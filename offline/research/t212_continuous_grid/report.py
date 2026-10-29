@@ -33,17 +33,8 @@ def generate_report(exp_dir=None):
     if not os.path.exists(results_path):
         return f"# Trading 212 grid\n\nNo results found at {results_path}.\n"
 
-    rows = []
-    with open(results_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    rec = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(rec, dict):
-                    rows.append(rec)
+    from state_io import read_jsonl_dicts
+    rows = read_jsonl_dicts(results_path)
 
     errors = [r for r in rows if "error" in r]
     valid_rows = [r for r in rows if "error" not in r]

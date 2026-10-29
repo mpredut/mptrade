@@ -10,24 +10,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from state_io import read_jsonl_dicts
 
-
-def _load_jsonl_dicts(path: str) -> list[dict]:
-    rows = []
-    if not os.path.exists(path):
-        return rows
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if isinstance(rec, dict):
-                rows.append(rec)
-    return rows
+_load_jsonl_dicts = read_jsonl_dicts
 
 
 def q(xs, p):

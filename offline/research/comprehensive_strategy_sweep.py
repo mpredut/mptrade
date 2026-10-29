@@ -330,8 +330,8 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         print(f"Shadow OHLC not found at {SHADOW_OHLC_JSON}")
         return {}
 
-    with open(SHADOW_OHLC_JSON, encoding="utf-8") as f:
-        full_bars = json.load(f)
+    from state_io import read_json_file
+    full_bars = read_json_file(SHADOW_OHLC_JSON, default=[])
 
     if not isinstance(full_bars, list) or len(full_bars) < 2:
         print(f"Shadow OHLC at {SHADOW_OHLC_JSON} has insufficient bars ({len(full_bars) if isinstance(full_bars, list) else 0} < 2)")

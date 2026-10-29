@@ -373,7 +373,7 @@ def test_atomic_write_json_default(tmp_path):
 
 
 def test_read_json_dict(tmp_path):
-    from state_io import read_json_dict
+    from state_io import read_json_dict, read_json_file, read_jsonl_dicts, read_jsonl_records
     p_ok = tmp_path / "ok.json"
     atomic_write_json(p_ok, {"k": "v"})
     assert read_json_dict(str(p_ok)) == {"k": "v"}
@@ -382,4 +382,23 @@ def test_read_json_dict(tmp_path):
     atomic_write_json(p_list, [1, 2, 3])
     with pytest.raises(ValueError, match="JSON root must be a dict"):
         read_json_dict(str(p_list))
+    assert read_json_dict(str(p_list), default={}) == {}
+    assert read_json_file(str(p_list)) == [1, 2, 3]
+    assert read_json_file(str(tmp_path / "missing.json"), default=None) is None
+
+    # .previous recovery with read_json_dict(recover_previous=True)
+    p_rec = tmp_path / "rec.json"
+    p_rec_prev = tmp_path / "rec.json.previous"
+    p_rec.write_text("[1, 2]", encoding="utf-8")
+    p_rec_prev.write_text('{"healed": 1}', encoding="utf-8")
+    assert read_json_dict(str(p_rec), recover_previous=True) == {"healed": 1}
+
+    # JSONL helpers
+    p_jsonl = tmp_path / "items.jsonl"
+    p_jsonl.write_text('{"a": 1}\n\ncorrupt\n[1, 2]\n{"b": 2}\n', encoding="utf-8")
+    assert read_jsonl_records(str(p_jsonl)) == [{"a": 1}, [1, 2], {"b": 2}]
+    assert read_jsonl_dicts(str(p_jsonl)) == [{"a": 1}, {"b": 2}]
+    assert read_jsonl_dicts(str(tmp_path / "missing.jsonl")) == []
+    with pytest.raises(ValueError):
+        read_jsonl_dicts(str(p_jsonl), strict=True)
 

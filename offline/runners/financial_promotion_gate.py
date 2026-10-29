@@ -27,10 +27,9 @@ def main() -> int:
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    with args.baseline.expanduser().resolve().open(encoding="utf-8") as handle:
-        baseline = json.load(handle)
-    with args.candidate.expanduser().resolve().open(encoding="utf-8") as handle:
-        candidate = json.load(handle)
+    from state_io import read_json_file
+    baseline = read_json_file(args.baseline.expanduser().resolve())
+    candidate = read_json_file(args.candidate.expanduser().resolve())
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         raise ValueError("baseline and candidate reports must be JSON objects")
     result = evaluate_dual_promotion(baseline, candidate)

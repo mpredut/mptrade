@@ -127,22 +127,18 @@ if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
         grid.load_asset(a)
-    if os.path.exists(grid.OUT):
-        with open(grid.OUT) as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                r = json.loads(line)
-                if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
-                    bars, _, _ = grid.load_asset(r["asset"])
-                    if len(bars) == r.get("bars"):
-                        p, pk = ALL[r["cfg"]]
-                        ck = (
-                            r["asset"], len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
-                            repr(p), bool(pk), "std",
-                        )
-                        _VIEWS_CACHE[ck] = {
-                            "kind": "views",
+    from state_io import read_jsonl_dicts
+    for r in read_jsonl_dicts(grid.OUT):
+        if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
+            bars, _, _ = grid.load_asset(r["asset"])
+            if len(bars) == r.get("bars"):
+                p, pk = ALL[r["cfg"]]
+                ck = (
+                    r["asset"], len(bars), bars[0][0] if bars else 0, bars[-1][0] if bars else 0,
+                    repr(p), bool(pk), "std",
+                )
+                _VIEWS_CACHE[ck] = {
+                    "kind": "views",
                             "fee": "std",
                             "asset": r["asset"],
                             "cfg": r["cfg"],

@@ -23,6 +23,7 @@ from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
+from state_io import read_jsonl_dicts
 
 # Strip the quote suffix to obtain the base asset (BTCUSDC -> BTC). This was
 # centralized in utils on July 28 after being duplicated here and elsewhere.
@@ -46,25 +47,18 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
                     break
         except Exception:
             pass
-    if not os.path.isfile(path):
-        return out
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict) or rec.get("s") != symbol:
-                continue
-            try:
-                ts_ms, price = rec["i"]
-            except (KeyError, TypeError, ValueError):
-                continue
-            ts_ms_f = safe_pos_float(ts_ms, default=None)
-            px_val = safe_pos_float(price, default=None)
-            if ts_ms_f is None or px_val is None:
-                continue
-            out.append((ts_ms_f / 1000.0, px_val))
+    for rec in read_jsonl_dicts(path):
+        if rec.get("s") != symbol:
+            continue
+        try:
+            ts_ms, price = rec["i"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        ts_ms_f = safe_pos_float(ts_ms, default=None)
+        px_val = safe_pos_float(price, default=None)
+        if ts_ms_f is None or px_val is None:
+            continue
+        out.append((ts_ms_f / 1000.0, px_val))
     out.sort(key=lambda x: x[0])
     return out
 

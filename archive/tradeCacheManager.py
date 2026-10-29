@@ -25,10 +25,10 @@ class TradeCacheManager:
     def load_state(self):
         if os.path.exists(self.filename):
             try:
-                with open(self.filename, "r") as f:
-                    data = json.load(f)
-                    self.trade_cache = data.get("trades", [])
-                    self.last_fetch_time_per_symbol = data.get("last_fetch", {})
+                from state_io import read_json_dict
+                data = read_json_dict(self.filename)
+                self.trade_cache = data.get("trades", [])
+                self.last_fetch_time_per_symbol = data.get("last_fetch", {})
             except Exception as e:
                 print(f"[Error] While reading the cache file: {e}")
 

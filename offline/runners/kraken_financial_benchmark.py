@@ -20,6 +20,7 @@ if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
+from state_io import read_json_file  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
@@ -66,8 +67,7 @@ def _git_state() -> dict:
 
 
 def _load_expected_dataset(manifest_path: Path, interval: int) -> dict:
-    with manifest_path.open(encoding="utf-8") as handle:
-        manifest = json.load(handle)
+    manifest = read_json_file(manifest_path)
     if not isinstance(manifest, dict):
         raise ValueError("the manifest must be a JSON object")
     datasets_map = manifest.get("datasets")
@@ -101,9 +101,8 @@ def _load_params(args) -> StratParams:
     cfg = load_layered_env_config(args.config_file, args.env_file)
     if not args.params_report:
         return StratParams.from_env(cfg)
-    with args.params_report.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    values = payload.get("strategy_params", payload)
+    payload = read_json_file(args.params_report)
+    values = payload.get("strategy_params", payload) if isinstance(payload, dict) else None
     if not isinstance(values, dict):
         raise ValueError("--params-report must contain strategy_params or an object")
     return strat_params_from_dict(values)
@@ -229,8 +228,7 @@ def build_report(
     }
     compare_to = getattr(args, "compare_to", None)
     if compare_to:
-        with compare_to.open(encoding="utf-8") as handle:
-            baseline = json.load(handle)
+        baseline = read_json_file(compare_to)
         report["promotion_gate"] = evaluate_dual_promotion(baseline, report)
     return report
 
@@ -385,8 +383,7 @@ def main() -> int:
         )
 
     if args.verify:
-        with args.verify.expanduser().resolve().open(encoding="utf-8") as handle:
-            expected = json.load(handle)
+        expected = read_json_file(args.verify.expanduser().resolve())
         if _projection(expected) != _projection(report):
             print("VERIFY FAILED: the benchmark differs from the versioned artefact", file=sys.stderr)
             return 1

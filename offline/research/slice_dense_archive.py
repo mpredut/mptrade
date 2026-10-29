@@ -52,15 +52,8 @@ def main():
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)
 
-    rows = []
-    with open(src, encoding="utf-8") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if ts_of(rec) > 0:
-                rows.append(rec)
+    from state_io import atomic_write_text, read_jsonl_records
+    rows = [rec for rec in read_jsonl_records(src) if ts_of(rec) > 0]
     if not rows:
         print(f"[slice] {src} gol/missing", file=sys.stderr)
         sys.exit(1)
@@ -71,7 +64,6 @@ def main():
     cutoff = last_ts - days * 86400.0 * ts_scale
     sliced = [r for r in rows if ts_of(r) >= cutoff]
 
-    from state_io import atomic_write_text
     atomic_write_text(out, "".join(json.dumps(r) + "\n" for r in sliced))
 
     print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} puncte (ultimele {days}z) -> {out}")

@@ -31,7 +31,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name
-from state_io import atomic_write_json, atomic_write_text
+from state_io import atomic_write_json, atomic_write_text, read_json_file
 from offline.backtests.comparison import (
     dominates as _dominates,
     format_comparison_markdown,
@@ -127,8 +127,7 @@ def _detect_venue(report: dict, cli_venue: str | None = None) -> str:
 
 
 def _load_report(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as handle:
-        report = json.load(handle)
+    report = read_json_file(path)
     if not isinstance(report, dict):
         raise ValueError("an incompatible or empty baseline report")
     intervals = report.get("intervals")

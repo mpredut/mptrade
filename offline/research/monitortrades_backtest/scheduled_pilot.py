@@ -130,19 +130,11 @@ def _append_audit(entry):
 
 def _last_change_for(full_key):
     """The most recent journal entry with action='applied' for full_key."""
-    if not os.path.exists(AUDIT_LOG):
-        return None
+    from state_io import read_jsonl_dicts
     last = None
-    with open(AUDIT_LOG, encoding="utf-8") as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("full_key") == full_key and entry.get("action") == "applied":
-                last = entry
+    for entry in read_jsonl_dicts(AUDIT_LOG):
+        if entry.get("full_key") == full_key and entry.get("action") == "applied":
+            last = entry
     return last
 
 

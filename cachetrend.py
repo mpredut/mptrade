@@ -41,6 +41,7 @@ from state_io import (
     discard_generation_file,
     meta_file_path,
     previous_generation_path,
+    read_json_dict,
     read_recovering_previous,
     restore_previous_generation,
     stage_previous_generation,
@@ -173,15 +174,8 @@ class CacheLongTrendManager(CacheManagerInterface):
             return []
 
         try:
-            def _read_pa(candidate_path):
-                with open(candidate_path, "r", encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                if not isinstance(payload, dict):
-                    raise ValueError("priceanalysis root must be a dict")
-                return payload
-
             data = read_recovering_previous(
-                trend_filename, _read_pa, backup_path=backup_path
+                trend_filename, read_json_dict, backup_path=backup_path
             )
         except Exception as exc:
             print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
@@ -313,19 +307,17 @@ class CacheShortTrendManager(CacheManagerInterface):
         meta_path = meta_file_path(self.filename)
         if os.path.exists(meta_path):
             try:
-                with open(meta_path, "r", encoding="utf-8") as handle:
-                    raw_meta = json.load(handle)
-                if isinstance(raw_meta, dict):
-                    ft = raw_meta.get("fetchtime")
-                    if isinstance(ft, dict):
-                        self.fetchtime_per_symbol = dict(ft)
-                    rc = raw_meta.get("rest_sync_cursor")
-                    if isinstance(rc, dict):
-                        self._rest_sync_cursor_per_symbol = dict(rc)
-                    elif self.fetchtime_per_symbol:
-                        self._rest_sync_cursor_per_symbol = dict(
-                            self.fetchtime_per_symbol
-                        )
+                raw_meta = read_json_dict(meta_path)
+                ft = raw_meta.get("fetchtime")
+                if isinstance(ft, dict):
+                    self.fetchtime_per_symbol = dict(ft)
+                rc = raw_meta.get("rest_sync_cursor")
+                if isinstance(rc, dict):
+                    self._rest_sync_cursor_per_symbol = dict(rc)
+                elif self.fetchtime_per_symbol:
+                    self._rest_sync_cursor_per_symbol = dict(
+                        self.fetchtime_per_symbol
+                    )
             except Exception:
                 pass
         if os.path.exists(self._previous_generation_path()):
@@ -766,10 +758,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                         return cached[1]
 
             def _read_c24(candidate_path):
-                with open(candidate_path, "r", encoding="utf-8") as fh:
-                    raw = json.load(fh)
-                if not isinstance(raw, dict):
-                    raise ValueError("Cache24 root must be a dict")
+                raw = read_json_dict(candidate_path)
                 items_map = raw.get("items")
                 if not isinstance(items_map, dict):
                     raise ValueError("Cache24 items must be a dict")
@@ -983,17 +972,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         backup_path = previous_generation_path(path)
         if not os.path.exists(path) and not os.path.exists(backup_path):
             return {}
-        try:
-            def _loader(candidate: str) -> dict:
-                with open(candidate, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                if not isinstance(data, dict):
-                    raise ValueError(f"{label} trend symbol file must be a dict")
-                return data
-
-            return read_recovering_previous(path, _loader, backup_path=backup_path)
-        except Exception:
-            return {}
+        return read_json_dict(path, default={}, backup_path=backup_path, recover_previous=True)
 
     def _read_live_symbol_file(self, symbol: str) -> dict:
         return self._read_symbol_trend_dict(self._live_trend_file(symbol), "live")
@@ -1296,10 +1275,7 @@ class CacheShortTrendManager(CacheManagerInterface):
             return {}
         try:
             def _load_candidate(candidate_path):
-                with open(candidate_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, dict):
-                    raise ValueError("ShortTrend cache root must be a dict")
+                data = read_json_dict(candidate_path)
                 if isinstance(data.get("items"), dict) and set(data.keys()) <= {
                     "items",
                     "fetchtime",

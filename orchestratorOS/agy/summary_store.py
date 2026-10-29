@@ -21,7 +21,7 @@ if _ROOT_DIR not in sys.path:
 
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 from botcore import _parse_bool_flag, safe_nonneg_int
-from state_io import atomic_write_bytes
+from state_io import atomic_write_bytes, read_json_dict
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
 
@@ -112,11 +112,7 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
         for fname in os.listdir(pdir):
             if not fname.endswith(".json"):
                 continue
-            try:
-                with open(os.path.join(pdir, fname), encoding="utf-8") as f:
-                    data = json.load(f)
-            except (OSError, ValueError):
-                continue
+            data = read_json_dict(os.path.join(pdir, fname), default=None)
             if not isinstance(data, dict):
                 continue
             raw_id, raw_name = data.get("id"), data.get("name")

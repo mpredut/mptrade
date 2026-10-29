@@ -48,8 +48,8 @@ def main():
         print(f"{ORDER_FILE} does not exist — nothing to do.")
         return
 
-    with open(ORDER_FILE, encoding="utf-8") as f:
-        data = json.load(f)
+    from state_io import read_json_dict
+    data = read_json_dict(ORDER_FILE, default=None)
     if not isinstance(data, dict):
         print(f"{ORDER_FILE} does not contain a JSON object — nothing to do.")
         return

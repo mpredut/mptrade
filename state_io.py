@@ -536,18 +536,101 @@ def commit_file_and_meta(
 _MISSING = object()
 
 
-def read_json_dict(path: str) -> dict[str, Any]:
-    """Read and parse a UTF-8 JSON file whose root value must be a ``dict``."""
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+def _read_json_file_strict(path: str) -> Any:
+    target = str(resolve_cachedb_filepath(os.fspath(path)))
+    with open(target, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _read_json_dict_strict(path: str) -> dict[str, Any]:
+    payload = _read_json_file_strict(path)
     if not isinstance(payload, dict):
         raise ValueError("JSON root must be a dict")
     return payload
 
 
+def read_json_file(
+    path: str,
+    *,
+    default: Any = _MISSING,
+    backup_path: str | None = None,
+    recover_previous: bool = False,
+) -> Any:
+    """Read and parse any UTF-8 JSON file, with optional ``.previous`` recovery or fallback ``default``."""
+    if recover_previous:
+        return read_recovering_previous(
+            path, _read_json_file_strict, backup_path=backup_path, default=default
+        )
+    try:
+        return _read_json_file_strict(path)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
+def read_json_dict(
+    path: str,
+    *,
+    default: Any = _MISSING,
+    backup_path: str | None = None,
+    recover_previous: bool = False,
+) -> dict[str, Any] | Any:
+    """Read and parse a UTF-8 JSON file whose root value must be a ``dict``."""
+    if recover_previous:
+        return read_recovering_previous(
+            path, _read_json_dict_strict, backup_path=backup_path, default=default
+        )
+    try:
+        return _read_json_dict_strict(path)
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise
+
+
+def read_jsonl_records(path: str, *, strict: bool = False) -> list[Any]:
+    """Read JSON records from a UTF-8 JSONL file, optionally enforcing strict line parsing."""
+    if not path or isinstance(path, (bool, int)):
+        if strict:
+            raise TypeError("path must be a valid filesystem path")
+        return []
+    target = str(resolve_cachedb_filepath(os.fspath(path)))
+    if not strict and not os.path.isfile(target):
+        return []
+    records: list[Any] = []
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            for line in handle:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    records.append(json.loads(raw))
+                except ValueError:
+                    if strict:
+                        raise
+    except OSError:
+        if strict:
+            raise
+        return []
+    return records
+
+
+def read_jsonl_dicts(path: str, *, strict: bool = False) -> list[dict[str, Any]]:
+    """Read JSON object records (``dict``) from a UTF-8 JSONL file."""
+    out: list[dict[str, Any]] = []
+    for rec in read_jsonl_records(path, strict=strict):
+        if isinstance(rec, dict):
+            out.append(rec)
+        elif strict:
+            raise ValueError("JSONL line must be a dict")
+    return out
+
+
 def read_recovering_previous(
     path: str,
-    read_fn: Callable[[str], T],
+    read_fn: Callable[[str], T] = json.loads,
     *,
     backup_path: str | None = None,
     error_mapper: Callable[[BaseException], BaseException] | None = None,
@@ -566,6 +649,8 @@ def read_recovering_previous(
         def _invoke(candidate_path: str) -> Any:
             with open(candidate_path, "r", encoding="utf-8") as handle:
                 return json.loads(handle.read())
+    elif read_fn is dict:
+        _invoke = _read_json_dict_strict
     else:
         _invoke = read_fn
     try:

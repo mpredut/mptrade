@@ -149,15 +149,11 @@ def _walk(value, *, owner: str, source: str, location: str = "$",
 
 
 def _read(path: str, *, json_lines: bool):
-    from state_io import read_recovering_previous
+    from state_io import read_jsonl_records, read_recovering_previous
 
-    def _loader(candidate_path: str):
-        with open(candidate_path, encoding="utf-8") as handle:
-            if json_lines:
-                return [json.loads(line) for line in handle if line.strip()]
-            return json.load(handle)
-
-    return read_recovering_previous(path, _loader)
+    if json_lines:
+        return read_recovering_previous(path, lambda p: read_jsonl_records(p, strict=True))
+    return read_recovering_previous(path, json.loads)
 
 
 def _path_context(path: str) -> dict:

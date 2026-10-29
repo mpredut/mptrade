@@ -7,12 +7,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_json_file
 
 
 def convert_price_cache(input_file: str, output_file: str, symbol: str):
-    with open(input_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = read_json_file(input_file)
 
     if not isinstance(data, dict):
         data = {"items": data if isinstance(data, list) else []}

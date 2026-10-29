@@ -9,7 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import atomic_write_text
+from state_io import atomic_write_text, read_json_dict, read_json_file
 
 _safe_f = safe_float
 
@@ -31,23 +31,13 @@ def generate_markdown_report() -> str:
     if not os.path.isfile(CRYPTO_JSON):
         return "No crypto ablation results found."
 
-    with open(CRYPTO_JSON, "r", encoding="utf-8") as f:
-        raw_crypto = json.load(f)
+    raw_crypto = read_json_file(CRYPTO_JSON, default=[])
     crypto_data = [r for r in raw_crypto if isinstance(r, dict) and r.get("asset")] if isinstance(raw_crypto, list) else []
 
-    summary = {}
-    if os.path.isfile(SUMMARY_JSON):
-        with open(SUMMARY_JSON, "r", encoding="utf-8") as f:
-            raw_sum = json.load(f)
-        if isinstance(raw_sum, dict):
-            summary = raw_sum
+    summary = read_json_dict(SUMMARY_JSON, default={}) if os.path.isfile(SUMMARY_JSON) else {}
 
-    equities_data = []
-    if os.path.isfile(EQUITIES_JSON):
-        with open(EQUITIES_JSON, "r", encoding="utf-8") as f:
-            raw_eq = json.load(f)
-        if isinstance(raw_eq, list):
-            equities_data = [eq for eq in raw_eq if isinstance(eq, dict)]
+    raw_eq = read_json_file(EQUITIES_JSON, default=[]) if os.path.isfile(EQUITIES_JSON) else []
+    equities_data = [eq for eq in raw_eq if isinstance(eq, dict)] if isinstance(raw_eq, list) else []
 
     md = []
     md.append("# Hybrid Re-Entry Architecture: Ablation Benchmark & Research Report")

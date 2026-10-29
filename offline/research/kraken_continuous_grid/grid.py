@@ -242,15 +242,12 @@ if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
         load_asset(a)
-    done = set()
-    if os.path.exists(OUT):
-        with open(OUT, encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                r = json.loads(line)
-                if "error" not in r:
-                    done.add((r["asset"], r["cfg"]))
+    from state_io import read_jsonl_dicts
+    done = {
+        (r["asset"], r["cfg"])
+        for r in read_jsonl_dicts(OUT)
+        if "error" not in r and "asset" in r and "cfg" in r
+    }
     first = ["live", "old_live_pre0923", "ov650_t8", "ov350_t6", "ov1000_t8", "ov2000_t8",
              "abl_tp5", "abl_spacing0", "abl_trail_fixed", "abl_gate_off", "abl_floor0", "abl_sl12.5",
              "peak2.2", "reentry0", "ov650_t8_sl12.5", "ov650_t8_oldlive", "sl0", "tp_classic"]

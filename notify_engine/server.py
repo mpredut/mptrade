@@ -17,6 +17,7 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import normalize_venue_name
+from state_io import read_json_dict
 from notify_engine.alertnotifiers import (
     _alert_attr,
     _external_notifications_disabled,
@@ -166,11 +167,10 @@ class NotificationServer:
     def _load_rules(self) -> List[Dict[str, Any]]:
         rules_path = os.path.join(os.path.dirname(__file__), "rules.json")
         try:
-            with open(rules_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for rule in data.get("rules", []):
-                    rule["regex_obj"] = re.compile(rule["match_regex"])
-                return data.get("rules", [])
+            data = read_json_dict(rules_path)
+            for rule in data.get("rules", []):
+                rule["regex_obj"] = re.compile(rule["match_regex"])
+            return data.get("rules", [])
         except Exception as e:
             logging.error(f"Failed to load rules.json: {e}")
             return []

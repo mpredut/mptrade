@@ -30,7 +30,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
     if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
         sys.modules.pop(_mod_name, None)
 
-from state_io import atomic_write_json, previous_generation_path, read_recovering_previous
+from state_io import atomic_write_json, previous_generation_path, read_json_dict, read_recovering_previous
 from providers.base import extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
@@ -112,16 +112,8 @@ def _read_marker(path: str) -> dict | None:
     backup = previous_generation_path(target)
     if not os.path.exists(target) and not os.path.exists(backup):
         return None
-
-    def _loader(candidate: str) -> dict:
-        with open(candidate, encoding="utf-8") as handle:
-            value = json.load(handle)
-        if not isinstance(value, dict):
-            raise RuntimeError(f"invalid T212 marker {path}: expected JSON object")
-        return value
-
     try:
-        return read_recovering_previous(target, _loader, backup_path=backup)
+        return read_recovering_previous(target, read_json_dict, backup_path=backup)
     except FileNotFoundError:
         return None
     except (OSError, TypeError, ValueError) as exc:

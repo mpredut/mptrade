@@ -24,7 +24,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
-from state_io import atomic_write_json, atomic_write_text
+from state_io import atomic_write_json, atomic_write_text, read_json_dict, read_jsonl_dicts
 
 CACHE_DIR = get_cachedb_dir()
 
@@ -42,8 +42,7 @@ def _entry_ts(item):
 
 def _load_old_json(path):
     """{'items': {SYM: [[ts,price],...]}, 'fetchtime': {...}} → {SYM: [items]}"""
-    with open(path) as f:
-        data = json.load(f)
+    data = read_json_dict(path, default={})
     items = data.get("items", data) if isinstance(data, dict) else {}
     if not isinstance(items, dict):
         return {}
@@ -53,19 +52,9 @@ def _load_old_json(path):
 def _load_jsonl(path):
     """{SYM: [items]} from the lines {'s': SYM, 'i': item}."""
     out = {}
-    if not os.path.exists(path):
-        return out
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-                if isinstance(rec, dict) and "s" in rec and "i" in rec:
-                    out.setdefault(rec["s"], []).append(rec["i"])
-            except Exception:
-                continue
+    for rec in read_jsonl_dicts(path):
+        if "s" in rec and "i" in rec:
+            out.setdefault(rec["s"], []).append(rec["i"])
     return out
 
 

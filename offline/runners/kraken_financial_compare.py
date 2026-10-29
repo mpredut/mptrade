@@ -37,8 +37,8 @@ DEFAULT_BASELINE = (
 
 
 def _load_json(path: Path) -> dict:
-    with path.open(encoding="utf-8") as handle:
-        return json.load(handle)
+    from state_io import read_json_file
+    return read_json_file(path)
 
 
 def _scenario_summary(report: dict) -> dict:

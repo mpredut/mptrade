@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from dotenv import dotenv_values
 from botcore import safe_pos_float
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_json_file
 from strategies import spot_engine as _strat
 from strategies.spot_replay import run_replay
 from strategies.spot_engine import StratParams
@@ -55,7 +55,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
     cash = cash_f
     records = validate_dataset(load_dataset(DEFAULT_DATASET), interval_minutes=240)
     digest = dataset_sha256(records)
-    manifest = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    manifest = read_json_file(DEFAULT_MANIFEST)
     ds_240 = ((manifest.get("datasets") if isinstance(manifest, dict) else None) or {}).get("240")
     expected_sha = ds_240.get("sha256") if isinstance(ds_240, dict) else None
     if digest != expected_sha:
