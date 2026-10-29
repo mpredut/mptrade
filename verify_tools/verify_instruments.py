@@ -147,8 +147,9 @@ def main() -> int:
         check_available(f_inst == f_prov, f_inst is not None and f_prov is not None,
                         "TAO free() == provider direct", f"instr={f_inst} prov={f_prov}")
     if hype:
+        from botcore import safe_pos_float
         p_h = hype.price()
-        check(p_h is not None and p_h > 0, "HYPE price() > 0 (rutat la HL)", str(p_h))
+        check(safe_pos_float(p_h, default=None) is not None, "HYPE price() > 0 (rutat la HL)", str(p_h))
         f_h = hype.free()
         f_hp = api.provider_by_name("hyperliquid").free_balance("HYPE")
         check_available(f_h == f_hp, f_h is not None and f_hp is not None,

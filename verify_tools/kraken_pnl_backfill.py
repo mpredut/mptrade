@@ -94,13 +94,14 @@ def main():
         pair = str(t.get('pair') or '?').strip() or '?'
         px = safe_pos_float(extract_order_price(t), default=0.0)
         qty = safe_pos_float(extract_order_qty(t), default=0.0)
-        if px <= 0.0 or qty <= 0.0:
+        side = extract_order_side(t)
+        if px <= 0.0 or qty <= 0.0 or side not in ('BUY', 'SELL'):
             continue
         cost = safe_pos_float(t.get('cost'), default=0.0)
         if cost <= 0.0:
             cost = px * qty
         by_sym.setdefault(pair, []).append(dict(
-            txid=txid, side=extract_order_side(t) or 'SELL',
+            txid=txid, side=side,
             price=px,
             qty=qty,
             cost=cost,

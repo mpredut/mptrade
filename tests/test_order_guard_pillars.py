@@ -1907,4 +1907,42 @@ def test_batch58_hl_shadow_longterm_tradeall_observe_and_portfolio_snapshot_guar
     assert fired == []
 
 
+def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(monkeypatch, tmp_path):
+    import pytest
+    from offline.backtests.evaluation import load_venue_module
+    from verify_tools import kraken_pnl_backfill as kpb
+
+    hl_strat = load_venue_module("hyperliquid", "strategy.py", "hl_strat_b59")
+    with pytest.raises(ValueError, match="invalid numeric boolean"):
+        hl_strat.StratParams.from_dict({"enable_takeprofit": 2})
+    with pytest.raises(ValueError, match="invalid boolean value"):
+        hl_strat.StratParams.from_dict({"enable_takeprofit": "invalid_bool"})
+
+    out_path = tmp_path / "kraken_trades_full.json"
+    monkeypatch.setattr(kpb, "OUT", str(out_path))
+    monkeypatch.setattr(kpb, "_client", lambda: object())
+    monkeypatch.setattr(
+        kpb,
+        "fetch_all_trades",
+        lambda cli: (
+            {
+                "T1": {"pair": "HYPEUSD", "type": "buy", "price": "10.0", "vol": "2.0", "cost": "20.0", "fee": "0.1", "time": 1700000000},
+                "T_BAD": {"pair": "HYPEUSD", "type": "unknown_side", "price": "10.0", "vol": "5.0", "cost": "50.0", "fee": "0.1", "time": 1700000010},
+            },
+            2,
+        ),
+    )
+    kpb.main()
+    import json
+    saved = json.loads(out_path.read_text(encoding="utf-8"))
+    assert len(saved["items"]["HYPEUSD"]) == 1
+    assert saved["items"]["HYPEUSD"][0]["side"] == "BUY"
+
+    from visuals import drawprices as dp
+    inv = dp.min_max_inverse([0.0, "bad", 0.5, 1.0], 10.0, 20.0)
+    assert list(inv) == [10.0, 15.0, 20.0]
+
+
+
+
 

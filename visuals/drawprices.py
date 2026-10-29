@@ -110,7 +110,13 @@ def min_max_scale(arr: np.ndarray):
 def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
     if arr_scaled is None or isinstance(arr_scaled, (bool, str, bytes)) or len(arr_scaled) == 0:
         return np.array([], dtype=np.float64)
-    arr_f = np.asarray(arr_scaled, dtype=np.float64)
+    try:
+        arr_f = np.asarray(arr_scaled, dtype=np.float64)
+    except (TypeError, ValueError):
+        clean = _clean_finite_floats(arr_scaled)
+        if not clean:
+            return np.array([], dtype=np.float64)
+        arr_f = np.asarray(clean, dtype=np.float64)
     vmin_f = safe_float(vmin, default=None)
     vmax_f = safe_float(vmax, default=None)
     if vmin_f is None or vmax_f is None:
@@ -144,24 +150,26 @@ def _plot_series_and_forecast(
             avg_step = (dt[-1] - dt[0]).total_seconds() / max(1, (n - 1))
             step = timedelta(seconds=avg_step if avg_step > 0 else 60.0)
         future_dt = [dt[-1] + (i + 1) * step for i in range(len(forecast))]
-    plt.figure(figsize=(10, 5))
-    if forecast_label is not None:
-        plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
-        if future_dt:
-            plt.plot(future_dt, forecast, marker="o", linestyle="--", label=forecast_label)
-    else:
-        plt.plot(dt, prices, marker="o", linestyle="-")
-    plt.title(title)
-    plt.xlabel("Timp")
-    plt.ylabel("Price")
-    plt.grid(True)
-    plt.xticks(rotation=45)
-    if forecast_label is not None:
-        plt.legend()
-    plt.tight_layout()
-    fname = os.path.join(outdir, f"{fname_prefix}_{symbol}.png")
-    plt.savefig(fname, dpi=150)
-    plt.close()
+    fig = plt.figure(figsize=(10, 5))
+    try:
+        if forecast_label is not None:
+            plt.plot(dt, prices, marker="o", linestyle="-", label="Istoric")
+            if future_dt:
+                plt.plot(future_dt, forecast, marker="o", linestyle="--", label=forecast_label)
+        else:
+            plt.plot(dt, prices, marker="o", linestyle="-")
+        plt.title(title)
+        plt.xlabel("Timp")
+        plt.ylabel("Price")
+        plt.grid(True)
+        plt.xticks(rotation=45)
+        if forecast_label is not None:
+            plt.legend()
+        plt.tight_layout()
+        fname = os.path.join(outdir, f"{fname_prefix}_{symbol}.png")
+        plt.savefig(fname, dpi=150)
+    finally:
+        plt.close(fig)
     return fname
 
 
