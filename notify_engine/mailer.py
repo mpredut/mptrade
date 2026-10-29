@@ -28,6 +28,10 @@ import sys
 from email.mime.text import MIMEText
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from botcore import _parse_bool_flag, load_dotenv, safe_pos_int
 
 # Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
@@ -47,7 +51,6 @@ def _disabled() -> bool:
 
 def load_env() -> None:
     """Load config.env (versioned) and .env (secrets) without overriding the process env."""
-    from botcore import load_dotenv
     for fname in ("config.env", ".env"):
         path = os.path.join(ROOT_DIR, fname)
         if os.path.isfile(path):
@@ -90,7 +93,6 @@ def _config() -> dict | None:
     if missing:
         logging.warning(f"Email not configured (missing: {', '.join(missing)})")
         return None
-    from botcore import safe_pos_int
     port_i = safe_pos_int(cfg["port"], default=None)
     if port_i is None or port_i > 65535:
         logging.warning(f"Email not configured (SMTP_PORT is not a valid TCP port: {cfg['port']!r})")
@@ -125,7 +127,6 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     cfg = _config()
     if cfg is None:
         return False
-    from botcore import _parse_bool_flag
     subj_str = "" if isinstance(subject, bool) else str(subject or "")
     subject = re.sub(r"[\r\n]+", " ", subj_str).strip() or "Alert"
     body = "" if isinstance(body, bool) else str(body or "")

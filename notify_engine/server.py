@@ -13,6 +13,7 @@ from typing import Dict, Any, List
 from botcore import (
     _parse_bool_flag,
     load_env_stack,
+    required_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -65,7 +66,6 @@ def _ensure_env_loaded() -> None:
 
 
 def resolve_topic(category: str) -> str:
-    from botcore import required_env
     cat = ("" if isinstance(category, bool) else str(category or "")).strip().upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
         cat = "SERVER"
