@@ -403,6 +403,33 @@ def normalize_bypassed_guards(
     return bypassed
 
 
+def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
+    """Remove a specific guard from an expanded bypass set while preserving sibling category tokens."""
+    g = GUARD_REGISTRY.get(code)
+    if g is None or not isinstance(bypassed, set):
+        return
+    if g in GUARD_CATEGORIES.get("financial", ()):
+        if bypassed.intersection({"financial", "gf"}):
+            bypassed.update(
+                s.code.lower()
+                for s in GUARD_CATEGORIES["financial"]
+                if s.code != g.code
+            )
+        bypassed.difference_update({"financial", "gf"})
+    cat_shortcuts = {sc for sc, cat in _CATEGORY_SHORTCUTS.items() if cat == g.category}
+    cat_tokens = {g.category} | cat_shortcuts
+    if bypassed.intersection(cat_tokens):
+        bypassed.update(
+            s.code.lower()
+            for s in GUARD_CATEGORIES.get(g.category, ())
+            if s.code != g.code
+        )
+    bypassed.difference_update(g.aliases)
+    bypassed.discard(g.canonical)
+    bypassed.discard(g.code.lower())
+    bypassed.difference_update(cat_tokens)
+
+
 def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
     """Return True when every guard in the given category is bypassed."""
     guards = GUARD_CATEGORIES.get(category)

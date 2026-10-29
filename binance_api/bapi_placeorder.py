@@ -521,7 +521,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     and historical price profit references before order placement.
     """
     from . import bapi_allorders as apiorders
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
     from providers.market_api import BinanceProvider
 
     order_type = _normalize_side(order_type)
@@ -541,12 +541,7 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
         print(
             f"[GUARD] {order_type} {symbol}: bypass math_profit/math_reference ignored; "
             "is allowed only for BUY")
-        if bypassed.intersection({"financial", "gf"}):
-            bypassed.update({"g_qlimit1", "g_qlimit2"})
-        bypassed.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
-        bypassed.discard(GUARD_REGISTRY["G_PROF"].canonical)
-        bypassed.discard(GUARD_REGISTRY["G_PROF"].code.lower())
-        bypassed.difference_update({"profit", "financial", "gf"})
+        revoke_guard_bypass(bypassed, "G_PROF")
         skip_math_profit_ref = False
         g_prof_revoked = True
     bypass_pg = (

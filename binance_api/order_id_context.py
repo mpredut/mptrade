@@ -8,6 +8,7 @@ import time
 
 from typing import Optional, Union, Iterable
 from botcore import safe_nonneg_int
+from providers.base import clean_order_id
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -146,8 +147,8 @@ def resolve_order_owner(client_order_id: Optional[str]) -> str:
     """
     if not isinstance(client_order_id, str):
         return "unspecified"
-    cid = client_order_id.strip()
-    if not cid or cid.lower() in {"none", "null", "nan", "inf", "-inf", "+inf", "0", "0.0", "-0", "+0"}:
+    cid = clean_order_id(client_order_id)
+    if not cid:
         return "unspecified"
     for prefix, bot in _SORTED_BOT_PREFIXES:
         if cid.startswith(prefix):

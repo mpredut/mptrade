@@ -40,6 +40,19 @@ def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
     return int(cleaned) if cleaned is not None and cleaned.isdigit() else None
 
 
+def _build_trade_order_record(order_id: Any, price: float, qty: float, timestamp_ms: int, side: str) -> dict[str, Any]:
+    return {
+        'orderId': order_id,
+        'price': price,
+        'quantity': qty,
+        'qty': qty,
+        'timestamp': timestamp_ms,
+        'time': timestamp_ms,
+        'side': side,
+        'isBuyer': side == 'BUY',
+    }
+
+
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
                        strict=False):
     """Fetch every fill from ``start_time_ms`` through now using pagination.
@@ -168,16 +181,7 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             raw_qty = data['quantity']
             qty_out = _round_fill_val(raw_qty)
             px_out = _round_fill_val(data['price_qty'] / raw_qty) if raw_qty > 0 else 0
-            result.append({
-                'orderId': oid,
-                'price': px_out,
-                'quantity': qty_out,
-                'qty': qty_out,
-                'timestamp': data['timestamp'],
-                'time': data['timestamp'],
-                'side': data['side'],
-                'isBuyer': data['side'] == 'BUY',
-            })
+            result.append(_build_trade_order_record(oid, px_out, qty_out, data['timestamp'], data['side']))
 
         for r in result[:5]:
             print(r)
@@ -273,16 +277,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
             qty = extract_order_qty(order)
             if px <= 0 or qty <= 0:
                 continue
-            filtered_orders.append({
-                'orderId': order.get('orderId'),
-                'price': px,
-                'quantity': qty,
-                'qty': qty,
-                'timestamp': ts_ms,
-                'time': ts_ms,
-                'side': side,
-                'isBuyer': side == 'BUY',
-            })
+            filtered_orders.append(_build_trade_order_record(order.get('orderId'), px, qty, ts_ms, side))
 
     #print(f" filtered_orders {filtered_orders} , current_time_ms {current_time_ms} timestamp  max_age+ms {max_age_ms}")
     return filtered_orders

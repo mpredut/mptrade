@@ -3,6 +3,7 @@ import math
 
 from botcore import safe_pos_float
 from instrument_registry import load_registry, symbols_for
+from providers.base import normalize_side
 
 
 # Historical labels remain available to diagnostics; membership is registry-driven.
@@ -29,8 +30,7 @@ def _get_client():
     return client
 def _normalize_ordertype(order_type):
     if isinstance(order_type, str):
-        s = order_type.strip().upper()
-        return {"B": "BUY", "S": "SELL"}.get(s, s)
+        return normalize_side(order_type) or order_type.strip().upper()
     return order_type
 
 

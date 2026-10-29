@@ -15,7 +15,7 @@ import sys
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
-from providers.base import extract_order_id, normalize_side
+from providers.base import extract_order_id, normalize_side, resolve_market_flag
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
@@ -55,6 +55,7 @@ from guard_hierarchy import (
     GUARD_CATALOG,  # noqa: F401
     GUARD_REGISTRY,
     normalize_bypassed_guards,
+    revoke_guard_bypass,
 )
 
 
@@ -343,12 +344,7 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass math_profit/math_reference ignored; "
                 "is allowed only for BUY")
-            if bypassed_guards.intersection({"financial", "gf"}):
-                bypassed_guards.update({"g_qlimit1", "g_qlimit2"})
-            bypassed_guards.difference_update(GUARD_REGISTRY["G_PROF"].aliases)
-            bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].canonical)
-            bypassed_guards.discard(GUARD_REGISTRY["G_PROF"].code.lower())
-            bypassed_guards.difference_update({"profit", "financial", "gf"})
+            revoke_guard_bypass(bypassed_guards, "G_PROF")
             bypass_math_ref = False
         # Quantity-policy bypass reduces exposure and is therefore SELL-only.
         # Ignore it on BUY so a misplaced argument can never increase exposure.
@@ -356,14 +352,7 @@ class Instrument:
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; "
                 "is allowed only for SELL")
-            if bypassed_guards.intersection({"financial", "gf"}):
-                bypassed_guards.update({"g_prof", "g_qlimit2"})
-            if bypassed_guards.intersection({"qlimit", "g_qlimit"}):
-                bypassed_guards.add("g_qlimit2")
-            bypassed_guards.difference_update(GUARD_REGISTRY["G_QLIMIT1"].aliases)
-            bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].canonical)
-            bypassed_guards.discard(GUARD_REGISTRY["G_QLIMIT1"].code.lower())
-            bypassed_guards.difference_update({"qlimit", "g_qlimit", "financial", "gf"})
+            revoke_guard_bypass(bypassed_guards, "G_QLIMIT1")
             bypass_quantity_policy = False
         requires_permit = bool(getattr(self._provider, "requires_cache_permit", lambda: False)())
         defers_smart_cancel = bool(getattr(self._provider, "defers_smart_cancellation", lambda: False)())
@@ -439,10 +428,7 @@ class Instrument:
         # before submission at the current executable price. This prevents a
         # force-market sell from passing at +1% then executing below the validated
         # margin, a financial time-of-check/time-of-use issue.
-        is_market = (
-            _parse_bool_flag(kwargs.get("market", False), False)
-            or _parse_bool_flag(kwargs.get("force", False), False)
-        )
+        is_market = resolve_market_flag(**kwargs)
         caller_enforce_biz_min = kwargs.pop("enforce_business_minimum", None)
         if caller_enforce_biz_min is not None:
             enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)

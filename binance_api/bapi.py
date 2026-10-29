@@ -219,10 +219,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 continue
             if extract_order_side(order) != order_type.upper():
                 continue
-            raw_cid = order.get('clientOrderId')
-            cid = extract_order_id(raw_cid, default='') if raw_cid is not None and not isinstance(raw_cid, (bool, dict, list, tuple, set, frozenset)) else ''
-            if cid and cid.strip().lower() in _INVALID_BAPI_ID_STRINGS:
-                cid = ''
+            cid = clean_order_id(order.get('clientOrderId')) or ''
             if allowed_owners is not None and not rc.order_matches_owner(cid, allowed_owners):
                 if cid.startswith("OR_"):
                     if accepted_owner_map is None:

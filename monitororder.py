@@ -59,6 +59,10 @@ def _clean_monitor_id(val) -> str:
     return cleaned if cleaned is not None else ""
 
 
+def _format_duration_hm(seconds: float) -> str:
+    return f"{seconds / 3600:.1f}h" if seconds >= 3600 else f"{seconds / 60:.1f}m"
+
+
 def resolve_effective_order_ttl(order_id, client_order_id, owner=None, custom_ttl_map=None) -> float:
     """Resolve the effective TTL for an open order.
 
@@ -291,8 +295,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             now = time.time()
             age_sec = max(0.0, now - order_ts)
             if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
-                age_str = f"{age_sec / 3600:.1f}h" if age_sec >= 3600 else f"{age_sec / 60:.1f}m"
-                ttl_str = f"{effective_ttl / 3600:.1f}h" if effective_ttl >= 3600 else f"{effective_ttl / 60:.1f}m"
+                age_str = _format_duration_hm(age_sec)
+                ttl_str = _format_duration_hm(effective_ttl)
                 print(
                     f"[MONITORORDER] ⏰ Order {order_id} ({owner}, cid='{cid}') EXPIRED: "
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
@@ -629,12 +633,9 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
 
     # Keep tracking set sizes bounded over long continuous execution
-    if len(_notified_placed_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _notified_placed_order_ids.trim(5000)
-    if len(_notified_expired_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _notified_expired_order_ids.trim(5000)
-    if len(_derived_replacement_order_ids) > MAX_TRACKED_ORDER_IDS:
-        _derived_replacement_order_ids.trim(5000)
+    for tracked_set in (_notified_placed_order_ids, _notified_expired_order_ids, _derived_replacement_order_ids):
+        if len(tracked_set) > MAX_TRACKED_ORDER_IDS:
+            tracked_set.trim(5000)
 
 
 

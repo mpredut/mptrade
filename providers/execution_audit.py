@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     float_env,
     safe_float,
     safe_nonneg_float,
@@ -180,11 +181,8 @@ class AuditedStrategyExecutor:
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:
-        if isinstance(order_id, (bool, list, tuple, dict, set, frozenset)):
-            return ""
         from .base import _clean_single_order_id
-        cleaned = _clean_single_order_id(order_id)
-        return cleaned if cleaned is not None else ""
+        return _clean_single_order_id(order_id) or ""
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         oid_key = self._norm_order_id_key(order_id)
@@ -199,12 +197,7 @@ class AuditedStrategyExecutor:
                 self._intent_by_order.popitem(last=False)
 
     def _intent(self, symbol: str, order_id: str, explicit: Optional[str] = None) -> str:
-        from .base import _clean_single_order_id
-        clean_exp = (
-            _clean_single_order_id(explicit)
-            if not isinstance(explicit, (bool, list, tuple, dict, set, frozenset))
-            else None
-        )
+        clean_exp = self._norm_order_id_key(explicit)
         if clean_exp:
             self._remember(symbol, order_id, clean_exp)
             return clean_exp
@@ -242,12 +235,7 @@ class AuditedStrategyExecutor:
             cache_permit=None,
             _requested_recorded: bool = False) -> SubmissionOutcome:
         """Submit once and retain refusal versus response-loss ambiguity."""
-        from .base import _clean_single_order_id
-        clean_cid = (
-            _clean_single_order_id(client_order_id)
-            if not isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset))
-            else None
-        )
+        clean_cid = self._norm_order_id_key(client_order_id) or None
         client_order_id = clean_cid or intent_client_order_id(self.name, intent_id)
         is_market = _parse_bool_flag(market, False)
         fields = {
@@ -400,10 +388,9 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "ohlc_series", None)
         if callable(reader):
             return reader(symbol, interval_min)
-        itv_f = safe_pos_float(interval_min, default=None)
-        if itv_f is None or not itv_f.is_integer():
+        interval_i = exact_pos_int(interval_min, default=None)
+        if interval_i is None:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-        interval_i = int(itv_f)
         from market_regime import ClosedPriceSeries
         return ClosedPriceSeries(
             tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),
