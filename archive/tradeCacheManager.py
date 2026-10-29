@@ -64,13 +64,11 @@ class TradeCacheManager:
 
     def save_state(self):
         try:
-            tmp_file = self.filename + ".tmp"
-            with open(tmp_file, "w") as f:
-                json.dump({
-                    "trades": self.trade_cache,
-                    "last_fetch": self.last_fetch_time_per_symbol
-                }, f)
-            os.replace(tmp_file, self.filename)
+            from state_io import atomic_write_json
+            atomic_write_json(self.filename, {
+                "trades": self.trade_cache,
+                "last_fetch": self.last_fetch_time_per_symbol
+            })
         except Exception as e:
             print(f"[Error] While saving the cache file: {e}")
 
