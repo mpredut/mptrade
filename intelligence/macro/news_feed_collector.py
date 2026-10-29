@@ -14,10 +14,7 @@ import xml.etree.ElementTree as ET
 from botcore import _parse_bool_flag, safe_float
 from cachepaths import cache_path, resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
-    ACUTE_SHOCK_PHRASES,
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
-    DEFAULT_RSS_URL,
-    HIGH_SEVERITY_KEYWORDS,
     build_dynamic_rss_url,
     discover_dynamic_terms_from_headlines,
     get_cache_filenames,

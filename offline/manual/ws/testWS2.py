@@ -4,8 +4,7 @@ import asyncio
 import requests
 import websockets
 import json
-import bapi as api
-from keys.apikeys import api_key, api_secret
+from keys.apikeys import api_key
 
 def get_listen_key(api_key):
     resp = requests.post(

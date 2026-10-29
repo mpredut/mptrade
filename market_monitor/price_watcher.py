@@ -22,10 +22,10 @@ from market_monitor.pricechecker import start_price_alert_checker
 from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
-from market_monitor.new_coins_discovery import create_new_coins_checker, NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
+from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier
 from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
-from market_monitor.alerts_config import load_config, resolve
+from market_monitor.alerts_config import load_config
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_env_stack(os.path.join(_ROOT, ".env"))

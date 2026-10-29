@@ -31,7 +31,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
-    safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
+    safe_pos_float, safe_nonneg_float,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct

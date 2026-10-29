@@ -1,11 +1,7 @@
 """A manual WebSocket diagnostic; it may reach the real API."""
 
 import asyncio
-import asyncio
 import requests
-import websockets
-import json
-import bapi as api
 from binance import AsyncClient, BinanceSocketManager
 from keys.apikeys import api_key, api_secret
 

@@ -1,21 +1,13 @@
 """A manual WebSocket diagnostic; it may reach the real API."""
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
 import base64, time, json, asyncio, websockets
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 api_key="-----BEGIN PUBLIC KEY-----MCowBQYDK2VwAyEAskWLaewXW9FEgnEBysc1kaJHZ/aBiXjZ4WDidcvL/b8=-----END PUBLIC KEY-----"
 
-from cryptography.hazmat.backends import default_backend
-
 with open("ed25519_private.pem", "rb") as f:
     private_key = load_pem_private_key(f.read(), password=None, backend=default_backend())
-
-# Force the version from .local, not the system one.
-import sys
-sys.path.insert(0, '/home/marius/.local/lib/python3.8/site-packages')
-
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
 #with open("ed25519_private.pem", "rb") as f:
     #private_key = load_pem_private_key(f.read(), password=None)

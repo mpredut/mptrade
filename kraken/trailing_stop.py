@@ -54,10 +54,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     should_sell,
     sync_trailing_retry_count,
 )
-from providers.execution_audit import (  # noqa: E402
-    AuditedStrategyExecutor,
-    intent_client_order_id,
-)
+from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from providers.base import extract_order_side, extract_timestamp_s  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,

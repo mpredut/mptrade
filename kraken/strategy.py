@@ -13,12 +13,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from strategies.spot_engine import (  # noqa: E402,F401
+from strategies.spot_engine import (  # noqa: E402
     StratParams,
     Strategy,
-    _new_state,
-    _parse_tranches,
-    notify,
     state_path_for,
 )
 

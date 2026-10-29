@@ -14,10 +14,10 @@ import urllib.parse
 import urllib.request
 
 try:
-    from kraken.kraken_common import log, safe_int, safe_nonneg_float, safe_pos_float
+    from kraken.kraken_common import log, safe_nonneg_float, safe_pos_float
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
-    from kraken_common import log, safe_int, safe_nonneg_float, safe_pos_float
+    from kraken_common import log, safe_nonneg_float, safe_pos_float
     from kraken_client import KrakenClient, KrakenError
 
 

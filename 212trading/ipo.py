@@ -48,7 +48,7 @@ for _mod_name in ("ipo_common", "ipo_notify", "listing_watcher", "market_data", 
 
 try:
     from .ipo_common import (
-        load_t212_environment, log, now_str, float_env, ET, required_env,
+        load_t212_environment, log, now_str, float_env, required_env,
         required_float_env, required_bool_env,
     )
     from .listing_watcher import in_market_window
@@ -59,7 +59,7 @@ try:
     from .strategy import Strategy, StratParams
 except ImportError:
     from ipo_common import (
-        load_t212_environment, log, now_str, float_env, ET, required_env,
+        load_t212_environment, log, now_str, float_env, required_env,
         required_float_env, required_bool_env,
     )
     from listing_watcher import in_market_window

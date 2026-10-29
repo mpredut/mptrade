@@ -10,7 +10,6 @@ from abc import ABC, abstractmethod
 
 # Repository integrations.
 import log
-import utils as u
 from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_pos_int
 
 # ============================================
