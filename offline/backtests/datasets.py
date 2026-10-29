@@ -14,6 +14,8 @@ import math
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from botcore import safe_float, safe_pos_float
+
 
 REQUIRED_FIELDS = ("timestamp", "open", "high", "low", "close")
 
@@ -34,11 +36,8 @@ def normalize_record(record: Mapping) -> dict:
         try:
             timestamp = int(str(raw_ts).strip())
         except (TypeError, ValueError):
-            try:
-                ts_f = float(raw_ts)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid timestamp: {raw_ts!r}") from exc
-            if not math.isfinite(ts_f) or not ts_f.is_integer():
+            ts_f = safe_float(raw_ts, default=None)
+            if ts_f is None or not ts_f.is_integer():
                 raise ValueError(f"invalid timestamp: {raw_ts!r}")
             timestamp = int(ts_f)
     try:
@@ -195,16 +194,11 @@ def align_previous_values(
         raw_val = record[value_field]
         if isinstance(raw_ts, bool) or isinstance(raw_val, bool) or raw_ts is None or raw_val is None:
             raise ValueError("source_records cannot contain None or boolean timestamp/value")
-        try:
-            ts_f = float(raw_ts)
-            val_f = float(raw_val)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("invalid timestamp or value in source_records") from exc
-        if not math.isfinite(ts_f):
-            raise ValueError(f"non-finite source timestamp: {raw_ts!r}")
+        ts_f = safe_float(raw_ts, default=None)
+        val_f = safe_float(raw_val, default=None)
+        if ts_f is None or val_f is None:
+            raise ValueError("invalid or non-finite timestamp or value in source_records")
         ts_i = int(ts_f)
-        if not math.isfinite(val_f):
-            raise ValueError(f"non-finite source value at timestamp {ts_i}")
         by_ts[ts_i] = val_f
     source = sorted(by_ts.items(), key=lambda item: item[0])
     if not source:
@@ -216,12 +210,9 @@ def align_previous_values(
     for timestamp in target_timestamps:
         if isinstance(timestamp, bool) or timestamp is None:
             raise ValueError("target_timestamps cannot contain None or boolean")
-        try:
-            tf = float(timestamp)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"invalid target timestamp: {timestamp!r}") from exc
-        if not math.isfinite(tf):
-            raise ValueError(f"non-finite target timestamp: {timestamp!r}")
+        tf = safe_float(timestamp, default=None)
+        if tf is None:
+            raise ValueError(f"invalid or non-finite target timestamp: {timestamp!r}")
         target = int(tf)
         while source_index < len(source) and source[source_index][0] <= target:
             current = convert(source[source_index][1])
@@ -231,7 +222,8 @@ def align_previous_values(
                 f"no known FX value at or before timestamp {target}; "
                 "extend the FX dataset further back"
             )
-        if isinstance(current, bool) or not math.isfinite(float(current)) or float(current) <= 0:
+        cur_f = safe_pos_float(current, default=None)
+        if cur_f is None:
             raise ValueError(f"non-positive aligned value at timestamp {target}")
-        result.append(float(current))
+        result.append(cur_f)
     return result

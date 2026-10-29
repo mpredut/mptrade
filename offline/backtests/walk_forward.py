@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import statistics
+
+from botcore import safe_float
 
 
 @dataclass(frozen=True)
@@ -57,13 +58,8 @@ def walk_forward_splits(
 
 
 def _finite_number(val, name: str) -> float:
-    if isinstance(val, bool) or val is None:
-        raise ValueError(f"{name} must be a finite number, got {val!r}")
-    try:
-        fval = float(val)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite number, got {val!r}") from exc
-    if not math.isfinite(fval):
+    fval = safe_float(val, default=None)
+    if fval is None:
         raise ValueError(f"{name} must be a finite number, got {val!r}")
     return fval
 

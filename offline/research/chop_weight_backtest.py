@@ -29,8 +29,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from priceAnalysis import get_trade_weight
-from cachepaths import cache_path
+from cachepaths import cache_path, canonical_base_asset
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -39,6 +40,34 @@ from intelligence.internal.state.persistence import calculate_mann_kendall
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("chop_backtest")
+
+_CHOP_POLICY_WEIGHTS = {
+    "CHOP_0.00": 0.00,
+    "CHOP_0.01": 0.01,
+    "CHOP_0.02": 0.02,
+    "CHOP_0.03": 0.03,
+    "CHOP_0.05": 0.05,
+    "CHOP_0.10": 0.10,
+}
+
+
+def _req_pos_num(val: Any, name: str) -> float:
+    fval = safe_pos_float(val, default=None) if isinstance(val, (int, float)) else None
+    if fval is None:
+        raise ValueError(f"{name} must be finite and > 0")
+    return fval
+
+
+def _downsample_price_series(
+    raw_series: List[Tuple[float, float]], step_seconds: int
+) -> List[Tuple[float, float]]:
+    sampled: List[Tuple[float, float]] = []
+    last_t = 0.0
+    for t, p in raw_series:
+        if (t - last_t) >= step_seconds:
+            sampled.append((t, p))
+            last_t = t
+    return sampled
 
 
 @dataclass
@@ -79,14 +108,8 @@ def detect_regime_slope(prices: np.ndarray, mk_alpha: float = 0.05) -> Tuple[str
     norm_slope = float(slope) / float(p_arr[-1]) if p_arr[-1] > 0 else 0.0
 
     _, _, p_mk = calculate_mann_kendall(p_arr)
-    alpha = 0.05
-    if mk_alpha is not None and not isinstance(mk_alpha, bool):
-        try:
-            af = float(mk_alpha)
-            if math.isfinite(af) and 0.0 < af < 1.0:
-                alpha = af
-        except (TypeError, ValueError):
-            pass
+    af = safe_pos_float(mk_alpha, default=None)
+    alpha = af if (af is not None and af < 1.0) else 0.05
     if p_mk > alpha:
         return "CHOP", norm_slope
     if norm_slope > 1e-4:
@@ -103,9 +126,8 @@ def _precompute_chop_bar_tape(
     step_seconds: int,
 ) -> List[Dict[str, Any]]:
     """Precompute policy-independent regime, volatility, and trigger signals once per symbol."""
-    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
-        raise ValueError("step_seconds must be finite and > 0")
-    step_seconds = max(1, int(round(float(step_seconds))))
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_seconds = max(1, int(round(step_f)))
     if not sampled:
         return []
 
@@ -114,13 +136,9 @@ def _precompute_chop_bar_tape(
     btc_dict: Dict[int, float] = {}
     if btc_sampled:
         for raw_bt, raw_bp in btc_sampled:
-            if isinstance(raw_bt, bool) or isinstance(raw_bp, bool):
-                continue
-            try:
-                bt_f, bp_f = float(raw_bt), float(raw_bp)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(bt_f) and math.isfinite(bp_f) and bp_f > 0.0:
+            bt_f = safe_float(raw_bt, default=None)
+            bp_f = safe_pos_float(raw_bp, default=None)
+            if bt_f is not None and bp_f is not None:
                 btc_dict[int(bt_f // step_seconds)] = bp_f
 
     rolling_prices: List[float] = []
@@ -133,13 +151,9 @@ def _precompute_chop_bar_tape(
     tape: List[Dict[str, Any]] = []
 
     for raw_t, raw_p in sampled:
-        if isinstance(raw_t, bool) or isinstance(raw_p, bool):
-            continue
-        try:
-            t, p = float(raw_t), float(raw_p)
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(t) and math.isfinite(p) and p > 0.0):
+        t = safe_float(raw_t, default=None)
+        p = safe_pos_float(raw_p, default=None)
+        if t is None or p is None:
             continue
         if trend_start_ts is None:
             trend_start_ts = t
@@ -216,26 +230,17 @@ def run_single_simulation(
     precomputed_tape: Optional[List[Dict[str, Any]]] = None,
 ) -> ChopBacktestStats:
     """Run a single backtest simulation under a specific chop allocation policy."""
-    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
-        raise ValueError("step_seconds must be finite and > 0")
-    if isinstance(initial_balance, bool) or not isinstance(initial_balance, (int, float)) or not math.isfinite(initial_balance) or initial_balance <= 0:
-        raise ValueError("initial_balance must be finite and > 0")
-    if isinstance(base_notional, bool) or not isinstance(base_notional, (int, float)) or not math.isfinite(base_notional) or base_notional <= 0:
-        raise ValueError("base_notional must be finite and > 0")
-    if isinstance(fee_pct, bool) or not isinstance(fee_pct, (int, float)) or not math.isfinite(fee_pct) or not (0.0 <= float(fee_pct) < 1.0):
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    initial_balance = _req_pos_num(initial_balance, "initial_balance")
+    base_notional = _req_pos_num(base_notional, "base_notional")
+    fee_f = safe_nonneg_float(fee_pct, default=None) if isinstance(fee_pct, (int, float)) else None
+    if fee_f is None or fee_f >= 1.0:
         raise ValueError("fee_pct must be in [0, 1)")
-    if isinstance(tp_pct, bool) or not isinstance(tp_pct, (int, float)) or not math.isfinite(tp_pct) or tp_pct <= 0:
-        raise ValueError("tp_pct must be finite and > 0")
-    if isinstance(stop_pct, bool) or not isinstance(stop_pct, (int, float)) or not math.isfinite(stop_pct) or stop_pct <= 0:
-        raise ValueError("stop_pct must be finite and > 0")
-    if isinstance(T_days, bool) or not isinstance(T_days, (int, float)) or not math.isfinite(T_days) or T_days <= 0:
-        raise ValueError("T_days must be finite and > 0")
-    step_seconds = max(1, int(round(float(step_seconds))))
-    initial_balance = float(initial_balance)
-    base_notional = float(base_notional)
-    fee_pct = float(fee_pct)
-    tp_pct = float(tp_pct)
-    stop_pct = float(stop_pct)
+    tp_pct = _req_pos_num(tp_pct, "tp_pct")
+    stop_pct = _req_pos_num(stop_pct, "stop_pct")
+    _req_pos_num(T_days, "T_days")
+    step_seconds = max(1, int(round(step_f)))
+    fee_pct = fee_f
     usd = initial_balance
     asset_qty = 0.0
     entry_price = 0.0
@@ -325,19 +330,7 @@ def run_single_simulation(
             else:
                 # CHOP or BEAR regime: evaluate candidate chop policy
                 trade_regime = "CHOP"
-                if policy == "CHOP_0.00":
-                    weight = 0.00  # Completely skip buy in chop
-                elif policy == "CHOP_0.01":
-                    weight = 0.01
-                elif policy == "CHOP_0.02":
-                    weight = 0.02
-                elif policy == "CHOP_0.03":
-                    weight = 0.03  # Default baseline
-                elif policy == "CHOP_0.05":
-                    weight = 0.05
-                elif policy == "CHOP_0.10":
-                    weight = 0.10
-                elif policy == "PROXY_BTC":
+                if policy == "PROXY_BTC":
                     if btc_regime == "BULL":
                         b_dur = max(0.0, (t - btc_trend_start_ts) / 86400.0)
                         _, b_ws = get_trade_weight(T=8, trend_len=b_dur, trend="up", order_type="BUY", lindy_plateau=True)
@@ -345,7 +338,7 @@ def run_single_simulation(
                     else:
                         weight = 0.03
                 else:
-                    weight = 0.03
+                    weight = _CHOP_POLICY_WEIGHTS.get(policy, 0.03)
 
             if weight <= 0.0001:
                 continue  # Skip order under 0% chop policy
@@ -421,31 +414,17 @@ def run_chop_benchmark(
     step_seconds: int = 900,
 ) -> Dict[str, List[ChopBacktestStats]]:
     """Run full comparative benchmark across all chop weight policies for given symbols."""
-    if isinstance(step_seconds, bool) or not isinstance(step_seconds, (int, float)) or not math.isfinite(step_seconds) or step_seconds <= 0:
-        raise ValueError("step_seconds must be finite and > 0")
-    step_seconds = max(1, int(round(float(step_seconds))))
+    step_f = _req_pos_num(step_seconds, "step_seconds")
+    step_seconds = max(1, int(round(step_f)))
     # Policies to test
-    policies = [
-        "CHOP_0.00",  # Skip / 0%
-        "CHOP_0.01",  # 1% micro
-        "CHOP_0.02",  # 2% small
-        "CHOP_0.03",  # 3% current default
-        "CHOP_0.05",  # 5% moderate
-        "CHOP_0.10",  # 10% aggressive
-        "PROXY_BTC",  # BTC proxy
-    ]
+    policies = [*_CHOP_POLICY_WEIGHTS.keys(), "PROXY_BTC"]
 
     all_results: Dict[str, List[ChopBacktestStats]] = {}
 
     # Load BTC series for proxy reference
     btc_path = cache_path("cache_sparse_price_BTCUSDC.jsonl")
     raw_btc = load_price_series(btc_path, "BTCUSDC")
-    sampled_btc: List[Tuple[float, float]] = []
-    last_t = 0.0
-    for t, p in raw_btc:
-        if (t - last_t) >= step_seconds:
-            sampled_btc.append((t, p))
-            last_t = t
+    sampled_btc = _downsample_price_series(raw_btc, step_seconds)
 
     for sym in symbols:
         cache_path_sym = cache_path(f"cache_sparse_price_{sym}.jsonl")
@@ -455,26 +434,21 @@ def run_chop_benchmark(
             logger.warning("No price data found for %s, skipping.", sym)
             continue
 
-        sampled: List[Tuple[float, float]] = []
-        last_t = 0.0
-        for t, p in raw_series:
-            if (t - last_t) >= step_seconds:
-                sampled.append((t, p))
-                last_t = t
-
+        sampled = _downsample_price_series(raw_series, step_seconds)
         if not sampled:
             logger.warning("No sampled bars for %s, skipping.", sym)
             continue
 
         logger.info("Symbol %s: %d ticks -> %d %ds bars (%.1f days)", sym, len(raw_series), len(sampled), step_seconds, (sampled[-1][0] - sampled[0][0]) / 86400.0)
 
-        btc_ref = sampled_btc if sym != "BTCUSDC" else None
+        is_btc = canonical_base_asset(sym) == "BTC"
+        btc_ref = sampled_btc if not is_btc else None
         tape = _precompute_chop_bar_tape(sym, sampled, btc_ref, step_seconds)
 
         sym_stats: List[ChopBacktestStats] = []
         for pol in policies:
             # Skip PROXY_BTC on BTC itself
-            if sym == "BTCUSDC" and pol == "PROXY_BTC":
+            if is_btc and pol == "PROXY_BTC":
                 continue
             logger.info("Testing policy %s on %s ...", pol, sym)
             stat = run_single_simulation(

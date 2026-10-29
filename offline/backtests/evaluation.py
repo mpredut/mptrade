@@ -18,6 +18,7 @@ from typing import Any
 
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
+from botcore import float_env, safe_float, safe_int
 
 
 Ohlc = list[tuple[float, float, float, float]]
@@ -49,35 +50,15 @@ def assess_decision_evidence(
         raise ValueError("evaluating the evidence requires at least one bar")
     raw_first_ts = records[0].get("timestamp") if isinstance(records[0], dict) else None
     raw_last_ts = records[-1].get("timestamp") if isinstance(records[-1], dict) else None
-    if isinstance(raw_first_ts, bool) or isinstance(raw_last_ts, bool) or raw_first_ts is None or raw_last_ts is None:
+    first_ts_f = safe_float(raw_first_ts, default=None)
+    last_ts_f = safe_float(raw_last_ts, default=None)
+    if first_ts_f is None or last_ts_f is None:
         raise ValueError("invalid record timestamps")
-    try:
-        first_ts_f = float(raw_first_ts)
-        last_ts_f = float(raw_last_ts)
-        if not (math.isfinite(first_ts_f) and math.isfinite(last_ts_f)):
-            raise ValueError("invalid record timestamps")
-        history_days = max(0.0, (int(last_ts_f) - int(first_ts_f)) / 86_400.0)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("invalid record timestamps") from exc
-    raw_fc = aggregate.get("fold_count") if isinstance(aggregate, dict) else 0
-    try:
-        fold_count = int(float(raw_fc)) if raw_fc is not None and not isinstance(raw_fc, bool) and math.isfinite(float(raw_fc)) else 0
-    except (TypeError, ValueError):
-        fold_count = 0
-    raw_cyc = aggregate.get("total_cycles") if isinstance(aggregate, dict) else 0
-    try:
-        cycles = int(float(raw_cyc)) if raw_cyc is not None and not isinstance(raw_cyc, bool) and math.isfinite(float(raw_cyc)) else 0
-    except (TypeError, ValueError):
-        cycles = 0
-    raw_worst = aggregate.get("worst_return_pct") if isinstance(aggregate, dict) else None
-    try:
-        worst_return = (
-            float(raw_worst)
-            if raw_worst is not None and not isinstance(raw_worst, bool) and math.isfinite(float(raw_worst))
-            else 0.0
-        )
-    except (TypeError, ValueError):
-        worst_return = 0.0
+    history_days = max(0.0, (int(last_ts_f) - int(first_ts_f)) / 86_400.0)
+    agg = aggregate if isinstance(aggregate, dict) else {}
+    fold_count = safe_int(agg.get("fold_count"), 0)
+    cycles = safe_int(agg.get("total_cycles"), 0)
+    worst_return = safe_float(agg.get("worst_return_pct"), 0.0)
     data_issues = []
     if fold_count < minimum_folds:
         data_issues.append(f"folds {fold_count} < {minimum_folds}")
@@ -241,26 +222,11 @@ def evaluate_walk_forward(
     compounded = 100.0
     for window in test_windows:
         compounded *= 1.0 + float(window["return_pct"]) / 100.0
-    bh_values: list[float] = []
-    for window in test_windows:
-        bh_raw = window.get("buy_hold_return_pct")
-        if bh_raw is None or isinstance(bh_raw, bool):
-            continue
-        try:
-            bh_f = float(bh_raw)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(bh_f):
-            bh_values.append(bh_f)
-
-    def _ambig_int(val: Any) -> int:
-        if val is None or isinstance(val, bool):
-            return 0
-        try:
-            vf = float(val)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, int(vf)) if math.isfinite(vf) else 0
+    bh_values = [
+        bh_f
+        for window in test_windows
+        if (bh_f := safe_float(window.get("buy_hold_return_pct"), default=None)) is not None
+    ]
 
     return {
         "folds": fold_results,
@@ -280,7 +246,7 @@ def evaluate_walk_forward(
             "total_cycles": summary["total_cycles"],
             "total_fills": summary["total_fills"],
             "total_ambiguous_bars": sum(
-                _ambig_int(window.get("ambiguous_bars")) for window in test_windows
+                max(0, safe_int(window.get("ambiguous_bars"), 0)) for window in test_windows
             ),
             "intrabar_policy_selected_counts": dict(Counter(
                 window["intrabar_policy_selected"] for window in test_windows
@@ -291,16 +257,7 @@ def evaluate_walk_forward(
 
 
 def _optional_min(values: list[float | None]) -> float | None:
-    present = []
-    for value in values:
-        if value is None or isinstance(value, bool):
-            continue
-        try:
-            vf = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(vf):
-            present.append(vf)
+    present = [vf for value in values if (vf := safe_float(value, default=None)) is not None]
     return min(present) if present else None
 
 
@@ -321,20 +278,8 @@ def extract_cfg_float(cfg: Any, key: str, default: float) -> float:
     """Extract a finite float parameter from configuration mapping using botcore.float_env."""
     if not isinstance(cfg, (dict, Mapping)):
         return default
-    try:
-        from botcore import float_env
-        val = float_env(key, cfg)
-        return default if val is None else val
-    except Exception:
-        raw = cfg.get(key)
-        if raw is None or isinstance(raw, bool):
-            return default
-        try:
-            s = str(raw).split("#", 1)[0].split(";", 1)[0].strip() if isinstance(raw, str) else raw
-            f = float(s)
-            return f if math.isfinite(f) else default
-        except (TypeError, ValueError, OverflowError):
-            return default
+    val = float_env(key, cfg)
+    return default if val is None else val
 
 
 def extract_cfg_int(cfg: Any, key: str, default: int) -> int:

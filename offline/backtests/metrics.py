@@ -10,6 +10,8 @@ import math
 import statistics
 from collections.abc import Iterable, Sequence
 
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
+
 
 def calculate_performance_metrics(
     equity_curve: Sequence[float],
@@ -27,25 +29,14 @@ def calculate_performance_metrics(
     Sharpe/Sortino/Calmar are ``None`` without the real bar frequency; that choice
     prevents falsely comparing 1h series with 4h/1d ones.
     """
-    def _req_float(val, msg: str) -> float:
-        if val is None or isinstance(val, bool):
-            raise ValueError(msg)
-        try:
-            f = float(val)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(msg) from exc
-        if not math.isfinite(f):
-            raise ValueError(msg)
-        return f
-
-    initial_capital = _req_float(initial_capital, "initial_capital must be positive")
-    if initial_capital <= 0:
+    initial_capital = safe_pos_float(initial_capital, default=None)
+    if initial_capital is None:
         raise ValueError("initial_capital must be positive")
-    cvar_confidence = _req_float(cvar_confidence, "cvar_confidence must be between 0 and 1")
-    if not 0 < cvar_confidence < 1:
+    cvar_confidence = safe_pos_float(cvar_confidence, default=None)
+    if cvar_confidence is None or cvar_confidence >= 1:
         raise ValueError("cvar_confidence must be between 0 and 1")
-    turnover_notional = _req_float(turnover_notional, "turnover_notional must be non-negative")
-    if turnover_notional < 0:
+    turnover_notional = safe_nonneg_float(turnover_notional, default=None)
+    if turnover_notional is None:
         raise ValueError("turnover_notional must be non-negative")
 
     curve: list[float] = []
@@ -54,11 +45,8 @@ def calculate_performance_metrics(
     for value in equity_curve:
         if isinstance(value, bool) or value is None:
             raise ValueError("equity_curve cannot contain booleans")
-        try:
-            fval = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("equity_curve must contain finite numbers") from exc
-        if not math.isfinite(fval):
+        fval = safe_float(value, default=None)
+        if fval is None:
             raise ValueError("equity_curve must contain finite numbers")
         curve.append(fval)
     if not curve:
@@ -92,8 +80,8 @@ def calculate_performance_metrics(
 
     annualized_return = sharpe = sortino = calmar = None
     if periods_per_year is not None:
-        periods_per_year = _req_float(periods_per_year, "periods_per_year must be positive")
-        if periods_per_year <= 0:
+        periods_per_year = safe_pos_float(periods_per_year, default=None)
+        if periods_per_year is None:
             raise ValueError("periods_per_year must be positive")
     if periods_per_year and periodic_returns and returns_valid:
         periods = len(periodic_returns)
@@ -138,8 +126,8 @@ def calculate_performance_metrics(
     for value in ([] if trade_pnls is None else trade_pnls):
         if isinstance(value, bool):
             raise ValueError("trade_pnls cannot contain booleans")
-        fval = float(value)
-        if not math.isfinite(fval):
+        fval = safe_float(value, default=None)
+        if fval is None:
             raise ValueError("trade_pnls must contain finite numbers")
         pnls.append(fval)
     gross_profit = sum(value for value in pnls if value > 0)
@@ -171,14 +159,8 @@ def calculate_performance_metrics(
 def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
     """Format standardized RISC and EXECUTIE summary lines across backtest harnesses."""
     def metric(name: str, digits: int = 2) -> str:
-        value = m.get(name) if isinstance(m, dict) else None
-        if value is None or isinstance(value, bool):
-            return "n/a"
-        try:
-            vf = float(value)
-            return f"{vf:.{digits}f}" if math.isfinite(vf) else "n/a"
-        except (TypeError, ValueError, OverflowError):
-            return "n/a"
+        vf = safe_float(m.get(name) if isinstance(m, dict) else None, default=None)
+        return f"{vf:.{digits}f}" if vf is not None else "n/a"
 
     lines = [
         (f"{indent}RISC: maxDD {metric('max_drawdown_pct')}%  "

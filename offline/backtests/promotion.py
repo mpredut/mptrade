@@ -83,6 +83,56 @@ def _relative_change(baseline, candidate) -> float | None:
     return (cand - base) / base
 
 
+def _validate_promotion_reports(baseline: dict, candidate: dict) -> tuple[dict, dict]:
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("baseline and candidate must be dictionaries")
+    if _identity(baseline) != _identity(candidate):
+        raise ValueError("baseline and candidate use different datasets or windows")
+    raw_base_scen = baseline.get("scenarios")
+    raw_cand_scen = candidate.get("scenarios")
+    base_scenarios = raw_base_scen if isinstance(raw_base_scen, dict) else {}
+    candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
+    if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
+        raise ValueError("baseline and candidate must have the same scenarios")
+    return base_scenarios, candidate_scenarios
+
+
+def _extract_scenario_windows(name: str, base: dict, cand: dict) -> tuple[dict, dict, dict, dict]:
+    if not isinstance(base, dict) or not isinstance(cand, dict):
+        raise ValueError(f"invalid scenario structure in scenario {name}")
+    if base.get("assumptions") != cand.get("assumptions"):
+        raise ValueError(f"different execution assumptions in scenario {name}")
+    base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
+    cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
+    base_windows = {
+        window["key"]: window
+        for window in base_win_list
+        if isinstance(window, dict) and "key" in window
+    }
+    cand_windows = {
+        window["key"]: window
+        for window in cand_win_list
+        if isinstance(window, dict) and "key" in window
+    }
+    if (
+        len(base_windows) != len(base_win_list)
+        or len(cand_windows) != len(cand_win_list)
+        or set(base_windows) != set(cand_windows)
+    ):
+        raise ValueError(f"different windows in scenario {name}")
+    base_aggregate = base.get("aggregate") if isinstance(base.get("aggregate"), dict) else {}
+    candidate_aggregate = cand.get("aggregate") if isinstance(cand.get("aggregate"), dict) else {}
+    return base_windows, cand_windows, base_aggregate, candidate_aggregate
+
+
+def _count_delta_outcomes(deltas: list[float], tolerance: float = 1e-10) -> tuple[int, int, int, int, float]:
+    wins = sum(math.isfinite(delta) and delta > tolerance for delta in deltas)
+    ties = sum(math.isfinite(delta) and abs(delta) <= tolerance for delta in deltas)
+    losses = sum(math.isfinite(delta) and delta < -tolerance for delta in deltas)
+    active_windows = wins + losses
+    return wins, ties, losses, active_windows, _one_sided_sign_pvalue(wins, losses)
+
+
 def evaluate_promotion(
     baseline: dict,
     candidate: dict,
@@ -90,62 +140,19 @@ def evaluate_promotion(
 ) -> dict:
     """The candidate passes only if it is robust in ALL shared scenarios."""
     limits = thresholds or PromotionThresholds()
-    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
-        raise ValueError("baseline and candidate must be dictionaries")
-    if _identity(baseline) != _identity(candidate):
-        raise ValueError("baseline and candidate use different datasets or windows")
-
-    raw_base_scen = baseline.get("scenarios")
-    raw_cand_scen = candidate.get("scenarios")
-    base_scenarios = raw_base_scen if isinstance(raw_base_scen, dict) else {}
-    candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
-    if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
-        raise ValueError("baseline and candidate must have the same scenarios")
+    base_scenarios, candidate_scenarios = _validate_promotion_reports(baseline, candidate)
 
     scenario_results = {}
     for name in sorted(base_scenarios):
-        base = base_scenarios[name]
-        cand = candidate_scenarios[name]
-        if not isinstance(base, dict) or not isinstance(cand, dict):
-            raise ValueError(f"invalid scenario structure in scenario {name}")
-        if base.get("assumptions") != cand.get("assumptions"):
-            raise ValueError(f"different execution assumptions in scenario {name}")
-        base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
-        cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
-        base_windows = {
-            window["key"]: window
-            for window in base_win_list
-            if isinstance(window, dict) and "key" in window
-        }
-        cand_windows = {
-            window["key"]: window
-            for window in cand_win_list
-            if isinstance(window, dict) and "key" in window
-        }
-        if (
-            len(base_windows) != len(base_win_list)
-            or len(cand_windows) != len(cand_win_list)
-            or set(base_windows) != set(cand_windows)
-        ):
-            raise ValueError(f"different windows in scenario {name}")
+        base_windows, cand_windows, base_aggregate, candidate_aggregate = _extract_scenario_windows(
+            name, base_scenarios[name], candidate_scenarios[name]
+        )
         deltas = [
             _diff(cand_windows[key].get("return_pct"), base_windows[key].get("return_pct"))
             for key in sorted(base_windows)
         ]
-        all_deltas_finite = all(
-            _finite(cand_windows[key].get("return_pct")) is not None
-            and _finite(base_windows[key].get("return_pct")) is not None
-            and math.isfinite(d)
-            for key, d in zip(sorted(base_windows), deltas)
-        )
-        tolerance = 1e-10
-        wins = sum(math.isfinite(delta) and delta > tolerance for delta in deltas)
-        ties = sum(math.isfinite(delta) and abs(delta) <= tolerance for delta in deltas)
-        losses = sum(math.isfinite(delta) and delta < -tolerance for delta in deltas)
-        active_windows = wins + losses
-        sign_pvalue = _one_sided_sign_pvalue(wins, losses)
-        base_aggregate = base.get("aggregate") if isinstance(base.get("aggregate"), dict) else {}
-        candidate_aggregate = cand.get("aggregate") if isinstance(cand.get("aggregate"), dict) else {}
+        all_deltas_finite = all(math.isfinite(d) for d in deltas)
+        wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(deltas)
         mean_delta = _diff(
             candidate_aggregate.get("mean_return_pct"),
             base_aggregate.get("mean_return_pct"),
@@ -214,64 +221,23 @@ def evaluate_risk_adjusted_promotion(
     each fold's curve, and the gate compares the medians of those values.
     """
     limits = thresholds or RiskAdjustedThresholds()
-    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
-        raise ValueError("baseline and candidate must be dictionaries")
-    if _identity(baseline) != _identity(candidate):
-        raise ValueError("baseline and candidate use different datasets or windows")
-
-    raw_base_scen = baseline.get("scenarios")
-    raw_cand_scen = candidate.get("scenarios")
-    base_scenarios = raw_base_scen if isinstance(raw_base_scen, dict) else {}
-    candidate_scenarios = raw_cand_scen if isinstance(raw_cand_scen, dict) else {}
-    if not base_scenarios or set(base_scenarios) != set(candidate_scenarios):
-        raise ValueError("baseline and candidate must have the same scenarios")
+    base_scenarios, candidate_scenarios = _validate_promotion_reports(baseline, candidate)
 
     scenario_results = {}
     tolerance = 1e-10
     for name in sorted(base_scenarios):
-        base = base_scenarios[name]
-        cand = candidate_scenarios[name]
-        if not isinstance(base, dict) or not isinstance(cand, dict):
-            raise ValueError(f"invalid scenario structure in scenario {name}")
-        if base.get("assumptions") != cand.get("assumptions"):
-            raise ValueError(f"different execution assumptions in scenario {name}")
-        base_win_list = base.get("windows") if isinstance(base.get("windows"), list) else []
-        cand_win_list = cand.get("windows") if isinstance(cand.get("windows"), list) else []
-        base_windows = {
-            window["key"]: window
-            for window in base_win_list
-            if isinstance(window, dict) and "key" in window
-        }
-        cand_windows = {
-            window["key"]: window
-            for window in cand_win_list
-            if isinstance(window, dict) and "key" in window
-        }
-        if (
-            len(base_windows) != len(base_win_list)
-            or len(cand_windows) != len(cand_win_list)
-            or set(base_windows) != set(cand_windows)
-        ):
-            raise ValueError(f"different windows in scenario {name}")
+        base_windows, cand_windows, base_aggregate, candidate_aggregate = _extract_scenario_windows(
+            name, base_scenarios[name], candidate_scenarios[name]
+        )
 
         drawdown_improvements = [
             _diff(base_windows[key].get("max_drawdown_pct"), cand_windows[key].get("max_drawdown_pct"))
             for key in sorted(base_windows)
         ]
-        all_dd_finite = all(
-            _finite(base_windows[key].get("max_drawdown_pct")) is not None
-            and _finite(cand_windows[key].get("max_drawdown_pct")) is not None
-            and math.isfinite(d)
-            for key, d in zip(sorted(base_windows), drawdown_improvements)
+        all_dd_finite = all(math.isfinite(d) for d in drawdown_improvements)
+        wins, ties, losses, active_windows, sign_pvalue = _count_delta_outcomes(
+            drawdown_improvements, tolerance
         )
-        wins = sum(math.isfinite(delta) and delta > tolerance for delta in drawdown_improvements)
-        ties = sum(math.isfinite(delta) and abs(delta) <= tolerance for delta in drawdown_improvements)
-        losses = sum(math.isfinite(delta) and delta < -tolerance for delta in drawdown_improvements)
-        active_windows = wins + losses
-        sign_pvalue = _one_sided_sign_pvalue(wins, losses)
-
-        base_aggregate = base.get("aggregate") if isinstance(base.get("aggregate"), dict) else {}
-        candidate_aggregate = cand.get("aggregate") if isinstance(cand.get("aggregate"), dict) else {}
         cand_mean_return = _finite(candidate_aggregate.get("mean_return_pct"))
         mean_delta = _diff(
             candidate_aggregate.get("mean_return_pct"),

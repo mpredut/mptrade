@@ -43,7 +43,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 import pricewindow as pw
-from botcore import float_env
+from botcore import float_env, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from providers.base import normalize_side
 
 # The default "instant" window — identical today to WINDOW_SECONDS[0] in
 # cacheManager.CacheShortTrendManager (the window is_trend_up() relies on).
@@ -64,14 +65,8 @@ class ReplayTrendSource:
     use SEPARATE instances (do not reuse one across horizons)."""
 
     def __init__(self, symbols, window_seconds: float = DEFAULT_WINDOW_SECONDS):
-        w_sec = DEFAULT_WINDOW_SECONDS
-        if window_seconds is not None and not isinstance(window_seconds, bool):
-            try:
-                cand = float(window_seconds)
-                if math.isfinite(cand) and cand > 0:
-                    w_sec = cand
-            except (TypeError, ValueError, OverflowError):
-                pass
+        cand_w = safe_pos_float(window_seconds, default=None)
+        w_sec = cand_w if cand_w is not None else DEFAULT_WINDOW_SECONDS
         self.window_seconds = w_sec
         is_default_w = math.isclose(w_sec, DEFAULT_WINDOW_SECONDS, rel_tol=0.0, abs_tol=1e-6)
         self._windows: Dict[str, pw.PriceWindow] = {}
@@ -92,14 +87,9 @@ class ReplayTrendSource:
         win = self._windows.get(symbol)
         if win is None:
             return
-        if isinstance(ts, bool) or isinstance(price, bool):
-            return
-        try:
-            ts_f = float(ts)
-            px_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
+        ts_f = safe_float(ts, default=None)
+        px_f = safe_pos_float(price, default=None)
+        if ts_f is None or px_f is None:
             return
         prev = self._prev_ts.get(symbol)
         if prev is not None and ts_f > prev:
@@ -116,13 +106,11 @@ class ReplayTrendSource:
         monitortrades.is_trend_up() returns False when it has no snapshot yet)."""
         win = self._windows.get(symbol)
         use_cache = window_seconds is None
-        if not use_cache and win is not None and not isinstance(window_seconds, bool):
-            try:
-                use_cache = math.isclose(
-                    float(window_seconds), win.window_seconds, rel_tol=0.0, abs_tol=1e-6
-                )
-            except (TypeError, ValueError, OverflowError):
-                use_cache = False
+        if not use_cache and win is not None:
+            ws_f = safe_float(window_seconds, default=None)
+            use_cache = ws_f is not None and math.isclose(
+                ws_f, win.window_seconds, rel_tol=0.0, abs_tol=1e-6
+            )
         if use_cache:
             cached = self._cached_trend_up.get(symbol)
             if cached is not None:
@@ -149,8 +137,7 @@ class ReplayTrendSource:
         now: Optional[float] = None,
     ) -> bool:
         """Replicate CacheShortTrendManager.should_wait against the replay PriceWindow."""
-        side_raw = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
-        side_str = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        side_str = normalize_side(side)
         if side_str not in ("BUY", "SELL"):
             return False
         win = self._windows.get(symbol)
@@ -201,16 +188,12 @@ def _is_trend_up_tuple(
         k_val = float_env("MPTRADE_TREND_NOISE_GATE_K")
     if k_val is None:
         k_val = UPWARD_EPSILON_K
-    if isinstance(eps, (int, float)) and not isinstance(eps, bool) and math.isfinite(eps) and eps > 0.0 and k_val > 0.0:
-        scale = 1.0
-        if n_samples is not None and not isinstance(n_samples, bool):
-            try:
-                m_steps = float(n_samples) - 1.0
-                if math.isfinite(m_steps) and m_steps > 10.0:
-                    scale = math.sqrt(10.0 / m_steps)
-            except (TypeError, ValueError, OverflowError):
-                scale = 1.0
-        return gc > k_val * scale * eps
+    eps_f = safe_pos_float(eps, default=None)
+    if eps_f is not None and k_val > 0.0:
+        n_f = safe_float(n_samples, default=None)
+        m_steps = (n_f - 1.0) if n_f is not None else 0.0
+        scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
+        return gc > k_val * scale * eps_f
     return gc > 0 or (gc == 0 and final_trend > 0)
 
 
@@ -236,29 +219,17 @@ class DynamicReplayTrendSource:
     (not precomputed) — any timeout in the range, not just fixed buckets."""
 
     def __init__(self, symbols, max_timeout_sec: float = SMALL_TIMEOUT_RANGE_SEC[1]):
-        m_sec = SMALL_TIMEOUT_RANGE_SEC[1]
-        if max_timeout_sec is not None and not isinstance(max_timeout_sec, bool):
-            try:
-                cand = float(max_timeout_sec)
-                if math.isfinite(cand) and cand > 0:
-                    m_sec = cand
-            except (TypeError, ValueError, OverflowError):
-                pass
-        self.max_timeout_sec = m_sec
+        cand_m = safe_pos_float(max_timeout_sec, default=None)
+        self.max_timeout_sec = cand_m if cand_m is not None else SMALL_TIMEOUT_RANGE_SEC[1]
         self._buf: Dict[str, deque] = {s: deque() for s in symbols}   # [(ts, price), ...] crescator
 
     def advance(self, symbol: str, ts: float, price: float) -> None:
         buf = self._buf.get(symbol)
         if buf is None:
             return
-        if isinstance(ts, bool) or isinstance(price, bool):
-            return
-        try:
-            ts_f = float(ts)
-            px_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return
-        if not (math.isfinite(ts_f) and math.isfinite(px_f) and px_f > 0):
+        ts_f = safe_float(ts, default=None)
+        px_f = safe_pos_float(price, default=None)
+        if ts_f is None or px_f is None:
             return
         buf.append((ts_f, px_f))
         cutoff = ts_f - self.max_timeout_sec
@@ -267,13 +238,8 @@ class DynamicReplayTrendSource:
 
     def _slice(self, symbol: str, timeout_sec: float) -> List[Tuple[float, float]]:
         buf = self._buf.get(symbol)
-        if not buf or timeout_sec is None or isinstance(timeout_sec, bool):
-            return []
-        try:
-            t_sec = float(timeout_sec)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not (math.isfinite(t_sec) and t_sec > 0):
+        t_sec = safe_pos_float(timeout_sec, default=None)
+        if not buf or t_sec is None:
             return []
         cutoff = buf[-1][0] - t_sec
         return [(t, p) for t, p in buf if t >= cutoff]
@@ -310,14 +276,8 @@ class DynamicReplayTrendSource:
         if not timeouts_sec:
             return False
         votes = [self.is_trend_up_at(symbol, t) for t in timeouts_sec]
-        if min_agree is None or isinstance(min_agree, bool):
-            threshold = len(timeouts_sec)
-        else:
-            try:
-                ma_f = float(min_agree)
-                threshold = max(1, int(ma_f)) if math.isfinite(ma_f) else len(timeouts_sec)
-            except (TypeError, ValueError, OverflowError):
-                threshold = len(timeouts_sec)
+        ma_i = safe_int(min_agree, default=None)
+        threshold = max(1, ma_i) if ma_i is not None else len(timeouts_sec)
         return sum(votes) >= threshold
 
     def should_wait(self, symbol: str, side: str, timeout_sec: float,
@@ -344,21 +304,14 @@ class DynamicReplayTrendSource:
             _instant_trend_from_slice(prices, _sample_rate, symbol=symbol)
         g = growth_coefficient
         if use_noise_gate:
-            ek = 1.0
-            if not isinstance(epsilon_k, bool) and epsilon_k is not None:
-                try:
-                    cand_ek = float(epsilon_k)
-                    if math.isfinite(cand_ek) and cand_ek >= 0:
-                        ek = cand_ek
-                except (TypeError, ValueError, OverflowError):
-                    pass
+            cand_ek = safe_nonneg_float(epsilon_k, default=None)
+            ek = cand_ek if cand_ek is not None else 1.0
             m_steps = float(len(prices) - 1)
             scale = math.sqrt(10.0 / m_steps) if m_steps > 10.0 else 1.0
             eps = float(ek * scale * pw.PriceWindow._std_of_gradient(prices))
             if abs(g) <= eps:
                 return True
-        side_raw = "" if isinstance(side, bool) or side is None else str(side).strip().upper()
-        side_str = {"B": "BUY", "S": "SELL"}.get(side_raw, side_raw)
+        side_str = normalize_side(side)
         if side_str == "BUY":
             return g < 0
         if side_str == "SELL":

@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import math
 import statistics
 from typing import Iterable
 
+from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel, FeeModel
 from offline.backtests.walk_forward import summarize_test_windows
-from botcore import safe_float as _safe_f, safe_int as _safe_int
+from botcore import (
+    safe_float as _safe_f,
+    safe_int as _safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 
 
 @dataclass(frozen=True)
@@ -35,7 +40,7 @@ class BenchmarkScenario:
 def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, BenchmarkScenario]:
     """A provisional central case plus stress for a given venue (defaults to Kraken)."""
     venue_raw = "" if isinstance(venue, bool) else str(getattr(venue, "name", venue) or "")
-    venue_norm = venue_raw.strip().lower() or "kraken"
+    venue_norm = normalize_venue_name(venue_raw) or "kraken"
     if venue_norm == "binance":
         return (
             BenchmarkScenario(
@@ -142,17 +147,7 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
 
 
 def _present(values: Iterable[float | int | None]) -> list[float]:
-    out: list[float] = []
-    for value in values:
-        if value is None or isinstance(value, bool):
-            continue
-        try:
-            vf = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(vf):
-            out.append(vf)
-    return out
+    return [vf for value in values if (vf := _safe_f(value, default=None)) is not None]
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
@@ -176,13 +171,8 @@ def _maximum(values: Iterable[float | int | None]) -> float | None:
 
 
 def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
-    if buy_hold_return_pct is None:
-        return "sideways"
-    try:
-        val = float(buy_hold_return_pct)
-    except (TypeError, ValueError):
-        return "sideways"
-    if not math.isfinite(val):
+    val = _safe_f(buy_hold_return_pct, default=None)
+    if val is None:
         return "sideways"
     if val >= threshold_pct:
         return "bull"
@@ -203,23 +193,13 @@ def aggregate_financial_windows(
     and the same empty state. It is not compounding and does not simulate position
     continuity across folds; the explicit name prevents the misreading.
     """
-    if isinstance(initial_capital, bool) or initial_capital is None:
-        raise ValueError("initial_capital must be positive")
-    try:
-        initial_capital_f = float(initial_capital)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("initial_capital must be positive") from exc
-    if not math.isfinite(initial_capital_f) or initial_capital_f <= 0:
+    initial_capital_f = safe_pos_float(initial_capital, default=None)
+    if initial_capital_f is None:
         raise ValueError("initial_capital must be positive")
     initial_capital = initial_capital_f
 
-    if isinstance(regime_threshold_pct, bool) or regime_threshold_pct is None:
-        raise ValueError("regime_threshold_pct cannot be negative")
-    try:
-        regime_threshold_f = float(regime_threshold_pct)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("regime_threshold_pct cannot be negative") from exc
-    if not math.isfinite(regime_threshold_f) or regime_threshold_f < 0:
+    regime_threshold_f = safe_nonneg_float(regime_threshold_pct, default=None)
+    if regime_threshold_f is None:
         raise ValueError("regime_threshold_pct cannot be negative")
     regime_threshold_pct = regime_threshold_f
     if not windows:

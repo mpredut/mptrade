@@ -238,7 +238,7 @@ class OrderReconciliationCapabilities:
             raise TypeError(
                 "not_found_reliable_for_seconds must be a positive number"
             ) from exc
-        horizon = safe_pos_float(horizon)
+        horizon = safe_pos_float(horizon, default=None)
         if horizon is None:
             raise ValueError(
                 "not_found_reliable_for_seconds must be finite and > 0")
