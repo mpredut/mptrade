@@ -8,7 +8,6 @@ pre-listing placeholder for trading. Reused by t212_bot.py for every awaited ass
 """
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime
 

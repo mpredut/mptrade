@@ -3,7 +3,6 @@ import os
 import time
 import json
 import math
-import threading
 from typing import Optional, Tuple, Dict, Any
 
 # my imports
@@ -26,7 +25,7 @@ from providers.base import (
 from providers.market_api import api as mkt
 from order_rollback import restore_cancelled_orders
 import cachepaths
-from state_io import atomic_write_json, previous_generation_path, read_recovering_previous, save_json_state
+from state_io import previous_generation_path, read_recovering_previous, save_json_state
 
 import utils as u
 from strategies.position_exit_manager import (

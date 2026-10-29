@@ -10,7 +10,6 @@ from collections import deque
 from collections.abc import Sequence
 import os
 import sys
-from unittest.mock import MagicMock
 
 _T212_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_T212_DIR)

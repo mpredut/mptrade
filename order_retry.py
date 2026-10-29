@@ -31,14 +31,12 @@ import os
 import json
 import time
 import uuid
-import tempfile
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
 from botcore import (
     _parse_bool_flag,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,

@@ -12,7 +12,6 @@ provider or runs the shared policy pipeline before provider mechanics.
 import inspect
 import os
 import sys
-import time
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
@@ -53,7 +52,7 @@ def _is_terminal_filter_refusal(reason) -> bool:
 
 
 from guard_hierarchy import (
-    GUARD_CATALOG,
+    GUARD_CATALOG,  # noqa: F401
     GUARD_REGISTRY,
     normalize_bypassed_guards,
 )

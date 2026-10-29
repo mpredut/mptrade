@@ -24,7 +24,6 @@ from botcore import (
     safe_int,
     safe_nonneg_float,
     safe_pos_float,
-    safe_pos_int,
 )
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
@@ -42,7 +41,7 @@ _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
 _MARGINS_FILE_MTIME: float = 0.0
 _MARGINS_LAST_CHECK: float = 0.0
-from llm_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN
+from llm_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDOWN  # noqa: F401
 
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({

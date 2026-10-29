@@ -1,7 +1,7 @@
 """Bind validated, credential-free registry records to the provider facade."""
 from dataclasses import asdict
 
-from instrument_registry import DEFAULT_PATH, load_registry, select_instruments
+from instrument_registry import load_registry, select_instruments
 
 
 def _bind(specs, api):

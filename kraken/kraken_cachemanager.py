@@ -41,7 +41,7 @@ from kraken_common import (
     safe_pos_int, single_instance,
 )
 from kraken_client import KrakenClient
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import read_recovering_previous, save_json_state
 from credentials import CredentialConfigurationError, kraken_credentials
 from cachepaths import cache_path
 from instrument_registry import symbols_for

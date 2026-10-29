@@ -1,18 +1,15 @@
 import os
 import time
 import datetime
-import random
 from collections import OrderedDict
 
 # Binance imports.
-from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
 # Project imports.
 import utils as u
 import symbols as sym
 from binance_api import bapi as api
-from binance_api import bapi_placeorder as po
 from binance_api import order_id_context as rc
 from providers.base import (
     _clean_single_order_id,

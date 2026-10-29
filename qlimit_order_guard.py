@@ -14,13 +14,11 @@ Executes in 0 ms (100% local in-memory calculation, zero network or external I/O
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_nonneg_float
-from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
+from intelligence.macro_sentiment_ssot import obj_attr, safe_pos_float
 from providers.base import normalize_side
 
 logger = logging.getLogger("qlimit_order_guard")

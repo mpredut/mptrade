@@ -149,7 +149,7 @@ TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = sym.btcsymbol
 ORDER_MISSING_CONFIRMATIONS = _required_int_config(
     "AG_ORDER_MISSING_CONFIRMATIONS")
-from state_io import atomic_write_json, load_json_state, save_json_state
+from state_io import load_json_state, save_json_state
 from lock import FileLock
 
 

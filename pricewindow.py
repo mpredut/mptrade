@@ -16,10 +16,9 @@ import math
 import os
 import threading
 from collections import deque
-from bisect import insort, bisect_left
+from bisect import bisect_left
 
 import numpy as np
-from scipy.stats import linregress
 
 from botcore import (
     float_env,

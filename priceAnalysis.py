@@ -4,7 +4,7 @@ import time
 import psutil
 
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 
 # Drawing dependencies.
 import matplotlib.pyplot as plt
@@ -13,7 +13,6 @@ from datetime import datetime
 
 # Local imports.
 import utils as u
-import symbols as sym
 from botcore import (
     _parse_bool_flag,
     load_dotenv as _load_dotenv,

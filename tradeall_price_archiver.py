@@ -33,7 +33,6 @@ import re
 import signal
 import sys
 import threading
-import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)

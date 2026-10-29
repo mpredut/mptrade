@@ -5,7 +5,7 @@ import random
 import re as _re
 import time
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 import nacl.signing
 import numpy as np
 

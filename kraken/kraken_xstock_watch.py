@@ -44,7 +44,7 @@ except ImportError:
     )
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
-from state_io import atomic_write_json, load_json_state, save_json_state
+from state_io import load_json_state, save_json_state
 from credentials import kraken_credentials
 
 
