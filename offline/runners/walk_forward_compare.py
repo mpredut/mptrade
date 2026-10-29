@@ -31,6 +31,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name
+from state_io import atomic_write_json, atomic_write_text
 from offline.backtests.comparison import (
     dominates as _dominates,
     format_comparison_markdown,
@@ -558,14 +559,11 @@ def main(argv: list[str] | None = None) -> int:
         args.output_dir.expanduser().resolve()
         if args.output_dir else baseline_path.parent / "comparisons"
     )
-    output_dir.mkdir(parents=True, exist_ok=True)
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     json_path = output_dir / f"comparison_{stamp}.json"
     markdown_path = output_dir / f"comparison_{stamp}.md"
-    with json_path.open("w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, ensure_ascii=False)
-    with markdown_path.open("w", encoding="utf-8") as handle:
-        handle.write(_markdown(report, venue=venue))
+    atomic_write_json(json_path, report, indent=2, ensure_ascii=False)
+    atomic_write_text(markdown_path, _markdown(report, venue=venue))
 
     print(f"Venue: {venue}")
     print(f"Comparison JSON: {json_path}")
