@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import cache_path, canonical_symbol_key
+from instrument_registry import casefold_get
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
@@ -69,7 +70,7 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
     if price_cache_manager is None:
         raise RuntimeError("The price cache manager was not initialised. Run build_price_cache_manager() first.")
 
-    manager = price_cache_manager.get(symbol)
+    manager = casefold_get(price_cache_manager, symbol)
     if manager is None:
         return []
 
@@ -77,9 +78,9 @@ def priceLstFor(symbol: str) -> List[Tuple[int, float]]:
     lock = getattr(manager, "lock", None)
     if lock is not None:
         with lock:
-            raw = list(manager.cache.get(symbol, []))
+            raw = list(casefold_get(manager.cache, symbol, []) or [])
     else:
-        raw = list(manager.cache.get(symbol, []))
+        raw = list(casefold_get(manager.cache, symbol, []) or [])
     out: List[Tuple[int, float]] = []
     for item in raw:
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -833,10 +834,10 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
     sym_canon = canonical_symbol_key(sym_u)
     items = (
-        all_trend_data.get(symbol)
-        or all_trend_data.get(sym_u)
-        or all_trend_data.get(sym_clean)
-        or (all_trend_data.get(sym_canon) if sym_canon else None)
+        casefold_get(all_trend_data, symbol)
+        or casefold_get(all_trend_data, sym_u)
+        or casefold_get(all_trend_data, sym_clean)
+        or (casefold_get(all_trend_data, sym_canon) if sym_canon else None)
     )
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)

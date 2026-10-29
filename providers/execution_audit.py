@@ -524,6 +524,7 @@ def _resolve_intent_execution_details(
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
     from cachepaths import normalize_venue_name
+    from instrument_registry import casefold_get
     from .base import (
         extract_executed_qty,
         extract_order_id,
@@ -590,7 +591,7 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
-        ro_entry = recent_orders.get(f"{venue}:{symbol}") or recent_orders.get(symbol)
+        ro_entry = casefold_get(recent_orders, f"{venue}:{symbol}") or casefold_get(recent_orders, symbol)
         if isinstance(ro_entry, dict):
             side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
             last_fill = ro_entry.get(side_key) if side_key else None

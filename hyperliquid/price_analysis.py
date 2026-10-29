@@ -42,121 +42,27 @@ load_env_stack(os.path.join(_HERE, ".env"))
 MIN_POINTS_PER_WINDOW = 3
 
 
-def _fast_linear_slope_1d(x: np.ndarray, y: np.ndarray) -> float:
-    """Compute OLS linear slope in O(N) without LAPACK/SVD matrix overhead."""
-    dx = x - x[0]
-    mean_dx = float(np.mean(dx))
-    dev_x = dx - mean_dx
-    var_x = float(np.dot(dev_x, dev_x))
-    if var_x == 0.0:
-        return 0.0
-    return float(np.dot(dev_x, y) / var_x)
-
-
-def _exact_min_int(val: object, min_val: int) -> int | None:
-    i = exact_int(val, default=None)
-    return i if (i is not None and i >= min_val) else None
-
-
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
     """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
-    if (
-        timestamps is None
-        or prices is None
-        or isinstance(timestamps, (bool, str, bytes))
-        or isinstance(prices, (bool, str, bytes))
-        or (isinstance(timestamps, np.ndarray) and timestamps.dtype == bool)
-        or (isinstance(prices, np.ndarray) and prices.dtype == bool)
-    ):
-        return None
-    wh_f = safe_pos_float(window_hours, default=None)
-    sh_f = safe_pos_float(step_hours, default=None)
-    mcb_i = _exact_min_int(min_consecutive_blocks, 1)
-    nt_i = _exact_min_int(noise_tolerance, 0)
-    mpw_i = _exact_min_int(min_points_per_window, 2)
-    if wh_f is None or sh_f is None or mcb_i is None or nt_i is None or mpw_i is None:
-        return None
-    try:
-        raw_ts = list(timestamps)
-        raw_px = list(prices)
-    except TypeError:
-        return None
-    if len(raw_ts) != len(raw_px) or len(raw_ts) < 2:
-        return None
-    pairs: list[tuple[float, float]] = []
-    for t_item, p_item in zip(raw_ts, raw_px):
-        tf = safe_pos_float(t_item, default=None)
-        pf = safe_pos_float(p_item, default=None)
-        if tf is not None and pf is not None:
-            pairs.append((tf, pf))
-    if len(pairs) < 2:
-        return None
-    if any(pairs[i][0] > pairs[i + 1][0] for i in range(len(pairs) - 1)):
-        pairs.sort(key=lambda item: item[0])
-    timestamps = np.asarray([p[0] for p in pairs], dtype=float)
-    prices = np.asarray([p[1] for p in pairs], dtype=float)
+    from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend
 
-    t_end, t_first = timestamps[-1], timestamps[0]
-    window_sec = wh_f * 3600.0
-    step_sec = sh_f * 3600.0
-    min_consecutive_blocks = mcb_i
-    noise_tolerance = nt_i
-    min_points_per_window = mpw_i
-
-    def slope_h(t_lo, t_hi):
-        lo = int(np.searchsorted(timestamps, t_lo, "left"))
-        hi = int(np.searchsorted(timestamps, t_hi, "left"))
-        if hi - lo < min_points_per_window:
-            return None, (lo, hi)
-        x, y = timestamps[lo:hi], prices[lo:hi]
-        s = _fast_linear_slope_1d(x, y)
-        if not math.isfinite(s):
-            return None, (lo, hi)
-        return s * 3600.0, (lo, hi)
-
-    cur, cur_idx = slope_h(t_end - window_sec, t_end + 1.0)
-    if not cur:
+    res = _root_detect_long_term_trend(
+        timestamps,
+        prices,
+        window_hours=window_hours,
+        step_hours=step_hours,
+        min_consecutive_blocks=min_consecutive_blocks,
+        noise_tolerance=noise_tolerance,
+        min_points_per_window=min_points_per_window,
+        detection_lag_hours=0.0,
+        mk_alpha=None,
+    )
+    if res is None:
         return None
-    current_sign = float(np.sign(cur))
-
-    blocks = [cur_idx]
-    consecutive, noise = 1, 0
-    confirm_lo = cur_idx[0]      # oldest point CONFIRMING the current direction
-    t_ws = t_end - window_sec - step_sec
-    while t_ws >= t_first:
-        s, idx = slope_h(t_ws, t_ws + window_sec)
-        if s is None:
-            break
-        if np.sign(s) == current_sign:
-            blocks.append(idx)
-            consecutive += 1
-            noise = 0
-            confirm_lo = idx[0]
-        elif noise < noise_tolerance:
-            noise += 1
-            blocks.append(idx)           # tentatively allow trend continuation past noise
-        else:
-            break                                    # noise beyond tolerance ends the trend here
-        t_ws -= step_sec
-
-    # Without enough CONFIRMED blocks there is no coherent trend. A one-day bounce
-    # against a four-day decline is not a four-day uptrend.
-    if consecutive < min_consecutive_blocks:
-        return None
-
-    trend_start_ts = float(timestamps[confirm_lo])   # duration includes confirmed data only
-    duration_seconds = t_end - trend_start_ts
-    if duration_seconds <= 0:
-        return None
-    return {
-        'direction': 'up' if current_sign > 0 else 'down',
-        'start_timestamp': float(trend_start_ts),
-        'duration_seconds': float(duration_seconds),
-        'estimated_future_hours': float(duration_seconds / 3600.0 * 0.5),
-        'current_slope_h': float(cur),
-    }
+    res.pop("blocks", None)
+    return res
 
 
 def analyze(client, coin: str) -> dict | None:
