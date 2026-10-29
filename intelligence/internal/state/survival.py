@@ -15,7 +15,6 @@ import json
 import os
 import sys
 import time
-import urllib.request
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -33,7 +32,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import read_recovering_previous, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE

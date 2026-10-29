@@ -42,8 +42,8 @@ from common import (
 )
 from notify import notify
 from providers.base import _clean_single_order_id
-from state_io import atomic_write_json, load_json_state, save_json_state
-from hl_client import HLClient, HLError
+from state_io import load_json_state, save_json_state
+from hl_client import HLClient
 from market_data import get_price
 from signals import _normalize_signal_trend, get_signal
 
