@@ -24,7 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
-from botcore import safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
+from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
 
 _safe_int = safe_int
 
@@ -40,16 +40,7 @@ def realized_vol_series(px: np.ndarray, win: int) -> np.ndarray:
     elif px is None or isinstance(px, (str, bytes, bool)):
         px_arr = np.empty(0, dtype=float)
     else:
-        cleaned: list[float] = []
-        for item in px:
-            if item is None or isinstance(item, bool):
-                cleaned.append(np.nan)
-            else:
-                try:
-                    cleaned.append(float(item))
-                except (TypeError, ValueError, OverflowError):
-                    cleaned.append(np.nan)
-        px_arr = np.asarray(cleaned, dtype=float).reshape(-1)
+        px_arr = np.asarray([safe_float(item, default=np.nan) for item in px], dtype=float).reshape(-1)
     win = safe_pos_int(win, default=24)
     with np.errstate(divide="ignore", invalid="ignore"):
         logp = np.where(np.isfinite(px_arr) & (px_arr > 0), np.log(px_arr), np.nan)
