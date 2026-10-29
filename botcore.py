@@ -203,14 +203,11 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
         log(f"  .env loaded from {env_path}")
 
 
-def parse_dotenv(path: str) -> dict:
+def parse_dotenv(path: str) -> dict[str, str]:
     """Parse dotenv into a dictionary without changing os.environ.
     This keeps configuration separate when multiple assets run in the same process."""
-    pairs, _loaded = _dotenv_pairs(path)
-    out: dict[str, str] = {}
-    for key, value in pairs:
-        out[key] = value
-    return out
+    pairs, _ = _dotenv_pairs(path)
+    return dict(pairs)
 
 
 def safe_float(val: object, default: float | None = 0.0) -> float | None:
@@ -436,8 +433,8 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
     tol = safe_nonneg_float(tolerance_percent, default=None)
     if tol is None:
         return False
-    diff = diff_percent(value1, value2)
-    return math.isfinite(diff) and diff <= tol
+    diff_f = safe_nonneg_float(diff_percent(value1, value2), default=None)
+    return diff_f is not None and diff_f <= tol
 
 
 def diff_equals_percent(value1: float, value2: float, target_percent: float,
@@ -450,5 +447,5 @@ def diff_equals_percent(value1: float, value2: float, target_percent: float,
     tol = safe_nonneg_float(tolerance_percent, default=None)
     if target is None or tol is None:
         return False
-    diff = diff_percent(value1, value2)
-    return math.isfinite(diff) and abs(diff - target) <= tol
+    diff_f = safe_nonneg_float(diff_percent(value1, value2), default=None)
+    return diff_f is not None and abs(diff_f - target) <= tol
