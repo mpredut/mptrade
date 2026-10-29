@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent  # orchestratorOS/lib/ -> r
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from notify_engine.alertnotifiers import AlertNotifier  # noqa: E402
+from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from botcore import (  # noqa: E402
     _parse_bool_flag,
     load_env_stack,
@@ -58,8 +58,7 @@ def _valid_webhook_url(raw_url: str) -> str | None:
     if u.startswith(("http://", "https://")):
         rest = u.split("://", 1)[1].rstrip("/")
         return u if "/" in rest and rest.split("/", 1)[1].strip() else None
-    clean_topic = u.lstrip("/").strip()
-    return f"https://ntfy.sh/{clean_topic}" if clean_topic else None
+    return format_ntfy_url(u) or None
 
 
 def send_ntfy(title, message):
