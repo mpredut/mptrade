@@ -8,6 +8,7 @@ from typing import Iterable
 
 from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel, FeeModel
+from offline.backtests.execution_calibration import _clean_finite_floats as _present
 from offline.backtests.walk_forward import summarize_test_windows
 from botcore import (
     safe_float,

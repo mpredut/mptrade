@@ -6770,3 +6770,43 @@ def test_t212_backtest_simulate_trail_and_calibrate_audit_fmt():
     assert _fmt(None) == "n/a"
     assert _req_pos_num(10, "step") == 10.0
 
+
+def test_replay_align_exports_grid_replay_vol_chronos_and_sim_normalize(monkeypatch):
+    """Verify align_spot_interval_params re-exports, kraken_continuous_grid interval alignment, vol_chronos list/inf handling, and PriceWindow.normalize_indices."""
+    from kraken import replay as kraken_rp
+    from binance_api import replay as binance_rp
+    from offline.research.kraken_continuous_grid import grid as kgrid
+    from offline.research.ml_forecast import vol_chronos
+    from offline.simulations.sim import PriceWindow
+    from strategies.spot_engine import StratParams
+
+    assert kraken_rp.align_spot_interval_params is binance_rp.align_spot_interval_params
+
+    # kraken_continuous_grid.grid.replay aligns params to 240m before calling run_replay
+    captured = {}
+
+    def _fake_replay(ohlc, params, **kwargs):
+        captured["params"] = params
+        return {"total": 10.0, "max_drawdown_pct": 1.0, "cycles": 1, "exposure_pct": 25.0}
+
+    monkeypatch.setattr(kgrid.rp, "run_replay", _fake_replay)
+    default_p = StratParams.from_dict({"max_budget": 1000.0, "trend_interval": 15, "tp_trail_vol_interval": 15, "dca_vol_interval": 15})
+    out = kgrid.replay([(100.0, 101.0, 99.0, 100.0)] * 5, [], default_p, 0)
+    assert out["ret"] == 1.0
+    assert captured["params"].trend_interval == 240
+    assert captured["params"].tp_trail_vol_interval == 240
+    assert captured["params"].dca_vol_interval == 240
+
+    # vol_chronos.walk_forward_vol handles Python list with inf/nan without crashing when no valid window exists
+    res_vol = vol_chronos.walk_forward_vol([float("inf"), float("nan"), 0.01], horizon=24, warmup=0, stride=6)
+    assert res_vol["n_test"] == 0
+
+    # PriceWindow.normalize_indices evicts expired entries before computing min_index
+    pw = PriceWindow(window_size=3, max_index=5)
+    for px in (10.0, 20.0, 30.0, 40.0):
+        pw.process_price(px)
+    pw.normalize_indices()
+    min_val, _ = pw.get_min()
+    assert min_val == 20.0
+
+

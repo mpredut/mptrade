@@ -60,10 +60,9 @@ class PriceWindow:
         if len(self.prices) > self.window_size:
             self.prices.popleft()
 
-        # Remove expired elements from both deques and normalize once before inserting.
-        self._evict_expired(self.min_deque)
-        self._evict_expired(self.max_deque)
         if self.current_index >= self.max_index:
+            self._evict_expired(self.min_deque)
+            self._evict_expired(self.max_deque)
             self.normalize_indices()
 
         # Handling of the current low and high.

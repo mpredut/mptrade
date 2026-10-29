@@ -170,7 +170,8 @@ def replay(bars, warm, params, peak, fee=0.26, initial_cash=None):
             if initial_cash is not None:
                 return {"ret": 0.0, "dd": 0.0, "cyc": 0, "refused": 0, "min_cash": float(initial_cash)}
             return {"ret": 0.0, "dd": 0.0, "cyc": 0, "expo": 0.0, "bh": 0.0}
-        m = rp.run_replay(ohlc, params, fee_pct=fee, bar_minutes=240,
+        interval_params = rp.align_spot_interval_params(params, 240)
+        m = rp.run_replay(ohlc, interval_params, fee_pct=fee, bar_minutes=240,
                           warmup_ohlc=w_ohlc, initial_cash=initial_cash)
         tot = safe_float(m.get("total"), 0.0)
         if initial_cash is not None:

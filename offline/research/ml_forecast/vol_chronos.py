@@ -61,15 +61,16 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
     """For each test hour i sampled by stride, give the model rv[:i+1] capped at
     MAX_CONTEXT and request a +horizon-hour prediction. Compare against persistence
     rv[i] and actual rv[i+horizon]."""
+    rv = _to_price_array(rv)
     horizon = safe_pos_int(horizon, default=24)
     stride = safe_pos_int(stride, default=6)
     warmup = safe_nonneg_int(warmup, default=0)
     n = len(rv)
     idxs = [
         i for i in range(warmup, n - horizon, stride)
-        if not np.isnan(rv[i])
-        and not np.isnan(rv[i + horizon])
-        and np.any(~np.isnan(rv[max(0, i + 1 - MAX_CONTEXT):i + 1]))
+        if np.isfinite(rv[i])
+        and np.isfinite(rv[i + horizon])
+        and np.any(np.isfinite(rv[max(0, i + 1 - MAX_CONTEXT):i + 1]))
     ]
     if not idxs:
         return {
@@ -88,7 +89,7 @@ def walk_forward_vol(rv: np.ndarray, horizon: int, warmup: int, stride: int):
         contexts = []
         for i in chunk:
             seg = rv[max(0, i + 1 - MAX_CONTEXT):i + 1]
-            contexts.append(torch.tensor(seg[~np.isnan(seg)], dtype=torch.float32))
+            contexts.append(torch.tensor(seg[np.isfinite(seg)], dtype=torch.float32))
         forecast = pipe.predict(contexts, prediction_length=horizon)
         for k, i in enumerate(chunk):
             path = forecast[k].numpy()
