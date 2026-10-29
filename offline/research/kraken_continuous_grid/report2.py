@@ -11,25 +11,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
 
-_safe_f = safe_float
-
-
-def _load_jsonl_dicts(path: str) -> list[dict]:
-    rows = []
-    if not os.path.exists(path):
-        return rows
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            if isinstance(rec, dict):
-                rows.append(rec)
-    return rows
+try:
+    from .report import _load_jsonl_dicts
+except ImportError:
+    from offline.research.kraken_continuous_grid.report import _load_jsonl_dicts
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:
