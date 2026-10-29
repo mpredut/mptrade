@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 import importlib.util
 
 from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float  # noqa: E402
+from state_io import atomic_write_json  # noqa: E402
 _orig_sys_path = list(sys.path)
 try:
     if str(T212_DIR) not in sys.path:
@@ -239,10 +240,9 @@ def main(argv: list[str] | None = None) -> int:
         "evidence_gate": evidence,
         **result,
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     report_path = output_dir / f"baseline_{symbol}_{stamp}.json"
-    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
 
     aggregate = result["aggregate_test"]
     print(f"Baseline saved: {report_path}")

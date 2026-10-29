@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import required_env, required_float_env, safe_nonneg_float
+from state_io import atomic_write_json
 import importlib.util
 
 _orig_sys_path = list(sys.path)
@@ -199,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         }
 
         report_path = output_dir / f"{coin}_{interval}m_baseline.json"
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
         print(f"[{coin} {interval}m] Verdict: {evidence['verdict']} | "
               f"Worst Return: {(wf_result['aggregate_test'].get('worst_return_pct') or 0.0):+.2f}% | "
               f"Folds: {wf_result['aggregate_test']['fold_count']} -> {report_path.name}")

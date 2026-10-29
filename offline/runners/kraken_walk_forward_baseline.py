@@ -25,6 +25,7 @@ if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
 from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
+from state_io import atomic_write_json  # noqa: E402
 from kraken import market_data as kraken_market_data  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
@@ -181,11 +182,9 @@ def main(argv: list[str] | None = None) -> int:
             **result,
         }
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     stamp = generated_at.strftime("%Y%m%dT%H%M%SZ")
     report_path = output_dir / f"baseline_{pair}_{stamp}.json"
-    with report_path.open("w", encoding="utf-8") as handle:
-        json.dump(report, handle, indent=2, ensure_ascii=False)
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
 
     print(f"Baseline saved: {report_path}")
     for interval, value in report["intervals"].items():

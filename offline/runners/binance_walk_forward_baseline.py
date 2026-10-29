@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from botcore import safe_nonneg_float
+from state_io import atomic_write_json
 from binance_api.market_data import fetch_ohlc_candles
 from binance_api.replay import make_binance_replay_adapter, StratParams
 from strategies.spot_replay import align_spot_interval_params
@@ -166,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         }
 
         report_path = output_dir / f"{symbol}_{interval}m_baseline.json"
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
         print(f"[{symbol} {interval}m] Verdict: {evidence['verdict']} | "
               f"Worst Return: {(wf_result['aggregate_test'].get('worst_return_pct') or 0.0):+.2f}% | "
               f"Folds: {wf_result['aggregate_test']['fold_count']} -> {report_path.name}")
