@@ -16,7 +16,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
-from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float
+from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float, safe_pos_int
 from cachepaths import canonical_symbol_key, normalize_venue_name
 from .base import (
     MarketDataProvider,
@@ -561,7 +561,7 @@ class BinanceProvider(MarketDataProvider):
         observed_at = timestamps[-1] if timestamps else None
         return ClosedPriceSeries(
             closes,
-            int(float(interval_min)),
+            safe_pos_int(interval_min, 1),
             observed_at,
             timestamps,
         )
