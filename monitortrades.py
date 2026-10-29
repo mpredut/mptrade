@@ -376,9 +376,9 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         tot_q = 0.0
         tot_v = 0.0
         for o in buy_orders:
-            q = extract_order_qty(o)
-            p = extract_order_price(o)
-            if not (math.isfinite(q) and q > 0.0 and math.isfinite(p) and p > 0.0):
+            q = safe_pos_float(extract_order_qty(o), default=None)
+            p = safe_pos_float(extract_order_price(o), default=None)
+            if q is None or p is None:
                 continue
             tot_q += q
             tot_v += q * p
@@ -386,19 +386,19 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         return tot_q, avg_px, avg_px
     events = []
     for o in buy_orders:
-        q = extract_order_qty(o)
-        p = extract_order_price(o)
-        ts = _order_timestamp_ms(o)
-        if not (math.isfinite(q) and q > 0.0 and math.isfinite(p) and p > 0.0):
+        q = safe_pos_float(extract_order_qty(o), default=None)
+        p = safe_pos_float(extract_order_price(o), default=None)
+        if q is None or p is None:
             continue
-        events.append((ts if math.isfinite(ts) else 0.0, 0, q, p))
+        ts = safe_float(_order_timestamp_ms(o), default=0.0)
+        events.append((ts, 0, q, p))
     for o in sell_orders:
-        q = extract_order_qty(o)
-        p = extract_order_price(o)
-        ts = _order_timestamp_ms(o)
-        if not (math.isfinite(q) and q > 0.0):
+        q = safe_pos_float(extract_order_qty(o), default=None)
+        if q is None:
             continue
-        events.append((ts if math.isfinite(ts) else 0.0, 1, q, p if math.isfinite(p) else 0.0))
+        p = safe_nonneg_float(extract_order_price(o), default=0.0)
+        ts = safe_float(_order_timestamp_ms(o), default=0.0)
+        events.append((ts, 1, q, p))
     events.sort(key=lambda x: (x[0], x[1]))
     owned = 0.0
     cost_qty = 0.0
@@ -1835,9 +1835,9 @@ def _execute_reentry_buy(
         **extra_kwargs,
     )
     if placed or reentry_outcome_ctx.get("state") == "unknown":
-        sell_t = prev_reentry_state.get("sell_time") if isinstance(prev_reentry_state, dict) else None
-        if not isinstance(sell_t, bool) and isinstance(sell_t, (int, float)) and math.isfinite(float(sell_t)) and sell_t > 0:
-            _REENTRY_DONE_SELL_TIME[symbol] = float(sell_t)
+        sell_t = safe_pos_float(prev_reentry_state.get("sell_time") if isinstance(prev_reentry_state, dict) else None, default=None)
+        if sell_t is not None:
+            _REENTRY_DONE_SELL_TIME[symbol] = sell_t
         _REENTRY_STATE.pop(symbol, None)
         _LAST_EXIT_KIND.pop(symbol, None)
         _save_mt_state()
