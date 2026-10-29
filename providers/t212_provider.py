@@ -17,7 +17,7 @@ import math
 import importlib
 from typing import Optional, List
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from .base import MarketDataProvider, _normalize_order, bool_env, env_value, normalize_side
 from .strategy_executor import (
     OrderNotFound,
@@ -131,13 +131,7 @@ class T212Provider(MarketDataProvider):
 
         def _opt_float(key: str) -> Optional[float]:
             raw = os.environ.get(key) or env_value(_T212_DIR, key)
-            if raw is None or not str(raw).strip():
-                return None
-            try:
-                val = float(str(raw).strip())
-                return val if math.isfinite(val) and val >= 0.0 else None
-            except (TypeError, ValueError, OverflowError):
-                return None
+            return safe_nonneg_float(str(raw).strip(), default=None) if (raw is not None and str(raw).strip()) else None
 
         self._cli = T212Client(
             credentials.key,
@@ -184,21 +178,14 @@ class T212Provider(MarketDataProvider):
     def get_current_price(self, symbol: str) -> Optional[float]:
         p = self._position(symbol)
         if p:
-            raw_cp = p.get("currentPrice")
-            if raw_cp is not None and not isinstance(raw_cp, bool):
-                try:
-                    px = float(raw_cp)
-                    if math.isfinite(px) and px > 0:
-                        return px
-                except (TypeError, ValueError):
-                    pass
+            px = safe_pos_float(p.get("currentPrice"), default=None)
+            if px is not None:
+                return px
         # Fallback to market data feed when no open position is held in the account
         try:
             market_data = importlib.import_module("212trading.market_data")
             yahoo_sym = market_data.t212_to_yahoo(symbol)
-            px = market_data.get_price_usd(yahoo_sym)
-            if px is not None and not isinstance(px, bool) and math.isfinite(float(px)) and float(px) > 0:
-                return float(px)
+            return safe_pos_float(market_data.get_price_usd(yahoo_sym), default=None)
         except Exception as e:
             print(f"[T212] get_current_price fallback {symbol}: {e}")
         return None
@@ -228,28 +215,22 @@ class T212Provider(MarketDataProvider):
                 raw_free = cash.get("free")
                 if isinstance(raw_free, bool):
                     return None
-                free_ron = float(raw_free or 0.0)
-                if not math.isfinite(free_ron) or free_ron < 0:
+                free_ron = safe_nonneg_float(raw_free if raw_free is not None else 0.0, default=None)
+                if free_ron is None:
                     return None
                 if asset_u == "RON":
                     return free_ron
                 try:
                     market_data = importlib.import_module("212trading.market_data")
-                    raw_fx = market_data.get_usd_ron()
-                    usd_ron = float(raw_fx or 4.6) if not isinstance(raw_fx, bool) else 4.6
+                    usd_ron = safe_pos_float(market_data.get_usd_ron(), default=4.6)
                 except Exception:
                     market_data = None
-                    usd_ron = 4.6
-                if not math.isfinite(usd_ron) or usd_ron <= 0:
                     usd_ron = 4.6
                 if asset_u == "EUR":
                     eur_usd = 1.08
                     if market_data is not None and hasattr(market_data, "get_eur_usd"):
                         try:
-                            raw_eu = market_data.get_eur_usd()
-                            cand_eu = float(raw_eu or 1.08) if not isinstance(raw_eu, bool) else 1.08
-                            if math.isfinite(cand_eu) and cand_eu > 0:
-                                eur_usd = cand_eu
+                            eur_usd = safe_pos_float(market_data.get_eur_usd(), default=1.08)
                         except Exception:
                             eur_usd = 1.08
                     return round(free_ron / (usd_ron * eur_usd), 2)
@@ -267,29 +248,15 @@ class T212Provider(MarketDataProvider):
         raw_qty = p.get("quantity")
         if isinstance(raw_qty, bool):
             return None
-        try:
-            qty = float(raw_qty or 0.0)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(qty) or qty < 0:
-            return None
-        return qty
+        return safe_nonneg_float(raw_qty if raw_qty is not None else 0.0, default=None)
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Represent the portfolio position as one synthetic average-price buy."""
-        if since_s is None or isinstance(since_s, bool):
-            return []
-        try:
-            since_val = float(since_s)
-        except (TypeError, ValueError, OverflowError):
-            return []
-        if not math.isfinite(since_val) or since_val <= 0:
+        since_val = safe_pos_float(since_s, default=None)
+        if since_val is None:
             return []
         if side is not None:
-            if isinstance(side, bool):
-                return []
-            want = normalize_side(side)
-            if want != "BUY":
+            if isinstance(side, bool) or normalize_side(side) != "BUY":
                 return []                         # Historical sells are not modeled.
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.
@@ -298,12 +265,10 @@ class T212Provider(MarketDataProvider):
             return []
         if isinstance(p.get("averagePrice"), bool) or isinstance(p.get("quantity"), bool):
             raise ProviderError(f"portfolio({symbol}): invalid position")
-        try:
-            avg = float(p.get("averagePrice"))
-            qty = float(p.get("quantity") or 0.0)
-        except (TypeError, ValueError) as e:
-            raise ProviderError(f"portfolio({symbol}): invalid position") from e
-        if not math.isfinite(avg) or not math.isfinite(qty) or avg <= 0 or qty < 0:
+        avg = safe_pos_float(p.get("averagePrice"), default=None)
+        raw_qty = p.get("quantity")
+        qty = safe_nonneg_float(raw_qty if raw_qty is not None else 0.0, default=None)
+        if avg is None or qty is None:
             raise ProviderError(f"portfolio({symbol}): invalid position")
         if qty <= 0:
             return []
@@ -319,15 +284,10 @@ class T212Provider(MarketDataProvider):
         if not isinstance(side, str):
             raise ProviderError(f"invalid T212 side: {side!r}")
         side_u = normalize_side(side)
-        if isinstance(qty, bool):
+        raw_f = safe_pos_float(qty, default=None)
+        if raw_f is None:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
-        try:
-            raw_f = float(qty)
-            if not math.isfinite(raw_f) or raw_f <= 0:
-                raise ProviderError(f"invalid T212 quantity: {qty!r}")
-            qty_f = round(raw_f, _VOLUME_DECIMALS)
-        except (TypeError, ValueError, OverflowError) as e:
-            raise ProviderError(f"invalid T212 quantity: {qty!r}") from e
+        qty_f = round(raw_f, _VOLUME_DECIMALS)
         if not math.isfinite(qty_f) or qty_f < _ORDER_MIN:
             raise ProviderError(f"invalid T212 quantity: {qty!r}")
         if side_u == "BUY":
@@ -346,13 +306,8 @@ class T212Provider(MarketDataProvider):
             return self._client().place_market_order(symbol, signed, extended_hours=False)
         if price is None:
             raise ProviderError("a T212 LIMIT order requires a price")
-        if isinstance(price, bool):
-            raise ProviderError(f"invalid T212 price: {price!r}")
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError) as e:
-            raise ProviderError(f"invalid T212 price: {price!r}") from e
-        if not math.isfinite(price_f) or price_f <= 0:
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             raise ProviderError(f"invalid T212 price: {price!r}")
         configured = (
             self._order_validity
@@ -467,15 +422,13 @@ class T212Provider(MarketDataProvider):
 
         if any(isinstance(raw.get(k), bool) for k in ("filledQuantity", "filledValue", "fee", "commission")):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
-        try:
-            filled_qty = abs(float(raw.get("filledQuantity") or 0.0))
-            filled_value_raw = raw.get("filledValue")
-            cost = abs(float(filled_value_raw or 0.0))
-            fee = float(raw.get("fee", raw.get("commission", 0.0)) or 0.0)
-        except (TypeError, ValueError, OverflowError) as e:
-            raise ProviderError(f"order_status({order_id}): invalid fill values") from e
-        if not all(math.isfinite(v) for v in (filled_qty, cost, fee)) or fee < 0:
+        fq_f = safe_float(raw.get("filledQuantity") or 0.0, default=None)
+        fv_f = safe_float(raw.get("filledValue") or 0.0, default=None)
+        fee = safe_nonneg_float(raw.get("fee", raw.get("commission", 0.0)) or 0.0, default=None)
+        if fq_f is None or fv_f is None or fee is None:
             raise ProviderError(f"order_status({order_id}): invalid fill values")
+        filled_qty = abs(fq_f)
+        cost = abs(fv_f)
 
         raw_fee_cur = raw.get("_feeCurrencies")
         fee_currencies = {
@@ -495,31 +448,16 @@ class T212Provider(MarketDataProvider):
             # Some legacy payloads expose execution price instead of filledValue.
             # Do not use limitPrice because it is not actual execution and distorts P&L.
             fill_price = raw.get("fillPrice", raw.get("averagePrice"))
-            if isinstance(fill_price, bool):
+            fp_f = safe_float(fill_price, default=None)
+            fp_val = abs(fp_f) if fp_f is not None else 0.0
+            if fp_val <= 0 or not math.isfinite(fp_val * filled_qty):
                 raise ProviderError(
                     f"order_status({order_id}): fill {filled_qty} without an executed cost"
                 )
-            try:
-                fp_val = abs(float(fill_price))
-                if not math.isfinite(fp_val) or fp_val <= 0:
-                    raise ValueError("non-finite or non-positive fill_price")
-                cost = fp_val * filled_qty
-                if not math.isfinite(cost):
-                    raise ValueError("non-finite cost")
-            except (TypeError, ValueError, OverflowError):
-                raise ProviderError(
-                    f"order_status({order_id}): fill {filled_qty} without an executed cost"
-                ) from None
+            cost = fp_val * filled_qty
 
-        raw_orig = raw.get("orderedQuantity", raw.get("quantity"))
-        orig_qty = None
-        if raw_orig is not None and not isinstance(raw_orig, bool):
-            try:
-                cand_orig = abs(float(raw_orig))
-                if math.isfinite(cand_orig):
-                    orig_qty = cand_orig
-            except (TypeError, ValueError, OverflowError):
-                orig_qty = None
+        orig_f = safe_float(raw.get("orderedQuantity", raw.get("quantity")), default=None)
+        orig_qty = abs(orig_f) if orig_f is not None else None
 
         return OrderStatus(
             status=normalized,

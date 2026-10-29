@@ -12,8 +12,9 @@ Each adapter still applies its configured live-order gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Callable, Optional, Protocol, runtime_checkable
+
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
 
 
 class ProviderError(Exception):
@@ -132,30 +133,19 @@ class OrderStatus:
         object.__setattr__(self, "status", st_norm)
         for name, raw in (("filled_qty", self.filled_qty),
                           ("cost", self.cost), ("fee", self.fee)):
-            if isinstance(raw, bool) or raw is None:
-                raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
-            try:
-                value = float(raw)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid {name} in OrderStatus: {raw!r}") from exc
+            value = safe_float(raw, default=None) if name == "fee" else safe_nonneg_float(raw, default=None)
             # A negative fee is valid when the venue pays a maker rebate.
-            if not math.isfinite(value) or (name != "fee" and value < 0):
+            if value is None:
                 raise ValueError(f"invalid {name} in OrderStatus: {raw!r}")
             object.__setattr__(self, name, value)
         if isinstance(self.venue_status, bool):
             raise ValueError(f"invalid venue_status in OrderStatus: {self.venue_status!r}")
         object.__setattr__(self, "venue_status", str(self.venue_status or "").strip().upper())
         if self.orig_qty is not None:
-            raw_orig = self.orig_qty
-            if isinstance(raw_orig, bool):
-                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
-            try:
-                orig_val = abs(float(raw_orig))
-                if not math.isfinite(orig_val):
-                    raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}")
-                object.__setattr__(self, "orig_qty", orig_val)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid orig_qty in OrderStatus: {raw_orig!r}") from exc
+            orig_val = safe_float(self.orig_qty, default=None)
+            if orig_val is None:
+                raise ValueError(f"invalid orig_qty in OrderStatus: {self.orig_qty!r}")
+            object.__setattr__(self, "orig_qty", abs(orig_val))
 
     @property
     def terminal(self) -> bool:
@@ -186,25 +176,12 @@ class PairPrecision:
     def __post_init__(self):
         for name in ("price_decimals", "volume_decimals"):
             raw = getattr(self, name)
-            if isinstance(raw, bool):
+            raw_f = safe_nonneg_float(raw, default=None)
+            if raw_f is None or not raw_f.is_integer():
                 raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
-            try:
-                raw_f = float(raw)
-                if not math.isfinite(raw_f) or not raw_f.is_integer():
-                    raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
-                raw_i = int(raw_f)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid {name} in PairPrecision: {raw!r}") from exc
-            if raw_i < 0:
-                raise ValueError(f"invalid {name} in PairPrecision: {raw!r}")
-            object.__setattr__(self, name, raw_i)
-        if isinstance(self.order_min, bool):
-            raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
-        try:
-            minimum = float(self.order_min)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}") from exc
-        if not math.isfinite(minimum) or minimum < 0:
+            object.__setattr__(self, name, int(raw_f))
+        minimum = safe_nonneg_float(self.order_min, default=None)
+        if minimum is None:
             raise ValueError(f"invalid order_min in PairPrecision: {self.order_min!r}")
         object.__setattr__(self, "order_min", minimum)
         if isinstance(self.base_asset, bool):
@@ -219,15 +196,10 @@ _CANDLE_INTERVALS = {
 
 def candle_interval(interval_min: int) -> str:
     """Return the canonical venue interval or reject an unsupported horizon."""
-    if isinstance(interval_min, bool) or interval_min is None:
+    itv_f = safe_float(interval_min, default=None)
+    if itv_f is None or not itv_f.is_integer():
         raise ProviderError(f"invalid candle interval: {interval_min!r}")
-    try:
-        itv_f = float(interval_min)
-        if not math.isfinite(itv_f) or not itv_f.is_integer():
-            raise ProviderError(f"invalid candle interval: {interval_min!r}")
-        minutes = int(itv_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ProviderError(f"invalid candle interval: {interval_min!r}") from exc
+    minutes = int(itv_f)
     if minutes not in _CANDLE_INTERVALS:
         raise ProviderError(f"unsupported candle interval: {interval_min!r} minutes")
     return _CANDLE_INTERVALS[minutes]
@@ -266,7 +238,8 @@ class OrderReconciliationCapabilities:
             raise TypeError(
                 "not_found_reliable_for_seconds must be a positive number"
             ) from exc
-        if not math.isfinite(horizon) or horizon <= 0:
+        horizon = safe_pos_float(horizon)
+        if horizon is None:
             raise ValueError(
                 "not_found_reliable_for_seconds must be finite and > 0")
         if not self.lookup_by_client_order_id:

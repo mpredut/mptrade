@@ -41,7 +41,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float as _safe_float
+from botcore import safe_float as _safe_float, safe_int, safe_pos_float
+from providers.base import normalize_side
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
@@ -148,13 +149,10 @@ def _read_pipe_log(path, ncols):
 
 
 def _log_dates(days_back):
-    if (
-        isinstance(days_back, bool)
-        or not isinstance(days_back, (int, float))
-        or not math.isfinite(float(days_back))
-    ):
+    db_f = _safe_float(days_back, default=None) if isinstance(days_back, (int, float)) else None
+    if db_f is None:
         return []
-    n_days = max(0, int(days_back))
+    n_days = max(0, int(db_f))
     today = datetime.now().date()
     return [today - timedelta(days=i) for i in range(n_days)]
 
@@ -184,14 +182,9 @@ def sample_current_prices(symbols):
             continue
         raw_ts = entry.get("ts", time.time())
         raw_px = entry["current_price"]
-        if isinstance(raw_ts, bool) or isinstance(raw_px, bool):
-            continue
-        try:
-            sample_ts = float(raw_ts)
-            px_val = float(raw_px)
-        except (TypeError, ValueError):
-            continue
-        if not (math.isfinite(sample_ts) and sample_ts > 0 and math.isfinite(px_val) and px_val > 0):
+        sample_ts = safe_pos_float(raw_ts, default=None)
+        px_val = safe_pos_float(raw_px, default=None)
+        if sample_ts is None or px_val is None:
             continue
         # The loop runs every two seconds, but the source may publish less often.
         # Avoid recording the same tick repeatedly and inflating the log and RAM cache.
@@ -216,21 +209,24 @@ def sample_current_prices(symbols):
 
 # -- Load logs (steps A / A2). -------------------------------------------------
 
-def load_price_samples(symbol, days_back):
+def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
     ts_list, px_list = [], []
-    for d in reversed(_log_dates(days_back)):
-        for ts, sym_, price in _read_pipe_log(_daily_log_path(PRICE_SAMPLES_PREFIX, d), 3):
-            if sym_ != symbol:
-                continue
-            try:
-                t_val = float(ts)
-                p_val = float(price)
-            except ValueError:
-                continue
-            if math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
-                ts_list.append(t_val)
-                px_list.append(p_val)
+    for ts, sym_, price in rows:
+        if sym_ != symbol:
+            continue
+        t_val = safe_pos_float(ts, default=None) if require_pos_ts else _safe_float(ts, default=None)
+        p_val = safe_pos_float(price, default=None)
+        if t_val is not None and p_val is not None:
+            ts_list.append(t_val)
+            px_list.append(p_val)
     return ts_list, px_list
+
+
+def load_price_samples(symbol, days_back):
+    rows = []
+    for d in reversed(_log_dates(days_back)):
+        rows.extend(_read_pipe_log(_daily_log_path(PRICE_SAMPLES_PREFIX, d), 3))
+    return _parse_price_sample_rows(rows, symbol, require_pos_ts=False)
 
 
 def _cachedb_dir() -> str:
@@ -278,36 +274,18 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
 
 
 def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
-    """Read enough sparse long-term history for a seven-day window.
+    """Read enough sparse long-term history for a seven-day window."""
+    return _load_cachedb_price_entries(f"cache_sparse_price_{symbol}.jsonl", symbol, max_bytes=max_bytes)
 
-    The approximately 40 MB file covers about eleven months. Its final
-    ``max_bytes`` span weeks, avoiding a full scan on every cycle.
-    """
-    path = str(resolve_cachedb_filepath(os.path.join(_cachedb_dir(), f"cache_sparse_price_{symbol}.jsonl")))
-    if not os.path.exists(path):
-        return []
-    entries = []
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes))
-            data = f.read().decode("utf-8", errors="replace")
-        # Drop the first line only when reading began in the middle of the file.
-        # Otherwise this would discard the first valid record in a small file.
-        lines = data.split("\n")[1:] if size > max_bytes else data.split("\n")
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-                if isinstance(rec, dict) and rec.get("s") == symbol and "i" in rec:
-                    entries.append(rec["i"])
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
-    except OSError:
-        pass
-    return entries
+
+def _ingest_cachedb_points(points: dict, entries) -> None:
+    for entry in entries or ():
+        if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        t_ms = _safe_float(entry[0], default=None)
+        p_val = safe_pos_float(entry[1], default=None)
+        if t_ms is not None and p_val is not None:
+            points[int(t_ms / 1000.0)] = p_val
 
 
 def load_price_series_live(symbol, days_back, include_history=True):
@@ -318,68 +296,40 @@ def load_price_series_live(symbol, days_back, include_history=True):
     timestamp collisions. ``include_history=False`` skips sparse history for
     windows already covered by dense caches, saving parsing on each cycle.
     """
-    # Merge into one-second buckets because sources have roughly one-second clock
-    # offsets. Without alignment, slightly different prices form a false jagged
-    # block. Dense sources are written last and therefore win each bucket.
     points = {}
-    # Add sparse/archive sources first, then dense live data, so an old archive
-    # record cannot overwrite the current tick from the same second.
     if include_history:
-        for entry in _load_history_jsonl_tail(symbol):
-            try:
-                t_val = float(entry[0]) / 1000.0
-                p_val = float(entry[1])
-                if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
-                    points[int(t_val)] = p_val
-            except (TypeError, ValueError, IndexError, OverflowError):
-                continue
-    # The unbounded long-term archive grows continuously. Parsing it every
-    # two-second live cycle was wasteful because the live file already provides
-    # identical density for 24 hours. Load it only for longer windows where it
-    # contributes data; this path previously accounted for 46% sustained CPU.
-    if include_history:
-        for entry in _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol):
-            try:
-                t_val = float(entry[0]) / 1000.0
-                p_val = float(entry[1])
-                if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
-                    points[int(t_val)] = p_val
-            except (TypeError, ValueError, IndexError, OverflowError):
-                continue
+        _ingest_cachedb_points(points, _load_history_jsonl_tail(symbol))
+        _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_365_price_{symbol}.jsonl", symbol))
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
         if math.isfinite(t) and math.isfinite(p) and p > 0:
             points[int(t)] = p
-    for entry in _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol):
-        try:
-            t_val = float(entry[0]) / 1000.0
-            p_val = float(entry[1])
-            if not isinstance(entry[0], bool) and not isinstance(entry[1], bool) and math.isfinite(t_val) and math.isfinite(p_val) and p_val > 0:
-                points[int(t_val)] = p_val
-        except (TypeError, ValueError, IndexError, OverflowError):
-            continue
+    _ingest_cachedb_points(points, _load_cachedb_price_entries(f"cache_24_price_{symbol}.json", symbol))
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
 
 
-def load_trend_starts(symbol, days_back):
+def _parse_trend_start_rows(rows, symbol):
     events = []
-    for d in reversed(_log_dates(days_back)):
-        for row in _read_pipe_log(_daily_log_path(DECISIONS_PREFIX, d), 7):
-            ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
-            if sym_ != symbol or event != "trend_start":
-                continue
-            try:
-                t_val = float(ts)
-                p_val = float(price)
-            except ValueError:
-                continue
-            if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
-                continue
-            events.append({"ts": t_val, "state": state, "old_state": old_state,
-                            "price": p_val, "prev_confirm_count": prev_confirm})
+    for row in rows:
+        ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
+        if sym_ != symbol or event != "trend_start":
+            continue
+        t_val = safe_pos_float(ts, default=None)
+        p_val = safe_pos_float(price, default=None)
+        if t_val is None or p_val is None:
+            continue
+        events.append({"ts": t_val, "state": state, "old_state": old_state,
+                        "price": p_val, "prev_confirm_count": prev_confirm})
     events.sort(key=lambda e: e["ts"])
     return events
+
+
+def load_trend_starts(symbol, days_back):
+    rows = []
+    for d in reversed(_log_dates(days_back)):
+        rows.extend(_read_pipe_log(_daily_log_path(DECISIONS_PREFIX, d), 7))
+    return _parse_trend_start_rows(rows, symbol)
 
 
 def _is_tradeall_order(caller: str, motivation: str) -> bool:
@@ -393,27 +343,30 @@ def _is_tradeall_order(caller: str, motivation: str) -> bool:
     return False
 
 
-def load_order_events(symbol, days_back):
-    """Load only tradeall.py events from the fleet-wide outcome log."""
+def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
     events = []
-    for d in reversed(_log_dates(days_back)):
-        for row in _read_pipe_log(_daily_log_path(OUTCOMES_PREFIX, d), 9):
-            ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
-            if sym_ != symbol or not _is_tradeall_order(caller, motivation):
-                continue
-            try:
-                t_val = float(ts)
-                p_val = float(price)
-            except ValueError:
-                continue
-            if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
-                continue
-            events.append({
-                "ts": t_val, "side": side, "price": p_val,
-                "outcome": outcome, "reason": motivation or refuse_reason,
-            })
+    for row in rows:
+        ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
+        if sym_ != symbol or (filter_caller and not _is_tradeall_order(caller, motivation)):
+            continue
+        t_val = safe_pos_float(ts, default=None)
+        p_val = safe_pos_float(price, default=None)
+        if t_val is None or p_val is None:
+            continue
+        events.append({
+            "ts": t_val, "side": normalize_side(side) or side, "price": p_val,
+            "outcome": outcome, "reason": motivation or refuse_reason,
+        })
     events.sort(key=lambda e: e["ts"])
     return events
+
+
+def load_order_events(symbol, days_back):
+    """Load only tradeall.py events from the fleet-wide outcome log."""
+    rows = []
+    for d in reversed(_log_dates(days_back)):
+        rows.extend(_read_pipe_log(_daily_log_path(OUTCOMES_PREFIX, d), 9))
+    return _parse_order_event_rows(rows, symbol, filter_caller=True)
 
 
 def _parse_shadow_rows(rows, symbol):
@@ -423,14 +376,14 @@ def _parse_shadow_rows(rows, symbol):
         ts, sym_, signal, event, state, old_state, price, vel, vel_std = row[:9]
         if sym_ != symbol or event != "trend_start":
             continue
+        t_val = safe_pos_float(ts, default=None)
+        p_val = safe_pos_float(price, default=None)
         try:
-            t_val = float(ts)
-            p_val = float(price)
             st_val = int(state)
             ost_val = int(old_state)
         except ValueError:
             continue
-        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
+        if t_val is None or p_val is None:
             continue
         events.append({"ts": t_val, "signal": signal, "state": st_val,
                         "old_state": ost_val, "price": p_val,
@@ -471,60 +424,27 @@ def build_trend_regions(events, window_start, window_end):
 # -- Load flat, non-rotating backtest logs. ------------------------------------
 
 def load_backtest_price_samples(directory, symbol):
-    ts_list, px_list = [], []
-    for ts, sym_, price in _read_pipe_log(os.path.join(directory, "tradeall_price_samples.log"), 3):
-        if sym_ != symbol:
-            continue
-        try:
-            t_val = float(ts)
-            p_val = float(price)
-        except ValueError:
-            continue
-        if math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0:
-            ts_list.append(t_val)
-            px_list.append(p_val)
-    return ts_list, px_list
+    return _parse_price_sample_rows(
+        _read_pipe_log(os.path.join(directory, "tradeall_price_samples.log"), 3),
+        symbol,
+        require_pos_ts=True,
+    )
 
 
 def load_backtest_trend_starts(directory, symbol):
-    events = []
-    for row in _read_pipe_log(os.path.join(directory, "tradeall_decisions.log"), 7):
-        ts, sym_, event, state, old_state, price, prev_confirm = row[:7]
-        if sym_ != symbol or event != "trend_start":
-            continue
-        try:
-            t_val = float(ts)
-            p_val = float(price)
-        except ValueError:
-            continue
-        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
-            continue
-        events.append({"ts": t_val, "state": state, "old_state": old_state,
-                        "price": p_val, "prev_confirm_count": prev_confirm})
-    events.sort(key=lambda e: e["ts"])
-    return events
+    return _parse_trend_start_rows(
+        _read_pipe_log(os.path.join(directory, "tradeall_decisions.log"), 7),
+        symbol,
+    )
 
 
 def load_backtest_order_events(directory, symbol):
     """Load one backtest run; its sole caller needs no caller filtering."""
-    events = []
-    for row in _read_pipe_log(os.path.join(directory, "order_outcomes.log"), 9):
-        ts, sym_, side, price, qty, outcome, refuse_reason, caller, motivation = row[:9]
-        if sym_ != symbol:
-            continue
-        try:
-            t_val = float(ts)
-            p_val = float(price)
-        except ValueError:
-            continue
-        if not (math.isfinite(t_val) and t_val > 0 and math.isfinite(p_val) and p_val > 0):
-            continue
-        events.append({
-            "ts": t_val, "side": side, "price": p_val,
-            "outcome": outcome, "reason": motivation or refuse_reason,
-        })
-    events.sort(key=lambda e: e["ts"])
-    return events
+    return _parse_order_event_rows(
+        _read_pipe_log(os.path.join(directory, "order_outcomes.log"), 9),
+        symbol,
+        filter_caller=False,
+    )
 
 
 # -- Rendering (step C). -------------------------------------------------------
@@ -784,17 +704,12 @@ def format_state_text(entry, header, pending=None, exposure=None):
     if entry.get("kalman_trend") is not None:
         text += (f"\nkalman:    {_t_label(entry.get('kalman_trend'))} "
                  f"(v={_safe_float(entry.get('kalman_vel')):+.3f}%/min ±{_safe_float(entry.get('kalman_vel_std')):.3f})")
-    v1h = entry.get("vol_1h_pct")
-    if v1h is not None and not isinstance(v1h, bool):
-        try:
-            v1h_f = float(v1h)
-        except (TypeError, ValueError):
-            v1h_f = float("nan")
-        if math.isfinite(v1h_f):
-            text += f"\nvol 1h:    {v1h_f:.2f}%"
-            if entry.get("adapt_reentry_pct") is not None or entry.get("adapt_dca_pct") is not None:
-                text += (f" → re:{entry.get('adapt_reentry_pct', '?')}% "
-                         f"dca:{entry.get('adapt_dca_pct', '?')}%")
+    v1h_f = _safe_float(entry.get("vol_1h_pct"), default=None)
+    if v1h_f is not None:
+        text += f"\nvol 1h:    {v1h_f:.2f}%"
+        if entry.get("adapt_reentry_pct") is not None or entry.get("adapt_dca_pct") is not None:
+            text += (f" → re:{entry.get('adapt_reentry_pct', '?')}% "
+                     f"dca:{entry.get('adapt_dca_pct', '?')}%")
     if pending:
         text += f"\npending:   {pending}"
     if exposure:
@@ -982,12 +897,7 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
         print(f"[tradeall_observe] {symbol}: no data for the frames yet")
         return []
 
-    try:
-        ch_f = float(chunk_hours) if not isinstance(chunk_hours, bool) else 24.0
-    except (TypeError, ValueError):
-        ch_f = 24.0
-    if not math.isfinite(ch_f) or ch_f <= 0:
-        ch_f = 24.0
+    ch_f = safe_pos_float(chunk_hours, default=24.0)
     chunk_sec = ch_f * 3600
     range_start, range_end = min(all_ts), max(all_ts)
     n_chunks = max(1, int(math.ceil((range_end - range_start) / chunk_sec))) if range_end > range_start else 1

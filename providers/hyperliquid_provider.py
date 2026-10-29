@@ -419,13 +419,8 @@ class HyperliquidProvider(MarketDataProvider):
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to Hyperliquid rules: max 5 significant figures and (8 - szDecimals) decimals for spot."""
         self.validate_symbol(symbol)
-        if price is None or isinstance(price, bool):
-            return 0.0
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
-        if not math.isfinite(price_f) or price_f <= 0.0:
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return 0.0
         try:
             pp = self.pair_precision(symbol)
@@ -866,14 +861,9 @@ class HyperliquidProvider(MarketDataProvider):
                     fee_token = fee_info["fee_asset"]
                 else:
                     raw_fee_val = f.get("fee", f.get("commission", 0.0))
-                    if isinstance(raw_fee_val, bool):
+                    raw_fee = safe_nonneg_float(raw_fee_val if raw_fee_val is not None else 0.0, default=None)
+                    if isinstance(raw_fee_val, bool) or raw_fee is None:
                         raise ProviderError(f"order_status({order_id}): invalid fee value")
-                    try:
-                        raw_fee = float(raw_fee_val or 0.0)
-                    except (TypeError, ValueError, OverflowError) as e:
-                        raise ProviderError(f"order_status({order_id}): invalid fee value") from e
-                    if not math.isfinite(raw_fee) or raw_fee < 0.0:
-                        raise ProviderError(f"order_status({order_id}): non-finite or negative fee value")
                     raw_fee_token = f.get("feeToken") or f.get("feeAsset") or ""
                     fee_token = str(raw_fee_token).strip().upper() if isinstance(raw_fee_token, str) else ""
                 # Hyperliquid usually charges BUY fees in base and SELL fees in
@@ -884,15 +874,16 @@ class HyperliquidProvider(MarketDataProvider):
                     fee += raw_fee
                 elif fee_token == "HYPE" and self._token != "HYPE":
                     hype_pair = c.resolve_spot_pair("HYPE")
-                    hype_mid = (
+                    hype_mid_f = safe_pos_float(
                         (c.spot_mid(hype_pair) if hype_pair else None)
-                        or getattr(c, "mid", lambda _t: None)("HYPE")
+                        or getattr(c, "mid", lambda _t: None)("HYPE"),
+                        default=None,
                     )
-                    if not hype_mid or isinstance(hype_mid, bool) or not math.isfinite(float(hype_mid)) or float(hype_mid) <= 0:
+                    if hype_mid_f is None:
                         raise ProviderError(
                             f"order_status({order_id}): cannot value HYPE fee in USDC"
                         )
-                    fee += raw_fee * float(hype_mid)
+                    fee += raw_fee * hype_mid_f
                 else:
                     raise ProviderError(
                         f"order_status({order_id}): unknown feeToken {fee_token!r}"
@@ -901,15 +892,10 @@ class HyperliquidProvider(MarketDataProvider):
             raw_rem_sz = order_payload.get("sz")
             if isinstance(raw_orig_sz, bool) or isinstance(raw_rem_sz, bool):
                 raise ProviderError(f"order_status({order_id}): invalid order sizes")
-            try:
-                original = float(raw_orig_sz or 0.0)
-                remaining = float(raw_rem_sz or 0.0)
-            except (TypeError, ValueError, OverflowError) as e:
-                raise ProviderError(
-                    f"order_status({order_id}): invalid order sizes"
-                ) from e
-            if (not all(math.isfinite(v) for v in (original, remaining, filled, cost, fee))
-                    or original < 0.0 or remaining < 0.0 or filled < 0.0 or cost < 0.0 or fee < 0.0):
+            original = safe_nonneg_float(raw_orig_sz if raw_orig_sz is not None else 0.0, default=None)
+            remaining = safe_nonneg_float(raw_rem_sz if raw_rem_sz is not None else 0.0, default=None)
+            if (original is None or remaining is None
+                    or not all(math.isfinite(v) and v >= 0.0 for v in (filled, cost, fee))):
                 raise ProviderError(
                     f"order_status({order_id}): invalid order sizes"
                 )

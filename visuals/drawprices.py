@@ -11,9 +11,16 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ### my import
-from botcore import safe_int, safe_pos_int as _safe_pos_int
+from botcore import safe_float, safe_int, safe_pos_int as _safe_pos_int
 import symbols as sym
 import cacheManager as cm
+
+
+def _clean_finite_floats(seq) -> List[float]:
+    return [
+        vf for x in (seq or ())
+        if (vf := safe_float(x, default=None)) is not None
+    ]
 
 
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
@@ -31,17 +38,11 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
     for item in raw:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        if isinstance(item[0], bool) or isinstance(item[1], bool):
+        t_f = safe_float(item[0], default=None)
+        p_val = safe_float(item[1], default=None)
+        if t_f is None or p_val is None:
             continue
-        try:
-            t_f = float(item[0])
-            p_val = float(item[1])
-            if not (math.isfinite(t_f) and math.isfinite(p_val)):
-                continue
-            t_val = int(t_f)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        out.append((t_val, p_val))
+        out.append((int(t_f), p_val))
     return out
 
 
@@ -53,15 +54,16 @@ def to_series(cache_pairs: List[Tuple[int, float]]):
     for item in cache_pairs:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        if isinstance(item[0], bool) or isinstance(item[1], bool):
+        t_f = safe_float(item[0], default=None)
+        p_val = safe_float(item[1], default=None)
+        if t_f is None or p_val is None:
             continue
         try:
-            t_val = int(float(item[0]))
-            p_val = float(item[1])
+            t_val = int(t_f)
             dt_val = datetime.fromtimestamp(t_val / 1000.0, timezone.utc).replace(tzinfo=None)
         except (TypeError, ValueError, OverflowError, OSError):
             continue
-        if math.isfinite(p_val) and 0 <= t_val <= (1 << 63) - 1:
+        if 0 <= t_val <= (1 << 63) - 1:
             valid.append((t_val, p_val, dt_val))
     if not valid:
         return np.array([]), np.array([]), []
@@ -83,16 +85,7 @@ def min_max_scale(arr: np.ndarray):
     try:
         arr_f = np.asarray(arr, dtype=np.float64)
     except (TypeError, ValueError):
-        clean = []
-        for x in arr:
-            if x is None or isinstance(x, bool):
-                continue
-            try:
-                xf = float(x)
-                if math.isfinite(xf):
-                    clean.append(xf)
-            except (TypeError, ValueError, OverflowError):
-                continue
+        clean = _clean_finite_floats(arr)
         if not clean:
             return np.array([], dtype=np.float64), 0.0, 0.0
         arr_f = np.asarray(clean, dtype=np.float64)
@@ -110,14 +103,9 @@ def min_max_inverse(arr_scaled: np.ndarray, vmin: float, vmax: float):
     if arr_scaled is None or isinstance(arr_scaled, (bool, str, bytes)) or len(arr_scaled) == 0:
         return np.array([], dtype=np.float64)
     arr_f = np.asarray(arr_scaled, dtype=np.float64)
-    if isinstance(vmin, bool) or isinstance(vmax, bool):
-        return np.zeros_like(arr_f, dtype=np.float64)
-    try:
-        vmin_f = float(vmin)
-        vmax_f = float(vmax)
-    except (TypeError, ValueError):
-        return np.zeros_like(arr_f, dtype=np.float64)
-    if not (math.isfinite(vmin_f) and math.isfinite(vmax_f)):
+    vmin_f = safe_float(vmin, default=None)
+    vmax_f = safe_float(vmax, default=None)
+    if vmin_f is None or vmax_f is None:
         return np.zeros_like(arr_f, dtype=np.float64)
     if vmax_f == vmin_f or not math.isfinite(vmax_f - vmin_f):
         return np.full_like(arr_f, vmin_f, dtype=np.float64)
@@ -158,23 +146,11 @@ def forecast_linear(ts_ms: np.ndarray, prices: np.ndarray, horizon: int = 20):
     """
     if prices is None or isinstance(prices, (bool, str, bytes)) or isinstance(horizon, bool):
         return np.array([], dtype=np.float64)
-    try:
-        hz_f = float(horizon)
-        if not math.isfinite(hz_f) or int(hz_f) <= 0:
-            return np.array([], dtype=np.float64)
-        hz = int(hz_f)
-    except (TypeError, ValueError, OverflowError):
+    hz_f = safe_float(horizon, default=None)
+    if hz_f is None or int(hz_f) <= 0:
         return np.array([], dtype=np.float64)
-    clean_p = []
-    for p in prices:
-        if p is None or isinstance(p, bool):
-            continue
-        try:
-            pf = float(p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(pf):
-            clean_p.append(pf)
+    hz = int(hz_f)
+    clean_p = _clean_finite_floats(prices)
     n = len(clean_p)
     if n == 0:
         return np.array([], dtype=np.float64)
@@ -267,17 +243,7 @@ def forecast_lstm(prices: np.ndarray, window: int = 20, epochs: int = 50, batch_
 
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."
-    clean_prices = []
-    for p in prices:
-        if p is None or isinstance(p, bool):
-            continue
-        try:
-            pf = float(p)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if math.isfinite(pf):
-            clean_prices.append(pf)
-    prices = np.asarray(clean_prices, dtype=np.float64)
+    prices = np.asarray(_clean_finite_floats(prices), dtype=np.float64)
 
     if len(prices) < window + 5:
         return None, f"The series is too short for LSTM (at least ~{window+5} points)."

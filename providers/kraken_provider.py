@@ -287,11 +287,7 @@ class KrakenProvider(MarketDataProvider):
         mn = 0.0
         try:
             info = self._client().pair_info(norm_sym) or {}
-            raw_mn = info.get("ordermin", 0)
-            if raw_mn is not None and not isinstance(raw_mn, bool):
-                cand_mn = float(raw_mn or 0.0)
-                if math.isfinite(cand_mn) and cand_mn > 0:
-                    mn = cand_mn
+            mn = safe_pos_float(info.get("ordermin", 0), default=0.0)
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] ordermin {symbol}: {e}")
         if mn > 0:
@@ -343,21 +339,11 @@ class KrakenProvider(MarketDataProvider):
             for key in candidates:
                 if key in bal:
                     raw_val = bal[key]
-                    if isinstance(raw_val, bool):
-                        return None
-                    val = float(raw_val or 0.0)
-                    if not math.isfinite(val) or val < 0.0:
-                        return None
-                    return val
+                    return safe_nonneg_float(raw_val if raw_val is not None else 0.0, default=None) if not isinstance(raw_val, bool) else None
             cands_up = {c.upper() for c in candidates}
             for k_raw, raw_val in bal.items():
                 if str(k_raw).strip().upper() in cands_up:
-                    if isinstance(raw_val, bool):
-                        return None
-                    val = float(raw_val or 0.0)
-                    if not math.isfinite(val) or val < 0.0:
-                        return None
-                    return val
+                    return safe_nonneg_float(raw_val if raw_val is not None else 0.0, default=None) if not isinstance(raw_val, bool) else None
             return 0.0
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] balance {asset}: {e}")
@@ -373,13 +359,8 @@ class KrakenProvider(MarketDataProvider):
         with BinanceProvider.get_orders().
         """
         try:
-            if since_s is None or isinstance(since_s, bool):
-                return []
-            try:
-                since_val = float(since_s)
-            except (TypeError, ValueError, OverflowError):
-                return []
-            if not math.isfinite(since_val) or since_val < 0:
+            since_val = safe_nonneg_float(since_s, default=None)
+            if since_val is None:
                 return []
             rows = self._fills_from_cache(symbol)
             if rows is None:                                  # Missing or stale cache: direct API.
@@ -458,14 +439,8 @@ class KrakenProvider(MarketDataProvider):
         key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
         if key is None or not isinstance(items.get(key), list):
             return None
-        raw_ft = ft.get(key)
-        if raw_ft is None or isinstance(raw_ft, bool):
-            return None
-        try:
-            ft_val = float(raw_ft)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(ft_val) or ft_val <= 0.0:
+        ft_val = safe_pos_float(ft.get(key), default=None)
+        if ft_val is None:
             return None
         if ft_val < 1e11:
             ft_val *= 1000.0
@@ -503,14 +478,11 @@ class KrakenProvider(MarketDataProvider):
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
         live = self.execution_enabled()
-        s_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-        if s_norm in {"BUY", "B", "BID", "LONG"}:
-            s = "buy"
-        elif s_norm in {"SELL", "S", "ASK", "A", "SHORT"}:
-            s = "sell"
-        else:
+        s_norm = normalize_side(side)
+        if s_norm not in {"BUY", "SELL"}:
             print(f"[Kraken] place_order {symbol}: refused invalid side={side!r}")
             return None
+        s = s_norm.lower()
         market = (
             _parse_bool_flag(force, False)
             or _parse_bool_flag(kwargs.get("market", False), False)
@@ -519,16 +491,9 @@ class KrakenProvider(MarketDataProvider):
         ordertype = "market" if market else "limit"
         submit_price = None if market else price
         if not market:
-            if submit_price is None or isinstance(submit_price, bool):
-                print(f"[Kraken] place_order {symbol}: refused invalid price={submit_price!r}")
-                return None
-            try:
-                px_f = float(submit_price)
-            except (TypeError, ValueError, OverflowError):
-                print(f"[Kraken] place_order {symbol}: refused invalid price={submit_price!r}")
-                return None
-            if not math.isfinite(px_f) or px_f <= 0:
-                print(f"[Kraken] place_order {symbol}: refused non-positive price={submit_price!r}")
+            px_f = safe_pos_float(submit_price, default=None)
+            if px_f is None:
+                print(f"[Kraken] place_order {symbol}: refused invalid/non-positive price={submit_price!r}")
                 return None
             submit_price = px_f
         client_order_id = kwargs.get("client_order_id")
@@ -596,14 +561,9 @@ class KrakenProvider(MarketDataProvider):
         ordertype = "market" if (is_market or price is None) else "limit"
         px_f = None
         if ordertype == "limit":
-            if isinstance(price, bool):
-                raise ProviderError(f"submit_order {symbol} {s}: invalid price={price!r}")
-            try:
-                px_f = float(price)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ProviderError(f"submit_order {symbol} {s}: invalid price={price!r}") from exc
-            if not math.isfinite(px_f) or px_f <= 0:
-                raise ProviderError(f"submit_order {symbol} {s}: non-positive price={price!r}")
+            px_f = safe_pos_float(price, default=None)
+            if px_f is None:
+                raise ProviderError(f"submit_order {symbol} {s}: invalid/non-positive price={price!r}")
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order {symbol} {s}: non-positive qty={qty}")
@@ -754,19 +714,11 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(
                 f"cancel_order {order_id}: missing count in Kraken response ({result})"
             )
-        try:
-            raw_cnt = result["count"]
-            if isinstance(raw_cnt, bool):
-                raise ValueError("bool count")
-            cnt_f = float(raw_cnt)
-            if not math.isfinite(cnt_f) or not cnt_f.is_integer() or int(cnt_f) < 1:
-                raise ProviderError(
-                    f"cancel_order {order_id}: Kraken did not confirm the cancellation"
-                )
-        except (TypeError, ValueError, OverflowError) as e:
+        cnt_f = safe_pos_float(result.get("count"), default=None)
+        if cnt_f is None or not cnt_f.is_integer() or int(cnt_f) < 1:
             raise ProviderError(
-                f"cancel_order {order_id}: invalid response ({result})"
-            ) from e
+                f"cancel_order {order_id}: Kraken did not confirm the cancellation ({result})"
+            )
 
     def cancel_order(self, symbol: str, order_id: str) -> None:  # contract StrategyExecutor
         self.cancel_order_by_id(symbol, order_id)
@@ -785,23 +737,19 @@ class KrakenProvider(MarketDataProvider):
                 raise ProviderError(
                     f"pair_precision {symbol}: missing metadata {', '.join(missing)}"
                 )
-            if any(isinstance(info[key], bool) for key in ("pair_decimals", "lot_decimals", "ordermin", "base")):
+            if isinstance(info["base"], bool):
                 raise ValueError("boolean values not allowed in pair_precision")
-            p_f = float(info["pair_decimals"])
-            v_f = float(info["lot_decimals"])
-            if not (math.isfinite(p_f) and math.isfinite(v_f)) or int(p_f) != p_f or int(v_f) != v_f:
-                raise ValueError("non-integer decimals in pair_precision")
-            p_dec = int(p_f)
-            v_dec = int(v_f)
-            ord_min = float(info["ordermin"])
-            if p_dec < 0 or v_dec < 0 or not math.isfinite(ord_min) or ord_min <= 0.0:
-                raise ValueError("non-finite or non-positive values in pair_precision")
+            p_f = safe_nonneg_float(info["pair_decimals"], default=None)
+            v_f = safe_nonneg_float(info["lot_decimals"], default=None)
+            ord_min = safe_pos_float(info["ordermin"], default=None)
+            if p_f is None or v_f is None or ord_min is None or not p_f.is_integer() or not v_f.is_integer():
+                raise ValueError("invalid decimals or ordermin in pair_precision")
             base_str = str(info["base"]).strip()
             if not base_str:
                 raise ValueError("empty base asset in pair_precision")
             return PairPrecision(
-                price_decimals=p_dec,
-                volume_decimals=v_dec,
+                price_decimals=int(p_f),
+                volume_decimals=int(v_f),
                 order_min=ord_min,
                 base_asset=base_str,
             )
@@ -809,17 +757,10 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        if isinstance(interval_min, bool) or interval_min is None:
+        itv_f = safe_pos_float(interval_min, default=None)
+        if itv_f is None or not itv_f.is_integer():
             raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
-        try:
-            itv_f = float(interval_min)
-            if not math.isfinite(itv_f) or not itv_f.is_integer():
-                raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
-            interval_i = int(itv_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}") from exc
-        if interval_i <= 0:
-            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
+        interval_i = int(itv_f)
         try:
             client = self._client()
             series_reader = getattr(
