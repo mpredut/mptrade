@@ -91,17 +91,10 @@ def main() -> int:
 
     safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
-    from state_io import read_recovering_previous
-
-    def _loader(candidate_path: str):
-        with open(candidate_path, "r", encoding="utf-8") as fh:
-            val = json.load(fh)
-        if not isinstance(val, dict):
-            raise ValueError("state must be a dict")
-        return val
+    from state_io import read_json_dict, read_recovering_previous
 
     try:
-        st = read_recovering_previous(state_path, _loader, default={})
+        st = read_recovering_previous(state_path, read_json_dict, default={})
     except (OSError, ValueError):
         st = {}
     armed = _parse_armed_flag(st.get("armed", True), default=True)

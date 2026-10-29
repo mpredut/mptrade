@@ -285,13 +285,11 @@ def inspect_health(*, path: str = HEALTH_PATH,
                    future_tolerance_sec: float = 5.0) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
     from cachepaths import resolve_cachedb_filepath
+    from state_io import read_json_dict
 
     eff_path = str(resolve_cachedb_filepath(path))
     try:
-        with open(eff_path, "r", encoding="utf-8") as handle:
-            state = json.load(handle)
-        if not isinstance(state, dict):
-            raise ValueError("root is not an object")
+        state = read_json_dict(eff_path)
         if state.get("schema_version") != SCHEMA_VERSION:
             return CacheHealthStatus(False, "account_cache_schema_mismatch")
 

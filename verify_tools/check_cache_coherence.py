@@ -13,7 +13,7 @@ if ROOT not in sys.path:
 from botcore import safe_pos_float
 from cachepaths import cache_symbol_variants, resolve_cachedb_filepath  # noqa: E402
 from orchestratorTrade.autonomous_intent_gateway import extract_current_price_item  # noqa: E402
-from state_io import previous_generation_path, read_recovering_previous  # noqa: E402
+from state_io import previous_generation_path, read_json_dict, read_recovering_previous  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
 STALE_S = 600.0  # More than 10 minutes without an update is STALE (instant trend refreshes every few seconds / 20s).
@@ -24,14 +24,7 @@ def load(name):
     if not os.path.exists(p) and not os.path.exists(previous_generation_path(p)):
         return None
     try:
-        def _read_json(candidate):
-            with open(candidate, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("cache payload root must be a dict")
-            return data
-
-        return read_recovering_previous(p, _read_json)
+        return read_recovering_previous(p, read_json_dict)
     except Exception as e:  # noqa: BLE001
         print(f"  [ERR] {name}: {e}")
         return None

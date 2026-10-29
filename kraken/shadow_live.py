@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
-from state_io import atomic_text_writer  # noqa: E402
+from state_io import atomic_text_writer, atomic_write_json  # noqa: E402
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
@@ -200,11 +200,7 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
 
 
 def _save_history(pair: str, interval: int, bars) -> None:
-    os.makedirs(LOG_DIR, exist_ok=True)
-    path = _history_path(pair, interval)
-    with atomic_text_writer(path) as fh:
-        json.dump(bars, fh, separators=(",", ":"))
-        fh.write("\n")
+    atomic_write_json(_history_path(pair, interval), bars, separators=(",", ":"))
 
 
 def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):

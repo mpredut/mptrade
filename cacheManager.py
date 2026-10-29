@@ -21,6 +21,7 @@ from state_io import (
     meta_file_path,
     previous_generation_path,
     prune_rotated_archives,
+    read_json_dict,
     read_recovering_previous,
     read_tail_lines,
     restore_previous_generation,
@@ -340,15 +341,8 @@ class CacheManagerInterface(ABC):
         backup_path = self._previous_generation_path()
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                def _read_json(candidate_path):
-                    with open(candidate_path, "r", encoding="utf-8") as handle:
-                        payload = json.load(handle)
-                    if not isinstance(payload, dict):
-                        raise ValueError("cache payload root must be a dict")
-                    return payload
-
                 data = read_recovering_previous(
-                    self.filename, _read_json, backup_path=backup_path
+                    self.filename, read_json_dict, backup_path=backup_path
                 )
                 with self.lock:
                     self.cache = data.get("items", {})
@@ -403,10 +397,7 @@ class CacheManagerInterface(ABC):
         self._rest_sync_cursor_per_symbol[symbol] = max(0, prior_cursor)
 
     def _read_legacy_order_snapshot_strict(self, legacy_meta, *, path=None):
-        with open(path or self.filename, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        if not isinstance(data, dict):
-            raise ValueError("Order cache root is not an object")
+        data = read_json_dict(path or self.filename)
         if data.get("data_version") is not None:
             raise ValueError("versioned Order cache is missing its versioned manifest")
         items = data.get("items")
@@ -464,12 +455,9 @@ class CacheManagerInterface(ABC):
         legacy_meta = None
         if has_meta:
             try:
-                with open(meta_path, "r", encoding="utf-8") as handle:
-                    raw_meta = json.load(handle)
+                raw_meta = read_json_dict(meta_path)
             except (OSError, ValueError, TypeError) as exc:
                 raise account_cache_health.AccountCacheNotReady(reason) from exc
-            if not isinstance(raw_meta, dict):
-                raise account_cache_health.AccountCacheNotReady(reason)
             if raw_meta.get("schema_version") is not None:
                 metadata = self._load_versioned_account_meta(optional=False)
                 self._ensure_order_version_generation_locked(
@@ -522,10 +510,7 @@ class CacheManagerInterface(ABC):
     def _persisted_max_ts(self):
         """Read file freshness cheaply from the ``.meta`` sidecar."""
         try:
-            with open(meta_file_path(self.filename), "r", encoding="utf-8") as mf:
-                meta = json.load(mf)
-            if not isinstance(meta, dict):
-                return 0
+            meta = read_json_dict(meta_file_path(self.filename))
             return self._safe_pos_ts_ms(meta.get("max_ts", 0))
         except Exception:
             return 0
@@ -888,15 +873,8 @@ class CacheManagerInterface(ABC):
         backup_path = self._previous_generation_path()
         if os.path.exists(self.filename) or os.path.exists(backup_path):
             try:
-                def _read_json(candidate_path):
-                    with open(candidate_path, "r", encoding="utf-8") as handle:
-                        payload = json.load(handle)
-                    if not isinstance(payload, dict):
-                        raise ValueError("cache payload root must be a dict")
-                    return payload
-
                 data = read_recovering_previous(
-                    self.filename, _read_json, backup_path=backup_path
+                    self.filename, read_json_dict, backup_path=backup_path
                 )
                 with self.lock:
                     items = data.get("items", {})
@@ -983,10 +961,7 @@ class CacheManagerInterface(ABC):
         if not os.path.exists(legacy):
             return
         try:
-            with open(legacy, encoding="utf-8") as handle:
-                payload = json.load(handle)
-            if not isinstance(payload, dict):
-                raise ValueError("legacy cache root must be a dictionary")
+            payload = read_json_dict(legacy)
             items = payload.get("items", {})
             if not isinstance(items, dict):
                 raise ValueError("legacy cache items must be a dictionary")
@@ -1331,10 +1306,7 @@ class CacheManagerInterface(ABC):
         reason = self._account_reader_reason()
         required_version = str(metadata["data_version"])
         try:
-            with open(path or self.filename, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            if not isinstance(payload, dict):
-                raise ValueError("Order cache root is not an object")
+            payload = read_json_dict(path or self.filename)
             items = payload.get("items")
             fetchtime = payload.get("fetchtime")
             if not isinstance(items, dict) or not isinstance(fetchtime, dict):
@@ -1643,10 +1615,7 @@ class CacheManagerInterface(ABC):
         metaf = self.filename + ".meta"
         if os.path.exists(metaf):
             try:
-                with open(metaf, encoding="utf-8") as handle:
-                    loaded_metadata = json.load(handle)
-                if isinstance(loaded_metadata, dict):
-                    legacy_metadata = loaded_metadata
+                legacy_metadata = read_json_dict(metaf)
             except (OSError, ValueError, TypeError):
                 legacy_metadata = {}
 
@@ -3048,8 +3017,7 @@ class Cache365PriceManager(Cache24PriceManager):
             metaf = self.filename + ".meta"
             if os.path.exists(metaf):
                 try:
-                    with open(metaf, "r", encoding="utf-8") as handle:
-                        meta_payload = json.load(handle)
+                    meta_payload = read_json_dict(metaf)
                     if isinstance(meta_payload, dict):
                         def _clean_ts_map(raw_map):
                             if not isinstance(raw_map, dict):

@@ -91,10 +91,7 @@ def _file_signal(path: str) -> dict:
         return {**NEUTRAL, "source": "file(missing)"}
     try:
         from state_io import read_recovering_previous
-        def _loader(cand: str):
-            with open(cand, "r", encoding="utf-8") as f:
-                return json.load(f)
-        d = read_recovering_previous(str(path), _loader)
+        d = read_recovering_previous(str(path), json.loads)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")
         return {**NEUTRAL, "source": "file(corrupt)"}

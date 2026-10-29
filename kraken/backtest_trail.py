@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import statistics
 import sys
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
@@ -167,7 +168,7 @@ def run_intraday(pair, tz_offset=3):
         v = by_hour.get(hr, [])
         if not v:
             continue
-        avg = sum(v)/len(v); pos = 100*sum(1 for x in v if x > 0)/len(v)
+        avg = statistics.fmean(v); pos = 100*sum(1 for x in v if x > 0)/len(v)
         bar = "#" * int(abs(avg)*20)
         sign = "+" if avg >= 0 else "-"
         print(f"{hr:>02}:00 {len(v):<5} {avg:>+13.3f}% {pos:>14.0f}%  {sign}{bar}")
@@ -175,8 +176,8 @@ def run_intraday(pair, tz_offset=3):
     morn = [x for hr in range(6, 13) for x in by_hour.get(hr, [])]
     rest = [x for hr in list(range(0, 6)) + list(range(13, 24)) for x in by_hour.get(hr, [])]
     if morn and rest:
-        print(f"\n  dimineata 06-12: medie {sum(morn)/len(morn):+.3f}%/ora ({len(morn)} obs)")
-        print(f"  restul zilei   : medie {sum(rest)/len(rest):+.3f}%/ora ({len(rest)} obs)")
+        print(f"\n  dimineata 06-12: medie {statistics.fmean(morn):+.3f}%/ora ({len(morn)} obs)")
+        print(f"  restul zilei   : medie {statistics.fmean(rest):+.3f}%/ora ({len(rest)} obs)")
 
 
 def main() -> int:

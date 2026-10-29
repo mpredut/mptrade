@@ -360,6 +360,39 @@ def read_tail_lines(
     return [line for line in joined.splitlines() if line.strip()][-limit:]
 
 
+def read_tail_jsonl_dicts(
+    path: str,
+    limit: int = 50,
+    *,
+    chunk_size: int = 65536,
+) -> list[dict[str, Any]]:
+    """Read and parse up to the last ``limit`` JSON object lines from a JSONL file."""
+    if not path or isinstance(path, (bool, int)):
+        return []
+    try:
+        resolved = str(resolve_cachedb_filepath(os.fspath(path)))
+    except TypeError:
+        return []
+    out: list[dict[str, Any]] = []
+    for raw_bytes in read_tail_lines(resolved, limit, chunk_size=chunk_size):
+        try:
+            parsed = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+    return out
+
+
+def read_last_jsonl_dict(
+    path: str,
+    tail_bytes: int = 4096,
+) -> dict[str, Any] | None:
+    """Read and parse the last JSON dict from a JSONL file using bounded tail reads."""
+    items = read_tail_jsonl_dicts(path, limit=1, chunk_size=_positive_chunk_size(tail_bytes, 4096))
+    return items[-1] if items else None
+
+
 def truncate_file_bytes(path: str, size: int) -> None:
     """Durably truncate ``path`` back to ``size`` bytes."""
     size_i = _exact_nonneg_int(size)
@@ -501,6 +534,15 @@ def commit_file_and_meta(
 
 
 _MISSING = object()
+
+
+def read_json_dict(path: str) -> dict[str, Any]:
+    """Read and parse a UTF-8 JSON file whose root value must be a ``dict``."""
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("JSON root must be a dict")
+    return payload
 
 
 def read_recovering_previous(

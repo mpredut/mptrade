@@ -372,6 +372,14 @@ def test_atomic_write_json_default(tmp_path):
     assert "2026-01-01" in loaded["time"]
 
 
+def test_read_json_dict(tmp_path):
+    from state_io import read_json_dict
+    p_ok = tmp_path / "ok.json"
+    atomic_write_json(p_ok, {"k": "v"})
+    assert read_json_dict(str(p_ok)) == {"k": "v"}
 
-
+    p_list = tmp_path / "list.json"
+    atomic_write_json(p_list, [1, 2, 3])
+    with pytest.raises(ValueError, match="JSON root must be a dict"):
+        read_json_dict(str(p_list))
 

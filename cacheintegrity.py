@@ -10,6 +10,7 @@ from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
 from botcore import safe_float, safe_int, safe_pos_int
+from state_io import read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2
 
@@ -270,17 +271,12 @@ def load_versioned_account_meta_file(
 ) -> dict[str, Any] | None:
     """Load and strictly validate a versioned account-cache ``.meta`` manifest."""
     try:
-        with open(meta_path, "r", encoding="utf-8") as handle:
-            metadata = json.load(handle)
+        metadata = read_json_dict(meta_path)
     except (OSError, ValueError, TypeError) as exc:
         if optional:
             return None
         raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
 
-    if not isinstance(metadata, dict):
-        if optional:
-            return None
-        raise account_cache_health.AccountCacheNotReady(reader_reason)
     if metadata.get("schema_version") != schema_version:
         if optional:
             return None

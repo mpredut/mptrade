@@ -8,7 +8,7 @@ if _ROOT not in sys.path:
 import json
 import time
 import requests
-from state_io import atomic_write_json, read_recovering_previous, save_json_state
+from state_io import atomic_write_json, read_json_dict, read_recovering_previous, save_json_state
 from datetime import datetime
 from typing import Dict, List, Optional, Set
 from urllib.parse import quote
@@ -628,14 +628,7 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
     def _load_symbol_metadata(self):
         if os.path.exists(self.filename) or os.path.exists(self._previous_generation_path()):
             try:
-                def _read_json(path: str):
-                    with open(path, "r") as f:
-                        payload = json.load(f)
-                    if not isinstance(payload, dict):
-                        raise ValueError("pricefetcher root must be a dict")
-                    return payload
-
-                data = read_recovering_previous(self.filename, _read_json)
+                data = read_recovering_previous(self.filename, read_json_dict)
                 sym_meta = data.get("symbol_metadata") if isinstance(data, dict) else None
                 if isinstance(sym_meta, dict):
                     raw_added = sym_meta.get("added_time")
