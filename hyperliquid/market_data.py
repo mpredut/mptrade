@@ -39,6 +39,7 @@ safe_float = _common.safe_float
 safe_pos_float = _common.safe_pos_float
 safe_nonneg_float = _common.safe_nonneg_float
 safe_int = _common.safe_int
+exact_pos_int = _common.exact_pos_int
 HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
@@ -155,12 +156,9 @@ def fetch_ohlc_candles(
         else:
             raise ValueError(f"unsupported Hyperliquid interval: {interval}")
     else:
-        if isinstance(interval, (bool, float)):
+        interval_min = None if isinstance(interval, float) else exact_pos_int(interval, default=None)
+        if interval_min is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        itv_f = safe_pos_float(interval, default=None)
-        if itv_f is None or not itv_f.is_integer():
-            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        interval_min = int(itv_f)
         interval_str = INTERVALS.get(interval_min)
         if interval_str is None:
             raise ValueError(f"unsupported Hyperliquid interval: {interval} minutes")

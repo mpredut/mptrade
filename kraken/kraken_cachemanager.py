@@ -112,6 +112,38 @@ def _clean_cache_id(val: object) -> str | None:
     return _clean_single_order_id(val)
 
 
+def _build_kraken_cache_fill(
+    *,
+    symbol,
+    fill_id: str,
+    order_id,
+    price: float,
+    qty: float,
+    ts_ms: int,
+    is_buyer: bool | None,
+    side: str | None,
+    fee: float | None = None,
+    fee_asset: str | None = None,
+) -> dict:
+    row = {
+        "symbol": symbol,
+        "id": fill_id,
+        "orderId": order_id,
+        "price": price,
+        "qty": qty,
+        "quantity": qty,
+        "time": ts_ms,
+        "timestamp": ts_ms,
+        "isBuyer": is_buyer,
+        "side": side,
+    }
+    if fee is not None:
+        row["fee"] = fee
+        if fee_asset:
+            row["feeAsset"] = fee_asset
+    return row
+
+
 def _normalize(txid, tr):
     """Normalize a Kraken TradesHistory/ownTrades transaction to the Binance-compatible form."""
     clean_txid = _clean_cache_id(txid)
@@ -128,24 +160,20 @@ def _normalize(txid, tr):
         order_id = extract_order_id(tr)
     raw_sym = tr.get("pair", tr.get("symbol"))
     sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
-    normalized = {
-        "symbol": sym_val,
-        "id": clean_txid,
-        "orderId": order_id,
-        "price": price,
-        "qty": qty,
-        "quantity": qty,
-        "time": ts_ms,
-        "timestamp": ts_ms,
-        "isBuyer": is_buyer,
-        "side": side,
-    }
     fee_info = extract_order_fee(tr)
-    if fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr):
-        normalized["fee"] = fee_info["fee"]
-        if fee_info["fee_asset"]:
-            normalized["feeAsset"] = fee_info["fee_asset"]
-    return normalized
+    has_fee = fee_info is not None and (fee_info["fee"] > 0 or "fee" in tr or "commission" in tr)
+    return _build_kraken_cache_fill(
+        symbol=sym_val,
+        fill_id=clean_txid,
+        order_id=order_id,
+        price=price,
+        qty=qty,
+        ts_ms=ts_ms,
+        is_buyer=is_buyer,
+        side=side,
+        fee=fee_info["fee"] if has_fee else None,
+        fee_asset=fee_info["fee_asset"] if has_fee else None,
+    )
 
 
 def _atomic_write(path, obj):
@@ -254,24 +282,24 @@ def _ledger_to_fills(ledger):
         px = abs(qa) / abs(ba)
         if safe_pos_float(px, default=None) is None:
             continue
-        fill = {
-            "symbol": raw_symbol,
-            "id": str(refid), "orderId": str(refid),
-            "price": px,
-            "qty": abs(ba), "quantity": abs(ba),
-            "time": ts_ms, "timestamp": ts_ms,
-            "isBuyer": is_buyer,                          # receiving base means a purchase
-            "side": "BUY" if is_buyer else "SELL",
-        }
         q_fee = safe_nonneg_float(quote.get("fee"), 0.0)
         b_fee = safe_nonneg_float(base.get("fee"), 0.0)
-        if q_fee > 0:
-            fill["fee"] = q_fee
-            fill["feeAsset"] = quote_ccy
-        elif b_fee > 0:
-            fill["fee"] = b_fee
-            fill["feeAsset"] = raw_base
-        fills.append(fill)
+        fee_val = q_fee if q_fee > 0 else (b_fee if b_fee > 0 else None)
+        fee_asset = quote_ccy if q_fee > 0 else (raw_base if b_fee > 0 else None)
+        fills.append(
+            _build_kraken_cache_fill(
+                symbol=raw_symbol,
+                fill_id=str(refid),
+                order_id=str(refid),
+                price=px,
+                qty=abs(ba),
+                ts_ms=ts_ms,
+                is_buyer=is_buyer,
+                side="BUY" if is_buyer else "SELL",
+                fee=fee_val,
+                fee_asset=fee_asset,
+            )
+        )
     return fills
 
 

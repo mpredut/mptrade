@@ -47,7 +47,6 @@ required_int_env = _common_mod.required_int_env
 safe_float = _common_mod.safe_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
 safe_pos_float = _common_mod.safe_pos_float
-safe_nonneg_float = _common_mod.safe_nonneg_float
 
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
 

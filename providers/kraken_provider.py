@@ -157,16 +157,11 @@ def _kraken_client_order_id(client_order_id: str) -> str:
     )
 
 
-_INVALID_KRAKEN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
-
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
-    if order_id is None or isinstance(order_id, (bool, dict, list, tuple, set, frozenset)) or not isinstance(order_id, str):
+    clean = _clean_single_order_id(order_id) if isinstance(order_id, str) else None
+    if not clean:
         raise ProviderError(f"{caller} {order_id}: invalid order id")
-    s = order_id.strip()
-    if not s or s.startswith("-") or s.lower() in _INVALID_KRAKEN_ID_STRINGS or s in {"+0.0", "-0.0"}:
-        raise ProviderError(f"{caller} {order_id}: invalid order id")
-    return s
+    return clean
 
 
 def _live() -> bool:

@@ -35,6 +35,7 @@ load_env_stack = _common_mod.load_env_stack
 required_int_env = _common_mod.required_int_env
 safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
+exact_int = _common_mod.exact_int
 
 load_env_stack(os.path.join(_HERE, ".env"))
 
@@ -53,11 +54,8 @@ def _fast_linear_slope_1d(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def _exact_min_int(val: object, min_val: int) -> int | None:
-    f = safe_float(val, default=None)
-    if f is None or not f.is_integer():
-        return None
-    i = int(f)
-    return i if i >= min_val else None
+    i = exact_int(val, default=None)
+    return i if (i is not None and i >= min_val) else None
 
 
 def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,

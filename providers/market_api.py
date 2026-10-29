@@ -107,22 +107,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         return None
 
 
-_INVALID_API_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
-
-def _clean_client_order_id(raw_coid: Any) -> Optional[str]:
-    if (
-        raw_coid is None
-        or isinstance(raw_coid, (bool, dict, list, tuple, set, frozenset))
-        or (isinstance(raw_coid, (int, float)) and raw_coid <= 0)
-    ):
-        return None
-    s = str(raw_coid).strip()
-    if not s or s.lower() in _INVALID_API_ID_STRINGS:
-        return None
-    if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
-        return None
-    return s
+_clean_client_order_id = clean_order_id
 
 
 def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
@@ -156,17 +141,10 @@ def _parse_binance_order_id(order_id: Any, context: str) -> int:
 
 def _step_decimals(step: str) -> int:
     """Return significant decimals in a Binance stepSize/tickSize."""
-    if step is None or isinstance(step, bool):
-        return 0
     try:
-        from decimal import Decimal
-        d = Decimal(str(step))
-        if not d.is_finite() or d <= 0:
-            return 0
-        return decimal_places(d)
+        return decimal_places(step)
     except Exception:
-        s = str(step).rstrip("0")
-        return len(s.split(".")[1]) if "." in s and s.split(".", 1)[1] else 0
+        return 0
 
 
 class BinanceProvider(MarketDataProvider):
