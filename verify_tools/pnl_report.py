@@ -7,7 +7,7 @@ import sys, os, time, json, math
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from botcore import safe_float as _safe_float
+from botcore import safe_float, safe_pos_float
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
 from instrument_registry import symbols_for
@@ -28,8 +28,8 @@ def binance_symbol(symbol):
     qty = cost = realized = 0.0
     buys = sells = 0
     for t in fills:
-        p = _safe_float(extract_order_price(t), 0.0)
-        q = _safe_float(extract_order_qty(t), 0.0)
+        p = safe_pos_float(extract_order_price(t), default=0.0)
+        q = safe_pos_float(extract_order_qty(t), default=0.0)
         if p <= 0 or q <= 0:
             continue
         side = extract_order_side(t)
@@ -41,9 +41,7 @@ def binance_symbol(symbol):
                 m = min(q, qty); avg = cost / qty
                 realized += (p - avg) * m; cost -= avg * m; qty -= m
     try:
-        cur = _safe_float(bapi.get_current_price(symbol), 0.0)
-        if cur < 0:
-            cur = 0.0
+        cur = safe_pos_float(bapi.get_current_price(symbol), default=0.0)
     except Exception:
         cur = 0.0
     unreal = (qty * cur - cost) if (qty > 1e-9 and cur > 0) else 0.0
@@ -76,12 +74,12 @@ def per_bot(symbol):
     for o in orders:
         if not isinstance(o, dict):
             continue
-        eq = _safe_float(o.get("executedQty", 0), 0.0)
+        eq = safe_pos_float(o.get("executedQty", 0), default=0.0)
         if eq <= 0:
             continue
-        cqq = _safe_float(o.get("cummulativeQuoteQty", 0), 0.0)
+        cqq = safe_pos_float(o.get("cummulativeQuoteQty", 0), default=0.0)
         if cqq <= 0:
-            op = _safe_float(o.get("price", 0), 0.0)
+            op = safe_pos_float(o.get("price", 0), default=0.0)
             cqq = eq * op if op > 0 else 0.0
         if cqq <= 0:
             continue
@@ -122,9 +120,9 @@ def main():
         if not isinstance(k, dict):
             raise FileNotFoundError("kraken/.state_HYPEUSD.json missing or invalid")
         hy = 54.77  # Latest price from trail_k.
-        k_qty = _safe_float(k.get("qty"), 0.0)
-        k_cost = _safe_float(k.get("cost"), 0.0)
-        kr = _safe_float(k.get("realized_net"), 0.0)
+        k_qty = safe_float(k.get("qty"), 0.0)
+        k_cost = safe_float(k.get("cost"), 0.0)
+        kr = safe_float(k.get("realized_net"), 0.0)
         ku = (k_qty * hy - k_cost) if k_qty > 1e-9 else 0.0
         tot_r += kr; tot_u += ku
         print(f"{'Kraken HYPE (bot)':<22}{kr:>+11.2f}{ku:>+12.2f}{k_qty:>10.4f}  (avg cost {k_cost/k_qty if k_qty else 0:.2f}, cur ~{hy})")
@@ -136,9 +134,9 @@ def main():
         h = read_recovering_previous(os.path.join(ROOT, "hyperliquid/.state_dn_HYPE.json"), json.loads, default=None)
         if not isinstance(h, dict):
             raise FileNotFoundError("hyperliquid/.state_dn_HYPE.json missing or invalid")
-        h_fund = _safe_float(h.get("funding_accrued"), 0.0)
-        h_fees = _safe_float(h.get("fees_paid"), 0.0)
-        h_spot = _safe_float(h.get("spot_qty"), 0.0)
+        h_fund = safe_float(h.get("funding_accrued"), 0.0)
+        h_fees = safe_float(h.get("fees_paid"), 0.0)
+        h_spot = safe_float(h.get("spot_qty"), 0.0)
         hl = h_fund - h_fees
         tot_r += hl
         print(f"{'HL dn_bot (funding)':<22}{hl:>+11.2f}{0.0:>+12.2f}{h_spot:>10.4f}  (delta-neutral: funding {h_fund:.2f} - fee {h_fees:.2f})")

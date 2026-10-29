@@ -32,10 +32,6 @@ except ImportError:
 
 from providers.base import _clean_single_order_id
 
-
-def _clean_nonneg(val: object, default: float) -> float:
-    return safe_nonneg_float(val, default=default)
-
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
 
@@ -67,11 +63,11 @@ class T212Client:
         self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
-        self._min_gap = _clean_nonneg(
-            required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec, 0.0
+        self._min_gap = safe_nonneg_float(
+            required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec, default=0.0
         )
-        self._order_min_gap = _clean_nonneg(
-            required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec, 0.0
+        self._order_min_gap = safe_nonneg_float(
+            required_float_env("T212_ORDER_MIN_GAP_SEC") if order_min_gap_sec is None else order_min_gap_sec, default=0.0
         )
         # Brief shared account-level caches coalesce redundant per-asset thread
         # reads. A six-second TTL stays above the approximate five-second limits
@@ -79,16 +75,16 @@ class T212Client:
         self._pf_cache: tuple[float, list] | None = None
         self._ord_cache: tuple[float, list] | None = None
         self._cash_cache: tuple[float, dict] | None = None
-        self._pf_ttl = _clean_nonneg(
+        self._pf_ttl = safe_nonneg_float(
             required_float_env("T212_PORTFOLIO_TTL_SEC") if portfolio_ttl_sec is None else portfolio_ttl_sec,
-            6.0,
+            default=6.0,
         )
         # On TTL expiry, one thread fetches while others wait and reuse its result.
         self._fetch_lock = threading.Lock()
 
     def notify_rate_limit(self, backoff_sec: float = 5.0) -> None:
         """Pause all subsequent requests across all threads after HTTP 429."""
-        wait_sec = _clean_nonneg(backoff_sec, 5.0)
+        wait_sec = safe_nonneg_float(backoff_sec, default=5.0)
         with self._lock:
             self._backoff_until = max(self._backoff_until, time.monotonic() + wait_sec)
 
@@ -325,12 +321,8 @@ class T212Client:
         for _, fill in matches:
             if not isinstance(fill, dict):
                 continue
-            raw_qty = fill.get("quantity")
-            raw_price = fill.get("price")
-            if isinstance(raw_qty, bool) or isinstance(raw_price, bool):
-                continue
-            qf = safe_float(raw_qty if raw_qty is not None else 0.0, default=None)
-            pf = safe_float(raw_price if raw_price is not None else 0.0, default=None)
+            qf = safe_float(fill.get("quantity"), default=None)
+            pf = safe_float(fill.get("price"), default=None)
             if qf is None or pf is None:
                 continue
             qty = abs(qf)
@@ -344,10 +336,7 @@ class T212Client:
             for tax in taxes or []:
                 if not isinstance(tax, dict):
                     continue
-                raw_tax_qty = tax.get("quantity")
-                if isinstance(raw_tax_qty, bool):
-                    continue
-                tqf = safe_float(raw_tax_qty if raw_tax_qty is not None else 0.0, default=None)
+                tqf = safe_float(tax.get("quantity"), default=None)
                 if tqf is None:
                     continue
                 total_fee += abs(tqf)

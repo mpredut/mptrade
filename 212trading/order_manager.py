@@ -36,12 +36,12 @@ from providers.base import extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
-    from .ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int
+    from .ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from .ipo_notify import notify
     from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     from .t212_client import T212Client
 except ImportError:
-    from ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int
+    from ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from ipo_notify import notify
     try:
         from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
@@ -227,16 +227,11 @@ def _matching_active_orders(client: T212Client, record: dict) -> list[dict] | No
             continue
         raw_sq = order.get("quantity", order.get("orderedQuantity", order.get("qty")))
         raw_lim = order.get("limitPrice", order.get("limit"))
-        if isinstance(raw_sq, bool) or isinstance(raw_lim, bool):
+        signed_qty = safe_float(raw_sq, default=None)
+        limit = safe_pos_float(raw_lim, default=None)
+        if signed_qty is None or limit is None:
             continue
-        try:
-            signed_qty = float(raw_sq)
-            qty = abs(signed_qty)
-            limit = float(raw_lim)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not (math.isfinite(qty) and math.isfinite(limit)):
-            continue
+        qty = abs(signed_qty)
         side = extract_order_side(order) or ""
         if side != "BUY" or qty <= 0:
             continue
@@ -271,7 +266,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
                 _persist_marker(record, marker_path)
                 log("  [ORDER] accepted order vanished from history; fill confirmed from portfolio")
                 return "complete"
-            misses = max(0, int(safe_nonneg_float(record.get("lookup_misses"), 0.0))) + 1
+            misses = safe_nonneg_int(record.get("lookup_misses"), default=0) + 1
             record["lookup_misses"] = misses
             record["last_observed_at"] = now
             if misses >= ABSENCE_CONFIRMATIONS:
@@ -342,12 +337,13 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
         log("  [ORDER] the submit was recovered from the growth of the T212 position")
         return "complete"
 
-    misses = max(0, int(safe_nonneg_float(record.get("lookup_misses"), 0.0))) + 1
+    misses = safe_nonneg_int(record.get("lookup_misses"), default=0) + 1
     record["lookup_misses"] = misses
     record["last_observed_at"] = now
     next_retry_at = safe_float(record.get("next_retry_at"), None)
-    if next_retry_at is None or next_retry_at > now + max(float(retry_delay), 0.0) + 60.0:
-        next_retry_at = now + max(float(retry_delay), 0.0)
+    retry_d = safe_nonneg_float(retry_delay, default=0.0)
+    if next_retry_at is None or next_retry_at > now + retry_d + 60.0:
+        next_retry_at = now + retry_d
         record["next_retry_at"] = next_retry_at
     _persist_marker(record, marker_path)
     if misses < ABSENCE_CONFIRMATIONS or now < next_retry_at:
@@ -501,7 +497,7 @@ def place_order_with_retry(
             )
             return False
 
-    att_i = max(0, int(safe_nonneg_float(record.get("attempts"), 0.0)))
+    att_i = safe_nonneg_int(record.get("attempts"), default=0)
     record["attempts"] = att_i + 1
     record["last_submit_at"] = now
     record["next_retry_at"] = now + retry_delay_f
