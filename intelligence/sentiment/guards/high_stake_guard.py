@@ -3236,7 +3236,6 @@ def collect_pretrade_telemetry(
     default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
         cachedb_dir = default_cdir
-    is_custom_dir = os.path.abspath(cachedb_dir) != os.path.abspath(default_cdir)
     sym_variants = cache_symbol_variants(symbol)
 
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
@@ -3247,14 +3246,10 @@ def collect_pretrade_telemetry(
         return None
 
     def _fetch_pillar2(getter_fn: Callable[[], Any], prefix: str) -> Any:
-        if is_custom_dir:
-            d_hit = _disk_telem(prefix)
-            if d_hit is not None:
-                return d_hit
         try:
             col = getter_fn()
             col_cdir = getattr(col, "_cache_dir", None)
-            if not is_custom_dir or not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
+            if not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
                 snap = col.fetch(symbol, allow_network=False)
                 if snap is not None:
                     return snap

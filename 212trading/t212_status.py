@@ -7,7 +7,6 @@ positions, and PENDING orders. Explains invested, available, and blocked amounts
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -19,7 +18,7 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 from ipo_common import (  # noqa: E402
-    http_get, load_t212_environment, required_env, required_float_env, safe_float,
+    load_t212_environment, required_env, required_float_env, safe_float,
 )
 from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
@@ -55,19 +54,10 @@ def main() -> int:
     )
 
     # --- CASH ---
-    def get_cash():
-        st, body = http_get(f"{c.base}/equity/account/cash", headers=c._headers())
-        if st != 200 or not body:
-            return None
-        try:
-            return json.loads(body)
-        except ValueError:
-            return None
-
     def _sf(obj: dict, key: str, default: float = 0.0) -> float:
         return safe_float(obj.get(key), default=default)
 
-    cash = _retry(get_cash)
+    cash = _retry(c.get_cash)
     print("============ TRADING 212 ACCOUNT ============")
     if isinstance(cash, dict) and cash:
         free = _sf(cash, "free"); inv = _sf(cash, "invested")

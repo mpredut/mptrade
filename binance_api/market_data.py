@@ -9,7 +9,6 @@ and incomplete bar handling for walk-forward evaluation and offline research.
 
 from __future__ import annotations
 
-import json
 import time
 import urllib.parse
 import urllib.request

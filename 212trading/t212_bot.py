@@ -137,7 +137,8 @@ def main() -> int:
     cfg_dir = os.path.dirname(args.env_file) or _HERE
     assets = discover_assets(cfg_dir)
     if args.only:
-        assets = [(n, p) for (n, p) in assets if n == args.only]
+        only_cf = args.only.strip().casefold()
+        assets = [(n, p) for (n, p) in assets if n.casefold() == only_cf]
     if not assets:
         log(f"! no config.*.env found in {cfg_dir}" + (f" for '{args.only}'" if args.only else ""))
         return 1

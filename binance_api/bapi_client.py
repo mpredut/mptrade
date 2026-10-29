@@ -3,7 +3,7 @@ import time
 import threading
 
 from binance.client import Client
-from botcore import exact_pos_int, safe_nonneg_float, safe_pos_float
+from botcore import exact_pos_int, safe_nonneg_float
 
 ####MYLIB
 _client = None

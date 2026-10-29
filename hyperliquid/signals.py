@@ -19,7 +19,6 @@ RULE: backtest every signal before assigning real money.
 
 from __future__ import annotations
 
-import math
 import os
 import statistics
 import sys

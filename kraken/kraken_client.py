@@ -25,11 +25,11 @@ import urllib.parse
 
 try:
     from kraken.kraken_common import (
-        _parse_bool_flag, http_get, http_post_form, log, safe_nonneg_float, safe_pos_float,
+        _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
     )
 except ImportError:
     from kraken_common import (
-        _parse_bool_flag, http_get, http_post_form, log, safe_nonneg_float, safe_pos_float,
+        _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
     )
 from botcore import exact_nonneg_int, exact_pos_int
 from providers.base import _clean_single_order_id, normalize_side

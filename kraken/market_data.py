@@ -9,7 +9,6 @@ a valid price. HYPE qualifies; an unlisted future pair does not.
 
 from __future__ import annotations
 
-import json
 import urllib.parse
 import urllib.request
 
