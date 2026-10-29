@@ -31,6 +31,8 @@ from botcore import (
 )
 from .base import (
     MarketDataProvider,
+    _clean_single_order_id,
+    _derive_128bit_client_order_id,
     _normalize_order,
     bool_env,
     env_value,
@@ -138,7 +140,6 @@ def _normalize_kraken_fill(raw: dict) -> dict:
     """Normalize a Kraken fill while preserving ordertxid/orderId for order-level aggregation."""
     norm = _normalize_order(raw)
     if isinstance(raw, dict):
-        from .base import _clean_single_order_id
         order_id = _clean_single_order_id(raw.get("ordertxid")) or _clean_single_order_id(raw.get("orderId"))
         if order_id is not None:
             norm["orderId"] = order_id
@@ -152,20 +153,12 @@ _KRAKEN_CLIENT_ID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 def _kraken_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Kraken's 128-bit hexadecimal UUID form."""
-    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
-        raise ProviderError("Kraken client_order_id must contain 1-128 characters")
-    from .base import _clean_single_order_id
-    raw = _clean_single_order_id(client_order_id) or ""
-    if not raw or len(raw) > 128:
-        raise ProviderError("Kraken client_order_id must contain 1-128 characters")
-    try:
-        encoded = raw.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ProviderError("Kraken client_order_id must be ASCII") from exc
-    if _KRAKEN_CLIENT_ID_RE.fullmatch(raw):
-        return raw.lower()
-    return hashlib.sha256(
-        b"assertguardian:kraken:cloid:v1\0" + encoded).hexdigest()[:32]
+    return _derive_128bit_client_order_id(
+        client_order_id,
+        venue_label="Kraken",
+        domain_prefix=b"assertguardian:kraken:cloid:v1\0",
+        exact_re=_KRAKEN_CLIENT_ID_RE,
+    )
 
 
 _INVALID_KRAKEN_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}

@@ -42,10 +42,6 @@ EXCLUDED_ASSET_NAME_KEYWORDS = {
 }
 
 
-_as_bool_flag = _parse_bool_flag
-_safe_num = safe_float
-
-
 def _safe_days_back(days_back, default: float = NEW_COINS_AGE_DAYS) -> float:
     d = safe_pos_float(days_back, default=None)
     return min(d, 3650.0) if d is not None else float(default)
@@ -60,10 +56,8 @@ def _parse_coin_added_at(raw_added, *, utc: bool = False) -> Optional[datetime]:
             return None
     except Exception:
         pass
-    if isinstance(raw_added, (int, float)):
-        val_f = safe_pos_float(raw_added, default=None)
-        if val_f is None:
-            return None
+    val_f = safe_pos_float(raw_added, default=None) if isinstance(raw_added, (int, float, str)) else None
+    if val_f is not None:
         sec = val_f / 1000.0 if val_f > 1e11 else val_f
         try:
             return datetime.fromtimestamp(sec, tz=timezone.utc) if utc else datetime.fromtimestamp(sec)
@@ -389,12 +383,11 @@ class DexScreenerSource(NewCoinsSource):
                     listed_at = profile.get('listedAt', None)
                     if symbol and len(symbol) <= 10 and symbol.isalnum() and symbol not in EXCLUDED_SYMBOLS:
                         self._supported_symbols.add(symbol)
-                        try:
-                            listed_val = _safe_num(listed_at, 0.0)
-                            listed_sec = listed_val / 1000.0 if listed_val > 1e11 else listed_val
-                            added_time = datetime.fromtimestamp(listed_sec) if listed_sec > 0 else None
-                        except (TypeError, ValueError, OSError, OverflowError):
-                            added_time = None
+                        added_time = (
+                            _parse_coin_added_at(listed_at, utc=False)
+                            if safe_pos_float(listed_at, default=None) is not None
+                            else None
+                        )
                         self._cache.append({
                             "symbol": symbol, "name": name, "added_at": added_time,
                             "source": self.get_name(), "chain": chain, "token_address": token_address,
@@ -510,7 +503,7 @@ class NewCoinsMonitor:
         return is_trackable_symbol(symbol, name=name, slug=slug)
 
     def refresh(self, refresh_sources: bool = False):
-        if _as_bool_flag(refresh_sources, False):
+        if _parse_bool_flag(refresh_sources, False):
             self.factory.refresh_all()
         self.all_new_coins = self.factory.get_all_new_coins(NEW_COINS_AGE_DAYS)
         self.all_symbols = set()
@@ -535,7 +528,7 @@ class NewCoinsMonitor:
     def _trigger_alerts(self, new_coins: List[Dict], source_name: str, auto_add: bool = True):
         if not new_coins:
             return
-        auto_add = _as_bool_flag(auto_add, True)
+        auto_add = _parse_bool_flag(auto_add, True)
 
         source_has_price = str(source_name or "").strip().lower() == "coinmarketcap"
         alerts = []
@@ -639,7 +632,7 @@ class NewCoinsMonitor:
                     sym_str = str(coin.get('symbol') or 'N/A')
                     raw_added = coin.get('added_at')
                     added_str = raw_added.strftime('%Y-%m-%d') if (raw_added is not None and not pd.isna(raw_added) and hasattr(raw_added, 'strftime')) else 'N/A'
-                    px_val = _safe_num(coin.get('price'), 0.0)
+                    px_val = safe_float(coin.get('price'), 0.0)
                     price_str = f"${px_val:.6f}" if px_val > 0 else 'N/A'
                     report += f"   🆕 {sym_str} - {coin.get('name', sym_str)}\n"
                     report += f"      📅 Added: {added_str} | 💰 Price: {price_str}\n"
@@ -701,7 +694,7 @@ class NewCoinsMonitor:
         }
         if isinstance(auto_add_thresholds, dict):
             merged_thresholds = {
-                k: _safe_num(auto_add_thresholds.get(k, v), v)
+                k: safe_float(auto_add_thresholds.get(k, v), v)
                 for k, v in default_thresholds.items()
             }
         else:
@@ -709,9 +702,9 @@ class NewCoinsMonitor:
         auto_add_thresholds = merged_thresholds
 
         # Check thresholds for informational display only
-        volume = _safe_num(coin_info.get('volume_24h', 0), 0.0)
-        price = _safe_num(coin_info.get('price', 0), 0.0)
-        change = _safe_num(coin_info.get('change_24h', 0), 0.0)
+        volume = safe_float(coin_info.get('volume_24h', 0), 0.0)
+        price = safe_float(coin_info.get('price', 0), 0.0)
+        change = safe_float(coin_info.get('change_24h', 0), 0.0)
 
         issues = []
 
@@ -756,7 +749,7 @@ class NewCoinsMonitor:
         if not isinstance(added_map, dict):
             return True
         added_time = added_map.get(symbol)
-        ts_val = _safe_num(added_time, 0.0)
+        ts_val = safe_float(added_time, 0.0)
         if ts_val <= 0.0:
             return True
         age_days = (time.time() - ts_val) / (24 * 3600)

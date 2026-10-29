@@ -26,10 +26,12 @@ if _DIR not in sys.path:
 
 try:
     from kraken.backtest import _bt_params, fetch_candles, simulate
+    from kraken.kraken_common import safe_float, safe_int, safe_pos_float
     from kraken.market_data import fetch_ohlc_candles
     from kraken import replay as rp
 except ImportError:
     from backtest import _bt_params, fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
+    from kraken_common import safe_float, safe_int, safe_pos_float
     from market_data import fetch_ohlc_candles
     import replay as rp
 
@@ -77,14 +79,9 @@ def base_params(budget=3000):
 def bh(ohlc):
     if not ohlc or len(ohlc[0]) < 4 or len(ohlc[-1]) < 4:
         return 0.0
-    if isinstance(ohlc[0][3], bool) or isinstance(ohlc[-1][3], bool):
-        return 0.0
-    try:
-        c0 = float(ohlc[0][3])
-        c1 = float(ohlc[-1][3])
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    if not (c0 > 0 and c1 == c1 and abs(c0) != float("inf") and abs(c1) != float("inf")):
+    c0 = safe_pos_float(ohlc[0][3], default=None)
+    c1 = safe_float(ohlc[-1][3], default=None)
+    if c0 is None or c1 is None:
         return 0.0
     return (c1 - c0) / c0 * 100.0
 
@@ -114,14 +111,8 @@ def run_compare(pairs, intervals):
 
 
 def run_wf(pair, interval, segments=4):
-    if isinstance(segments, bool) or segments is None:
-        segments = 4
-    else:
-        try:
-            seg_f = float(segments)
-            segments = max(1, int(seg_f)) if (seg_f == seg_f and abs(seg_f) != float("inf")) else 4
-        except (TypeError, ValueError, OverflowError):
-            segments = 4
+    seg_val = safe_int(segments, default=4)
+    segments = max(1, seg_val if seg_val is not None else 4)
     P = {**base_params(), "interval": interval}
     try:
         ohlc = fetch_candles(pair, interval)
@@ -150,14 +141,8 @@ def run_intraday(pair, tz_offset=3):
     The sample is small (~30 days at 1h, or ~30 observations per hour), so the
     result should be treated skeptically.
     """
-    if isinstance(tz_offset, bool) or tz_offset is None:
-        tz_offset = 3
-    else:
-        try:
-            tz_f = float(tz_offset)
-            tz_offset = int(tz_f) if (tz_f == tz_f and abs(tz_f) != float("inf")) else 3
-        except (TypeError, ValueError, OverflowError):
-            tz_offset = 3
+    tz_val = safe_int(tz_offset, default=3)
+    tz_offset = tz_val if tz_val is not None else 3
     try:
         rows = fetch_with_time(pair, 60)
     except Exception as e:  # noqa: BLE001
@@ -167,20 +152,14 @@ def run_intraday(pair, tz_offset=3):
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 5:
             continue
-        ts, o, h, l, c = row[:5]
-        if isinstance(ts, bool) or isinstance(o, bool) or isinstance(c, bool):
-            continue
-        try:
-            ts_i = int(float(ts))
-            o_f = float(o)
-            c_f = float(c)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if not (o_f == o_f and c_f == c_f and abs(o_f) != float("inf") and abs(c_f) != float("inf")):
+        ts, o, _h, _l, c = row[:5]
+        ts_i = safe_int(ts, default=None)
+        o_f = safe_pos_float(o, default=None)
+        c_f = safe_float(c, default=None)
+        if ts_i is None or o_f is None or c_f is None:
             continue
         hr = (ts_i // 3600 + tz_offset) % 24
-        if o_f > 0:
-            by_hour[hr].append((c_f - o_f) / o_f * 100)
+        by_hour[hr].append((c_f - o_f) / o_f * 100)
     print(f"=== INTRADAY {pair} (ora LOCALA UTC+{tz_offset}, {len(rows)} bare orare) ===")
     print(f"{'hour':<5} {'n':<5} {'avg.return/hour':>14} {'% positive bars':>16}")
     cum = 0.0

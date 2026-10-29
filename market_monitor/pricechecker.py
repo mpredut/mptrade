@@ -15,6 +15,7 @@ from urllib.parse import quote
 # Import your existing modules
 import log
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from cachepaths import canonical_base_asset
 from market_monitor.pricefetcher import get_base_symbol
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
@@ -228,9 +229,19 @@ class PriceChecker:
             "newest_time": self._readable_time(newest_entry),
         }
 
+    @staticmethod
+    def _alert_key(symbol: str, alert_type: str) -> str:
+        return f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
+
+    def _monitored_symbols(self) -> List:
+        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
+        if raw_symbols is None:
+            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
+        return list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
+
     def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
         """Check whether we can send a new alert (spam prevention)."""
-        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
+        key = self._alert_key(symbol, alert_type)
         now = time.time()
         lf = safe_nonneg_float(self._last_alert_time.get(key, 0.0), default=None)
         if lf is not None and lf <= now:
@@ -274,24 +285,20 @@ class PriceChecker:
         if isinstance(per_coin, dict) and not isinstance(symbol, bool) and symbol is not None:
             sym_str = str(symbol).strip()
             sym_up = sym_str.upper()
-            if isinstance(per_coin.get(sym_str), dict):
-                chosen = per_coin[sym_str]
-            elif isinstance(per_coin.get(sym_up), dict):
-                chosen = per_coin[sym_up]
-            else:
-                base = get_base_symbol(sym_up) or get_base_symbol(sym_str)
-                base_up = str(base).strip().upper() if base else ""
-                if base and isinstance(per_coin.get(base), dict):
-                    chosen = per_coin[base]
-                elif base_up and isinstance(per_coin.get(base_up), dict):
-                    chosen = per_coin[base_up]
-                else:
-                    for k, v in per_coin.items():
-                        if isinstance(v, dict) and not isinstance(k, bool) and k is not None:
-                            k_up = str(k).strip().upper()
-                            if k_up in (sym_up, base_up) and k_up:
-                                chosen = v
-                                break
+            base = get_base_symbol(sym_up) or get_base_symbol(sym_str) or ""
+            base_up = str(base).strip().upper() if base else ""
+            canon = canonical_base_asset(sym_up)
+            for cand in (sym_str, sym_up, base, base_up, canon):
+                if cand and isinstance(per_coin.get(cand), dict):
+                    chosen = per_coin[cand]
+                    break
+            if chosen is None:
+                target_keys = {k for k in (sym_up, base_up, canon) if k}
+                for k, v in per_coin.items():
+                    if isinstance(v, dict) and not isinstance(k, bool) and k is not None:
+                        if str(k).strip().upper() in target_keys:
+                            chosen = v
+                            break
         raw = chosen if isinstance(chosen, dict) else fallback
 
         def_up = safe_pos_float(fallback.get("up_percent"), default=PRICE_ALERT_CONFIG["default"]["up_percent"])
@@ -303,8 +310,7 @@ class PriceChecker:
 
     def _record_alert_sent(self, symbol: str, alert_type: str):
         """Record that an alert was sent."""
-        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
-        self._last_alert_time[key] = time.time()
+        self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
 
     def check_symbol(self, symbol: str) -> List[PriceAlert]:
         """Check a symbol and return a list of alerts (0, 1, or 2)."""
@@ -366,12 +372,7 @@ class PriceChecker:
     def check_all_symbols(self) -> List[PriceAlert]:
         """Check all symbols in the watchlist."""
         all_alerts = []
-        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
-        if raw_symbols is None:
-            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
-        symbols = list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
-
-        for symbol in dict.fromkeys(symbols):
+        for symbol in dict.fromkeys(self._monitored_symbols()):
             try:
                 alerts = self.check_symbol(symbol)
                 all_alerts.extend(alerts)
@@ -429,14 +430,10 @@ class PriceChecker:
         print("[Checker] Monitoring stopped")
 
     def get_status(self) -> dict:
-        raw_symbols = getattr(self.cachePriceAll, "original_symbols", None)
-        if raw_symbols is None:
-            raw_symbols = getattr(self.cachePriceAll, "symbols", None)
-        sym_list = list(raw_symbols) if isinstance(raw_symbols, (list, tuple, set, frozenset)) else []
         return {
             "running": self._running,
             "config": self.config,
-            "symbols_count": len(sym_list),
+            "symbols_count": len(self._monitored_symbols()),
             "last_alerts": dict(self._last_alert_time)
         }
 

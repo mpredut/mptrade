@@ -51,7 +51,7 @@ from state_io import atomic_text_writer  # noqa: E402
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
-from botcore import required_env, safe_float, safe_int  # noqa: E402
+from botcore import required_env, safe_float, safe_int, safe_pos_float  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
 CONFIG_ENV = os.path.join(HERE, "config.env")
@@ -162,16 +162,13 @@ def _get_anchor(pair: str, interval: int, default_ts: int) -> int:
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as fh:
-                vf = float(fh.read().strip())
-            if math.isfinite(vf) and vf > 0 and vf == int(vf):
+                vf = safe_pos_float(fh.read().strip(), default=None)
+            if vf is not None and vf.is_integer():
                 return int(vf)
-        except (OSError, ValueError, OverflowError):
+        except OSError:
             pass
-    try:
-        def_f = 0.0 if (default_ts is None or isinstance(default_ts, bool)) else float(default_ts)
-        anchor_val = int(def_f) if (math.isfinite(def_f) and def_f > 0) else 0
-    except (TypeError, ValueError, OverflowError):
-        anchor_val = 0
+    def_f = safe_pos_float(default_ts, default=0.0)
+    anchor_val = int(def_f)
     os.makedirs(LOG_DIR, exist_ok=True)
     with atomic_text_writer(path) as fh:
         fh.write(f"{anchor_val}\n")
@@ -193,21 +190,13 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) != 5:
             continue
-        if any(isinstance(row[i], bool) for i in range(5)):
+        vals = [safe_pos_float(row[i], default=None) for i in range(5)]
+        if any(v is None for v in vals):
             continue
-        try:
-            ts_f = float(row[0])
-            o_f, h_f, l_f, c_f = float(row[1]), float(row[2]), float(row[3]), float(row[4])
-            if (
-                not all(math.isfinite(v) and v > 0 for v in (ts_f, o_f, h_f, l_f, c_f))
-                or h_f < l_f
-                or h_f < max(o_f, c_f)
-                or l_f > min(o_f, c_f)
-            ):
-                continue
-            out.append((int(ts_f), o_f, h_f, l_f, c_f))
-        except (TypeError, ValueError, OverflowError):
+        ts_f, o_f, h_f, l_f, c_f = vals
+        if h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
             continue
+        out.append((int(ts_f), o_f, h_f, l_f, c_f))
     return out
 
 

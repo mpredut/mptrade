@@ -205,11 +205,10 @@ def _sanitize_state(raw: dict) -> dict:
     merged = _new_state()
     if isinstance(raw, dict):
         merged.update(raw)
-    for k in ("qty", "cost", "spent", "realized_gross", "realized_net", "fees_total"):
-        merged[k] = safe_float(merged.get(k, 0.0), 0.0)
     for k in ("qty", "cost", "spent", "fees_total"):
-        if merged[k] < 0.0:
-            merged[k] = 0.0
+        merged[k] = safe_nonneg_float(merged.get(k, 0.0), 0.0)
+    for k in ("realized_gross", "realized_net"):
+        merged[k] = safe_float(merged.get(k, 0.0), 0.0)
     for k, default_i in (("cycle", 1), ("cycles_completed", 0), ("wins", 0), ("dca_buys", 0)):
         vf = safe_float(merged.get(k, default_i), None)
         merged[k] = max(default_i if k == "cycle" else 0, int(vf)) if vf is not None else default_i
@@ -233,9 +232,9 @@ def _sanitize_state(raw: dict) -> dict:
             o_copy["oid"] = int(clean_oid) if (isinstance(raw_oid, (int, float)) and clean_oid.isdigit()) else clean_oid
             o_copy["px"] = px_f
             o_copy["sz"] = sz_f
-            o_copy["amount"] = max(0.0, safe_float(o_copy.get("amount", 0.0), 0.0))
+            o_copy["amount"] = safe_nonneg_float(o_copy.get("amount", 0.0), 0.0)
             if "ts" in o_copy and o_copy.get("ts") is not None:
-                o_copy["ts"] = max(0.0, safe_float(o_copy.get("ts"), 0.0))
+                o_copy["ts"] = safe_nonneg_float(o_copy.get("ts"), 0.0)
             if "dca_counted" in o_copy:
                 o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)
@@ -367,18 +366,13 @@ class Strategy:
 
     # -- reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> bool:
-        if (
-            isinstance(price, bool)
-            or not isinstance(price, (int, float))
-            or not math.isfinite(float(price))
-            or float(price) <= 0.0
-        ):
+        price_f = safe_pos_float(price, default=None) if isinstance(price, (int, float)) else None
+        if price_f is None:
             return False
-        price = float(price)
         if self.dry_run:
-            self._reconcile_paper(price)
+            self._reconcile_paper(price_f)
             return True
-        return self._reconcile_real(price)
+        return self._reconcile_real(price_f)
 
     def _reconcile_paper(self, price: float) -> None:
         for role in ("open", "close"):
@@ -437,26 +431,16 @@ class Strategy:
             filled_open = next(
                 (o for o in self.s["orders"] if o.get("role") == "open" and _clean_oid(o.get("oid")) not in active),
                 None,
+            ) or next(
+                (o for o in self.s["orders"] if o.get("role") == "open"),
+                None,
             )
-            if filled_open is None:
-                filled_open = next(
-                    (o for o in self.s["orders"] if o.get("role") == "open"),
-                    None,
-                )
+            filled_open_px = safe_pos_float(filled_open.get("px"), default=None) if filled_open else None
             if prev > 1e-9:
                 marginal_px = ((qty_now * entry - prev_cost) / fq) if (entry > 0 and prev_cost > 0) else 0.0
-                if marginal_px > 0:
-                    fp = marginal_px
-                elif filled_open and float(filled_open.get("px", 0) or 0) > 0:
-                    fp = float(filled_open["px"])
-                else:
-                    fp = price
+                fp = marginal_px if marginal_px > 0 else (filled_open_px or price)
             else:
-                fp = entry if entry > 0 else (
-                    float(filled_open["px"])
-                    if (filled_open and float(filled_open.get("px", 0) or 0) > 0)
-                    else price
-                )
+                fp = entry if entry > 0 else (filled_open_px or price)
             open_kind = filled_open.get("kind") if filled_open else None
             if open_kind == "ENTRY":
                 count_dca = False
@@ -476,11 +460,12 @@ class Strategy:
                 (o for o in self.s["orders"] if o.get("role") == "close" and _clean_oid(o.get("oid")) not in active),
                 None,
             )
-            close_px = (
-                float(filled_close["px"])
-                if (filled_close and filled_close.get("kind") != "STOP" and float(filled_close.get("px", 0) or 0) > 0)
-                else price
+            filled_close_px = (
+                safe_pos_float(filled_close.get("px"), default=None)
+                if filled_close and filled_close.get("kind") != "STOP"
+                else None
             )
+            close_px = filled_close_px or price
             self._apply_close(self._avg() or entry or close_px, close_px, prev - qty_now,
                               real_qty=qty_now, real_avg=entry)
         else:
@@ -634,12 +619,7 @@ class Strategy:
 
     # -- decision --------------------------------------------------------------
     def step(self, price: float, signal: str | None = None) -> None:
-        if (
-            isinstance(price, bool)
-            or not isinstance(price, (int, float))
-            or not math.isfinite(float(price))
-            or float(price) <= 0.0
-        ):
+        if (safe_pos_float(price, default=None) if isinstance(price, (int, float)) else None) is None:
             if not self.replay_mode:
                 log("  ! [STRAT] invalid price — deferring step")
             return
@@ -717,7 +697,7 @@ class Strategy:
         log(f"      DCA        : {self.p.dca_amount} {self.ccy} la {self.p.dca_drop_pct}% contra (max {self.p.max_dca_buys})")
         log(f"      take-profit: {self.p.takeprofit_pct}% in favoare" if self.p.enable_takeprofit else "      TP: off")
         log(f"      PLAFON     : {self.p.max_budget} {self.ccy} / ciclu  |  fee HL ~{fee_hl}%/leg")
-        sleep_sec = max(1.0, float(self.p.check_minutes) * 60.0) if math.isfinite(float(self.p.check_minutes)) else 60.0
+        sleep_sec = max(1.0, safe_pos_float(self.p.check_minutes, default=1.0) * 60.0)
         try:
             while True:
                 try:

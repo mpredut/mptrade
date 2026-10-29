@@ -1,7 +1,9 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
+import hashlib
 import math
 import os
+import re
 from abc import ABC, abstractmethod
 from typing import Any, List, Optional
 
@@ -12,6 +14,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import normalize_venue_name
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -214,17 +217,12 @@ def extract_order_side(order: Any) -> str:
             if b_norm in ("s", "sell"):
                 return "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
-        signed_qty = order.get(sq_key)
-        if signed_qty is not None and not isinstance(signed_qty, bool):
-            try:
-                sq = float(signed_qty)
-                if math.isfinite(sq) and sq != 0.0:
-                    if sq < 0.0:
-                        return "SELL"
-                    if sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order:
-                        return "BUY"
-            except (TypeError, ValueError, OverflowError):
-                pass
+        sq = safe_float(order.get(sq_key), default=0.0)
+        if sq != 0.0:
+            if sq < 0.0:
+                return "SELL"
+            if sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order:
+                return "BUY"
     return ""
 
 
@@ -254,21 +252,13 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         ("Y", "l"),
         ("Z", "z"),
     ):
-        if (
-            cost_key in order
-            and exec_key in order
-            and not isinstance(order.get(cost_key), bool)
-            and not isinstance(order.get(exec_key), bool)
-        ):
-            try:
-                cost_val = abs(float(order[cost_key] or 0.0))
-                exec_val = abs(float(order[exec_key] or 0.0))
-                if math.isfinite(cost_val) and math.isfinite(exec_val) and cost_val > 0 and exec_val > 0:
-                    res = cost_val / exec_val
-                    if math.isfinite(res) and res > 0:
-                        return res
-            except (TypeError, ValueError, OverflowError):
-                continue
+        if cost_key in order and exec_key in order:
+            cost_val = abs(safe_float(order.get(cost_key), default=0.0))
+            exec_val = abs(safe_float(order.get(exec_key), default=0.0))
+            if cost_val > 0 and exec_val > 0:
+                res = safe_pos_float(cost_val / exec_val, default=None)
+                if res is not None:
+                    return res
     fills = order.get("fills")
     if isinstance(fills, list) and fills:
         total_quote = 0.0
@@ -276,21 +266,14 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         for f in fills:
             if not isinstance(f, dict):
                 continue
-            try:
-                raw_px = f.get("price", f.get("px", 0.0))
-                raw_qty = f.get("qty", f.get("quantity", f.get("sz", 0.0)))
-                if isinstance(raw_px, bool) or isinstance(raw_qty, bool):
-                    continue
-                f_px = float(raw_px or 0.0)
-                f_qty = abs(float(raw_qty or 0.0))
-                if math.isfinite(f_px) and math.isfinite(f_qty) and f_px > 0 and f_qty > 0:
-                    total_quote += f_px * f_qty
-                    total_qty += f_qty
-            except (TypeError, ValueError, OverflowError):
-                continue
+            f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
+            f_qty = abs(safe_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))), default=0.0))
+            if f_px is not None and f_qty > 0:
+                total_quote += f_px * f_qty
+                total_qty += f_qty
         if total_qty > 0:
-            res = total_quote / total_qty
-            if math.isfinite(res) and res > 0:
+            res = safe_pos_float(total_quote / total_qty, default=None)
+            if res is not None:
                 return res
     return default
 
@@ -300,13 +283,10 @@ def extract_order_qty(order: Any, default: float = 0.0) -> float:
     if not isinstance(order, dict):
         return default
     for key in _QTY_KEYS:
-        if key in order and order[key] is not None and not isinstance(order[key], bool):
-            try:
-                val = abs(float(order[key] or 0.0))
-                if math.isfinite(val) and val > 0:
-                    return val
-            except (TypeError, ValueError, OverflowError):
-                continue
+        if key in order and order[key] is not None:
+            val = abs(safe_float(order[key], default=0.0))
+            if val > 0:
+                return val
     return default
 
 
@@ -324,26 +304,13 @@ def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[fl
         order = getattr(order, "native", None)
         if order is None or isinstance(order, bool):
             return default
-    if isinstance(order, dict):
-        for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
-            if key in order and order[key] is not None and not isinstance(order[key], bool):
-                try:
-                    val = abs(float(order[key]))
-                    if math.isfinite(val) and val > 0:
-                        return val
-                except (TypeError, ValueError, OverflowError):
-                    continue
-    else:
-        for attr in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
-            if hasattr(order, attr):
-                raw = getattr(order, attr)
-                if raw is not None and not isinstance(raw, bool):
-                    try:
-                        val = abs(float(raw))
-                        if math.isfinite(val) and val > 0:
-                            return val
-                    except (TypeError, ValueError, OverflowError):
-                        continue
+    is_dict = isinstance(order, dict)
+    for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
+        raw = order.get(key) if is_dict else getattr(order, key, None)
+        if raw is not None:
+            val = abs(safe_float(raw, default=0.0))
+            if val > 0:
+                return val
     return default
 
 
@@ -351,43 +318,29 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     """Extract remaining unfilled quantity for an open/cancelled order across any venue shape."""
     if not isinstance(order, dict):
         return default
-    rem = order.get("remainingQty")
-    if rem is not None and not isinstance(rem, bool):
-        try:
-            rem_f = float(rem)
-            if math.isfinite(rem_f) and rem_f >= 0.0:
-                return rem_f
-        except (TypeError, ValueError, OverflowError):
-            pass
+    rem_f = safe_nonneg_float(order.get("remainingQty"), default=None)
+    if rem_f is not None:
+        return rem_f
     if "origSz" in order and "sz" in order and not any(k in order for k in _EXEC_QTY_KEYS):
-        raw_sz = order.get("sz")
-        if raw_sz is not None and not isinstance(raw_sz, bool):
-            try:
-                sz_f = abs(float(raw_sz))
-                if math.isfinite(sz_f) and sz_f >= 0.0:
-                    return sz_f
-            except (TypeError, ValueError, OverflowError):
-                pass
-    orig = 0.0
-    for key in _ORIG_QTY_KEYS:
-        if key in order and order[key] is not None and not isinstance(order[key], bool):
-            try:
-                val = abs(float(order[key] or 0.0))
-                if math.isfinite(val) and val > 0:
-                    orig = val
-                    break
-            except (TypeError, ValueError, OverflowError):
-                continue
-    exec_q = 0.0
-    for key in _EXEC_QTY_KEYS:
-        if key in order and order[key] is not None and not isinstance(order[key], bool):
-            try:
-                val = abs(float(order[key] or 0.0))
-                if math.isfinite(val) and val > 0:
-                    exec_q = val
-                    break
-            except (TypeError, ValueError, OverflowError):
-                continue
+        sz_f = safe_float(order.get("sz"), default=None)
+        if sz_f is not None:
+            return abs(sz_f)
+    orig = next(
+        (
+            abs(vf)
+            for key in _ORIG_QTY_KEYS
+            if key in order and (vf := safe_float(order.get(key), default=0.0)) != 0.0
+        ),
+        0.0,
+    )
+    exec_q = next(
+        (
+            abs(vf)
+            for key in _EXEC_QTY_KEYS
+            if key in order and (vf := safe_float(order.get(key), default=0.0)) != 0.0
+        ),
+        0.0,
+    )
     if orig > 0:
         return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
@@ -408,19 +361,14 @@ def extract_order_fee(
     """
     if not isinstance(order, dict):
         return None
-    fee: Optional[float] = None
-    for key in _FEE_KEYS:
-        if key in order and order[key] is not None:
-            cand_raw = order[key]
-            if isinstance(cand_raw, bool):
-                continue
-            try:
-                cand_f = float(cand_raw)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if math.isfinite(cand_f) and cand_f >= 0.0:
-                fee = cand_f
-                break
+    fee = next(
+        (
+            cand_f
+            for key in _FEE_KEYS
+            if key in order and (cand_f := safe_nonneg_float(order[key], default=None)) is not None
+        ),
+        None,
+    )
     if fee is None:
         return None
 
@@ -443,16 +391,7 @@ def extract_order_fee(
     if not fee_asset and not req_explicit and quote_u:
         fee_asset = quote_u
 
-    px = 0.0
-    if fill_price is not None and not isinstance(fill_price, bool):
-        try:
-            fp_val = float(fill_price)
-            if math.isfinite(fp_val) and fp_val > 0.0:
-                px = fp_val
-        except (TypeError, ValueError, OverflowError):
-            px = 0.0
-    if px <= 0.0:
-        px = extract_order_price(order, default=0.0)
+    px = safe_pos_float(fill_price, default=0.0) or extract_order_price(order, default=0.0)
     base_fee = 0.0
     quote_fee = 0.0
     fee_in_quote: Optional[float] = 0.0 if fee == 0.0 else None
@@ -524,13 +463,8 @@ def aggregate_fills_by_order_id(
         norm = normalize_order(r)
         ts_ms = norm["timestamp"]
         if cutoff_ms is not None:
-            if isinstance(cutoff_ms, bool):
-                continue
-            try:
-                cutoff_f = float(cutoff_ms)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if not math.isfinite(cutoff_f) or ts_ms is None or float(ts_ms) < cutoff_f:
+            cutoff_f = safe_float(cutoff_ms, default=None)
+            if cutoff_f is None or ts_ms is None or float(ts_ms) < cutoff_f:
                 continue
         if want and norm["side"] != want:
             continue
@@ -588,6 +522,29 @@ from .strategy_executor import (  # noqa: E402
     PairPrecision,
     ProviderError,
 )
+
+
+def _derive_128bit_client_order_id(
+    client_order_id: Any,
+    *,
+    venue_label: str,
+    domain_prefix: bytes,
+    exact_re: re.Pattern[str],
+    hex_prefix: str = "",
+) -> str:
+    """Map one durable client ID to a venue's 128-bit hex clientOrderId form."""
+    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
+        raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
+    raw = _clean_single_order_id(client_order_id) or ""
+    if not raw or len(raw) > 128:
+        raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
+    try:
+        encoded = raw.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ProviderError(f"{venue_label} client_order_id must be ASCII") from exc
+    if exact_re.fullmatch(raw):
+        return raw.lower()
+    return hex_prefix + hashlib.sha256(domain_prefix + encoded).hexdigest()[:32]
 
 
 class MarketDataProvider(ABC):
@@ -671,17 +628,20 @@ class MarketDataProvider(ABC):
     def guards_internally(self) -> bool:
         return False
 
+    def _is_binance(self) -> bool:
+        return normalize_venue_name(getattr(self, "name", "")) == "binance"
+
     def requires_cache_permit(self) -> bool:
         """Return whether this provider enforces account-cache submit permits."""
-        return str(getattr(self, "name", "") or "").casefold() == "binance"
+        return self._is_binance()
 
     def defers_smart_cancellation(self) -> bool:
         """Return whether opposing order cancellation is deferred until dispatch."""
-        return str(getattr(self, "name", "") or "").casefold() == "binance"
+        return self._is_binance()
 
     def supports_business_minimum(self) -> bool:
         """Return whether this provider enforces venue business minimum rules."""
-        return str(getattr(self, "name", "") or "").casefold() == "binance"
+        return self._is_binance()
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         """Return normalized pair precision and limits, or None if unavailable."""
@@ -689,25 +649,16 @@ class MarketDataProvider(ABC):
 
     def round_quantity(self, symbol: str, qty: float) -> float:
         """Round or floor quantity to venue volume precision."""
-        if qty is None or isinstance(qty, bool):
-            return 0.0
-        try:
-            qty_f = float(qty)
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
-        if not math.isfinite(qty_f) or qty_f <= 0.0:
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec_raw = getattr(pp, "volume_decimals", None) if pp is not None else None
-            if dec_raw is not None and not isinstance(dec_raw, bool):
-                dec_f = float(dec_raw)
-                if math.isfinite(dec_f) and dec_f.is_integer():
-                    dec = int(dec_f)
-                    if dec >= 0:
-                        dec = min(dec, 18)
-                        factor = 10 ** dec
-                        return math.floor(qty_f * factor + 1e-12) / factor
+            dec_f = safe_nonneg_float(getattr(pp, "volume_decimals", None) if pp is not None else None, default=None)
+            if dec_f is not None and dec_f.is_integer():
+                dec = min(int(dec_f), 18)
+                factor = 10 ** dec
+                return math.floor(qty_f * factor + 1e-12) / factor
         except Exception:
             pass
         return qty_f
@@ -718,23 +669,14 @@ class MarketDataProvider(ABC):
 
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to venue price precision (tick size / price decimals)."""
-        if price is None or isinstance(price, bool):
-            return 0.0
-        try:
-            price_f = float(price)
-        except (TypeError, ValueError, OverflowError):
-            return 0.0
-        if not math.isfinite(price_f) or price_f <= 0.0:
+        price_f = safe_pos_float(price, default=None)
+        if price_f is None:
             return 0.0
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec_raw = getattr(pp, "price_decimals", None) if pp is not None else None
-            if dec_raw is not None and not isinstance(dec_raw, bool):
-                dec_f = float(dec_raw)
-                if math.isfinite(dec_f) and dec_f.is_integer():
-                    dec = int(dec_f)
-                    if dec >= 0:
-                        return round(price_f, min(dec, 18))
+            dec_f = safe_nonneg_float(getattr(pp, "price_decimals", None) if pp is not None else None, default=None)
+            if dec_f is not None and dec_f.is_integer():
+                return round(price_f, min(int(dec_f), 18))
         except Exception:
             pass
         return price_f
@@ -744,11 +686,7 @@ class MarketDataProvider(ABC):
         try:
             pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
             if pp is not None:
-                raw_min = getattr(pp, "order_min", 0.0)
-                if raw_min is not None and not isinstance(raw_min, bool):
-                    val = float(raw_min)
-                    if math.isfinite(val) and val > 0.0:
-                        return val
+                return safe_pos_float(getattr(pp, "order_min", 0.0), default=0.0)
         except Exception:
             pass
         return 0.0
@@ -758,12 +696,10 @@ class MarketDataProvider(ABC):
                              enforce_business_minimum: bool = True
                              ) -> Optional[str]:
         """Return a provider-specific pre-submit refusal, if one is known."""
-        if qty is None or isinstance(qty, bool):
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             return "qty_zero_or_negative"
         try:
-            qty_f = float(qty)
-            if not math.isfinite(qty_f) or qty_f <= 0:
-                return "qty_zero_or_negative"
             min_qty = self.min_order_qty(symbol)
             if min_qty > 0 and qty_f < min_qty:
                 return f"filter_lot_size_min:{qty_f}<{min_qty}"
@@ -806,25 +742,8 @@ class MarketDataProvider(ABC):
             module=module,
             reference_mode=reference_mode,
         )
-        win_valid = False
-        if window_s is not None and not isinstance(window_s, bool):
-            try:
-                win_f = float(window_s)
-                if math.isfinite(win_f) and win_f > 0:
-                    window_s = win_f
-                    win_valid = True
-            except (TypeError, ValueError, OverflowError):
-                win_valid = False
-        if not win_valid:
-            sb_val = 0.0
-            if safeback_sec is not None and not isinstance(safeback_sec, bool):
-                try:
-                    cand_sb = float(safeback_sec)
-                    if math.isfinite(cand_sb) and cand_sb > 0.0:
-                        sb_val = cand_sb
-                except (TypeError, ValueError, OverflowError):
-                    sb_val = 0.0
-            window_s = sb_val
+        win_f = safe_pos_float(window_s, default=None)
+        window_s = win_f if win_f is not None else safe_pos_float(safeback_sec, default=0.0)
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode
@@ -834,23 +753,14 @@ class MarketDataProvider(ABC):
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
-        if isinstance(order_type, bool):
-            return None
-        ot_norm = str(order_type or "").strip().upper()
-        if ot_norm in ("BUY", "B", "BID", "LONG"):
+        ot_norm = normalize_side(order_type)
+        if ot_norm == "BUY":
             opposite = "SELL"
-        elif ot_norm in ("SELL", "S", "A", "ASK", "SHORT"):
+        elif ot_norm == "SELL":
             opposite = "BUY"
         else:
             return None
-        eff_since_s = 90.0 * 24.0 * 3600.0
-        if since_s is not None and not isinstance(since_s, bool):
-            try:
-                cand_s = float(since_s)
-                if math.isfinite(cand_s) and cand_s >= 0.0:
-                    eff_since_s = cand_s
-            except (TypeError, ValueError, OverflowError):
-                pass
+        eff_since_s = safe_nonneg_float(since_s, default=90.0 * 24.0 * 3600.0)
         fills = self.get_orders(symbol, opposite, eff_since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")

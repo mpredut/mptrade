@@ -25,9 +25,13 @@ import time
 import urllib.parse
 
 try:
-    from kraken.kraken_common import _parse_bool_flag, http_get, http_post_form, log, safe_pos_float
+    from kraken.kraken_common import (
+        _parse_bool_flag, http_get, http_post_form, log, safe_nonneg_float, safe_pos_float,
+    )
 except ImportError:
-    from kraken_common import _parse_bool_flag, http_get, http_post_form, log, safe_pos_float
+    from kraken_common import (
+        _parse_bool_flag, http_get, http_post_form, log, safe_nonneg_float, safe_pos_float,
+    )
 from providers.base import _clean_single_order_id, normalize_side
 
 API_URL = "https://api.kraken.com"
@@ -192,20 +196,18 @@ class KrakenClient:
     def asset_pairs(self) -> dict:
         return self._public("AssetPairs")
 
+    def _public_first_dict(self, method: str, pair: str) -> dict | None:
+        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return None
+        res = self._public(method, {"pair": pair.strip().upper()})
+        return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
+
     def pair_info(self, pair: str) -> dict | None:
         """Return pair price/volume precision and minimum order, or None if absent."""
-        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
-            return None
-        res = self._public("AssetPairs", {"pair": pair.strip().upper()})
-        if not res:
-            return None
-        return next((v for v in res.values() if isinstance(v, dict)), None)
+        return self._public_first_dict("AssetPairs", pair)
 
     def ticker(self, pair: str) -> dict | None:
-        if not pair or isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
-            return None
-        res = self._public("Ticker", {"pair": pair.strip().upper()})
-        return next((v for v in res.values() if isinstance(v, dict)), None) if res else None
+        return self._public_first_dict("Ticker", pair)
 
     def ohlc_closes_with_timestamps(
         self, pair: str, interval: int,
@@ -220,15 +222,10 @@ class KrakenClient:
             or (isinstance(interval, str) and "." in interval.strip())
         ):
             raise ValueError("interval must be a positive integer")
-        try:
-            itv_f = float(interval)
-            if not math.isfinite(itv_f) or not itv_f.is_integer():
-                raise ValueError("interval must be a positive integer")
-            itv_int = int(itv_f)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("interval must be a positive integer") from exc
-        if itv_int <= 0:
+        itv_f = safe_pos_float(interval, default=None)
+        if itv_f is None or not itv_f.is_integer():
             raise ValueError("interval must be a positive integer")
+        itv_int = int(itv_f)
         itv_sec = itv_int * 60
         res = self._public("OHLC", {"pair": pair, "interval": itv_int})
         key = next((key for key in res if key != "last"), None)
@@ -278,13 +275,9 @@ class KrakenClient:
         Kraken accepts fewer decimals but never more (e.g. HYPE/USD = 2)."""
         try:
             info = self.pair_info(pair)
-            raw_dec = info.get("pair_decimals") if isinstance(info, dict) else None
-            if raw_dec is not None and not isinstance(raw_dec, bool):
-                dec_f = float(raw_dec)
-                if math.isfinite(dec_f) and dec_f.is_integer():
-                    dec = int(dec_f)
-                    if 0 <= dec <= 18:
-                        return dec
+            dec_f = safe_nonneg_float(info.get("pair_decimals") if isinstance(info, dict) else None, default=None)
+            if dec_f is not None and dec_f <= 18 and dec_f.is_integer():
+                return int(dec_f)
         except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
             pass
         return 2

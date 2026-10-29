@@ -119,20 +119,13 @@ def resolve(alert_config: dict, symbol: str, is_dynamic: bool) -> dict:
     sym_str = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
     sym_up = sym_str.upper()
     sym_low = sym_str.lower()
-    if isinstance(per.get(sym_str), dict):
-        return per[sym_str]
-    if isinstance(per.get(sym_up), dict):
-        return per[sym_up]
-    if isinstance(per.get(sym_low), dict):
-        return per[sym_low]
+    from cachepaths import canonical_base_asset
     from providers.quantity import resolve_assets
     base = resolve_assets(sym_up)[0]
-    if base and isinstance(per.get(base), dict):
-        return per[base]
-    if base and isinstance(per.get(base.upper()), dict):
-        return per[base.upper()]
-    if base and isinstance(per.get(base.lower()), dict):
-        return per[base.lower()]
+    canon = canonical_base_asset(sym_up)
+    for cand in (sym_str, sym_up, sym_low, base, base.upper(), base.lower(), canon, canon.lower()):
+        if cand and isinstance(per.get(cand), dict):
+            return per[cand]
     dyn_flag = _parse_bool_flag(is_dynamic, default=False)
     preferred = alert_config.get("dynamic") if dyn_flag else alert_config.get("default")
     if isinstance(preferred, dict):

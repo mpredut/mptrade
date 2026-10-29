@@ -33,6 +33,8 @@ from botcore import (
 )
 from .base import (
     MarketDataProvider,
+    _clean_single_order_id,
+    _derive_128bit_client_order_id,
     _normalize_order,
     bool_env,
     extract_order_fee,
@@ -95,21 +97,13 @@ _CLOID_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
 
 def _cloid_for_client_order_id(client_order_id: str) -> str:
     """Map one durable client ID to Hyperliquid's exact 128-bit CLOID form."""
-    if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
-        raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
-    from .base import _clean_single_order_id
-    raw = _clean_single_order_id(client_order_id) or ""
-    if not raw or len(raw) > 128:
-        raise ProviderError("Hyperliquid client_order_id must contain 1-128 characters")
-    try:
-        encoded = raw.encode("ascii")
-    except UnicodeEncodeError as exc:
-        raise ProviderError("Hyperliquid client_order_id must be ASCII") from exc
-    if _CLOID_RE.fullmatch(raw):
-        return raw.lower()
-    digest = hashlib.sha256(
-        b"assertguardian:hyperliquid:cloid:v1\0" + encoded).hexdigest()
-    return "0x" + digest[:32]
+    return _derive_128bit_client_order_id(
+        client_order_id,
+        venue_label="Hyperliquid",
+        domain_prefix=b"assertguardian:hyperliquid:cloid:v1\0",
+        exact_re=_CLOID_RE,
+        hex_prefix="0x",
+    )
 
 
 class HyperliquidProvider(MarketDataProvider):
@@ -548,10 +542,8 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         try:
             raw_szd = c.sz_decimals(self._token)
-            if isinstance(raw_szd, bool) or raw_szd is None:
-                raise ValueError(f"invalid sz_decimals={raw_szd!r}")
-            szd_f = float(raw_szd)
-            if not math.isfinite(szd_f) or not szd_f.is_integer() or int(szd_f) < 0:
+            szd_f = safe_nonneg_float(raw_szd, default=None)
+            if szd_f is None or not szd_f.is_integer():
                 raise ValueError(f"invalid sz_decimals={raw_szd!r}")
             szd = int(szd_f)
         except Exception as e:  # noqa: BLE001
@@ -763,27 +755,15 @@ class HyperliquidProvider(MarketDataProvider):
     def _parse_oid(order_id: object, caller: str) -> int:
         if isinstance(order_id, bool) or order_id is None:
             raise ProviderError(f"{caller}({order_id}): invalid order id")
-        try:
-            if isinstance(order_id, int):
-                oid = order_id
-            elif isinstance(order_id, str):
-                s_oid = order_id.strip()
-                if s_oid.lstrip("+-").isdigit():
-                    oid = int(s_oid)
-                else:
-                    oid_f = float(s_oid)
-                    if not math.isfinite(oid_f) or not oid_f.is_integer():
-                        raise ProviderError(f"{caller}({order_id}): invalid order id")
-                    oid = int(oid_f)
-            else:
-                oid_f = float(order_id)
-                if not math.isfinite(oid_f) or not oid_f.is_integer():
-                    raise ProviderError(f"{caller}({order_id}): invalid order id")
-                oid = int(oid_f)
-        except ProviderError:
-            raise
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ProviderError(f"{caller}({order_id}): invalid order id") from exc
+        if isinstance(order_id, int):
+            oid = order_id
+        elif isinstance(order_id, str) and order_id.strip().lstrip("+-").isdigit():
+            oid = int(order_id.strip())
+        else:
+            oid_f = safe_pos_float(order_id, default=None)
+            if oid_f is None or not oid_f.is_integer():
+                raise ProviderError(f"{caller}({order_id}): invalid order id")
+            oid = int(oid_f)
         if oid <= 0:
             raise ProviderError(f"{caller}({order_id}): invalid order id")
         return oid

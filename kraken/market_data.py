@@ -39,21 +39,13 @@ def fetch_ohlc_candles(
     pair = pair.strip()
     if isinstance(interval, bool) or isinstance(timeout, bool):
         raise ValueError("interval and timeout must not be boolean")
-    try:
-        if isinstance(interval, float) or (isinstance(interval, str) and "." in interval.strip()):
-            raise ValueError(f"invalid interval={interval!r}")
-        itv_f = float(interval)
-        to_f = float(timeout)
-        if (
-            not (math.isfinite(itv_f) and math.isfinite(to_f))
-            or not itv_f.is_integer()
-            or int(itv_f) <= 0
-            or to_f <= 0
-        ):
-            raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-        interval = int(itv_f)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}") from exc
+    if isinstance(interval, float) or (isinstance(interval, str) and "." in interval.strip()):
+        raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
+    itv_f = safe_pos_float(interval, default=None)
+    to_f = safe_pos_float(timeout, default=None)
+    if itv_f is None or to_f is None or not itv_f.is_integer():
+        raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
+    interval = int(itv_f)
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     req = urllib.request.Request(
