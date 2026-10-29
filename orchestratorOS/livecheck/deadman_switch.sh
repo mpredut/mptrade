@@ -22,13 +22,18 @@ if [[ "$LAST" =~ ^[0-9]+$ ]] && (( NOW - LAST >= DOWN_AFTER_SEC )); then
     echo "$(date '+%H:%M') deadman: heartbeat gap ${GAP_MIN} min -> outage email queued"
 fi
 
-curl --fail-with-body -sS -m 10 --retry 4 --retry-delay 5 --retry-all-errors --retry-connrefused \
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --retry 2 --retry-delay 5 --retry-connrefused \
     "${AUTH_HDR[@]}" \
     -H "In: 35m" -H "Title: SERVER DOWN ($HOST)" \
     -d "No heartbeat for 35 minutes — check the server (crash / reboot / power loss)." \
-    "https://ntfy.sh/$TOPIC/server-alive" >/dev/null \
-    && echo "$(date '+%H:%M') deadman: pushed heartbeat (+35m)" \
-    || echo "$(date '+%H:%M') deadman: curl ERROR after retries (prolonged DNS/net blip or quota?)"
+    "https://ntfy.sh/$TOPIC/server-alive" || echo "000")
+if [[ "$HTTP_CODE" =~ ^2 ]]; then
+    echo "$(date '+%H:%M') deadman: pushed heartbeat (+35m)"
+elif [ "$HTTP_CODE" = "429" ]; then
+    echo "$(date '+%H:%M') deadman: ntfy rate-limited (HTTP 429); relying on healthchecks.io"
+else
+    echo "$(date '+%H:%M') deadman: ntfy curl HTTP $HTTP_CODE after retries"
+fi
 
 HC_URL="$(env_get HC_PING_URL)"
 if [ -n "$HC_URL" ]; then
