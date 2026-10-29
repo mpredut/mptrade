@@ -10,9 +10,10 @@ from cachepaths import normalize_venue_name
 from offline.backtests.execution import ExecutionModel, FeeModel
 from offline.backtests.walk_forward import summarize_test_windows
 from botcore import (
-    safe_float as _safe_f,
-    safe_int as _safe_int,
+    safe_float,
+    safe_int,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
 )
 
@@ -147,7 +148,7 @@ def default_scenarios(venue: str = "kraken") -> tuple[BenchmarkScenario, Benchma
 
 
 def _present(values: Iterable[float | int | None]) -> list[float]:
-    return [vf for value in values if (vf := _safe_f(value, default=None)) is not None]
+    return [vf for value in values if (vf := safe_float(value, default=None)) is not None]
 
 
 def _mean(values: Iterable[float | int | None]) -> float | None:
@@ -171,7 +172,7 @@ def _maximum(values: Iterable[float | int | None]) -> float | None:
 
 
 def _regime(buy_hold_return_pct: float | None, threshold_pct: float) -> str:
-    val = _safe_f(buy_hold_return_pct, default=None)
+    val = safe_float(buy_hold_return_pct, default=None)
     if val is None:
         return "sideways"
     if val >= threshold_pct:
@@ -218,7 +219,7 @@ def aggregate_financial_windows(
 
     summary = summarize_test_windows(windows)
     metrics = [window["metrics"] if isinstance(window.get("metrics"), dict) else {} for window in windows]
-    net_pnls = [_safe_f(item.get("net_pnl"), 0.0) for item in metrics]
+    net_pnls = [safe_float(item.get("net_pnl"), 0.0) for item in metrics]
     regimes = {}
     for name in ("bull", "bear", "sideways"):
         selected = [
@@ -261,12 +262,12 @@ def aggregate_financial_windows(
         "worst_cvar_95_pct": _minimum(item.get("cvar_95_pct") for item in metrics),
         "mean_exposure_pct": _mean(item.get("exposure_pct") for item in metrics),
         "mean_turnover_pct": _mean(item.get("turnover_pct") for item in metrics),
-        "total_trade_count": sum(_safe_int(item.get("trade_count"), 0) for item in metrics),
+        "total_trade_count": sum(safe_nonneg_int(item.get("trade_count"), default=0) for item in metrics),
         "worst_underwater_bars": int(max(
-            (_safe_int(item.get("max_underwater_periods"), 0) for item in metrics),
+            (safe_nonneg_int(item.get("max_underwater_periods"), default=0) for item in metrics),
             default=0,
         )),
-        "total_test_bars": sum(_safe_int(window.get("bars"), 0) for window in windows),
+        "total_test_bars": sum(safe_nonneg_int(window.get("bars"), default=0) for window in windows),
         "regime_threshold_pct": float(regime_threshold_pct),
         "regimes": regimes,
     }

@@ -24,7 +24,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from cachepaths import cache_path as resolve_cache_path
-from botcore import safe_float as _safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_float, safe_nonneg_float, safe_pos_float
+
+_safe_float = safe_float
 from providers.replay_provider import load_price_series
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
@@ -110,7 +112,7 @@ def _precompute_intelligence_tape(
     tape: List[dict] = []
 
     for raw_t, raw_p in sampled:
-        t = _safe_float(raw_t, default=None)
+        t = safe_float(raw_t, default=None)
         p = safe_pos_float(raw_p, default=None)
         if t is None or p is None:
             continue
@@ -202,10 +204,8 @@ def run_intelligence_backtest(
     base_survival = get_trend_survival_metrics(symbol, 0.0, allow_network=False)
     raw_p90 = base_survival.get("p90_days") if isinstance(base_survival, dict) else None
     raw_med = base_survival.get("median_days") if isinstance(base_survival, dict) else None
-    p90_cand = _safe_float(raw_p90, 0.0)
-    med_cand = _safe_float(raw_med, 0.0)
-    p90_days = p90_cand if p90_cand > 0.0 else 7.0
-    median_days = med_cand if med_cand > 0.0 else 3.0
+    p90_days = safe_pos_float(raw_p90, default=7.0)
+    median_days = safe_pos_float(raw_med, default=3.0)
     tape = _precompute_intelligence_tape(symbol, sampled, step_seconds, parabolic_surge_pct)
 
     # Run across Baseline, Pillar 1, Pillar 1 + Pillar 2, and Full Composite (All 4 Pillars)
@@ -318,9 +318,9 @@ def run_intelligence_backtest(
                 if use_p1:
                     # 1. Noise Floor Guard (Defers momentum/trend buys during dead chop)
                     if not is_mean_reversion:
-                        vel = _safe_float(k_out.get("vel"), 0.0)
-                        vstd_cand = _safe_float(k_out.get("vel_std"), 1.0)
-                        vel_std = max(vstd_cand if vstd_cand > 0.0 else 1.0, 1e-4)
+                        vel = safe_float(k_out.get("vel"), 0.0)
+                        vstd_cand = safe_pos_float(k_out.get("vel_std"), default=1.0)
+                        vel_std = max(vstd_cand, 1e-4)
                         n_dec = noise_guard.check(symbol, "BUY", gradient=vel, epsilon=vel_std)
                         if not n_dec.allowed:
                             noise_vetoes += 1
