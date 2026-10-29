@@ -1667,4 +1667,57 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
     assert res_eval["winner_value"] == 8.0
 
 
+def test_batch55_undefined_globals_and_shadow_live_hardening(tmp_path, monkeypatch):
+    import importlib.util
+    import os
+    from types import SimpleNamespace
+    import cachetrend as ct
+    from kraken import shadow_live as kr_sl
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    hl_sig_spec = importlib.util.spec_from_file_location(
+        "hl_signals_test", os.path.join(root_dir, "hyperliquid", "signals.py")
+    )
+    hl_signals = importlib.util.module_from_spec(hl_sig_spec)
+    hl_sig_spec.loader.exec_module(hl_signals)
+
+    # 1. CacheShortTrendManager.load_state resolves meta_file_path without NameError
+    stm = ct.CacheShortTrendManager(
+        ["BTCUSDC"],
+        filename=str(tmp_path / "cache_short_trend.json"),
+    )
+    assert stm.filename.endswith("cache_short_trend.json")
+
+    # 2. hyperliquid.signals._builtin_trend resolves safe_nonneg_float without NameError
+    monkeypatch.setenv("SIGNAL_FAST_H", "2")
+    monkeypatch.setenv("SIGNAL_SLOW_H", "4")
+    monkeypatch.setenv("SIGNAL_BAND_PCT", "1.0")
+    fake_hl_client = SimpleNamespace(
+        candles=lambda coin, interval, lookback_hours=0: [{"c": "100.0"}, {"c": "101.0"}, {"c": "102.0"}, {"c": "105.0"}]
+    )
+    sig_res = hl_signals._builtin_trend(fake_hl_client, "BTC")
+    assert sig_res["source"] == "builtin"
+    assert sig_res["trend"] in ("up", "down", "neutral")
+
+    # 3. kraken.shadow_live._eval_block resolves replay module `rp` without NameError
+    fake_param = SimpleNamespace(effective_max_budget=lambda: 1000.0)
+    monkeypatch.setattr(kr_sl, "_variants", lambda interval: {"current": fake_param})
+    monkeypatch.setattr(
+        kr_sl,
+        "_run_one",
+        lambda ohlc, params, interval, fee_pct, include_decision_trace=False: {
+            "net": 25.0,
+            "total": 30.0,
+            "max_drawdown_pct": 1.5,
+            "cycles": 2,
+            "open_qty": 0.0,
+            "decision_trace": [],
+        },
+    )
+    rows = kr_sl._eval_block([(100.0, 101.0, 99.0, 100.5), (100.5, 102.0, 100.0, 101.5)], 240, 0.25)
+    assert "current" in rows
+    assert rows["current"]["net_pct"] == 2.5
+
+
+
 

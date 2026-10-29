@@ -246,9 +246,14 @@ def _eval_block(ohlc4, interval, fee_pct, *, include_decision_trace=False):
     """Run every variant over OHLC, returning None when fewer than two bars exist."""
     if len(ohlc4) < 2:
         return None
+    try:
+        from kraken import replay as rp
+    except ImportError:
+        import replay as rp
     variants = _variants(interval)
-    if hasattr(rp, "prewarm_trend_series"):
-        rp.prewarm_trend_series(ohlc4, warmup=0, params=variants.get("current"), bar_minutes=interval)
+    cur_params = variants.get("current")
+    if hasattr(rp, "prewarm_trend_series") and hasattr(cur_params, "surge_guard"):
+        rp.prewarm_trend_series(ohlc4, warmup=0, params=cur_params, bar_minutes=interval)
     rows = {}
     for name, params in variants.items():
         budget = safe_float(params.effective_max_budget(), 0.0)

@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
