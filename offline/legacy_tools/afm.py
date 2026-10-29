@@ -1,10 +1,13 @@
 """A historical manual utility; it is not part of the runtime."""
 
-from plyer import notification
+try:
+    from plyer import notification
+except ImportError:
+    notification = None
 import requests
 import hashlib
 import time
-import utils  # Presupunem ca utils.py contine functia beep
+import utils
 
 # A function that generates the page's hash.
 def get_page_hash(url):
@@ -22,11 +25,12 @@ def get_page_hash(url):
 
 # A function that shows a cross-platform notification.
 def show_notification(title, text):
-    notification.notify(
-        title=title,
-        message=text,
-        timeout=10  # Durata notificarii in secunde
-    )
+    if notification is not None:
+        notification.notify(
+            title=title,
+            message=text,
+            timeout=10  # Durata notificarii in secunde
+        )
 
 # A function that plays the sound through utils.beep.
 def play_sound():

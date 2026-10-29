@@ -13,8 +13,6 @@ adjusted_values = initial_values * np.minimum(2, np.maximum(0, 1 + associated_pe
 #for i in range(10):
 #   print(f"Initial value: {initial_values[i]:.2f}, Associated percentage: {associated_percentages[i]*100:.1f}%, Adjusted value: {adjusted_values[i]:.2f}")
 
-import numpy as np
-
 # Simulare de date
 initial_values = np.linspace(7, 0, 120)  # Array descrescator de la 7 la 0
 associated_percentages = np.random.uniform(-1.0/10, 1.0/10, 120)  # The associated percentages, between -100% and 100%.

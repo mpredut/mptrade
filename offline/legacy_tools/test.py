@@ -16,8 +16,6 @@ def fetch_data():
     # The API for the historical data (for example: the Binance API).
     end_time = int(datetime.datetime.now().timestamp() * 1000)
     start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Ultimele 30 de zile
-    end_time = int(datetime.datetime.now().timestamp() * 1000)
-    start_time = end_time - 30 * 24 * 60 * 60 * 1000  # Ultimele 30 de zile
 
     url = f'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={start_time}&endTime={end_time}'
     response = requests.get(url)

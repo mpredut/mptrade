@@ -1,11 +1,6 @@
 """A historical manual experiment; it may reach the real API."""
 
-import os
-import time
-from datetime import datetime, timedelta
-
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
 from keys.apikeys import api_key, api_secret
 
 

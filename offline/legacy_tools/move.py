@@ -2,7 +2,6 @@
 
 import os
 import shutil
-import json
 
 def backup_and_replace(converted_file: str, cache_file: str):
     """

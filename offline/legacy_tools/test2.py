@@ -3,6 +3,7 @@
 import datetime
 import os
 import sys
+import matplotlib.pyplot as plt
 import pandas as pd
 import requests
 
@@ -39,7 +40,6 @@ def fetch_data():
     full_df = pd.concat(df_list)
     return full_df
 
-import matplotlib.pyplot as plt
 
 def analyze_drops_with_distribution(df, show_plot: bool = False):
     drops = []

@@ -2,12 +2,7 @@
 
 import pandas as pd
 
-from datetime import datetime
-
- 
-
 # A function that generates the timesheet.
-
 def genereaza_fisa_pontaj(month, year):
 
     month_days = pd.date_range(start=f'{year}-{month}-01', end=f'{year}-{month}-{pd.Timestamp(f"{year}-{month}-01").days_in_month}')
