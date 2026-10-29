@@ -3,7 +3,6 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import copy
-import math
 import time
 import threading
 from datetime import datetime
@@ -162,7 +161,8 @@ class PriceChecker:
         if hours_f is None:
             return []
         eff_hours = min(hours_f, 24.0 * 365.0)
-        history_limit = max(1000, min(100_000, int(math.ceil(eff_hours * 60)) + 2))
+        mins = eff_hours * 60.0
+        history_limit = max(1000, min(100_000, int(mins) + (1 if mins > int(mins) else 0) + 2))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
         cutoff_time = (time.time() - eff_hours * 3600) * 1000
 
@@ -412,7 +412,8 @@ class PriceChecker:
                     print(f"[Checker] Error in main loop: {e}")
 
                 print(f"[Checker] Waiting {interval_seconds} seconds until next check...")
-                for _ in range(max(1, int(math.ceil(iv_f)))):
+                steps = max(1, int(iv_f) + (1 if iv_f > int(iv_f) else 0))
+                for _ in range(steps):
                     if not self._running:
                         break
                     time.sleep(1)
