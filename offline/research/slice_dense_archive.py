@@ -71,10 +71,8 @@ def main():
     cutoff = last_ts - days * 86400.0 * ts_scale
     sliced = [r for r in rows if ts_of(r) >= cutoff]
 
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        for r in sliced:
-            f.write(json.dumps(r) + "\n")
+    from state_io import atomic_write_text
+    atomic_write_text(out, "".join(json.dumps(r) + "\n" for r in sliced))
 
     print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} puncte (ultimele {days}z) -> {out}")
 

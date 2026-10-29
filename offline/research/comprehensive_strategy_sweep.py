@@ -432,52 +432,57 @@ def main():
     # Save complete JSON
     out_dir = ROOT / "offline" / "results" / "strategy_sweep"
     json_path = out_dir / "sweep_results.json"
-    from state_io import atomic_write_json
+    from state_io import atomic_write_json, atomic_write_text
     atomic_write_json(json_path, master, indent=2)
     print(f"\nSaved raw JSON to {json_path}")
 
     # Generate Markdown Summary Report
     md_path = out_dir / "SWEEP_REPORT.md"
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write("# Strategy Sweep: High Profit & Low Drawdown (628 Days + Live Shadow)\n\n")
-        f.write("Evaluation across:\n")
-        f.write("1. **Walk-Forward (WF)**: 31 Out-of-Sample folds (~628 days, HYPE 240m)\n")
-        f.write("2. **Continuous 628d**: Unbroken compounding replay across all 3,772 bars\n")
-        f.write("3. **Kraken Shadow**: 206 forward bars (last 34 days) & 720-bar Kraken window (~120 days)\n\n")
+    lines = [
+        "# Strategy Sweep: High Profit & Low Drawdown (628 Days + Live Shadow)\n\n",
+        "Evaluation across:\n",
+        "1. **Walk-Forward (WF)**: 31 Out-of-Sample folds (~628 days, HYPE 240m)\n",
+        "2. **Continuous 628d**: Unbroken compounding replay across all 3,772 bars\n",
+        "3. **Kraken Shadow**: 206 forward bars (last 34 days) & 720-bar Kraken window (~120 days)\n\n",
+        "## 1. Walk-Forward Out-Of-Sample Performance (31 Folds)\n\n",
+        "| Rank | Candidate | WF Mean % | WF Median % | WF Worst % | WF Worst DD % | Pos Folds | W/T/L vs Live |\n",
+        "|---:|---|---:|---:|---:|---:|---:|---:|\n",
+    ]
+    sorted_wf = sorted(master, key=lambda x: (x.get("wf_mean_ret", 0), -x.get("wf_worst_dd", 100)), reverse=True)
+    for rank, r in enumerate(sorted_wf, 1):
+        lines.append(
+            f"| {rank} | `{r['name']}` | {r.get('wf_mean_ret', 0):+.3f}% | {r.get('wf_median_ret', 0):+.3f}% | "
+            f"{r.get('wf_worst_ret', 0):+.2f}% | {r.get('wf_worst_dd', 0):.2f}% | "
+            f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', 31)} | {r.get('vs_live_WTL', '-')} |\n"
+        )
 
-        # Table 1: Walk-Forward Out-Of-Sample (The true test of robustness)
-        f.write("## 1. Walk-Forward Out-Of-Sample Performance (31 Folds)\n\n")
-        f.write("| Rank | Candidate | WF Mean % | WF Median % | WF Worst % | WF Worst DD % | Pos Folds | W/T/L vs Live |\n")
-        f.write("|---:|---|---:|---:|---:|---:|---:|---:|\n")
-        sorted_wf = sorted(master, key=lambda x: (x.get("wf_mean_ret", 0), -x.get("wf_worst_dd", 100)), reverse=True)
-        for rank, r in enumerate(sorted_wf, 1):
-            f.write(f"| {rank} | `{r['name']}` | {r.get('wf_mean_ret', 0):+.3f}% | {r.get('wf_median_ret', 0):+.3f}% | "
-                    f"{r.get('wf_worst_ret', 0):+.2f}% | {r.get('wf_worst_dd', 0):.2f}% | "
-                    f"{r.get('wf_pos_count', 0)}/{r.get('wf_total_folds', 31)} | {r.get('vs_live_WTL', '-')} |\n")
+    lines.append("\n## 2. Continuous 628-Day Compounding Replay (~3,772 bars)\n\n")
+    lines.append("| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n")
+    lines.append("|---:|---|---:|---:|---:|---:|---:|\n")
+    sorted_cont = sorted(master, key=lambda x: x.get("cont_calmar", 0), reverse=True)
+    for rank, r in enumerate(sorted_cont, 1):
+        cycles = r.get("cont_cycles", 0)
+        wins = r.get("cont_wins", 0)
+        win_rate = (wins / cycles * 100.0) if cycles > 0 else 0.0
+        lines.append(
+            f"| {rank} | `{r['name']}` | {r.get('cont_net_pct', 0):+.2f}% | {r.get('cont_total_pct', 0):+.2f}% | "
+            f"{r.get('cont_max_dd', 0):.2f}% | **{r.get('cont_calmar', 0):.2f}** | {cycles} | {win_rate:.1f}% |\n"
+        )
 
-        # Table 2: Continuous 628-Day Replay (Total Compounding & Risk-Adjusted Calmar)
-        f.write("\n## 2. Continuous 628-Day Compounding Replay (~3,772 bars)\n\n")
-        f.write("| Rank | Candidate | Net % | Total % | MaxDD % | Calmar Ratio | Cycles | Win Rate |\n")
-        f.write("|---:|---|---:|---:|---:|---:|---:|---:|\n")
-        sorted_cont = sorted(master, key=lambda x: x.get("cont_calmar", 0), reverse=True)
-        for rank, r in enumerate(sorted_cont, 1):
-            cycles = r.get("cont_cycles", 0)
-            wins = r.get("cont_wins", 0)
-            win_rate = (wins / cycles * 100.0) if cycles > 0 else 0.0
-            f.write(f"| {rank} | `{r['name']}` | {r.get('cont_net_pct', 0):+.2f}% | {r.get('cont_total_pct', 0):+.2f}% | "
-                    f"{r.get('cont_max_dd', 0):.2f}% | **{r.get('cont_calmar', 0):.2f}** | {cycles} | {win_rate:.1f}% |\n")
+    lines.append("\n## 3. Kraken Live Shadow Performance (Forward 34d & Window 120d)\n\n")
+    if not shadow_results:
+        lines.append("*Live shadow evaluation skipped: insufficient forward bars recorded in `logs/shadow_live/` (minimum 2 bars required).* \n")
+    else:
+        lines.append("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|\n")
+        for r in master:
+            lines.append(
+                f"| `{r['name']}` | {r.get('fwd_net', 0):+.2f}% | {r.get('fwd_total', 0):+.2f}% | "
+                f"{r.get('fwd_dd', 0):.2f}% | {r.get('full_net', 0):+.2f}% | {r.get('full_total', 0):+.2f}% | "
+                f"{r.get('full_dd', 0):.2f}% |\n"
+            )
 
-        # Table 3: Kraken Live Forward Shadow Performance
-        f.write("\n## 3. Kraken Live Shadow Performance (Forward 34d & Window 120d)\n\n")
-        if not shadow_results:
-            f.write("*Live shadow evaluation skipped: insufficient forward bars recorded in `logs/shadow_live/` (minimum 2 bars required).* \n")
-        else:
-            f.write("| Candidate | Forward Net % | Forward Total % | Forward DD % | 120d Net % | 120d Total % | 120d DD % |\n")
-            f.write("|---|---:|---:|---:|---:|---:|---:|\n")
-            for r in master:
-                f.write(f"| `{r['name']}` | {r.get('fwd_net', 0):+.2f}% | {r.get('fwd_total', 0):+.2f}% | "
-                        f"{r.get('fwd_dd', 0):.2f}% | {r.get('full_net', 0):+.2f}% | {r.get('full_total', 0):+.2f}% | "
-                        f"{r.get('full_dd', 0):.2f}% |\n")
+    atomic_write_text(md_path, "".join(lines))
 
     print(f"Report written to {md_path}")
 
