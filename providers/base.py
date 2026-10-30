@@ -364,7 +364,14 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
             return abs(sz_f)
     orig = extract_orig_qty(order, default=0.0) or 0.0
     if orig > 0:
-        exec_q = extract_executed_qty(order, default=0.0)
+        exec_q = next(
+            (
+                abs(vf)
+                for key in _EXEC_QTY_KEYS
+                if key in order and (vf := safe_float(order.get(key), default=0.0)) != 0.0
+            ),
+            0.0,
+        )
         return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
 

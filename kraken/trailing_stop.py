@@ -73,7 +73,7 @@ from credentials import kraken_credentials  # noqa: E402
 from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset  # noqa: E402
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
 from instrument_registry import casefold_get  # noqa: E402
-from order_guard import check_intelligence_guards  # noqa: E402
+import order_guard  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
@@ -343,7 +343,7 @@ class KrakenTrailing:
 
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
-            allowed, reason, suggested_scale = check_intelligence_guards(
+            allowed, reason, suggested_scale = order_guard.check_intelligence_guards(
                 self.executor._executor, pair, side.upper(), price,
                 qty=qty,
                 bypass_guards=bypass_guards,

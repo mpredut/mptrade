@@ -19,7 +19,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv, required_float_env, single_instance
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
@@ -255,7 +255,6 @@ def main():
         print(json.dumps(daemon.run_cycle(force=True), indent=2))
         sys.exit(0)
 
-    from botcore import single_instance
     single_instance("intelligence_telemetry")
     daemon.start()
 
