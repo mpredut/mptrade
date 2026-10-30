@@ -515,15 +515,21 @@ def _filter_intents_by_scope(intents_data: list[dict[str, Any]], scope: str) -> 
     """Filter intent records to those matching the requested asset scope ('crypto', 'equities', or 'all')."""
     if not isinstance(intents_data, list):
         return []
-    return [
-        i
-        for i in intents_data
-        if isinstance(i, dict)
-        and (
-            scope not in ("equities", "crypto")
-            or (normalize_venue_name(i.get("venue")) == "t212") == (scope == "equities")
-        )
-    ]
+    out: list[dict[str, Any]] = []
+    for i in intents_data:
+        if not isinstance(i, dict):
+            continue
+        if scope in ("equities", "crypto"):
+            v_norm = normalize_venue_name(i.get("venue"))
+            is_eq = (
+                v_norm == "t212"
+                if v_norm
+                else str(i.get("symbol") or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+            )
+            if is_eq != (scope == "equities"):
+                continue
+        out.append(i)
+    return out
 
 
 def _resolve_intent_execution_details(
@@ -559,6 +565,9 @@ def _resolve_intent_execution_details(
         for oo in open_orders:
             if not isinstance(oo, dict):
                 continue
+            oo_venue = normalize_venue_name(oo.get("venue"))
+            if oo_venue and venue and oo_venue != venue:
+                continue
             oo_oid = extract_order_id(oo, default=None)
             if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
                 matched_open = oo
@@ -566,7 +575,7 @@ def _resolve_intent_execution_details(
             if (
                 order_id is None
                 and order_type == "LIMIT"
-                and normalize_venue_name(oo.get("venue")) == venue
+                and oo_venue == venue
                 and canonical_symbol_key(oo.get("symbol")) == canonical_symbol_key(symbol)
                 and compatible_quote_suffixes(oo.get("symbol")) == compatible_quote_suffixes(symbol)
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
@@ -911,16 +920,16 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     candidates.sort(key=_sort_key)
 
     decisions: list[dict[str, Any]] = []
-    seen_keys: set[tuple[str, str, str]] = set()
+    seen_keys: set[tuple[Any, ...]] = set()
     for item in candidates:
         sym_raw = str(item.get("symbol") or "").strip().upper()
         sym_canon = canonical_base_asset(sym_raw) or sym_raw
         venue_norm = normalize_venue_name(item.get("venue"))
         side_norm = str(item.get("decision") or "HOLD").strip().upper()
         key = (
-            (venue_norm, sym_canon, "")
+            (venue_norm, sym_canon, compatible_quote_suffixes(sym_raw), "")
             if sym_canon
-            else (venue_norm, "", side_norm)
+            else (venue_norm, "", (), side_norm)
         )
         if key not in seen_keys:
             seen_keys.add(key)

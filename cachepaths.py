@@ -705,7 +705,7 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
         return "USDCUSDT"
     base = canonical_base_asset(s)
-    if base and base != s:
+    if base:
         return f"{base}USDT"
     return s.replace("USDC", "USDT") if "USDC" in s else s
 

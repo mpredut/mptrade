@@ -999,8 +999,8 @@ def load_symbol_microstructure(
     if ob_cand:
         m_info["_source_cand"] = ob_cand
     if ob is not None:
-        m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio")
-        ob_mid = safe_pos_float(obj_attr(ob, "mid_price"), default=None)
+        m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio", obj_attr(ob, "ob_imbalance"))
+        ob_mid = safe_pos_float(obj_attr(ob, "mid_price", obj_attr(ob, "ob_mid_price")), default=None)
         if ob_mid is not None:
             m_info["ob_mid_price"] = ob_mid
         best_bid = safe_pos_float(obj_attr(ob, "best_bid"), default=None)
@@ -1025,21 +1025,24 @@ def load_symbol_microstructure(
             ("largest_bid_wall_usd", "bid_wall_usd"),
             ("largest_ask_wall_usd", "ask_wall_usd"),
         ):
-            val = safe_nonneg_float(obj_attr(ob, k_src), default=None)
+            raw_v = obj_attr(ob, k_src)
+            if raw_v is None and k_src != k_dst:
+                raw_v = obj_attr(ob, k_dst)
+            val = safe_nonneg_float(raw_v, default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
-        m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price")
-        m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price")
+        m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px"))
+        m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px"))
     if deriv is not None:
         m_info["funding_rate"] = obj_attr(deriv, "funding_rate")
-        m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate")
-        m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd")
+        m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate"))
+        m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd", obj_attr(deriv, "oi_usd"))
     if whale is not None:
-        m_info["whale_long_pct"] = obj_attr(whale, "top_traders_long_pct")
-        m_info["whale_long_ratio"] = obj_attr(whale, "top_traders_long_ratio")
+        m_info["whale_long_pct"] = obj_attr(whale, "top_traders_long_pct", obj_attr(whale, "whale_long_pct"))
+        m_info["whale_long_ratio"] = obj_attr(whale, "top_traders_long_ratio", obj_attr(whale, "whale_long_ratio"))
         m_info["taker_buy_sell_ratio"] = obj_attr(whale, "taker_buy_sell_ratio")
         m_info["taker_buy_vol_usd"] = obj_attr(whale, "taker_buy_vol_usd")
         m_info["taker_sell_vol_usd"] = obj_attr(whale, "taker_sell_vol_usd")
-        m_info["oi_1h_chg_pct"] = obj_attr(whale, "open_interest_1h_change_pct")
+        m_info["oi_1h_chg_pct"] = obj_attr(whale, "open_interest_1h_change_pct", obj_attr(whale, "oi_1h_chg_pct"))
         m_info["divergence_regime"] = obj_attr(whale, "divergence_regime")
     enrich_microstructure_cvd(m_info)
     return m_info

@@ -20,6 +20,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from cachepaths import (
     cache_symbol_variants,
+    compatible_quote_suffixes,
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
     resolve_cache_dir_path,
@@ -65,6 +66,7 @@ class _DiskBackedSymbolCollector:
 
     _DISK_FILE_PREFIX: str = ""
     _SNAPSHOT_CLS: Any = None
+    _QUOTE_ISOLATED: bool = False
 
     def __init__(
         self,
@@ -87,9 +89,15 @@ class _DiskBackedSymbolCollector:
 
     _as_bool_flag = staticmethod(_parse_bool_flag)
 
+    def _candidate_variants(self, symbol: str) -> List[Any]:
+        if self._QUOTE_ISOLATED:
+            quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+            return _symbol_variants(symbol, quotes=quotes)
+        return _symbol_variants(symbol)
+
     def _lookup_cached(self, symbol: str, now: float) -> Tuple[Any, Any]:
         cached = None
-        for cand in _symbol_variants(symbol):
+        for cand in self._candidate_variants(symbol):
             cached = self._cache.get(cand)
             if cached is not None:
                 break
@@ -102,7 +110,7 @@ class _DiskBackedSymbolCollector:
     def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[Any]:
         ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-        for cand in _symbol_variants(symbol):
+        for cand in self._candidate_variants(symbol):
             p = self._disk_path(cand)
             if not p:
                 continue
@@ -231,9 +239,14 @@ class OrderbookSnapshot:
             data = {}
         raw_sym = data.get("symbol")
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
-        mid_price = max(0.0, _clean_dict_float(data, "mid_price", 0.0))
+        mid_price = max(
+            0.0,
+            _clean_dict_float(data, "mid_price", _clean_dict_float(data, "ob_mid_price", 0.0)),
+        )
         best_bid = max(0.0, _clean_dict_float(data, "best_bid", 0.0))
         best_ask = max(0.0, _clean_dict_float(data, "best_ask", 0.0))
+        if mid_price <= 0.0 and best_bid > 0.0 and best_ask >= best_bid:
+            mid_price = round((best_bid + best_ask) / 2.0, 6)
         spread_bps = round_spread_bps(
             data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price
         ) or 0.0
@@ -245,16 +258,21 @@ class OrderbookSnapshot:
             d1_bid = round(bid_depth * (1.0 / 1.5), 2)
         if d1_ask <= 0.0 and ask_depth > 0.0:
             d1_ask = round(ask_depth * (1.0 / 1.5), 2)
+        imb_raw = _clean_dict_float(data, "imbalance_ratio", _clean_dict_float(data, "ob_imbalance", 0.5))
+        bid_wall_usd = _clean_dict_float(data, "largest_bid_wall_usd", _clean_dict_float(data, "bid_wall_usd", 0.0))
+        bid_wall_px = _clean_dict_float(data, "largest_bid_wall_price", _clean_dict_float(data, "bid_wall_px", 0.0))
+        ask_wall_usd = _clean_dict_float(data, "largest_ask_wall_usd", _clean_dict_float(data, "ask_wall_usd", 0.0))
+        ask_wall_px = _clean_dict_float(data, "largest_ask_wall_price", _clean_dict_float(data, "ask_wall_px", 0.0))
         return cls(
             symbol=sym_str,
             mid_price=mid_price,
             bid_depth_usd=bid_depth,
             ask_depth_usd=ask_depth,
-            imbalance_ratio=min(1.0, max(0.0, _clean_dict_float(data, "imbalance_ratio", 0.5))),
-            largest_bid_wall_usd=max(0.0, _clean_dict_float(data, "largest_bid_wall_usd", 0.0)),
-            largest_bid_wall_price=max(0.0, _clean_dict_float(data, "largest_bid_wall_price", 0.0)),
-            largest_ask_wall_usd=max(0.0, _clean_dict_float(data, "largest_ask_wall_usd", 0.0)),
-            largest_ask_wall_price=max(0.0, _clean_dict_float(data, "largest_ask_wall_price", 0.0)),
+            imbalance_ratio=min(1.0, max(0.0, imb_raw)),
+            largest_bid_wall_usd=max(0.0, bid_wall_usd),
+            largest_bid_wall_price=max(0.0, bid_wall_px),
+            largest_ask_wall_usd=max(0.0, ask_wall_usd),
+            largest_ask_wall_price=max(0.0, ask_wall_px),
             ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
             best_bid=best_bid,
             best_ask=best_ask,
@@ -269,6 +287,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
     _DISK_FILE_PREFIX = "orderbook_depth"
     _SNAPSHOT_CLS = OrderbookSnapshot
+    _QUOTE_ISOLATED = True
 
     def __init__(
         self,

@@ -4937,3 +4937,95 @@ def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_re
     assert sh["microstructure_count"] == 2
 
 
+def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tmp_path):
+    from cachepaths import resolve_binance_lookup_symbol
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.guards.high_stake_guard import load_symbol_microstructure
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        normalize_trading_decisions,
+    )
+
+    # 1. resolve_binance_lookup_symbol converts bare base assets ('BTC', 'TAO', 'HYPE') to '<BASE>USDT'
+    assert resolve_binance_lookup_symbol("BTC") == "BTCUSDT"
+    assert resolve_binance_lookup_symbol("TAO") == "TAOUSDT"
+    assert resolve_binance_lookup_symbol("HYPE") == "HYPEUSDT"
+    assert resolve_binance_lookup_symbol("USDCUSDT") == "USDCUSDT"
+
+    # 2. OrderbookDepthCollector isolates USD vs EUR snapshots in memory & on disk; OrderbookSnapshot.from_dict accepts ob_mid_price
+    ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, disk_ttl_sec=60.0, cache_dir=str(tmp_path))
+    usd_snap = OrderbookSnapshot.from_dict(
+        {
+            "symbol": "BTCUSDC",
+            "ob_mid_price": 82000.0,
+            "best_bid": 81990.0,
+            "best_ask": 82010.0,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 400000.0,
+            "ob_imbalance": 0.556,
+            "bid_wall_usd": 200000.0,
+            "bid_wall_px": 81500.0,
+            "ask_wall_usd": 250000.0,
+            "ask_wall_px": 82500.0,
+            "ts": 1793300000.0,
+        }
+    )
+    assert usd_snap.mid_price == 82000.0
+    assert usd_snap.largest_bid_wall_price == 81500.0
+    ob_col.record_snapshot(usd_snap, save_to_disk=True)
+
+    assert ob_col.fetch("XBTUSD", allow_network=False, now=1793300010.0) is not None
+    assert ob_col.fetch("BTCEUR", allow_network=False, now=1793300010.0) is None
+
+    # 3. load_symbol_microstructure accepts pre-normalized alias keys (ob_mid_price, bid_wall_px, oi_usd, whale_long_pct)
+    m_norm = load_symbol_microstructure(
+        str(tmp_path),
+        "BTCUSDC",
+        ob={"ob_imbalance": 0.58, "ob_mid_price": 82000.0, "bid_wall_usd": 150000.0, "bid_wall_px": 81500.0},
+        deriv={"funding_rate": 0.0001, "pred_funding_rate": 0.00015, "oi_usd": 95000000.0},
+        whale={"whale_long_pct": 0.62, "whale_long_ratio": 1.63, "oi_1h_chg_pct": 1.2},
+    )
+    assert m_norm["ob_mid_price"] == 82000.0
+    assert m_norm["bid_wall_usd"] == 150000.0
+    assert m_norm["bid_wall_px"] == 81500.0
+    assert m_norm["oi_usd"] == 95000000.0
+    assert m_norm["whale_long_pct"] == 0.62
+
+    # 4. normalize_trading_decisions preserves distinct quote-family decisions (XBTUSD vs XBTEUR) on the same venue
+    decs = normalize_trading_decisions(
+        {
+            "market_trading_decisions": [
+                {"venue": "kraken", "symbol": "XBTUSD", "decision": "BUY", "confidence": 0.90, "suggested_notional_usd": 200.0},
+                {"venue": "kraken", "symbol": "XBTEUR", "decision": "SELL", "confidence": 0.88, "suggested_notional_usd": 150.0},
+            ]
+        }
+    )
+    assert [d["symbol"] for d in decs] == ["XBTUSD", "XBTEUR"]
+
+    # 5. _resolve_intent_execution_details does not match open_orders by order_id across different venues
+    st_cross_oid = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": 1793300000.0,
+                "venue": "binance",
+                "symbol": "TAOUSDC",
+                "decision": "BUY",
+                "order_type": "LIMIT",
+                "limit_price": 300.0,
+                "reference_price": 302.0,
+                "suggested_notional_usd": 300.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "101", "status": "FILLED", "price": "300.0", "executedQty": "1.0"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        open_orders=[{"venue": "hyperliquid", "orderId": "101", "symbol": "TAOUSDC", "side": "BUY", "price": 295.0, "executedQty": 0.0}],
+    )
+    assert st_cross_oid["status"] == "FILLED"
+    assert st_cross_oid["fill_px"] == 300.0
+
+
+
