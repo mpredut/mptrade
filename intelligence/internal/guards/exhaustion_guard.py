@@ -116,6 +116,14 @@ class WeibullExhaustionGuard:
         survival_prob, hazard_rate, k_shape, lam_scale = weibull_survival_and_hazard(
             duration_days, med_d, limit_p90
         )
+        metrics = {
+            "duration_days": duration_days,
+            "p90_days": limit_p90,
+            "weibull_survival": round(survival_prob, 4),
+            "weibull_hazard": round(hazard_rate, 4),
+            "weibull_k": round(k_shape, 3),
+            "weibull_lambda": round(lam_scale, 3),
+        }
 
         if duration_days > limit_p90:
             reason = (
@@ -123,36 +131,16 @@ class WeibullExhaustionGuard:
                 f"median={med_d:.1f}d, S_weibull={survival_prob:.2f}, k={k_shape:.2f})"
             )
             if self.policy in ("veto", "block", "defer"):
-                return GuardDecision.veto(
-                    "WeibullExhaustionGuard",
-                    reason,
-                    duration_days=duration_days,
-                    p90_days=limit_p90,
-                    weibull_survival=round(survival_prob, 4),
-                    weibull_hazard=round(hazard_rate, 4),
-                    weibull_k=round(k_shape, 3),
-                    weibull_lambda=round(lam_scale, 3),
-                )
-            else:
-                return GuardDecision.downscale(
-                    "WeibullExhaustionGuard",
-                    scale=self.exhausted_scale,
-                    reason=reason,
-                    duration_days=duration_days,
-                    p90_days=limit_p90,
-                    weibull_survival=round(survival_prob, 4),
-                    weibull_hazard=round(hazard_rate, 4),
-                    weibull_k=round(k_shape, 3),
-                    weibull_lambda=round(lam_scale, 3),
-                )
+                return GuardDecision.veto("WeibullExhaustionGuard", reason, **metrics)
+            return GuardDecision.downscale(
+                "WeibullExhaustionGuard",
+                scale=self.exhausted_scale,
+                reason=reason,
+                **metrics,
+            )
 
         return GuardDecision.allow(
             "WeibullExhaustionGuard",
             f"trend_healthy (duration={duration_days:.1f}d <= P90={limit_p90:.1f}d, S_weibull={survival_prob:.2f})",
-            duration_days=duration_days,
-            p90_days=limit_p90,
-            weibull_survival=round(survival_prob, 4),
-            weibull_hazard=round(hazard_rate, 4),
-            weibull_k=round(k_shape, 3),
-            weibull_lambda=round(lam_scale, 3),
+            **metrics,
         )

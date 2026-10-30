@@ -60,12 +60,19 @@ _SERVER_MARKERS = (
     "CONFIG RELOAD", "SERVER STATUS", "SERVER DOWN", "DEADMAN",
 )
 
+def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
+    if isinstance(val, bool) or val is None:
+        return default
+    s = str(val).strip() if strip else str(val)
+    return s if s else default
+
+
 def _ensure_env_loaded() -> None:
     load_env_stack(os.path.join(ROOT_DIR, ".env"))
 
 
 def resolve_topic(category: str) -> str:
-    cat = ("" if isinstance(category, bool) else str(category or "")).strip().upper()
+    cat = _clean_str(category, strip=True).upper()
     if cat in ("SERVER", "SERVER_STATE", "SERVER_STATUS", "DEADMAN"):
         cat = "SERVER"
     key = f"NTFY_TOPIC_{cat}"
@@ -74,8 +81,8 @@ def resolve_topic(category: str) -> str:
     return required_env(key)
 
 def _category_for_title_and_source(title: str, source: str) -> str:
-    t = ("" if isinstance(title, bool) else str(title or "")).upper()
-    s = ("" if isinstance(source, bool) else str(source or "")).lower()
+    t = _clean_str(title).upper()
+    s = _clean_str(source).lower()
     if "AUTO_TECHNICAL_REPAIR" in t or s == "ai_supervisor":
         if any(m in t for m in _EXPLICIT_ERROR_MARKERS):
             return "ERROR"
@@ -111,8 +118,8 @@ def _topic_for_category(title: str, source: str) -> str:
     return resolve_topic(cat)
 
 def _resolve_provider_label(bot_name: str = "", source: str = "") -> str:
-    bot_str = "" if isinstance(bot_name, bool) else str(bot_name or "")
-    src_str = "" if isinstance(source, bool) else str(source or "")
+    bot_str = _clean_str(bot_name)
+    src_str = _clean_str(source)
     for cand in (normalize_venue_name(src_str), normalize_venue_name(bot_str)):
         if cand == "kraken":
             return "Kraken"
@@ -242,12 +249,12 @@ class NotificationServer:
         return flushed
 
     def _send_ntfy(self, title: str, message: str, priority: str, topic: str, is_retry: bool = False, skip_email: bool = False) -> bool:
-        topic_str = "" if isinstance(topic, bool) or topic is None else str(topic).strip()
+        topic_str = _clean_str(topic, strip=True)
         if not topic_str:
             return True
-        title = "Alert" if isinstance(title, bool) or title is None else (str(title).strip() or "Alert")
-        message = "" if isinstance(message, bool) or message is None else str(message)
-        priority = "default" if isinstance(priority, bool) or priority is None else (str(priority).strip() or "default")
+        title = _clean_str(title, "Alert", strip=True)
+        message = _clean_str(message)
+        priority = _clean_str(priority, "default", strip=True)
         if _external_notifications_disabled():
             logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")
             return True
@@ -556,18 +563,10 @@ class NotificationServer:
                 if intent == "ntfy_webhook":
                     # Direct retry or pre-formatted [auto_...] topic payload
                     if "title" in payload:
-                        raw_t = payload.get("title")
-                        raw_m = payload.get("message")
-                        raw_p = payload.get("priority")
-                        raw_top = payload.get("topic")
-                        t_val = "Alert" if isinstance(raw_t, bool) or raw_t is None else (str(raw_t).strip() or "Alert")
-                        m_val = "" if isinstance(raw_m, bool) or raw_m is None else str(raw_m)
-                        p_val = "default" if isinstance(raw_p, bool) or raw_p is None else (str(raw_p).strip() or "default")
-                        top_val = (
-                            self._resolve_topic("ERROR")
-                            if isinstance(raw_top, bool) or raw_top is None or not str(raw_top).strip()
-                            else str(raw_top).strip()
-                        )
+                        t_val = _clean_str(payload.get("title"), "Alert", strip=True)
+                        m_val = _clean_str(payload.get("message"))
+                        p_val = _clean_str(payload.get("priority"), "default", strip=True)
+                        top_val = _clean_str(payload.get("topic"), strip=True) or self._resolve_topic("ERROR")
                         self._gate_and_send_ntfy(
                             t_val,
                             m_val,
@@ -585,10 +584,8 @@ class NotificationServer:
 
                 elif intent == "email":
                     # Same schema as the retry queue; rendered by AlertNotifier.send_email_batch.
-                    raw_s = payload.get("subject")
-                    raw_em = payload.get("message")
-                    s_val = "Alert" if isinstance(raw_s, bool) or raw_s is None else (str(raw_s).strip() or "Alert")
-                    em_val = "" if isinstance(raw_em, bool) or raw_em is None else str(raw_em)
+                    s_val = _clean_str(payload.get("subject"), "Alert", strip=True)
+                    em_val = _clean_str(payload.get("message"))
                     self._send_email(s_val, em_val)
                 return
             except json.JSONDecodeError as e:
@@ -723,20 +720,15 @@ class NotificationServer:
                         success = False
                         if intent == "ntfy_webhook":
                             if "title" in payload:
-                                raw_title = payload.get("title")
-                                title = "" if isinstance(raw_title, bool) or raw_title is None else str(raw_title)
-                                raw_msg = payload.get("message")
-                                msg = "" if isinstance(raw_msg, bool) or raw_msg is None else str(raw_msg)
-                                raw_p = payload.get("priority")
-                                prio = "default" if isinstance(raw_p, bool) or raw_p is None else (str(raw_p).strip() or "default")
-                                raw_top = payload.get("topic")
-                                if isinstance(raw_top, bool) or raw_top is None or not str(raw_top).strip():
+                                title = _clean_str(payload.get("title"))
+                                msg = _clean_str(payload.get("message"))
+                                prio = _clean_str(payload.get("priority"), "default", strip=True)
+                                top = _clean_str(payload.get("topic"), strip=True)
+                                if not top:
                                     try:
                                         top = self._resolve_topic("ERROR")
                                     except Exception:
                                         top = "ntfy-error-1978"
-                                else:
-                                    top = str(raw_top).strip()
                                 if not title.startswith("[DELAYED]"):
                                     title = "[DELAYED] " + title
                                 success = await asyncio.to_thread(
@@ -757,10 +749,8 @@ class NotificationServer:
                             else:
                                 success = True
                         elif intent == "email":
-                            raw_subj = payload.get("subject")
-                            subj = "" if isinstance(raw_subj, bool) or raw_subj is None else str(raw_subj)
-                            raw_emsg = payload.get("message")
-                            emsg = "" if isinstance(raw_emsg, bool) or raw_emsg is None else str(raw_emsg)
+                            subj = _clean_str(payload.get("subject"))
+                            emsg = _clean_str(payload.get("message"))
                             if not subj.startswith("[DELAYED]"):
                                 subj = "[DELAYED] " + subj
                             success = await asyncio.to_thread(

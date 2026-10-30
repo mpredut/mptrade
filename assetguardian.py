@@ -269,11 +269,15 @@ def _finite_float(raw, *, positive=False):
     return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
 
 
+def _clamp_confidence(raw) -> float:
+    return min(1.0, safe_nonneg_float(raw, default=0.0))
+
+
 def _price_row(row):
     """Normalize a Price24 row to ``(timestamp_seconds, positive_price)``."""
     if isinstance(row, dict):
-        timestamp = _finite_float(extract_timestamp_s(row, default=None), positive=True)
-        price = _finite_float(extract_order_price(row, default=0.0), positive=True)
+        timestamp = extract_timestamp_s(row, default=None)
+        price = extract_order_price(row, default=None)
         if timestamp is None or price is None:
             return None
         return timestamp, price
@@ -375,10 +379,11 @@ def _get_portfolio_growth_percent(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFA
         if not isinstance(row, dict):
             continue
         payload = row.get("i") if isinstance(row.get("i"), dict) else row
-        ts = _finite_float(extract_timestamp_s(payload, default=None), positive=True)
-        val = _finite_float(payload.get("total_value_usdc"), positive=True)
-        if val is None:
-            val = _finite_float(payload.get("total_value_usdt"), positive=True)
+        ts = extract_timestamp_s(payload, default=None)
+        val = (
+            _finite_float(payload.get("total_value_usdc"), positive=True)
+            or _finite_float(payload.get("total_value_usdt"), positive=True)
+        )
         if ts is None or val is None:
             continue
         if target_ts <= ts <= now_ts:
@@ -413,13 +418,11 @@ def _read_p3b_sentiment(path=None, now_ts=None):
     if age_sec < -60.0 or age_sec > P3B_MAX_AGE_SECONDS:
         return None
 
-    raw_conf = _finite_float(data.get("confidence"))
-    conf = min(1.0, max(0.0, raw_conf if raw_conf is not None else 0.0))
     return {
         "recommended_action": str(data.get("recommended_action") or "HOLD").strip().upper(),
         "market_bias": str(data.get("market_bias") or "NEUTRAL").strip().upper(),
         "risk_level": str(data.get("risk_level") or "MODERATE").strip().upper(),
-        "confidence": conf,
+        "confidence": _clamp_confidence(data.get("confidence")),
         "ts": eval_ts,
     }
 
@@ -451,8 +454,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
     action = str(assessment.get("recommended_action") or "HOLD").strip().upper()
     bias = str(assessment.get("market_bias") or "NEUTRAL").strip().upper()
     risk = str(assessment.get("risk_level") or "MODERATE").strip().upper()
-    raw_conf = _finite_float(assessment.get("confidence"))
-    conf = min(1.0, max(0.0, raw_conf if raw_conf is not None else 0.0))
+    conf = _clamp_confidence(assessment.get("confidence"))
 
     # 1. SELL threshold multiplier
     if action == "DEFENSIVE" or (bias == "BEARISH" and risk in {"HIGH", "EXTREME"}):
@@ -487,10 +489,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
 
 def _effective_portfolio_growth_threshold(sell_mult=1.0):
     """Return effective 24h portfolio growth threshold (%) scaled by P3B sell_mult."""
-    sm = _finite_float(sell_mult, positive=True)
-    if sm is None:
-        sm = 1.0
-    return PORTFOLIO_GROWTH_PERCENT * sm
+    return PORTFOLIO_GROWTH_PERCENT * safe_pos_float(sell_mult, default=1.0)
 
 
 def _portfolio_sell_multiplier(portfolio_growth_pct=None, sell_mult=1.0):
@@ -512,12 +511,8 @@ def _trigger_threshold_for_sell_tier(
       and portfolio growth multiplier down to SELL_REARM_GROWTH_PERCENT + 2.0 (4.0%),
       preserving strict ordering above the hybrid tier.
     """
-    thr = _finite_float(canonical_threshold, positive=True)
-    if thr is None:
-        thr = float(SELL_TIERS[0][0])
-    sm = _finite_float(sell_mult, positive=True)
-    if sm is None:
-        sm = 1.0
+    thr = safe_pos_float(canonical_threshold, default=float(SELL_TIERS[0][0]))
+    sm = safe_pos_float(sell_mult, default=1.0)
     static_thresholds = {float(t) for t, _ in SELL_TIERS}
     if thr not in static_thresholds and abs(thr - PORTFOLIO_ASSET_MIN_GROWTH_PERCENT) <= 1e-9:
         return max(SELL_REARM_GROWTH_PERCENT + 1.5, thr * sm)
@@ -530,12 +525,8 @@ def _trigger_threshold_for_sell_tier(
 
 def _trigger_threshold_for_buy_tier(canonical_threshold, buy_mult=1.0):
     """Return effective drawdown trigger (%) for a canonical BUY tier."""
-    thr = _finite_float(canonical_threshold, positive=True)
-    if thr is None:
-        thr = float(BUY_TIERS[0][0])
-    bm = _finite_float(buy_mult, positive=True)
-    if bm is None:
-        bm = 1.0
+    thr = safe_pos_float(canonical_threshold, default=float(BUY_TIERS[0][0]))
+    bm = safe_pos_float(buy_mult, default=1.0)
     return max(RECOVERY_RESET_PERCENT + 0.5, thr * bm)
 
 
@@ -1556,9 +1547,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         rolling_growth_percent if effective_growth is None else effective_growth)
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
-    p3b_conf = _finite_float(p3b_assessment.get("confidence")) if isinstance(p3b_assessment, dict) else None
-    if p3b_conf is None:
-        p3b_conf = 0.0
+    p3b_conf = _clamp_confidence(p3b_assessment.get("confidence")) if isinstance(p3b_assessment, dict) else 0.0
     p3b_str = (
         f"{p3b_assessment.get('recommended_action')}/{p3b_assessment.get('market_bias')}"
         f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"

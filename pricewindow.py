@@ -375,10 +375,7 @@ def instant_trend_from_prices(
     if noise_gate_k > 0.0 and len(analyzer.prices) >= 3:
         grad_arr = np.array(gradient_lst) if len(gradient_lst) else np.gradient(np.array(analyzer.prices))
         noise_thr = noise_gate_k * float(np.std(grad_arr))
-    if noise_thr > 0.0 and abs(growth_coefficient) <= noise_thr:
-        final_trend = 0
-    else:
-        final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
+    final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
     return final_trend, growth_coefficient, slope_full, gradient_recent
 
 
@@ -677,10 +674,7 @@ class IncrementalTrendBuffer:
 
         noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
         noise_thr = noise_gate_k * epsilon if noise_gate_k > 0.0 else 0.0
-        if noise_thr > 0.0 and abs(growth_coefficient) <= noise_thr:
-            final_trend = 0
-        else:
-            final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
+        final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
 
         return final_trend, growth_coefficient, slope_full, gradient_recent, epsilon
 

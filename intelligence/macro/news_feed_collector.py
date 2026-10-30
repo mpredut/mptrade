@@ -199,6 +199,15 @@ class NewsFeedCollector:
             ts=now,
         )
 
+    @staticmethod
+    def _is_valid_pool_entry(v: Any, cutoff: float, max_ts: Optional[float] = None) -> bool:
+        if not (isinstance(v, tuple) and len(v) == 2 and hasattr(v[1], "title")):
+            return False
+        ts_f = safe_float(v[0], default=None)
+        if ts_f is None or ts_f < cutoff:
+            return False
+        return max_ts is None or ts_f <= max_ts
+
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         cache_dir = self._CacheDirOrNone()
@@ -214,12 +223,7 @@ class NewsFeedCollector:
         self._aggregated_pool = {
             k: v
             for k, v in self._aggregated_pool.items()
-            if isinstance(v, tuple)
-            and len(v) == 2
-            and isinstance(v[0], (int, float))
-            and safe_float(v[0], default=None) is not None
-            and float(v[0]) >= cutoff
-            and hasattr(v[1], "title")
+            if self._is_valid_pool_entry(v, cutoff)
         }
 
         pool_items = [v[1] for v in self._aggregated_pool.values()]
@@ -255,12 +259,7 @@ class NewsFeedCollector:
         active_values = [
             v
             for v in self._aggregated_pool.values()
-            if isinstance(v, tuple)
-            and len(v) == 2
-            and isinstance(v[0], (int, float))
-            and safe_float(v[0], default=None) is not None
-            and cutoff <= float(v[0]) <= (now + 5.0)
-            and hasattr(v[1], "title")
+            if self._is_valid_pool_entry(v, cutoff, max_ts=now + 5.0)
             and hasattr(v[1], "is_high_severity")
         ]
         return self._build_pool_snapshot(active_values, now, cache_dir)

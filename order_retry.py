@@ -934,31 +934,23 @@ def get_accepted_order_ttl_map() -> dict:
     return res
 
 
+def _clean_str(val) -> str:
+    return "" if val is None or isinstance(val, bool) else str(val).strip()
+
+
 def infer_record_owner(rec: dict) -> str:
     """Infer the logical bot owner of a durable outbox record."""
     if not isinstance(rec, dict):
         return "unspecified"
     raw_place_kw = rec.get("place_kwargs")
     placement = dict(raw_place_kw) if isinstance(raw_place_kw, dict) else {}
-    raw_parent = rec.get("parent_owner")
-    if raw_parent is None or isinstance(raw_parent, bool) or not str(raw_parent).strip():
-        raw_parent = placement.get("parent_owner")
     parent_owner = (
-        str(raw_parent).strip().lower()
-        if raw_parent is not None and not isinstance(raw_parent, bool)
-        else ""
-    )
+        _clean_str(rec.get("parent_owner")) or _clean_str(placement.get("parent_owner"))
+    ).lower()
     if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
         return parent_owner
     owner = "unspecified"
-    raw_cid = placement.get("client_order_id")
-    if raw_cid is None or isinstance(raw_cid, bool) or not str(raw_cid).strip():
-        raw_cid = rec.get("prefix")
-    cid = (
-        str(raw_cid).strip()
-        if raw_cid is not None and not isinstance(raw_cid, bool)
-        else ""
-    )
+    cid = _clean_str(placement.get("client_order_id")) or _clean_str(rec.get("prefix"))
     if cid:
         try:
             from binance_api import order_id_context as rc
@@ -967,8 +959,7 @@ def infer_record_owner(rec: dict) -> str:
             owner = "unspecified"
     if owner not in {"unknown", "unspecified", "order_retry"} and not str(owner).startswith("alt:"):
         return owner
-    raw_kind = rec.get("kind")
-    kind = str(raw_kind).strip() if raw_kind is not None and not isinstance(raw_kind, bool) else ""
+    kind = _clean_str(rec.get("kind"))
     if "monitor_order_replace" in kind:
         return "monitororder"
     if kind in {"STOP", "TP"}:
@@ -1142,7 +1133,7 @@ def _apply_accepted(rec, order, now, provider_name=None):
     order_id = extract_order_id(order)
     if order_id is None:
         return False
-    venue_qty = safe_pos_float(extract_orig_qty(order), default=None)
+    venue_qty = extract_orig_qty(order)
     if venue_qty is not None:
         rec["qty"] = venue_qty
         rec["requested_qty_total"] = venue_qty
@@ -1308,7 +1299,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 continue
             if outcome == "accepted" and same_revision:
                 _set_safe_to_discard(rec, False)
-                venue_qty = safe_pos_float(extract_orig_qty(order), default=None)
+                venue_qty = extract_orig_qty(order)
                 if venue_qty is not None:
                     rec["qty"] = venue_qty
                     rec["requested_qty_total"] = venue_qty
@@ -2048,13 +2039,12 @@ class TrackedOrderLifecycle:
             if status is not None:
                 fields["submit_status"] = str(status)
             orig_qty = extract_orig_qty(response)
-            submitted_qty = _lifecycle_finite(
-                orig_qty if orig_qty is not None else extract_order_qty(response, default=0.0),
-                positive=True)
+            submitted_qty = (
+                orig_qty if orig_qty is not None else extract_order_qty(response, default=None)
+            )
             if submitted_qty is not None:
                 fields["submitted_qty"] = submitted_qty
-            submitted_price = _lifecycle_finite(
-                extract_order_price(response, default=0.0), positive=True)
+            submitted_price = extract_order_price(response, default=None)
             if submitted_price is not None:
                 fields["submitted_price"] = submitted_price
             return fields

@@ -497,6 +497,16 @@ def pass_common_gate(
                 return False, "local_daily_budget", warn, None
 
         # 4. Check the 5-minute Common Gate
+        new_item = {
+            "title": title,
+            "body": body,
+            "priority": priority,
+            "topic": topic,
+            "ts": now_ts,
+            "sim_key": sim_key,
+            "fingerprint": fingerprint,
+            "count": 1,
+        }
         last_gate_ts = safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
         if last_gate_ts > now_ts:
             last_gate_ts = 0.0
@@ -504,16 +514,7 @@ def pass_common_gate(
             # Gate is CLOSED: buffer this distinct message for bulk synthesis
             channel_state["last"][fingerprint] = now_ts
             channel_state["last"][sim_key] = now_ts
-            pending_bulk.append({
-                "title": title,
-                "body": body,
-                "priority": priority,
-                "topic": topic,
-                "ts": now_ts,
-                "sim_key": sim_key,
-                "fingerprint": fingerprint,
-                "count": 1,
-            })
+            pending_bulk.append(new_item)
             _save_delivery_state(path, state)
             return False, "buffered_for_bulk", False, None
 
@@ -523,16 +524,7 @@ def pass_common_gate(
         channel_state["last"][sim_key] = now_ts
         channel_state["last_gate_ts"] = now_ts
         if pending_bulk:
-            items_to_send = list(pending_bulk) + [{
-                "title": title,
-                "body": body,
-                "priority": priority,
-                "topic": topic,
-                "ts": now_ts,
-                "sim_key": sim_key,
-                "fingerprint": fingerprint,
-                "count": 1,
-            }]
+            items_to_send = list(pending_bulk) + [new_item]
             channel_state["pending_bulk"] = []
             _save_delivery_state(path, state)
             return True, "bulk_synthesized", False, synthesize_bulk_notifications(items_to_send)
