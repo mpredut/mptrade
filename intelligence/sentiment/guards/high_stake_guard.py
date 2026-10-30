@@ -3489,6 +3489,34 @@ def populate_market_and_portfolio_snapshot(
     return snapshot
 
 
+def format_bottom_structure_6h_parts(
+    m24: Dict[str, Any],
+    btc_m24: Optional[Dict[str, Any]] = None,
+    *,
+    prior_label: str = "prior_6h_low",
+    px_prefix: str = "$",
+    check_smt: bool = True,
+) -> Tuple[Optional[str], List[str]]:
+    """Build 6h intraday bottom structure label and formatted metric parts (including SMT vs BTC)."""
+    b_struct = m24.get("bottom_structure_6h") if isinstance(m24, dict) else None
+    if not b_struct:
+        return None, []
+    b_parts = [
+        f"{prior_label}={px_prefix}{m24.get('prior_6h_low_px')}",
+        f"1h_low={px_prefix}{m24.get('recent_1h_low_px')}",
+    ]
+    if m24.get("higher_low_vs_prior_pct") is not None:
+        b_parts.append(f"hl_diff={safe_float(m24.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
+    if m24.get("reclaim_above_prior_low_pct") is not None:
+        b_parts.append(f"reclaim={safe_float(m24.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
+    if check_smt and b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" and isinstance(btc_m24, dict) and btc_m24:
+        btc_b = btc_m24.get("bottom_structure_6h")
+        btc_pos24 = safe_float(btc_m24.get("pos_24h_pct"), 100.0)
+        if btc_b in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos24 <= 35.0:
+            b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
+    return str(b_struct), b_parts
+
+
 def collect_pretrade_telemetry(
     symbol: str,
     regime_context: Optional[Any] = None,
@@ -3685,18 +3713,11 @@ def collect_pretrade_telemetry(
                             rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
             if m24.get("bottom_structure_6h"):
-                b_struct = m24["bottom_structure_6h"]
-                b_parts = [f"prior_6h_low=${m24.get('prior_6h_low_px')}", f"1h_low=${m24.get('recent_1h_low_px')}"]
-                if m24.get("higher_low_vs_prior_pct") is not None:
-                    b_parts.append(f"hl_diff={float(m24['higher_low_vs_prior_pct']):+.2f}%")
-                if m24.get("reclaim_above_prior_low_pct") is not None:
-                    b_parts.append(f"reclaim={float(m24['reclaim_above_prior_low_pct']):+.2f}%")
-                if b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" and btc_m24:
-                    btc_b = btc_m24.get("bottom_structure_6h")
-                    btc_pos24 = safe_float(btc_m24.get("pos_24h_pct"), 100.0)
-                    if btc_b in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos24 <= 35.0:
-                        b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
-                telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
+                b_struct, b_parts = format_bottom_structure_6h_parts(
+                    m24, btc_m24, prior_label="prior_6h_low", px_prefix="$", check_smt=bool(btc_m24)
+                )
+                if b_struct:
+                    telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
         cur_m_info = load_symbol_microstructure(
             cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap

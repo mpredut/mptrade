@@ -98,9 +98,7 @@ def _write_json_atomic(path, data, **kwargs):
     )
 
 
-def _dynamic_window_key(window_seconds: float) -> str:
-    """Key a clamped dynamic window in the published snapshot, e.g. 900.0 -> '900'."""
-    return f"{float(window_seconds):g}"
+_dynamic_window_key = pw.dynamic_window_key
 
 
 class CacheLongTrendManager(CacheManagerInterface):
@@ -1343,14 +1341,6 @@ class CacheShortTrendManager(CacheManagerInterface):
             self._flush_thread = None
             self._computing = False
         return stopped
-
-    @classmethod
-    def shutdown_all_instances(cls, timeout=5.0):
-        results = [
-            manager.shutdown(timeout=timeout)
-            for manager in list(cls._live_instances)
-        ]
-        return all(results) if results else True
 
     def prime_from_file(self, symbols=None, *, overwrite=True):
         """Prime memory from startup data so a reader can calculate fresh trends locally."""

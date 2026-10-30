@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from botcore import exact_int, exact_nonneg_int, safe_float, safe_nonneg_float, safe_pos_float
+from .base import _clean_single_order_id, extract_order_id, extract_orig_qty
 
 
 class ProviderError(Exception):
@@ -62,7 +63,6 @@ class SubmissionOutcome:
         if self.order_id is None or (isinstance(self.order_id, str) and not self.order_id.strip()):
             order_id = None
         else:
-            from .base import _clean_single_order_id
             order_id = _clean_single_order_id(self.order_id)
             if order_id is None:
                 raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
@@ -96,18 +96,6 @@ def capture_submission(submit: Callable[[], object]) -> SubmissionOutcome:
         return SubmissionOutcome(
             "unknown", reason="response_without_order_id", native=native)
     return SubmissionOutcome("accepted", order_id=order_id, native=native)
-
-
-def extract_order_id(native, default: Optional[str] = None) -> Optional[str]:
-    """Extract a venue order ID from normalized and common native response shapes."""
-    from .base import extract_order_id as _extract_order_id
-    return _extract_order_id(native, default=default)
-
-
-def extract_orig_qty(native, default: Optional[float] = None) -> Optional[float]:
-    """Extract the venue-accepted original order quantity from common response shapes."""
-    from .base import extract_orig_qty as _extract_orig_qty
-    return _extract_orig_qty(native, default=default)
 
 
 # Compatibility alias retained for existing imports.

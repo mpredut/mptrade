@@ -8,18 +8,15 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import float_env, pos_float_env, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached
 
 
-def _f_env(name: str, default: float) -> float:
-    return safe_float(float_env(name), default)
-
-
-K_REENTRY_DEFAULT = _f_env("SHADOW_K_REENTRY", 2.0)
-K_DCA_DEFAULT = _f_env("SHADOW_K_DCA", 1.0)
+_f_env = pos_float_env
+K_REENTRY_DEFAULT = pos_float_env("SHADOW_K_REENTRY", 2.0)
+K_DCA_DEFAULT = pos_float_env("SHADOW_K_DCA", 1.0)
 
 _vol_memo_cache: dict = {}
 _VOL_MEMO_MAX_ENTRIES = 128

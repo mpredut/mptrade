@@ -1122,26 +1122,11 @@ _whale_collector = None
 _orderbook_collector = None
 _derivatives_collector = None
 
-
-def get_whale_collector():
-    if _whale_collector is not None:
-        return _whale_collector
-    from external_order_guard import get_whale_collector as _gwc
-    return _gwc()
-
-
-def get_orderbook_collector():
-    if _orderbook_collector is not None:
-        return _orderbook_collector
-    from external_order_guard import get_orderbook_collector as _goc
-    return _goc()
-
-
-def get_derivatives_collector():
-    if _derivatives_collector is not None:
-        return _derivatives_collector
-    from external_order_guard import get_derivatives_collector as _gdc
-    return _gdc()
+from external_order_guard import (
+    get_derivatives_collector,
+    get_orderbook_collector,
+    get_whale_collector,
+)
 
 
 _normalize_base_asset = canonical_base_asset

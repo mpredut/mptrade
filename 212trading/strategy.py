@@ -45,6 +45,11 @@ from providers.t212_provider import T212Provider, _t212_tickers_match
 from strategies.state_store import (
     JsonStateStore,
     build_dataclass_from_dict,
+    build_strategy_exit_manager,
+    clean_nonneg_float as _clean_nonneg_float,
+    clean_pos_float as _clean_pos_float,
+    compute_adaptive_reentry_pullback_pct,
+    find_open_order,
     state_path_for as _shared_state_path_for,
     update_post_sell_anchors,
 )
@@ -73,15 +78,6 @@ def log(msg: str) -> None:
 
 def state_path_for(ticker: str) -> str:
     return _shared_state_path_for(ticker, _HERE)
-
-
-def _clean_pos_float(val: object, default: float | None = None) -> float | None:
-    return safe_pos_float(val, default=default)
-
-
-def _clean_nonneg_float(val: object, default: float | None = None) -> float | None:
-    return safe_nonneg_float(val, default=default)
-
 
 
 def generate_tp_ladder(
@@ -553,40 +549,13 @@ class Strategy:
         self._paper_seq = 0
 
     def _init_exit_manager(self) -> PositionExitManager:
-        exit_cfg = PositionExitConfig(
-            lost_threshold=vol_pct_to_ratio(self.p.stop_loss_pct),
-            sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
-            sl_disaster_buffer_max_pct=vol_pct_to_ratio(self.p.sl_disaster_buffer_max_pct),
-            sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-            sl_bounce_min_recovery_pct=vol_pct_to_ratio(self.p.sl_bounce_min_recovery_pct),
-            sl_bounce_pullback_pct=vol_pct_to_ratio(self.p.sl_bounce_pullback_pct),
-            sl_structural_break_enabled=self.p.sl_structural_break_enabled,
-            smart_sl_enabled=False,
-            reentry_enabled=True,
-            reentry_sl_bounce_pct=(
-                vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
-                if self.p.sl_rebuy_enabled
-                else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
-            ),
-            reentry_drop_pct=vol_pct_to_ratio(self.p.reentry_drop_pct),
-            reentry_pullback_pct=vol_pct_to_ratio(self.p.reentry_pullback_pct),
-            reentry_ttl_hours=self.p.reentry_ttl_hours,
-            reentry_tolerance_pct=self.p.reentry_tolerance_pct,
-            reentry_bear_gate_enabled=False,
-            reentry_bear_bounce_pct=0.0,
-            gain_threshold=vol_pct_to_ratio(self.p.takeprofit_pct),
-            tp_trend_ride_enabled=self.p.tp_mdhtp_enabled,
-            tp_profit_floor_min_pct=vol_pct_to_ratio(self.p.trail_min_profit_pct) if self.p.trail_min_profit_pct > 0 else 0.0,
-            tp_pullback_pct=vol_pct_to_ratio(self.p.trail_pct) if self.p.trail_pct > 0 else 0.015,
-            tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
+        return build_strategy_exit_manager(
+            self.p,
+            self.s,
+            self._resolve_volatility_tuple,
             allow_external_cache=not self.replay_mode,
+            mode="t212",
         )
-        mgr = PositionExitManager(
-            config=exit_cfg,
-            vol_resolver=self._resolve_volatility_tuple,
-        )
-        mgr.bind_state(self.s)
-        return mgr
 
     def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
         """Callable adapter for PositionExitManager vol_resolver."""
@@ -659,16 +628,7 @@ class Strategy:
         )
 
     def _find_open(self, side: str) -> dict | None:
-        if isinstance(side, bool):
-            return None
-        side_u = str(side or "").strip().upper()
-        if not side_u:
-            return None
-        orders = self.s.get("orders")
-        for o in (orders if isinstance(orders, list) else []):
-            if isinstance(o, dict) and str(o.get("side") or "").strip().upper() == side_u:
-                return o
-        return None
+        return find_open_order(self.s, side)
 
     @staticmethod
     def _definitive_submit_rejection(exc: Exception) -> bool:
@@ -1804,20 +1764,15 @@ class Strategy:
                source="T212", price=price, desktop=self.desktop)
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
-        """Return the dynamic volatility-scaled or fixed pullback threshold from peak.
-
-        When STRAT_REENTRY_PULLBACK_ADAPTIVE is enabled, scale pullback by volatility:
-        pullback = clamp(K_PULLBACK * vol, min_pullback, max_pullback).
-        """
+        """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
         vol = self._resolve_shadow_vol_1h_pct()
         if vol is None and not self.replay_mode:
             vol = resolve_cached_volatility_1h_pct(self.ticker)
-        if vol is None:
-            return self.p.reentry_pullback_pct, "fixed (fallback)"
-        val = max(self.p.reentry_pullback_min, min(self.p.reentry_pullback_max, self.p.reentry_pullback_k * vol))
-        return val, f"adaptive (vol {vol:.2f}% x k={self.p.reentry_pullback_k} -> {val:.2f}%)"
+        return compute_adaptive_reentry_pullback_pct(
+            self.p, vol, fallback_reason="fixed (fallback)", vol_label="vol",
+        )
 
     def _evaluate_reentry_gate(self, price: float) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically with PositionExitManager or legacy fallback."""

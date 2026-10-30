@@ -19,6 +19,7 @@ import websockets
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
 from providers.base import normalize_side
 
@@ -79,16 +80,18 @@ class BybitLiquidationCollector:
         # symbol -> deque[(ts, "LONG"|"SHORT", notional_usd)]
         self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._retry = WS_RETRY_INITIAL
 
     def start(self, name: str = "BybitLiquidationWS", daemon: bool = True) -> "BybitLiquidationCollector":
-        if self._thread and self._thread.is_alive():
-            return self
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
-        self._thread.start()
+        with self._start_lock:
+            if self._thread and self._thread.is_alive():
+                return self
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
+            self._thread.start()
         logger.info("Bybit liquidation collector started for %s", ",".join(self._symbols))
         return self
 
@@ -141,6 +144,8 @@ class BybitLiquidationCollector:
             last_ping = time.time()
             while not self._stop.is_set():
                 now = time.time()
+                if now < last_ping:
+                    last_ping = now
                 if now - last_ping >= WS_APP_PING_SEC:
                     await ws.send(json.dumps({"op": "ping"}))
                     last_ping = now
@@ -153,10 +158,12 @@ class BybitLiquidationCollector:
                 self._ingest(raw)
 
     async def _sleep(self, delay: float, step: float = 0.2) -> None:
+        eff_delay = safe_pos_float(delay, 0.0)
+        eff_step = safe_pos_float(step, 0.2)
         elapsed = 0.0
-        while elapsed < delay and not self._stop.is_set():
-            await asyncio.sleep(min(step, delay - elapsed))
-            elapsed += step
+        while elapsed < eff_delay and not self._stop.is_set():
+            await asyncio.sleep(min(eff_step, eff_delay - elapsed))
+            elapsed += eff_step
 
     def _ingest(self, raw: str) -> None:
         try:
@@ -178,7 +185,9 @@ class BybitLiquidationCollector:
             v = safe_pos_float(item.get("v"), default=None)
             p = safe_pos_float(item.get("p"), default=None)
             if v is not None and p is not None:
-                self.record_event(item.get("s"), item.get("S"), v * p, ts=now)
+                notional = safe_pos_float(v * p, default=None)
+                if notional is not None:
+                    self.record_event(item.get("s"), item.get("S"), notional, ts=now)
 
     def record_event(self, symbol: str, side: str, notional_usd: float, ts: Optional[float] = None) -> None:
         """Inject event directly (useful for tests and synthetic feeds)."""
@@ -252,3 +261,59 @@ class BybitLiquidationCollector:
             events_count=events_n,
             last_event_ts=last_ts,
         )
+
+    def get_signal(self, symbol: str, window_sec: float = 300.0) -> Dict[str, float]:
+        """Aggregate liquidations for ``symbol`` over the last ``window_sec`` as a dict."""
+        symbol_str = str(symbol or "").strip().upper()
+        sym_clean = clean_symbol_key(symbol_str)
+        eff_win = safe_pos_float(window_sec, 300.0)
+        now = time.time()
+        cutoff = now - eff_win
+        long_usd = short_usd = 0.0
+        long_n = short_n = 0
+        last_ts = 0.0
+        with self._lock:
+            items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol_str) or ())
+            if not items and symbol_str:
+                for cand in cache_symbol_variants(
+                    symbol_str, include_original=True, quotes=("USDT", "USDC", "USD")
+                ):
+                    cand_items = casefold_get(self._events, cand)
+                    if cand_items:
+                        items = list(cand_items)
+                        break
+        for ts, side, notional in items:
+            if safe_float(ts, default=None) is None or ts < cutoff:
+                continue
+            last_ts = max(last_ts, ts)
+            if side == "LONG":
+                long_usd += notional
+                long_n += 1
+            else:
+                short_usd += notional
+                short_n += 1
+        return {
+            "symbol": symbol_str,
+            "window_sec": eff_win,
+            "long_liq_usd": long_usd,
+            "short_liq_usd": short_usd,
+            "long_count": long_n,
+            "short_count": short_n,
+            "net_usd": short_usd - long_usd,
+            "age_sec": max(0.0, now - last_ts) if last_ts else float("inf"),
+        }
+
+    def capitulation_ratio(
+        self,
+        symbol: str,
+        window_sec: float = 120.0,
+        baseline_sec: float = 3600.0,
+    ) -> float:
+        """Intensity of recent LONG-liquidation burst relative to baseline rate."""
+        eff_win = safe_pos_float(window_sec, 120.0)
+        eff_base = max(safe_pos_float(baseline_sec, 3600.0), eff_win)
+        recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
+        base = self.get_signal(symbol, eff_base)["long_liq_usd"]
+        recent_rate = recent / max(eff_win, 1.0)
+        base_rate = base / max(eff_base, 1.0)
+        return recent_rate / base_rate if base_rate > 0 else 0.0

@@ -306,6 +306,24 @@ def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
     return i if (i is not None and i >= 0) else default
 
 
+def bounded_float(
+    value: object,
+    *,
+    name: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """Validate and coerce ``value`` to a finite float within ``[minimum, maximum]``."""
+    parsed = safe_float(value, default=None)
+    if parsed is None:
+        raise ValueError(f"{name} must be a finite number")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return parsed
+
+
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
     if obj is None:
@@ -314,25 +332,37 @@ def obj_attr(obj: object, key: str, default: object = None) -> object:
     return default if val is None else val
 
 
-def float_env(key: str, env: dict | None = None) -> float | None:
+def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
-    The optional `env` argument preserves compatibility with legacy float_env(key) calls."""
+    Supports both float_env(key, env_dict) and float_env(key, default_val)."""
+    if env is not None and not hasattr(env, "get"):
+        default = env
+        env = None
     src = os.environ if env is None else env
     val = src.get(key)
     if val is None or isinstance(val, bool):
-        return None
+        return default
     raw = str(val).split("#", 1)[0].strip()
-    return safe_float(raw, default=None) if raw else None
+    return safe_float(raw, default=default) if raw else default
 
 
-def int_env(key: str, env: dict | None = None) -> int | None:
-    """Read an integer from os.environ or an injected dictionary, ignoring inline comments."""
+def pos_float_env(key: str, default: float, env: dict | None = None) -> float:
+    """Read a strictly positive float from os.environ or an injected dictionary, falling back to default."""
+    return safe_pos_float(float_env(key, env=env), default)
+
+
+def int_env(key: str, env: dict | int | None = None, default: int | None = None) -> int | None:
+    """Read an integer from os.environ or an injected dictionary, ignoring inline comments.
+    Supports both int_env(key, env_dict) and int_env(key, default_val)."""
+    if env is not None and not hasattr(env, "get"):
+        default = env
+        env = None
     src = os.environ if env is None else env
     val = src.get(key)
     if val is None or isinstance(val, bool):
-        return None
+        return default
     raw = str(val).split("#", 1)[0].strip()
-    return exact_int(raw, default=None) if raw else None
+    return exact_int(raw, default=default) if raw else default
 
 
 def required_env(key: str, env: dict | None = None) -> str:

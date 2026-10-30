@@ -1507,6 +1507,11 @@ def _eval_reentry_buy_quantity_decision(
     return decision, quote_asset
 
 
+_REENTRY_BELOW_SELL_BYPASS_GUARDS = frozenset({
+    "G_PROF", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"
+})
+
+
 def _can_pass_buy_quantity_policy(
     inst,
     symbol: str,
@@ -1527,10 +1532,10 @@ def _can_pass_buy_quantity_policy(
         return True
     try:
         below_sell = 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0)
-        extra_bg = {"all"} if below_sell else {"G_PROF", "GLLM1"}
+        extra_bg = _REENTRY_BELOW_SELL_BYPASS_GUARDS if below_sell else {"G_PROF", "GLLM1"}
         reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass=extra_bg)
         decision, quote_asset = _eval_reentry_buy_quantity_decision(
-            inst, provider, symbol, current_price, requested_qty, {"G_PROF", "GLLM1"} | _resolve_inst_bypass_guards(inst, provider=provider)
+            inst, provider, symbol, current_price, requested_qty, reentry_bg
         )
         if decision is None:
             return True
@@ -1650,11 +1655,11 @@ def _apply_post_stop_ai_guard(
         caller_bg = _resolve_inst_bypass_guards(inst, provider=provider)
         if GUARD_REGISTRY["GLLM1"].is_bypassed(caller_bg) or "all" in caller_bg or "*" in caller_bg or is_llm_guard_exempt():
             return True, buy_budget, buy_qty_cfg, qty
+        if 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0):
+            return True, buy_budget, buy_qty_cfg, qty
         _ps_guard = get_post_stop_reentry_guard()
         if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
-        if 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0):
-            return True, buy_budget, buy_qty_cfg, qty
         raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
         _trough_px = raw_trough if raw_trough is not None else min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
@@ -1758,9 +1763,7 @@ def _execute_reentry_buy(
     else:
         reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
     if below_sell:
-        reentry_bypass = (reentry_bypass or set()) | {
-            "G_PROF", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"
-        }
+        reentry_bypass = (reentry_bypass or set()) | _REENTRY_BELOW_SELL_BYPASS_GUARDS
     extra_kwargs = {}
     applied_scale_f = safe_float(applied_scale, 1.0)
     if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):

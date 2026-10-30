@@ -704,3 +704,27 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
         assert ds_dec.allowed is True
         assert ds_dec.brake_action == BrakeAction.DOWNSCALE_QTY
         assert ds_dec.suggested_scale == 0.5
+
+    # 5. Re-entry below sell_price in monitortrades skips get_post_stop_reentry_guard() and still enforces GO1 daily limit
+    with patch("intelligence.sentiment.guards.post_stop_reentry_guard.get_post_stop_reentry_guard") as mock_get_ps:
+        ok, _, _, _ = mt._apply_post_stop_ai_guard(
+            symbol="TAOUSDC",
+            current_price=98.0,
+            sell_price=100.0,
+            sell_time=1000.0,
+            reentry_snap=mt.ReentrySnapshot(
+                symbol="TAOUSDC",
+                current_price=98.0,
+                current_time_s=1100.0,
+                last_sell_price=100.0,
+                last_sell_time_s=1000.0,
+                post_sell_trough=95.0,
+            ),
+            buy_budget=None,
+            buy_qty_cfg=1.0,
+            qty=1.0,
+            inst=MockInstrument(symbol="TAOUSDC", price=98.0),
+        )
+        assert ok is True
+        mock_get_ps.assert_not_called()
+        assert "TAOUSDC" not in mt._POST_STOP_AI_NOT_ENFORCED

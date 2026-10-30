@@ -626,3 +626,106 @@ class TrailingCore:
                 self.save(state)
             except Exception as e:  # noqa: BLE001 — resilience: retry after a network failure
                 self.a.log_tick_error(e)
+
+
+class TrailingAdapterBase:
+    """Shared base adapter for venue-specific TrailingCore implementations (Binance, Kraken)."""
+
+    _VENUE_SLUG: str = ""
+    _VENUE_LABEL: str = ""
+    _LOG_TAG: str = "[TRAIL]"
+    _ENABLED_ENV_VAR: str = "TRAILING_ENABLED"
+
+    _safe_float = staticmethod(safe_float)
+
+    def _load(self) -> dict:
+        return self.core.load()
+
+    def _save(self, state: dict) -> None:
+        self.core.save(state)
+
+    def trend(self, pair: str) -> float:
+        return self._trend_value(pair)
+
+    def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
+        sync_trailing_retry_count(self._retry_counts, pair, action, persist)
+
+    def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
+        return build_trailing_order_intent(
+            self.order_lifecycle,
+            self._retry_counts,
+            venue_slug=self._VENUE_SLUG,
+            venue_label=self._VENUE_LABEL,
+            action=action,
+            key=key,
+            asset=asset,
+            pair=pair,
+            qty=qty,
+            price=price,
+            **metadata,
+        )
+
+    def reconcile_pending(self, pending, persist):
+        return reconcile_trailing_pending_order(
+            self.order_lifecycle, self._retry_counts, pending, persist,
+        )
+
+    def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
+        price_f = self._safe_float(price, 0.0)
+        if self._VENUE_SLUG == "kraken":
+            peak_f = self._safe_float(peak, 0.0)
+            self.log(
+                f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {qty} {asset} @ ~{price_f:.4f} "
+                f"(peak {peak_f:.4f}, -{trail}%)  [{self._ENABLED_ENV_VAR}=true for it to execute]"
+            )
+        else:
+            peak_f = self._safe_float(peak, price_f)
+            self.log(
+                f"  🟡 {self._LOG_TAG}[DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
+                f"(varf {peak_f:.4f}, scadere >= {trail}%)  "
+                f"[set {self._ENABLED_ENV_VAR}=true for it to execute]"
+            )
+
+    def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
+        price_f = (
+            self._safe_float(price, 0.0)
+            if self._VENUE_SLUG == "kraken"
+            else safe_nonneg_float(price, 0.0)
+        )
+        low_val, _ = extract_rebuy_anchors(rb, price_f)
+        target_desc = f"{qty} {asset}" if self._VENUE_SLUG == "kraken" else f"{pair} {qty}"
+        self.log(
+            f"  🟡 {self._LOG_TAG}[DRY] WOULD RE-BUY {target_desc} @ ~{price_f:.4f}  "
+            f"(a pullback from the low {low_val:.4f})  [{self._ENABLED_ENV_VAR}=true for it to execute]"
+        )
+
+    def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
+        price_f = self._safe_float(price, 0.0)
+        stop_f = self._safe_float(stop_at, 0.0)
+        if self._VENUE_SLUG == "kraken":
+            peak_f = self._safe_float(peak, 0.0)
+            free_f = self._safe_float(free, 0.0)
+            self.log(
+                f"  {self._LOG_TAG} {asset}: {price_f:.4f}  varf {peak_f:.4f}  "
+                f"sells below {stop_f:.4f} (-{trail}%)  (free {free_f:.4f})"
+            )
+        else:
+            peak_f = self._safe_float(peak, price_f)
+            self.log(
+                f"  {self._LOG_TAG} {pair}: {price_f:.4f}  varf {peak_f:.4f}  "
+                f"sells below {stop_f:.4f} (-{trail}%)"
+            )
+
+    def log_skip_rebuy_trend(self, asset) -> None:
+        self.log(
+            f"  {self._LOG_TAG} re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)"
+        )
+
+    def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
+        target = asset if self._VENUE_SLUG == "kraken" else pair
+        self.log(
+            f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)"
+        )
+
+    def check_once(self) -> None:
+        self.core.check_once()

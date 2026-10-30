@@ -91,10 +91,8 @@ CM_PUBLISHED_TREND_WINDOWS_SEC = [
     if part.strip()
 ]
 
+from pricewindow import dynamic_window_key as _dynamic_window_key
 
-def _dynamic_window_key(window_seconds):
-    """Key a clamped dynamic window in the published snapshot, e.g. 900.0 -> "900"."""
-    return f"{float(window_seconds):g}"
 CM_RETENTION_DAYS = required_float_env("CM_RETENTION_DAYS")
 CM_RETENTION_CHECK_INTERVAL_SEC = required_float_env("CM_RETENTION_CHECK_INTERVAL_SEC")
 CM_APPEND_MAX_FILE_BYTES = required_int_env("CM_APPEND_MAX_FILE_BYTES")

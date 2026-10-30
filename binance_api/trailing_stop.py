@@ -50,17 +50,15 @@ from order_retry import (
 )
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+    TrailingAdapterBase,
     TrailingCore,
-    build_trailing_order_intent,
     extract_rebuy_anchors,
     extract_short_trend_slope,
-    reconcile_trailing_pending_order,
     resolve_rebuy_bypass_guards,
     should_sell,
-    sync_trailing_retry_count,
 )
 should_sell = should_sell  # Re-exported for test compatibility
-from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
+from botcore import (_parse_bool_flag, bounded_float, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)  # noqa: E402
 from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
 
@@ -121,21 +119,17 @@ if not 1 <= REBUY_TREND_DAYS < 1000:
     raise ValueError("TRAILING_REBUY_TREND_DAYS must be in [1, 999] for the kline request")
 
 
-def _finite(value, *, name: str, minimum=None, maximum=None) -> float:
-    """Normalize one financial/runtime input or fail before the live loop starts."""
-    result = safe_float(value, default=None)
-    if result is None:
-        raise ValueError(f"{name} must be a finite numeric value")
-    if minimum is not None and result < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    if maximum is not None and result > maximum:
-        raise ValueError(f"{name} must be <= {maximum}")
-    return result
+_finite = bounded_float
 
 
-class TrailingStop:
+class TrailingStop(TrailingAdapterBase):
     """Binance adapter for TrailingCore, providing balance, price, sell/buy,
     trend APIs, and provider-specific logging. TrailingCore owns the state machine."""
+
+    _VENUE_SLUG = "binance"
+    _VENUE_LABEL = "Binance"
+    _LOG_TAG = "[TRAIL]"
+    _ENABLED_ENV_VAR = "TRAILING_ENABLED"
 
     def __init__(self, api, po, sym, log=log, enabled=None,
                  sell_fraction=SELL_FRACTION, state_file=DEFAULT_STATE,
@@ -171,13 +165,6 @@ class TrailingStop:
             missing_confirmations=1, retry_on_lookup_error=True,
             max_age_seconds=180,
         )
-
-    # -- state delegated to the core; retained for --status and tests ----------
-    def _load(self) -> dict:
-        return self.core.load()
-
-    def _save(self, state: dict):
-        self.core.save(state)
 
     @staticmethod
     def _lookup_symbol_entry(mapping: dict, symbol: str):
@@ -392,34 +379,6 @@ class TrailingStop:
     def price(self, pair: str):
         return safe_pos_float(self.api.get_current_price(pair), None)
 
-    def trend(self, pair: str) -> float:
-        return self._trend_value(pair)
-
-    _safe_float = staticmethod(safe_float)
-
-    def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        return build_trailing_order_intent(
-            self.order_lifecycle,
-            self._retry_counts,
-            venue_slug="binance",
-            venue_label="Binance",
-            action=action,
-            key=key,
-            asset=asset,
-            pair=pair,
-            qty=qty,
-            price=price,
-            **metadata,
-        )
-
-    def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
-        sync_trailing_retry_count(self._retry_counts, pair, action, persist)
-
-    def reconcile_pending(self, pending, persist):
-        return reconcile_trailing_pending_order(
-            self.order_lifecycle, self._retry_counts, pending, persist,
-        )
-
     def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
         """Submit through Instrument without losing its typed refusal state."""
         outcome_context = {}
@@ -491,38 +450,8 @@ class TrailingStop:
                 f"(orderId={result.intent.get('order_id')})")
         return result
 
-    def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        price_f = self._safe_float(price, 0.0)
-        peak_f = self._safe_float(peak, price_f)
-        self.log(f"  🟡 [TRAIL][DRY] WOULD SELL {pair} {qty} @ ~{price_f:.4f} "
-                 f"(varf {peak_f:.4f}, scadere >= {trail}%)  "
-                 f"[set TRAILING_ENABLED=true for it to execute]")
-
-    def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
-        price_f = safe_nonneg_float(price, 0.0)
-        low_val, _ = extract_rebuy_anchors(rb, price_f)
-        self.log(f"  🟡 [TRAIL][DRY] WOULD RE-BUY {pair} {qty} @ ~{price_f:.4f}  "
-                 f"(a pullback from the low {low_val:.4f})  [TRAILING_ENABLED=true for it to execute]")
-
-    def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        price_f = self._safe_float(price, 0.0)
-        peak_f = self._safe_float(peak, price_f)
-        stop_f = self._safe_float(stop_at, 0.0)
-        self.log(f"  [TRAIL] {pair}: {price_f:.4f}  varf {peak_f:.4f}  "
-                 f"sells below {stop_f:.4f} (-{trail}%)")
-
-    def log_skip_rebuy_trend(self, asset) -> None:
-        self.log(f"  [TRAIL] re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)")
-
-    def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
-        self.log(f"  [TRAIL] {pair}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)")
-
     def log_item_error(self, key, e) -> None:
         self.log(f"  ! [TRAIL] {key}: {e}")
-
-    # -- one step / loop -------------------------------------------------------
-    def check_once(self) -> None:
-        self.core.check_once()
 
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"

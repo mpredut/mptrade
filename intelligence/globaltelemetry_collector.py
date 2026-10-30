@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     is_interval_due,
     parse_symbol_list,
     resolve_now_ts,
+    run_daemon_loop,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat_files,
@@ -249,38 +250,19 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
-        poll_interval_sec = safe_pos_float(poll_interval_sec, 1.0)
-        self.running = True
-
-        def _handle_exit(signum, frame):
-            logger.info("Received termination signal (%d), stopping collector...", signum)
-            self.running = False
-            raise SystemExit(0)
-
-        signal.signal(signal.SIGINT, _handle_exit)
-        signal.signal(signal.SIGTERM, _handle_exit)
-
-        logger.info("Starting GlobalTelemetryCollector for symbols: %s (PID=%d)", ", ".join(self.symbols), os.getpid())
-        self.write_heartbeat({"ts": time.time(), "symbols": list(self.symbols)})
-
-        try:
-            self.run_cycle(force=True)
-        except SystemExit:
-            raise
-        except Exception as e:
-            logger.warning("Error during initial telemetry update cycle: %s", e)
-
-        while self.running:
-            try:
-                self.run_cycle(force=False)
-                time.sleep(poll_interval_sec)
-            except SystemExit:
-                break
-            except Exception as e:
-                logger.error("Unexpected error in telemetry loop: %s", e)
-                time.sleep(poll_interval_sec)
-
-        logger.info("GlobalTelemetryCollector stopped gracefully.")
+        run_daemon_loop(
+            self,
+            poll_interval_sec=poll_interval_sec,
+            default_poll_sec=1.0,
+            daemon_name="GlobalTelemetryCollector",
+            stop_label="collector",
+            cycle_label="telemetry",
+            start_msg=f"Starting GlobalTelemetryCollector for symbols: {', '.join(self.symbols)} (PID={os.getpid()})",
+            logger_inst=logger,
+            initial_force=True,
+            initial_heartbeat={"ts": time.time(), "symbols": list(self.symbols)},
+            reraise_initial_exit=True,
+        )
 
 
 def main():

@@ -35,6 +35,7 @@ from intelligence.macro_sentiment_ssot import (
     prune_automated_cli_threads,
     resolve_global_trading_session,
     resolve_now_ts,
+    run_daemon_loop,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat_files,
@@ -379,41 +380,18 @@ class MacroAnalyzer:
 
     def start(self, poll_interval_sec: float = 5.0) -> None:
         """Run the main analysis loop continuously."""
-        poll_interval_sec = safe_pos_float(poll_interval_sec, 5.0)
-        self.running = True
-
-        def _handle_exit(signum, frame):
-            logger.info("Received termination signal (%d), stopping macro analyzer...", signum)
-            self.running = False
-            raise SystemExit(0)
-
-        signal.signal(signal.SIGINT, _handle_exit)
-        signal.signal(signal.SIGTERM, _handle_exit)
-
-        logger.info("Starting MacroAnalyzer (PID=%d)", os.getpid())
-        self.write_heartbeat({"ts": time.time()})
-
-        try:
-            self.run_cycle(force=False)
-        except SystemExit:
-            logger.info("MacroAnalyzer stopped gracefully.")
-            return
-        except Exception as e:
-            logger.warning("Error during initial macro analysis cycle: %s", e)
-
-        while self.running:
-            try:
-                self.run_cycle(force=False)
-                if self.running:
-                    time.sleep(poll_interval_sec)
-            except SystemExit:
-                break
-            except Exception as e:
-                logger.error("Unexpected error in macro analyzer loop: %s", e)
-                if self.running:
-                    time.sleep(poll_interval_sec)
-
-        logger.info("MacroAnalyzer stopped gracefully.")
+        run_daemon_loop(
+            self,
+            poll_interval_sec=poll_interval_sec,
+            default_poll_sec=5.0,
+            daemon_name="MacroAnalyzer",
+            stop_label="macro analyzer",
+            cycle_label="macro analyzer",
+            start_msg=f"Starting MacroAnalyzer (PID={os.getpid()})",
+            logger_inst=logger,
+            initial_force=False,
+            initial_heartbeat={"ts": time.time()},
+        )
 
 
 def main():

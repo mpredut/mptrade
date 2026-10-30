@@ -10,8 +10,130 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import fields as _dc_fields
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, safe_nonneg_float, safe_pos_float
+from intelligence.internal.state.volatility import vol_pct_to_ratio
 from state_io import StateReadError, load_json_state, save_json_state
+from .position_exit_manager import PositionExitConfig, PositionExitManager
+
+
+def clean_pos_float(val: object, default: float | None = None) -> float | None:
+    return safe_pos_float(val, default=default)
+
+
+def clean_nonneg_float(val: object, default: float | None = None) -> float | None:
+    return safe_nonneg_float(val, default=default)
+
+
+def find_open_order(state: dict, side: str) -> dict | None:
+    """Return the first open order in ``state['orders']`` matching ``side`` (case-insensitive)."""
+    if not isinstance(state, dict) or isinstance(side, bool):
+        return None
+    target = str(side or "").strip().lower()
+    if not target:
+        return None
+    orders = state.get("orders")
+    if not isinstance(orders, list):
+        return None
+    return next(
+        (o for o in orders if isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target),
+        None,
+    )
+
+
+def compute_adaptive_reentry_pullback_pct(
+    params,
+    vol: float | None,
+    *,
+    fallback_reason: str = "fixed (fallback)",
+    vol_label: str = "vol",
+) -> tuple[float, str]:
+    """Compute volatility-scaled or fixed re-entry pullback threshold from peak."""
+    if not getattr(params, "reentry_pullback_adaptive", False):
+        return params.reentry_pullback_pct, "fixed"
+    if vol is None:
+        return params.reentry_pullback_pct, fallback_reason
+    val = max(
+        params.reentry_pullback_min,
+        min(params.reentry_pullback_max, params.reentry_pullback_k * vol),
+    )
+    return val, f"adaptive ({vol_label} {vol:.2f}% x k={params.reentry_pullback_k} -> {val:.2f}%)"
+
+
+def build_strategy_exit_manager(
+    params,
+    state: dict,
+    vol_resolver: Callable[[str], tuple[float, str]],
+    *,
+    allow_external_cache: bool,
+    mode: str = "spot",
+) -> PositionExitManager:
+    """Construct and bind a ``PositionExitManager`` for spot or T212 strategy engines."""
+    p = params
+    if mode == "t212":
+        exit_cfg = PositionExitConfig(
+            lost_threshold=vol_pct_to_ratio(p.stop_loss_pct),
+            sl_disaster_buffer_ratio=p.sl_disaster_buffer_ratio,
+            sl_disaster_buffer_max_pct=vol_pct_to_ratio(p.sl_disaster_buffer_max_pct),
+            sl_trend_defer_max_sec=p.sl_trend_defer_max_sec,
+            sl_bounce_min_recovery_pct=vol_pct_to_ratio(p.sl_bounce_min_recovery_pct),
+            sl_bounce_pullback_pct=vol_pct_to_ratio(p.sl_bounce_pullback_pct),
+            sl_structural_break_enabled=p.sl_structural_break_enabled,
+            smart_sl_enabled=False,
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=(
+                vol_pct_to_ratio(p.sl_rebuy_bounce_pct)
+                if p.sl_rebuy_enabled
+                else (0.015 if p.sl_mhdsl_enabled else 0.0)
+            ),
+            reentry_drop_pct=vol_pct_to_ratio(p.reentry_drop_pct),
+            reentry_pullback_pct=vol_pct_to_ratio(p.reentry_pullback_pct),
+            reentry_ttl_hours=p.reentry_ttl_hours,
+            reentry_tolerance_pct=p.reentry_tolerance_pct,
+            reentry_bear_gate_enabled=False,
+            reentry_bear_bounce_pct=0.0,
+            gain_threshold=vol_pct_to_ratio(p.takeprofit_pct),
+            tp_trend_ride_enabled=p.tp_mdhtp_enabled,
+            tp_profit_floor_min_pct=vol_pct_to_ratio(p.trail_min_profit_pct) if p.trail_min_profit_pct > 0 else 0.0,
+            tp_pullback_pct=vol_pct_to_ratio(p.trail_pct) if p.trail_pct > 0 else 0.015,
+            tp_stagnation_max_sec=p.tp_stagnation_max_sec,
+            allow_external_cache=allow_external_cache,
+        )
+    else:
+        exit_cfg = PositionExitConfig(
+            lost_threshold=p.stop_loss_pct / 100.0,
+            sl_disaster_buffer_ratio=p.sl_disaster_buffer_ratio,
+            sl_disaster_vol_multiplier=p.sl_disaster_vol_multiplier,
+            sl_disaster_buffer_min_pct=p.sl_disaster_buffer_min_pct / 100.0,
+            sl_disaster_buffer_max_pct=p.sl_disaster_buffer_max_pct / 100.0,
+            sl_trend_defer_max_sec=p.sl_trend_defer_max_sec,
+            sl_bounce_min_recovery_pct=p.sl_bounce_min_recovery_pct / 100.0,
+            sl_bounce_pullback_pct=p.sl_bounce_pullback_pct / 100.0,
+            sl_bounce_ratchet_enabled=p.sl_bounce_ratchet_enabled,
+            sl_bounce_ratchet_k=p.sl_bounce_ratchet_k,
+            sl_bounce_min_pullback_pct=p.sl_bounce_min_pullback_pct / 100.0,
+            sl_structural_break_enabled=p.sl_structural_break_enabled,
+            smart_sl_enabled=False,
+            gain_threshold=p.takeprofit_pct / 100.0,
+            tp_trend_ride_enabled=p.tp_trend_hold,
+            tp_profit_floor_min_pct=(p.tp_trail_profit_floor_pct or 0.0) / 100.0,
+            tp_pullback_pct=p.tp_trail_pct / 100.0,
+            tp_stagnation_max_sec=p.tp_stagnation_max_sec,
+            fast_profit_guard_enabled=p.fast_profit_guard,
+            fast_profit_mult=p.fast_profit_mult,
+            fast_profit_window_sec=p.fast_profit_window_min * 60.0,
+            fast_profit_drop_pct=p.fast_profit_drop_pct,
+            reentry_enabled=True,
+            reentry_sl_bounce_pct=p.reentry_sl_bounce_pct / 100.0,
+            reentry_drop_pct=p.reentry_drop_pct / 100.0,
+            reentry_pullback_pct=p.reentry_pullback_pct / 100.0,
+            reentry_bear_bounce_pct=p.reentry_bear_bounce_pct / 100.0,
+            reentry_ttl_hours=p.reentry_ttl_hours,
+            reentry_tolerance_pct=p.reentry_tolerance_pct,
+            allow_external_cache=allow_external_cache,
+        )
+    mgr = PositionExitManager(config=exit_cfg, vol_resolver=vol_resolver)
+    mgr.bind_state(state)
+    return mgr
 
 
 def build_dataclass_from_dict(

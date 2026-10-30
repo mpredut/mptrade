@@ -15,6 +15,7 @@ from intelligence.sentiment.guards.high_stake_guard import (
     _compute_horizon_range_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_bottom_structure_6h_parts,
     format_macro_benchmarks_summary_line,
     resolve_symbol_price as _resolve_symbol_price,
     resolve_venue_fee_and_limits,
@@ -402,23 +403,19 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
 
         if pinfo.get("bottom_structure_6h"):
-            b_struct = pinfo.get("bottom_structure_6h")
-            b_parts = [f"prior_low={pinfo.get('prior_6h_low_px')}", f"1h_low={pinfo.get('recent_1h_low_px')}"]
-            if pinfo.get("higher_low_vs_prior_pct") is not None:
-                b_parts.append(f"hl_diff={_parse_finite_float(pinfo.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
-            if pinfo.get("reclaim_above_prior_low_pct") is not None:
-                b_parts.append(f"reclaim={_parse_finite_float(pinfo.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
-            if (
-                not sym.endswith(("_EQ", "_US_EQ"))
-                and canonical_base_asset(sym) != "BTC"
-                and btc_entry
-                and b_struct == "HIGHER_LOW_DOUBLE_BOTTOM"
-            ):
-                btc_b_struct = btc_entry.get("bottom_structure_6h")
-                btc_pos_24 = _parse_finite_float(btc_entry.get("pos_24h_pct"), 100.0)
-                if btc_b_struct in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos_24 <= 35.0:
-                    b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
-            extras.append(f"bottom_6h={b_struct}({', '.join(b_parts)})")
+            b_struct, b_parts = format_bottom_structure_6h_parts(
+                pinfo,
+                btc_entry,
+                prior_label="prior_low",
+                px_prefix="",
+                check_smt=bool(
+                    not sym.endswith(("_EQ", "_US_EQ"))
+                    and canonical_base_asset(sym) != "BTC"
+                    and btc_entry
+                ),
+            )
+            if b_struct:
+                extras.append(f"bottom_6h={b_struct}({', '.join(b_parts)})")
 
         if "chg_7d_pct" in pinfo:
             extras.append(

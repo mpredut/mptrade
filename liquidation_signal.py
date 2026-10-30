@@ -35,35 +35,29 @@ standalone to watch it live before we wire it into the strategies:
     python liquidation_signal.py BTCUSDT TAOUSDT ETHUSDT
 """
 
-import asyncio
-import json
 import logging
 import threading
 import time
-from collections import deque
-from typing import Deque, Dict, List, Optional, Tuple
-
-import websockets
+from typing import List, Optional
 
 from botcore import safe_pos_float
-from cachepaths import cache_symbol_variants, canonical_symbol_key as _clean_liq_symbol
-from instrument_registry import casefold_get
-from providers.base import normalize_side
+from cachepaths import canonical_symbol_key as _clean_liq_symbol
+from intelligence.external.collectors.bybit_liquidations import (
+    BYBIT_WS_URL as BYBIT_URL,
+    DEFAULT_SYMBOLS,
+    MAX_RETENTION_SEC,
+    STABLE_SESSION_SEC,
+    WS_APP_PING_SEC,
+    WS_CLOSE_TIMEOUT,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_RECV_TIMEOUT,
+    WS_RETRY_INITIAL,
+    WS_RETRY_MAX,
+    BybitLiquidationCollector,
+)
 
 logger = logging.getLogger("liquidation")
-
-BYBIT_URL = "wss://stream.bybit.com/v5/public/linear"
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
-
-MAX_RETENTION_SEC = 3600.0     # Keep raw events at most this long; windows are subsets.
-WS_RECV_TIMEOUT = 5.0
-WS_APP_PING_SEC = 20.0         # Bybit closes idle connections; send {"op":"ping"} periodically.
-WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT = 10
-WS_CLOSE_TIMEOUT = 2
-WS_RETRY_INITIAL = 1.0
-WS_RETRY_MAX = 60.0
-STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up this long.
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
 _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
@@ -71,212 +65,13 @@ _SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / sque
 _safe_pos_float = safe_pos_float
 
 
-class LiquidationSignal:
+class LiquidationSignal(BybitLiquidationCollector):
     """Background thread holding a rolling window of Bybit liquidations and
     exposing an aggregated per-symbol signal. Thread-safe."""
 
-    def __init__(self, symbols: Optional[List[str]] = None,
-                 retention_sec: float = MAX_RETENTION_SEC):
-        if isinstance(symbols, str):
-            raw_syms = [s for s in symbols.split(",")]
-        elif isinstance(symbols, (list, tuple, set)):
-            raw_syms = list(symbols)
-        else:
-            raw_syms = list(DEFAULT_SYMBOLS)
-        self._symbols = [
-            sym for s in raw_syms
-            if (sym := _clean_liq_symbol(s))
-        ]
-        if not self._symbols:
-            self._symbols = list(DEFAULT_SYMBOLS)
-        self._retention = safe_pos_float(retention_sec, MAX_RETENTION_SEC)
-        # symbol -> deque[(ts, LONG|SHORT, notional_usd)]
-        self._events: Dict[str, Deque[Tuple[float, str, float]]] = {}
-        self._lock = threading.Lock()
-        self._start_lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._retry = WS_RETRY_INITIAL
-
-    # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self, name: str = "LiquidationWS", daemon: bool = True) -> "LiquidationSignal":
-        with self._start_lock:
-            if self._thread and self._thread.is_alive():
-                return self
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._worker, name=name, daemon=daemon)
-            self._thread.start()
-        logger.info("liquidation signal started (%s)", ",".join(self._symbols))
+        super().start(name=name, daemon=daemon)
         return self
-
-    def stop(self, timeout: float = 8.0) -> None:
-        self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=safe_pos_float(timeout, 8.0))
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-    # ── worker / reconnect ───────────────────────────────────────────────────
-    def _worker(self) -> None:
-        try:
-            asyncio.run(self._run_with_reconnect())
-        except Exception as e:  # defensive: never let the thread die silently
-            logger.exception("liquidation thread crashed: %s", e)
-        finally:
-            logger.info("liquidation thread exited")
-
-    async def _run_with_reconnect(self) -> None:
-        while not self._stop.is_set():
-            t0 = time.time()
-            try:
-                await self._session()
-            except Exception as e:
-                logger.warning("liquidation WS error: %s", e)
-            if self._stop.is_set():
-                break
-            if time.time() - t0 >= STABLE_SESSION_SEC:
-                self._retry = WS_RETRY_INITIAL
-            logger.info("liquidation WS reconnect in %.1fs", self._retry)
-            await self._sleep(self._retry)
-            self._retry = min(self._retry * 2, WS_RETRY_MAX)
-
-    async def _session(self) -> None:
-        async with websockets.connect(
-            BYBIT_URL, ping_interval=WS_PING_INTERVAL,
-            ping_timeout=WS_PING_TIMEOUT, close_timeout=WS_CLOSE_TIMEOUT,
-        ) as ws:
-            args = [f"allLiquidation.{s}" for s in self._symbols]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
-            logger.info("liquidation subscribed: %s", ", ".join(args))
-            last_ping = time.time()
-            while not self._stop.is_set():
-                now = time.time()
-                if now < last_ping:
-                    last_ping = now
-                if now - last_ping >= WS_APP_PING_SEC:
-                    await ws.send(json.dumps({"op": "ping"}))
-                    last_ping = now
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
-                except asyncio.TimeoutError:
-                    continue
-                except websockets.exceptions.ConnectionClosed:
-                    logger.info("liquidation stream closed by server; reconnecting")
-                    return
-                self._ingest(raw)
-
-    async def _sleep(self, delay: float, step: float = 0.2) -> None:
-        eff_delay = safe_pos_float(delay, 0.0)
-        eff_step = safe_pos_float(step, 0.2)
-        elapsed = 0.0
-        while elapsed < eff_delay and not self._stop.is_set():
-            await asyncio.sleep(min(eff_step, eff_delay - elapsed))
-            elapsed += eff_step
-
-    # ── ingest / query ───────────────────────────────────────────────────────
-    def _ingest(self, raw: str) -> None:
-        # Liquidation msg: {"topic":"allLiquidation.BTCUSDT","type":"snapshot","ts":..,
-        #                   "data":[{"T":..,"s":"BTCUSDT","S":"Buy","v":"0.5","p":"77000"}]}
-        # Subscribe acks / pongs are ignored (no "allLiquidation." topic).
-        try:
-            msg = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return
-        if not isinstance(msg, dict):
-            return
-        topic = str(msg.get("topic") or "")
-        if not topic.startswith("allLiquidation."):
-            return
-        raw_data = msg.get("data")
-        if not isinstance(raw_data, list):
-            return
-        now = time.time()
-        for item in raw_data:
-            if not isinstance(item, dict):
-                continue
-            raw_sym = item.get("s")
-            if isinstance(raw_sym, bool) or not isinstance(raw_sym, str):
-                continue
-            symbol = _clean_liq_symbol(raw_sym)
-            # Bybit: "Buy" = long liquidated, "Sell" = short liquidated.
-            norm_side = normalize_side(item.get("S"))
-            side = _LONG if norm_side == "BUY" else (_SHORT if norm_side == "SELL" else None)
-            vol = safe_pos_float(item.get("v"), default=None)
-            px = safe_pos_float(item.get("p"), default=None)
-            if not symbol or side is None or vol is None or px is None:
-                continue
-            notional = safe_pos_float(vol * px, default=None)
-            if notional is None:
-                continue
-            with self._lock:
-                dq = self._events.setdefault(symbol, deque())
-                dq.append((now, side, notional))
-                cutoff = now - self._retention
-                while dq and dq[0][0] < cutoff:
-                    dq.popleft()
-
-    def get_signal(self, symbol: str, window_sec: float = 300.0) -> Dict[str, float]:
-        """Aggregate liquidations for ``symbol`` over the last ``window_sec``.
-
-        long_liq_usd  = longs liquidated (forced selling -> downward / panic)
-        short_liq_usd = shorts liquidated (forced buying -> upward squeeze)
-        net_usd       = short_liq_usd - long_liq_usd  (>0 squeeze up, <0 capitulation)
-        """
-        symbol = str(symbol or "").strip().upper()
-        sym_clean = _clean_liq_symbol(symbol)
-        eff_win = safe_pos_float(window_sec, 300.0)
-        now = time.time()
-        cutoff = now - eff_win
-        long_usd = short_usd = 0.0
-        long_n = short_n = 0
-        last_ts = 0.0
-        with self._lock:
-            items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol) or ())
-            if not items and symbol:
-                for cand in cache_symbol_variants(
-                    symbol, include_original=True, quotes=("USDT", "USDC", "USD")
-                ):
-                    cand_items = casefold_get(self._events, cand)
-                    if cand_items:
-                        items = list(cand_items)
-                        break
-        for ts, side, notional in items:
-            if ts < cutoff:
-                continue
-            last_ts = max(last_ts, ts)
-            if side == _LONG:
-                long_usd += notional
-                long_n += 1
-            else:
-                short_usd += notional
-                short_n += 1
-        return {
-            "symbol": symbol,
-            "window_sec": eff_win,
-            "long_liq_usd": long_usd,
-            "short_liq_usd": short_usd,
-            "long_count": long_n,
-            "short_count": short_n,
-            "net_usd": short_usd - long_usd,
-            "age_sec": max(0.0, now - last_ts) if last_ts else float("inf"),
-        }
-
-    def capitulation_ratio(self, symbol: str,
-                           window_sec: float = 120.0,
-                           baseline_sec: float = 3600.0) -> float:
-        """Intensity of the recent LONG-liquidation (panic-selling) burst relative
-        to the average rate over ``baseline_sec``. >1 = above average; a threshold
-        like >=3 is a reasonable "capitulation" trigger, but the strategy owns the
-        final number. Returns 0.0 until there is enough baseline history."""
-        eff_win = safe_pos_float(window_sec, 120.0)
-        eff_base = max(safe_pos_float(baseline_sec, 3600.0), eff_win)
-        recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
-        base = self.get_signal(symbol, eff_base)["long_liq_usd"]
-        recent_rate = recent / max(eff_win, 1.0)
-        base_rate = base / max(eff_base, 1.0)
-        return recent_rate / base_rate if base_rate > 0 else 0.0
 
 
 # Shared lazy singleton, mirroring bapi_ws.get_ws_manager().

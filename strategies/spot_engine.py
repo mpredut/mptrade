@@ -41,6 +41,11 @@ from . import spot_rules as sr
 from .state_store import (
     JsonStateStore,
     build_dataclass_from_dict,
+    build_strategy_exit_manager,
+    clean_nonneg_float as _clean_nonneg_float,
+    clean_pos_float as _clean_pos_float,
+    compute_adaptive_reentry_pullback_pct,
+    find_open_order,
     state_path_for as _shared_state_path_for,
     update_post_sell_anchors,
 )
@@ -60,14 +65,6 @@ _REGIME_BAR_SETTLE_MAX_SEC = 900.0
 
 
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
-
-
-def _clean_pos_float(val: object, default: float | None = None) -> float | None:
-    return safe_pos_float(val, default=default)
-
-
-def _clean_nonneg_float(val: object, default: float | None = None) -> float | None:
-    return safe_nonneg_float(val, default=default)
 
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
@@ -835,16 +832,7 @@ class Strategy:
         return self._find_open(side) is not None
 
     def _find_open(self, side: str) -> dict | None:
-        target = str(side or "").strip().lower() if not isinstance(side, bool) else ""
-        if not target:
-            return None
-        orders = self.s.get("orders")
-        if not isinstance(orders, list):
-            return None
-        return next(
-            (o for o in orders if isinstance(o, dict) and str(o.get("side") or "").strip().lower() == target),
-            None,
-        )
+        return find_open_order(self.s, side)
 
     def _remove(self, o: dict) -> None:
         if o in self.s["orders"]:
@@ -1462,44 +1450,13 @@ class Strategy:
         return self._vol_1h_ratio()
 
     def _init_exit_manager(self) -> PositionExitManager:
-        exit_cfg = PositionExitConfig(
-            lost_threshold=self.p.stop_loss_pct / 100.0,
-            sl_disaster_buffer_ratio=self.p.sl_disaster_buffer_ratio,
-            sl_disaster_vol_multiplier=self.p.sl_disaster_vol_multiplier,
-            sl_disaster_buffer_min_pct=self.p.sl_disaster_buffer_min_pct / 100.0,
-            sl_disaster_buffer_max_pct=self.p.sl_disaster_buffer_max_pct / 100.0,
-            sl_trend_defer_max_sec=self.p.sl_trend_defer_max_sec,
-            sl_bounce_min_recovery_pct=self.p.sl_bounce_min_recovery_pct / 100.0,
-            sl_bounce_pullback_pct=self.p.sl_bounce_pullback_pct / 100.0,
-            sl_bounce_ratchet_enabled=self.p.sl_bounce_ratchet_enabled,
-            sl_bounce_ratchet_k=self.p.sl_bounce_ratchet_k,
-            sl_bounce_min_pullback_pct=self.p.sl_bounce_min_pullback_pct / 100.0,
-            sl_structural_break_enabled=self.p.sl_structural_break_enabled,
-            smart_sl_enabled=False,
-            gain_threshold=self.p.takeprofit_pct / 100.0,
-            tp_trend_ride_enabled=self.p.tp_trend_hold,
-            tp_profit_floor_min_pct=(self.p.tp_trail_profit_floor_pct or 0.0) / 100.0,
-            tp_pullback_pct=self.p.tp_trail_pct / 100.0,
-            tp_stagnation_max_sec=self.p.tp_stagnation_max_sec,
-            fast_profit_guard_enabled=self.p.fast_profit_guard,
-            fast_profit_mult=self.p.fast_profit_mult,
-            fast_profit_window_sec=self.p.fast_profit_window_min * 60.0,
-            fast_profit_drop_pct=self.p.fast_profit_drop_pct,
-            reentry_enabled=True,
-            reentry_sl_bounce_pct=self.p.reentry_sl_bounce_pct / 100.0,
-            reentry_drop_pct=self.p.reentry_drop_pct / 100.0,
-            reentry_pullback_pct=self.p.reentry_pullback_pct / 100.0,
-            reentry_bear_bounce_pct=self.p.reentry_bear_bounce_pct / 100.0,
-            reentry_ttl_hours=self.p.reentry_ttl_hours,
-            reentry_tolerance_pct=self.p.reentry_tolerance_pct,
+        return build_strategy_exit_manager(
+            self.p,
+            self.s,
+            self._resolve_volatility_tuple,
             allow_external_cache=not self.replay_mode,
+            mode="spot",
         )
-        mgr = PositionExitManager(
-            config=exit_cfg,
-            vol_resolver=self._resolve_volatility_tuple,
-        )
-        mgr.bind_state(self.s)
-        return mgr
 
     def _create_position_snapshot(
         self,
@@ -1803,11 +1760,7 @@ class Strategy:
         return eff_drop, f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
-        """Return the dynamic volatility-scaled or fixed pullback threshold from peak.
-
-        When STRAT_REENTRY_PULLBACK_ADAPTIVE is enabled, scale pullback by volatility:
-        pullback = clamp(K_PULLBACK * vol_1h, min_pullback, max_pullback).
-        """
+        """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
         if not self.p.reentry_pullback_adaptive:
             return self.p.reentry_pullback_pct, "fixed"
         try:
@@ -1815,10 +1768,12 @@ class Strategy:
         except Exception as e:
             log(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
             vol = None
-        if vol is None:
-            return self.p.reentry_pullback_pct, f"fixed (fallback, warm-up {len(self._shadow_prices)}/20)"
-        val = max(self.p.reentry_pullback_min, min(self.p.reentry_pullback_max, self.p.reentry_pullback_k * vol))
-        return val, f"adaptive (vol_1h {vol:.2f}% x k={self.p.reentry_pullback_k} -> {val:.2f}%)"
+        return compute_adaptive_reentry_pullback_pct(
+            self.p,
+            vol,
+            fallback_reason=f"fixed (fallback, warm-up {len(self._shadow_prices)}/20)",
+            vol_label="vol_1h",
+        )
 
     def _effective_trail_pct(self) -> float:
         """Return the clamped volatility-adaptive or fixed trailing pullback.

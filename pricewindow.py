@@ -72,14 +72,17 @@ def _resolve_short_trend_estimator() -> str:
 SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
 
 
-def _env_float(name: str, default: float) -> float:
-    val = float_env(name)
-    return default if val is None else val
+def dynamic_window_key(window_seconds: float) -> str:
+    """Format a positive dynamic trend window duration (in seconds) into its canonical cache key."""
+    w = safe_pos_float(window_seconds, default=None)
+    if w is None:
+        raise ValueError(f"window_seconds must be a positive finite number, got {window_seconds!r}")
+    return f"{w:g}"
 
 
 def _resolve_step_wols_power(estimator_name: str = None) -> float:
     if "MPTRADE_STEP_WOLS_POWER" in os.environ:
-        return max(0.0, _env_float("MPTRADE_STEP_WOLS_POWER", DEFAULT_STEP_WOLS_POWER))
+        return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
     est = (estimator_name or SHORT_TREND_ESTIMATOR or "").lower()
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
         return 3.0
@@ -90,7 +93,7 @@ def _resolve_step_wols_power(estimator_name: str = None) -> float:
 
 STEP_WOLS_POWER = _resolve_step_wols_power(SHORT_TREND_ESTIMATOR)
 DEFAULT_TREND_NOISE_GATE_K = 0.0      # Multiplier k for adaptive noise gate (0.0 = bypassed, e.g. 0.05-0.10)
-TREND_NOISE_GATE_K = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", DEFAULT_TREND_NOISE_GATE_K))
+TREND_NOISE_GATE_K = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", default=DEFAULT_TREND_NOISE_GATE_K))
 _STEP_WOLS_DIRECT_MAX_STEPS = 1024          # Exact direct dot product up to this many steps.
 _SYMBOL_POWER_CACHE = {"mtime_ns": None, "map": {}}
 _SYMBOL_FAST_WINDOW_CACHE = {"mtime_ns": None, "map": {}}
@@ -176,8 +179,7 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     float (e.g. ``90.0`` for ``TAOUSDC``) when ``trend.fast_window_sec`` is configured.
     """
     if "MPTRADE_FAST_TREND_WINDOW_SEC" in os.environ:
-        val = _env_float("MPTRADE_FAST_TREND_WINDOW_SEC", 0.0)
-        return val if val > 0.0 else None
+        return safe_pos_float(float_env("MPTRADE_FAST_TREND_WINDOW_SEC"), default=None)
     return _lookup_symbol_param(symbol, _load_symbol_fast_window_map())
 
 
@@ -188,7 +190,7 @@ def resolve_dynamic_trend_snapshot(snap, symbol: str | None = None):
     fw = safe_pos_float(fast_trend_window_for_symbol(symbol), default=None)
     dyn = snap.get("dynamic")
     if fw is not None and isinstance(dyn, dict):
-        w_snap = dyn.get(f"{fw:g}")
+        w_snap = dyn.get(dynamic_window_key(fw))
         if isinstance(w_snap, dict):
             return w_snap
     return snap
@@ -394,7 +396,7 @@ def instant_trend_from_prices(
     growth_coefficient = step_wols_slope(
         analyzer.prices, sample_rate_sec, power=power, symbol=symbol
     )
-    noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+    noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
     noise_thr = 0.0
     if noise_gate_k > 0.0 and len(analyzer.prices) >= 3:
         grad_arr = np.array(gradient_lst) if len(gradient_lst) else np.gradient(np.array(analyzer.prices))
@@ -696,7 +698,7 @@ class IncrementalTrendBuffer:
             var_g = max(0.0, sum_g2 / n - mean_g * mean_g)
             epsilon = float(k_val * math.sqrt(var_g))
 
-        noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+        noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
         noise_thr = noise_gate_k * epsilon if noise_gate_k > 0.0 else 0.0
         final_trend = 1 if growth_coefficient > noise_thr else (-1 if growth_coefficient < -noise_thr else 0)
 

@@ -19,7 +19,7 @@ import os
 import time
 from datetime import date
 
-from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import float_env, pos_float_env, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from intelligence.internal.state.volatility import (
@@ -36,15 +36,11 @@ from intelligence.internal.triggers.kalman_trigger import (
 from state_io import read_json_dict, save_json_state
 
 
-def _f_env(name: str, default: float) -> float:
-    val = float_env(name)
-    return val if (val is not None and val > 0.0) else default
-
-
 # Feed Kalman at a subsampled cadence. One-second ticks track minute oscillations
 # and produced thousands of daily transitions; 60 seconds yields about four BTC
 # transitions per day, comparable with the primary model's timescale.
-KALMAN_SAMPLE_SEC = _f_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
+_f_env = pos_float_env
+KALMAN_SAMPLE_SEC = pos_float_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))

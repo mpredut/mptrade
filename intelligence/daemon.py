@@ -31,6 +31,7 @@ from intelligence.macro_sentiment_ssot import (
     parse_symbol_list,
     prune_automated_cli_threads,
     resolve_now_ts,
+    run_daemon_loop,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat_files,
@@ -174,39 +175,17 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main daemon loop continuously."""
-        poll_interval_sec = safe_pos_float(poll_interval_sec, 1.0)
-        self.running = True
-
-        def _handle_exit(signum, frame):
-            logger.info("Received termination signal (%d), stopping daemon...", signum)
-            self.running = False
-            raise SystemExit(0)
-
-        signal.signal(signal.SIGINT, _handle_exit)
-        signal.signal(signal.SIGTERM, _handle_exit)
-
-        logger.info("Starting IntelligenceTelemetryDaemon for symbols: %s (PID=%d)", ", ".join(self.symbols), os.getpid())
-        try:
-            self.run_cycle(force=True)
-        except SystemExit:
-            logger.info("IntelligenceTelemetryDaemon stopped gracefully.")
-            return
-        except Exception as e:
-            logger.warning("Error during initial daemon update cycle: %s", e)
-
-        while self.running:
-            try:
-                self.run_cycle(force=False)
-                if self.running:
-                    time.sleep(poll_interval_sec)
-            except SystemExit:
-                break
-            except Exception as e:
-                logger.error("Unexpected error in daemon loop: %s", e)
-                if self.running:
-                    time.sleep(poll_interval_sec)
-
-        logger.info("IntelligenceTelemetryDaemon stopped gracefully.")
+        run_daemon_loop(
+            self,
+            poll_interval_sec=poll_interval_sec,
+            default_poll_sec=1.0,
+            daemon_name="IntelligenceTelemetryDaemon",
+            stop_label="daemon",
+            cycle_label="daemon",
+            start_msg=f"Starting IntelligenceTelemetryDaemon for symbols: {', '.join(self.symbols)} (PID={os.getpid()})",
+            logger_inst=logger,
+            initial_force=True,
+        )
 
 
 def main():

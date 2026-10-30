@@ -399,6 +399,65 @@ def write_daemon_heartbeat_files(
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
 
 
+def run_daemon_loop(
+    daemon_obj: Any,
+    *,
+    poll_interval_sec: float,
+    default_poll_sec: float,
+    daemon_name: str,
+    stop_label: str = "daemon",
+    cycle_label: str = "daemon",
+    start_msg: Optional[str] = None,
+    logger_inst: Optional[logging.Logger] = None,
+    initial_force: bool = True,
+    initial_heartbeat: Optional[Dict[str, Any]] = None,
+    reraise_initial_exit: bool = False,
+) -> None:
+    """Run a standard signal-handled intelligence daemon poll loop."""
+    import signal as _signal
+
+    log = logger_inst or logger
+    poll_sec = safe_pos_float(poll_interval_sec, default_poll_sec)
+    daemon_obj.running = True
+
+    def _handle_exit(signum, frame):
+        log.info("Received termination signal (%d), stopping %s...", signum, stop_label)
+        daemon_obj.running = False
+        raise SystemExit(0)
+
+    _signal.signal(_signal.SIGINT, _handle_exit)
+    _signal.signal(_signal.SIGTERM, _handle_exit)
+
+    if start_msg:
+        log.info("%s", start_msg)
+    if initial_heartbeat is not None:
+        daemon_obj.write_heartbeat(initial_heartbeat)
+
+    try:
+        daemon_obj.run_cycle(force=initial_force)
+    except SystemExit:
+        if reraise_initial_exit:
+            raise
+        log.info("%s stopped gracefully.", daemon_name)
+        return
+    except Exception as exc:
+        log.warning("Error during initial %s update cycle: %s", cycle_label, exc)
+
+    while daemon_obj.running:
+        try:
+            daemon_obj.run_cycle(force=False)
+            if daemon_obj.running:
+                time.sleep(poll_sec)
+        except SystemExit:
+            break
+        except Exception as exc:
+            log.error("Unexpected error in %s loop: %s", cycle_label, exc)
+            if daemon_obj.running:
+                time.sleep(poll_sec)
+
+    log.info("%s stopped gracefully.", daemon_name)
+
+
 def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) -> int:
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger

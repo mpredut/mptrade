@@ -47,15 +47,13 @@ except ImportError:
     from notify import notify  # noqa: E402
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+    TrailingAdapterBase,
     TrailingCore,
-    build_trailing_order_intent,
     extract_rebuy_anchors,
     extract_short_trend_slope,
     extract_trailing_intent_action_asset,
-    reconcile_trailing_pending_order,
     resolve_rebuy_bypass_guards,
     should_sell,
-    sync_trailing_retry_count,
     vwap_or_fallback,
 )
 should_sell = should_sell  # Re-exported for kraken tests/compatibility
@@ -118,9 +116,14 @@ MIN_PROFIT_PCT = required_float_env("KRAKEN_TRAILING_MIN_PROFIT_PCT")
 TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 
-class KrakenTrailing:
+class KrakenTrailing(TrailingAdapterBase):
     """Kraken adapter for TrailingCore, providing free-balance, price,
     limit sell/buy, and trend APIs plus provider-specific logging and notifications."""
+
+    _VENUE_SLUG = "kraken"
+    _VENUE_LABEL = "Kraken"
+    _LOG_TAG = "[TRAIL-K]"
+    _ENABLED_ENV_VAR = "KRAKEN_TRAILING_ENABLED"
 
     def __init__(self, client: KrakenClient, log=log, enabled=None, state_file=STATE_FILE,
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
@@ -155,13 +158,6 @@ class KrakenTrailing:
             missing_confirmations=2, retry_on_lookup_error=False,
             max_age_seconds=180,
         )
-
-    # -- state delegated to the core; retained for --status and tests ----------
-    def _load(self) -> dict:
-        return self.core.load()
-
-    def _save(self, st: dict):
-        self.core.save(st)
 
     def trail_pct_for(self, asset: str) -> float:
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
@@ -296,33 +292,8 @@ class KrakenTrailing:
     def price(self, pair: str):
         return self.client.last_price(pair)
 
-    def trend(self, pair: str) -> float:
-        return self._trend_value(pair)
-
-    _safe_float = staticmethod(safe_float)
-
-    def _sync_retry_count_from_state(self, pair: str, action: str, persist) -> None:
-        sync_trailing_retry_count(self._retry_counts, pair, action, persist)
-
-    def _order_intent(self, action, key, asset, pair, qty, price, **metadata):
-        return build_trailing_order_intent(
-            self.order_lifecycle,
-            self._retry_counts,
-            venue_slug="kraken",
-            venue_label="Kraken",
-            action=action,
-            key=key,
-            asset=asset,
-            pair=pair,
-            qty=qty,
-            price=price,
-            **metadata,
-        )
-
     def reconcile_pending(self, pending, persist):
-        result = reconcile_trailing_pending_order(
-            self.order_lifecycle, self._retry_counts, pending, persist,
-        )
+        result = super().reconcile_pending(pending, persist)
         if result is not None and result.outcome == "terminal":
             filled = safe_nonneg_float(getattr(result.status, "filled_qty", None), default=0.0)
             if filled > 0:
@@ -440,38 +411,12 @@ class KrakenTrailing:
             )
         return result
 
-    def log_dry_sell(self, key, asset, pair, qty, price, peak, trail) -> None:
-        px_f = self._safe_float(price, 0.0)
-        pk_f = self._safe_float(peak, 0.0)
-        self.log(f"  🟡 [TRAIL-K][DRY] WOULD SELL {qty} {asset} @ ~{px_f:.4f} "
-                 f"(peak {pk_f:.4f}, -{trail}%)  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
-
-    def log_dry_rebuy(self, key, asset, pair, qty, price, rb) -> None:
-        px_f = self._safe_float(price, 0.0)
-        low_val, _ = extract_rebuy_anchors(rb, px_f)
-        self.log(f"  🟡 [TRAIL-K][DRY] WOULD RE-BUY {qty} {asset} @ ~{px_f:.4f}  "
-                 f"(a pullback from the low {low_val:.4f})  [KRAKEN_TRAILING_ENABLED=true for it to execute]")
-
-    def log_hold(self, key, asset, pair, price, peak, stop_at, trail, free) -> None:
-        px_f = self._safe_float(price, 0.0)
-        pk_f = self._safe_float(peak, 0.0)
-        st_f = self._safe_float(stop_at, 0.0)
-        fr_f = self._safe_float(free, 0.0)
-        self.log(f"  [TRAIL-K] {asset}: {px_f:.4f}  varf {pk_f:.4f}  "
-                 f"sells below {st_f:.4f} (-{trail}%)  (free {fr_f:.4f})")
-
-    def log_skip_rebuy_trend(self, asset) -> None:
-        self.log(f"  [TRAIL-K] re-buy {asset} deferred — the instant trend is CLEARLY down (not catching the knife)")
-
-    def log_skip_sell_trend(self, key, asset, pair, trail) -> None:
-        self.log(f"  [TRAIL-K] {asset}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)")
-
     def log_tick_error(self, e) -> None:
         self.log(f"  ! [TRAIL-K] cycle failed ({e.__class__.__name__}: {e}) — retrying")
 
     # -- one step / loop -------------------------------------------------------
     def check_once(self) -> None:
-        self.core.check_once()
+        super().check_once()
         # healthcheck.sh uses the log mtime as its heartbeat. When there is no free
         # balance to protect, the core intentionally exits without another message;
         # explicitly confirm that the process still completed the cycle successfully.
