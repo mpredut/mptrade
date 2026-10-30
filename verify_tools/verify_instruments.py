@@ -17,8 +17,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from providers.market_api import api
+from botcore import safe_float, safe_pos_float
 from instruments_config import load_instruments, load_for
+from providers.market_api import api
+from state_io import read_text_lines
 
 FAIL = []
 
@@ -39,8 +41,6 @@ def check_available(cond, available, label, detail=""):
 
 def parse_monitortrades_conf(path=None):
     """Parser simplu pt formatul existent (key=val; SYMBOL = g / l / maxage)."""
-    from state_io import read_text_lines
-
     if path is None:
         path = os.path.join(_ROOT, "monitortrades.conf")
     g = {}
@@ -129,16 +129,12 @@ def main() -> int:
 
     print("\n==== 4. operatii generice == facada directa ====")
     if tao:
-        p_inst = tao.price()
-        p_api = api.get_current_price("TAOUSDC")
+        p_inst = safe_pos_float(tao.price(), default=None)
+        p_api = safe_pos_float(api.get_current_price("TAOUSDC"), default=None)
         price_match = (
-            isinstance(p_inst, (int, float))
-            and not isinstance(p_inst, bool)
-            and isinstance(p_api, (int, float))
-            and not isinstance(p_api, bool)
-            and p_inst > 0
-            and p_api > 0
-            and abs(float(p_inst) - float(p_api)) / float(p_api) < 0.02
+            p_inst is not None
+            and p_api is not None
+            and abs(p_inst - p_api) / p_api < 0.02
         )
         check(price_match,
               "TAO price() == facada", f"instr={p_inst} api={p_api}")
@@ -147,7 +143,6 @@ def main() -> int:
         check_available(f_inst == f_prov, f_inst is not None and f_prov is not None,
                         "TAO free() == provider direct", f"instr={f_inst} prov={f_prov}")
     if hype:
-        from botcore import safe_pos_float
         p_h = hype.price()
         check(safe_pos_float(p_h, default=None) is not None, "HYPE price() > 0 (rutat la HL)", str(p_h))
         f_h = hype.free()

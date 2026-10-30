@@ -18,9 +18,17 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import safe_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from credentials import CredentialConfigurationError, kraken_credentials
+from providers.base import (
+    env_value,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+)
+from state_io import save_json_state
 
 _safe_float = safe_float
-from providers.base import env_value
 
 KD = os.path.join(ROOT, 'kraken')
 OUT = os.path.join(_HERE, 'kraken_trades_full.json')
@@ -32,9 +40,6 @@ def _client():
         'KRAKEN_API_KEY_BOT', 'KRAKEN_API_SECRET_BOT',
     )
     values = {name: env_value(KD, name) or '' for name in names}
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
-    from credentials import CredentialConfigurationError, kraken_credentials
     try:
         credentials = kraken_credentials('analysis', values=values)
     except CredentialConfigurationError as exc:
@@ -76,15 +81,6 @@ def fetch_all_trades(cli):
 
 
 def main():
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
-    from providers.base import (
-        extract_order_price,
-        extract_order_qty,
-        extract_order_side,
-        extract_timestamp_ms,
-    )
-    from state_io import save_json_state
     cli = _client()
     trades, total = fetch_all_trades(cli)
     by_sym = {}

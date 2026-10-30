@@ -31,6 +31,12 @@ import sys
 import tokenize
 from typing import Iterable, List, Tuple
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from state_io import read_text_file
+
 # Detection dictionary. Diacritics are conclusive on their own; the word list holds
 # Romanian tokens that are unlikely to appear in English prose or in identifiers.
 RO_DIACRITICS = set("ăâîșțĂÂÎȘȚşţŞŢ")
@@ -84,8 +90,6 @@ def doc_is_runtime_text(source: str) -> bool:
 
 def scan_file(path: str, min_score: int) -> Tuple[List[tuple], bool]:
     """Return (hits, doc_is_runtime) for one file; a hit is (line, kind, score, text)."""
-    from state_io import read_text_file
-
     source = read_text_file(path, default=None)
     if source is None:
         return [], False
@@ -207,8 +211,6 @@ def cmd_verify(args) -> int:
             continue
 
         try:
-            from state_io import read_text_file
-
             work_source = read_text_file(path, newline="")
         except (OSError, UnicodeDecodeError) as exc:
             print(f"FAIL {path:<40} unreadable on disk ({exc})")

@@ -11,15 +11,19 @@ total. It touches nothing.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
+import urllib.request
 from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
 from botcore import _parse_bool_flag, parse_dotenv, required_float_env, safe_float  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from state_io import read_json_dict, save_json_state  # noqa: E402
@@ -92,8 +96,6 @@ def kraken_rows() -> list[dict]:
 
 
 def hl_row() -> dict | None:
-    import contextlib
-    import io
     saved_path = list(sys.path)
     saved_common = sys.modules.get("common")
     try:
@@ -131,8 +133,6 @@ ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")
 
 def _ntfy(title: str, body: str) -> None:
     """Send an ntfy notification (best-effort, no external dependencies)."""
-    from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url
-
     if _external_notifications_disabled():
         return
     topic = (os.environ.get("NTFY_TOPIC") or "").strip()
@@ -147,7 +147,6 @@ def _ntfy(title: str, body: str) -> None:
     url = format_ntfy_url(topic)
     if not url:
         return
-    import urllib.request
     safe_title = AlertNotifier.utf8_header(title or "Alert") or "Alert"
     body_str = "" if isinstance(body, bool) else str(body or "")
     req = urllib.request.Request(

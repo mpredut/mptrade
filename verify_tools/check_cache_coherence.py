@@ -11,7 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import extract_current_price_item, safe_pos_float  # noqa: E402
 from cachepaths import cache_symbol_variants  # noqa: E402
-from instrument_registry import casefold_get  # noqa: E402
+from instrument_registry import casefold_get, select_instruments, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
 CACHEDB = os.path.join(ROOT, "cachedb")
@@ -24,9 +24,6 @@ def load(name):
 
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
-    from instrument_registry import select_instruments, symbols_for
     syms = symbols_for("binance")
     for inst in select_instruments(role="mt").values():
         if inst.provider != "binance" and inst.symbol not in syms:
@@ -50,7 +47,7 @@ def main() -> int:
     for s in exp:
         e = None
         for cand in cache_symbol_variants(s, include_original=True, include_base=True):
-            cand_entry = it.get(cand) if cand in it else casefold_get(it, cand)
+            cand_entry = casefold_get(it, cand)
             if isinstance(cand_entry, dict) and cand_entry:
                 e = cand_entry
                 break
@@ -82,7 +79,7 @@ def main() -> int:
         entries = None
         matched_key = s
         for cand in cache_symbol_variants(s, include_original=True, include_base=True):
-            cand_val = items.get(cand) if cand in items else casefold_get(items, cand)
+            cand_val = casefold_get(items, cand)
             if cand_val is not None:
                 entries = cand_val
                 matched_key = cand
@@ -94,8 +91,8 @@ def main() -> int:
 
         px_val = extract_current_price_item(entries) or 0.0
         ts_raw = None
-        ft_matched = fetchtime_map.get(matched_key) if matched_key in fetchtime_map else casefold_get(fetchtime_map, matched_key)
-        ft_sym = fetchtime_map.get(s) if s in fetchtime_map else casefold_get(fetchtime_map, s)
+        ft_matched = casefold_get(fetchtime_map, matched_key)
+        ft_sym = casefold_get(fetchtime_map, s)
         if isinstance(entries, list):
             last_entry = entries[-1] if entries else None
             if not isinstance(last_entry, (list, tuple)) or len(last_entry) < 2:

@@ -3,6 +3,7 @@
 P&L (current position at current price). Sources: Binance get_filled_orders (direct API,
 not the incomplete cache) and Kraken/HL state. Binance uses a 120-day window, so older
 cost basis is approximate. Run with: ./myenv/bin/python verify_tools/pnl_report.py"""
+from collections import defaultdict
 import sys, os, time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -10,6 +11,7 @@ if ROOT not in sys.path:
 from botcore import safe_float, safe_pos_float
 from binance_api import bapi_allorders as ao
 from binance_api import bapi
+from binance_api.order_id_context import resolve_order_owner
 from instrument_registry import symbols_for
 from providers.base import (
     extract_order_price,
@@ -17,6 +19,7 @@ from providers.base import (
     extract_order_side,
     extract_timestamp_ms,
 )
+from state_io import read_json_dict
 
 WINDOW_D = 120
 
@@ -54,7 +57,6 @@ def binance_symbol(symbol):
 # (avg_sell - avg_buy). For bots that exchange inventory (tradeall buys TAO while
 # rtrade sells it), net_qty shows which one accumulates versus distributes. The
 # window contains roughly the latest 1,000 orders returned by get_all_orders.
-from binance_api.order_id_context import resolve_order_owner
 
 
 def _bot(cid):
@@ -65,7 +67,6 @@ def _bot(cid):
 
 
 def per_bot(symbol):
-    from collections import defaultdict
     try:
         orders = bapi.client.get_all_orders(symbol=symbol, limit=1000) or []
     except Exception as e:  # noqa: BLE001
@@ -114,7 +115,6 @@ def main():
             print(f"{'Binance '+sym:<22} ERROR: {e}")
 
     # Kraken HYPE (kraken_bot)
-    from state_io import read_json_dict
     try:
         k = read_json_dict(os.path.join(ROOT, "kraken/.state_HYPEUSD.json"), default=None, recover_previous=True)
         if not isinstance(k, dict):

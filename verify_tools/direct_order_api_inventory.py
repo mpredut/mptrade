@@ -17,6 +17,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from state_io import read_text_file
+
 SENSITIVE_METHODS = {
     "create_order", "order_limit_buy", "order_limit_sell",
     "order_market_buy", "order_market_sell", "add_order", "spot_order",
@@ -90,8 +93,6 @@ def scan_direct_calls(root: Path = ROOT) -> set[DirectCall]:
             continue
         visitor = _Visitor(relative_path.as_posix())
         try:
-            from state_io import read_text_file
-
             visitor.visit(ast.parse(read_text_file(path)))
         except (OSError, SyntaxError, UnicodeError):
             continue

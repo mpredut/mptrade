@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import safe_float as _f, safe_int as _i
+from state_io import read_text_lines
 
 
 def _last_valid_record(lines: list[str]) -> dict | None:
@@ -48,8 +49,6 @@ def main() -> None:
         help="Path to shadow .jsonl log",
     )
     args = parser.parse_args()
-
-    from state_io import read_text_lines
 
     if not args.file.exists():
         print(f"Shadow log not found: {args.file}")

@@ -75,7 +75,7 @@ def main():
 
     print(f"==== TRADE WATCH {time.strftime('%Y-%m-%d %H:%M:%S')} ====")
     for s in SYMBOLS:
-        spec = specs_by_sym.get(s) or casefold_get(specs_by_sym, s)
+        spec = casefold_get(specs_by_sym, s)
         try:
             gain_pct = safe_pos_float(spec.number("mt.gain") if spec else None, default=9.2)
         except Exception:

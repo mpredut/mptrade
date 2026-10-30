@@ -24,7 +24,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
+from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
+from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
+from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noqa: E402
 from providers.quantity import resolve_assets  # noqa: E402
+from state_io import read_text_file  # noqa: E402
 
 
 _truthy = _parse_bool_flag
@@ -79,7 +83,6 @@ def _account_ref(
 
 
 def _manifest(root: Path) -> list[str]:
-    from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest
     return [p["pattern"] for p in parse_procs_manifest(str(root), roles=("bot", "fleet"))]
 
 
@@ -114,7 +117,6 @@ def _running(pattern: str | None, commands: list[str] | None) -> bool | None:
 
 
 def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, str]:
-    from cachepaths import split_symbol_assets
     resolved_base, resolved_quote = resolve_assets(
         symbol, base=base or None, quote=quote or None)
     if not resolved_quote and not base and not quote:
@@ -128,8 +130,6 @@ def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, st
 
 def _python_symbols(root: Path) -> tuple[list[str], str]:
     """Read constants without importing `symbols.py` or triggering its API side effects."""
-    from state_io import read_text_file
-
     path = root / "symbols.py"
     if not path.exists():
         return [], ""
@@ -149,7 +149,6 @@ def _python_symbols(root: Path) -> tuple[list[str], str]:
     tao = str(values.get("taosymbol") or "")
     if not syms:
         try:
-            from instrument_registry import symbols_for, single_symbol_for
             conf_path = root / "instruments.conf"
             if conf_path.exists():
                 syms = symbols_for("binance", path=conf_path)
@@ -287,7 +286,6 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             mt_role = values.get("role.mt")
             if mt_role is not None and not _truthy(mt_role):
                 continue
-            from cachepaths import normalize_venue_name
             venue = normalize_venue_name(values.get("provider", "unknown")) or "unknown"
             symbol = values.get("symbol", section).strip()
             enabled = (
