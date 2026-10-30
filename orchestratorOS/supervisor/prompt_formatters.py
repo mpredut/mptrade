@@ -765,8 +765,11 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         ts = normalize_timestamp_ms(entry.get("ts_ms"), default=0) or 0
         age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
         tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
-        by_sfx = f", by={tag}" if tag else ""
-        return f"{entry.get('qty')} @ {px} (age={age_h}h{by_sfx})"
+        qty_v = entry.get("qty")
+        qty_pfx = f"{qty_v} @ " if qty_v is not None else "@ "
+        meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
+        meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
+        return f"{qty_pfx}{px}{meta_sfx}"
 
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""

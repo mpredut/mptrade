@@ -1737,9 +1737,11 @@ def is_expired(rec, now=None):
         expires_at = safe_pos_float(raw_expires_at, default=None)
         if expires_at is None or now_f > expires_at:
             return True
+    effective_ttl = resolve_record_ttl(rec)
+    if _clean_str(rec.get("kind")).startswith(_FAST_IMPULSE_KIND_PREFIXES) and (now_f - created) > effective_ttl:
+        return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
-    effective_ttl = resolve_record_ttl(rec)
     return ((now_f - ttl_started) > effective_ttl or
             (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS))
 

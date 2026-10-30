@@ -1759,6 +1759,11 @@ def parse_venue_cycle_state(
             cyc_entry["_entry_ts_ms"] = (
                 int(round(raw_entry_ts * 1000.0)) if raw_entry_ts < 1e11 else int(round(raw_entry_ts))
             )
+        raw_sell_ts = safe_pos_float(st_data.get("last_sell_ts"), default=None)
+        if raw_sell_ts is not None:
+            cyc_entry["_last_sell_ts_ms"] = (
+                int(round(raw_sell_ts * 1000.0)) if raw_sell_ts < 1e11 else int(round(raw_sell_ts))
+            )
     return cyc_entry
 
 
@@ -2428,7 +2433,7 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
         subsampled = pts[-min(len(pts), 30) :]
     if len(subsampled) < 5:
         return None
-    kf = KalmanTrend(gap_reset_sec=900.0)
+    kf = KalmanTrend(gap_reset_sec=7200.0)
     fed: List[float] = []
     last_out: Optional[Dict[str, Any]] = None
     for ts_s, px_v in subsampled[-60:]:
@@ -2925,6 +2930,7 @@ def harvest_recent_orders_and_enrich_positions(
                         _record_venue_fills("t212", sym_t, fills)
             except Exception:
                 pass
+    cyc_sell_ts_map: Dict[tuple[str, str], int] = {}
     for c_venue, cyc_map, avg_dec in (
         ("kraken", kraken_cycles, 6),
         ("hyperliquid", hyperliquid_cycles, 6),
@@ -2937,6 +2943,9 @@ def harvest_recent_orders_and_enrich_positions(
             if not isinstance(cyc, dict):
                 continue
             entry_ts_ms = cyc.pop("_entry_ts_ms", None)
+            sell_ts_ms = cyc.pop("_last_sell_ts_ms", None)
+            if sell_ts_ms:
+                cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = int(sell_ts_ms)
             if not entry_ts_ms or cyc.get("resting_orders"):
                 continue
             c_quotes = compatible_quote_suffixes(c_sym)
@@ -3114,10 +3123,57 @@ def harvest_recent_orders_and_enrich_positions(
                     pos_px_f,
                     overwrite=(p_venue == "t212" and cyc.get("avg_cost_px") is not None),
                 )
-                if p_venue == "t212" and cyc.get("avg_cost_px") is not None and isinstance(ro, dict):
+                if p_venue == "t212":
                     _t212_avg = safe_pos_float(cyc.get("avg_cost_px"), default=0.0) or 0.0
-                    if _t212_avg > 0:
-                        ro["active_avg_buy_px"] = round(_t212_avg, 6)
+                    _t212_lb = safe_pos_float(cyc.get("last_buy_price"), default=None)
+                    _t212_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
+                    _t212_ls_ts = cyc_sell_ts_map.get(("t212", p_sym))
+                    if not isinstance(ro, dict) and (_t212_lb is not None or _t212_ls is not None):
+                        ro = {
+                            "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if _t212_ls is not None else "BUY"),
+                            "last_action_actor": "BOT",
+                            "last_action_actor_tag": "BOT",
+                            "last_buy": (
+                                {
+                                    "price": _t212_lb,
+                                    "qty": cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None,
+                                    "actor": "BOT",
+                                    "actor_tag": "BOT",
+                                }
+                                if _t212_lb is not None
+                                else None
+                            ),
+                            "last_sell": (
+                                {
+                                    "price": _t212_ls,
+                                    "ts_ms": _t212_ls_ts,
+                                    "actor": "BOT",
+                                    "actor_tag": "BOT",
+                                }
+                                if _t212_ls is not None
+                                else None
+                            ),
+                            "active_avg_buy_px": round(_t212_avg, 6) if _t212_avg > 0 else None,
+                            "recent_buys": [],
+                        }
+                        recent_orders[p_sym] = ro
+                        v_ro_map[p_sym] = ro
+                    elif isinstance(ro, dict):
+                        if _t212_avg > 0:
+                            ro["active_avg_buy_px"] = round(_t212_avg, 6)
+                        if ro.get("last_sell") is None and _t212_ls is not None:
+                            ro["last_sell"] = {
+                                "price": _t212_ls,
+                                "ts_ms": _t212_ls_ts,
+                                "actor": "BOT",
+                                "actor_tag": "BOT",
+                            }
+                        if ro.get("last_buy") is None and _t212_lb is not None:
+                            ro["last_buy"] = {
+                                "price": _t212_lb,
+                                "actor": "BOT",
+                                "actor_tag": "BOT",
+                            }
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
