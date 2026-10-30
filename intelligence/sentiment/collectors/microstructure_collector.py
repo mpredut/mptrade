@@ -7,45 +7,23 @@ import os
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import (
-    extract_current_price_item,
-)
+from botcore import extract_current_price_item
 from cachepaths import (
-    cache_symbol_variants,
-    canonical_base_asset,
-    compatible_quote_suffixes,
-    legacy_filenames_for,
+    cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, legacy_filenames_for,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    obj_attr,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
+    clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float,
 )
 from instrument_registry import casefold_get
 from providers.base import (
-    _EXEC_QTY_KEYS,
-    _UNFILLED_ORDER_STATUSES,
-    aggregate_fills_by_order_id,
-    extract_executed_qty,
-    extract_order_id,
-    extract_order_price,
-    extract_order_side,
-    extract_orig_qty,
-    extract_timestamp_ms,
-    format_actor_tag,
-    resolve_order_origin,
+    _EXEC_QTY_KEYS, _UNFILLED_ORDER_STATUSES, aggregate_fills_by_order_id, extract_executed_qty,
+    extract_order_id, extract_order_price, extract_order_side, extract_orig_qty,
+    extract_timestamp_ms, format_actor_tag, resolve_order_origin,
 )
-from providers.execution_audit import (
-    extract_intent_order_type,
-    extract_intent_side,
-)
+from providers.execution_audit import extract_intent_order_type, extract_intent_side
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
-    read_tail_jsonl_records,
-    resolve_cachedb_filepath,
+    read_json_dict_recovering as read_json_cached, read_tail_jsonl_records, resolve_cachedb_filepath,
 )
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
@@ -149,18 +127,16 @@ def compute_volume_profile_metrics(
 
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None
-        if timed_rows:
-            timed_rows.sort(key=lambda x: x[0])
-            for _, px_f, vol_w in timed_rows:
-                if vol_w <= 0.0:
-                    vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
-                prev_px = px_f
-                samples.append((px_f, vol_w))
-        else:
-            for px_f in scalar_rows:
+        raw_pairs = (
+            [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])]
+            if timed_rows
+            else [(px_f, 0.0) for px_f in scalar_rows]
+        )
+        for px_f, vol_w in raw_pairs:
+            if vol_w <= 0.0:
                 vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
-                prev_px = px_f
-                samples.append((px_f, vol_w))
+            prev_px = px_f
+            samples.append((px_f, vol_w))
 
         if len(samples) < 4:
             return {}
@@ -319,20 +295,13 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     eff_dec = 2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6)
                     if recent_low < prior_low and cur_px > prior_low:
                         out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
-                        out["prior_6h_low_px"] = round(prior_low, eff_dec)
-                        out["recent_1h_low_px"] = round(recent_low, eff_dec)
                         out["reclaim_above_prior_low_pct"] = round(((cur_px / prior_low) - 1.0) * 100.0, 2)
-                    elif (
-                        recent_low >= prior_low
-                        and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5
-                        and cur_px > recent_low * 1.002
-                    ):
+                    elif recent_low >= prior_low and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5 and cur_px > recent_low * 1.002:
                         out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
-                        out["prior_6h_low_px"] = round(prior_low, eff_dec)
-                        out["recent_1h_low_px"] = round(recent_low, eff_dec)
                         out["higher_low_vs_prior_pct"] = round(((recent_low / prior_low) - 1.0) * 100.0, 2)
                     elif recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5:
                         out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
+                    if "bottom_structure_6h" in out:
                         out["prior_6h_low_px"] = round(prior_low, eff_dec)
                         out["recent_1h_low_px"] = round(recent_low, eff_dec)
         vp_metrics = compute_volume_profile_metrics(series)
@@ -831,25 +800,17 @@ def apply_short_trend_item(
     entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
     entry["slope_full"] = tinfo.get("slope_full", 0.0)
     entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
+    for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
+        if not require_any_slope or tinfo.get(k) is not None:
+            entry[k] = tinfo.get(k)
     if not require_any_slope:
-        entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
-        entry["epsilon"] = tinfo.get("epsilon")
         entry["trend_fast"] = tinfo.get("trend_fast", trend)
-        entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
-    else:
-        if tinfo.get("gradient_recent_fast") is not None:
-            entry["gradient_recent_fast"] = tinfo.get("gradient_recent_fast")
-        if tinfo.get("epsilon") is not None:
-            entry["epsilon"] = tinfo.get("epsilon")
-        if tinfo.get("vol_1h_pct") is not None:
-            entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
     t_vol = safe_pos_float(tinfo.get("vol_1h_pct"), default=None)
     t_re = safe_pos_float(tinfo.get("adapt_reentry_pct"), default=None)
-    t_vol_aligned = t_vol is None or (t_re is not None and abs(t_re - 2.0 * t_vol) <= 0.05)
-    if t_vol_aligned and tinfo.get("adapt_reentry_pct") is not None:
-        entry["adapt_reentry_pct"] = tinfo.get("adapt_reentry_pct")
-    if t_vol_aligned and tinfo.get("adapt_dca_pct") is not None:
-        entry["adapt_dca_pct"] = tinfo.get("adapt_dca_pct")
+    if t_vol is None or (t_re is not None and abs(t_re - 2.0 * t_vol) <= 0.05):
+        for ak in ("adapt_reentry_pct", "adapt_dca_pct"):
+            if tinfo.get(ak) is not None:
+                entry[ak] = tinfo[ak]
     if d90.get("slope_full") is not None:
         entry["slope_90s"] = d90.get("slope_full")
         entry["trend_90s"] = d90.get("final_trend", trend)
@@ -1351,16 +1312,10 @@ def compute_liquidation_clusters(
         inner_guard_px=short_near_raw,
     )
 
-    eff_dec = (
-        decimals
-        if decimals is not None
-        else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
+    eff_dec = decimals if decimals is not None else (2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6))
+    long_liq_px, short_liq_px, long_liq_deep_px, short_liq_deep_px = (
+        round(v, eff_dec) for v in (long_near_raw, short_near_raw, long_deep_raw, short_deep_raw)
     )
-    long_liq_px = round(long_near_raw, eff_dec)
-    short_liq_px = round(short_near_raw, eff_dec)
-    long_liq_deep_px = round(long_deep_raw, eff_dec)
-    short_liq_deep_px = round(short_deep_raw, eff_dec)
-
     oi_chg_1h = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     oi_heat_mult = min(1.25, max(0.85, 1.0 + (oi_chg_1h / 100.0) * 1.5))
 
@@ -1369,33 +1324,21 @@ def compute_liquidation_clusters(
     long_liq_deep_usd = round(oi_usd * eff_long_share * 0.024 * oi_heat_mult, 0)
     short_liq_deep_usd = round(oi_usd * eff_short_share * 0.024 * oi_heat_mult, 0)
 
-    long_liq_dist_pct = round(((long_liq_px - cur_px) / cur_px) * 100.0, 2)
-    short_liq_dist_pct = round(((short_liq_px - cur_px) / cur_px) * 100.0, 2)
-    long_liq_deep_dist_pct = round(((long_liq_deep_px - cur_px) / cur_px) * 100.0, 2)
-    short_liq_deep_dist_pct = round(((short_liq_deep_px - cur_px) / cur_px) * 100.0, 2)
-
+    long_liq_dist_pct, short_liq_dist_pct, long_liq_deep_dist_pct, short_liq_deep_dist_pct = (
+        round(((px_v - cur_px) / cur_px) * 100.0, 2)
+        for px_v in (long_liq_px, short_liq_px, long_liq_deep_px, short_liq_deep_px)
+    )
     short_gravity = short_liq_usd / max(0.35, abs(short_liq_dist_pct))
     long_gravity = long_liq_usd / max(0.35, abs(long_liq_dist_pct))
-    if short_gravity > long_gravity * 1.18:
-        liq_magnet_bias = "SHORT_SQUEEZE_MAGNET_UP"
-    elif long_gravity > short_gravity * 1.18:
-        liq_magnet_bias = "LONG_SWEEP_MAGNET_DOWN"
-    else:
-        liq_magnet_bias = "BALANCED_LIQ_MAGNET"
-
+    liq_magnet_bias = (
+        "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.18
+        else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.18 else "BALANCED_LIQ_MAGNET")
+    )
     return {
-        "long_liq_px": long_liq_px,
-        "long_liq_usd": long_liq_usd,
-        "long_liq_dist_pct": long_liq_dist_pct,
-        "short_liq_px": short_liq_px,
-        "short_liq_usd": short_liq_usd,
-        "short_liq_dist_pct": short_liq_dist_pct,
-        "long_liq_deep_px": long_liq_deep_px,
-        "long_liq_deep_usd": long_liq_deep_usd,
-        "long_liq_deep_dist_pct": long_liq_deep_dist_pct,
-        "short_liq_deep_px": short_liq_deep_px,
-        "short_liq_deep_usd": short_liq_deep_usd,
-        "short_liq_deep_dist_pct": short_liq_deep_dist_pct,
+        "long_liq_px": long_liq_px, "long_liq_usd": long_liq_usd, "long_liq_dist_pct": long_liq_dist_pct,
+        "short_liq_px": short_liq_px, "short_liq_usd": short_liq_usd, "short_liq_dist_pct": short_liq_dist_pct,
+        "long_liq_deep_px": long_liq_deep_px, "long_liq_deep_usd": long_liq_deep_usd, "long_liq_deep_dist_pct": long_liq_deep_dist_pct,
+        "short_liq_deep_px": short_liq_deep_px, "short_liq_deep_usd": short_liq_deep_usd, "short_liq_deep_dist_pct": short_liq_deep_dist_pct,
         "liq_magnet_bias": liq_magnet_bias,
     }
 

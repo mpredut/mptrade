@@ -8,68 +8,36 @@ import time as _time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.parse as _urlparse
 
-from botcore import (
-    extract_current_price_item,
-    fetch_public_json,
-)
+from botcore import extract_current_price_item, fetch_public_json
 from cachepaths import (
-    cache_symbol_variants,
-    canonical_base_asset,
-    compatible_quote_suffixes,
-    get_cachedb_dir,
-    normalize_venue_name,
+    cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes,
+    get_cachedb_dir, normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
-    filter_valid_severity_keywords,
-    get_cache_filenames,
-    obj_attr,
-    safe_float,
-    safe_nonneg_ts,
-    safe_pos_float,
+    filter_valid_severity_keywords, get_cache_filenames, obj_attr,
+    safe_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _MICRO_PRICE_ANCHOR_KEYS,
-    _first_variant_dict,
-    _prices_diverged,
-    apply_live_24trend_windows,
-    apply_short_trend_item,
-    compute_24h_price_metrics,
-    compute_cross_btc_metrics,
-    compute_liquidation_clusters,
-    enrich_microstructure_cvd,
-    extract_symbol_recent_fills,
-    load_symbol_microstructure,
-    load_symbol_price_series,
+    _MICRO_PRICE_ANCHOR_KEYS, _first_variant_dict, _prices_diverged,
+    apply_live_24trend_windows, apply_short_trend_item, compute_24h_price_metrics,
+    compute_cross_btc_metrics, compute_liquidation_clusters, enrich_microstructure_cvd,
+    extract_symbol_recent_fills, load_symbol_microstructure, load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    _load_recent_audit_origins,
-    build_cross_market_context,
-    enrich_24h_and_microstructure,
-    enrich_cross_venue_trends,
-    harvest_bot_runtime_states,
-    harvest_kraken_xstocks,
-    harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders,
-    harvest_venue_cycles,
-    load_venue_trailing_maps,
-    sync_sibling_symbol_telemetry,
+    _load_recent_audit_origins, build_cross_market_context, enrich_24h_and_microstructure,
+    enrich_cross_venue_trends, harvest_bot_runtime_states, harvest_kraken_xstocks,
+    harvest_recent_orders_and_enrich_positions, harvest_tradable_positions_and_orders,
+    harvest_venue_cycles, load_venue_trailing_maps, sync_sibling_symbol_telemetry,
 )
 from instrument_registry import casefold_get
-from providers.base import (
-    extract_timestamp_s,
-)
+from providers.base import extract_timestamp_s
 from providers.execution_audit import (
-    build_last_cycle_execution_status,
-    collect_known_ai_order_ids,
-    extract_intent_notional,
-    summarize_recent_ai_intents,
+    build_last_cycle_execution_status, collect_known_ai_order_ids,
+    extract_intent_notional, summarize_recent_ai_intents,
 )
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
-    read_json_recovering,
-    read_last_jsonl_dict,
-    resolve_cachedb_filepath,
-    save_json_state,
+    read_json_dict_recovering as read_json_cached, read_json_recovering,
+    read_last_jsonl_dict, resolve_cachedb_filepath, save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.macro_telemetry_collector")
@@ -933,29 +901,24 @@ def collect_pretrade_telemetry(
         )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         if m24:
-            h_parts = []
-            for micro_lbl, micro_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct")):
-                if micro_k in m24 and m24.get(micro_k) is not None:
-                    h_parts.append(f"{micro_lbl}={float(m24[micro_k]):+.2f}%")
-            h_parts.extend([
-                f"15m={m24.get('chg_15m_pct', 0):+.2f}%",
-                f"30m={m24.get('chg_30m_pct', 0):+.2f}%",
-                f"1h={m24.get('chg_1h_pct', 0):+.2f}%",
-                f"3h={m24.get('chg_3h_pct', 0):+.2f}%",
-            ])
-            for opt_lbl, opt_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct")):
-                if opt_k in m24 and m24.get(opt_k) is not None:
-                    h_parts.append(f"{opt_lbl}={float(m24[opt_k]):+.2f}%")
+            h_parts = [
+                f"{lbl}={float(m24.get(k, 0)):+.2f}%"
+                for lbl, k, req in (
+                    ("1m", "chg_1m_pct", False), ("3m", "chg_3m_pct", False), ("5m", "chg_5m_pct", False),
+                    ("15m", "chg_15m_pct", True), ("30m", "chg_30m_pct", True), ("1h", "chg_1h_pct", True), ("3h", "chg_3h_pct", True),
+                    ("6h", "chg_6h_pct", False), ("12h", "chg_12h_pct", False), ("24h", "chg_24h_pct", False),
+                )
+                if req or (k in m24 and m24.get(k) is not None)
+            ]
             rng_str = f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
-            geom_parts = []
-            if m24.get("pos_24h_pct") is not None:
-                geom_parts.append(f"pos={m24['pos_24h_pct']}%")
-            if m24.get("dd_24h_high_pct") is not None:
-                geom_parts.append(f"dd_high={float(m24['dd_24h_high_pct']):+.2f}%")
-            if m24.get("bounce_24h_low_pct") is not None:
-                geom_parts.append(f"bounce_low={float(m24['bounce_24h_low_pct']):+.2f}%")
-            if m24.get("span_24h_pct") is not None:
-                geom_parts.append(f"span={m24['span_24h_pct']}%")
+            geom_parts = [
+                f"{g_lbl}={float(m24[g_k]):+.2f}%" if g_signed else f"{g_lbl}={m24[g_k]}%"
+                for g_lbl, g_k, g_signed in (
+                    ("pos", "pos_24h_pct", False), ("dd_high", "dd_24h_high_pct", True),
+                    ("bounce_low", "bounce_24h_low_pct", True), ("span", "span_24h_pct", False),
+                )
+                if m24.get(g_k) is not None
+            ]
             if geom_parts:
                 rng_str += f" ({', '.join(geom_parts)})"
             if m24.get("recent_tape_15m"):
@@ -978,24 +941,21 @@ def collect_pretrade_telemetry(
                     vs_parts = [
                         f"{h_lbl}={float(m24[h_k]) - float(btc_m24[h_k]):+.2f}%"
                         for h_lbl, h_k in (
-                            ("5m", "chg_5m_pct"),
-                            ("15m", "chg_15m_pct"),
-                            ("1h", "chg_1h_pct"),
-                            ("3h", "chg_3h_pct"),
-                            ("6h", "chg_6h_pct"),
-                            ("12h", "chg_12h_pct"),
-                            ("24h", "chg_24h_pct"),
+                            ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
+                            ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
                         )
                         if h_k in m24 and h_k in btc_m24
                     ]
                     cross_btc = compute_cross_btc_metrics(alt_series_24h, btc_series_24h)
-                    cross_parts = []
-                    if cross_btc.get("alt_btc_pos_24h_pct") is not None:
-                        cross_parts.append(f"alt_btc_pos_24h={cross_btc['alt_btc_pos_24h_pct']}%")
-                    if cross_btc.get("alt_btc_dd_24h_high_pct") is not None:
-                        cross_parts.append(f"alt_btc_dd_high={float(cross_btc['alt_btc_dd_24h_high_pct']):+.2f}%")
-                    if cross_btc.get("alt_btc_bounce_24h_low_pct") is not None:
-                        cross_parts.append(f"alt_btc_bounce_low={float(cross_btc['alt_btc_bounce_24h_low_pct']):+.2f}%")
+                    cross_parts = [
+                        f"{c_lbl}={float(cross_btc[c_k]):+.2f}%" if c_signed else f"{c_lbl}={cross_btc[c_k]}%"
+                        for c_lbl, c_k, c_signed in (
+                            ("alt_btc_pos_24h", "alt_btc_pos_24h_pct", False),
+                            ("alt_btc_dd_high", "alt_btc_dd_24h_high_pct", True),
+                            ("alt_btc_bounce_low", "alt_btc_bounce_24h_low_pct", True),
+                        )
+                        if cross_btc.get(c_k) is not None
+                    ]
                     if vs_parts or cross_parts:
                         rel_str = f"vs_btc({', '.join(vs_parts)})" if vs_parts else ""
                         if cross_parts:
@@ -1008,35 +968,22 @@ def collect_pretrade_telemetry(
                 if b_struct:
                     telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
-        cur_m_info = load_symbol_microstructure(
-            cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap
-        )
+        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:
             if cur_m_info.get("spread_bps") is not None:
                 telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
             d1_b = safe_pos_float(cur_m_info.get("depth_1pct_bid_usd"), default=0.0) or 0.0
             d1_a = safe_pos_float(cur_m_info.get("depth_1pct_ask_usd"), default=0.0) or 0.0
             if d1_b > 0.0 or d1_a > 0.0:
-                slip_s = (
-                    f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps"
-                    if cur_m_info.get("est_slip_2k_bps") is not None
-                    else ""
-                )
+                slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
                 telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
             cur_px_est = safe_pos_float(alt_series_24h[-1][1], default=0.0) if alt_series_24h else 0.0
             if not cur_px_est or cur_px_est <= 0.0:
                 cur_px_est = next(
-                    (
-                        px_v
-                        for cand in quote_variants
-                        if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None
-                        and px_v > 0.0
-                    ),
+                    (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
                     0.0,
                 )
-            if not is_usd_sym and (
-                not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))
-            ):
+            if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     cur_m_info.pop(k_strip, None)
             p_est = dict(m24)
@@ -1049,15 +996,14 @@ def collect_pretrade_telemetry(
                 telemetry["15m Cumulative Volume Delta (CVD)"] = f"${cvd_u:+,.0f} ({cvd_reg})"
             liq_c = compute_liquidation_clusters(p_est, cur_m_info)
             if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
-                deep_parts = []
-                if liq_c.get("long_liq_deep_px") is not None:
-                    deep_parts.append(
-                        f"deep_LONG=${liq_c['long_liq_deep_px']} (${liq_c.get('long_liq_deep_usd', 0):,.0f}, {float(liq_c.get('long_liq_deep_dist_pct', 0.0)):+.2f}%)"
+                deep_parts = [
+                    f"deep_{s_lbl}=${liq_c[px_k]} (${liq_c.get(usd_k, 0):,.0f}, {float(liq_c.get(dist_k, 0.0)):+.2f}%)"
+                    for s_lbl, px_k, usd_k, dist_k in (
+                        ("LONG", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
+                        ("SHORT", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
                     )
-                if liq_c.get("short_liq_deep_px") is not None:
-                    deep_parts.append(
-                        f"deep_SHORT=${liq_c['short_liq_deep_px']} (${liq_c.get('short_liq_deep_usd', 0):,.0f}, {float(liq_c.get('short_liq_deep_dist_pct', 0.0)):+.2f}%)"
-                    )
+                    if liq_c.get(px_k) is not None
+                ]
                 deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
                 telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
                     f"LONG liq=${liq_c['long_liq_px']} (${liq_c.get('long_liq_usd', 0):,.0f}, {float(liq_c.get('long_liq_dist_pct', 0.0)):+.2f}%), "

@@ -9,56 +9,29 @@ import re
 import sys as _sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import (
-    load_key_value_conf,
-    load_local_module,
-)
+from botcore import load_key_value_conf, load_local_module
 from cachepaths import (
-    cache_symbol_variants,
-    canonical_base_asset,
-    compatible_quote_suffixes,
-    normalize_venue_name,
-    resolve_kraken_lookup_symbol,
-    split_symbol_assets,
+    cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes,
+    normalize_venue_name, resolve_kraken_lookup_symbol, split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.internal.triggers.kalman_trigger import KalmanTrend
 from intelligence.macro_sentiment_ssot import (
-    clean_symbol_key,
-    safe_float,
-    safe_nonneg_float,
-    safe_pos_float,
+    clean_symbol_key, safe_float, safe_nonneg_float, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _MICRO_PRICE_ANCHOR_KEYS,
-    _build_vp_position_dict,
-    _first_variant_dict,
-    _parse_ts_px_row,
-    _prices_diverged,
-    apply_short_trend_item,
-    compute_24h_price_metrics,
-    compute_7d_range_metrics,
-    compute_cross_btc_metrics,
-    compute_liquidation_clusters,
-    enrich_microstructure_cvd,
-    extract_symbol_recent_fills,
-    load_symbol_microstructure,
-    load_symbol_price_series,
-    round_opt_px,
+    _MICRO_PRICE_ANCHOR_KEYS, _build_vp_position_dict, _first_variant_dict, _parse_ts_px_row,
+    _prices_diverged, apply_short_trend_item, compute_24h_price_metrics, compute_7d_range_metrics,
+    compute_cross_btc_metrics, compute_liquidation_clusters, enrich_microstructure_cvd,
+    extract_symbol_recent_fills, load_symbol_microstructure, load_symbol_price_series, round_opt_px,
 )
 from instrument_registry import casefold_get
-from providers.base import (
-    extract_order_side,
-    normalize_open_order,
-    resolve_order_origin,
-)
+from providers.base import extract_order_side, normalize_open_order, resolve_order_origin
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
-    read_tail_jsonl_dicts,
-    resolve_cachedb_filepath,
-    save_json_state,
+    read_json_dict_recovering as read_json_cached, read_tail_jsonl_dicts,
+    resolve_cachedb_filepath, save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
@@ -378,16 +351,10 @@ def parse_venue_cycle_state(
         if close_orders:
             cyc_entry["resting_orders"] = close_orders
     if include_meta:
-        raw_entry_ts = safe_pos_float(st_data.get("entry_ts"), default=None)
-        if raw_entry_ts is not None:
-            cyc_entry["_entry_ts_ms"] = (
-                int(round(raw_entry_ts * 1000.0)) if raw_entry_ts < 1e11 else int(round(raw_entry_ts))
-            )
-        raw_sell_ts = safe_pos_float(st_data.get("last_sell_ts"), default=None)
-        if raw_sell_ts is not None:
-            cyc_entry["_last_sell_ts_ms"] = (
-                int(round(raw_sell_ts * 1000.0)) if raw_sell_ts < 1e11 else int(round(raw_sell_ts))
-            )
+        for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
+            raw_ts = safe_pos_float(st_data.get(src_k), default=None)
+            if raw_ts is not None:
+                cyc_entry[dst_k] = int(round(raw_ts * 1000.0)) if raw_ts < 1e11 else int(round(raw_ts))
     return cyc_entry
 
 
@@ -398,33 +365,27 @@ def harvest_venue_cycles(
     read_json_fn: Any,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
+    def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int) -> None:
+        st_data = read_json_fn(st_path)
+        if isinstance(st_data, dict):
+            target[sym] = parse_venue_cycle_state(
+                st_data, sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
+            )
+
     kraken_cycles: Dict[str, Any] = {}
     kraken_dir = os.path.join(workspace_dir, "kraken")
     if os.path.isdir(kraken_dir):
         for st_path in sorted(_glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
             pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
-            if not pair_name.isalnum() or not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
-                continue
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                kraken_cycles[pair_name] = parse_venue_cycle_state(
-                    st_data,
-                    pair_name,
-                    prices_and_trends,
-                    avg_decimals=6,
-                    fallback_prices=fallback_prices,
-                    include_meta=True,
-                )
+            if pair_name.isalnum() and pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
+                _record_cyc(kraken_cycles, st_path, pair_name, 6)
 
     hyperliquid_cycles: Dict[str, Any] = {}
     hl_dir = os.path.join(workspace_dir, "hyperliquid")
     if os.path.isdir(hl_dir):
         hl_state_paths = sorted(
             _glob.glob(os.path.join(hl_dir, ".state_*.json")),
-            key=lambda p: (
-                0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
-                os.path.basename(p),
-            ),
+            key=lambda p: (0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1, os.path.basename(p)),
         )
         for st_path in hl_state_paths:
             raw_tok = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
@@ -434,40 +395,17 @@ def harvest_venue_cycles(
                 if raw_tok.endswith(sfx):
                     raw_tok = raw_tok[: -len(sfx)]
                     break
-            if not raw_tok.isalnum():
-                continue
-            pair_name = raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC"
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                hyperliquid_cycles[pair_name] = parse_venue_cycle_state(
-                    st_data,
-                    pair_name,
-                    prices_and_trends,
-                    avg_decimals=6,
-                    fallback_prices=fallback_prices,
-                    include_meta=True,
-                )
+            if raw_tok.isalnum():
+                _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
 
     all_t212_cycles: Dict[str, Any] = {}
     t212_dir = os.path.join(workspace_dir, "212trading")
     if os.path.isdir(t212_dir):
         for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
             fname = os.path.basename(st_path)
-            if fname.startswith(".."):
-                continue
             ticker = fname[len(".state_") : -len(".json")].upper()
-            if not ticker.replace("_", "").isalnum():
-                continue
-            st_data = read_json_fn(st_path)
-            if isinstance(st_data, dict):
-                all_t212_cycles[ticker] = parse_venue_cycle_state(
-                    st_data,
-                    ticker,
-                    prices_and_trends,
-                    avg_decimals=4,
-                    fallback_prices=fallback_prices,
-                    include_meta=True,
-                )
+            if not fname.startswith("..") and ticker.replace("_", "").isalnum():
+                _record_cyc(all_t212_cycles, st_path, ticker, 4)
 
     return kraken_cycles, hyperliquid_cycles, all_t212_cycles
 
@@ -1755,49 +1693,21 @@ def harvest_recent_orders_and_enrich_positions(
                     if not isinstance(ro, dict) and (_t212_lb is not None or _t212_ls is not None):
                         ro = {
                             "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if _t212_ls is not None else "BUY"),
-                            "last_action_actor": "BOT",
-                            "last_action_actor_tag": "BOT",
-                            "last_buy": (
-                                {
-                                    "price": _t212_lb,
-                                    "qty": cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None,
-                                    "actor": "BOT",
-                                    "actor_tag": "BOT",
-                                }
-                                if _t212_lb is not None
-                                else None
-                            ),
-                            "last_sell": (
-                                {
-                                    "price": _t212_ls,
-                                    "ts_ms": _t212_ls_ts,
-                                    "actor": "BOT",
-                                    "actor_tag": "BOT",
-                                }
-                                if _t212_ls is not None
-                                else None
-                            ),
-                            "active_avg_buy_px": round(_t212_avg, 6) if _t212_avg > 0 else None,
-                            "recent_buys": [],
+                            "last_action_actor": "BOT", "last_action_actor_tag": "BOT",
+                            "last_buy": None, "last_sell": None,
+                            "active_avg_buy_px": None, "recent_buys": [],
                         }
-                        recent_orders[p_sym] = ro
-                        v_ro_map[p_sym] = ro
-                    elif isinstance(ro, dict):
+                        recent_orders[p_sym] = v_ro_map[p_sym] = ro
+                    if isinstance(ro, dict):
                         if _t212_avg > 0:
                             ro["active_avg_buy_px"] = round(_t212_avg, 6)
-                        if ro.get("last_sell") is None and _t212_ls is not None:
-                            ro["last_sell"] = {
-                                "price": _t212_ls,
-                                "ts_ms": _t212_ls_ts,
-                                "actor": "BOT",
-                                "actor_tag": "BOT",
-                            }
                         if ro.get("last_buy") is None and _t212_lb is not None:
-                            ro["last_buy"] = {
-                                "price": _t212_lb,
-                                "actor": "BOT",
-                                "actor_tag": "BOT",
-                            }
+                            lb_d: Dict[str, Any] = {"price": _t212_lb, "actor": "BOT", "actor_tag": "BOT"}
+                            if "qty" not in lb_d and not ro.get("recent_buys"):
+                                lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
+                            ro["last_buy"] = lb_d
+                        if ro.get("last_sell") is None and _t212_ls is not None:
+                            ro["last_sell"] = {"price": _t212_ls, "ts_ms": _t212_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)

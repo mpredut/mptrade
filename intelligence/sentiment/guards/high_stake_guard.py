@@ -5,78 +5,34 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from botcore import (
-    _parse_bool_flag,
-    fetch_public_json,
-)
+from botcore import _parse_bool_flag, fetch_public_json
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
-    clean_scale,
-    clean_symbol_key,
-    is_cache_fresh,
-    normalize_order_side,
-    resolve_now_ts,
-    resolve_order_notional,
-    safe_float,
-    safe_nonneg_float,
-    safe_nonneg_ts,
-    safe_pos_float,
+    clean_scale, clean_symbol_key, is_cache_fresh, normalize_order_side,
+    resolve_now_ts, resolve_order_notional, safe_float, safe_nonneg_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
-    MACRO_BENCHMARK_SPECS,
-    _read_first_cached_dict,
-    apply_asset_scope_filter,
-    build_cycle_fallback_prices,
-    collect_macro_benchmarks_snapshot,
-    collect_pretrade_telemetry,
-    format_bottom_structure_6h_parts,
-    format_macro_benchmarks_summary_line,
-    harvest_initial_prices_and_trends,
-    harvest_macro_and_news_sensors,
-    harvest_portfolio_and_venue_cycles,
-    populate_market_and_portfolio_snapshot,
+    MACRO_BENCHMARK_SPECS, _read_first_cached_dict, apply_asset_scope_filter, build_cycle_fallback_prices,
+    collect_macro_benchmarks_snapshot, collect_pretrade_telemetry, format_bottom_structure_6h_parts,
+    format_macro_benchmarks_summary_line, harvest_initial_prices_and_trends, harvest_macro_and_news_sensors,
+    harvest_portfolio_and_venue_cycles, populate_market_and_portfolio_snapshot,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _MICRO_PRICE_ANCHOR_KEYS,
-    _blend_structural_liq_anchor,
-    _build_vp_position_dict,
-    _compute_horizon_range_dict,
-    _extract_cached_items_series,
-    _first_variant_dict,
-    _parse_ts_px_row,
-    _prices_diverged,
-    apply_live_24trend_windows,
-    apply_short_trend_item,
-    compute_24h_price_metrics,
-    compute_7d_range_metrics,
-    compute_cross_btc_metrics,
-    compute_liquidation_clusters,
-    compute_swing_wave_metrics,
-    compute_volume_profile_metrics,
-    enrich_microstructure_cvd,
-    extract_symbol_recent_fills,
-    load_symbol_microstructure,
-    load_symbol_price_series,
-    round_opt_px,
+    _MICRO_PRICE_ANCHOR_KEYS, _blend_structural_liq_anchor, _build_vp_position_dict,
+    _compute_horizon_range_dict, _extract_cached_items_series, _first_variant_dict,
+    _parse_ts_px_row, _prices_diverged, apply_live_24trend_windows, apply_short_trend_item,
+    compute_24h_price_metrics, compute_7d_range_metrics, compute_cross_btc_metrics,
+    compute_liquidation_clusters, compute_swing_wave_metrics, compute_volume_profile_metrics,
+    enrich_microstructure_cvd, extract_symbol_recent_fills, load_symbol_microstructure,
+    load_symbol_price_series, round_opt_px,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    _VENUE_DEFAULT_FEE_SPECS,
-    _compute_kalman_from_series,
-    _load_recent_audit_origins,
-    build_cross_market_context,
-    enrich_24h_and_microstructure,
-    enrich_cross_venue_trends,
-    harvest_bot_runtime_states,
-    harvest_kraken_xstocks,
-    harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders,
-    harvest_venue_cycles,
-    load_venue_trailing_maps,
-    parse_venue_cycle_state,
-    resolve_symbol_price,
-    resolve_venue_fee_and_limits,
-    set_pos_anchor,
-    sync_sibling_symbol_telemetry,
+    _VENUE_DEFAULT_FEE_SPECS, _compute_kalman_from_series, _load_recent_audit_origins,
+    build_cross_market_context, enrich_24h_and_microstructure, enrich_cross_venue_trends,
+    harvest_bot_runtime_states, harvest_kraken_xstocks, harvest_recent_orders_and_enrich_positions,
+    harvest_tradable_positions_and_orders, harvest_venue_cycles, load_venue_trailing_maps,
+    parse_venue_cycle_state, resolve_symbol_price, resolve_venue_fee_and_limits,
+    set_pos_anchor, sync_sibling_symbol_telemetry,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
@@ -85,18 +41,14 @@ logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
-
-
 DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = 600.0
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
 
 
 def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
     """True when LLM pre-trade guards are suppressed via environment flags (backtest/replay/disabled)."""
-    exp_b = _parse_bool_flag(explicit_client, False)
-    return not exp_b and any(
-        _parse_bool_flag(os.environ.get(k))
-        for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
+    return not _parse_bool_flag(explicit_client, False) and any(
+        _parse_bool_flag(os.environ.get(k)) for k in ("DISABLE_GEMINI_LLM", "BACKTEST_MODE", "REPLAY_MODE")
     )
 
 
@@ -115,64 +67,36 @@ def evaluate_llm_guard_response(
         if fb_norm in ("veto", "block"):
             return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=safe_notional)
         if fb_norm == "downscale":
-            return GuardDecision.downscale(
-                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional
-            )
+            return GuardDecision.downscale(guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional)
         return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=safe_notional)
 
     raw_dec = resp.get("decision")
     decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
     raw_reason = resp.get("reason")
     reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
-    default_scale = 0.5 if decision_str == "DOWNSCALE" else 1.0
-    scale = clean_scale(resp.get("suggested_scale"), default_scale, allow_percentage=True)
+    scale = clean_scale(resp.get("suggested_scale"), 0.5 if decision_str == "DOWNSCALE" else 1.0, allow_percentage=True)
 
     if decision_str in ("REJECTED", "REJECT", "VETO", "BLOCK", "DENIED", "DENY"):
-        return GuardDecision.veto(
-            guard_name,
-            f"Gemini vetoed {action_label}: {reason}",
-            notional_eur=safe_notional,
-            gemini_reason=reason,
-        )
+        return GuardDecision.veto(guard_name, f"Gemini vetoed {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason)
     if decision_str == "DOWNSCALE":
-        if scale <= 0.0 or scale >= 1.0:
-            scale = 0.5
+        eff_scale = 0.5 if (scale <= 0.0 or scale >= 1.0) else max(0.1, min(1.0, scale))
         return GuardDecision.downscale(
-            guard_name,
-            scale=max(0.1, min(1.0, scale)),
-            reason=f"Gemini downscaled {action_label}: {reason}",
-            notional_eur=safe_notional,
-            gemini_reason=reason,
+            guard_name, scale=eff_scale, reason=f"Gemini downscaled {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason
         )
-    return GuardDecision.allow(
-        guard_name,
-        f"Gemini approved {action_label}: {reason}",
-        notional_eur=safe_notional,
-        gemini_reason=reason,
-    )
+    return GuardDecision.allow(guard_name, f"Gemini approved {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason)
 
 
 def resolve_llm_guard_cache_ttl(
-    cache_ttl_sec: Any,
-    explicit_client: bool,
-    gemini_client: Any,
-    default_ttl_sec: float,
+    cache_ttl_sec: Any, explicit_client: bool, gemini_client: Any, default_ttl_sec: float
 ) -> float:
     """Resolve effective LLM guard decision cache TTL (0.0 when custom client/runner is injected)."""
     if cache_ttl_sec is not None and not isinstance(cache_ttl_sec, bool):
         return safe_nonneg_ts(cache_ttl_sec, 0.0)
-    if not explicit_client and getattr(gemini_client, "_custom_runner", None) is None:
-        return default_ttl_sec
-    return 0.0
+    return default_ttl_sec if (not explicit_client and getattr(gemini_client, "_custom_runner", None) is None) else 0.0
 
 
 class HighStakeGuard:
-    """Invokes LLM reasoning before executing large BUY purchases (>= 1000 EUR).
-
-    Sub-1000 EUR orders pass immediately with zero overhead (0 ms).
-    Orders exceeding the threshold undergo real-time LLM risk vetting against
-    market psychology, whale positioning, and liquidation cascades.
-    """
+    """Invokes LLM reasoning before executing large BUY/SELL orders (>= 700 EUR/USD)."""
 
     def __init__(
         self,
@@ -180,15 +104,13 @@ class HighStakeGuard:
         min_notional_eur: float = DEFAULT_MIN_NOTIONAL_USD,
         min_notional_usd: Optional[float] = None,
         timeout_sec: float = 120.0,
-        fallback_action: str = "allow",  # "allow" | "downscale" | "veto"
+        fallback_action: str = "allow",
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
         self._explicit_client = gemini_client is not None
         self.gemini_client = gemini_client or GeminiClient()
-        raw_min = min_notional_usd if min_notional_usd is not None else min_notional_eur
-        resolved_min = safe_pos_float(raw_min, DEFAULT_MIN_NOTIONAL_USD)
-        self.min_notional_usd = resolved_min
-        self.min_notional_eur = resolved_min
+        resolved_min = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_notional_eur, DEFAULT_MIN_NOTIONAL_USD)
+        self.min_notional_usd = self.min_notional_eur = resolved_min
         self.timeout_sec = safe_pos_float(timeout_sec, 120.0)
         self.fallback_action = str(fallback_action or "allow").strip().lower()
         self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
@@ -217,9 +139,7 @@ class HighStakeGuard:
         notional_f = safe_float(notional, default=None)
         if notional_f is None or notional_f < self.min_notional_eur:
             return GuardDecision.allow(
-                "HighStakeGuard",
-                f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)",
-                notional_eur=notional,
+                "HighStakeGuard", f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)", notional_eur=notional
             )
 
         if is_llm_guard_exempt(self._explicit_client):
@@ -273,40 +193,20 @@ class HighStakeGuard:
 
         prompt = (
             "You are a principal quantitative crypto risk officer. "
-            f"An automated trading bot is about to place a {action_desc}:\n\n"
-            f"{context_str}\n\n"
-            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing "
-            f"{risk_context}\n\n"
+            f"An automated trading bot is about to place a {action_desc}:\n\n{context_str}\n\n"
+            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing {risk_context}\n\n"
             f"{policy_rules}"
             "Respond strictly in valid JSON format with exact keys:\n"
-            "{\n"
-            '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'
-            '  "suggested_scale": 0.0 to 1.0,\n'
-            '  "reason": "Concise 1-2 sentence rationale for the decision"\n'
-            "}"
+            '{\n  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n  "suggested_scale": 0.0 to 1.0,\n  "reason": "Concise 1-2 sentence rationale for the decision"\n}'
         )
 
         thread_title = f"{topic_spec('guard_high_stake').title} — {side_norm} {symbol} €{notional:,.2f}"
-        resp = self.gemini_client.query_json(
-            prompt,
-            timeout_sec=self.timeout_sec,
-            thread_title=thread_title,
-            topic_key="guard_high_stake",
-        )
+        resp = self.gemini_client.query_json(prompt, timeout_sec=self.timeout_sec, thread_title=thread_title, topic_key="guard_high_stake")
         if not resp:
-            logger.warning(
-                "LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s",
-                symbol,
-                notional,
-                self.fallback_action,
-            )
+            logger.warning("LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s", symbol, notional, self.fallback_action)
 
         dec = evaluate_llm_guard_response(
-            "HighStakeGuard",
-            f"high-stake {side_norm}",
-            resp or None,
-            fallback_action=self.fallback_action,
-            notional_eur=notional,
+            "HighStakeGuard", f"high-stake {side_norm}", resp or None, fallback_action=self.fallback_action, notional_eur=notional
         )
         if self.cache_ttl_sec > 0:
             _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
