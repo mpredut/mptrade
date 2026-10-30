@@ -34,17 +34,21 @@ class DerivativesTelemetry:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> DerivativesTelemetry:
+    def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> DerivativesTelemetry:
         if not isinstance(data, dict):
             data = {}
-        raw_sym = data.get("symbol")
+        raw_sym = data.get("symbol") or symbol
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         return cls(
             symbol=sym_str,
             funding_rate=_clean_dict_float(data, "funding_rate", 0.0),
-            predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0),
+            predicted_funding_rate=_clean_dict_float(
+                data, "predicted_funding_rate", _clean_dict_float(data, "pred_funding_rate", 0.0)
+            ),
             open_interest=max(0.0, _clean_dict_float(data, "open_interest", 0.0)),
-            open_interest_usd=max(0.0, _clean_dict_float(data, "open_interest_usd", 0.0)),
+            open_interest_usd=max(
+                0.0, _clean_dict_float(data, "open_interest_usd", _clean_dict_float(data, "oi_usd", 0.0))
+            ),
             ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
         )
 

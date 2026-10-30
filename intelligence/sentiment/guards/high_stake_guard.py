@@ -1695,10 +1695,18 @@ def harvest_kraken_xstocks(
 def build_cross_market_context(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
-    all_t212_cycles: Dict[str, Any],
+    all_t212_cycles: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
+    all_t212_cycles = all_t212_cycles if isinstance(all_t212_cycles, dict) else {}
     ctx: Dict[str, Any] = {}
+    def _bellwether_rank(s: str, p: Dict[str, Any]) -> Tuple[int, int, int]:
+        return (
+            1 if "USD" in compatible_quote_suffixes(s) else 0,
+            1 if s.endswith(("USDC", "_US_EQ", "_EQ")) else 0,
+            len(p),
+        )
+
     by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
     for sym, pinfo in sorted(prices_and_trends.items()):
         if not isinstance(pinfo, dict):
@@ -1707,11 +1715,7 @@ def build_cross_market_context(
         if not b_canon:
             continue
         prev = by_base.get(b_canon)
-        if (
-            prev is None
-            or (sym.endswith(("USDC", "_US_EQ", "_EQ")) and not prev[0].endswith(("USDC", "_US_EQ", "_EQ")))
-            or len(pinfo) > len(prev[1])
-        ):
+        if prev is None or _bellwether_rank(sym, pinfo) > _bellwether_rank(prev[0], prev[1]):
             by_base[b_canon] = (sym, pinfo)
 
     raw_horizon_keys = (
@@ -1732,17 +1736,23 @@ def build_cross_market_context(
         for k_copy in raw_horizon_keys:
             if pinfo.get(k_copy) is not None:
                 cb_entry[k_copy] = pinfo.get(k_copy)
+        sym_quotes = compatible_quote_suffixes(sym)
         m_info = microstructure.get(sym)
+        m_same_quote = True
         if not isinstance(m_info, dict):
-            m_info = next(
-                (mv for mk, mv in microstructure.items() if canonical_base_asset(mk) == b_canon and isinstance(mv, dict)),
-                None,
+            m_info, m_same_quote = next(
+                (
+                    (mv, compatible_quote_suffixes(mk) == sym_quotes)
+                    for mk, mv in microstructure.items()
+                    if canonical_base_asset(mk) == b_canon and isinstance(mv, dict)
+                ),
+                (None, False),
             )
         if isinstance(m_info, dict):
             for mk_copy in (
                 "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
                 "cvd_15m_usd", "cvd_regime", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
-                "long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias",
+                *(("long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias") if m_same_quote else ()),
             ):
                 if m_info.get(mk_copy) is not None:
                     cb_entry[mk_copy] = m_info.get(mk_copy)

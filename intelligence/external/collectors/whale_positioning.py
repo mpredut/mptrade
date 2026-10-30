@@ -48,23 +48,35 @@ class WhalePositioningSnapshot:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> WhalePositioningSnapshot:
+    def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> WhalePositioningSnapshot:
         if not isinstance(data, dict):
             data = {}
         fr_val = safe_float(data.get("funding_rate"), default=None)
-        raw_sym = data.get("symbol")
+        raw_sym = data.get("symbol") or symbol
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         raw_reg = data.get("divergence_regime")
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         return cls(
             symbol=sym_str,
-            top_traders_long_ratio=max(0.0, _clean_dict_float(data, "top_traders_long_ratio", 1.0)),
-            top_traders_long_pct=min(1.0, max(0.0, _clean_dict_float(data, "top_traders_long_pct", 0.5))),
+            top_traders_long_ratio=max(
+                0.0, _clean_dict_float(data, "top_traders_long_ratio", _clean_dict_float(data, "whale_long_ratio", 1.0))
+            ),
+            top_traders_long_pct=min(
+                1.0,
+                max(
+                    0.0,
+                    _clean_dict_float(data, "top_traders_long_pct", _clean_dict_float(data, "whale_long_pct", 0.5)),
+                ),
+            ),
             taker_buy_sell_ratio=max(0.0, _clean_dict_float(data, "taker_buy_sell_ratio", 1.0)),
             taker_buy_vol_usd=max(0.0, _clean_dict_float(data, "taker_buy_vol_usd", 0.0)),
             taker_sell_vol_usd=max(0.0, _clean_dict_float(data, "taker_sell_vol_usd", 0.0)),
-            open_interest_usd=max(0.0, _clean_dict_float(data, "open_interest_usd", 0.0)),
-            open_interest_1h_change_pct=_clean_dict_float(data, "open_interest_1h_change_pct", 0.0),
+            open_interest_usd=max(
+                0.0, _clean_dict_float(data, "open_interest_usd", _clean_dict_float(data, "oi_usd", 0.0))
+            ),
+            open_interest_1h_change_pct=_clean_dict_float(
+                data, "open_interest_1h_change_pct", _clean_dict_float(data, "oi_1h_chg_pct", 0.0)
+            ),
             divergence_regime=reg_str,
             ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
             funding_rate=fr_val,

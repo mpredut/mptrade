@@ -260,10 +260,11 @@ class RTradeThreadingTest(unittest.TestCase):
             current_price=lambda: 100.0,
             recovery_blocked=False,
             executor=SimpleNamespace(open_orders=lambda _symbol: []))
+        monotonic_vals = [0.0, 0.0, 0.0, 1.0]
         with patch.object(rtrade, "_LivePairVenue", return_value=venue), \
              patch.object(rtrade, "PairCoordinator", AcceptedCoordinator), \
              patch.object(rtrade, "_trend_too_strong", return_value=False), \
-             patch.object(rtrade.time, "monotonic", side_effect=[0.0, 1.0]), \
+             patch.object(rtrade.time, "monotonic", side_effect=lambda: monotonic_vals.pop(0) if monotonic_vals else 1.0), \
              patch.object(
                  rtrade.time, "sleep",
                  side_effect=[None, KeyboardInterrupt]):

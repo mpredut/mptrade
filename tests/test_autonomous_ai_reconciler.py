@@ -5106,5 +5106,66 @@ def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3
     assert "age=0.0h" in ro_line
 
 
+def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_aliases():
+    from intelligence.sentiment.guards.high_stake_guard import build_cross_market_context
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+    from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
+
+    # 1. build_cross_market_context prefers USD-quoted bellwether over EUR-quoted even when EUR has more keys
+    ctx = build_cross_market_context(
+        prices_and_trends={
+            "BTCUSDC": {"price": 82000.0, "rsi": 55.0},
+            "XBTEUR": {"price": 74000.0, "rsi": 54.0, "adx": 28.0, "atr_pct": 1.2, "ret_1h_pct": 0.5, "poc": 73800.0},
+        },
+        microstructure={
+            "BTCUSDC": {"funding_rate": 0.0001, "long_liq_px": 80500.0, "short_liq_px": 83500.0},
+        },
+    )
+    btc_bw = ctx["crypto_bellwethers"]["BTC"]
+    assert btc_bw["symbol"] == "BTCUSDC"
+    assert btc_bw["price"] == 82000.0
+    assert btc_bw.get("long_liq_px") == 80500.0
+
+    # And when only XBTEUR is present in prices, USD liquidation clusters are NOT grafted onto EUR bellwether
+    ctx_eur_only = build_cross_market_context(
+        prices_and_trends={"XBTEUR": {"price": 74000.0, "rsi": 54.0}},
+        microstructure={"BTCUSDC": {"funding_rate": 0.0001, "long_liq_px": 80500.0, "short_liq_px": 83500.0}},
+    )
+    btc_bw_eur = ctx_eur_only["crypto_bellwethers"]["BTC"]
+    assert btc_bw_eur["symbol"] == "XBTEUR"
+    assert btc_bw_eur["price"] == 74000.0
+    assert btc_bw_eur.get("funding_rate") == 0.0001
+    assert "long_liq_px" not in btc_bw_eur
+    assert "short_liq_px" not in btc_bw_eur
+
+    # 2. DerivativesTelemetry.from_dict and WhalePositioningSnapshot.from_dict accept normalized alias keys
+    dt = DerivativesTelemetry.from_dict(
+        {"pred_funding_rate": -0.00025, "oi_usd": 1250000000.0, "ts": 1700000000.0},
+        symbol="BTCUSDC",
+    )
+    assert dt is not None
+    assert dt.symbol == "BTCUSDC"
+    assert dt.predicted_funding_rate == -0.00025
+    assert dt.open_interest_usd == 1250000000.0
+
+    wp = WhalePositioningSnapshot.from_dict(
+        {
+            "whale_long_ratio": 1.5,
+            "whale_long_pct": 0.60,
+            "oi_usd": 980000000.0,
+            "oi_1h_chg_pct": 3.25,
+            "ts": 1700000000.0,
+        },
+        symbol="ETHUSDC",
+    )
+    assert wp is not None
+    assert wp.symbol == "ETHUSDC"
+    assert wp.top_traders_long_ratio == 1.5
+    assert wp.top_traders_long_pct == 0.60
+    assert wp.open_interest_usd == 980000000.0
+    assert wp.open_interest_1h_change_pct == 3.25
+
+
+
 
 

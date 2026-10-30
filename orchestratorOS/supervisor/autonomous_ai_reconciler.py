@@ -462,8 +462,13 @@ class AutonomousAIReconciler:
         if spec.can_self_heal:
             report.notification_sent = self.dispatch_notification(report, topic_key=topic_key)
         else:
+            notified_statuses = ("OBSERVED_SHADOW", "EXECUTED", "BLOCKED_BY_GUARD", "FAILED")
             report.notification_sent = bool(
-                intents_emitted and getattr(self.intent_gateway, "notify_enabled", False)
+                getattr(self.intent_gateway, "notify_enabled", False)
+                and any(
+                    isinstance(it, dict) and str(it.get("status") or "").upper() in notified_statuses
+                    for it in intents_emitted
+                )
             )
         self.write_audit_artifact(report)
         logger.info("Autonomous AI Supervisor cycle complete: %s", report.summary)
