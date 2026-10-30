@@ -1623,6 +1623,7 @@ def parse_venue_cycle_state(
     *,
     avg_decimals: int = 6,
     fallback_prices: Optional[Dict[str, float]] = None,
+    include_meta: bool = False,
 ) -> Dict[str, Any]:
     """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
     qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
@@ -1694,6 +1695,12 @@ def parse_venue_cycle_state(
         ]
         if close_orders:
             cyc_entry["resting_orders"] = close_orders
+    if include_meta:
+        raw_entry_ts = safe_pos_float(st_data.get("entry_ts"), default=None)
+        if raw_entry_ts is not None:
+            cyc_entry["_entry_ts_ms"] = (
+                int(round(raw_entry_ts * 1000.0)) if raw_entry_ts < 1e11 else int(round(raw_entry_ts))
+            )
     return cyc_entry
 
 
@@ -1714,7 +1721,12 @@ def harvest_venue_cycles(
             st_data = read_json_fn(st_path)
             if isinstance(st_data, dict):
                 kraken_cycles[pair_name] = parse_venue_cycle_state(
-                    st_data, pair_name, prices_and_trends, avg_decimals=6, fallback_prices=fallback_prices
+                    st_data,
+                    pair_name,
+                    prices_and_trends,
+                    avg_decimals=6,
+                    fallback_prices=fallback_prices,
+                    include_meta=True,
                 )
 
     hyperliquid_cycles: Dict[str, Any] = {}
@@ -1741,7 +1753,12 @@ def harvest_venue_cycles(
             st_data = read_json_fn(st_path)
             if isinstance(st_data, dict):
                 hyperliquid_cycles[pair_name] = parse_venue_cycle_state(
-                    st_data, pair_name, prices_and_trends, avg_decimals=6, fallback_prices=fallback_prices
+                    st_data,
+                    pair_name,
+                    prices_and_trends,
+                    avg_decimals=6,
+                    fallback_prices=fallback_prices,
+                    include_meta=True,
                 )
 
     all_t212_cycles: Dict[str, Any] = {}
@@ -1757,7 +1774,12 @@ def harvest_venue_cycles(
             st_data = read_json_fn(st_path)
             if isinstance(st_data, dict):
                 all_t212_cycles[ticker] = parse_venue_cycle_state(
-                    st_data, ticker, prices_and_trends, avg_decimals=4, fallback_prices=fallback_prices
+                    st_data,
+                    ticker,
+                    prices_and_trends,
+                    avg_decimals=4,
+                    fallback_prices=fallback_prices,
+                    include_meta=True,
                 )
 
     return kraken_cycles, hyperliquid_cycles, all_t212_cycles
@@ -1821,7 +1843,7 @@ def harvest_kraken_xstocks(
             xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
     sib_cyc = _first_variant_dict(all_t212_cycles, (t212_sib, underlying))
     if isinstance(sib_cyc, dict):
-        xst_summary["t212_sibling_cycle"] = sib_cyc
+        xst_summary["t212_sibling_cycle"] = {k: v for k, v in sib_cyc.items() if not str(k).startswith("_")}
     return xst_summary
 
 
@@ -2779,6 +2801,70 @@ def harvest_recent_orders_and_enrich_positions(
                     _record_venue_fills("hyperliquid", sym, fills)
         except Exception:
             pass
+    for c_venue, cyc_map, avg_dec in (
+        ("kraken", kraken_cycles, 6),
+        ("hyperliquid", hyperliquid_cycles, 6),
+        ("t212", t212_cycles, 4),
+    ):
+        if not isinstance(cyc_map, dict):
+            continue
+        v_ro_c = venue_recent_orders.get(c_venue, {})
+        for c_sym, cyc in cyc_map.items():
+            if not isinstance(cyc, dict):
+                continue
+            entry_ts_ms = cyc.pop("_entry_ts_ms", None)
+            if not entry_ts_ms or cyc.get("resting_orders"):
+                continue
+            c_quotes = compatible_quote_suffixes(c_sym)
+            c_variants = cache_symbol_variants(
+                c_sym,
+                include_base="USD" in c_quotes,
+                quotes=c_quotes,
+            )
+            ro_c = _first_variant_dict(v_ro_c, (c_sym, *c_variants))
+            if not isinstance(ro_c, dict):
+                continue
+            ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
+            ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
+            ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
+            ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
+            cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
+            if ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95:
+                r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
+                buys_after = [
+                    b
+                    for b in r_buys_c
+                    if isinstance(b, dict)
+                    and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                    and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
+                    and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+                ]
+                if buys_after:
+                    new_qty = sum(float(b["qty"]) for b in buys_after)
+                    new_cost = sum(float(b["qty"]) * float(b["price"]) for b in buys_after)
+                    new_avg = round(new_cost / new_qty, avg_dec)
+                    px_c = resolve_symbol_price(c_sym, prices_and_trends)
+                    new_dd = round(((px_c - new_avg) / new_avg) * 100.0, 2) if px_c > 0 and new_avg > 0 else None
+                    cyc["qty"] = round(new_qty, 6)
+                    cyc["cost_usd"] = round(new_cost, 2)
+                    cyc["avg_cost_px"] = new_avg
+                    cyc["entry_price"] = round(float(buys_after[0]["price"]), avg_dec)
+                    cyc["last_buy_price"] = round(float(buys_after[-1]["price"]), avg_dec)
+                    if ls_px > 0:
+                        cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    cyc["dca_buys"] = max(0, len(buys_after) - 1)
+                    cyc["dd_pct"] = new_dd
+                    cyc["pnl_vs_avg_pct"] = new_dd
+                else:
+                    cyc["qty"] = 0.0
+                    cyc["cost_usd"] = 0.0
+                    cyc["avg_cost_px"] = None
+                    cyc["dd_pct"] = None
+                    cyc["pnl_vs_avg_pct"] = None
+                    if ls_px > 0:
+                        cyc["last_sell_price"] = round(ls_px, avg_dec)
+                cyc.pop("pos_peak", None)
+                cyc.pop("dd_from_peak_pct", None)
     for pos in tradable_positions:
         if not isinstance(pos, dict):
             continue

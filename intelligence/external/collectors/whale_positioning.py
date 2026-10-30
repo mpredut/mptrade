@@ -259,15 +259,23 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             latest_oi, data_oi = self._fetch_latest_json_row(url_oi, "openInterestHist", lookup_sym)
             latest_oi_usd = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterestValue", 0.0))
             latest_oi_coins = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterest", 0.0))
+            mark_px = 0.0
             if latest_oi_usd > 0.0 and latest_oi_coins > 0.0:
                 mark_px = latest_oi_usd / latest_oi_coins
                 taker_buy = round(taker_buy * mark_px, 2)
                 taker_sell = round(taker_sell * mark_px, 2)
+            prev_oi_dict = data_oi[-2] if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict)) else None
             prev_oi_usd = (
-                max(0.0, _clean_dict_float(data_oi[-2], "sumOpenInterestValue", latest_oi_usd))
-                if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict))
+                max(0.0, _clean_dict_float(prev_oi_dict, "sumOpenInterestValue", latest_oi_usd))
+                if prev_oi_dict is not None
                 else latest_oi_usd
             )
+            if abs(price_1h_change_pct) < 1e-6 and mark_px > 0.0 and prev_oi_dict is not None:
+                prev_oi_coins = max(0.0, _clean_dict_float(prev_oi_dict, "sumOpenInterest", 0.0))
+                if prev_oi_usd > 0.0 and prev_oi_coins > 0.0:
+                    prev_mark_px = prev_oi_usd / prev_oi_coins
+                    if prev_mark_px > 0.0:
+                        price_1h_change_pct = (mark_px - prev_mark_px) / prev_mark_px * 100.0
             oi_change_pct = ((latest_oi_usd - prev_oi_usd) / prev_oi_usd * 100.0) if prev_oi_usd > 0 else 0.0
 
             # 4. Classify OI-Price divergence regime

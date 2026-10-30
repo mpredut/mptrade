@@ -6546,6 +6546,74 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     bot_states_after_exp = harvest_bot_runtime_states(str(tmp_path), 1793381000.0)
     assert "active_retry_queue" not in bot_states_after_exp
 
+    # 11. harvest_recent_orders_and_enrich_positions reconciles stale .state_*.json cycles against newer exit+rebuy fills
+    from intelligence.sentiment.guards.high_stake_guard import (
+        harvest_recent_orders_and_enrich_positions,
+        parse_venue_cycle_state,
+    )
+
+    (tmp_path / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "TAOUSD": [
+                    {
+                        "symbol": "TAOUSD",
+                        "id": "T_SELL_OLD",
+                        "orderId": "T_SELL_OLD",
+                        "price": 226.016729,
+                        "qty": 7.40379,
+                        "time": 1793319677319,
+                        "isBuyer": False,
+                        "side": "SELL",
+                    },
+                    {
+                        "symbol": "TAOUSD",
+                        "id": "T_BUY_NEW",
+                        "orderId": "T_BUY_NEW",
+                        "price": 235.741094,
+                        "qty": 3.70189,
+                        "time": 1793331231572,
+                        "isBuyer": True,
+                        "side": "BUY",
+                    },
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    stale_tao_cyc = parse_venue_cycle_state(
+        {
+            "qty": 7.38813,
+            "cost": 2105.506352,
+            "entry_price": 305.469,
+            "last_buy_price": 256.0432,
+            "last_sell_price": 291.14414,
+            "dca_buys": 5,
+            "entry_ts": 1791188569.638,
+        },
+        "TAOUSD",
+        {"TAOUSDC": {"price": 233.10}},
+        avg_decimals=6,
+        include_meta=True,
+    )
+    krk_cycles = {"TAOUSD": stale_tao_cyc}
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        [],
+        {"TAOUSDC": {"price": 233.10}},
+        krk_cycles,
+        {},
+        {},
+    )
+    assert "_entry_ts_ms" not in krk_cycles["TAOUSD"]
+    assert krk_cycles["TAOUSD"]["qty"] == pytest.approx(3.70189)
+    assert krk_cycles["TAOUSD"]["cost_usd"] == pytest.approx(872.69)
+    assert krk_cycles["TAOUSD"]["avg_cost_px"] == pytest.approx(235.741094)
+    assert krk_cycles["TAOUSD"]["last_sell_price"] == pytest.approx(226.016729)
+    assert krk_cycles["TAOUSD"]["dca_buys"] == 0
+    assert krk_cycles["TAOUSD"]["dd_pct"] == pytest.approx(-1.12)
+
 
 
 
