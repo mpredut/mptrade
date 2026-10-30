@@ -29,7 +29,13 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key, normalize_venue_name
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    canonical_symbol_key,
+    compatible_quote_suffixes,
+    normalize_venue_name,
+)
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
 from state_io import load_json_state, read_jsonl_dicts, save_json_state
@@ -562,6 +568,7 @@ def _resolve_intent_execution_details(
                 and order_type == "LIMIT"
                 and normalize_venue_name(oo.get("venue")) == venue
                 and canonical_symbol_key(oo.get("symbol")) == canonical_symbol_key(symbol)
+                and compatible_quote_suffixes(oo.get("symbol")) == compatible_quote_suffixes(symbol)
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
             ):
                 matched_open = oo
@@ -589,7 +596,7 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
-        sym_cands = cache_symbol_variants(symbol)
+        sym_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
         ro_entry = next(
             (
                 val

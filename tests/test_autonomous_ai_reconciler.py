@@ -4645,3 +4645,80 @@ def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_p
     assert "ob_mid_price" not in micro["BTCEUR"]
     assert "long_liq_px" not in micro["BTCEUR"]
 
+
+def test_iteration27_position_enrichment_and_audit_quote_isolation(tmp_path):
+    import json
+    from unittest.mock import MagicMock
+    from intelligence.sentiment.guards.high_stake_guard import (
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+    )
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    # 1. harvest_tradable_positions_and_orders does not attach USD trailing_peak to EUR position
+    eur_inst = MagicMock(symbol="XBTEUR", provider_name="kraken", base="XBT", quote="EUR", params={})
+    eur_inst._provider.free_balance.side_effect = lambda a: 0.1 if a == "XBT" else 1000.0
+    eur_inst.open_orders.return_value = []
+    positions, _, _, inst_by_sym = harvest_tradable_positions_and_orders(
+        {"XBTEUR": eur_inst},
+        {"XBTEUR": {"price": 74000.0}, "XBTUSD": {"price": 82000.0}},
+        {},
+        {"kraken": {"XBTUSD": {"peak": 83500.0}}},
+    )
+    assert len(positions) == 1
+    assert "trailing_peak" not in positions[0]
+
+    # 2. harvest_recent_orders_and_enrich_positions isolates USD vs EUR recent_orders and cycle states on the same venue
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_trade_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "XBTUSD": [
+                        {"ordertxid": "K_USD_1", "type": "buy", "price": "82000.0", "vol_exec": "0.1", "time": 1793300010}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ro_map = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        inst_by_sym,
+        positions,
+        {"XBTEUR": {"price": 74000.0}, "XBTUSD": {"price": 82000.0}},
+        {"XBTUSD": {"qty": 0.1, "avg_cost_px": 82000.0, "last_buy_price": 82000.0, "pos_peak": 83500.0}},
+        {},
+        {},
+    )
+    assert "active_avg_buy_px" not in positions[0]
+    assert "last_buy_px" not in positions[0]
+    assert "cycle_avg_cost_px" not in positions[0]
+
+    # 3. _resolve_intent_execution_details does not match XBTUSD open orders or fills onto an XBTEUR intent
+    st_eur = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": 1793300000.0,
+                "venue": "kraken",
+                "symbol": "XBTEUR",
+                "decision": "BUY",
+                "order_type": "LIMIT",
+                "limit_price": 73800.0,
+                "reference_price": 74000.0,
+                "suggested_notional_usd": 738.0,
+                "status": "EXECUTED",
+                "execution_payload": {"status": "OPEN"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        recent_orders=ro_map,
+        open_orders=[{"venue": "kraken", "symbol": "XBTUSD", "side": "BUY", "price": 81500.0, "executedQty": 0.05}],
+    )
+    assert st_eur["status"] == "OPEN_RESTING"
+    assert st_eur["fill_px"] is None
+    assert st_eur["filled_qty"] is None
+
