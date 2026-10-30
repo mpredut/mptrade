@@ -1848,12 +1848,25 @@ def harvest_tradable_positions_and_orders(
 
     if isinstance(inst_map, dict):
         for inst in inst_map.values():
-            sym = str(getattr(inst, "symbol", "")).upper()
-            venue = str(getattr(inst, "provider_name", "")).lower()
-            base = str(getattr(inst, "base", "")).upper()
-            quote = str(getattr(inst, "quote", "")).upper()
+            raw_sym = getattr(inst, "symbol", "")
+            sym = raw_sym.strip().upper() if isinstance(raw_sym, str) else str(raw_sym or "").upper()
+            raw_venue = getattr(inst, "provider_name", "")
+            venue = raw_venue.strip().lower() if isinstance(raw_venue, str) else str(raw_venue or "").lower()
             if not sym or not venue:
                 continue
+            sym_parts = split_symbol_assets(sym)
+            raw_base = getattr(inst, "base", None)
+            base = (
+                raw_base.strip().upper()
+                if isinstance(raw_base, str) and raw_base.strip()
+                else (sym_parts[0] if sym_parts else sym)
+            )
+            raw_quote = getattr(inst, "quote", None)
+            quote = (
+                raw_quote.strip().upper()
+                if isinstance(raw_quote, str) and raw_quote.strip()
+                else (sym_parts[1] if sym_parts and sym_parts[1] else "USD")
+            )
             inst_by_sym[sym] = inst
             inst_by_sym[f"{normalize_venue_name(venue)}:{sym}"] = inst
 
@@ -3378,7 +3391,10 @@ def collect_pretrade_telemetry(
     default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
         cachedb_dir = default_cdir
+    sym_quotes = compatible_quote_suffixes(symbol)
+    is_usd_sym = "USD" in sym_quotes
     sym_variants = cache_symbol_variants(symbol)
+    quote_variants = cache_symbol_variants(symbol, quotes=sym_quotes)
 
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
         for cand in sym_variants:
@@ -3417,6 +3433,8 @@ def collect_pretrade_telemetry(
                 ("Ask", "largest_ask_wall_usd", "largest_ask_wall_price"),
                 ("Bid", "largest_bid_wall_usd", "largest_bid_wall_price"),
             ):
+                if not is_usd_sym:
+                    continue
                 w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
                 w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)
                 w_px_fmt = f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip(".")
@@ -3572,12 +3590,17 @@ def collect_pretrade_telemetry(
                 cur_px_est = next(
                     (
                         px_v
-                        for cand in sym_variants
+                        for cand in quote_variants
                         if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None
                         and px_v > 0.0
                     ),
                     0.0,
                 )
+            if not is_usd_sym and (
+                not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))
+            ):
+                for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
+                    cur_m_info.pop(k_strip, None)
             p_est = dict(m24)
             if cur_px_est and cur_px_est > 0:
                 p_est["price"] = cur_px_est
@@ -3637,7 +3660,7 @@ def collect_pretrade_telemetry(
             o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) else {}
             if not isinstance(o_items, dict):
                 continue
-            orders_for_sym = next((val for cand in sym_variants if (val := casefold_get(o_items, cand))), [])
+            orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
             cand_fills = extract_symbol_recent_fills(
                 orders_for_sym,
                 known_ai_order_ids=known_ai_oids,

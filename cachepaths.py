@@ -753,7 +753,7 @@ def compatible_quote_suffixes(
     default_usd: tuple[str, ...] = ("USDC", "USDT", "USD"),
 ) -> tuple[str, ...]:
     """Return quote suffixes that share the same currency valuation family as ``symbol`` / ``quote``."""
-    q_str = quote.strip().upper() if isinstance(quote, str) and quote.strip() else ""
+    q_str = quote.strip().upper() if isinstance(quote, str) and quote.strip().isalnum() else ""
     if not q_str and isinstance(symbol, str) and symbol.strip():
         parts = split_symbol_assets(symbol.strip().upper())
         if parts is not None and parts[1]:

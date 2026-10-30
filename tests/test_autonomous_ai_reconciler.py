@@ -4722,3 +4722,74 @@ def test_iteration27_position_enrichment_and_audit_quote_isolation(tmp_path):
     assert st_eur["fill_px"] is None
     assert st_eur["filled_qty"] is None
 
+
+def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_derivation(tmp_path):
+    import json
+    from unittest.mock import MagicMock
+    from intelligence.sentiment.guards.high_stake_guard import (
+        collect_pretrade_telemetry,
+        harvest_tradable_positions_and_orders,
+    )
+
+    # 1. harvest_tradable_positions_and_orders derives clean base/quote when inst.base/inst.quote are unset MagicMocks
+    mock_inst = MagicMock(symbol="SOLUSD", provider_name="kraken", params={})
+    mock_inst._provider.free_balance.side_effect = lambda a: 2.0 if a == "SOL" else 500.0
+    mock_inst.open_orders.return_value = []
+    positions, _, cash_map, _ = harvest_tradable_positions_and_orders(
+        {"SOLUSD": mock_inst},
+        {"SOLUSD": {"price": 150.0}},
+        {},
+        {"kraken": {"SOLUSD": {"peak": 160.0}}},
+    )
+    assert positions[0]["base"] == "SOL"
+    assert positions[0]["quote"] == "USD"
+    assert "kraken:USD" in cash_map
+    assert positions[0]["trailing_peak"] == pytest.approx(160.0)
+
+    # 2. collect_pretrade_telemetry on BTCEUR anchors liquidation clusters on EUR price and skips USD recent fills/walls
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCEUR": 74000.0, "BTCUSDC": 82000.0}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "imbalance_ratio": 0.60,
+                "best_bid": 81990.0,
+                "best_ask": 82010.0,
+                "ob_mid_price": 82000.0,
+                "bid_depth_usd": 600000.0,
+                "ask_depth_usd": 400000.0,
+                "largest_ask_wall_usd": 250000.0,
+                "largest_ask_wall_price": 82500.0,
+                "largest_bid_wall_usd": 220000.0,
+                "largest_bid_wall_price": 81500.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps({"funding_rate": 0.0001, "open_interest_usd": 100000000.0}),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {"orderId": 1, "side": "BUY", "status": "FILLED", "price": "82000.0", "executedQty": "0.1", "time": 1000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem_eur = collect_pretrade_telemetry("BTCEUR", cachedb_dir=str(cache_dir))
+    assert "Orderbook Ask Wall Ahead" not in telem_eur
+    assert "Recent Venue Fills" not in telem_eur
+    assert "Liquidation Clusters (LONG vs SHORT)" in telem_eur
+    assert telem_eur["Liquidation Clusters (LONG vs SHORT)"].startswith("LONG liq=$72")
+
