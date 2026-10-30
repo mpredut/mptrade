@@ -26,6 +26,7 @@ from botcore import (
     safe_pos_float,
 )
 from kraken import replay as kraken_replay
+from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
 from strategies.spot_engine import StratParams
 from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import load_dataset
@@ -335,7 +336,6 @@ def run_live_forward_shadow(candidates: dict[str, dict]) -> dict[str, dict]:
         print(f"Shadow OHLC not found at {SHADOW_OHLC_JSON}")
         return {}
 
-    from state_io import read_json_file, read_text_file
     full_bars = read_json_file(SHADOW_OHLC_JSON, default=[])
 
     if not isinstance(full_bars, list) or len(full_bars) < 2:
@@ -437,7 +437,6 @@ def main():
     # Save complete JSON
     out_dir = ROOT / "offline" / "results" / "strategy_sweep"
     json_path = out_dir / "sweep_results.json"
-    from state_io import atomic_write_json, atomic_write_text
     atomic_write_json(json_path, master, indent=2)
     print(f"\nSaved raw JSON to {json_path}")
 

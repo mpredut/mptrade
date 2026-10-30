@@ -39,7 +39,7 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
     entry = None
     if isinstance(mgr, dict):
         for c in cands:
-            val = mgr[c] if c in mgr else casefold_get(mgr, c)
+            val = casefold_get(mgr, c)
             if val is not None:
                 entry = val
                 break
@@ -47,7 +47,7 @@ def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:
     if isinstance(raw, dict):
         raw_seq = []
         for c in cands:
-            val = raw[c] if c in raw else casefold_get(raw, c)
+            val = casefold_get(raw, c)
             if val:
                 raw_seq = val
                 break

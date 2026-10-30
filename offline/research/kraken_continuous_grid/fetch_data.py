@@ -17,6 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from binance_api.market_data import fetch_ohlc_candles
+from state_io import atomic_text_writer
 
 EXP = os.environ.get("GRID_OUT") or os.path.join(ROOT, "offline", "results", "kraken_continuous_grid")
 DATA = os.path.join(EXP, "data")
@@ -33,7 +34,6 @@ def fetch(symbol: str, name: str, force: bool = False) -> None:
     if not candles:
         print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
         return
-    from state_io import atomic_text_writer
     with atomic_text_writer(out_path, newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["timestamp", "open", "high", "low", "close"])

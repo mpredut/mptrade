@@ -26,6 +26,7 @@ import priceAnalysis as pa
 import monitortrades as mt
 import intelligence.internal.state.volatility as vol
 from cachepaths import cache_path
+from providers.replay_provider import load_price_series
 
 
 def test_pricewindow_regression_parity(iterations: int = 10_000) -> None:
@@ -110,8 +111,6 @@ def test_priceanalysis_ols_parity(iterations: int = 10_000) -> None:
 
 def test_detect_long_term_trend_real_data() -> None:
     print("[TEST 3/5] Testing detect_long_term_trend memoization vs raw unmemoized on real historical caches...")
-    from providers.replay_provider import load_price_series
-
     symbols = ["BTCUSDC", "TAOUSDC"]
     for sym in symbols:
         c_path = cache_path(f"cache_sparse_price_{sym}.jsonl")

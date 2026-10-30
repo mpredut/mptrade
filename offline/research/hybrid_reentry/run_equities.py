@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run Tests 0 to 4 ablation across Trading 212 US equities."""
 
-import json
 import os
 import sys
 
@@ -11,12 +10,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import parse_dotenv
+from offline.backtests.evaluation import load_venue_module
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,
     evaluate_asset,
-    format_ablation_result,
     load_ohlc_csv,
 )
+from state_io import atomic_write_json
 from strategies.spot_replay import align_spot_interval_params
 
 OUT_DIR = os.path.join(ROOT, "offline", "results", "hybrid_reentry")
@@ -71,7 +71,6 @@ BASE_CONFIG = {
 
 
 def _import_t212():
-    from offline.backtests.evaluation import load_venue_module
     rp = load_venue_module("212trading", "replay.py", "t212_replay_equities")
     return rp._strat, rp
 
@@ -125,7 +124,6 @@ def main():
                 )
 
     out_json = os.path.join(OUT_DIR, "equities_ablation_results.json")
-    from state_io import atomic_write_json
     atomic_write_json(out_json, results, indent=2)
     print(f"\nEquities results saved to {out_json}")
 

@@ -9,7 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
-from state_io import read_jsonl_dicts
+from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts
 
 _load_jsonl_dicts = read_jsonl_dicts
 
@@ -204,7 +204,6 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     L.extend(_format_errors_section(errors))
 
-    from state_io import atomic_write_json, atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT.md"), "\n".join(L) + "\n")
     atomic_write_json(os.path.join(exp, "summary.json"), summary, indent=1, allow_nan=True)
     return L

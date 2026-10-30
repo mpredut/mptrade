@@ -6,6 +6,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 from offline.backtests.evaluation import load_venue_module
+from state_io import atomic_text_writer
 
 _t212_md = load_venue_module("212trading", "market_data.py", "t212_md")
 fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
@@ -36,7 +37,6 @@ if __name__ == "__main__":
             if not rows:
                 print(f"[fetch] {sym} {itv}: no bars returned", flush=True)
                 continue
-            from state_io import atomic_text_writer
             with atomic_text_writer(csv_path, newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(["timestamp", "open", "high", "low", "close"])

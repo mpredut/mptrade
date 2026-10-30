@@ -18,7 +18,6 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
-import json
 import os
 import sys
 import time
@@ -41,6 +40,8 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
+from state_io import atomic_write_json, atomic_write_text
+from strategies import spot_replay as _spot_replay
 
 _safe_f = safe_float
 _safe_int = safe_int
@@ -159,9 +160,6 @@ def build_candidate_grid(base_params: strat.StratParams) -> list[dict[str, Any]]
         })
 
     return candidates
-
-
-from strategies import spot_replay as _spot_replay
 
 
 def _asset_slices(ohlc: list[tuple[float, float, float, float]]):
@@ -557,7 +555,6 @@ def main():
     results.sort(key=lambda x: (x["total_profit_usd"], x["pnl_per_drawdown_point"]), reverse=True)
 
     # Save JSON database
-    from state_io import atomic_write_json, atomic_write_text
     atomic_write_json(
         json_path,
         {

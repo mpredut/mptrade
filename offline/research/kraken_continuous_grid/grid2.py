@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import int_env
+from state_io import read_jsonl_dicts
 if HERE not in sys.path:
     sys.path.append(HERE)
 
@@ -127,7 +128,6 @@ if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
         grid.load_asset(a)
-    from state_io import read_jsonl_dicts
     for r in read_jsonl_dicts(grid.OUT):
         if "error" not in r and r.get("cfg") in ALL and r.get("asset") in assets:
             bars, _, _ = grid.load_asset(r["asset"])

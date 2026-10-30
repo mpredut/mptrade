@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Wave 3: continuous full-history runs with a FINITE cash account of 3900 USD (replay
 initial_cash): losses are not refilled, open BUYs reserve cash. Top candidates only."""
-import json, os, sys
+import json, os, sys, traceback
 from multiprocessing import Pool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +42,6 @@ def task(args):
         _TASK3_CACHE[cache_key] = res
         return res
     except Exception:
-        import traceback
         return {"asset": asset, "cfg": cfg, "error": traceback.format_exc()}
 
 

@@ -24,7 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
-from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
+from botcore import safe_int, safe_nonneg_int, safe_pos_int  # noqa: E402
 from offline.research.ml_forecast.forecast import _to_price_array  # noqa: E402
 
 _safe_int = safe_int

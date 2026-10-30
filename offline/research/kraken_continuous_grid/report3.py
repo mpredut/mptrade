@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from state_io import atomic_write_text
 
 _safe_f = safe_float
 
@@ -80,7 +81,6 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
 
     L.extend(_format_errors_section(errors))
 
-    from state_io import atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT3.md"), "\n".join(L) + "\n")
     return L
 

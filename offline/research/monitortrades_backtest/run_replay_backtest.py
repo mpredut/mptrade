@@ -26,6 +26,10 @@ the network (ReplayMarketDataProvider reads only from cachedb/cache_price_*.json
 
 Rulare: python3 offline/research/monitortrades_backtest/run_replay_backtest.py
 """
+import argparse
+import configparser
+import math
+from multiprocessing import Pool
 import os
 import sys
 
@@ -35,13 +39,15 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import _parse_bool_flag, float_env, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 
 from cachepaths import cache_path
+from instrument_registry import select_instruments
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
 from instrument import Instrument
 import monitortrades as mt
+import pricewindow as pw
 from offline.research.monitortrades_backtest.replay_trend_source import (
     DEFAULT_WINDOW_SECONDS,
     ReplayTrendSource,
@@ -56,7 +62,6 @@ FEE_PCT = 0.1
 
 def _live_mt_params(section):
     """Read the CURRENT mt.* parameters from a section of instruments.conf."""
-    import configparser
     cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     cp.read(os.path.join(ROOT, "instruments.conf"), encoding="utf-8")
     if section not in cp:
@@ -69,7 +74,6 @@ class _LiveSymbols:
     ACCESS (not at import), so it cannot become a stale copy again."""
     @property
     def _SECTIONS(self):
-        from instrument_registry import select_instruments
         return {
             spec.symbol: (spec.name, spec.base)
             for spec in select_instruments(role="mt", path=os.path.join(ROOT, "instruments.conf")).values()
@@ -96,7 +100,6 @@ _resolve_upward_eps_k = resolve_upward_eps_k
 
 
 def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | None) -> tuple:
-    import pricewindow as pw
     return (
         str(symbol),
         len(series),
@@ -126,8 +129,6 @@ def prewarm_trend_series(
     cached = _TREND_TAPE_CACHE.get(key)
     if cached is not None:
         return cached
-    import pricewindow as pw
-    import math
     eff_win_sec = win_sec
     if math.isclose(win_sec, DEFAULT_WINDOW_SECONDS, rel_tol=0.0, abs_tol=1e-6):
         fast_w = pw.fast_trend_window_for_symbol(symbol)
@@ -560,8 +561,6 @@ def _cli_run_target(task_args):
 
 
 if __name__ == "__main__":
-    import argparse
-    from multiprocessing import Pool
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symbol", choices=list(SYMBOLS._SECTIONS), default=None,
                      help="run ONLY this symbol (default: BTCUSDC + TAOUSDC)")

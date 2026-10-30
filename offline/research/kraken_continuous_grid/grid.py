@@ -28,12 +28,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import (
     int_env,
-    parse_dotenv,
     safe_float,
     safe_int,
     safe_nonneg_int,
     safe_pos_float,
 )
+from state_io import read_jsonl_dicts
 
 _safe_f = safe_float
 _safe_int = safe_int
@@ -227,7 +227,6 @@ if __name__ == "__main__":
     assets = sorted(f[:-9] for f in os.listdir(DATA) if f.endswith("_240m.csv"))
     for a in assets:
         load_asset(a)
-    from state_io import read_jsonl_dicts
     done = {
         (r["asset"], r["cfg"])
         for r in read_jsonl_dicts(OUT)

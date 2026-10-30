@@ -11,7 +11,6 @@ Coverage:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import json
 import logging
 import os
 import sys
@@ -23,6 +22,8 @@ if ROOT not in sys.path:
 
 from cachepaths import cache_path as resolve_cache_path
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from instrument_registry import symbols_for
+from state_io import atomic_write_json
 
 _safe_float = safe_float
 from offline.research.chop_weight_backtest import _downsample_price_series, _req_pos_num
@@ -502,8 +503,6 @@ def run_intelligence_backtest(
 
 
 if __name__ == "__main__":
-    from instrument_registry import symbols_for
-
     symbols = (
         sys.argv[1].split(",")
         if len(sys.argv) > 1
@@ -547,6 +546,5 @@ if __name__ == "__main__":
             logger.error("Failed backtest for %s: %s", sym, e, exc_info=True)
 
     out_file = os.path.join(ROOT, "logger", "intelligence_backtest_results.json")
-    from state_io import atomic_write_json
     atomic_write_json(out_file, all_results, indent=2)
     logger.info("Saved backtest results to %s", out_file)

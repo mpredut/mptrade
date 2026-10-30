@@ -37,6 +37,7 @@ if ROOT not in sys.path:
 
 from botcore import int_env, safe_float, safe_pos_float
 from cachepaths import cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
+from state_io import read_jsonl_dicts
 
 D = get_cachedb_dir()
 N_WIN = 222
@@ -68,7 +69,6 @@ def load_series(sym):
     )
     if not jsonl_path:
         return np.empty(0), np.empty(0)
-    from state_io import read_jsonl_dicts
 
     valid_syms = set(sym_cands) | {sym}
     for r in read_jsonl_dicts(jsonl_path):

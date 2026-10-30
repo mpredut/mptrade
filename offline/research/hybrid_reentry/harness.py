@@ -29,6 +29,7 @@ if KRAKEN_DIR not in sys.path:
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from strategies import spot_engine as strat
 from botcore import safe_float, safe_int, safe_nonneg_int, safe_pos_float
+from state_io import read_text_lines
 
 _safe_f = safe_float
 _safe_int = safe_int
@@ -36,8 +37,6 @@ _safe_int = safe_int
 
 def load_ohlc_csv(csv_path: str) -> list[tuple[float, float, float, float]]:
     """Load OHLC rows as (open, high, low, close) tuples."""
-    from state_io import read_text_lines
-
     rows: list[tuple[float, float, float, float]] = []
     reader = csv.reader(read_text_lines(csv_path))
     first = next(reader, None)

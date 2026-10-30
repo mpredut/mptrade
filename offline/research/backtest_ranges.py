@@ -32,6 +32,8 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from state_io import read_text_lines
+
 _SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*(?:[#;].*)?$')
 _BACKTEST_RE = re.compile(r'^\s*#\s*BACKTEST:\s*(.+?)\s*$')
 _KEY_RE = re.compile(r'^\s*(?:export\s+)?([A-Za-z0-9_.]+)\s*=\s*(.+?)\s*$')
@@ -46,7 +48,6 @@ def scan_backtest_ranges(path: str) -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     if not path or isinstance(path, (bool, int, float)) or not os.path.isfile(path):
         return out
-    from state_io import read_text_lines
 
     section: Optional[str] = None
     pending: Optional[List[str]] = None

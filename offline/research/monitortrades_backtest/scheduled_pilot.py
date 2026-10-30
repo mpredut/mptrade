@@ -37,10 +37,12 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as _futures
+import configparser
 import json
 import math
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -53,9 +55,12 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 from botcore import _parse_bool_flag, float_env, load_dotenv, safe_float
 from cachepaths import cache_path
+from instrument_registry import select_instruments
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
+from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts, read_text_lines
+
 
 def _env_float(name: str, default: float) -> float:
     val = float_env(name)
@@ -84,7 +89,6 @@ MIN_EDGE_MARGIN_USD = _env_float("PILOT_MIN_EDGE_MARGIN_USD", 1.0)
 #   #15   hardtp / hardtp_fraction (28 iul; per-instrument, monitortrades.py:447)
 def _build_pilot_keys(conf_path=INSTRUMENTS_CONF):
     """Derive pilot keys dynamically from instruments.conf (SSOT role.mt=yes)."""
-    from instrument_registry import select_instruments
     keys = {}
     mt_params = (
         "mt.gain",
@@ -113,7 +117,6 @@ def _now_iso():
 def _git_head_short():
     """The (short) commit of the code that produced the proposal — so that prod knows
     exactly which engine/config version produced it. '?' if git does not answer."""
-    import subprocess
     try:
         return subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
                               capture_output=True, text=True, timeout=5).stdout.strip() or "?"
@@ -130,7 +133,6 @@ def _append_audit(entry):
 
 def _last_change_for(full_key):
     """The most recent journal entry with action='applied' for full_key."""
-    from state_io import read_jsonl_dicts
     last = None
     for entry in read_jsonl_dicts(AUDIT_LOG):
         if entry.get("full_key") == full_key and entry.get("action") == "applied":
@@ -160,7 +162,6 @@ def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
 
 def _current_value(section, key):
     """Read today's LIVE value (not the grid) directly from instruments.conf."""
-    import configparser
     cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
     cp.read(INSTRUMENTS_CONF, encoding="utf-8")
     if section not in cp or key not in cp[section]:
@@ -439,8 +440,6 @@ def _apply_config_change(section, key, old_value, new_value):
     """Replace ONLY the numeric value on the `key = ...` line in
     sectiunea `section`, pastrand tot restul fisierului (comentarii,
     formatare, alte sectiuni) neatins."""
-    from state_io import atomic_write_text, read_text_lines
-
     lines = read_text_lines(INSTRUMENTS_CONF, keepends=True)
     in_section = False
     key_re = re.compile(rf'^(\s*{re.escape(key)}\s*=\s*)([^\s#;]+)(.*)$')
@@ -460,7 +459,6 @@ def _apply_config_change(section, key, old_value, new_value):
 def _restart_monitortrades():
     """Kills the live process — the flota_start.sh supervisor restarts it
     automatically (the same mechanism used by hand throughout the session)."""
-    import subprocess
     try:
         out = subprocess.run(["pgrep", "-f", "python monitortrades.py"],
                               capture_output=True, text=True, timeout=5)
@@ -733,8 +731,6 @@ def main():
         # a snapshot of the current proposals (overwriting — the file means "what dev proposes
         # NOW"; prod consumes them and applies them with its own guardrails). Empty = no
         # confirmed signal in this cycle (prod has nothing to apply).
-        from state_io import atomic_write_json
-
         atomic_write_json(args.propose_out, proposals, indent=2, default=str)
         print(f"\n[scheduled_pilot] {len(proposals)} proposal(s) written to {args.propose_out}")
         if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):

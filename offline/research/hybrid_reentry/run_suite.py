@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Run Tests 0 to 4 ablation across 11 crypto assets and US equities."""
 
-import json
 import os
 import statistics
 import sys
@@ -16,6 +15,7 @@ if _KRAKEN_DIR not in sys.path:
     sys.path.append(_KRAKEN_DIR)
 
 from botcore import safe_float, safe_int, safe_nonneg_int
+from state_io import atomic_write_json
 
 _safe_f = safe_float
 _safe_int = safe_int
@@ -112,7 +112,6 @@ def main():
 
     # Save raw results
     out_json = os.path.join(OUT_DIR, "ablation_results.json")
-    from state_io import atomic_write_json
     atomic_write_json(out_json, all_results, indent=2)
     print(f"\nRaw results saved to {out_json}")
 

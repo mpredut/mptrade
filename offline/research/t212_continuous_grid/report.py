@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from state_io import atomic_write_text, read_jsonl_dicts
 
 REPO = ROOT
 EXP = os.environ.get("GRID_OUT") or os.path.join(REPO, "offline", "results", "t212_continuous_grid")
@@ -32,7 +33,6 @@ def generate_report(exp_dir=None):
     if not os.path.exists(results_path):
         return f"# Trading 212 grid\n\nNo results found at {results_path}.\n"
 
-    from state_io import read_jsonl_dicts
     rows = read_jsonl_dicts(results_path)
 
     errors = [r for r in rows if "error" in r]
@@ -127,7 +127,6 @@ def generate_report(exp_dir=None):
             L.append(f"- {e.get('profile')} {e.get('variant')} {e.get('asset')}: `{last_err}`")
 
     report_content = "\n".join(L) + "\n"
-    from state_io import atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT.md"), report_content)
     return report_content
 

@@ -17,6 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_pos_float
 from cachepaths import cache_path, cache_symbol_variants
+from state_io import atomic_write_text, read_jsonl_records
 
 
 def ts_of(r) -> float:
@@ -52,7 +53,6 @@ def main():
         print(f"[slice] {src} missing", file=sys.stderr)
         sys.exit(1)
 
-    from state_io import atomic_write_text, read_jsonl_records
     rows = [rec for rec in read_jsonl_records(src) if ts_of(rec) > 0]
     if not rows:
         print(f"[slice] {src} gol/missing", file=sys.stderr)

@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sys
 import socket
-from datetime import datetime, timezone
 
 # RESILIENCE: the Hyperliquid SDK makes requests WITHOUT a read timeout. A network
 # failure during an open request would hang forever without error or heartbeat.
@@ -26,6 +25,7 @@ from botcore import (  # noqa: E402,F401  (re-export compatibility)
     resolve_cli_arg,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
+    now_str,
 )
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,8 +51,3 @@ def load_hl_local(name: str):
         return mod
     finally:
         sys.path[:] = orig_sys_path
-
-
-def now_str() -> str:
-    n = datetime.now(timezone.utc)
-    return f"{n.astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"

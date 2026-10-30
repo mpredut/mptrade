@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-import json
 import logging
 import os
 import sys
@@ -28,9 +27,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from priceAnalysis import get_trade_weight
 from cachepaths import cache_path, canonical_base_asset
+from instrument_registry import symbols_for
+from priceAnalysis import get_trade_weight
 from providers.replay_provider import load_price_series
+from state_io import atomic_write_json
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
 from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
 from intelligence.internal.state.volatility import calculate_volatility_1h
@@ -502,8 +503,6 @@ def print_comparison_table(symbol: str, stats_list: List[ChopBacktestStats]) -> 
 
 
 if __name__ == "__main__":
-    from instrument_registry import symbols_for
-
     default_syms = ",".join(symbols_for("binance", role="tradeall_fire"))
     parser = argparse.ArgumentParser(description="Run Chop Weight Backtest")
     parser.add_argument("--symbols", default=default_syms, help="Comma-separated symbols")
@@ -525,6 +524,5 @@ if __name__ == "__main__":
         sym: [asdict(s) for s in stats]
         for sym, stats in results.items()
     }
-    from state_io import atomic_write_json
     atomic_write_json(args.out, json_data, indent=2)
     logger.info("Saved chop benchmark results to %s", args.out)

@@ -41,14 +41,14 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
-from state_io import atomic_write_text, read_json_dict, read_tail_jsonl_dicts
+from state_io import atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 try:
     from intelligence.internal.state.volatility import get_kalman_state_path
 except ImportError:
     from intelligence import get_kalman_state_path
 from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, symbols_for
 LOGGER_DIR = os.path.join(ROOT, "logger")
 CACHE_TREND_PATH = cache_path("cache_short_trend.json")
 
@@ -244,13 +244,20 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=4 * 1024 * 1024):
     if not os.path.exists(path):
         return []
     if filename.endswith(".jsonl"):
+        sym_variants = set(cache_symbol_variants(symbol, include_original=True))
         return [
             rec["i"]
             for rec in read_tail_jsonl_dicts(path, limit=None, max_bytes=max_bytes)
-            if rec.get("s") == symbol and "i" in rec
+            if rec.get("s") in sym_variants and "i" in rec
         ]
     items = read_json_dict(path, default={}, recover_previous=True).get("items")
-    return items.get(symbol, []) if isinstance(items, dict) else []
+    if not isinstance(items, dict):
+        return []
+    for cand in cache_symbol_variants(symbol, include_original=True):
+        cand_val = casefold_get(items, cand)
+        if isinstance(cand_val, list):
+            return cand_val
+    return []
 
 
 def _load_history_jsonl_tail(symbol, max_bytes=4 * 1024 * 1024):
@@ -444,8 +451,6 @@ def _close_new_figures(function):
 
 def _save_figure_atomic(fig, out_path, **savefig_kwargs):
     """Publish a PNG only after rendering completes successfully."""
-    from state_io import atomic_file_path
-
     with atomic_file_path(out_path, prefix=".tradeall_observe_", suffix=".png") as temp_path:
         fig.savefig(temp_path, format="png", **savefig_kwargs)
 
@@ -700,8 +705,8 @@ def _lookup_symbol_dict(mapping, symbol):
         return None
     if symbol not in mapping and isinstance(mapping.get("items"), dict):
         mapping = mapping["items"]
-    for cand in (symbol, *cache_symbol_variants(symbol)):
-        val = mapping.get(cand) if cand in mapping else casefold_get(mapping, cand)
+    for cand in cache_symbol_variants(symbol, include_original=True):
+        val = casefold_get(mapping, cand)
         if isinstance(val, dict):
             return val
     return None
@@ -1009,7 +1014,6 @@ setInterval(function() {{
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
-    from instrument_registry import symbols_for
 
     parser.add_argument("--symbols", default=None,
                          help="explicit override; otherwise all enabled Binance instruments")

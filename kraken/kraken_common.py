@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repository root
 from botcore import (  # noqa: E402,F401  (re-export: compat `from common import ...`)
@@ -19,9 +18,5 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from common import
     resolve_cli_arg,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_pos_int, safe_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
+    now_str,
 )
-
-
-def now_str() -> str:
-    n = datetime.now(timezone.utc)
-    return f"{n.astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"

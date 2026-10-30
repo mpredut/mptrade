@@ -34,6 +34,12 @@ def log(msg: str) -> None:
     print(f"[{datetime.now(timezone.utc).astimezone(BUCHAREST):%H:%M:%S}] {msg}", flush=True)
 
 
+def now_str() -> str:
+    """Return current timestamp formatted in Europe/Bucharest timezone."""
+    n = datetime.now(timezone.utc)
+    return f"{n.astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"
+
+
 def single_instance(name: str, lockdir: str = "/tmp") -> None:
     """Enforce a single instance with an exclusive flock.
     The first process holds <lockdir>/binance_<name>.lock for its lifetime; a second exits

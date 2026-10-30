@@ -9,6 +9,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_float
+from state_io import atomic_write_text
 
 try:
     from .report import _format_errors_section, _load_jsonl_dicts, _resolve_exp_dir
@@ -144,7 +145,6 @@ def generate_report(exp_dir: str | None = None) -> list[str]:
     table(fee, "Fee stress: 0.26% vs 0.40% per leg")
 
     L.extend(_format_errors_section(errors, label_fn=lambda e: str(e.get("args", "?"))))
-    from state_io import atomic_write_text
     atomic_write_text(os.path.join(exp, "REPORT2.md"), "\n".join(L) + "\n")
     return L
 
