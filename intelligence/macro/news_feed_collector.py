@@ -129,23 +129,21 @@ class NewsFeedCollector:
     def _load_history(self) -> None:
         hist_file = self._effective_history_file()
         now = time.time()
-        for load_path in (hist_file,):
-            try:
-                data = read_json_file(load_path, default=None, recover_previous=True)
-                if not isinstance(data, list):
-                    continue
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
-                    if ts > 0.0 and 0.0 <= (now - ts) < self.rolling_window_sec:
-                        h = self._coerce_headline(item)
-                        norm = self._normalize_title(h.title) if h else ""
-                        if h and norm:
-                            self._aggregated_pool[norm] = (ts, h)
+        try:
+            data = read_json_file(hist_file, default=None, recover_previous=True)
+            if not isinstance(data, list):
                 return
-            except Exception as e:
-                logger.debug("Could not load news history from %s: %s", load_path, e)
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
+                if ts > 0.0 and 0.0 <= (now - ts) < self.rolling_window_sec:
+                    h = self._coerce_headline(item)
+                    norm = self._normalize_title(h.title) if h else ""
+                    if h and norm:
+                        self._aggregated_pool[norm] = (ts, h)
+        except Exception as e:
+            logger.debug("Could not load news history from %s: %s", hist_file, e)
 
     def _save_history(self) -> None:
         hist_file = self._effective_history_file()

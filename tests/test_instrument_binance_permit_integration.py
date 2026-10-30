@@ -18,6 +18,7 @@ import order_guard
 import order_retry
 import order_retry_worker
 from providers import market_api
+from providers.base import clean_order_id
 from providers.market_api import BinanceProvider, MarketApi
 
 
@@ -77,6 +78,10 @@ class _FakeBapi:
         self.events.append("cancel")
         self.canceled = True
         return True
+
+    @staticmethod
+    def _resolve_valid_bapi_oid(order_id):
+        return clean_order_id(order_id)
 
 
 class InstrumentBinancePermitIntegrationTest(unittest.TestCase):

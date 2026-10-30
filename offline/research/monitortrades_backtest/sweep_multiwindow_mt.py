@@ -16,6 +16,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+from botcore import safe_float, safe_int
 import pricewindow as pw
 import offline.research.monitortrades_backtest.run_replay_backtest as rrb
 from offline.research.monitortrades_backtest.sweep_mt_models import (
@@ -96,9 +97,9 @@ def run_multiwindow_sweep(use_365: bool = False):
             rrb._TREND_TAPE_CACHE[key] = fn(sigs[sym], sym) if fn.__code__.co_argcount >= 2 else fn(sigs[sym])
             cfg = rrb.SYMBOLS[sym]
             res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-            net = float(res.get("net") or 0.0)
+            net = safe_float(res.get("net"), 0.0)
             tot_net += net
-            cells.append(f"{net:>+8.2f} ({int(res.get('buys') or 0):>2}B/{int(res.get('sells') or 0):>2}S)")
+            cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
         print(f"{m_name:<36} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
 
 

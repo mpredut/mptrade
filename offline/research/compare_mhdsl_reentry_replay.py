@@ -13,10 +13,10 @@ from strategies import spot_engine as strat
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from offline.backtests.datasets import load_dataset, validate_dataset
 from offline.backtests.evaluation import to_ohlc
-from botcore import safe_float, safe_int, safe_nonneg_int
+from botcore import safe_float, safe_nonneg_int
 
 _safe_f = safe_float
-_safe_int = safe_int
+_safe_int = safe_nonneg_int
 
 
 def run_comparison(csv_path=None):

@@ -12,15 +12,11 @@ from botcore import safe_float
 from state_io import atomic_write_text
 
 _safe_f = safe_float
-
-try:
-    from .report import _format_errors_section, _load_jsonl_dicts, _resolve_exp_dir
-except ImportError:
-    from offline.research.kraken_continuous_grid.report import (
-        _format_errors_section,
-        _load_jsonl_dicts,
-        _resolve_exp_dir,
-    )
+from offline.research.kraken_continuous_grid.report import (
+    _format_errors_section,
+    _load_jsonl_dicts,
+    _resolve_exp_dir,
+)
 
 
 def generate_report(exp_dir: str | None = None) -> list[str]:

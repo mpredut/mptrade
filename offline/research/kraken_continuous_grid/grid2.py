@@ -20,13 +20,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import int_env
 from state_io import read_jsonl_dicts
-if HERE not in sys.path:
-    sys.path.append(HERE)
-
-try:
-    from offline.research.kraken_continuous_grid import grid
-except ImportError:
-    import grid
+from offline.research.kraken_continuous_grid import grid
 CONFIGS, LIVE, OLD, R, ov, load = grid.CONFIGS, grid.LIVE, grid.OLD, grid.R, grid.ov, grid.load
 WARM, W30, W90, WSTEP, DATA, EXP = grid.WARM, grid.W30, grid.W90, grid.WSTEP, grid.DATA, grid.EXP
 

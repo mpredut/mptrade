@@ -22,9 +22,6 @@ from typing import Any
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-KRAKEN_DIR = os.path.join(ROOT, "kraken")
-if KRAKEN_DIR not in sys.path:
-    sys.path.append(KRAKEN_DIR)
 
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series, run_replay
 from strategies import spot_engine as strat

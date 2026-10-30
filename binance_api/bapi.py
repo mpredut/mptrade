@@ -270,10 +270,7 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         return {}
  
           
-def _resolve_valid_bapi_oid(order_id):
-    if isinstance(order_id, (dict, list, tuple, set, frozenset)):
-        return None
-    return extract_order_id(order_id, default=None)
+_resolve_valid_bapi_oid = clean_order_id
 
 
 def _cancel_and_resolve(symbol, order_id) -> bool:

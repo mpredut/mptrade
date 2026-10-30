@@ -28,26 +28,22 @@ from typing import Any
 ROOT = str(Path(__file__).resolve().parents[3])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-_KRAKEN_DIR = os.path.join(ROOT, "kraken")
-if _KRAKEN_DIR not in sys.path:
-    sys.path.append(_KRAKEN_DIR)
 
 from botcore import (
     parse_dotenv,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
 from state_io import atomic_write_json, atomic_write_text
 from strategies import spot_replay as _spot_replay
-
-_safe_f = safe_float
-_safe_int = safe_int
 from strategies.spot_replay import align_spot_interval_params, run_replay
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import load_ohlc_csv
+
+_safe_f = safe_float
+_safe_int = safe_nonneg_int
 
 DATA_DIR = os.path.join(ROOT, "offline", "results", "kraken_continuous_grid", "data")
 DEFAULT_OUT_DIR = os.path.join(ROOT, "offline", "results", "surge_sweep")

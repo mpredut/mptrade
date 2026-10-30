@@ -21,7 +21,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-from botcore import safe_pos_float
+from botcore import safe_float, safe_int, safe_pos_float
 import pricewindow as pw
 from cachepaths import cache_path
 from providers.replay_provider import load_price_series
@@ -312,10 +312,10 @@ def evaluate_dataset(use_365: bool = False):
             rrb._TREND_TAPE_CACHE[key] = tape_fn(sig_map[sym])
             cfg = rrb.SYMBOLS[sym]
             res = rrb.run_symbol(sym, cfg["params"], cfg["base"], quiet=True, series=series) or {}
-            net = float(res.get("net") or 0.0)
-            bh_Wait[sym] = float(res.get("buy_hold") or 0.0)
+            net = safe_float(res.get("net"), 0.0)
+            bh_Wait[sym] = safe_float(res.get("buy_hold"), 0.0)
             tot_net += net
-            cells.append(f"{net:>+8.2f} ({int(res.get('buys') or 0):>2}B/{int(res.get('sells') or 0):>2}S)")
+            cells.append(f"{net:>+8.2f} ({safe_int(res.get('buys'), 0):>2}B/{safe_int(res.get('sells'), 0):>2}S)")
         print(f"{m_name:<34} | " + " | ".join(f"{c:>14}" for c in cells) + f" | {tot_net:>+14.2f}")
 
     bh_tot = sum(bh_Wait.values())

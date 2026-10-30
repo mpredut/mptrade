@@ -10,15 +10,12 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-_KRAKEN_DIR = os.path.join(ROOT, "kraken")
-if _KRAKEN_DIR not in sys.path:
-    sys.path.append(_KRAKEN_DIR)
 
-from botcore import safe_float, safe_int, safe_nonneg_int
+from botcore import safe_float, safe_nonneg_int
 from state_io import atomic_write_json
 
 _safe_f = safe_float
-_safe_int = safe_int
+_safe_int = safe_nonneg_int
 from strategies import spot_engine as strat
 from offline.research.hybrid_reentry.harness import (
     build_ablation_variants,

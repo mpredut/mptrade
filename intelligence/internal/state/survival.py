@@ -31,7 +31,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import cache_path, cache_symbol_variants, normalize_cache_base_asset
+from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached, save_json_state
 
@@ -382,7 +382,7 @@ def estimate_T(
                 return ent
 
     sym_u = symbol.upper().strip()
-    clean_sym_u = sym_u.replace("/", "").replace("-", "").replace("_", "")
+    clean_sym_u = canonical_symbol_key(sym_u)
     base = _extract_base_symbol(sym_u)
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
     if base and clean_sym_u != "USDCUSDT":

@@ -21,6 +21,7 @@ from . import bapi as api
 from . import bapi_allorders as apiorders
 from .bapi_client import client
 from providers.base import (
+    clean_order_id,
     extract_order_id,
     extract_order_price,
     extract_order_side,
@@ -408,7 +409,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
             raise SubmissionRefused("account_cache_not_fresh")
 
     target_client = api_client or client
-    client_order_id = api._resolve_valid_bapi_oid(client_order_id) or rc.create_client_order_id()
+    client_order_id = clean_order_id(client_order_id) or rc.create_client_order_id()
     if market:
         method = (
             target_client.order_market_buy

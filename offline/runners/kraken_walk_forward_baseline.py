@@ -20,8 +20,6 @@ ROOT = Path(__file__).resolve().parents[2]
 KRAKEN_DIR = ROOT / "kraken"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-if str(KRAKEN_DIR) not in sys.path:
-    sys.path.append(str(KRAKEN_DIR))
 
 from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402

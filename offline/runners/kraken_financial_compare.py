@@ -16,14 +16,11 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNNER_DIR = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-if str(RUNNER_DIR) not in sys.path:
-    sys.path.append(str(RUNNER_DIR))
 
 from botcore import safe_float  # noqa: E402
-import kraken_financial_benchmark as benchmark  # noqa: E402
+from offline.runners import kraken_financial_benchmark as benchmark  # noqa: E402
 from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )

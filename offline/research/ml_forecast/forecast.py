@@ -25,11 +25,11 @@ if _ROOT not in sys.path:
 
 from intelligence.internal.state.survival import fetch_klines  # noqa: E402
 from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall, calculate_hurst_exponent as hurst_rs  # noqa: E402
-from botcore import safe_float, safe_pos_float, safe_int, safe_pos_int  # noqa: E402
+from botcore import safe_float, safe_pos_float, safe_pos_int  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 
 _safe_f = safe_float
-_safe_int = safe_int
+_safe_int = safe_pos_int
 
 HORIZON_H = 24
 WARMUP = 240            # history hours required for features; Hurst uses 240h

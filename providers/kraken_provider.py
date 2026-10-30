@@ -14,7 +14,6 @@ gate. Importing this module does not eagerly initialize the Kraken client.
 """
 import os
 import re
-import sys
 import time
 from typing import Optional, List
 
@@ -22,6 +21,7 @@ from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    load_local_module,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -211,15 +211,7 @@ class KrakenProvider(MarketDataProvider):
     def _client(self):
         if self._cli is not None:
             return self._cli
-        # Put kraken first on sys.path for lazy client imports, then restore the
-        # path so other providers are unaffected. The unique kraken_common name
-        # avoids collision with hyperliquid/common.py.
-        saved_path = list(sys.path)
-        try:
-            sys.path.insert(0, _KRAKEN_DIR)
-            from kraken_client import KrakenClient  # noqa: import lazy
-        finally:
-            sys.path[:] = saved_path                  # Restore order for other providers.
+        KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
         # Read Kraken-specific credentials, with environment variables taking
         # precedence. Preserve the existing whole-profile priority: primary,
         # then SPARE, then BOT. The resolver prevents cross-profile key mixing.

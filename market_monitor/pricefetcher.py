@@ -267,13 +267,7 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             sym_up = sym_clean.upper()
             base_up = get_base_symbol(sym_up)
             self.refresh_symbols()
-            raw_val = self._all_mids.get(sym_clean)
-            if raw_val is None:
-                raw_val = self._all_mids.get(sym_up)
-            if raw_val is None and base_up:
-                raw_val = self._all_mids.get(base_up)
-            if raw_val is None:
-                raw_val = casefold_get(self._all_mids, sym_clean)
+            raw_val = casefold_get(self._all_mids, sym_clean)
             if raw_val is None and base_up:
                 raw_val = casefold_get(self._all_mids, base_up)
             if raw_val is None:

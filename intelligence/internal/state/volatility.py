@@ -9,7 +9,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import cache_path, cache_symbol_variants, normalize_cache_base_asset
+from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached
 
@@ -206,7 +206,7 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
     raw = symbol.strip().upper()
     if not raw:
         return ()
-    clean = raw.replace("/", "").replace("-", "").replace("_", "")
+    clean = canonical_symbol_key(raw)
     if clean == "USDCUSDT":
         return ("USDCUSDT",)
     base = normalize_cache_base_asset(raw)

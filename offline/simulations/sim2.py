@@ -7,14 +7,11 @@ import sys
 import time
 import matplotlib.pyplot as plt
 
-_DIR = os.path.dirname(os.path.abspath(__file__))
-if _DIR not in sys.path:
-    sys.path.insert(0, _DIR)
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-try:
-    from offline.simulations.sim import PriceWindow
-except ImportError:
-    from sim import PriceWindow
+from offline.simulations.sim import PriceWindow
 
 
 def plot_graphs(price_window, full_prices):

@@ -17,6 +17,7 @@ from botcore import (
     extract_current_price_item,
     fetch_public_json,
     load_key_value_conf,
+    load_local_module,
 )
 from cachepaths import (
     cache_symbol_variants,
@@ -2219,10 +2220,7 @@ def enrich_24h_and_microstructure(
                     pass
             if not m24 and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212":
                 try:
-                    t212_dir = os.path.join(workspace_dir, "212trading")
-                    if t212_dir not in _sys.path:
-                        _sys.path.insert(0, t212_dir)
-                    from market_data import _chart
+                    _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
                     yahoo_sym = sym.split("_", 1)[0]
                     chart_res = _chart(yahoo_sym, rng="5d", interval="5m")
                     pts_5d: List[List[Any]] = []
