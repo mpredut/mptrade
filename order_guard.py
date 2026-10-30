@@ -49,7 +49,7 @@ from providers.base import (
     extract_timestamp_s,
     normalize_side,
 )
-from providers.strategy_executor import ProviderError
+from providers.strategy_executor import ProviderError, SubmissionRefused
 from state_io import read_json_dict_cached
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
@@ -703,7 +703,6 @@ def get_window_cfg(
     Otherwise returns `<venue>_window_h` (or default_window_h) in seconds.
     """
     name = _provider_name(provider_name)
-    m = _load_margins()
     side = _normalize_side_token(order_type)
 
     if side in ("BUY", "SELL"):
@@ -940,7 +939,6 @@ def resolve_trade_weight(symbol, order_type, provider_name=None, *, default_weig
                 return fval
             if val is not None:
                 if raise_on_error and sym == symbol:
-                    from providers.strategy_executor import SubmissionRefused
                     raise SubmissionRefused("invalid_weight_policy_weight")
                 return None
             return None

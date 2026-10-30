@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime
 
 import alertnotifiers as alert
 from botcore import load_dotenv, required_float_env, required_int_env, safe_float
@@ -24,8 +25,6 @@ if not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5:
     raise ValueError(
         "ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC must be finite, > 0, "
         "and <= 5")
-
-
 
 
 def _claim_client_order_id(record) -> str | None:
@@ -89,7 +88,6 @@ def complete_accepted_claim(
         if attempt + 1 < ACCEPTED_TRACKING_PERSIST_ATTEMPTS:
             time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
 
-    from datetime import datetime
     try:
         order_id = _clean_id(order_retry_module.order_id_from_response(order))
     except Exception:

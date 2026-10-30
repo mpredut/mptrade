@@ -7,6 +7,7 @@ from collections import OrderedDict
 from binance.exceptions import BinanceAPIException
 
 # Project imports.
+import alertnotifiers as alert
 import utils as u
 import symbols as sym
 from binance_api import bapi as api
@@ -111,7 +112,6 @@ def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None)
 def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=None, age_str="", ttl_str=""):
     """Notify when an expired open order is canceled by monitororder."""
     try:
-        import alertnotifiers as alert
         qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
@@ -193,7 +193,6 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
     if not _should_notify_order_launched(owner):
         return
     try:
-        import alertnotifiers as alert
         qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
