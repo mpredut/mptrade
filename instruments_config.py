@@ -1,7 +1,24 @@
 """Bind validated, credential-free registry records to the provider facade."""
 from dataclasses import asdict
+import glob
+import os
 
-from instrument_registry import load_registry, select_instruments
+from botcore import (
+    _parse_bool_flag,
+    extract_current_price_item,
+    is_us_rth_open,
+    load_env_file_defaults,
+    parse_env_file,
+    safe_pos_float,
+)
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    normalize_venue_name,
+    split_symbol_assets,
+)
+from instrument_registry import casefold_get, load_registry, select_instruments, symbols_for
+from state_io import read_json_dict_recovering
 
 
 def _bind(specs, api):
@@ -22,7 +39,6 @@ def load_for(consumer, path=None, api=None, only_enabled=True):
 
 # Compatibility APIs delegate to the same validated registry, never a second parser.
 def binance_symbols(path=None):
-    from instrument_registry import symbols_for
     symbols = symbols_for("binance", path=path)
     if not symbols:
         raise ValueError("instruments.conf: no enabled Binance instruments")
@@ -35,7 +51,6 @@ def trail_pct_map(path=None):
 
 
 def tradeall_trade_symbols(path=None):
-    from instrument_registry import symbols_for
     return set(symbols_for("binance", "tradeall_fire", path=path))
 
 
@@ -45,10 +60,6 @@ def tradeall_trade_symbols(path=None):
 
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
     """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS) and listed xStock pairs from kraken/."""
-    import os
-    from botcore import parse_env_file
-    from cachepaths import split_symbol_assets
-
     kv = parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
     raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
     out: list[tuple[str, str, str]] = []
@@ -66,9 +77,6 @@ def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]
 
 def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
     """Read hyperliquid/config.env to include live Hyperliquid spot pairs (e.g. HYPEUSDC)."""
-    import os
-    from botcore import _parse_bool_flag, load_env_file_defaults
-
     cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
     if not os.path.exists(cfg_path):
         return []
@@ -83,10 +91,6 @@ def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
 
 def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]]:
     """Read 212trading/config.*.env to discover configured Trading212 equity tickers."""
-    import glob
-    import os
-    from botcore import parse_env_file
-
     t212_dir = os.path.join(workspace_dir, "212trading")
     if not os.path.isdir(t212_dir):
         return []
@@ -112,10 +116,6 @@ def load_tradable_instruments(
     is_rth_open_fn=None,
 ) -> dict:
     """Load enabled instruments across Binance, Kraken, Hyperliquid, and Trading212 filtered by asset_scope."""
-    import os
-    from botcore import is_us_rth_open, load_env_file_defaults
-    from cachepaths import normalize_venue_name
-
     ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
     rth_check = is_rth_open_fn or is_us_rth_open
     scope = (asset_scope or "all").strip().lower()
@@ -202,7 +202,6 @@ def resolve_tradable_instrument(
     workspace_dir: str | None = None,
 ):
     """Resolve an enabled Instrument instance for the given symbol and venue."""
-    from cachepaths import canonical_base_asset, normalize_venue_name
     from intelligence.macro_sentiment_ssot import clean_symbol_key
 
     if instruments_map is None:
@@ -237,11 +236,6 @@ def resolve_tradable_instrument(
 
 def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     """Fetch live market price for ``inst`` from provider or ``cachedb`` fallbacks."""
-    import os
-    from botcore import extract_current_price_item, safe_pos_float
-    from cachepaths import cache_symbol_variants, canonical_base_asset, split_symbol_assets
-    from instrument_registry import casefold_get
-
     try:
         if hasattr(inst._provider, "get_current_price"):
             px_f = safe_pos_float(inst._provider.get_current_price(inst.symbol), default=None)
@@ -252,7 +246,6 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
 
     cache_path = os.path.join(cache_dir, "cache_current_price.json")
     try:
-        from state_io import read_json_dict_recovering
         cdata = read_json_dict_recovering(cache_path)
         if isinstance(cdata, dict):
             raw_items = cdata.get("items")

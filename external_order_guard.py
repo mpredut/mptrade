@@ -10,11 +10,13 @@ Executes in 0 ms (reads local cachedb/ telemetry, zero network calls during orde
 
 from __future__ import annotations
 
+import importlib
 import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
@@ -39,7 +41,6 @@ def _get_collector(attr_name: str, module_path: str, cls_name: str):
         return getattr(og, attr_name)
     cur = globals().get(attr_name)
     if cur is None:
-        import importlib
         cur = getattr(importlib.import_module(module_path), cls_name)()
         globals()[attr_name] = cur
     return cur
@@ -76,7 +77,6 @@ def check_external_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0

@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import hashlib
-import json
 import time
 
 from binance_api import bapi as api
@@ -18,7 +17,10 @@ from order_retry import propagate_submission_refusal
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
+from lock import FileLock
 import order_guard as _og
+import pricewindow as pw
 
 import cacheManager as cm
 import symbols as sym
@@ -81,17 +83,9 @@ def _validate_required_config_presence():
             + ", ".join(missing))
 
 
-def _required_config(name):
-    """Return one mandatory AG setting or abort startup on missing/empty input."""
-    return required_env(name)
-
-
-def _required_float_config(name):
-    return required_float_env(name)
-
-
-def _required_int_config(name):
-    return required_int_env(name)
+_required_config = required_env
+_required_float_config = required_float_env
+_required_int_config = required_int_env
 
 
 # Every financial/operational parameter is mandatory in config.env.
@@ -152,7 +146,6 @@ TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = sym.btcsymbol
 ORDER_MISSING_CONFIRMATIONS = _required_int_config(
     "AG_ORDER_MISSING_CONFIRMATIONS")
-from lock import FileLock
 
 
 class AssetGuardianState:
@@ -406,7 +399,6 @@ def _read_p3b_sentiment(path=None, now_ts=None):
         if not state_path:
             return None
         cache_dir = os.path.dirname(os.path.abspath(state_path))
-        from intelligence.macro_sentiment_ssot import load_cached_sentiment_advisor_eval
         data = load_cached_sentiment_advisor_eval(cache_dir)
     else:
         data = read_json_dict(path, default=None, recover_previous=True)
@@ -772,7 +764,6 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
                   if same_intent else None)
     try:
         short_tm = cm.get_short_trend_manager()
-        import pricewindow as pw
         fast_w = pw.fast_trend_window_for_symbol(symbol)
         if (
             fast_w is not None

@@ -4,6 +4,8 @@ from __future__ import annotations
 import builtins
 import glob
 import os
+import shutil
+import time
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -289,9 +291,6 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
 
 def _clean_stale_staging_in_dir(target_dir: str, *, min_file_age_sec: float = 30.0) -> None:
     """Remove transient ``.<name>.previous.<rand>`` directories and stale ``.tmp`` files in ``target_dir``."""
-    import shutil
-    import time
-
     if not os.path.isdir(target_dir):
         return
     now = time.time()
@@ -317,8 +316,6 @@ def organize_cachedb_subdomains(
     remove_stale_staging: bool = True,
 ) -> dict[str, list[str]]:
     """Partition flat files in ``cachedb_dir`` into thematic subdomain subdirectories."""
-    import shutil
-
     base = cachedb_dir or get_cachedb_dir()
     ensure_cachedb_subdomains(base)
     moved: dict[str, list[str]] = {sub: [] for sub in CACHEDB_SUBDOMAINS}

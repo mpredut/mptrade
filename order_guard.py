@@ -1128,9 +1128,7 @@ def get_derivatives_collector():
     return _gdc()
 
 
-def _normalize_base_asset(sym: str) -> str:
-    from cachepaths import canonical_base_asset
-    return canonical_base_asset(sym)
+_normalize_base_asset = canonical_base_asset
 
 
 def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
@@ -1144,22 +1142,18 @@ def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
     return None
 
 
-def _resolve_cachedb_dir() -> str:
-    from cachepaths import get_cachedb_dir
-    return get_cachedb_dir()
+_resolve_cachedb_dir = get_cachedb_dir
 
 
 _JSON_RECOVERING_MEMO: Dict[str, Tuple[tuple, dict]] = {}
 
 
 def _read_json_recovering(path: str) -> Optional[dict]:
-    from state_io import read_json_dict_cached
     return read_json_dict_cached(path, _JSON_RECOVERING_MEMO, max_entries=32)
 
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     try:
-        from cachepaths import cache_symbol_variants
         cachedb_dir = _resolve_cachedb_dir()
         p = os.path.join(cachedb_dir, "cache_long_trend.json")
         data = _read_json_recovering(p)
@@ -1271,7 +1265,6 @@ def _read_cached_price_history(
     history: List[Tuple[float, float]] = []
 
     # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
-    from cachepaths import cache_symbol_variants
     su_base = _normalize_base_asset(su)
     cand_symbols = cache_symbol_variants(symbol, include_base=True)
 
@@ -1413,8 +1406,6 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import GUARD_REGISTRY, is_category_bypassed, make_intel_cache_key, normalize_bypassed_guards
-    from intelligence.macro_sentiment_ssot import resolve_order_notional
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -1609,7 +1600,6 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    from guard_hierarchy import GUARD_REGISTRY, is_category_bypassed, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
@@ -1851,7 +1841,6 @@ def profit_guard(
       and Geopolitical shock shield only on mathematically cleared orders when
       evaluate_intelligence=True.
     """
-    from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True

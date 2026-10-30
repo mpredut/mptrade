@@ -19,6 +19,8 @@ import re
 from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
+from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
+from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
     clean_scale as _clean_scale,
@@ -73,8 +75,6 @@ def evaluate_high_stake_order_guard(
     notify_on_eval: bool = True,
 ) -> Tuple[bool, str, float]:
     """SSOT evaluator for HighStakeGuard (GLLM1) across both initial and cached-context re-evaluations."""
-    from guard_hierarchy import GUARD_REGISTRY
-    from intelligence.internal.guards.guard_decision import BrakeAction
     from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
     from order_guard import is_intelligence_master_off, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
@@ -222,7 +222,6 @@ def check_geopolitical_order_guards(
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
 
-    from intelligence.internal.guards.guard_decision import BrakeAction
     from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
     m = _load_margins() if margins is None else margins
 
@@ -306,7 +305,6 @@ def check_llm_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    from guard_hierarchy import GUARD_REGISTRY, make_intel_cache_key, normalize_bypassed_guards
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
