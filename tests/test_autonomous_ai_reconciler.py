@@ -6175,6 +6175,68 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert b_news[0]["is_high_severity"] is False
     assert b_news[0]["keywords"] == []
 
+    # Corporate M&A 'strikes ... deal' idiom must not discover dynamic crisis bigrams
+    corp_discovered = discover_dynamic_terms_from_headlines(
+        [
+            {"title": "DoorDash strikes $17 billion deal for US rival Instacart in mega grocery delivery bet - Reuters", "source": "Reuters"},
+            {"title": "DoorDash strikes $17 billion deal for rival Instacart in grocery delivery - CNBC", "source": "CNBC"},
+        ],
+        persist=False,
+    )
+    assert corp_discovered == ()
+
+    # 7. enrich_cross_venue_trends keeps adapt_reentry_pct/adapt_dca_pct aligned with fresh vol_1h_pct
+    from intelligence.sentiment.guards.high_stake_guard import (
+        enrich_cross_venue_trends,
+        harvest_tradable_positions_and_orders,
+    )
+    pt_hype = {"HYPEUSDC": {"price": 91.50, "vol_1h_pct": 1.62}}
+    enrich_cross_venue_trends(
+        pt_hype,
+        trends_data={"items": {"HYPEUSDC": {"vol_1h_pct": 1.62}}},
+        kalman_data={"HYPE": {"kalman_vel": 0.08, "kalman_vel_std": 0.06, "kalman_trend": 1, "vol_1h_pct": 0.316, "adapt_reentry_pct": 0.632, "adapt_dca_pct": 0.316}},
+        long_items={},
+        priceanalysis_data={},
+        t_trend_map={},
+        watcher_price_items={},
+    )
+    assert pt_hype["HYPEUSDC"]["vol_1h_pct"] == 1.62
+    assert pt_hype["HYPEUSDC"]["adapt_reentry_pct"] == 3.24
+    assert pt_hype["HYPEUSDC"]["adapt_dca_pct"] == 1.62
+
+    # 8. harvest_tradable_positions_and_orders falls back to cached venue_balances_state.json when API fails
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "venue_balances_state.json").write_text(
+        json.dumps({"binance:BTC": 0.0085, "binance:USDC": 1450.25}),
+        encoding="utf-8",
+    )
+
+    class _DownProv:
+        def free_balance(self, _asset):
+            return None
+
+    class _DownInst:
+        symbol = "BTCUSDC"
+        provider_name = "binance"
+        base = "BTC"
+        quote = "USDC"
+        params = {}
+        _provider = _DownProv()
+
+    pos_fb, _, cash_fb, _ = harvest_tradable_positions_and_orders(
+        {"BTCUSDC": _DownInst()},
+        {"BTCUSDC": {"price": 77500.0}},
+        {},
+        {},
+        cache_dir=str(tmp_path),
+    )
+    assert len(pos_fb) == 1
+    assert pos_fb[0]["free_base"] == 0.0085
+    assert pos_fb[0]["free_quote"] == 1450.25
+    assert cash_fb["binance:USDC"]["free"] == 1450.25
+
+
 
 
 

@@ -797,6 +797,13 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "associated press", "was heartbroken", "leave everything", "united states",
     "middle east", "according pentagon", "pentagon estimate", "cuba wins",
     "shocks however", "profit thanks", "thanks gold", "insane plan", "focus live",
+    "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
+    "gillibrand presses", "civilian schools",
+})
+
+_NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "deal", "deals", "agreement", "partnership", "pact", "contract", "bargain",
+    "bet", "chord", "balance", "gold", "rich", "pose", "lightning",
 })
 
 _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
@@ -1028,10 +1035,16 @@ def discover_dynamic_terms_from_headlines(
             continue
         title = _strip_headline_publisher_suffix(raw_title)
         norm_title = re.sub(r"\s+", " ", title.lower()).strip()
+        raw_words = set(re.findall(r"[a-zA-Z]{3,}", norm_title))
+        eff_stems = (
+            crisis_stems - {"strike"}
+            if (raw_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS)
+            else crisis_stems
+        )
         tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", norm_title) if tok not in stopwords]
         if len(tokens) < 2:
             continue
-        stem_flags = [_token_matches_crisis_stem(tok, crisis_stems) for tok in tokens]
+        stem_flags = [_token_matches_crisis_stem(tok, eff_stems) for tok in tokens]
         if not any(stem_flags):
             continue
         src_key = str(source or "unknown").strip().lower()

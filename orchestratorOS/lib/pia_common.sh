@@ -45,12 +45,21 @@ pia_with_secret_file() {  # $1=secret_content $2..=command (secret file path app
   return $rc
 }
 
+pia_login_from_env() {
+  [ -n "${PIA_USER:-}" ] && [ -n "${PIA_PASS:-}" ] || return 1
+  echo "Attempting PIA login using .env credentials..."
+  pia_with_secret_file "$(printf "%s\n%s" "$PIA_USER" "$PIA_PASS")" pia login
+}
+
 pia_register_dip_if_needed() {  # $1=token $2=region_prefix $3=label
   local token="${1:-}" prefix="$2" label="$3"
   [ -n "$token" ] || return 0
   if ! pia get regions 2>/dev/null | grep -q "^${prefix}"; then
     echo "Registering ${label} Dedicated IP from .env..."
-    if pia_with_secret_file "$token" pia dedicatedip add; then
+    if ! pia_with_secret_file "$token" pia dedicatedip add; then
+      pia_login_from_env || true
+    fi
+    if pia get regions 2>/dev/null | grep -q "^${prefix}" || pia_with_secret_file "$token" pia dedicatedip add; then
       echo "Successfully added ${label} Dedicated IP token from .env"
     else
       echo "warning: Failed to add ${label} Dedicated IP token from .env" >&2

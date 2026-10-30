@@ -79,7 +79,13 @@ connect_to_region() {
     echo "Attempting connection to $desc ($target_region)..."
     pia set region "$target_region" >/dev/null 2>&1 || return 1
     pia set requestportforward true >/dev/null 2>&1 || true
-    pia connect >/dev/null 2>&1 || return 1
+    if ! pia connect >/dev/null 2>&1; then
+        echo "pia connect failed on $target_region (possibly logged out); re-authenticating..."
+        pia_login_from_env || true
+        ensure_dedicated_ips_registered
+        pia set region "$target_region" >/dev/null 2>&1 || return 1
+        pia connect >/dev/null 2>&1 || return 1
+    fi
 
     local conn_ok=0
     for attempt in $(seq 1 12); do
@@ -213,9 +219,8 @@ pia set allowlan true || true
 pia_ensure_lan_rule
 [ "$(pia get protocol 2>/dev/null | tr -d '\r')" = "wireguard" ] || pia set protocol wireguard || exit 1
 
-if ! pia get connectionstate 2>/dev/null | grep -Eq '^(Connected|Connecting|Disconnected|Reconnecting)$'; then
-    echo "Attempting PIA login using .env credentials..."
-    pia_with_secret_file "$(printf "%s\n%s" "$PIA_USER" "$PIA_PASS")" pia login || true
+if [ "$(pia get connectionstate 2>/dev/null | tr -d '\r')" != "Connected" ]; then
+    pia_login_from_env || true
 fi
 
 ensure_dedicated_ips_registered

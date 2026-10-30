@@ -31,6 +31,7 @@ from cachepaths import (
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
@@ -1961,6 +1962,7 @@ def harvest_tradable_positions_and_orders(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
+    cache_dir: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     tradable_positions: List[Dict[str, Any]] = []
@@ -1968,6 +1970,19 @@ def harvest_tradable_positions_and_orders(
     venue_quote_cash: Dict[str, Dict[str, Any]] = {}
     inst_by_sym: Dict[str, Any] = {}
     balance_memo: Dict[tuple[str, str], Optional[float]] = {}
+    bcache_path = (
+        str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json")))
+        if cache_dir
+        else None
+    )
+    cached_bals: Dict[str, Any] = (
+        read_json_cached(bcache_path)
+        if bcache_path and os.path.exists(bcache_path)
+        else {}
+    ) or {}
+    if not isinstance(cached_bals, dict):
+        cached_bals = {}
+    updated_bals: Dict[str, float] = {}
 
     def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
         if not asset:
@@ -1984,6 +1999,11 @@ def harvest_tradable_positions_and_orders(
                 val_f = safe_nonneg_float(free_fn(asset), default=None)
             except Exception:
                 val_f = None
+        bkey = f"{v_name}:{asset.upper()}"
+        if val_f is not None:
+            updated_bals[bkey] = round(val_f, 8)
+        elif bkey in cached_bals:
+            val_f = safe_nonneg_float(cached_bals.get(bkey), default=None)
         balance_memo[key] = val_f
         return val_f
 
@@ -2132,6 +2152,19 @@ def harvest_tradable_positions_and_orders(
                 except Exception:
                     pass
 
+    if (
+        bcache_path
+        and updated_bals
+        and ("PYTEST_CURRENT_TEST" not in os.environ or os.path.exists(bcache_path))
+    ):
+        try:
+            merged_bals = {**cached_bals, **updated_bals}
+            if merged_bals != cached_bals:
+                os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
+                save_json_state(bcache_path, merged_bals, indent=2)
+        except Exception:
+            pass
+
     return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym
 
 
@@ -2185,18 +2218,40 @@ def enrich_cross_venue_trends(
                             entry[k_inh] = sib[k_inh]
                     break
 
+        if entry.get("vol_1h_pct") is None and isinstance(trends_items_map, dict):
+            for ck in cand_keys:
+                t_vol_info = casefold_get(trends_items_map, ck)
+                if isinstance(t_vol_info, dict) and t_vol_info.get("vol_1h_pct") is not None:
+                    entry["vol_1h_pct"] = t_vol_info.get("vol_1h_pct")
+                    if entry.get("adapt_reentry_pct") is None and t_vol_info.get("adapt_reentry_pct") is not None:
+                        entry["adapt_reentry_pct"] = t_vol_info.get("adapt_reentry_pct")
+                    if entry.get("adapt_dca_pct") is None and t_vol_info.get("adapt_dca_pct") is not None:
+                        entry["adapt_dca_pct"] = t_vol_info.get("adapt_dca_pct")
+                    break
+
         if isinstance(kalman_data, dict):
             k_sym = _first_variant_dict(kalman_data, cand_keys)
             if isinstance(k_sym, dict):
                 entry["kalman_vel"] = k_sym.get("kalman_vel")
                 entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
                 entry["kalman_trend"] = k_sym.get("kalman_trend")
-                if entry.get("vol_1h_pct") is None and k_sym.get("vol_1h_pct") is not None:
-                    entry["vol_1h_pct"] = k_sym.get("vol_1h_pct")
-                if k_sym.get("adapt_reentry_pct") is not None:
+                cur_vol = safe_pos_float(entry.get("vol_1h_pct"), default=None)
+                k_vol = safe_pos_float(k_sym.get("vol_1h_pct"), default=None)
+                vol_matches_kalman = cur_vol is None or (k_vol is not None and abs(cur_vol - k_vol) <= 0.05)
+                if cur_vol is None and k_vol is not None:
+                    entry["vol_1h_pct"] = k_vol
+                if vol_matches_kalman and entry.get("adapt_reentry_pct") is None and k_sym.get("adapt_reentry_pct") is not None:
                     entry["adapt_reentry_pct"] = k_sym.get("adapt_reentry_pct")
-                if k_sym.get("adapt_dca_pct") is not None:
+                if vol_matches_kalman and entry.get("adapt_dca_pct") is None and k_sym.get("adapt_dca_pct") is not None:
                     entry["adapt_dca_pct"] = k_sym.get("adapt_dca_pct")
+
+        eff_vol = safe_pos_float(entry.get("vol_1h_pct"), default=None)
+        if eff_vol is not None and (entry.get("adapt_reentry_pct") is None or entry.get("adapt_dca_pct") is None):
+            calc_re, calc_dca = adaptive_thresholds(eff_vol)
+            if entry.get("adapt_reentry_pct") is None and calc_re is not None:
+                entry["adapt_reentry_pct"] = calc_re
+            if entry.get("adapt_dca_pct") is None and calc_dca is not None:
+                entry["adapt_dca_pct"] = calc_dca
         lt_obj: Optional[Dict[str, Any]] = None
         if isinstance(long_items, dict):
             for ck in cand_keys:
@@ -3409,6 +3464,7 @@ def populate_market_and_portfolio_snapshot(
                 trailing_by_venue,
                 known_ai_order_ids=known_ai_oids,
                 gateway_max_usd=gw_max_usd,
+                cache_dir=cache_dir,
             )
         )
 
