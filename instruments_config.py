@@ -165,7 +165,8 @@ def load_tradable_instruments(
 
         existing_kraken_syms = _existing_syms("kraken")
         for pair, base, quote in discover_kraken_cache_pairs(ws_dir):
-            if pair not in existing_kraken_syms and _bind_inst(f"KRAKEN_{base}", "kraken", pair, base, quote):
+            inst_key = f"KRAKEN_{base}" if f"KRAKEN_{base}" not in active_map else f"KRAKEN_{pair}"
+            if pair not in existing_kraken_syms and _bind_inst(inst_key, "kraken", pair, base, quote):
                 existing_kraken_syms.add(pair)
 
         existing_hl_syms = _existing_syms("hyperliquid")
@@ -207,11 +208,18 @@ def resolve_tradable_instrument(
     if instruments_map is None:
         instruments_map = load_tradable_instruments(workspace_dir)
 
+    raw_sym_u = str(symbol or "").strip().upper()
     sym_norm = clean_symbol_key(symbol)
-    if not sym_norm or isinstance(venue, bool):
+    if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(("X.T", ".T", "X.T/USD", "X.TUSD")):
         return None
     venue_norm = normalize_venue_name(venue) or None
     req_base = canonical_base_asset(symbol)
+    usd_quotes = ("USDC", "USDT", "USD", "FDUSD")
+    req_quotes = compatible_quote_suffixes(raw_sym_u, default_usd=usd_quotes)
+    variant_norms = {
+        clean_symbol_key(v)
+        for v in cache_symbol_variants(raw_sym_u, include_original=True, include_base=False, quotes=req_quotes)
+    }
 
     candidates = [
         inst for inst in instruments_map.values()
@@ -222,12 +230,22 @@ def resolve_tradable_instrument(
     for inst in candidates:
         if clean_symbol_key(inst.symbol) == sym_norm:
             return inst
+    for inst in candidates:
+        if clean_symbol_key(inst.symbol) in variant_norms:
+            return inst
     if req_base:
         for inst in candidates:
-            raw_b = getattr(inst, "base", None) or getattr(inst, "symbol", "")
-            if canonical_base_asset(str(raw_b)) == req_base:
+            inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+            if compatible_quote_suffixes(inst_sym_u, getattr(inst, "quote", None), default_usd=usd_quotes) != req_quotes:
+                continue
+            raw_b = getattr(inst, "base", None)
+            b_str = raw_b if isinstance(raw_b, str) and raw_b.strip() else inst_sym_u
+            if canonical_base_asset(b_str) == req_base:
                 return inst
     for inst in candidates:
+        inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+        if compatible_quote_suffixes(inst_sym_u, getattr(inst, "quote", None), default_usd=usd_quotes) != req_quotes:
+            continue
         inst_sym_n = clean_symbol_key(inst.symbol)
         if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
             return inst

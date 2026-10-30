@@ -1484,6 +1484,25 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[st
     return fleet_processes, system_and_vpn
 
 
+def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
+    if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL"):
+        return True
+    sym_u = str(dec.get("symbol") or "").strip().upper()
+    if sym_u.endswith(("X.T", ".T", "X.T/USD", "X.TUSD")):
+        return False
+    v_norm = normalize_venue_name(dec.get("venue"))
+    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
+    if scope == "equities":
+        if v_norm and v_norm != "t212":
+            return False
+        if sym_u.endswith(("USDC", "USDT", "FDUSD", "BUSD", "EUR")):
+            return False
+        return v_norm == "t212" or is_eq_sym
+    if scope == "crypto":
+        return v_norm != "t212" and not is_eq_sym
+    return True
+
+
 def submit_supervisor_trading_decisions(
     plan: Dict[str, Any],
     spec: Any,
@@ -1500,19 +1519,9 @@ def submit_supervisor_trading_decisions(
     if not getattr(spec, "can_trade", False):
         return [], {}, [], None, False
     decisions_list = normalize_trading_decisions(plan)
-    scope = getattr(spec, "asset_scope", "all")
-    if scope in ("equities", "crypto") and decisions_list:
-        want_t212 = scope == "equities"
-        decisions_list = [
-            d
-            for d in decisions_list
-            if str(d.get("decision") or "HOLD").upper() not in ("BUY", "SELL")
-            or (
-                normalize_venue_name(d.get("venue")) == "t212"
-                or str(d.get("symbol") or "").strip().upper().endswith(("_EQ", "_US_EQ"))
-            )
-            == want_t212
-        ]
+    scope = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
+    if decisions_list:
+        decisions_list = [d for d in decisions_list if _is_decision_in_scope(d, scope)]
     market_decision = decisions_list[0] if decisions_list else {}
     intents_emitted: List[Dict[str, Any]] = []
     actionable_decs = [
@@ -1520,7 +1529,6 @@ def submit_supervisor_trading_decisions(
         if str(d.get("decision") or "HOLD").upper() in ("BUY", "SELL")
     ]
     submit_decs = actionable_decs if actionable_decs else decisions_list[:1]
-    scope = getattr(spec, "asset_scope", "all")
     effective_max_mode = "shadow" if (scope == "equities" and not is_rth_open_fn(now_ts)) else mode
     any_executed = False
     for dec in submit_decs:
@@ -1540,7 +1548,9 @@ def build_sensor_health_summary(sensors: Any) -> Dict[str, Any]:
         "market_breadth_present": getattr(sensors, "market_breadth", None) is not None,
         "sentiment_advisor_present": getattr(sensors, "sentiment_advisor", None) is not None,
         "geopolitical_threat_present": getattr(sensors, "geopolitical_threat", None) is not None,
+        "macro_benchmarks_present": getattr(sensors, "macro_benchmarks", None) is not None,
         "prices_and_trends_count": len(getattr(sensors, "prices_and_trends", None) or {}),
+        "microstructure_count": len(getattr(sensors, "microstructure", None) or {}),
         "active_heartbeats_count": len(getattr(sensors, "active_heartbeats", None) or {}),
     }
 
@@ -1595,30 +1605,47 @@ def summarize_fleet_sensor_status(
     read_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """Load and summarize real-time risk guards and telemetry files for FleetHealthMonitor."""
+    from intelligence.macro_sentiment_ssot import (
+        get_cache_filenames,
+        normalize_market_bias,
+        normalize_recommended_action,
+        normalize_risk_level,
+        normalize_threat_level,
+    )
+
     _rj = read_json_fn or read_json_recovering
     sensors: Dict[str, Any] = {}
 
     def _read(*fnames: str) -> Optional[Dict[str, Any]]:
+        seen: Set[str] = set()
         for fname in fnames:
+            if not fname or fname in seen:
+                continue
+            seen.add(fname)
             data = _rj(os.path.join(cachedb_dir, fname))
             if isinstance(data, dict) and data:
                 return data
         return None
 
-    geo = _read("geopolitical_eval.json")
+    geo = _read(*get_cache_filenames("geopolitical_eval_files"), "geopolitical_eval.json")
     if geo:
         sensors["geopolitical_threat"] = {
-            "threat_level": str(geo.get("threat_level") or "NORMAL"),
+            "threat_level": normalize_threat_level(geo.get("threat_level")),
             "risk_score": safe_float(geo.get("risk_score"), default=0.0),
             "summary": str(geo.get("summary") or ""),
         }
 
-    macro = _read("sentiment_eval.json", "sentiment_state.json")
+    macro = _read(
+        *get_cache_filenames("sentiment_eval_files"),
+        "sentiment_eval.json",
+        "sentiment_state.json",
+        "macro_sentiment_state.json",
+    )
     if macro:
         sensors["sentiment_advisor"] = {
-            "market_bias": str(macro.get("market_bias") or "NEUTRAL"),
-            "risk_level": str(macro.get("risk_level") or "MODERATE"),
-            "action": str(macro.get("recommended_action") or "HOLD"),
+            "market_bias": normalize_market_bias(macro.get("market_bias")),
+            "risk_level": normalize_risk_level(macro.get("risk_level")),
+            "action": normalize_recommended_action(macro.get("recommended_action") or macro.get("action")),
         }
 
     sup = _read(
@@ -1636,11 +1663,11 @@ def summarize_fleet_sensor_status(
             "summary": str(sup.get("summary") or ""),
         }
 
-    fg = _read("fear_greed_collect.json", "fear_greed_state.json")
+    fg = _read(*get_cache_filenames("fear_greed_files"), "fear_greed_collect.json", "fear_greed_state.json")
     if fg:
         sensors["fear_greed"] = safe_float(fg.get("value"), default=None)
 
-    mb = _read("market_breadth_collect.json", "market_breadth_state.json")
+    mb = _read(*get_cache_filenames("market_breadth_files"), "market_breadth_collect.json", "market_breadth_state.json")
     if mb:
         sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
 

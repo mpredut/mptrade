@@ -4837,3 +4837,103 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
     assert "bid_wall=81500.0 ($200000.0, dist=-0.61%)" in joined_3b
     assert "ask_wall=82500.0 ($250000.0, dist=+0.61%)" in joined_3b
 
+
+def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from instruments_config import resolve_tradable_instrument
+    from orchestratorOS.lib.technical_repair_ssot import (
+        build_sensor_health_summary,
+        submit_supervisor_trading_decisions,
+        summarize_fleet_sensor_status,
+    )
+
+    # 1. submit_supervisor_trading_decisions blocks cross-scope and read-only Kraken xStocks
+    gw = MagicMock()
+    gw.submit.side_effect = lambda d, **kw: {"status": "EXECUTED", "symbol": d.get("symbol"), "venue": d.get("venue")}
+
+    eq_spec = SimpleNamespace(can_trade=True, asset_scope="equities")
+    decs_eq, _, emitted_eq, _, _ = submit_supervisor_trading_decisions(
+        {
+            "market_trading_decisions": [
+                {"decision": "BUY", "venue": "binance", "symbol": "NVDA_US_EQ", "confidence": 0.9, "suggested_notional_usd": 100.0},
+                {"decision": "BUY", "venue": "t212", "symbol": "BTCUSDC", "confidence": 0.9, "suggested_notional_usd": 100.0},
+                {"decision": "BUY", "venue": "t212", "symbol": "NVDA_US_EQ", "confidence": 0.9, "suggested_notional_usd": 100.0},
+            ]
+        },
+        eq_spec,
+        topic_key="auto_sharetrade_executor",
+        mode="enforce",
+        now_ts=1793300000.0,
+        intent_gateway=gw,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert len(decs_eq) == 1
+    assert decs_eq[0]["symbol"] == "NVDA_US_EQ"
+    assert decs_eq[0]["venue"] == "t212"
+    assert len(emitted_eq) == 1
+
+    crypto_spec = SimpleNamespace(can_trade=True, asset_scope="crypto")
+    decs_cr, _, emitted_cr, _, _ = submit_supervisor_trading_decisions(
+        {
+            "market_trading_decisions": [
+                {"decision": "SELL", "venue": "kraken", "symbol": "SPCXx.T", "confidence": 0.95, "suggested_notional_usd": 50.0},
+                {"decision": "BUY", "venue": "t212", "symbol": "NVDA", "confidence": 0.95, "suggested_notional_usd": 50.0},
+                {"decision": "BUY", "venue": "kraken", "symbol": "XBTUSD", "confidence": 0.95, "suggested_notional_usd": 150.0},
+            ]
+        },
+        crypto_spec,
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=1793300000.0,
+        intent_gateway=gw,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert len(decs_cr) == 1
+    assert decs_cr[0]["symbol"] == "XBTUSD"
+    assert len(emitted_cr) == 1
+
+    # 2. resolve_tradable_instrument isolates USD vs EUR quote families and rejects read-only Kraken xStocks
+    usd_inst = MagicMock(symbol="XBTUSD", provider_name="kraken", base="XBT", quote="USD", enabled=True)
+    eur_inst = MagicMock(symbol="XBTEUR", provider_name="kraken", base="XBT", quote="EUR", enabled=True)
+    inst_map = {"KRAKEN_XBT": usd_inst, "KRAKEN_XBTEUR": eur_inst}
+
+    assert resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map=inst_map) is eur_inst
+    assert resolve_tradable_instrument("BTCUSDC", venue="kraken", instruments_map=inst_map) is usd_inst
+    assert resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map={"KRAKEN_XBT": usd_inst}) is None
+    assert resolve_tradable_instrument("SPCXx.T", venue="kraken", instruments_map=inst_map) is None
+
+    # 3. summarize_fleet_sensor_status normalizes taxonomy aliases & build_sensor_health_summary reports macro/micro counts
+    sensors_status = summarize_fleet_sensor_status(
+        str(tmp_path),
+        read_json_fn=lambda p: (
+            {"threat_level": "CRITICAL", "risk_score": 0.9, "summary": "shock"}
+            if p.endswith("geopolitical_eval.json")
+            else (
+                {"market_bias": "BULL", "risk_level": "ELEVATED", "action": "BUY"}
+                if p.endswith("macro_sentiment_state.json")
+                else None
+            )
+        ),
+    )
+    assert sensors_status["geopolitical_threat"]["threat_level"] == "CRITICAL_SHOCK"
+    assert sensors_status["sentiment_advisor"]["market_bias"] == "BULLISH"
+    assert sensors_status["sentiment_advisor"]["risk_level"] == "HIGH"
+    assert sensors_status["sentiment_advisor"]["action"] == "ACCUMULATE"
+
+    sh = build_sensor_health_summary(
+        SimpleNamespace(
+            fear_greed={"value": 50},
+            market_breadth=None,
+            sentiment_advisor={},
+            geopolitical_threat={},
+            macro_benchmarks={"SPY": {}},
+            prices_and_trends={"BTCUSDC": {}},
+            microstructure={"BTCUSDC": {}, "TAOUSDC": {}},
+            active_heartbeats={"b1": {}},
+        )
+    )
+    assert sh["macro_benchmarks_present"] is True
+    assert sh["microstructure_count"] == 2
+
+
