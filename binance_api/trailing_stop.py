@@ -55,6 +55,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     extract_rebuy_anchors,
     extract_short_trend_slope,
     reconcile_trailing_pending_order,
+    resolve_rebuy_bypass_guards,
     should_sell,
     sync_trailing_retry_count,
 )
@@ -463,18 +464,19 @@ class TrailingStop:
         return result
 
     def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
-        # Re-buy runs with force=True for reliable fill on bounce, but guards against
-        # falling knife cascades (liquidation cascades, taker dumps) by bypassing only
-        # the historical math reference while keeping microstructure/AI guards active.
+        # Re-buy runs with force=True for reliable fill on bounce. When re-entering
+        # below sell_price, all guards are bypassed; at or above sell_price, only
+        # the historical math reference is bypassed while microstructure/AI guards remain active.
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         price_f = safe_nonneg_float(price, 0.0)
         anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_f)
+        bypass_guards = resolve_rebuy_bypass_guards(price_f, sell_price_val)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, price,
             anchor=anchor_val,
             sell_price=sell_price_val)
         result = self._submit_lifecycle_order(
-            intent, persist, pair, "BUY", price, qty, bypass_guards={"math_reference"})
+            intent, persist, pair, "BUY", price, qty, bypass_guards=bypass_guards)
         if result.outcome == "refused":
             self.log(
                 f"  🟢 [TRAIL] RE-BUY REFUSED {pair} {qty} @ ~{price_f:.4f} "

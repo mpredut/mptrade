@@ -67,6 +67,22 @@ def extract_rebuy_anchors(rb: object, fallback_price: object) -> tuple[float, fl
     return low_anchor, sell_price
 
 
+def resolve_rebuy_bypass_guards(price: object, sell_price: object) -> set[str]:
+    """Return guard bypass set for trailing re-buy based on entry price vs sell price.
+
+    When re-entering below the trailing stop sell price (0 < price < sell_price),
+    bypass all guards ({"all"}) to lock in the lower re-entry price without guard
+    vetoes or quantity downscaling. When re-entering at or above sell_price (or when
+    sell_price is unknown), bypass only {"math_reference"} so intelligence and
+    microstructure guards are consulted.
+    """
+    price_f = safe_pos_float(price, default=None)
+    sell_f = safe_pos_float(sell_price, default=None)
+    if price_f is not None and sell_f is not None and price_f < sell_f:
+        return {"all"}
+    return {"math_reference"}
+
+
 def sync_trailing_retry_count(retry_counts: dict, pair: str, action: str, persist) -> None:
     """Restore in-memory retry count from persisted state when higher."""
     st = getattr(persist, "st", None)

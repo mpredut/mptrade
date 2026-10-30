@@ -233,6 +233,21 @@ class TestRebuyGuardsKraken(Base):
             self.assertAlmostEqual(c.orders[0]["volume"], 5.0)
             self.assertAlmostEqual(res.intent.get("requested_qty"), 5.0)
 
+    def test_rebuy_below_sell_price_bypasses_all_guards(self):
+        from unittest.mock import patch
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        rb_state = {"qty": 10.0, "sell_price": 45.0, "low": 40.0}
+
+        with patch("order_guard.check_intelligence_guards",
+                   return_value=(False, "would_block_if_consulted", 0.0)) as mock_guard:
+            res = ts.execute_rebuy("HYPE", "HYPE", "HYPEUSD", 10.0, 42.0, rb_state, persist=lambda _: None)
+            mock_guard.assert_not_called()
+            self.assertEqual(len(c.orders), 1)
+            self.assertEqual(c.orders[0]["side"], "buy")
+            self.assertAlmostEqual(c.orders[0]["volume"], 10.0)
+            self.assertEqual(res.outcome, "active")
+
 
     def test_multi_asset_trailing_kraken(self):
         """Verify trailing protection operates on multiple configured assets (e.g. TAO, ADA)."""

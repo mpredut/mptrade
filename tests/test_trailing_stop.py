@@ -388,6 +388,18 @@ class TestPerCoinRebuy(Base):
                 fake_mgr.get_fresh_snapshot.return_value = {"gradient_recent": -0.25}
                 self.assertEqual(ts._trend_value("TAOUSDC"), -0.25)
 
+        with self.subTest(msg="rebuy_below_sell_price_bypasses_all_guards_and_above_consults_guards"):
+            self.tearDown(); self.setUp()
+            ts = self.ts(FakeApi(100.0))
+            rb_state = {"qty": 1.0, "low": 90.0, "sell_price": 100.0}
+            ts.execute_rebuy("TAOUSDC", "TAO", "TAOUSDC", 1.0, 95.0, rb_state, persist=lambda _: None)
+            ts.execute_rebuy("TAOUSDC", "TAO", "TAOUSDC", 1.0, 100.0, rb_state, persist=lambda _: None)
+            ts.execute_rebuy("TAOUSDC", "TAO", "TAOUSDC", 1.0, 105.0, rb_state, persist=lambda _: None)
+            self.assertEqual(len(self.po.orders), 3)
+            self.assertEqual(self.po.orders[0]["bypass_guards"], {"all"})
+            self.assertEqual(self.po.orders[1]["bypass_guards"], {"math_reference"})
+            self.assertEqual(self.po.orders[2]["bypass_guards"], {"math_reference"})
+
 
 class TestPerCoin(Base):
     def test_per_coin_configurations(self):

@@ -53,6 +53,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     extract_short_trend_slope,
     extract_trailing_intent_action_asset,
     reconcile_trailing_pending_order,
+    resolve_rebuy_bypass_guards,
     should_sell,
     sync_trailing_retry_count,
     vwap_or_fallback,
@@ -415,13 +416,14 @@ class KrakenTrailing:
         limit = price * 1.005
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         anchor_val, sell_price_val = extract_rebuy_anchors(rb, price)
+        bypass_guards = resolve_rebuy_bypass_guards(price, sell_price_val)
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
             anchor=anchor_val,
             sell_price=sell_price_val)
         result = self._submit_lifecycle_order(
             intent, persist, pair, "BUY", qty, limit,
-            kind="TRAIL_REBUY", bypass_guards={"math_reference"})
+            kind="TRAIL_REBUY", bypass_guards=bypass_guards)
         if result.outcome == "refused":
             self.log(
                 f"  🟢 [TRAIL-K] RE-BUY REFUSED {qty} {asset} @ ~{limit:.4f} "
