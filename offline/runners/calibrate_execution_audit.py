@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text  # noqa: E402
 from offline.backtests.comparison import format_number as _fmt  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
@@ -136,7 +137,6 @@ def main() -> int:
     output = args.output.expanduser().resolve() if args.output else None
     markdown = args.markdown.expanduser().resolve() if args.markdown else None
     if output or markdown:
-        from state_io import atomic_write_json, atomic_write_text
         if output:
             atomic_write_json(output, report, indent=2, ensure_ascii=False)
         if markdown:

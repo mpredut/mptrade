@@ -28,7 +28,7 @@ from offline.backtests.hype_candidates import (  # noqa: E402
     financial_priority_candidates,
 )
 from offline.backtests.promotion import evaluate_dual_promotion  # noqa: E402
-from state_io import read_json_file as _load_json  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, read_json_file as _load_json  # noqa: E402
 
 
 DEFAULT_BASELINE = (
@@ -187,7 +187,6 @@ def main() -> int:
         args.markdown.expanduser().resolve() if args.markdown else
         output.with_suffix(".md")
     )
-    from state_io import atomic_write_json, atomic_write_text
     atomic_write_json(output, report, indent=2, ensure_ascii=False)
     atomic_write_text(markdown, markdown_report(report))
 

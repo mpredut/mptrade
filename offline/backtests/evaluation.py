@@ -12,9 +12,12 @@ import argparse
 from collections.abc import Callable, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
+import datetime as dt
+import importlib.util
 import os
 from pathlib import Path
 from statistics import fmean
+import sys
 from typing import Any
 
 from offline.backtests.execution import ExecutionModel
@@ -105,8 +108,6 @@ def automatic_window_sizes(sample_count: int) -> tuple[int, int, int, int]:
 
 
 def iso_utc(timestamp: int) -> str:
-    import datetime as dt
-
     return dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc).isoformat()
 
 
@@ -303,9 +304,6 @@ def load_venue_module(
     reload: bool = False,
 ):
     """Load a module from a venue directory (e.g. 'hyperliquid', '212trading') while preserving sys.path."""
-    import importlib.util
-    import sys
-
     root = Path(__file__).resolve().parents[2]
     venue_dir = (root / subdir).resolve()
     file_path = venue_dir / (filename if filename.endswith(".py") else f"{filename}.py")

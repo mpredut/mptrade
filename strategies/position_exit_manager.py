@@ -32,6 +32,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from .spot_rules import check_fast_profit_reversal
 
 try:
     from intelligence.internal.state.volatility import resolve_cached_volatility_1h, vol_ratio_to_pct
@@ -1198,7 +1199,6 @@ class PositionExitManager:
             # Optional Advanced Guard: Fast profit reversal
             if self.config.fast_profit_guard_enabled:
                 try:
-                    from strategies.spot_rules import check_fast_profit_reversal
                     fp_triggered, fp_gain, fp_drop = check_fast_profit_reversal(
                         current_price=current_price,
                         avg_cost=buy_price,
@@ -1343,13 +1343,7 @@ class PositionExitManager:
         last_sell = last_sell_f
         current_price = float(current_price)
 
-        def _valid_px(val, fallback: float) -> float:
-            return safe_pos_float(val, default=fallback)
-
-        def _valid_ts(val) -> Optional[float]:
-            return safe_pos_float(val, default=None)
-
-        sell_time_s = _valid_ts(snapshot.last_sell_time_s)
+        sell_time_s = safe_pos_float(snapshot.last_sell_time_s, default=None)
 
         # Case 1: TTL barrier expiration
         if self.config.reentry_ttl_hours > 0 and sell_time_s is not None:
@@ -1369,16 +1363,16 @@ class PositionExitManager:
             self.reentry_state.pop(symbol, None)
             existing_state = None
         if existing_state and sell_time_s is not None:
-            st_sell_time = _valid_ts(existing_state.get("sell_time"))
-            st_started = _valid_ts(existing_state.get("started_at"))
+            st_sell_time = safe_pos_float(existing_state.get("sell_time"), default=None)
+            st_started = safe_pos_float(existing_state.get("started_at"), default=None)
             if (
                 (st_sell_time is not None and st_sell_time != sell_time_s)
                 or (st_sell_time is None and st_started is not None and st_started < sell_time_s)
             ):
                 self.reentry_state.pop(symbol, None)
 
-        default_trough = _valid_px(snapshot.post_sell_trough, min(last_sell, current_price))
-        default_peak = _valid_px(snapshot.post_sell_peak, max(last_sell, current_price))
+        default_trough = safe_pos_float(snapshot.post_sell_trough, default=min(last_sell, current_price))
+        default_peak = safe_pos_float(snapshot.post_sell_peak, default=max(last_sell, current_price))
 
         state = self.reentry_state.setdefault(symbol, {
             "trough": default_trough,
@@ -1396,12 +1390,12 @@ class PositionExitManager:
                 "sell_time": sell_time_s,
             }
             self.reentry_state[symbol] = state
-        if sell_time_s is not None and _valid_ts(state.get("sell_time")) is None:
+        if sell_time_s is not None and safe_pos_float(state.get("sell_time"), default=None) is None:
             state["sell_time"] = sell_time_s
 
-        cur_trough = _valid_px(state.get("trough"), default_trough)
-        cur_peak = _valid_px(state.get("peak"), default_peak)
-        cur_peak_bounce = _valid_px(state.get("peak_bounce"), current_price)
+        cur_trough = safe_pos_float(state.get("trough"), default=default_trough)
+        cur_peak = safe_pos_float(state.get("peak"), default=default_peak)
+        cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=current_price)
         eff_trough = min(cur_trough, default_trough, current_price)
         if eff_trough < cur_trough or current_price < cur_trough:
             state["trough"] = eff_trough

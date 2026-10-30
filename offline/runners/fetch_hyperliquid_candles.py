@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
-import math
 from pathlib import Path
 import sys
 
@@ -19,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from botcore import exact_int, exact_pos_int
+from state_io import atomic_write_bytes, atomic_write_json
 from offline.backtests.datasets import canonical_bytes, dataset_metadata
 from offline.backtests.evaluation import load_venue_module, parse_intervals
 
@@ -173,7 +172,6 @@ def main() -> int:
         meta = dataset_metadata(records, interval_minutes=interval)
         digest = meta["sha256"]
         path = output_dir / f"{stem}_{interval}m_hlspot_{digest[:12]}.csv"
-        from state_io import atomic_write_bytes, atomic_write_json
         atomic_write_bytes(path, raw)
         manifest["datasets"][str(interval)] = {
             "file": str(path),

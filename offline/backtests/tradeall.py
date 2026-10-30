@@ -17,6 +17,7 @@ Visualisation (while running or afterwards): in another terminal,
 """
 import argparse
 import os
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -297,7 +298,7 @@ def load_ticks_cache24(symbol, start_ts, end_ts, filename=None):
     entries = []
     if isinstance(items_map, dict):
         for cand in cache_symbol_variants(symbol, include_original=True):
-            cand_val = items_map.get(cand) if cand in items_map else casefold_get(items_map, cand)
+            cand_val = casefold_get(items_map, cand)
             if isinstance(cand_val, list) and cand_val:
                 entries = cand_val
                 break
@@ -328,8 +329,7 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     # the new one. Until now, every caller had to remember to do the
     # shutil.rmtree() itself (offline/research/tradeall_trigger_gate/experiment_quality_
     # signal_v2.py did it by hand) — moved here once, for every caller.
-    import shutil as _shutil
-    _shutil.rmtree(out_dir, ignore_errors=True)
+    shutil.rmtree(out_dir, ignore_errors=True)
     os.makedirs(out_dir, exist_ok=True)
     price_path = os.path.join(out_dir, "tradeall_price_samples.log")
 

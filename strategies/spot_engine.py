@@ -12,7 +12,7 @@ import math
 import os
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as _dc_fields
 from typing import Callable
 
 from alertnotifiers import bind_notify
@@ -339,7 +339,6 @@ class StratParams:
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        from dataclasses import fields as _dc_fields
         base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
         if isinstance(defaults, dict):
             base_defaults.update(defaults)

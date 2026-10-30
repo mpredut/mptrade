@@ -19,10 +19,11 @@ if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
-from state_io import read_json_file  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
+from offline.backtests.comparison import format_number as _format  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_sha256,
     load_dataset,
@@ -218,11 +219,6 @@ def build_report(
     return report
 
 
-def _format(value, *, signed: bool = False) -> str:
-    from offline.backtests.comparison import format_number
-    return format_number(value, signed=signed)
-
-
 def markdown_report(report: dict) -> str:
     lines = [
         "# HYPE financial benchmark",
@@ -350,7 +346,6 @@ def main() -> int:
         args.markdown.expanduser().resolve() if args.markdown
         else output.with_suffix(".md")
     )
-    from state_io import atomic_write_json, atomic_write_text
     atomic_write_json(output, report, indent=2, ensure_ascii=False)
     atomic_write_text(markdown, markdown_report(report))
 

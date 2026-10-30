@@ -8,6 +8,9 @@ intrabar ambiguity resolution without network, notifications, or persistent stat
 
 from __future__ import annotations
 
+import copy
+import dataclasses
+
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
     ExecutionModel,
@@ -147,8 +150,6 @@ def _run_once(
     # Legacy replay explicitly assumes funding up to the configured cycle cap.
     # A mock or unavailable live balance must never imply unlimited buying power.
     if dca_drop_series is not None or reentry_series is not None:
-        import copy
-        import dataclasses
         params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
     client = _ReplayClient(float(params.effective_max_budget()))
     original_notify = _strat.notify
@@ -438,8 +439,6 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
         and not isinstance(getattr(params, "regime_min_samples", 20), bool)
     ):
         return params
-    import copy
-    import dataclasses
 
     if dataclasses.is_dataclass(params):
         field_names = {f.name for f in dataclasses.fields(params) if f.init}
