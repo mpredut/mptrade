@@ -19,8 +19,7 @@ class GeopoliticalShockGuard:
     """Black Swan & Shock Shield braking BUY orders during major geopolitical or energy crises."""
 
     def __init__(self, downscale_factor: float = 0.50) -> None:
-        df = clean_scale(downscale_factor, default=0.50, allow_percent=True)
-        self.downscale_factor = df if df > 0.0 else 0.50
+        self.downscale_factor = clean_scale(downscale_factor, default=0.50, allow_percent=True, min_positive=True)
 
     def check(
         self,

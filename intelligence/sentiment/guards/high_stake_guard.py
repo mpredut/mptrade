@@ -673,16 +673,17 @@ def extract_symbol_recent_fills(
 
     ordered = sorted(
         enumerate(valid),
-        key=lambda item: (safe_nonneg_ts(extract_timestamp_ms(item[1], default=None), 0.0), item[0]),
+        key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]),
     )
     chron = [o for _, o in ordered]
     last_any = chron[-1]
 
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
-        p_f = extract_order_price(o, default=0.0)
-        q_f = extract_executed_qty(o, default=0.0)
-        ts_raw = extract_timestamp_ms(o, default=None)
-        return (round(p_f, 6) if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
+        return (
+            round_opt_px(extract_order_price(o, default=None), 6),
+            extract_executed_qty(o, default=None),
+            extract_timestamp_ms(o, default=None),
+        )
 
     cost_qty = 0.0
     active_avg = 0.0
@@ -1385,40 +1386,42 @@ def resolve_venue_fee_and_limits(
             kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
             cache_dict = getattr(kc_mod, "_CACHE", None)
         if isinstance(cache_dict, dict):
-            p_meta = None
-            for kc in kr_cands:
-                cached_pair = cache_dict.get(f"pair:{kc}")
-                cand_meta = cached_pair[1] if isinstance(cached_pair, tuple) and len(cached_pair) >= 2 else None
-                if isinstance(cand_meta, dict):
-                    p_meta = cand_meta
-                    break
-            if not isinstance(p_meta, dict):
-                for kc in kr_cands:
-                    ap_hit = cache_dict.get(("AssetPairs", (("pair", kc),)))
-                    ap_res = ap_hit[1] if isinstance(ap_hit, tuple) and len(ap_hit) >= 2 else None
-                    if isinstance(ap_res, dict):
-                        p_meta = next((v for v in ap_res.values() if isinstance(v, dict)), None)
-                        if isinstance(p_meta, dict):
-                            break
-            if not isinstance(p_meta, dict):
-                ap_all = cache_dict.get(("AssetPairs", ()))
-                ap_all_res = ap_all[1] if isinstance(ap_all, tuple) and len(ap_all) >= 2 else None
-                if isinstance(ap_all_res, dict):
-                    for kc in kr_cands:
-                        if isinstance(ap_all_res.get(kc), dict):
-                            p_meta = ap_all_res[kc]
-                            break
+            def _cache_val(ckey: Any) -> Any:
+                hit = cache_dict.get(ckey)
+                return hit[1] if isinstance(hit, tuple) and len(hit) >= 2 else None
+
+            p_meta = next(
+                (m for kc in kr_cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)),
+                None,
+            )
+            if p_meta is None:
+                p_meta = next(
+                    (
+                        v
+                        for kc in kr_cands
+                        if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict)
+                        for v in ap_res.values()
+                        if isinstance(v, dict)
+                    ),
+                    None,
+                )
+            if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
+                p_meta = next(
+                    (ap_all_res[kc] for kc in kr_cands if isinstance(ap_all_res.get(kc), dict)),
+                    None,
+                )
             if isinstance(p_meta, dict):
-                fees_m = p_meta.get("fees_maker")
-                fees_t = p_meta.get("fees")
-                if isinstance(fees_m, list) and fees_m and isinstance(fees_m[0], (list, tuple)) and len(fees_m[0]) >= 2:
-                    m_v = safe_nonneg_float(fees_m[0][1], default=None)
-                    if m_v is not None:
-                        maker_bps = round(m_v * 100.0, 2)
-                if isinstance(fees_t, list) and fees_t and isinstance(fees_t[0], (list, tuple)) and len(fees_t[0]) >= 2:
-                    t_v = safe_nonneg_float(fees_t[0][1], default=None)
-                    if t_v is not None:
-                        taker_bps = round(t_v * 100.0, 2)
+                def _tier0_bps(fee_key: str) -> Optional[float]:
+                    tbl = p_meta.get(fee_key)
+                    if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
+                        fv = safe_nonneg_float(tbl[0][1], default=None)
+                        return round(fv * 100.0, 2) if fv is not None else None
+                    return None
+
+                if (m_bps := _tier0_bps("fees_maker")) is not None:
+                    maker_bps = m_bps
+                if (t_bps := _tier0_bps("fees")) is not None:
+                    taker_bps = t_bps
                 ord_min = safe_pos_float(p_meta.get("ordermin"), default=None)
                 if ord_min is not None:
                     min_qty = ord_min
@@ -1731,10 +1734,7 @@ def harvest_kraken_xstocks(
         return None
     underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
     t212_sib = f"{underlying}_US_EQ"
-    alloc_px = safe_float(xstock_cfg.get("xstock_alloc_price"), 0.0) or 0.0
-    tp1_pct = safe_float(xstock_cfg.get("xstock_tp_alert_pct"), 0.0) or 0.0
-    tp2_pct = safe_float(xstock_cfg.get("xstock_tp2_alert_pct"), 0.0) or 0.0
-    sl_pct = safe_float(xstock_cfg.get("xstock_sl_alert_pct"), 0.0) or 0.0
+    alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
     live_px = resolve_symbol_price(listed_pair or underlying, prices_and_trends)
     xst_summary: Dict[str, Any] = {
         "underlying": underlying,
@@ -1742,14 +1742,14 @@ def harvest_kraken_xstocks(
         "holdings": x_holdings,
         "allocated": alloc_info,
         "listed_pair": listed_pair,
-        "alloc_price": alloc_px if alloc_px > 0 else None,
-        "tp1_alert_pct": tp1_pct if tp1_pct > 0 else None,
-        "tp2_alert_pct": tp2_pct if tp2_pct > 0 else None,
-        "sl_alert_pct": sl_pct if sl_pct > 0 else None,
+        "alloc_price": alloc_px,
+        "tp1_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp_alert_pct"), default=None),
+        "tp2_alert_pct": safe_pos_float(xstock_cfg.get("xstock_tp2_alert_pct"), default=None),
+        "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
     }
     if live_px > 0:
         xst_summary["live_price"] = live_px
-        if alloc_px > 0:
+        if alloc_px is not None:
             xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
     sib_cyc = _first_variant_dict(all_t212_cycles, (t212_sib, underlying))
     if isinstance(sib_cyc, dict):
@@ -1926,10 +1926,8 @@ def harvest_tradable_positions_and_orders(
 
     if isinstance(inst_map, dict):
         for inst in inst_map.values():
-            raw_sym = getattr(inst, "symbol", "")
-            sym = raw_sym.strip().upper() if isinstance(raw_sym, str) else str(raw_sym or "").upper()
-            raw_venue = getattr(inst, "provider_name", "")
-            venue = raw_venue.strip().lower() if isinstance(raw_venue, str) else str(raw_venue or "").lower()
+            sym = str(getattr(inst, "symbol", "") or "").strip().upper()
+            venue = str(getattr(inst, "provider_name", "") or "").strip().lower()
             if not sym or not venue:
                 continue
             res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
@@ -2230,10 +2228,11 @@ def enrich_24h_and_microstructure(
             last_7d_px = safe_float(arch_vals_7d[-1], 0.0)
             if _prices_diverged(sym_px_cur, last_7d_px):
                 arch_vals_7d = []
-        if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0 and matched_series_24h:
-            prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
-        elif safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0 and arch_vals_7d:
-            prices_and_trends[sym]["price"] = arch_vals_7d[-1]
+        if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0:
+            if matched_series_24h:
+                prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
+            elif arch_vals_7d:
+                prices_and_trends[sym]["price"] = arch_vals_7d[-1]
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
         if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
             prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d))

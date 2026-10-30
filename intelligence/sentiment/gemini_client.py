@@ -6,8 +6,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import sqlite3
 import subprocess
 import threading
 import time
@@ -17,6 +15,7 @@ import urllib.request
 from botcore import _parse_bool_flag, load_dotenv, required_env
 from intelligence.macro_sentiment_ssot import is_cache_fresh, safe_pos_float
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
+from orchestratorOS.agy.summary_store import delete_threads
 from orchestratorOS.agy.topics import (
     TopicSession,
     extract_json_object,
@@ -405,30 +404,7 @@ class GeminiClient:
         cid = cid.strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", cid):
             return
-        for rel in (
-            f"conversations/{cid}.db",
-            f"conversations/{cid}.db-wal",
-            f"conversations/{cid}.db-shm",
-            f"annotations/{cid}.pbtxt",
-        ):
-            try:
-                p = os.path.join(bot_cli_base, rel)
-                if os.path.exists(p):
-                    os.remove(p)
-            except OSError:
-                pass
-        shutil.rmtree(os.path.join(bot_cli_base, "brain", cid), ignore_errors=True)
-        sum_db = os.path.join(bot_cli_base, "conversation_summaries.db")
-        if os.path.exists(sum_db):
-            try:
-                conn = sqlite3.connect(sum_db, timeout=5)
-                try:
-                    conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (cid,))
-                    conn.commit()
-                finally:
-                    conn.close()
-            except sqlite3.Error:
-                pass
+        delete_threads({cid}, bot_cli_base)
 
     def query_json(
         self,

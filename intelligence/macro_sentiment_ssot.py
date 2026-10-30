@@ -219,40 +219,39 @@ def detect_active_binance_symbols(
     """Detect enabled symbols from ``instruments.conf`` plus optional Kraken reference pairs."""
     out: List[str] = []
     seen_bases: Set[str] = set()
+
+    def _add_sym(raw_s: Any, *, skip_eq: bool = False, unique_base: bool = False) -> None:
+        s_clean = str(raw_s or "").strip().strip("'\"").upper()
+        if not s_clean or (skip_eq and s_clean.endswith(("_EQ", "_US_EQ"))) or s_clean in out:
+            return
+        base = canonical_base_asset(s_clean)
+        if unique_base and (not base or base in seen_bases):
+            return
+        out.append(s_clean)
+        seen_bases.add(base)
+
     if include_kraken_cache:
         try:
             from instrument_registry import tracked_price_instruments
             all_syms, _, _ = tracked_price_instruments()
             for s in all_syms:
-                s_clean = str(s).strip().upper()
-                if s_clean and not s_clean.endswith(("_EQ", "_US_EQ")) and s_clean not in out:
-                    out.append(s_clean)
-                    seen_bases.add(canonical_base_asset(s_clean))
+                _add_sym(s, skip_eq=True)
         except Exception:
             pass
     if not out:
         try:
             from instruments_config import binance_symbols
             for s in binance_symbols() or []:
-                s_clean = str(s).strip().upper()
-                if s_clean and s_clean not in out:
-                    out.append(s_clean)
-                    seen_bases.add(canonical_base_asset(s_clean))
+                _add_sym(s)
         except Exception:
             pass
     if include_kraken_cache:
         try:
             krk_cfg = os.path.join(_ROOT_DIR, "kraken", "config.env")
             if os.path.exists(krk_cfg):
-                parsed = parse_dotenv(krk_cfg)
-                val = parsed.get("KRAKEN_CACHE_PAIRS", "")
-                if val:
-                    for item in val.split(","):
-                        p = item.strip().strip("'\"").upper()
-                        base = canonical_base_asset(p)
-                        if p and base and base not in seen_bases and p not in out:
-                            out.append(p)
-                            seen_bases.add(base)
+                val = parse_dotenv(krk_cfg).get("KRAKEN_CACHE_PAIRS", "")
+                for item in (val.split(",") if val else ()):
+                    _add_sym(item, unique_base=True)
         except Exception:
             pass
     return out if out else list(default)
@@ -349,11 +348,12 @@ def inspect_daemon_heartbeat(
                 is_alive = False
 
         status_str = "alive" if (is_alive and age < max_alive_age_sec) else ("stale" if is_alive else "dead")
+        age_f = safe_float(age, default=None)
         res: Dict[str, Any] = {
             "running": is_alive and age < max_alive_age_sec,
             "pid": pid,
             "status": status_str,
-            "age_seconds": round(safe_float(age, default=None), 1) if safe_float(age, default=None) is not None else None,
+            "age_seconds": round(age_f, 1) if age_f is not None else None,
             "intervals": data.get("intervals") if isinstance(data.get("intervals"), dict) else {},
             "last_run": data.get("last_run") if isinstance(data.get("last_run"), dict) else {},
         }
@@ -1348,6 +1348,14 @@ def load_cached_market_breadth_snapshot(
             raw_reg = mb_data.get("regime")
             mb_regime = str(raw_reg).strip() if (raw_reg is not None and not isinstance(raw_reg, bool) and str(raw_reg).strip()) else "NEUTRAL"
             raw_ts = mb_data.get("ts") if mb_data.get("ts") is not None else mb_data.get("timestamp")
+
+            def _norm_pairs(items: Any) -> Tuple[Tuple[str, float], ...]:
+                return tuple(
+                    (str(x[0]), safe_float(x[1], 0.0))
+                    for x in (items if isinstance(items, (list, tuple)) else ())
+                    if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
+                )
+
             return MarketBreadthSnapshot(
                 advance_ratio=safe_float(mb_data.get("advance_ratio"), 0.5),
                 advancing_count=safe_int(raw_adv, 0),
@@ -1357,16 +1365,8 @@ def load_cached_market_breadth_snapshot(
                 mean_change_pct=safe_float(mb_data.get("mean_change_pct"), 0.0),
                 dispersion_std=safe_float(mb_data.get("dispersion_std"), 0.0),
                 regime=mb_regime,
-                top_gainers=tuple(
-                    (str(x[0]), safe_float(x[1], 0.0))
-                    for x in (raw_gainers if isinstance(raw_gainers, (list, tuple)) else ())
-                    if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
-                ),
-                top_losers=tuple(
-                    (str(x[0]), safe_float(x[1], 0.0))
-                    for x in (raw_losers if isinstance(raw_losers, (list, tuple)) else ())
-                    if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
-                ),
+                top_gainers=_norm_pairs(raw_gainers),
+                top_losers=_norm_pairs(raw_losers),
                 ts=safe_float(raw_ts, eval_now),
             )
         except Exception as mb_err:

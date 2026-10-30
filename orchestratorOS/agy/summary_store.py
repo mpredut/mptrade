@@ -253,15 +253,18 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
         return
     db = summaries_db(cli_base)
     if os.path.exists(db):
-        conn = sqlite3.connect(db)
         try:
-            conn.execute(
-                f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in clean_cids)})",
-                list(clean_cids),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+            conn = sqlite3.connect(db, timeout=5)
+            try:
+                conn.execute(
+                    f"DELETE FROM conversation_summaries WHERE conversation_id IN ({','.join('?' for _ in clean_cids)})",
+                    list(clean_cids),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
     for name in SUMMARIES_PB_FILES:
         path = os.path.join(cli_base, name)
         if os.path.exists(path):
@@ -307,9 +310,13 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
         brain = os.path.join(cli_base, "brain", cid)
         if os.path.isdir(brain):
             for root, _, names in os.walk(brain):
-                freed += sum(os.path.getsize(os.path.join(root, n)) for n in names)
+                for n in names:
+                    try:
+                        freed += os.path.getsize(os.path.join(root, n))
+                    except OSError:
+                        pass
             if not dry_run:
-                shutil.rmtree(brain)
+                shutil.rmtree(brain, ignore_errors=True)
     if not dry_run:
         _drop_summaries(cli_base, clean_cids)
     return (len(clean_cids), freed)
