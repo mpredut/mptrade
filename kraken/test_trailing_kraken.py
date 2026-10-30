@@ -23,6 +23,8 @@ class FakeK:
     def _private(self, method, data=None):
         if method == "BalanceEx":
             return {"HYPE": {"balance": str(self.total), "hold_trade": str(self.held)}}
+        if method == "TradesHistory":
+            return {"trades": {}}
         return {}
     def last_price(self, pair): return self.price
     def add_order(self, pair, side, volume, price=None, ordertype="limit", validate=False,
