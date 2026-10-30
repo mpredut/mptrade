@@ -2010,14 +2010,15 @@ class Strategy:
                             log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
 
                 if pending_exit:
+                    def _is_market_exit(o: dict) -> bool:
+                        return bool(o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))
+
                     existing_exit = next(
-                        (o for o in self.s.get("orders", [])
-                         if o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL")),
+                        (o for o in self.s.get("orders", []) if _is_market_exit(o)),
                         None
                     )
                     if existing_exit:
-                        non_exit_orders = [o for o in list(self.s["orders"])
-                                           if not (o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))]
+                        non_exit_orders = [o for o in list(self.s["orders"]) if not _is_market_exit(o)]
                         for o in non_exit_orders:
                             self._cancel_specific(o)
 
@@ -2031,8 +2032,7 @@ class Strategy:
                     if not self._cancel_all_orders():
                         log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
                         return
-                    pending_orders = [o for o in self.s["orders"]
-                                      if not (o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))]
+                    pending_orders = [o for o in self.s["orders"] if not _is_market_exit(o)]
                     if pending_orders:
                         log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
                         return

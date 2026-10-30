@@ -77,6 +77,19 @@ def _parse_coin_added_at(raw_added, *, utc: bool = False) -> Optional[datetime]:
     return raw_added.replace(tzinfo=None) if getattr(raw_added, "tzinfo", None) is not None else raw_added
 
 
+def _filter_recent_coins(items: list, days_back: object, *, utc: bool = False) -> List[Dict]:
+    if not items:
+        return []
+    eff_days = _safe_days_back(days_back)
+    cutoff_date = (datetime.now(timezone.utc) if utc else datetime.now()) - timedelta(days=eff_days)
+    return [
+        item for item in items
+        if isinstance(item, dict)
+        and (added_at := _parse_coin_added_at(item.get("added_at"), utc=utc)) is not None
+        and added_at >= cutoff_date
+    ]
+
+
 def is_trackable_symbol(symbol: str, name: str = "", slug: str = "") -> bool:
     if not symbol or not isinstance(symbol, str):
         return False
@@ -188,14 +201,7 @@ class CoinMarketCapSource(NewCoinsSource):
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         if not self._cache:
             self.refresh()
-        eff_days = _safe_days_back(days_back)
-        cutoff_date = datetime.now(timezone.utc) - timedelta(days=eff_days)
-        return [
-            coin for coin in self._cache
-            if isinstance(coin, dict)
-            and (added_at := _parse_coin_added_at(coin.get('added_at'), utc=True)) is not None
-            and added_at >= cutoff_date
-        ]
+        return _filter_recent_coins(self._cache, days_back, utc=True)
 
 # ============================================
 # Source 2: CoinGecko
@@ -323,16 +329,7 @@ class BinanceNewListingsSource(NewCoinsSource):
             print(f"[Binance Source] Error: {e}")
 
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
-        if not self._new_listings:
-            return []
-        eff_days = _safe_days_back(days_back)
-        cutoff_date = datetime.now() - timedelta(days=eff_days)
-        return [
-            item for item in self._new_listings
-            if isinstance(item, dict)
-            and (cmp_dt := _parse_coin_added_at(item.get('added_at'), utc=False)) is not None
-            and cmp_dt >= cutoff_date
-        ]
+        return _filter_recent_coins(self._new_listings, days_back, utc=False)
 
 # ============================================
 # Source 4: DexScreener
@@ -403,17 +400,7 @@ class DexScreenerSource(NewCoinsSource):
             self._cache = []
     
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
-        if not self._cache:
-            return []
-        eff_days = _safe_days_back(days_back)
-        cutoff_date = datetime.now() - timedelta(days=eff_days)
-        out = [
-            token for token in self._cache
-            if isinstance(token, dict)
-            and (cmp_dt := _parse_coin_added_at(token.get('added_at'), utc=False)) is not None
-            and cmp_dt >= cutoff_date
-        ]
-        return out[:50]
+        return _filter_recent_coins(self._cache, days_back, utc=False)[:50]
 
 # ============================================
 # Factory for new-coin data sources.
@@ -754,9 +741,7 @@ class NewCoinsMonitor:
         if ts_val <= 0.0:
             return True
         age_days = (time.time() - ts_val) / (24 * 3600)
-        if age_days > NEW_COIN_CLEANUP_MAX_AGE_DAYS:
-            return False
-        return True
+        return age_days <= NEW_COIN_CLEANUP_MAX_AGE_DAYS
 
     def cleanup_old_new_coins(self):
         if not self.price_monitor:

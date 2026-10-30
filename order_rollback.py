@@ -21,8 +21,8 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
     if not isinstance(order, dict):
         order = {}
     side = extract_order_side(order) or "SELL"
-    price = _finite_pos_float(extract_order_price(order, default=0.0))
-    qty = _finite_pos_float(extract_remaining_qty(order, default=0.0))
+    price = extract_order_price(order, default=0.0)
+    qty = _finite_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
 
     raw_amount = order.get("amount")
     raw_level = order.get("level")

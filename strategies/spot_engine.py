@@ -2401,28 +2401,15 @@ class Strategy:
                     log(
                         f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
                     )
-                    self.s["qty"] = 0.0
-                    self.s["cost"] = 0.0
-                    self.s["spent"] = 0.0
-                    self.s["cycle_fees"] = 0.0
-                    self.s["dca_buys"] = 0
-                    self.s["entry_price"] = None
-                    self.s["last_buy_price"] = None
-                    self.s["entry_ts"] = None
-                    self.s["trail_peak"] = None
-                    self.s["trail_stop"] = None
-                    self.s["trend_mode"] = False
-                    self.s["trend_peak"] = None
-                    self.s["trend_confirm_count"] = 0
-                    self.s["pending_exit"] = None
-                    self.s["surge_active"] = False
-                    self.s["surge_peak"] = None
-                    self.s["slow_grind_active"] = False
-                    self.s["slow_grind_peak"] = None
-                    self.s["sl_bounce_state"] = {}
-                    self.s["sl_episode_state"] = {}
-                    self.s["tp_ride_state"] = {}
-                    self.s["reentry_state"] = {}
+                    defaults = _new_state()
+                    for k in (
+                        "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
+                        "last_buy_price", "entry_ts", "trail_peak", "trail_stop", "trend_mode",
+                        "trend_peak", "trend_confirm_count", "pending_exit", "surge_active",
+                        "surge_peak", "slow_grind_active", "slow_grind_peak", "sl_bounce_state",
+                        "sl_episode_state", "tp_ride_state", "reentry_state",
+                    ):
+                        self.s[k] = defaults[k]
                     exit_ts = clean_ts if clean_ts is not None else self._now()
                     self._seed_post_exit_anchors(price, "TP", exit_ts)
                     self.s["ledger_reconcile_required"] = False

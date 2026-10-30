@@ -267,6 +267,18 @@ class HLClient:
             raise HLError(f"Invalid user_state payload: {type(st).__name__}")
         return st
 
+    def _find_position_dict(self, coin: str) -> dict | None:
+        if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
+            return None
+        coin_cf = coin.strip().casefold()
+        for ap in (self._user_state().get("assetPositions") or []):
+            if not isinstance(ap, dict):
+                continue
+            p = ap.get("position")
+            if isinstance(p, dict) and str(p.get("coin") or "").casefold() == coin_cf:
+                return p
+        return None
+
     def position_strict(self, coin: str) -> tuple[float, float]:
         """Return position data while propagating API errors.
         Use when code must distinguish no position (0) from unknown state, such as
@@ -274,21 +286,17 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return 0.0, 0.0
         coin = coin.strip()
-        coin_cf = coin.casefold()
-        for ap in (self._user_state().get("assetPositions") or []):
-            if not isinstance(ap, dict):
-                continue
-            p = ap.get("position")
-            if isinstance(p, dict) and str(p.get("coin") or "").casefold() == coin_cf:
-                raw_szi = p.get("szi")
-                raw_entry = p.get("entryPx")
-                if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
-                    raise HLError(f"Invalid boolean position state for {coin}")
-                szi = safe_float(raw_szi or 0.0, default=None)
-                entry = safe_nonneg_float(raw_entry or 0.0, default=None)
-                if szi is None or entry is None:
-                    raise HLError(f"Invalid numeric position state for {coin}")
-                return szi, entry
+        p = self._find_position_dict(coin)
+        if p is not None:
+            raw_szi = p.get("szi")
+            raw_entry = p.get("entryPx")
+            if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
+                raise HLError(f"Invalid boolean position state for {coin}")
+            szi = safe_float(raw_szi or 0.0, default=None)
+            entry = safe_nonneg_float(raw_entry or 0.0, default=None)
+            if szi is None or entry is None:
+                raise HLError(f"Invalid numeric position state for {coin}")
+            return szi, entry
         return 0.0, 0.0
 
     def position(self, coin: str) -> tuple[float, float]:
@@ -422,15 +430,8 @@ class HLClient:
         """Return the complete perpetual position including szi, entryPx, liquidationPx, and PnL."""
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return None
-        coin = coin.strip()
-        coin_cf = coin.casefold()
         try:
-            for ap in (self._user_state().get("assetPositions") or []):
-                if not isinstance(ap, dict):
-                    continue
-                p = ap.get("position")
-                if isinstance(p, dict) and str(p.get("coin") or "").casefold() == coin_cf:
-                    return p
+            return self._find_position_dict(coin)
         except Exception as e:  # noqa: BLE001
             log(f"  ! position_full failed: {e}")
         return None

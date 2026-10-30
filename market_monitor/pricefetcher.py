@@ -799,36 +799,33 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
             print(f"[Pricefetcher] ❌ Symbol removed: {symbol} {reason}")
             return True
 
+    def _cached_entries_locked(self, symbol: str):
+        entries = self.cache.get(symbol)
+        if entries is None:
+            entries = casefold_get(self.cache, symbol.strip())
+        return entries if isinstance(entries, (list, tuple)) else ()
+
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get the latest saved price for a symbol."""
         if not isinstance(symbol, str) or not symbol.strip():
             return None
-        sym_clean = symbol.strip()
         with self.lock:
-            entries = self.cache.get(symbol)
-            if entries is None:
-                entries = casefold_get(self.cache, sym_clean, [])
-            if isinstance(entries, (list, tuple)) and entries:
-                for entry in reversed(entries):
-                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                        ts_val = safe_pos_float(entry[0], default=None)
-                        px = safe_pos_float(entry[1], default=None)
-                        if ts_val is not None and px is not None:
-                            return px
+            for entry in reversed(self._cached_entries_locked(symbol)):
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    ts_val = safe_pos_float(entry[0], default=None)
+                    px = safe_pos_float(entry[1], default=None)
+                    if ts_val is not None and px is not None:
+                        return px
         return None
 
     def get_price_history(self, symbol: str, limit: int = 100) -> List[Dict]:
         limit_i = exact_pos_int(limit, default=None)
         if limit_i is None or not isinstance(symbol, str) or not symbol.strip():
             return []
-        sym_clean = symbol.strip()
         # Copy only references under the lock. Convert and format afterward so datetime
         # work and allocations do not block price synchronization.
         with self.lock:
-            raw_entries = self.cache.get(symbol)
-            if raw_entries is None:
-                raw_entries = casefold_get(self.cache, sym_clean, ())
-            entries = raw_entries[-limit_i:] if isinstance(raw_entries, (list, tuple)) else ()
+            entries = self._cached_entries_locked(symbol)[-limit_i:]
 
         history: List[Dict] = []
         for entry in entries:

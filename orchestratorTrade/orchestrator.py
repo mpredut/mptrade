@@ -24,6 +24,19 @@ from orchestratorOS.lib.technical_repair_ssot import (
 from state_io import read_bytes_file
 
 
+def _bot_hb_files(bot: Dict[str, Any]) -> List[str]:
+    return bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])
+
+
+def _close_process_transport(proc: Any) -> None:
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            pass
+
+
 class BotManager:
     def __init__(self, server: NotificationServer):
         self.server = server
@@ -178,7 +191,7 @@ class BotManager:
 
         # Refresh mtime on existing dedicated heartbeat files on launch so a newly
         # started process is not immediately blamed for a predecessor's stale file.
-        for raw_hbf in (bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])):
+        for raw_hbf in _bot_hb_files(bot):
             hbf = str(resolve_cachedb_filepath(raw_hbf)) if raw_hbf else ""
             if hbf and os.path.exists(hbf):
                 try:
@@ -228,12 +241,7 @@ class BotManager:
                 except Exception:
                     pass
                 self.log_files.pop(name, None)
-            transport = getattr(process, "_transport", None)
-            if transport is not None:
-                try:
-                    transport.close()
-                except Exception:
-                    pass
+            _close_process_transport(process)
 
     async def stop_bot(self, name: str, sig=signal.SIGTERM):
         if name in self.processes:
@@ -267,12 +275,7 @@ class BotManager:
                         await asyncio.wait_for(proc.wait(), timeout=2.0)
                     except (asyncio.TimeoutError, TimeoutError):
                         pass
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                try:
-                    transport.close()
-                except Exception:
-                    pass
+            _close_process_transport(proc)
 
     async def restart_bot(self, name: str):
         await self.stop_bot(name)
@@ -352,7 +355,7 @@ class BotManager:
                 self.last_hb_status_log = now
                 hb_statuses = []
                 for b in self.bots:
-                    hb_files = b.get("hb_files") or ([b["hb_file"]] if b.get("hb_file") else [])
+                    hb_files = _bot_hb_files(b)
                     if b.get("hb_stale_s", 0) > 0 and hb_files:
                         for raw_hbf in hb_files:
                             hbf = resolve_cachedb_filepath(raw_hbf)
@@ -382,7 +385,7 @@ class BotManager:
                         asyncio.create_task(self.start_bot(bot))
                 elif name not in self.zombie_killing:
                     # Zombie / Hang detection: check if process is alive but heartbeat is stale
-                    hb_files = bot.get("hb_files") or ([bot["hb_file"]] if bot.get("hb_file") else [])
+                    hb_files = _bot_hb_files(bot)
                     hb_stale_s = bot.get("hb_stale_s", 0.0)
                     if hb_stale_s > 0 and hb_files:
                         proc_start = self.process_start_times.get(name, now)

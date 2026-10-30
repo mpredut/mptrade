@@ -46,6 +46,7 @@ INTERVALS = {
     4320: "3d",
     10080: "1w",
 }
+_REV_INTERVALS = {v: k for k, v in INTERVALS.items()}
 
 
 def _post_info(body: dict, timeout: int = 25) -> object:
@@ -130,12 +131,11 @@ def fetch_ohlc_candles(
         raise ValueError(f"invalid coin: {coin!r}")
     coin = coin.strip()
     if isinstance(interval, str):
-        rev_intervals = {v: k for k, v in INTERVALS.items()}
         cleaned = interval.strip()
-        cleaned_norm = cleaned.lower() if cleaned.lower() in rev_intervals else cleaned
-        if cleaned_norm in rev_intervals:
+        cleaned_norm = cleaned.lower() if cleaned.lower() in _REV_INTERVALS else cleaned
+        if cleaned_norm in _REV_INTERVALS:
             interval_str = cleaned_norm
-            interval_min = rev_intervals[cleaned_norm]
+            interval_min = _REV_INTERVALS[cleaned_norm]
         elif cleaned.isascii() and cleaned.isdigit():
             interval_min = int(cleaned)
             interval_str = INTERVALS.get(interval_min)

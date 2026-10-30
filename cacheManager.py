@@ -3020,6 +3020,19 @@ class Cache365PriceManager(Cache24PriceManager):
                 removed = before - after
                 self._persisted_counts[symbol] = max(0, self._persisted_counts.get(symbol, 0) - removed)
 
+    def _reload_and_merge_timestamps_locked(self, original_fetchtimes, original_rest_cursors):
+        self._load_jsonl()
+        for s_sym, ft in original_fetchtimes.items():
+            self.fetchtime_per_symbol[s_sym] = max(
+                int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
+                int(ft or 0),
+            )
+        for s_sym, cur in original_rest_cursors.items():
+            self._rest_sync_cursor_per_symbol[s_sym] = max(
+                int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
+                int(cur or 0),
+            )
+
     def maintain_append_persist(self):
         """Prune the full disk archive with bounded memory, then reload its recent tail."""
         if not self.save_state:
@@ -3066,17 +3079,9 @@ class Cache365PriceManager(Cache24PriceManager):
                                     json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
                                 )
                             changed = True
-                self._load_jsonl()
-                for s_sym, ft in original_fetchtimes.items():
-                    self.fetchtime_per_symbol[s_sym] = max(
-                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
-                        int(ft or 0),
-                    )
-                for s_sym, cur in original_rest_cursors.items():
-                    self._rest_sync_cursor_per_symbol[s_sym] = max(
-                        int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
-                        int(cur or 0),
-                    )
+                self._reload_and_merge_timestamps_locked(
+                    original_fetchtimes, original_rest_cursors
+                )
                 if changed:
                     if not self._write_meta({
                         "counts": dict(self._persisted_counts),
@@ -3156,17 +3161,9 @@ class Cache365PriceManager(Cache24PriceManager):
                             target.write(
                                 json.dumps({"s": symbol, "i": item}, separators=(",", ":")) + "\n"
                             )
-                self._load_jsonl()
-                for s_sym, ft in original_fetchtimes.items():
-                    self.fetchtime_per_symbol[s_sym] = max(
-                        int(self.fetchtime_per_symbol.get(s_sym, 0) or 0),
-                        int(ft or 0),
-                    )
-                for s_sym, cur in original_rest_cursors.items():
-                    self._rest_sync_cursor_per_symbol[s_sym] = max(
-                        int(self._rest_sync_cursor_per_symbol.get(s_sym, 0) or 0),
-                        int(cur or 0),
-                    )
+                self._reload_and_merge_timestamps_locked(
+                    original_fetchtimes, original_rest_cursors
+                )
                 meta_ok = self._write_meta({
                     "counts": dict(self._persisted_counts),
                     "fetchtime": dict(self.fetchtime_per_symbol),
