@@ -20,7 +20,7 @@ DATA = os.path.join(EXP, "data")
 OUT = os.path.join(EXP, "results.jsonl")
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
-from botcore import int_env, parse_dotenv, safe_float, safe_int, safe_nonneg_int, safe_pos_float  # noqa: E402
+from botcore import int_env, parse_dotenv, safe_float, safe_nonneg_int, safe_pos_float  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
 from offline.backtests.evaluation import load_venue_module  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params, prewarm_trend_series  # noqa: E402
@@ -28,8 +28,6 @@ from strategies.spot_replay import align_spot_interval_params, prewarm_trend_ser
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 rp = load_venue_module("212trading", "replay.py", "t212_replay_grid")
 strat = rp._strat
-_safe_f = safe_float
-_safe_int = safe_int
 
 FLAGS = {"peak": False}
 _orig_step = strat.Strategy.step

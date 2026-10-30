@@ -21,6 +21,7 @@ import sys
 from typing import Any
 
 from offline.backtests.execution import ExecutionModel
+from offline.backtests.metrics import validate_replay_metrics
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 from botcore import exact_pos_int, float_env, parse_dotenv, safe_float, safe_int
 
@@ -147,7 +148,6 @@ def evaluate_segment(
     if missing:
         raise ValueError(f"the replay adapter did not supply the metrics: {sorted(missing)}")
     if validate_contract:
-        from offline.backtests.metrics import validate_replay_metrics
         validate_replay_metrics(metrics)
     first_close = safe_float(records[0]["close"], 0.0)
     last_close = safe_float(records[-1]["close"], 0.0)

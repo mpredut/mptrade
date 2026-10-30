@@ -29,7 +29,6 @@ from botcore import safe_float, safe_pos_float, safe_int, safe_pos_int  # noqa: 
 from state_io import atomic_write_json  # noqa: E402
 
 _safe_f = safe_float
-_safe_pos_f = safe_pos_float
 _safe_int = safe_int
 
 HORIZON_H = 24

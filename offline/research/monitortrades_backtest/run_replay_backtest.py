@@ -46,6 +46,7 @@ from instrument_registry import select_instruments
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
 from instrument import Instrument
+import log
 import monitortrades as mt
 import pricewindow as pw
 from offline.research.monitortrades_backtest.replay_trend_source import (
@@ -210,7 +211,6 @@ def run_symbol(
 
     if quiet:
         try:
-            import log
             log.disable_print()
         except Exception:
             pass
@@ -516,7 +516,6 @@ def run_symbol(
     finally:
         if quiet:
             try:
-                import log
                 log.enable_print()
             except Exception:
                 pass

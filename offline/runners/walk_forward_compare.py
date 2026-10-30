@@ -101,7 +101,6 @@ def default_candidates() -> list[Candidate]:
 
 
 _as_bool = _parse_bool_flag
-_safe_f = safe_float
 
 
 def _detect_venue(report: dict, cli_venue: str | None = None) -> str:

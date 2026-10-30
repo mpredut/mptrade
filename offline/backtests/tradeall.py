@@ -36,13 +36,14 @@ from providers.replay_clock import SimClock as _SimClock  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
+import log
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
+import shadow_signals
 
 
 def _sanitize(value):
-    import shadow_signals
     return shadow_signals.KalmanJournal._sanitize(value)
 
 
@@ -339,7 +340,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         # run time. log.disable_print() suppresses print() globally (OUR messages use
         # sys.stderr.write, which stays visible).
         try:
-            import log
             log.disable_print()
         except Exception:
             pass
@@ -405,7 +405,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     
         # SHADOW (observational, the 17 Jul plan): the same objects as live, with the simulated
         # clock; a FLAT journal in the run's folder (the backtest monitor draws it).
-        import shadow_signals
         shadow = shadow_signals.KalmanStateTracker(
             journal=shadow_signals.KalmanJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
             now_fn=clock,
@@ -573,7 +572,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
                 os.environ[_k] = _v
         if quiet:
             try:
-                import log
                 log.enable_print()
             except Exception:
                 pass

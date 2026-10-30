@@ -46,6 +46,10 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 if ROOT not in sys.path:
@@ -53,6 +57,7 @@ if ROOT not in sys.path:
 os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
+import log
 from botcore import _parse_bool_flag, float_env, load_dotenv, safe_float
 from cachepaths import cache_path
 from instrument_registry import select_instruments
@@ -501,14 +506,14 @@ def main():
 
     lock_file = None
     try:
-        import fcntl
-        lock_path = (
-            "/tmp/mptrade_scheduled_pilot_dryrun.lock"
-            if (args.dry_run and not args.propose)
-            else "/tmp/mptrade_scheduled_pilot.lock"
-        )
-        lock_file = open(lock_path, "w", encoding="utf-8")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl is not None:
+            lock_path = (
+                "/tmp/mptrade_scheduled_pilot_dryrun.lock"
+                if (args.dry_run and not args.propose)
+                else "/tmp/mptrade_scheduled_pilot.lock"
+            )
+            lock_file = open(lock_path, "w", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         sys.stderr.write("[scheduled_pilot] Another instance is already running -- exiting\n")
         return
@@ -518,7 +523,6 @@ def main():
     # monitor_price_and_trade() is VERY chatty (a print() on every tick) —
     # the pilot runs dozens of variants over hundreds of thousands of ticks, so
     # output suppression is required (otherwise console I/O dominates execution time).
-    import log
     log.disable_print()
 
     only_terms = [t.strip() for t in args.only.split(",") if t.strip()]

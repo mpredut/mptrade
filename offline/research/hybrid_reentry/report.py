@@ -10,8 +10,6 @@ if ROOT not in sys.path:
 from botcore import safe_float
 from state_io import atomic_write_text, read_json_dict, read_json_file
 
-_safe_f = safe_float
-
 
 def _fmt_pct(val, *, decimals: int = 2, signed: bool = False, bold: bool = False) -> str:
     f = safe_float(val, default=None)

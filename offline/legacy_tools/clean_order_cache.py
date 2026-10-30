@@ -26,7 +26,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
 from cachepaths import cache_path, get_cachedb_dir
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_json_dict
 
 CACHE_DIR = get_cachedb_dir()
 ORDER_FILE = cache_path("cache_order.json")
@@ -47,7 +47,6 @@ def main():
         print(f"{ORDER_FILE} does not exist — nothing to do.")
         return
 
-    from state_io import read_json_dict
     data = read_json_dict(ORDER_FILE, default=None)
     if not isinstance(data, dict):
         print(f"{ORDER_FILE} does not contain a JSON object — nothing to do.")

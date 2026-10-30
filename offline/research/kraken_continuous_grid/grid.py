@@ -29,14 +29,10 @@ if ROOT not in sys.path:
 from botcore import (
     int_env,
     safe_float,
-    safe_int,
     safe_nonneg_int,
     safe_pos_float,
 )
 from state_io import read_jsonl_dicts
-
-_safe_f = safe_float
-_safe_int = safe_int
 from strategies import spot_engine as strat  # noqa: E402
 from kraken import replay as rp  # noqa: E402
 from offline.backtests.datasets import load_ohlc_tuples_csv  # noqa: E402
