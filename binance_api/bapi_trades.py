@@ -198,9 +198,9 @@ def aggregate_trades(trades):
         })
 
     return aggregated_list
-    
-def _clean_non_neg_int(val, default: int = 0) -> int:
-    return safe_nonneg_int(val, default=default)
+
+
+_clean_non_neg_int = safe_nonneg_int
 
 
 def _validate_trade_query_args(order_type, symbol, days, *, default_days: int, limit=1000):

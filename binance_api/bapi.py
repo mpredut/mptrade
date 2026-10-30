@@ -8,6 +8,7 @@ import signal
 #### MYLIB
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     load_dotenv as _load_dotenv,
     required_float_env,
     safe_float,
@@ -200,7 +201,7 @@ def _normalize_bapi_oid(val):
     cleaned = clean_order_id(val)
     if cleaned is None:
         return None
-    return int(val) if isinstance(val, (int, float)) else cleaned
+    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
 
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):

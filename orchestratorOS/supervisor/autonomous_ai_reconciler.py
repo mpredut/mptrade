@@ -80,7 +80,6 @@ from providers.execution_audit import (
 )
 
 _parse_finite_float = safe_float
-_as_bool_flag = _parse_bool_flag
 
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
@@ -223,9 +222,7 @@ class AutonomousAIReconciler:
 
     def harvest_log_anomalies(self, lookback_hours: Optional[float] = None) -> LogEventSummary:
         """Parses recent log files for errors, persistent unresolved exceptions, and guard vetoes."""
-        hours = _parse_finite_float(lookback_hours, self.lookback_hours)
-        if hours <= 0:
-            hours = self.lookback_hours
+        hours = safe_pos_float(lookback_hours, default=self.lookback_hours) or self.lookback_hours
         return harvest_log_anomalies_from_dirs(self.logs_dirs, hours)
 
     def synthesize_and_diagnose(
@@ -391,8 +388,8 @@ class AutonomousAIReconciler:
         scope = getattr(spec, "asset_scope", "all")
         if (
             scope == "equities"
-            and not _as_bool_flag(force_rth_open, False)
-            and not _as_bool_flag(os.environ.get("FORCE_SHARE_RTH_OPEN"), False)
+            and not _parse_bool_flag(force_rth_open, False)
+            and not _parse_bool_flag(os.environ.get("FORCE_SHARE_RTH_OPEN"), False)
             and not _is_us_rth_open(now)
         ):
             msg = "US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) closed; cycle skipped."

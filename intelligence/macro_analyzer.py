@@ -46,10 +46,6 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.macro_analyzer")
 
 
-def _as_bool(val: Any) -> bool:
-    return _parse_bool_flag(val, False)
-
-
 class MacroAnalyzer:
     """Orchestrates periodic macro and sentiment LLM synthesis and publishes assessments."""
 
@@ -71,7 +67,7 @@ class MacroAnalyzer:
         default_adv_itv = safe_pos_float(conf_margins.get("macro_advisor_interval_sec"), DEFAULT_SENTIMENT_INTERVAL_SEC)
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, default_macro_itv)
         self.advisor_interval_sec = safe_pos_float(advisor_interval_sec, default_adv_itv)
-        self.shadow_notify = _as_bool(conf_margins.get("shadow_notify", True))
+        self.shadow_notify = _parse_bool_flag(conf_margins.get("shadow_notify", True), False)
         self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, 10800.0)
         self.symbols = parse_symbol_list(symbols) or ["BTCUSDC"]
         self.running = False
@@ -159,7 +155,7 @@ class MacroAnalyzer:
 
     def assess_geopolitical_threat(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Evaluate macro headlines and publish geopolitical threat assessment."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         try:
             eval_now = self._resolve_now(now)
             news_snap = self._load_news_snapshot(eval_now, explicit_now=now)
@@ -193,7 +189,7 @@ class MacroAnalyzer:
                         f"(Risk: {assessment.risk_score:.2f}, Headlines: {assessment.headlines_analyzed})\n"
                         f"{assessment.summary}"
                     ),
-                    skip_notify=_as_bool(getattr(assessment, "is_fallback", False)),
+                    skip_notify=_parse_bool_flag(getattr(assessment, "is_fallback", False), False),
                 )
                 return True
         except Exception as e:
@@ -202,7 +198,7 @@ class MacroAnalyzer:
 
     def assess_market_advisor(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Synthesize multi-source sentiment & whale telemetry into a macro perspective."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         try:
             eval_now = self._resolve_now(now)
             fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=eval_now)
@@ -260,7 +256,7 @@ class MacroAnalyzer:
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, publishing assessments whose context-adaptive interval has elapsed."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         current_ts = self._resolve_now(now)
         session_ctx = resolve_global_trading_session(current_ts)
         results: Dict[str, Any] = {

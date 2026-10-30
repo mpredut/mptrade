@@ -9,7 +9,7 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
-from botcore import exact_pos_int, safe_float, safe_nonneg_int, safe_pos_int
+from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_nonneg_int, safe_pos_int
 from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
@@ -61,8 +61,7 @@ def _managed_script(proc):
     return None
 
 
-_safe_float = safe_float
-_as_bool_flag = wc._parse_bool_flag
+_as_bool_flag = _parse_bool_flag
 
 
 def _restart_allowed(state, script, now):

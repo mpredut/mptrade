@@ -108,8 +108,7 @@ def _match_configured_pair(symbol: str | None) -> str | None:
     return _kraken_pair_key(raw) or raw
 
 
-def _clean_cache_id(val: object) -> str | None:
-    return _clean_single_order_id(val)
+_clean_cache_id = _clean_single_order_id
 
 
 def _build_kraken_cache_fill(

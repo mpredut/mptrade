@@ -30,7 +30,6 @@ from state_io import (
 )
 
 logger = logging.getLogger("orchestratorOS.agy.summary_store")
-_as_bool_flag = _parse_bool_flag
 
 SUMMARIES_DB = "conversation_summaries.db"
 SUMMARIES_PB_FILES = ("agyhub_summaries_proto.pb", "jetbox_summaries_proto.pb")
@@ -63,7 +62,7 @@ def checkpoint_db(path: str) -> bool:
 
 def drop_wal_sidecars(path: str, *, force: bool = False) -> None:
     """Remove -wal and -shm sidecar files next to ``path`` (refuses non-empty -wal unless ``force=True``)."""
-    force_b = _as_bool_flag(force, False)
+    force_b = _parse_bool_flag(force, False)
     for ext in ("-wal", "-shm"):
         sidecar = path + ext
         if os.path.exists(sidecar):
@@ -273,7 +272,7 @@ def _drop_summaries(cli_base: str, cids: Set[str]) -> None:
 
 def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tuple[int, int]:
     """Delete conversations (content, sidecars, annotations, presence, brain, summaries). Returns (count, bytes)."""
-    dry_run = _as_bool_flag(dry_run, False)
+    dry_run = _parse_bool_flag(dry_run, False)
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return (0, 0)
@@ -318,7 +317,7 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
 
 def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
     """Remove summary rows (and proto entries / annotations) whose conversation file no longer exists."""
-    dry_run = _as_bool_flag(dry_run, False)
+    dry_run = _parse_bool_flag(dry_run, False)
     db = summaries_db(cli_base)
     if not os.path.exists(db):
         return 0

@@ -41,10 +41,6 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.telemetry_collector")
 
 
-def _as_bool(val: Any) -> bool:
-    return _parse_bool_flag(val, False)
-
-
 class GlobalTelemetryCollector(ExternalTelemetryMixin):
     """Orchestrates periodic background ingestion of external microstructure and macro telemetry."""
 
@@ -70,8 +66,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, 1800.0)
         self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, 900.0)
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, 300.0)
-        self.skip_news = _as_bool(skip_news)
-        self.skip_external = _as_bool(skip_external)
+        self.skip_news = _parse_bool_flag(skip_news, False)
+        self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
         self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
 
@@ -104,7 +100,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_news(self, force: bool = False) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""
         try:
-            news_snap = self.news_collector.fetch(force_refresh=_as_bool(force))
+            news_snap = self.news_collector.fetch(force_refresh=_parse_bool_flag(force, False))
             if news_snap:
                 logger.debug("RSS news pool updated: %d headlines in pool", news_snap.total_fetched)
                 return True
@@ -115,7 +111,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_fear_greed(self, force: bool = False) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
-            snap = self.fear_greed_collector.fetch(force_refresh=_as_bool(force))
+            snap = self.fear_greed_collector.fetch(force_refresh=_parse_bool_flag(force, False))
             if snap:
                 self._save_dual_cache(
                     "fear_greed",
@@ -139,7 +135,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_market_breadth(self, force: bool = False) -> bool:
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
         try:
-            breadth = self.breadth_collector.fetch(force_refresh=_as_bool(force))
+            breadth = self.breadth_collector.fetch(force_refresh=_parse_bool_flag(force, False))
             if breadth:
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
@@ -182,7 +178,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         current_ts = resolve_now_ts(now)
         results: Dict[str, Any] = {
             "ts": current_ts,

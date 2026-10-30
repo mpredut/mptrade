@@ -25,6 +25,7 @@ from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    load_env_stack,
     required_bool_env,
     safe_float,
     safe_nonneg_float,
@@ -65,6 +66,18 @@ _HL_DIR = os.path.join(_REPO_ROOT, "hyperliquid")
 # Enable real Hyperliquid orders. Default dry mode only logs intent. This is the
 # final gate after dry-run validation and resolution of delta-neutral co-mingling.
 _LIVE_ENV = "HL_LIVE_ORDERS"
+
+
+def _hl_client_module():
+    """Import hyperliquid/hl_client.py while preserving sys.path."""
+    saved_path = list(sys.path)
+    try:
+        if _HL_DIR not in sys.path:
+            sys.path.insert(0, _HL_DIR)
+        import hl_client
+        return hl_client
+    finally:
+        sys.path[:] = saved_path
 
 
 def _mainnet_setting() -> bool:
@@ -161,37 +174,14 @@ class HyperliquidProvider(MarketDataProvider):
         if self._env_loaded:
             return
         self._env_loaded = True
-        saved_path = list(sys.path)
         try:
-            if _HL_DIR not in sys.path:
-                sys.path.insert(0, _HL_DIR)
-            try:
-                from common import load_env_stack  # hyperliquid/common.py
-            except ImportError:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "_hl_common_fallback", os.path.join(_HL_DIR, "common.py")
-                )
-                if spec is None or spec.loader is None:
-                    raise
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                load_env_stack = mod.load_env_stack
             load_env_stack(os.path.join(_HL_DIR, ".env"))
         except Exception as e:  # noqa: BLE001 — Without env files, use public data only.
             print(f"[HL] _load_env failed: {e}")
-        finally:
-            sys.path[:] = saved_path
 
     def _new_client(self, secret_key=None):
         """Build one consistently configured SDK client for reads or signing."""
-        saved_path = list(sys.path)
-        try:
-            if _HL_DIR not in sys.path:
-                sys.path.insert(0, _HL_DIR)
-            from hl_client import HLClient
-        finally:
-            sys.path[:] = saved_path
+        HLClient = _hl_client_module().HLClient
         return HLClient(
             secret_key=secret_key,
             account_address=os.environ.get("HL_ACCOUNT_ADDRESS"),
@@ -415,13 +405,7 @@ class HyperliquidProvider(MarketDataProvider):
             sz_dec = int(getattr(pp, "volume_decimals", 2)) if pp is not None else 2
         except Exception:
             sz_dec = 2
-        saved_path = list(sys.path)
-        try:
-            if _HL_DIR not in sys.path:
-                sys.path.insert(0, _HL_DIR)
-            from hl_client import _round_px
-        finally:
-            sys.path[:] = saved_path
+        _round_px = _hl_client_module()._round_px
         try:
             return _round_px(price_f, sz_decimals=sz_dec, is_perp=False)
         except Exception:

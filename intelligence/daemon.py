@@ -40,10 +40,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 
 logger = logging.getLogger("intelligence.daemon")
-
-
-def _as_bool(val: Any) -> bool:
-    return _parse_bool_flag(val, False)
+_as_bool = _parse_bool_flag
 
 
 class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
@@ -69,8 +66,8 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self.macro_interval_sec = safe_pos_float(macro_interval_sec, required_float_env("MACRO_NEWS_INTERVAL_SEC"))
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, required_float_env("MACRO_LLM_INTERVAL_SEC"))
         self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, 10800.0)
-        self.skip_macro = _as_bool(skip_macro)
-        self.skip_external = _as_bool(skip_external)
+        self.skip_macro = _parse_bool_flag(skip_macro, False)
+        self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
         self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
 
@@ -98,7 +95,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
     def update_macro(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         try:
             try:
                 news_snap = self.news_collector.fetch(force_refresh=force, now_ts=now)
@@ -123,7 +120,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
     def run_cycle(self, force: bool = False, now: Optional[float] = None) -> Dict[str, Any]:
         """Execute one evaluation cycle, updating tasks whose scheduled interval has elapsed."""
-        force = _as_bool(force)
+        force = _parse_bool_flag(force, False)
         current_ts = resolve_now_ts(now)
         results: Dict[str, Any] = {
             "ts": current_ts,

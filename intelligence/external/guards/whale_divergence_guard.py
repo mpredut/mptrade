@@ -21,9 +21,6 @@ from intelligence.external.collectors.whale_positioning import (
 )
 
 
-_safe_bool = _parse_bool_flag
-
-
 class WhaleDivergenceGuard:
     """Blocks or defers orders when whale positioning or OI flow contradicts the move."""
 
@@ -39,9 +36,9 @@ class WhaleDivergenceGuard:
         taker_downscaled_scale: float = 0.50,
     ) -> None:
         self.collector = collector
-        self.block_short_covering_fakeout = _safe_bool(block_short_covering_fakeout, True)
-        self.block_aggressive_shorting = _safe_bool(block_aggressive_shorting, True)
-        self.block_liquidation_cascade = _safe_bool(block_liquidation_cascade, True)
+        self.block_short_covering_fakeout = _parse_bool_flag(block_short_covering_fakeout, True)
+        self.block_aggressive_shorting = _parse_bool_flag(block_aggressive_shorting, True)
+        self.block_liquidation_cascade = _parse_bool_flag(block_liquidation_cascade, True)
         self.severe_cascade_oi_pct = safe_float(severe_cascade_oi_pct, default=-5.0) or -5.0
         self.min_taker_ratio = safe_pos_float(min_taker_ratio, default=0.75) or 0.75
         self.taker_downscale_threshold = safe_pos_float(taker_downscale_threshold, default=0.90) or 0.90
