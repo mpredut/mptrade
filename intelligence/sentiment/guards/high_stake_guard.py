@@ -3651,6 +3651,7 @@ def collect_pretrade_telemetry(
                     f"VAH=${m24.get('vah_px')} ({float(m24.get('vah_dist_pct', 0.0)):+.2f}%), "
                     f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}"
                 )
+            btc_m24: Dict[str, Any] = {}
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, _ = load_symbol_price_series(
                     cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
@@ -3683,6 +3684,19 @@ def collect_pretrade_telemetry(
                         if cross_parts:
                             rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
+            if m24.get("bottom_structure_6h"):
+                b_struct = m24["bottom_structure_6h"]
+                b_parts = [f"prior_6h_low=${m24.get('prior_6h_low_px')}", f"1h_low=${m24.get('recent_1h_low_px')}"]
+                if m24.get("higher_low_vs_prior_pct") is not None:
+                    b_parts.append(f"hl_diff={float(m24['higher_low_vs_prior_pct']):+.2f}%")
+                if m24.get("reclaim_above_prior_low_pct") is not None:
+                    b_parts.append(f"reclaim={float(m24['reclaim_above_prior_low_pct']):+.2f}%")
+                if b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" and btc_m24:
+                    btc_b = btc_m24.get("bottom_structure_6h")
+                    btc_pos24 = safe_float(btc_m24.get("pos_24h_pct"), 100.0)
+                    if btc_b in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos24 <= 35.0:
+                        b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
+                telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
         cur_m_info = load_symbol_microstructure(
             cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap
@@ -4006,7 +4020,7 @@ class HighStakeGuard:
                 "CORE RISK POLICIES & PRIORITY RULES:\n"
                 "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
                 "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
-                "3. MACRO & GEOPOLITICAL RISK: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow.\n\n"
+                "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED — do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated.\n\n"
             )
         else:
             action_desc = "HIGH-VALUE SELL order"
@@ -4018,7 +4032,7 @@ class HighStakeGuard:
                 "CORE RISK POLICIES & PRIORITY RULES:\n"
                 "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated. If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
                 "2. ORDERBOOK RESISTANCE LIMITATION: Ask walls and orderbook ask depth are passive and can be pulled or absorbed by aggressive market buying. Do NOT use orderbook ask depth alone to override persistent taker buying.\n"
-                "3. CAPITULATION & SQUEEZE PROTECTION: Do not approve panic-selling into extreme negative funding or active whale accumulation at local bottoms.\n\n"
+                "3. CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE): Do not approve panic-selling into extreme negative funding, active whale accumulation, or a verified 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'FRESH_6H_LOW_TEST') at local bottoms.\n\n"
             )
 
         prompt = (

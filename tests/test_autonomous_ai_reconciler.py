@@ -5717,6 +5717,172 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
     )
 
 
+def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, collect_pretrade_telemetry
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from state_io import save_json_state
+
+    t0 = 1_793_300_000_000
+    hr = 3_600_000
+    save_json_state(
+        str(tmp_path / "cache_24_price_BTCUSDC.json"),
+        {
+            "items": {
+                "BTCUSDC": [
+                    [t0 - 5 * hr, 80500.0],
+                    [t0 - 3 * hr, 78900.0],
+                    [t0 - 2 * hr, 76739.78],
+                    [t0 - 90 * 60000, 77400.0],
+                    [t0 - 25 * 60000, 76387.17],
+                    [t0, 77208.86],
+                ]
+            }
+        },
+    )
+    save_json_state(
+        str(tmp_path / "cache_24_price_TAOUSDC.json"),
+        {
+            "items": {
+                "TAOUSDC": [
+                    [t0 - 5 * hr, 250.0],
+                    [t0 - 3 * hr, 238.0],
+                    [t0 - 2 * hr, 220.0],
+                    [t0 - 90 * 60000, 229.0],
+                    [t0 - 25 * 60000, 226.1],
+                    [t0, 231.8],
+                ]
+            }
+        },
+    )
+
+    telem = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(tmp_path))
+    assert "6h Intraday Bottom Structure" in telem
+    assert "HIGHER_LOW_DOUBLE_BOTTOM" in telem["6h Intraday Bottom Structure"]
+    assert "smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE" in telem["6h Intraday Bottom Structure"]
+
+    captured_prompts = {}
+
+    class _DummyClient:
+        def __init__(self, key, resp):
+            self.key = key
+            self.resp = resp
+
+        def query_json(self, prompt, **kwargs):
+            captured_prompts[self.key] = prompt
+            return self.resp
+
+    # 1. HighStakeGuard (BUY & SELL)
+    hs_guard = HighStakeGuard(
+        gemini_client=_DummyClient(
+            "hs_buy",
+            {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Verified 6h double bottom"},
+        ),
+        min_notional_eur=100.0,
+    )
+    hs_guard.check("TAOUSDC", "BUY", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
+    assert "HIGHER_LOW_DOUBLE_BOTTOM" in captured_prompts["hs_buy"]
+    assert "smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE" in captured_prompts["hs_buy"]
+    assert "CONTRARIAN BOTTOM ACCUMULATION" in captured_prompts["hs_buy"]
+
+    hs_sell_guard = HighStakeGuard(
+        gemini_client=_DummyClient(
+            "hs_sell",
+            {"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Do not sell into 6h double bottom"},
+        ),
+        min_notional_eur=100.0,
+    )
+    hs_sell_guard.check("TAOUSDC", "SELL", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
+    assert "CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE)" in captured_prompts["hs_sell"]
+
+    # 2. PostStopReentryGuard
+    ps_guard = PostStopReentryGuard(
+        gemini_client=_DummyClient(
+            "post_stop",
+            {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Confirmed 6h higher low"},
+        ),
+        notify_enabled=False,
+    )
+    ps_guard.check(
+        "TAOUSDC",
+        current_price=231.8,
+        last_sell_price=235.0,
+        trough=226.1,
+        bounce_pct=0.025,
+        qty=2.0,
+        telemetry=telem,
+        notional_eur=463.6,
+    )
+    assert "GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION" in captured_prompts["post_stop"]
+    assert "HIGHER_LOW_DOUBLE_BOTTOM" in captured_prompts["post_stop"]
+
+    # 3. SentimentAdvisor
+    advisor = SentimentAdvisor(
+        gemini_client=_DummyClient(
+            "sentiment",
+            {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.82,
+                "summary": "Intraday liquidity sweep reclaim underway.",
+                "key_risks": ["Residual volatility"],
+                "recommended_action": "ACCUMULATE",
+            },
+        ),
+        cache_file=str(tmp_path / "sentiment_eval.json"),
+    )
+    advisor.review(
+        fear_greed={"value": 25, "classification": "Extreme Fear", "trend_7d_change": -10},
+        breadth={
+            "advance_ratio": 0.146,
+            "median_change_pct": -3.59,
+            "regime": "BEARISH_BREADTH",
+        },
+        whale_telemetry={"BTCUSDC": {"divergence_regime": "accumulation", "taker_buy_sell_ratio": 1.14}},
+        force_refresh=True,
+        now_ts=t0 / 1000.0,
+    )
+    assert "BTC Intraday Structure:" in captured_prompts["sentiment"]
+    assert "bottom_structure_6h=LIQUIDITY_SWEEP_RECLAIM" in captured_prompts["sentiment"]
+    assert "LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION" in captured_prompts["sentiment"]
+
+    # 4. GeopoliticalThreatAnalyzer
+    geo = GeopoliticalThreatAnalyzer(
+        gemini_client=_DummyClient(
+            "geo",
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.55,
+                "summary": "Ongoing priced-in headlines.",
+                "recommended_brake": "DOWNSCALE_50",
+            },
+        ),
+        state_file=str(tmp_path / "geopolitical_threat_eval.json"),
+    )
+    geo.assess(
+        {
+            "headlines": [
+                {
+                    "title": "Ongoing diplomatic statements on regional sanctions and conflict",
+                    "source": "Reuters",
+                    "published_ts": t0 / 1000.0,
+                    "matched_keywords": ["sanctions", "conflict"],
+                    "is_high_severity": True,
+                }
+            ],
+            "high_severity_count": 1,
+            "has_critical_shock_keywords": False,
+            "ts": t0 / 1000.0,
+        },
+        force_refresh=True,
+        now_ts=t0 / 1000.0,
+    )
+    assert "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES" in captured_prompts["geo"]
+
+
 
 
 

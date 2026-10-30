@@ -237,7 +237,10 @@ class GeopoliticalThreatAnalyzer:
             "sweeping tariffs/sanctions, central bank emergency actions, or systemic financial shocks):\n\n"
             f"{headline_list}\n\n"
             "Assess whether these events represent an acute systemic shock (sudden escalation, oil/gas supply cut, "
-            "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n\n"
+            "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n"
+            "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
+            "- Reserve 'CRITICAL_SHOCK' ('HARD_VETO_NEW_BUYS') strictly for a brand-new, sudden, unpriced kinetic or systemic escalation breaking right now (e.g., surprise military strike, sudden strait closure, emergency sanctions/tariff shock) that markets have not yet absorbed.\n"
+            "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "threat_level": "NORMAL" | "ELEVATED" | "CRITICAL_SHOCK",\n'
