@@ -554,7 +554,7 @@ class PricePlatformFactory:
         sym_norm = symbol.strip().upper()
         cached_platform = None
         supported = False
-        platform_name = casefold_get(self._symbol_platform_cache, sym_norm) or casefold_get(self._symbol_platform_cache, symbol)
+        platform_name = casefold_get(self._symbol_platform_cache, sym_norm)
         if platform_name:
             for platform in self._platforms:
                 if platform.platform_name == platform_name:
@@ -568,7 +568,6 @@ class PricePlatformFactory:
                             "platform": platform.platform_name, "timestamp": int(time.time())
                         }
                     self._symbol_platform_cache.pop(sym_norm, None)
-                    self._symbol_platform_cache.pop(symbol, None)
                     break
         for platform in self._platforms:
             if platform is cached_platform:

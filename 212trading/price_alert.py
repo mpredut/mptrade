@@ -21,16 +21,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-if _HERE not in sys.path:
-    sys.path.append(_HERE)
-from ipo_common import _parse_bool_flag, load_t212_environment, load_t212_market_data, log, safe_pos_float  # noqa: E402
-try:
-    from .market_data import get_price_usd  # noqa: E402
-except ImportError:
-    try:
-        from market_data import get_price_usd  # noqa: E402
-    except ImportError:
-        get_price_usd = load_t212_market_data().get_price_usd
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "ipo_common", "market_data")
+from ipo_common import _parse_bool_flag, load_t212_environment, log, safe_pos_float  # noqa: E402
+from market_data import get_price_usd  # noqa: E402
 from alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
 

@@ -15,8 +15,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-if _HERE not in sys.path:
-    sys.path.append(_HERE)
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "ipo_common", "t212_client")
 from ipo_common import (  # noqa: E402
     load_t212_environment, required_env, required_float_env, safe_float,
 )

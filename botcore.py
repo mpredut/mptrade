@@ -646,35 +646,72 @@ def ensure_local_module_priority(directory: str, *module_names: str) -> None:
             sys.modules.pop(mod_name, None)
 
 
+_AMBIGUOUS_LOCAL_MODULES = (
+    "strategy",
+    "market_data",
+    "replay",
+    "common",
+    "notify",
+    "hl_client",
+    "t212_client",
+    "ipo_common",
+    "ipo_notify",
+)
+
+
 def load_local_module(
     directory: str,
     name: str,
     *,
     module_key: str | None = None,
     register: bool = True,
+    reload: bool = False,
 ):
     """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
     abs_dir = os.path.abspath(directory)
-    key = module_key or name
-    if register:
+    stem = name[:-3] if name.endswith(".py") else name
+    key = module_key or stem
+    if register and not reload:
         mod = sys.modules.get(key)
         mod_file = getattr(mod, "__file__", None) if mod is not None else None
-        if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == abs_dir):
+        if mod is not None and (
+            not isinstance(mod_file, str)
+            or not mod_file
+            or os.path.dirname(os.path.abspath(mod_file)) == abs_dir
+        ):
             return mod
     import importlib.util
     orig_sys_path = list(sys.path)
+    saved_ambiguous: dict[str, object] = {}
+    for amb_name in _AMBIGUOUS_LOCAL_MODULES:
+        if amb_name in sys.modules:
+            amb_file = getattr(sys.modules[amb_name], "__file__", None)
+            if isinstance(amb_file, str) and amb_file and os.path.dirname(os.path.abspath(amb_file)) != abs_dir:
+                saved_ambiguous[amb_name] = sys.modules.pop(amb_name)
+    succeeded = False
     try:
-        if _REPO_ROOT not in sys.path:
-            sys.path.insert(0, _REPO_ROOT)
-        if abs_dir not in sys.path:
-            sys.path.append(abs_dir)
-        spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{name}.py"))
+        while abs_dir in sys.path:
+            sys.path.remove(abs_dir)
+        while _REPO_ROOT in sys.path:
+            sys.path.remove(_REPO_ROOT)
+        sys.path.insert(0, _REPO_ROOT)
+        sys.path.insert(0, abs_dir)
+        spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
         mod = importlib.util.module_from_spec(spec)
         if register:
             sys.modules[key] = mod
-        spec.loader.exec_module(mod)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            if register:
+                sys.modules.pop(key, None)
+            raise
+        succeeded = True
         return mod
     finally:
         sys.path[:] = orig_sys_path
+        for amb_name, saved_mod in saved_ambiguous.items():
+            if not (succeeded and register and amb_name == key):
+                sys.modules[amb_name] = saved_mod
 
 

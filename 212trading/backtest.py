@@ -21,21 +21,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 T212_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-if T212_DIR not in sys.path:
-    sys.path.append(T212_DIR)
 
 from offline.backtests.evaluation import load_venue_module
 from offline.backtests.metrics import format_performance_summary
 from botcore import (
     _parse_bool_flag,
     float_env,
+    load_local_module,
     required_env,
     required_float_env,
     required_int_env,
     safe_float,
     safe_pos_float,
 )
-from ipo_common import load_t212_environment
+
+load_t212_environment = load_local_module(T212_DIR, "ipo_common", module_key="t212_ipo_common").load_t212_environment
 
 _replay_mod = load_venue_module("212trading", "replay.py", "t212_backtest_replay")
 run_replay = _replay_mod.run_replay

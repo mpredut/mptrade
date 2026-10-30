@@ -22,13 +22,10 @@ except ImportError:
     _ROOT = _os.path.dirname(_HERE)
     if _ROOT not in _sys.path:
         _sys.path.insert(0, _ROOT)
-    if _HERE not in _sys.path:
-        _sys.path.append(_HERE)
-    from ipo_common import ET, load_t212_market_data, log, safe_float
-    try:
-        from market_data import check_market
-    except ImportError:
-        check_market = load_t212_market_data().check_market
+    from botcore import ensure_local_module_priority
+    ensure_local_module_priority(_HERE, "ipo_common", "market_data")
+    from ipo_common import ET, log, safe_float
+    from market_data import check_market
 
 from providers.t212_provider import _t212_tickers_match
 

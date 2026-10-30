@@ -25,8 +25,8 @@ except ImportError:
     _ROOT = _os.path.dirname(_HERE)
     if _ROOT not in _sys.path:
         _sys.path.insert(0, _ROOT)
-    if _HERE not in _sys.path:
-        _sys.path.append(_HERE)
+    from botcore import ensure_local_module_priority
+    ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from providers.base import _clean_single_order_id, extract_order_id

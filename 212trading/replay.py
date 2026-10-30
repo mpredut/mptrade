@@ -15,8 +15,6 @@ _T212_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_T212_DIR)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-if _T212_DIR not in sys.path:
-    sys.path.append(_T212_DIR)
 
 from botcore import load_local_module, safe_float, safe_pos_float
 _md = load_local_module(_T212_DIR, "market_data", module_key="t212_market_data")
