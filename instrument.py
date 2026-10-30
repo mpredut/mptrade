@@ -16,7 +16,7 @@ from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
 from guard_hierarchy import (
-    GUARD_CATALOG,  # noqa: F401
+    GUARD_CATALOG,  # noqa: F401 (re-export: test compat)
     GUARD_REGISTRY,
     normalize_bypassed_guards,
     revoke_guard_bypass,
@@ -31,7 +31,7 @@ from providers.strategy_executor import SubmissionRefused
 import order_guard
 import order_outcomes_log as _outcomes_log
 import accepted_order_persistence
-import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
+import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 
 
 _EXECUTION_AUDIT = ExecutionAudit()

@@ -4,7 +4,7 @@ import datetime
 import threading
 
 # Local imports.
-import alertnotifiers as alert
+import alertnotifiers as alert  # noqa: F401 (re-export: test compat)
 import cacheManager as cm
 from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
@@ -18,7 +18,7 @@ from providers.base import extract_order_id, normalize_side
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
 
-from pricewindow import (
+from pricewindow import (  # noqa: F401 (re-export: test compat)
     DEFAULT_SAMPLE_RATE_SEC,
     PriceTrendAnalyzer,
     PriceWindow,
@@ -944,7 +944,7 @@ class TrendCoordinator:
             due = [s for s in self.symbols if self._is_due(s, now)]
             if not due:
                 continue
-            print(f"----------------------------------")
+            print("----------------------------------")
             for symbol in due:
                 try:
                     self.evaluate(symbol)

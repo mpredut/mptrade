@@ -9,7 +9,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import exact_int, safe_float, safe_int, safe_pos_int
+from botcore import exact_int, safe_pos_int
 from state_io import read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2

@@ -362,7 +362,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         """Normalize ``thresholds`` to a ``(symbol, seconds) -> percentage`` function."""
         if callable(thresholds):
             return thresholds
-        small, big = self.window_seconds[0], self.window_seconds[-1]
+        small = self.window_seconds[0]
 
         def per_window_default(sec):
             # The smallest window uses SMALL; all others use BIG.
@@ -500,7 +500,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 primary_pos = pos
 
         # Detailed metrics for primary window and published/active windows.
-        pwin, pan = wins[primary], ans[primary]
+        pwin = wins[primary]
         gradient, gc, slope_full, gradient_recent = pwin.get_short_trend()
         eps_primary = pwin.get_noise_epsilon(self.EPSILON_K)
         published_dyn = self._published_dynamic_windows(symbol, now=observed_at)

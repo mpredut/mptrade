@@ -27,7 +27,7 @@ from providers.market_api import api as mkt  # Single guarded proxy (Instrument.
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import accepted_order_persistence
-import lock.trade_cooldown as trade_cooldown  # Retained for namespace compatibility with test patches
+import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
     load_dotenv as _load_dotenv,
     required_float_env,

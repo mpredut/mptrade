@@ -203,7 +203,7 @@ class RTradePairStore:
                             f"for {pair_id!r}")
                     if ticket.get("pair_id") not in (None, pair_id):
                         raise ValueError(
-                            f"rtrade checkpoint ticket belongs to another pair")
+                            "rtrade checkpoint ticket belongs to another pair")
                 if ("snapshots" in state
                         and not isinstance(state["snapshots"], dict)):
                     raise ValueError(

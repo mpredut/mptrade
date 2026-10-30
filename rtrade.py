@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor, wait
 import cacheManager as cm
 import order_guard
 import utils as u
-import symbols as sym
 import external_order_guard as eog
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from instrument_registry import single_symbol_for
@@ -946,7 +945,7 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
         import cacheManager as cm
         mgr = cm.get_short_trend_manager()
         dyn = mgr.get_short_trend_for_window(symbol, RTRADE_TREND_WINDOW_SEC)
-    except Exception as exc:
+    except Exception:
         return mkt.market_regime(
             symbol, horizon="short", snapshot={}, snapshot_source="cache24_dynamic",
             strength_threshold=RTRADE_TREND_FILTER_K,

@@ -17,12 +17,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
-from botcore import (  # noqa: E402 (re-exports for watchdogs)
-    _parse_bool_flag,
+from botcore import (  # noqa: E402, F401 (re-exports for watchdogs)
+    _parse_bool_flag,  # noqa: F401
     load_env_stack,
-    required_bool_env,
-    required_float_env,
-    required_int_env,
+    required_bool_env,  # noqa: F401
+    required_float_env,  # noqa: F401
+    required_int_env,  # noqa: F401
 )
 from state_io import read_json_dict, save_json_state  # noqa: E402
 

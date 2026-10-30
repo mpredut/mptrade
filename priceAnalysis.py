@@ -375,7 +375,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
             if (trend_ref_slope_h * slope_h < 0):  # sign changed
                 trend_ref_slope_h = slope_h
                 trend_ref_count = 1
-                print(f"CONTINUE ... ")
+                print("CONTINUE ... ")
             else:  # update the mean reference slope
                 
                 # w < 1 makes the previous mean count less than one new observation.
@@ -389,7 +389,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
             last_slope_h = slope_h
         else:
             # The trend has broken.
-            print(f"BREAK!")
+            print("BREAK!")
             break
                
     duration_seconds = timestamps[-1] - trend_start_ts
@@ -809,7 +809,6 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     explicitly restores legacy behavior.
     """
     import cacheManager as cm
-    global last_timestamp, last_w, last_calc_time, last_duration
 
     if not isinstance(symbol, str) or not symbol.strip():
         return None
@@ -1007,7 +1006,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
     idx = max(0, min(int(trend_len), t_steps - 1))
     t_full, w_full = u.gaussian_weights_from_idx(T=t_steps, idx=0)
     if len(w_full) == 0:
-        _dbg(f"[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
+        _dbg("[DEBUG] Zone 1: gaussian_weights_from_idx returned empty. return [0.05]")
         return np.array([0.0]), np.array([0.05])
     # utils normalizes a probability distribution. Rescale its peak to one for
     # trading weights, avoiding the former 8-40x zone-scale mismatch.
@@ -1059,7 +1058,7 @@ if __name__ == "__main__":
             print(f"write : {all_trends}")
             time.sleep(UPDATE_AND_REFRESH_TREND)
     except KeyboardInterrupt:
-        print(f"Manual shutdown...")
+        print("Manual shutdown...")
 
 
 ######################

@@ -17,7 +17,6 @@ from botcore import (
     required_float_env,
     required_int_env,
     safe_nonneg_float,
-    safe_pos_float,
 )
 
 

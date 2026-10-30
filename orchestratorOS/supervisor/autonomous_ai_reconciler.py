@@ -36,13 +36,13 @@ from botcore import (
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
-    apply_short_trend_item as _apply_short_trend_item,
-    compute_liquidation_clusters,
-    compute_swing_wave_metrics as _compute_swing_wave_metrics,
-    compute_volume_profile_metrics,
-    parse_venue_cycle_state as _parse_venue_cycle_state,
+    apply_short_trend_item as _apply_short_trend_item,  # noqa: F401 (re-export: test compat)
+    compute_liquidation_clusters,  # noqa: F401 (re-export: test compat)
+    compute_swing_wave_metrics as _compute_swing_wave_metrics,  # noqa: F401 (re-export: test compat)
+    compute_volume_profile_metrics,  # noqa: F401 (re-export: test compat)
+    parse_venue_cycle_state as _parse_venue_cycle_state,  # noqa: F401 (re-export: test compat)
     populate_market_and_portfolio_snapshot,
-    resolve_venue_fee_and_limits,
+    resolve_venue_fee_and_limits,  # noqa: F401 (re-export: test compat)
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -66,17 +66,17 @@ from orchestratorOS.lib.technical_repair_ssot import (
     parse_supervisor_config,
     persist_supervisor_audit_artifact,
     read_json_recovering,
-    recent_log_lines,
+    recent_log_lines,  # noqa: F401 (re-export: test compat)
     send_supervisor_ntfy_http,
     submit_supervisor_trading_decisions,
 )
 from orchestratorOS.supervisor.prompt_formatters import (
-    _format_venue_cycle_line,
+    _format_venue_cycle_line,  # noqa: F401 (re-export: test compat)
     build_supervisor_prompt,
 )
 from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from providers.execution_audit import (
-    normalize_trading_decisions as _normalize_trading_decisions,
+    normalize_trading_decisions as _normalize_trading_decisions,  # noqa: F401 (re-export: test compat)
 )
 
 _parse_finite_float = safe_float

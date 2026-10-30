@@ -19,7 +19,6 @@ from providers.quantity import (
     round_provider_qty,
 )
 import symbols as sym
-from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
 from binance_api import bapi_allorders as apiorders
 # Read account state through the generic facade instead of bapi/apiorders so this module
@@ -138,7 +137,7 @@ _trades_monitor_warmup_failed_symbols: set[str] = set()
 
 def reset_trades_monitor_state_for_test():
     """Reset the executed trades tracking state (used in testing)."""
-    global _notified_trade_ids, _trades_monitor_initialized, _trades_monitor_warmup_failed_symbols
+    global _notified_trade_ids, _trades_monitor_initialized
     _notified_trade_ids = _FifoTradeIdTracker()
     _trades_monitor_initialized = False
     _trades_monitor_warmup_failed_symbols.clear()
@@ -171,7 +170,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     Subsequent cycles notify for any newly appeared trade fill across all tracked symbols.
     Fills sharing the same order ID in the same tick are aggregated into a single notification.
     """
-    global _notified_trade_ids, _trades_monitor_initialized, _trades_monitor_warmup_failed_symbols
+    global _trades_monitor_initialized
 
     symbols_to_check = symbols_list or sym.symbols
     if not _trades_monitor_initialized:
@@ -1945,7 +1944,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         buy_price_f = safe_pos_float(buy_price, 0.0)
         if buy_price_f <= 0.0:
             if _verbose:
-                print(f"No buy_price !!!!!")
+                print("No buy_price !!!!!")
             return
         buy_price = buy_price_f
 
@@ -2044,7 +2043,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
         sell_price_f = safe_pos_float(sell_price, 0.0)
         if sell_price_f <= 0.0:
             if _verbose:
-                print(f"No sell_price !!!!!")
+                print("No sell_price !!!!!")
             return
         sell_price = sell_price_f
         if (
@@ -2148,7 +2147,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _REENTRY_STATE[symbol] = prev_reentry_state
                 _save_mt_state()
             if _verbose:
-                print(f"No action taken, because trend is down!")
+                print("No action taken, because trend is down!")
             return
 
         reentry_dec = exit_mgr.evaluate_reentry(reentry_snap, custom_drop_pct=gain_threshold)
@@ -2227,10 +2226,7 @@ def main():
     # its own WebSocket and polling without rereading files.
     cm.enable_real_ws_event_sync()
 
-    filename = "trades.json"
-    
-    maxage_trade_s =  4 * 24 * 3600  # Maximum age for considering filled orders recent.
-    interval = 60 * 4 #4 minute
+    maxage_trade_s = 4 * 24 * 3600  # Maximum age for considering filled orders recent.
 
 
     for _inst in instruments.values():

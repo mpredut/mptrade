@@ -1103,7 +1103,6 @@ _derivatives_collector = None
 
 
 def get_whale_collector():
-    global _whale_collector
     if _whale_collector is not None:
         return _whale_collector
     from external_order_guard import get_whale_collector as _gwc
@@ -1111,7 +1110,6 @@ def get_whale_collector():
 
 
 def get_orderbook_collector():
-    global _orderbook_collector
     if _orderbook_collector is not None:
         return _orderbook_collector
     from external_order_guard import get_orderbook_collector as _goc
@@ -1119,7 +1117,6 @@ def get_orderbook_collector():
 
 
 def get_derivatives_collector():
-    global _derivatives_collector
     if _derivatives_collector is not None:
         return _derivatives_collector
     from external_order_guard import get_derivatives_collector as _gdc
