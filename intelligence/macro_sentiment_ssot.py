@@ -853,6 +853,17 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     return False
 
 
+def _dynamic_keyword_has_crisis_stem(term: str, crisis_stems: Optional[Set[str]] = None) -> bool:
+    """Return True if at least one token in ``term`` matches a configured crisis stem."""
+    stems = (
+        crisis_stems
+        if crisis_stems is not None
+        else set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
+    )
+    words = re.findall(r"[a-zA-Z]{3,}", (term or "").lower())
+    return any(_token_matches_crisis_stem(w, stems) for w in words)
+
+
 def filter_valid_severity_keywords(
     raw_keywords: Any,
     *,
@@ -864,6 +875,7 @@ def filter_valid_severity_keywords(
     seed_set = set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
         _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
     )
+    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
     sw = _get_stopwords_set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
@@ -871,7 +883,10 @@ def filter_valid_severity_keywords(
             if not isinstance(k, str) or not k.strip():
                 continue
             k_clean = re.sub(r"\s+", " ", k.strip()).lower()
-            if k_clean in seed_set or not _is_noise_dynamic_keyword(k_clean, sw):
+            if k_clean in seed_set or (
+                not _is_noise_dynamic_keyword(k_clean, sw)
+                and _dynamic_keyword_has_crisis_stem(k_clean, crisis_stems)
+            ):
                 if k.strip() not in out:
                     out.append(k.strip())
     if not out and isinstance(title, str) and title.strip():
@@ -1145,9 +1160,16 @@ def match_high_severity_keywords(
     lower = (text or "").lower()
     if not lower:
         return ()
+    seed_set = set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
+        _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    )
+    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
     return tuple(
-        kw for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
-        if kw in lower and re.search(r"\b" + re.escape(kw) + r"\b", lower)
+        kw
+        for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
+        if kw in lower
+        and (kw in seed_set or _dynamic_keyword_has_crisis_stem(kw, crisis_stems))
+        and re.search(r"\b" + re.escape(kw) + r"\b", lower)
     )
 
 

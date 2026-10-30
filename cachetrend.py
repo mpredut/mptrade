@@ -1273,6 +1273,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             snap = dict(
                 self._mem.get(symbol) or self._read_file().get(symbol) or {}
             )
+            for legacy_k in ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct"):
+                snap.pop(legacy_k, None)
             snap.update(fields)
             snap["symbol"] = symbol
             self._mem[symbol] = snap
@@ -1359,7 +1361,12 @@ class CacheShortTrendManager(CacheManagerInterface):
                     and (allowed is None or symbol in allowed)
                     and (overwrite or symbol not in self._mem)
                 ):
-                    self._mem[symbol] = dict(snap)
+                    cleaned_snap = {
+                        k: v
+                        for k, v in snap.items()
+                        if k not in ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
+                    }
+                    self._mem[symbol] = cleaned_snap
                     ts_ms = self._snap_ts_ms(snap)
                     if ts_ms is not None:
                         self.fetchtime_per_symbol[symbol] = ts_ms

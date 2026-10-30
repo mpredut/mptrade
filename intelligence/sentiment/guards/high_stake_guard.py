@@ -817,9 +817,12 @@ def apply_short_trend_item(
             entry["epsilon"] = tinfo.get("epsilon")
         if tinfo.get("vol_1h_pct") is not None:
             entry["vol_1h_pct"] = tinfo.get("vol_1h_pct")
-    if tinfo.get("adapt_reentry_pct") is not None:
+    t_vol = safe_pos_float(tinfo.get("vol_1h_pct"), default=None)
+    t_re = safe_pos_float(tinfo.get("adapt_reentry_pct"), default=None)
+    t_vol_aligned = t_vol is None or (t_re is not None and abs(t_re - 2.0 * t_vol) <= 0.05)
+    if t_vol_aligned and tinfo.get("adapt_reentry_pct") is not None:
         entry["adapt_reentry_pct"] = tinfo.get("adapt_reentry_pct")
-    if tinfo.get("adapt_dca_pct") is not None:
+    if t_vol_aligned and tinfo.get("adapt_dca_pct") is not None:
         entry["adapt_dca_pct"] = tinfo.get("adapt_dca_pct")
     if d90.get("slope_full") is not None:
         entry["slope_90s"] = d90.get("slope_full")
