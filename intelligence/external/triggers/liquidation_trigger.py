@@ -88,16 +88,16 @@ class LiquidationCapitulationTrigger:
 
         # 1. Long capitulation burst -> BUY entry
         if cap_ratio >= self.ratio_threshold and long_liq >= self.min_notional_usd:
-            return TriggerEvent(
-                action=TriggerAction.ENTRY,
-                side=TriggerSide.BUY,
+            return TriggerEvent.directional(
+                True,
                 source="LiquidationCapitulationTrigger",
                 symbol=symbol,
                 price=price,
                 strength=round(cap_ratio, 2),
                 ts=t_now,
                 confidence=round(min(1.0, long_liq / denom), 2),
-                reason="liquidation_capitulation_burst",
+                reason_bull="liquidation_capitulation_burst",
+                reason_bear="",
                 metadata={
                     "long_liq_usd": long_liq,
                     "short_liq_usd": short_liq,
@@ -108,16 +108,16 @@ class LiquidationCapitulationTrigger:
 
         # 2. Short squeeze burst -> SELL exit
         if sq_ratio >= self.ratio_threshold and short_liq >= self.min_notional_usd:
-            return TriggerEvent(
-                action=TriggerAction.EXIT,
-                side=TriggerSide.SELL,
+            return TriggerEvent.directional(
+                False,
                 source="LiquidationCapitulationTrigger",
                 symbol=symbol,
                 price=price,
                 strength=round(sq_ratio, 2),
                 ts=t_now,
                 confidence=round(min(1.0, short_liq / denom), 2),
-                reason="liquidation_short_squeeze_burst",
+                reason_bull="",
+                reason_bear="liquidation_short_squeeze_burst",
                 metadata={
                     "long_liq_usd": long_liq,
                     "short_liq_usd": short_liq,

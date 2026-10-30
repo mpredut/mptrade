@@ -68,15 +68,15 @@ class MarketBreadthTrigger:
             relative_strength = bool(a24 is not None and a24 > med_c)
 
             strength = round(min(0.95, 0.70 + (1.0 - adv_r) * 0.25), 2)
-            event = TriggerEvent(
-                action=TriggerAction.ENTRY,
-                side=TriggerSide.BUY,
+            event = TriggerEvent.directional(
+                True,
                 source="market_breadth_washout",
                 symbol=symbol,
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"market_washout_capitulation_bounce (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
+                reason_bull=f"market_washout_capitulation_bounce (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
+                reason_bear="",
                 metadata={
                     "advance_ratio": adv_r,
                     "median_change_pct": med_c,
@@ -92,15 +92,15 @@ class MarketBreadthTrigger:
             and med_c >= self.blowoff_median_threshold
         ):
             strength = round(min(0.95, 0.70 + adv_r * 0.25), 2)
-            event = TriggerEvent(
-                action=TriggerAction.EXIT,
-                side=TriggerSide.SELL,
+            event = TriggerEvent.directional(
+                False,
                 source="market_breadth_blowoff",
                 symbol=symbol,
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"market_blowoff_overheated_exhaustion (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
+                reason_bull="",
+                reason_bear=f"market_blowoff_overheated_exhaustion (adv_ratio={adv_r:.2f}, median={med_c:.1f}%)",
                 metadata={
                     "advance_ratio": adv_r,
                     "median_change_pct": med_c,

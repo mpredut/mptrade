@@ -755,12 +755,9 @@ def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> L
                 has_stamp_token = True
                 secs = int(c.group(1)) * 3600 + int(c.group(2)) * 60 + int(c.group(3))
                 dt_same = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)
-                ts0 = dt_same.replace(fold=0).timestamp()
-                ts1 = dt_same.replace(fold=1).timestamp()
-                if ts1 > ts0 and ts1 <= prev_ts + 300.0:
-                    ts = ts1
-                elif ts0 <= prev_ts + 300.0:
-                    ts = ts0
+                ts_same = _resolve_fold_ts(dt_same, prev_ts)
+                if ts_same <= prev_ts + 300.0:
+                    ts = ts_same
                 else:
                     day -= timedelta(days=1)
                     dt_prev = datetime.combine(day, datetime.min.time()) + timedelta(seconds=secs)

@@ -213,13 +213,8 @@ class ParabolicSurgeGuard:
             else:
                 pullback_pct = (current_price - extreme) / extreme * 100.0 if extreme > 0 else 0.0
 
-            if ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds:
-                # Spike has consolidated past the window without new extremes; disarmed
-                st["surge_active"] = False
-                st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
-                st["peak"] = current_price
-                st["ts"] = ts_now
-            elif pullback_pct < self.pullback_required_pct:
+            window_elapsed = ts_now > 0 and st.get("ts", 0) > 0 and (ts_now - st["ts"]) >= self.window_seconds
+            if not window_elapsed and pullback_pct < self.pullback_required_pct:
                 label = "parabolic_surge_active" if side_u == "BUY" else "parabolic_dump_active"
                 ext_label = "peak" if side_u == "BUY" else "trough"
                 return GuardDecision.defer(
@@ -230,11 +225,9 @@ class ParabolicSurgeGuard:
                     pullback_pct=pullback_pct,
                     required_pullback=self.pullback_required_pct,
                 )
-            else:
-                # Retracement achieved, surge/dump disarmed
-                st["surge_active"] = False
-                st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
-                st["peak"] = current_price
-                st["ts"] = ts_now
+            st["surge_active"] = False
+            st["disarmed_peak_ts"] = max(float(st.get("disarmed_peak_ts", 0.0)), float(st.get("ts", 0.0)))
+            st["peak"] = current_price
+            st["ts"] = ts_now
 
         return GuardDecision.allow("ParabolicSurgeGuard", "normal_market_structure")

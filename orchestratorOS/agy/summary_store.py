@@ -132,14 +132,26 @@ def resolve_project_ids(names_or_ids: Iterable[str], cli_bases: Iterable[str]) -
 _safe_step_count = safe_nonneg_int
 
 
+def _visible_dir_if_cli_store(cli_base: str) -> str:
+    if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
+        return visible_conversations_dir(cli_base)
+    return ""
+
+
+def _sanitize_title_str(title: Any) -> str:
+    return ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+
+
 def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     """(content file exists, step_count, run status) of a conversation in ``cli_base``."""
     if not cid or not isinstance(cid, str) or not cid.strip():
         return (False, 0, "")
     clean_cid = cid.strip()
     exists = os.path.exists(conversation_db(cli_base, clean_cid))
-    if not exists and isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        exists = os.path.exists(os.path.join(visible_conversations_dir(cli_base), f"{clean_cid}.db"))
+    if not exists:
+        vis_dir = _visible_dir_if_cli_store(cli_base)
+        if vis_dir:
+            exists = os.path.exists(os.path.join(vis_dir, f"{clean_cid}.db"))
     row = read_summary_row(cli_base, clean_cid)
     if not row:
         return (exists, 0, "")
@@ -165,7 +177,7 @@ def write_annotation_title(cli_base: str, cid: str, title: str) -> None:
     if not clean_cids:
         return
     clean_cid = next(iter(clean_cids))
-    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    title_str = _sanitize_title_str(title)
     annot_dir = os.path.join(cli_base, "annotations")
     os.makedirs(annot_dir, exist_ok=True)
     path = os.path.join(annot_dir, f"{clean_cid}.pbtxt")
@@ -206,7 +218,7 @@ def upsert_ui_visible_summary(cli_base: str, row: dict, title: str) -> None:
     if not clean_cids:
         return
     clean_cid = next(iter(clean_cids))
-    title_str = ("" if title is None or isinstance(title, bool) else str(title)).replace("\r", " ").replace("\n", " ").strip()
+    title_str = _sanitize_title_str(title)
     row = dict(row, conversation_id=clean_cid, title=title_str, source="", status="CASCADE_RUN_STATUS_IDLE", not_fully_idle=0)
     if row.get("raw_summary"):
         row["raw_summary"] = summary_ui_visible(row["raw_summary"], title_str)
@@ -279,9 +291,7 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
     clean_cids = _clean_cid_set(cids)
     if not clean_cids:
         return (0, 0)
-    vis_dir = ""
-    if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        vis_dir = visible_conversations_dir(cli_base)
+    vis_dir = _visible_dir_if_cli_store(cli_base)
     freed = 0
     seen_inodes: set[Tuple[int, int]] = set()
     for cid in clean_cids:
@@ -333,9 +343,7 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         rows = conn.execute("SELECT conversation_id, title FROM conversation_summaries").fetchall()
     finally:
         conn.close()
-    vis_dir = ""
-    if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        vis_dir = visible_conversations_dir(cli_base)
+    vis_dir = _visible_dir_if_cli_store(cli_base)
     active = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
     orphans = {
         cid.strip()

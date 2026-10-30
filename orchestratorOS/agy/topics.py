@@ -339,6 +339,12 @@ def extract_json_object(text: Any) -> Optional[Dict[str, Any]]:
         pos = idx
 
 
+def _fmt_trade_decision_item(d: Dict[str, Any]) -> str:
+    if str(d.get("order_type") or "").upper() == "LIMIT" and d.get("limit_price") is not None:
+        return f"{d.get('decision', 'HOLD')}(LIMIT@{d.get('limit_price')}):{d.get('symbol', '')}@{d.get('confidence', 0)}"
+    return f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
+
+
 def condense_decision(response_text: Any, max_len: int = 220) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
     if not isinstance(response_text, str):
@@ -349,26 +355,13 @@ def condense_decision(response_text: Any, max_len: int = 220) -> str:
         parts = [f"{k}={parsed[k]}" for k in _SHORT_SUMMARY_KEYS if parsed.get(k) not in (None, "")]
         mtds = parsed.get("market_trading_decisions")
         if isinstance(mtds, list) and mtds:
-            t_items = [
-                (
-                    f"{d.get('decision', 'HOLD')}(LIMIT@{d.get('limit_price')}):{d.get('symbol', '')}@{d.get('confidence', 0)}"
-                    if str(d.get("order_type") or "").upper() == "LIMIT" and d.get("limit_price") is not None
-                    else f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
-                )
-                for d in mtds
-                if isinstance(d, dict)
-            ]
+            t_items = [_fmt_trade_decision_item(d) for d in mtds if isinstance(d, dict)]
             if t_items:
                 parts.append(f"trade={','.join(t_items)}")
         else:
             mtd = parsed.get("market_trading_decision")
             if isinstance(mtd, dict):
-                if str(mtd.get("order_type") or "").upper() == "LIMIT" and mtd.get("limit_price") is not None:
-                    parts.append(
-                        f"trade={mtd.get('decision', 'HOLD')}(LIMIT@{mtd.get('limit_price')}):{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}"
-                    )
-                else:
-                    parts.append(f"trade={mtd.get('decision', 'HOLD')}:{mtd.get('symbol', '')}@{mtd.get('confidence', 0)}")
+                parts.append(f"trade={_fmt_trade_decision_item(mtd)}")
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)

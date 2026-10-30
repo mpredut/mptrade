@@ -148,8 +148,9 @@ def _save_grace_state() -> None:
 def _clear_grace_entry(sym_key: str, *, is_sim: bool) -> None:
     tracker = _load_grace_state(is_sim=is_sim)
     if sym_key in tracker:
-        tracker.pop(sym_key, None)
-        if not is_sim:
+        grace_info = tracker.pop(sym_key, None)
+        is_sim_eff = is_sim or _is_simulated_provider(grace_info.get("provider") if isinstance(grace_info, dict) else None)
+        if not is_sim_eff:
             _save_grace_state()
 
 
@@ -632,12 +633,5 @@ def clear_smart_stop_loss_if_recovered(
 def clear_smart_stop_loss(symbol: str, *, provider: Optional[str] = None) -> None:
     """Clear any active grace state for symbol across in-memory tracker and persistent state."""
     sym_key = clean_guard_symbol_key(symbol)
-    if not sym_key:
-        return
-    is_sim_call = _is_simulated_provider(provider)
-    tracker = _load_grace_state(is_sim=is_sim_call)
-    if sym_key in tracker:
-        grace_info = tracker.pop(sym_key, None)
-        is_sim = is_sim_call or _is_simulated_provider(grace_info.get("provider") if isinstance(grace_info, dict) else None)
-        if not is_sim:
-            _save_grace_state()
+    if sym_key:
+        _clear_grace_entry(sym_key, is_sim=_is_simulated_provider(provider))

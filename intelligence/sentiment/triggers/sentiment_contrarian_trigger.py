@@ -66,15 +66,15 @@ class SentimentContrarianTrigger:
                     return None, None
 
             strength = round(max(0.60, min(1.0, 1.0 - (val / 100.0))), 2)
-            event = TriggerEvent(
-                action=TriggerAction.ENTRY,
-                side=TriggerSide.BUY,
+            event = TriggerEvent.directional(
+                True,
                 source="sentiment_contrarian",
                 symbol=symbol,
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"extreme_fear_contrarian_dip_buy (F&G={val}, {cls_label})",
+                reason_bull=f"extreme_fear_contrarian_dip_buy (F&G={val}, {cls_label})",
+                reason_bear="",
                 metadata={
                     "fear_greed_value": val,
                     "fear_greed_classification": cls_label,
@@ -86,15 +86,15 @@ class SentimentContrarianTrigger:
         # 2. Contrarian EXIT SELL during Extreme Greed
         if val >= self.extreme_greed_exit:
             strength = round(max(0.70, min(1.0, val / 100.0)), 2)
-            event = TriggerEvent(
-                action=TriggerAction.EXIT,
-                side=TriggerSide.SELL,
+            event = TriggerEvent.directional(
+                False,
                 source="sentiment_contrarian",
                 symbol=symbol,
                 price=price,
                 strength=strength,
                 ts=now,
-                reason=f"extreme_greed_contrarian_distribution (F&G={val}, {cls_label})",
+                reason_bull="",
+                reason_bear=f"extreme_greed_contrarian_distribution (F&G={val}, {cls_label})",
                 metadata={
                     "fear_greed_value": val,
                     "fear_greed_classification": cls_label,

@@ -172,6 +172,32 @@ class NewsFeedCollector:
         except Exception:
             return None
 
+    @classmethod
+    def _make_snapshot(
+        cls,
+        all_headlines: List[NewsHeadline],
+        now: float,
+        cache_dir: Optional[str] = None,
+        *,
+        max_headlines: Optional[int] = None,
+        pass_now_ts: bool = False,
+    ) -> NewsFeedSnapshot:
+        high_sev = [h for h in all_headlines if cls._as_bool_flag(getattr(h, "is_high_severity", False))]
+        titles = [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)]
+        has_shock = len(high_sev) >= 3 or (
+            has_acute_shock_keywords(titles, cache_dir=cache_dir, now_ts=now)
+            if pass_now_ts
+            else has_acute_shock_keywords(titles, cache_dir=cache_dir)
+        )
+        sliced = all_headlines[:max_headlines] if max_headlines is not None else all_headlines
+        return NewsFeedSnapshot(
+            headlines=tuple(sliced),
+            total_fetched=len(all_headlines),
+            high_severity_count=len(high_sev),
+            has_critical_shock_keywords=has_shock,
+            ts=now,
+        )
+
     def _build_pool_snapshot(
         self,
         pool_values: Any,
@@ -186,18 +212,7 @@ class NewsFeedCollector:
                 reverse=True,
             )
         ]
-        high_sev = [h for h in all_headlines if self._as_bool_flag(getattr(h, "is_high_severity", False))]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords(
-            [h.title for h in high_sev if isinstance(getattr(h, "title", None), str)],
-            cache_dir=cache_dir,
-        )
-        return NewsFeedSnapshot(
-            headlines=tuple(all_headlines[:35]),
-            total_fetched=len(all_headlines),
-            high_severity_count=len(high_sev),
-            has_critical_shock_keywords=has_shock,
-            ts=now,
-        )
+        return self._make_snapshot(all_headlines, now, cache_dir, max_headlines=35)
 
     @staticmethod
     def _is_valid_pool_entry(v: Any, cutoff: float, max_ts: Optional[float] = None) -> bool:
@@ -330,14 +345,8 @@ class NewsFeedCollector:
                 )
             )
 
-        high_sev = [h for h in parsed_headlines if h.is_high_severity]
-        has_shock = len(high_sev) >= 3 or has_acute_shock_keywords([h.title for h in high_sev], cache_dir=cache_dir, now_ts=now)
-        return NewsFeedSnapshot(
-            headlines=tuple(parsed_headlines[:25]),
-            total_fetched=len(parsed_headlines),
-            high_severity_count=len(high_sev),
-            has_critical_shock_keywords=has_shock,
-            ts=now,
+        return NewsFeedCollector._make_snapshot(
+            parsed_headlines, now, cache_dir, max_headlines=25, pass_now_ts=True
         )
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
@@ -374,15 +383,7 @@ class NewsFeedCollector:
                 logger.debug("Failed to fetch RSS feed %s: %s", feed_url, e)
 
         if any_parsed:
-            high_sev = [h for h in collected_headlines if h.is_high_severity]
-            combined_latest = NewsFeedSnapshot(
-                headlines=tuple(collected_headlines),
-                total_fetched=len(collected_headlines),
-                high_severity_count=len(high_sev),
-                has_critical_shock_keywords=len(high_sev) >= 3
-                or has_acute_shock_keywords([h.title for h in high_sev], cache_dir=cache_dir),
-                ts=now,
-            )
+            combined_latest = self._make_snapshot(collected_headlines, now, cache_dir)
             aggregated = self._aggregate(combined_latest, now)
             self._cached_snapshot = aggregated
             self._last_fetch_ts = now

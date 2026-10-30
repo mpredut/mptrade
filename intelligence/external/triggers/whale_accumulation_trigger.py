@@ -75,16 +75,16 @@ class WhaleAccumulationTrigger:
 
         if is_whale_long and is_aggressive_buying and is_capital_entering:
             confidence = max(0.0, min(1.0, (top_long_pct - 0.5) * 2.0))
-            return TriggerEvent(
-                action=TriggerAction.ENTRY,
-                side=TriggerSide.BUY,
+            return TriggerEvent.directional(
+                True,
                 source="WhaleAccumulationTrigger",
                 symbol=symbol,
                 price=price,
                 strength=round(taker_ratio, 2),
                 ts=t_now,
                 confidence=round(confidence, 2),
-                reason="whale_aggressive_accumulation",
+                reason_bull="whale_aggressive_accumulation",
+                reason_bear="",
                 metadata={
                     "top_long_pct": top_long_pct,
                     "taker_ratio": taker_ratio,
@@ -101,16 +101,16 @@ class WhaleAccumulationTrigger:
 
         if is_whale_short and is_aggressive_selling:
             confidence = max(0.0, min(1.0, (top_short_pct - 0.5) * 2.0))
-            return TriggerEvent(
-                action=TriggerAction.EXIT,
-                side=TriggerSide.SELL,
+            return TriggerEvent.directional(
+                False,
                 source="WhaleAccumulationTrigger",
                 symbol=symbol,
                 price=price,
                 strength=round(1.0 / max(0.01, taker_ratio), 2),
                 ts=t_now,
                 confidence=round(confidence, 2),
-                reason="whale_aggressive_distribution",
+                reason_bull="",
+                reason_bear="whale_aggressive_distribution",
                 metadata={
                     "top_short_pct": top_short_pct,
                     "taker_ratio": taker_ratio,

@@ -25,6 +25,10 @@ _vol_memo_cache: dict = {}
 _VOL_MEMO_MAX_ENTRIES = 128
 
 
+def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
+    return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+
+
 def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
     if prices is None or isinstance(prices, (bool, str, bytes)):
@@ -59,9 +63,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
         ):
             std = tbuf.log_return_std(blen - n, blen - 1)
             if std is not None:
-                if std == 0.0:
-                    return 0.0
-                return round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+                return _std_to_vol1h_pct(std, sample_rate_sec)
 
     cache_key = (
         (n, p0, pn, round(float(sample_rate_sec), 3))
@@ -102,10 +104,7 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
     # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
     rets = np.log(p[1:] / p[:-1])
     std = float(np.std(rets))
-    if std == 0.0:
-        res = 0.0
-    else:
-        res = round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
+    res = _std_to_vol1h_pct(std, sample_rate_sec)
 
     if cache_key is not None:
         if len(_vol_memo_cache) > _VOL_MEMO_MAX_ENTRIES:
@@ -160,9 +159,7 @@ class RollingVolatilityTracker:
 
         variance = self._m2 / self._count
         std = math.sqrt(variance)
-        if std == 0.0:
-            return 0.0
-        return round(std * math.sqrt(3600.0 / sr_f) * 100.0, 4)
+        return _std_to_vol1h_pct(std, sr_f)
 
 
 def adaptive_thresholds(
