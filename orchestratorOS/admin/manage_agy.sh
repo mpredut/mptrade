@@ -86,6 +86,10 @@ do_watchdog() {
     exec 200>"$LOCK_FILE"
     flock -n 200 || exit 0
 
+    if command -v systemctl >/dev/null 2>&1 && [ "$(systemctl --user show -p ActiveState --value antigravity-cli-daemon 2>/dev/null || true)" = "activating" ]; then
+        exit 0
+    fi
+
     if ! is_active; then
         log "WARNING: Daemon is DOWN/INACTIVE. Triggering auto-recovery as '${INSTANCE_NAME}'..."
         local start_out start_out_single
