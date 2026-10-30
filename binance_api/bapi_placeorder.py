@@ -12,6 +12,7 @@ import order_guard
 import symbols as sym
 import config as cfg
 import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
+_ = pa
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api

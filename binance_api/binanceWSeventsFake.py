@@ -100,8 +100,6 @@ def _poll_loop(handler=None, interval_sec=47):
     Detect changes and invoke the handler through the same interface previously
     used by the WebSocket implementation.
     """
-    global _prev_orders, _prev_balances
-
     # Initialize the baseline state.
     try:
         account = api.client.get_account()

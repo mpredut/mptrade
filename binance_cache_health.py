@@ -25,7 +25,8 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from state_io import atomic_write_json
+from cachepaths import resolve_cachedb_filepath
+from state_io import atomic_write_json, read_json_dict
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -281,9 +282,6 @@ def inspect_health(*, path: str = HEALTH_PATH,
                        [int], Optional[int]] = _pid_started_at_ms,
                    future_tolerance_sec: float = 5.0) -> CacheHealthStatus:
     """Validate the shared snapshot without trusting mtime or defaults."""
-    from cachepaths import resolve_cachedb_filepath
-    from state_io import read_json_dict
-
     eff_path = str(resolve_cachedb_filepath(path))
     try:
         state = read_json_dict(eff_path)

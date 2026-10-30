@@ -45,6 +45,11 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 import websockets
 
+from botcore import safe_pos_float
+from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
+from providers.base import normalize_side
+
 logger = logging.getLogger("liquidation")
 
 BYBIT_URL = "wss://stream.bybit.com/v5/public/linear"
@@ -61,14 +66,9 @@ WS_RETRY_MAX = 60.0
 STABLE_SESSION_SEC = 60.0       # Reset backoff only after a session stays up this long.
 
 _LONG = "LONG"     # a long position was liquidated -> forced selling (down / panic)
-from botcore import safe_pos_float
-from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key
-from instrument_registry import casefold_get
-from providers.base import normalize_side
+_SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
 _safe_pos_float = safe_pos_float
-
-_SHORT = "SHORT"   # a short position was liquidated -> forced buying (up / squeeze)
 
 
 def _clean_liq_symbol(raw_sym: object) -> str:

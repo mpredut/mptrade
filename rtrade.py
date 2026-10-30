@@ -985,13 +985,13 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tu
     if not _is_gi_whale_enforced(bypass_guards):
         return False, "gi_whale_bypassed_or_off"
     try:
-        collector = eog.get_whale_collector()
+        collector = sys.modules.get("external_order_guard", eog).get_whale_collector()
         if collector is None:
             return False, "no_collector"
         snap = collector.fetch(symbol, allow_network=False)
         if snap is None:
             return False, "no_snapshot"
-        ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0)
+        ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0
         oi_pct = safe_float(getattr(snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
         div_regime = getattr(snap, "divergence_regime", None)
         if side_u == "BUY":
@@ -1014,10 +1014,10 @@ def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypas
     if not _is_gi_whale_enforced(bypass_guards):
         return base_adjustment
     try:
-        collector = eog.get_whale_collector()
+        collector = sys.modules.get("external_order_guard", eog).get_whale_collector()
         if collector is not None:
             snap = collector.fetch(symbol, allow_network=False)
-            ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) if snap is not None else 0.0
+            ratio = (_finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0) if snap is not None else 0.0
             if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
                 # Widen grid spacing by 50% to quote deeper on dips/rips rather than top/bottom ticks
                 return base_adjustment * 1.5

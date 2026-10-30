@@ -17,10 +17,23 @@ from __future__ import annotations
 import math
 import os
 import time
-from state_io import read_json_dict, save_json_state
 from datetime import date
 
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
+from intelligence.internal.state.volatility import (
+    K_DCA_DEFAULT as K_DCA,
+    K_REENTRY_DEFAULT as K_REENTRY,
+    adaptive_thresholds,
+    vol_1h_pct,
+)
+from intelligence.internal.triggers.kalman_trigger import (
+    GAP_RESET_SEC,
+    KALMAN_QR,
+    KalmanTrend,
+)
+from state_io import read_json_dict, save_json_state
 
 
 def _f_env(name: str, default: float) -> float:
@@ -32,18 +45,6 @@ def _f_env(name: str, default: float) -> float:
 # and produced thousands of daily transitions; 60 seconds yields about four BTC
 # transitions per day, comparable with the primary model's timescale.
 KALMAN_SAMPLE_SEC = _f_env("SHADOW_KALMAN_SAMPLE_SEC", 60.0)
-
-from intelligence.internal.triggers.kalman_trigger import (
-    KalmanTrend,
-    KALMAN_QR,
-    GAP_RESET_SEC,
-)
-from intelligence.internal.state.volatility import (
-    vol_1h_pct,
-    adaptive_thresholds,
-    K_REENTRY_DEFAULT as K_REENTRY,
-    K_DCA_DEFAULT as K_DCA,
-)
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -145,8 +146,6 @@ class KalmanStateTracker:
         """Return Kalman trend and state age for tradeall's live order gate."""
         st = self._state.get(symbol)
         if not isinstance(st, dict) and isinstance(symbol, str):
-            from cachepaths import cache_symbol_variants
-            from instrument_registry import casefold_get
             for cand in cache_symbol_variants(symbol):
                 st = self._state.get(cand) if cand in self._state else casefold_get(self._state, cand)
                 if isinstance(st, dict):

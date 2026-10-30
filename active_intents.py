@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
-from cachepaths import normalize_venue_name
+from cachepaths import legacy_filenames_for, normalize_venue_name, resolve_cachedb_filepath
 from providers.base import _clean_single_order_id, normalize_side
 from state_io import read_json_file, read_jsonl_records, read_recovering_previous
 
@@ -303,8 +303,6 @@ def format_summary(result: dict) -> str:
 
 def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     """Return normalized active intents and read errors without mutating sources."""
-    from cachepaths import legacy_filenames_for, resolve_cachedb_filepath
-
     root = os.path.abspath(root)
     intents = []
     exposures = []

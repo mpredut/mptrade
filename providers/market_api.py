@@ -16,9 +16,10 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
+import instrument_registry
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float
 from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_venue_name
-from instrument_registry import casefold_get, select_instruments
+from instrument_registry import casefold_get
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -215,7 +216,7 @@ class BinanceProvider(MarketDataProvider):
         sym_canon = canonical_symbol_key(symbol)
         spec = next(
             (
-                item for item in select_instruments("binance").values()
+                item for item in instrument_registry.select_instruments("binance").values()
                 if item.symbol == symbol or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
             ),
             None,
@@ -1327,7 +1328,7 @@ class MarketApi:
         if inst_params is None:
             try:
                 sym_canon = canonical_symbol_key(symbol)
-                for spec in select_instruments(prov_name).values():
+                for spec in instrument_registry.select_instruments(prov_name).values():
                     if sym_canon and canonical_symbol_key(spec.symbol) == sym_canon:
                         inst_params = dict(spec.params or {})
                         base = base or spec.base or None

@@ -18,6 +18,7 @@ from cachepaths import (
     split_symbol_assets,
 )
 from instrument_registry import casefold_get, load_registry, select_instruments, symbols_for
+from intelligence.macro_sentiment_ssot import clean_symbol_key
 from state_io import read_json_dict_recovering
 
 
@@ -202,8 +203,6 @@ def resolve_tradable_instrument(
     workspace_dir: str | None = None,
 ):
     """Resolve an enabled Instrument instance for the given symbol and venue."""
-    from intelligence.macro_sentiment_ssot import clean_symbol_key
-
     if instruments_map is None:
         instruments_map = load_tradable_instruments(workspace_dir)
 

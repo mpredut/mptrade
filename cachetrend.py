@@ -27,10 +27,13 @@ import weakref
 from collections import defaultdict
 from typing import Optional
 
+import pricewindow as pw
 import utils as u
 from botcore import safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from cachepaths import (
     CACHEDB_SUBDOMAINS,
+    cache_path,
+    cache_symbol_variants,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -140,7 +143,6 @@ class CacheLongTrendManager(CacheManagerInterface):
         )
         default_root = os.path.dirname(os.path.abspath(__file__))
         if os.path.abspath(config_root) == os.path.abspath(default_root):
-            from cachepaths import cache_path
             trend_filename = cache_path("priceanalysis.json")
             if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
                 legacy_root_pa = os.path.join(config_root, "priceanalysis.json")
@@ -181,7 +183,6 @@ CacheLongTrend = CacheLongTrendManager
 
 def _short_trend_symbol_variants(symbol) -> list:
     """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
-    from cachepaths import cache_symbol_variants
     return cache_symbol_variants(
         symbol,
         include_original=True,
@@ -351,7 +352,6 @@ class CacheShortTrendManager(CacheManagerInterface):
         return self._trend_symbol_file("hist", symbol)
 
     def _get_trend_buffer(self, symbol: str):
-        import pricewindow as pw
         buf = self._trend_buffers.get(symbol)
         if buf is None:
             buf = pw.IncrementalTrendBuffer()
@@ -419,7 +419,6 @@ class CacheShortTrendManager(CacheManagerInterface):
         self._stop_event.clear()
         if self.writer:
             self.prime_from_file(symbols=self.symbols, overwrite=False)
-        import pricewindow as pw
         if cache24_managers is None:
             get_cm = _cm_attr("get_cache_manager")
             cache24_managers = get_cm("24Price")
@@ -678,7 +677,6 @@ class CacheShortTrendManager(CacheManagerInterface):
         self, symbol, entries, a: int, b: int, window_seconds=None
     ):
         """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
-        import pricewindow as pw
         sub_entries = entries[a : b + 1]
         sample_rate = pw.PriceWindow._sample_rate_from_entries(sub_entries)
         with self._lock:

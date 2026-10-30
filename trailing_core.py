@@ -32,9 +32,8 @@ ADAPTER contract (duck typing; see the two adapter classes):
 from __future__ import annotations
 
 import os
-from state_io import load_json_state, save_json_state
 
-
+import pricewindow as pw
 from botcore import (
     _parse_bool_flag,
     safe_float,
@@ -43,6 +42,8 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from providers.execution_audit import intent_client_order_id
+from state_io import load_json_state, save_json_state
 
 
 def extract_trailing_intent_action_asset(intent: object) -> tuple[str, str]:
@@ -95,8 +96,6 @@ def build_trailing_order_intent(
     **metadata,
 ) -> dict:
     """Build a deterministic TrackedOrderLifecycle intent for a trailing SELL or REBUY."""
-    from providers.execution_audit import intent_client_order_id
-
     raw_attempt = retry_counts.get((pair, action), 0)
     attempt = safe_nonneg_int(raw_attempt, 0) + 1
     qty_f = safe_float(qty, 0.0)
@@ -171,8 +170,6 @@ def extract_short_trend_slope(snap: dict, symbol: str) -> float:
     """Extract the short-trend slope from a trend snapshot, preferring the symbol's dynamic window."""
     if not isinstance(snap, dict):
         return 0.0
-    import pricewindow as pw
-
     target = snap
     fast_w = pw.fast_trend_window_for_symbol(symbol)
     dyn = snap.get("dynamic")

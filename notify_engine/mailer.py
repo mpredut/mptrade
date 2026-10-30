@@ -20,6 +20,7 @@ stays here and the shell scripts never duplicate it.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import re
@@ -32,6 +33,7 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from botcore import _parse_bool_flag, load_env_stack, safe_pos_int
+from notify_engine.alertnotifiers import _external_notifications_disabled, pass_common_gate
 
 # Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
@@ -45,7 +47,6 @@ def last_error_is_auth_failure() -> bool:
 
 
 def _disabled() -> bool:
-    from notify_engine.alertnotifiers import _external_notifications_disabled
     return _external_notifications_disabled()
 
 
@@ -132,7 +133,6 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
     else:
         dedup_flag = _parse_bool_flag(dedup, True)
     if dedup_flag:
-        from notify_engine.alertnotifiers import pass_common_gate
         identity = [{"type": "email", "name": subject, "body": body, "source": "mailer"}]
         allowed, reason, _, out_payload = pass_common_gate(
             "email", subject, body, "high", "email", identity, urgent=True,

@@ -13,7 +13,8 @@ from binance_api.bapi_ws_normalize import (
     parse_trade_execution_report,
 )
 from instrument_registry import casefold_get
-import log  # noqa: F401 - keep print behavior aligned with the rest of the runtime
+import log  # keep print behavior aligned with the rest of the runtime
+_ = log
 
 _ws_bridge = None
 _ws_bridge_lock = threading.Lock()

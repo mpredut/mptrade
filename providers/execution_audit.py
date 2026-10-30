@@ -29,7 +29,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_base_asset, canonical_symbol_key, normalize_venue_name
+from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key, normalize_venue_name
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
 from state_io import load_json_state, read_jsonl_dicts, save_json_state
@@ -561,7 +561,7 @@ def _resolve_intent_execution_details(
                 order_id is None
                 and order_type == "LIMIT"
                 and normalize_venue_name(oo.get("venue")) == venue
-                and str(oo.get("symbol") or "").strip().upper() == symbol
+                and canonical_symbol_key(oo.get("symbol")) == canonical_symbol_key(symbol)
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
             ):
                 matched_open = oo
@@ -589,7 +589,15 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
-        ro_entry = casefold_get(recent_orders, f"{venue}:{symbol}") or casefold_get(recent_orders, symbol)
+        ro_entry = next(
+            (
+                val
+                for cand in cache_symbol_variants(symbol)
+                for key_cand in (f"{venue}:{cand}", cand)
+                if isinstance((val := casefold_get(recent_orders, key_cand)), dict)
+            ),
+            None,
+        )
         if isinstance(ro_entry, dict):
             side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
             last_fill = ro_entry.get(side_key) if side_key else None

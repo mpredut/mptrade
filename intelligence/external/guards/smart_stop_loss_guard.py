@@ -108,7 +108,7 @@ _LOADED_STATE_FILE_KEY: Optional[Tuple[Any, ...]] = None
 
 
 def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
-    global _GRACE_TRACKER, _LOADED_STATE_FILE_KEY
+    global _LOADED_STATE_FILE_KEY
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
@@ -222,7 +222,6 @@ def _dispatch_recovery_alerts(events: list[Dict[str, Any]]) -> None:
 
 def flush_smart_stop_loss_alerts() -> int:
     """Dispatches any pending batched smart stop-loss recovery alerts."""
-    global _PENDING_RECOVERIES
     if not _PENDING_RECOVERIES:
         return 0
     events = list(_PENDING_RECOVERIES)
