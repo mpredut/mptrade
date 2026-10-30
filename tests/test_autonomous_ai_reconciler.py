@@ -6671,6 +6671,189 @@ def test_t212_client_cross_process_shared_disk_cache(tmp_path, monkeypatch):
     assert not os.path.exists(shared_file)
 
 
+def test_reconcile_executed_intents_from_audit_and_kraken_t212_fill_attribution(tmp_path):
+    """Verify EXECUTED intents are enriched with terminal cost/filled_qty, T212 cycle realized_net_usd is parsed, and Kraken/T212 fills are attributed to AI."""
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        reconcile_intents_from_execution_audit,
+        summarize_recent_ai_intents,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        extract_symbol_recent_fills,
+        harvest_recent_orders_and_enrich_positions,
+        parse_venue_cycle_state,
+    )
+
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. T212 market order initially recorded as status="NEW" and Kraken market order without cost/price
+    intents = [
+        {
+            "intent_id": "intent_1793367352_buy_spcx_us_eq",
+            "timestamp": 1793367352.98,
+            "decision": "BUY",
+            "symbol": "SPCX_US_EQ",
+            "venue": "t212",
+            "order_type": "MARKET",
+            "suggested_notional_usd": 150.0,
+            "clamped_notional_usd": 150.0,
+            "reference_price": 137.69,
+            "requested_price": 137.69,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "id": 59656394943,
+                "orderId": "59656394943",
+                "type": "MARKET",
+                "ticker": "SPCX_US_EQ",
+                "quantity": 1.08,
+                "filledQuantity": 0,
+                "status": "NEW",
+            },
+            "history": [{"ts": 1793367356.99, "action": "EXECUTED", "price": 137.69, "qty": 1.0894}],
+        },
+        {
+            "intent_id": "intent_1793365871_buy_hypeusd",
+            "timestamp": 1793365871.08,
+            "decision": "BUY",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "MARKET",
+            "suggested_notional_usd": 450.0,
+            "reference_price": 91.17,
+            "status": "EXECUTED",
+            "execution_payload": {
+                "txid": ["OX463P-YOSTO-S5NMAZ"],
+                "descr": {"order": "buy 4.93583 HYPEUSD @ market"},
+            },
+            "history": [{"ts": 1793365874.83, "action": "EXECUTED", "price": 91.17, "qty": 4.93583416}],
+        },
+    ]
+
+    audit_file = audit_dir / "execution_audit_2026-10-30.jsonl"
+    audit_file.write_text(
+        "\n".join([
+            json.dumps({
+                "event": "order_terminal",
+                "intent_id": "intent_1793367352_buy_spcx_us_eq",
+                "client_order_id": "AI_intent_1793367352_buy_spcx_us_eq",
+                "order_id": "59656394943",
+                "symbol": "SPCX_US_EQ",
+                "venue": "t212",
+                "side": "buy",
+                "status": "closed",
+                "venue_status": "FILLED",
+                "filled_qty": 1.08,
+                "cost": 148.5864,
+                "fee": 1.07,
+                "ts": 1793367696.36,
+            }),
+            json.dumps({
+                "event": "order_terminal",
+                "intent_id": "intent_1793365871_buy_hypeusd",
+                "client_order_id": "AI_intent_1793365871_buy_hypeusd",
+                "order_id": "OX463P-YOSTO-S5NMAZ",
+                "symbol": "HYPEUSD",
+                "venue": "kraken",
+                "side": "buy",
+                "status": "closed",
+                "venue_status": "CLOSED",
+                "filled_qty": 4.93583415,
+                "cost": 450.19743,
+                "fee": 1.57569,
+                "ts": 1793366203.03,
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is True
+    # Running a second time is idempotent
+    assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is False
+
+    eq_status = build_last_cycle_execution_status(intents, "equities", 1793370000.0, extract_intent_notional)
+    assert eq_status["fill_px"] == pytest.approx(137.58)
+    assert eq_status["ref_px"] == pytest.approx(137.69)
+    assert eq_status["filled_qty"] == pytest.approx(1.08)
+    assert eq_status["notional_usd"] == pytest.approx(148.59)
+    assert eq_status["slippage_bps"] == pytest.approx(-7.99)
+
+    krk_summary = summarize_recent_ai_intents(intents, "crypto", 1793370000.0, extract_intent_notional)
+    assert len(krk_summary) == 1
+    assert krk_summary[0]["venue_status"] == "FILLED"
+    assert krk_summary[0]["fill_px"] == pytest.approx(91.21, abs=1e-4)
+    assert krk_summary[0]["slippage_bps"] == pytest.approx(4.39, abs=0.05)
+
+    # 2. Kraken Ledgers fill with trade refid TZHKJT-VEG3G-YZAXLQ is attributed to AI via ai_intents
+    krk_fills = extract_symbol_recent_fills(
+        [
+            {
+                "symbol": "HYPEUSD",
+                "id": "TEUGID-NDEDW-YJAF2M",
+                "orderId": "TEUGID-NDEDW-YJAF2M",
+                "price": 93.30,
+                "qty": 11.7548,
+                "timestamp": 1793287711318,
+                "side": "SELL",
+            },
+            {
+                "symbol": "HYPEUSD",
+                "id": "TZHKJT-VEG3G-YZAXLQ",
+                "orderId": "TZHKJT-VEG3G-YZAXLQ",
+                "price": 91.209992,
+                "qty": 4.9358342,
+                "timestamp": 1793365875456,
+                "side": "BUY",
+            },
+        ],
+        known_ai_order_ids={"OX463P-YOSTO-S5NMAZ"},
+        ai_intents=intents,
+    )
+    assert krk_fills["last_action_side"] == "BUY"
+    assert krk_fills["last_action_actor"] == "AI"
+    assert krk_fills["last_buy"]["actor"] == "AI"
+    assert krk_fills["last_sell"]["actor"] == "BOT"
+
+    # 3. T212 cycle state parses realized_net_usd and harvest_recent_orders synthesizes T212 fills from execution_audit
+    t212_cyc = parse_venue_cycle_state(
+        {
+            "qty": 5.922965,
+            "cost_usd": 893.90,
+            "entry_price": 146.8203,
+            "last_buy_price": 137.5833,
+            "last_sell_price": 150.0015,
+            "realized_pnl_usd": -44.01,
+            "realized_net_usd": -50.3231,
+            "pos_peak": 166.0119,
+        },
+        "SPCX_US_EQ",
+        {"SPCX_US_EQ": {"price": 135.97}},
+        avg_decimals=4,
+    )
+    assert t212_cyc["realized_pnl_usd"] == pytest.approx(-50.32)
+
+    t212_pos = [{"venue": "t212", "symbol": "SPCX_US_EQ", "base": "SPCX", "quote": "USD", "price": 135.97, "free_base": 5.922965}]
+    ro_out = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        {},
+        t212_pos,
+        {"SPCX_US_EQ": {"price": 135.97}},
+        {},
+        {},
+        {"SPCX_US_EQ": t212_cyc},
+        known_ai_order_ids={"59656394943"},
+        ai_intents=intents,
+    )
+    assert "SPCX_US_EQ" in ro_out
+    assert ro_out["SPCX_US_EQ"]["last_action_actor"] == "AI"
+    assert ro_out["SPCX_US_EQ"]["last_buy"]["price"] == pytest.approx(137.58)
+    assert t212_pos[0]["active_avg_buy_px"] == pytest.approx(150.921)
+
+
+
 
 
 

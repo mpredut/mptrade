@@ -59,6 +59,7 @@ from providers.base import (
     extract_order_id,
     extract_order_price,
     extract_order_side,
+    extract_orig_qty,
     extract_timestamp_ms,
     extract_timestamp_s,
     format_actor_tag,
@@ -69,6 +70,8 @@ from providers.execution_audit import (
     build_last_cycle_execution_status,
     collect_known_ai_order_ids,
     extract_intent_notional,
+    extract_intent_order_type,
+    extract_intent_side,
     summarize_recent_ai_intents,
 )
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
@@ -649,6 +652,7 @@ def extract_symbol_recent_fills(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
+    ai_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
@@ -669,10 +673,65 @@ def extract_symbol_recent_fills(
     if not valid:
         return None
     ai_oids: set[str] = set(known_ai_order_ids or ())
+    valid_oids: set[str] = {
+        str(oid_x)
+        for x in valid
+        if (oid_x := extract_order_id(x, default=""))
+    }
+    parsed_ai_intents: List[tuple[str, str, float, float, str]] = []
+    for it in ai_intents or ():
+        if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() != "EXECUTED":
+            continue
+        exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
+        it_oid = extract_order_id(exec_pay, default="")
+        if it_oid and str(it_oid) in valid_oids:
+            continue
+        i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
+        i_ts_s = safe_pos_float(it.get("timestamp"), default=0.0) or 0.0
+        if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
+            continue
+        i_sym = str(it.get("symbol") or "").strip().upper()
+        i_otype = extract_intent_order_type(it)
+        hist = it.get("history") if isinstance(it.get("history"), list) else []
+        last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
+        i_qty = (
+            extract_executed_qty(exec_pay, default=0.0)
+            or extract_orig_qty(exec_pay, default=0.0)
+            or safe_pos_float(last_h.get("qty"), default=0.0)
+            or 0.0
+        )
+        parsed_ai_intents.append((i_sym, i_side, i_ts_s, i_qty, i_otype))
     origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
     origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
     for o in valid:
         act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
+        if (
+            act_v == "BOT"
+            and not mod_v
+            and not rule_v
+            and parsed_ai_intents
+            and not o.get("clientOrderId")
+            and not o.get("client_order_id")
+        ):
+            o_side = extract_order_side(o)
+            o_ts_ms = extract_timestamp_ms(o, default=0) or 0
+            o_ts_s = o_ts_ms / 1000.0 if o_ts_ms > 0 else 0.0
+            o_qty = extract_executed_qty(o, default=0.0) or 0.0
+            o_sym = str(o.get("symbol") or "").strip().upper()
+            for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
+                if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
+                    continue
+                if i_sym and o_sym and (
+                    canonical_base_asset(i_sym) != canonical_base_asset(o_sym)
+                    or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)
+                ):
+                    continue
+                if (
+                    (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0)
+                    or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0)
+                ):
+                    act_v = "AI"
+                    break
         oid_v = extract_order_id(o, default="")
         if oid_v:
             if act_v == "AI":
@@ -1666,19 +1725,18 @@ def parse_venue_cycle_state(
         if px_f > 0 and pos_peak > 0:
             eff_peak = max(pos_peak, px_f)
             cyc_entry["dd_from_peak_pct"] = round(((px_f - eff_peak) / eff_peak) * 100.0, 2)
-    raw_realized = (
-        st_data.get("realized_net")
-        if st_data.get("realized_net") is not None
-        else (
-            st_data.get("realized_pnl")
-            if st_data.get("realized_pnl") is not None
-            else st_data.get("realized_gross")
-        )
+    raw_realized = next(
+        (
+            st_data[rk]
+            for rk in ("realized_net", "realized_net_usd", "realized_pnl", "realized_pnl_usd", "realized_gross")
+            if st_data.get(rk) is not None
+        ),
+        None,
     )
     realized_pnl = safe_float(raw_realized, 0.0) or 0.0
     if abs(realized_pnl) > 1e-9:
         cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    tp_sold = st_data.get("tp_sold")
+    tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
     if isinstance(tp_sold, list) and tp_sold:
         cyc_entry["tp_sold_levels"] = tp_sold
     raw_orders = st_data.get("orders")
@@ -2741,8 +2799,9 @@ def harvest_recent_orders_and_enrich_positions(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
+    ai_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Load recent fills across Binance, Kraken, and Hyperliquid and enrich tradable_positions with cost-basis anchors."""
+    """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
     _rj = read_json_fn or read_json_cached
     audit_origin_map = _load_recent_audit_origins(cache_dir)
     recent_orders: Dict[str, Any] = {}
@@ -2768,15 +2827,26 @@ def harvest_recent_orders_and_enrich_positions(
     ):
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
+            v_ai_intents = (
+                [it for it in ai_intents if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
+                if isinstance(ai_intents, list)
+                else None
+            )
             for sym, o_list in orders_data["items"].items():
                 fills = extract_symbol_recent_fills(
                     o_list,
                     known_ai_order_ids=known_ai_order_ids,
                     audit_origin_map=audit_origin_map,
+                    ai_intents=v_ai_intents,
                 )
                 if fills:
                     _record_venue_fills(cache_venue, sym, fills)
     seen_hl_syms: set[str] = set()
+    hl_ai_intents = (
+        [it for it in ai_intents if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == "hyperliquid"]
+        if isinstance(ai_intents, list)
+        else None
+    )
     for inst in inst_by_sym.values():
         sym = str(getattr(inst, "symbol", "")).upper()
         v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
@@ -2796,11 +2866,65 @@ def harvest_recent_orders_and_enrich_positions(
                     hl_orders,
                     known_ai_order_ids=known_ai_order_ids,
                     audit_origin_map=audit_origin_map,
+                    ai_intents=hl_ai_intents,
                 )
                 if fills:
                     _record_venue_fills("hyperliquid", sym, fills)
         except Exception:
             pass
+    if not venue_recent_orders["t212"] and cache_dir:
+        audit_dir = os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit")
+        if os.path.isdir(audit_dir):
+            try:
+                t212_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+                audit_files = sorted(
+                    (os.path.join(audit_dir, f) for f in os.listdir(audit_dir) if f.startswith("execution_audit") and f.endswith(".jsonl"))
+                )[-10:]
+                for af in audit_files:
+                    for rec in read_tail_jsonl_dicts(af, limit=500):
+                        if str(rec.get("event") or "") not in ("order_terminal", "order_terminal_retry"):
+                            continue
+                        if normalize_venue_name(rec.get("venue")) != "t212":
+                            continue
+                        sym_t = str(rec.get("symbol") or "").strip().upper()
+                        f_q = safe_pos_float(
+                            rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
+                            default=0.0,
+                        ) or 0.0
+                        cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
+                        px_f = safe_pos_float(rec.get("price"), default=None) or (
+                            round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None
+                        )
+                        ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                        side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
+                        if sym_t and f_q > 0 and px_f is not None and px_f > 0 and ts_s > 0 and side_t in ("BUY", "SELL"):
+                            t212_by_sym.setdefault(sym_t, []).append({
+                                "symbol": sym_t,
+                                "orderId": rec.get("order_id"),
+                                "clientOrderId": rec.get("client_order_id"),
+                                "side": side_t,
+                                "price": px_f,
+                                "qty": f_q,
+                                "executedQty": f_q,
+                                "timestamp": int(round(ts_s * 1000.0)),
+                                "status": "FILLED",
+                            })
+                t212_ai_intents = (
+                    [it for it in ai_intents if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == "t212"]
+                    if isinstance(ai_intents, list)
+                    else None
+                )
+                for sym_t, o_list in t212_by_sym.items():
+                    fills = extract_symbol_recent_fills(
+                        o_list,
+                        known_ai_order_ids=known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
+                        ai_intents=t212_ai_intents,
+                    )
+                    if fills:
+                        _record_venue_fills("t212", sym_t, fills)
+            except Exception:
+                pass
     for c_venue, cyc_map, avg_dec in (
         ("kraken", kraken_cycles, 6),
         ("hyperliquid", hyperliquid_cycles, 6),
@@ -2976,7 +3100,14 @@ def harvest_recent_orders_and_enrich_positions(
                 pos.pop("dd_from_peak_pct", None)
             elif not is_flat_after_exit and cyc_has_open_qty:
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
-                set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
+                set_pos_anchor(
+                    pos,
+                    "active_avg_buy_px",
+                    "pnl_vs_avg_pct",
+                    cyc_avg,
+                    pos_px_f,
+                    overwrite=(p_venue == "t212" and cyc.get("avg_cost_px") is not None),
+                )
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
@@ -3623,6 +3754,16 @@ def populate_market_and_portfolio_snapshot(
     snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
 
     intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+    if isinstance(intents_data, list) and intents_data:
+        reconcile_fn = getattr(intent_gateway, "reconcile_intents", None)
+        if callable(reconcile_fn):
+            try:
+                if reconcile_fn(intents_data):
+                    save_fn = getattr(intent_gateway, "save_all_intents", None)
+                    if callable(save_fn):
+                        save_fn(intents_data)
+            except Exception:
+                pass
     known_ai_oids = collect_known_ai_order_ids(intents_data)
     gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 
@@ -3728,20 +3869,12 @@ def populate_market_and_portfolio_snapshot(
         _rj,
         known_ai_order_ids=known_ai_oids,
         gateway_max_usd=gw_max_usd,
+        ai_intents=intents_data if isinstance(intents_data, list) else None,
     )
     if recent_orders:
         snapshot.portfolio_summary["recent_orders"] = recent_orders
 
     if isinstance(intents_data, list) and intents_data:
-        reconcile_fn = getattr(intent_gateway, "reconcile_intents", None)
-        if callable(reconcile_fn):
-            try:
-                if reconcile_fn(intents_data):
-                    save_fn = getattr(intent_gateway, "save_all_intents", None)
-                    if callable(save_fn):
-                        save_fn(intents_data)
-            except Exception:
-                pass
         recent_intents_out = summarize_recent_ai_intents(
             intents_data,
             scope,
