@@ -285,6 +285,11 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
             res = safe_pos_float(total_quote / total_qty, default=None)
             if res is not None:
                 return res
+    msg_str = order.get("msg")
+    if isinstance(msg_str, str) and "@" in msg_str and msg_str.strip().lower().startswith("filled "):
+        msg_px = safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)
+        if msg_px is not None:
+            return msg_px
     return default
 
 
@@ -321,6 +326,13 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
         rem_sz = safe_float(order.get("sz"), default=None)
         if orig_sz is not None and rem_sz is not None:
             return round(max(0.0, abs(orig_sz) - abs(rem_sz)), 8)
+    msg_str = str(order.get("msg") or "").strip()
+    if msg_str.lower() == "resting":
+        return 0.0
+    if msg_str.lower().startswith("filled "):
+        msg_qty = safe_pos_float(msg_str[7:].split("@", 1)[0].strip(), default=None)
+        if msg_qty is not None:
+            return msg_qty
     raw_st = str(order.get("status") or "").strip().upper()
     if raw_st in _UNFILLED_ORDER_STATUSES or (isinstance(order.get("resting"), dict) and not filled_sub):
         return 0.0

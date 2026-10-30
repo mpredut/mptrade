@@ -585,7 +585,10 @@ def _resolve_intent_execution_details(
             fill_px = safe_pos_float(matched_open.get("price"), default=None)
 
     raw_intent_st = str(i.get("status") or "").strip().upper()
-    venue_st = str(exec_pay.get("status") or "").strip().upper()
+    venue_st = str(
+        exec_pay.get("status")
+        or ("RESTING" if str(exec_pay.get("msg") or "").strip().lower() == "resting" else "")
+    ).strip().upper()
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"

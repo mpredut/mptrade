@@ -4083,6 +4083,64 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert "active_avg_buy_px" not in live_pos_with_closed_cyc[0]
     assert "trailing_peak" not in live_pos_with_closed_cyc[0]
 
+    # 7. Iteration 17: Hyperliquid msg='resting' / 'filled <qty> @ <px>' parsing & extract_remaining_qty without status
+    from providers.base import extract_order_price, extract_remaining_qty
+
+    assert extract_remaining_qty({"origQty": "10.0"}) == pytest.approx(10.0)
+    assert extract_order_price({"orderId": 124, "ok": True, "msg": "filled 32.5 @ 61.42"}) == pytest.approx(61.42)
+    assert extract_executed_qty({"orderId": 124, "ok": True, "msg": "filled 32.5 @ 61.42"}) == pytest.approx(32.5)
+    assert extract_executed_qty({"orderId": 123, "ok": True, "msg": "resting"}) == 0.0
+
+    hl_rest_st = build_last_cycle_execution_status(
+        [
+            {
+                "intent_id": "hl_lim_1",
+                "timestamp": 1793300000.0,
+                "decision": "BUY",
+                "symbol": "HYPEUSDC",
+                "venue": "hyperliquid",
+                "order_type": "LIMIT",
+                "limit_price": 60.5,
+                "reference_price": 61.0,
+                "suggested_notional_usd": 302.5,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": 123, "ok": True, "msg": "resting"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        open_orders=[],
+    )
+    assert hl_rest_st["status"] == "OPEN_RESTING"
+    assert hl_rest_st["fill_px"] is None
+    assert hl_rest_st["filled_qty"] is None
+
+    hl_fill_st = build_last_cycle_execution_status(
+        [
+            {
+                "intent_id": "hl_mkt_1",
+                "timestamp": 1793300000.0,
+                "decision": "BUY",
+                "symbol": "HYPEUSDC",
+                "venue": "hyperliquid",
+                "order_type": "MARKET",
+                "reference_price": 61.40,
+                "suggested_notional_usd": 1996.15,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": 124, "ok": True, "msg": "filled 32.5 @ 61.42"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        open_orders=[],
+    )
+    assert hl_fill_st["status"] == "FILLED"
+    assert hl_fill_st["fill_px"] == pytest.approx(61.42)
+    assert hl_fill_st["filled_qty"] == pytest.approx(32.5)
+
+
 
 
 
