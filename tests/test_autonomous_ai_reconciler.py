@@ -5666,5 +5666,57 @@ def test_iteration40_monolithic_cache24_isolation_and_bare_base_series_micro_pre
     assert "23.5" in telem["Recent Venue Fills"]
 
 
+def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
+    from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics
+    from orchestratorOS.supervisor.prompt_formatters import _format_market_prices_section
+
+    t0 = 1_793_300_000_000
+    hr = 3_600_000
+    # Simulate a 2-wave overnight crash:
+    # - BTC: drops from 80,500 (-5h) to 76,740 (-2h), then sweeps 76,387 (-25m) and reclaims 77,208 (now)
+    btc_series = [
+        [t0 - 5 * hr, 80500.0],
+        [t0 - 3 * hr, 78900.0],
+        [t0 - 2 * hr, 76739.78],
+        [t0 - 90 * 60000, 77400.0],
+        [t0 - 25 * 60000, 76387.17],
+        [t0, 77208.86],
+    ]
+    # - TAO: drops from 250.0 (-5h) to 220.0 (-2h), then holds a higher low at 226.1 (-25m) and bounces to 231.8 (now)
+    tao_series = [
+        [t0 - 5 * hr, 250.0],
+        [t0 - 3 * hr, 238.0],
+        [t0 - 2 * hr, 220.0],
+        [t0 - 90 * 60000, 229.0],
+        [t0 - 25 * 60000, 226.1],
+        [t0, 231.8],
+    ]
+
+    btc_m = compute_24h_price_metrics(btc_series)
+    tao_m = compute_24h_price_metrics(tao_series)
+
+    assert btc_m["bottom_structure_6h"] == "LIQUIDITY_SWEEP_RECLAIM"
+    assert btc_m["prior_6h_low_px"] == 76739.78
+    assert btc_m["recent_1h_low_px"] == 76387.17
+    assert btc_m["reclaim_above_prior_low_pct"] == 0.61
+
+    assert tao_m["bottom_structure_6h"] == "HIGHER_LOW_DOUBLE_BOTTOM"
+    assert tao_m["prior_6h_low_px"] == 220.0
+    assert tao_m["recent_1h_low_px"] == 226.1
+    assert tao_m["higher_low_vs_prior_pct"] == 2.77
+
+    lines = _format_market_prices_section({
+        "BTCUSDC": {"price": 77208.86, **btc_m},
+        "TAOUSDC": {"price": 231.8, **tao_m},
+    })
+    joined = "\n".join(lines)
+    assert "bottom_6h=LIQUIDITY_SWEEP_RECLAIM(prior_low=76739.78, 1h_low=76387.17, reclaim=+0.61%)" in joined
+    assert (
+        "bottom_6h=HIGHER_LOW_DOUBLE_BOTTOM(prior_low=220.0, 1h_low=226.1, hl_diff=+2.77%, smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE)"
+        in joined
+    )
+
+
+
 
 

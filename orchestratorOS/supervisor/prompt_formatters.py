@@ -401,6 +401,25 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             if cross_parts:
                 extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
 
+        if pinfo.get("bottom_structure_6h"):
+            b_struct = pinfo.get("bottom_structure_6h")
+            b_parts = [f"prior_low={pinfo.get('prior_6h_low_px')}", f"1h_low={pinfo.get('recent_1h_low_px')}"]
+            if pinfo.get("higher_low_vs_prior_pct") is not None:
+                b_parts.append(f"hl_diff={_parse_finite_float(pinfo.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
+            if pinfo.get("reclaim_above_prior_low_pct") is not None:
+                b_parts.append(f"reclaim={_parse_finite_float(pinfo.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
+            if (
+                not sym.endswith(("_EQ", "_US_EQ"))
+                and canonical_base_asset(sym) != "BTC"
+                and btc_entry
+                and b_struct == "HIGHER_LOW_DOUBLE_BOTTOM"
+            ):
+                btc_b_struct = btc_entry.get("bottom_structure_6h")
+                btc_pos_24 = _parse_finite_float(btc_entry.get("pos_24h_pct"), 100.0)
+                if btc_b_struct in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos_24 <= 35.0:
+                    b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
+            extras.append(f"bottom_6h={b_struct}({', '.join(b_parts)})")
+
         if "chg_7d_pct" in pinfo:
             extras.append(
                 f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
@@ -980,11 +999,15 @@ def build_supervisor_prompt(
             "fixed slices when conviction or profitability is clear: when a position is clearly in profit (e.g. above "
             "`active_avg_buy_px` / `last_buy_px` or after a strong upward swing), you are completely free to sell a large "
             f"quantity or the entire profitable position (`50%–100%` of `value_usd`, up to {max_usd:g} USD) at once.\n"
-            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN): Elevated macro/geopolitical risk scores, extreme fear, or compressed "
-            "breadth (`advance_ratio < 0.20`) signal high-volatility regimes where capitulation dips and liquidation cascades "
-            "create the highest-EV mean-reversion entries. Whenever microstructure confirms strong absorption at support "
-            "(e.g. a large `bid_wall` / positive `ob_imbalance`, `taker_ratio > 1.3`, seller exhaustion at 24h/7d/`VAL` support, "
-            "and ample dry powder), execute contrarian dip accumulation (scale-in) in controlled small/medium tranches ($200–$500 USD).\n"
+            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & MULTI-WAVE BOTTOM STRUCTURE (`bottom_6h` / `smt_vs_btc`): Elevated "
+            "macro/geopolitical risk scores (`CRITICAL_SHOCK`), extreme fear, or compressed breadth (`advance_ratio < 0.20`) signal "
+            "high-volatility regimes where multi-wave capitulation dips and liquidation cascades create the highest-EV mean-reversion entries. "
+            "Do NOT freeze into passive `HOLD` across cycles merely because an earlier tranche was bought at a higher price (never anchor to "
+            "temporary unrealized PnL drawdowns when ample free quote cash remains). Whenever a deeper washout (-3% to -12% below prior entry) "
+            "or a verified 6h bottom structure (`bottom_6h=HIGHER_LOW_DOUBLE_BOTTOM` or `LIQUIDITY_SWEEP_RECLAIM`, especially paired with "
+            "`smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE`, positive `cvd_15m`, `taker_ratio > 1.05`, `div_regime=accumulation`, or deep `bid_wall` "
+            "absorption at 24h/7d/`VAL` support) forms while you hold ample dry powder, actively scale in with controlled tranches ($200–$800 USD) "
+            "via immediate `MARKET` or passive `BUY LIMIT` orders to lower average cycle cost and capture the recovery.\n"
             "   - DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK (`open_limit_orders` & `last_cycle_execution_status`): "
             "Because intra-cycle wicks between 10-minute evaluations can touch key support or resistance levels and bounce before the next cycle, "
             "you may submit either immediate market orders (`\"order_type\": \"MARKET\"`, `\"limit_price\": null`) OR passive resting "

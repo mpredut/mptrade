@@ -331,6 +331,38 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     tape_pts.append(f"{lbl}:{px_m:.6g}")
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
+        if span_ms >= 3600000.0 * 2.0:
+            win_6h = [(tms, p_v) for tms, p_v in clean_series if tms >= now_ms - 360.0 * 60000.0]
+            cutoff_1h = now_ms - 60.0 * 60000.0
+            prior_pts = [p_v for tms, p_v in win_6h if tms < cutoff_1h]
+            recent_pts = [p_v for tms, p_v in win_6h if tms >= cutoff_1h]
+            if len(prior_pts) >= 2 and len(recent_pts) >= 2:
+                high_6h = max(p_v for _, p_v in win_6h)
+                prior_low = min(prior_pts)
+                recent_low = min(recent_pts)
+                low_6h = min(prior_low, recent_low)
+                dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
+                pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
+                if dd_low_6h <= -2.0 and pos_6h <= 0.65 and prior_low > 0.0 and recent_low > 0.0:
+                    eff_dec = 2 if cur_px >= 100.0 else (4 if cur_px >= 1.0 else 6)
+                    if recent_low < prior_low and cur_px > prior_low:
+                        out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
+                        out["prior_6h_low_px"] = round(prior_low, eff_dec)
+                        out["recent_1h_low_px"] = round(recent_low, eff_dec)
+                        out["reclaim_above_prior_low_pct"] = round(((cur_px / prior_low) - 1.0) * 100.0, 2)
+                    elif (
+                        recent_low >= prior_low
+                        and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5
+                        and cur_px > recent_low * 1.002
+                    ):
+                        out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
+                        out["prior_6h_low_px"] = round(prior_low, eff_dec)
+                        out["recent_1h_low_px"] = round(recent_low, eff_dec)
+                        out["higher_low_vs_prior_pct"] = round(((recent_low / prior_low) - 1.0) * 100.0, 2)
+                    elif recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5:
+                        out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
+                        out["prior_6h_low_px"] = round(prior_low, eff_dec)
+                        out["recent_1h_low_px"] = round(recent_low, eff_dec)
         vp_metrics = compute_volume_profile_metrics(series)
         if vp_metrics:
             out.update(vp_metrics)
@@ -2413,6 +2445,7 @@ def sync_sibling_symbol_telemetry(
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
         "poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime",
+        "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }
     for sym, pinfo in list(prices_and_trends.items()):
         if not isinstance(pinfo, dict):
