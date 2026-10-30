@@ -532,6 +532,7 @@ def _resolve_intent_execution_details(
         extract_order_price,
         extract_order_side,
         extract_orig_qty,
+        normalize_timestamp_ms,
     )
 
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
@@ -597,13 +598,20 @@ def _resolve_intent_execution_details(
             side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
             last_fill = ro_entry.get(side_key) if side_key else None
             if isinstance(last_fill, dict):
-                f_ts_ms = safe_float(last_fill.get("ts_ms"), 0.0)
-                if ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= (ts_val - 120.0) * 1000.0:
+                f_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+                f_actor = str(last_fill.get("actor") or "").strip().upper()
+                min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
+                if f_actor != "BOT" and (ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= min_fill_ts_ms):
                     if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
                         fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
                     if filled_qty <= 0:
                         filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
-    if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW"):
+    is_unfilled_resting_limit = (
+        order_type == "LIMIT"
+        and venue_st in _UNFILLED_ORDER_STATUSES
+        and filled_qty <= 0
+    )
+    if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:
         fill_px = safe_pos_float(
             last_hist.get("price")
             or i.get("requested_price")
@@ -617,6 +625,8 @@ def _resolve_intent_execution_details(
     elif raw_intent_st == "EXECUTED":
         if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
             exec_status = venue_st
+        elif is_unfilled_resting_limit:
+            exec_status = "OPEN_RESTING"
         elif venue_st == "PARTIALLY_FILLED":
             exec_status = "PARTIALLY_FILLED"
         else:

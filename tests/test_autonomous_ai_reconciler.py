@@ -4018,5 +4018,71 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     ada_inst = MagicMock(symbol="ADAUSD", base="ADA", _provider=None)
     assert resolve_instrument_live_price(ada_inst, str(tmp_path)) == pytest.approx(0.71)
 
+    # 4. Iteration 16: resting LIMIT without open_orders/AI fill stays OPEN_RESTING, ignores BOT fills, normalizes seconds ts_ms
+    from intelligence.sentiment.guards.high_stake_guard import (
+        enrich_microstructure_cvd,
+        parse_venue_cycle_state,
+    )
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    lim_intent = [
+        {
+            "intent_id": "lim_new_1",
+            "timestamp": 1793300000.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 78000.0,
+            "reference_price": 79000.0,
+            "suggested_notional_usd": 390.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "L1", "status": "NEW", "price": "78000.0", "origQty": "0.005", "executedQty": "0.0"},
+        }
+    ]
+    ro_bot = {"binance:BTCUSDC": {"last_buy": {"price": 78900.0, "qty": 0.01, "ts_ms": 1793300005.0, "actor": "BOT"}}}
+    st_unfilled = build_last_cycle_execution_status(
+        lim_intent, "crypto", 1793300060.0, extract_intent_notional, recent_orders=ro_bot, open_orders=[]
+    )
+    assert st_unfilled["status"] == "OPEN_RESTING"
+    assert st_unfilled["fill_px"] is None
+    assert st_unfilled["filled_qty"] is None
+
+    ro_ai_sec = {"binance:BTCUSDC": {"last_buy": {"price": 77950.0, "qty": 0.005, "ts_ms": 1793300010.0, "actor": "AI"}}}
+    st_filled_sec = build_last_cycle_execution_status(
+        lim_intent, "crypto", 1793300060.0, extract_intent_notional, recent_orders=ro_ai_sec, open_orders=[]
+    )
+    assert st_filled_sec["status"] == "FILLED"
+    assert st_filled_sec["fill_px"] == pytest.approx(77950.0)
+    assert st_filled_sec["filled_qty"] == pytest.approx(0.005)
+
+    # 5. enrich_microstructure_cvd derives ob_mid_price/spread_bps and uses chg_15m_pct for cvd_regime
+    m_sample = {
+        "best_bid": 99.9,
+        "best_ask": 100.1,
+        "ob_imbalance": 0.60,
+        "taker_buy_vol_usd": 500_000.0,
+        "taker_sell_vol_usd": 200_000.0,
+    }
+    enrich_microstructure_cvd(m_sample, {"price": 100.0, "chg_15m_pct": 1.4})
+    assert m_sample["ob_mid_price"] == pytest.approx(100.0)
+    assert m_sample["spread_bps"] == pytest.approx(20.0)
+    assert m_sample["cvd_regime"] == "aggressive_buying"
+
+    # 6. parse_venue_cycle_state omits pos_peak on qty=0 and closed cycle does not overwrite live position anchors
+    closed_cyc = parse_venue_cycle_state(
+        {"qty": 0.0, "cost": 0.0, "entry_price": 140.0, "pos_peak": 165.0},
+        "SOLUSD",
+        {"SOLUSD": {"price": 150.0}},
+    )
+    assert "pos_peak" not in closed_cyc
+    live_pos_with_closed_cyc = [{"venue": "kraken", "symbol": "SOLUSD", "price": 150.0, "free_base": 2.0, "free_quote": 500.0}]
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path), {}, live_pos_with_closed_cyc, {"SOLUSD": {"price": 150.0}}, {"SOLUSD": closed_cyc}, {}, {}
+    )
+    assert "active_avg_buy_px" not in live_pos_with_closed_cyc[0]
+    assert "trailing_peak" not in live_pos_with_closed_cyc[0]
+
+
 
 

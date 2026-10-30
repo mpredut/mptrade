@@ -992,6 +992,20 @@ def enrich_microstructure_cvd(
     """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime` on `minfo`."""
     if not isinstance(minfo, dict):
         return
+    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
+    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
+    if b_bid > 0.0 and b_ask >= b_bid:
+        if not safe_pos_float(minfo.get("ob_mid_price"), default=None):
+            minfo["ob_mid_price"] = round((b_bid + b_ask) / 2.0, 6)
+        if minfo.get("spread_bps") is None:
+            sp_bps = round_spread_bps(
+                None,
+                best_bid=b_bid,
+                best_ask=b_ask,
+                mid_price=safe_pos_float(minfo.get("ob_mid_price"), default=None),
+            )
+            if sp_bps is not None:
+                minfo["spread_bps"] = sp_bps
     if not safe_pos_float(minfo.get("depth_1pct_bid_usd"), default=None) and (
         bd_f := safe_pos_float(minfo.get("bid_depth_usd"), default=None)
     ):
@@ -1017,8 +1031,6 @@ def enrich_microstructure_cvd(
     if cvd_usd is None:
         return
     p_dict = pinfo if isinstance(pinfo, dict) else {}
-    b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
-    b_ask = safe_pos_float(minfo.get("best_ask"), default=0.0) or 0.0
     m_px = (
         safe_pos_float(p_dict.get("price"), default=None)
         or safe_pos_float(minfo.get("ob_mid_price"), default=None)
@@ -1431,7 +1443,18 @@ def parse_venue_cycle_state(
     qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
     raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
     cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
-    avg_cost = round(cost / qty, avg_decimals) if qty > 1e-12 and cost > 0 else None
+    avg_cost = (
+        round(cost / qty, avg_decimals)
+        if qty > 1e-12 and cost > 0
+        else (
+            round_opt_px(
+                st_data.get("avg_cost") or st_data.get("avg_price") or st_data.get("entry_price"),
+                avg_decimals,
+            )
+            if qty > 1e-12
+            else None
+        )
+    )
     px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
     dd_pct = round(((px_f - avg_cost) / avg_cost) * 100.0, 2) if avg_cost and px_f > 0 else None
     last_buy_px = (
@@ -1451,7 +1474,7 @@ def parse_venue_cycle_state(
         "dd_pct": dd_pct,
     }
     pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
-    if pos_peak is not None:
+    if pos_peak is not None and qty > 1e-12:
         cyc_entry["pos_peak"] = pos_peak
     raw_realized = (
         st_data.get("realized_net")
@@ -1669,6 +1692,7 @@ def build_cross_market_context(
         if isinstance(m_info, dict):
             for mk_copy in (
                 "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
+                "cvd_15m_usd", "cvd_regime", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
                 "long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias",
             ):
                 if m_info.get(mk_copy) is not None:
@@ -2193,6 +2217,13 @@ def enrich_24h_and_microstructure(
 
         m_info = load_symbol_microstructure(cache_dir, sym, _rj)
         if m_info:
+            if (
+                isinstance(prices_and_trends.get(sym), dict)
+                and safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0
+                and safe_pos_float(m_info.get("ob_mid_price"), default=None)
+            ):
+                prices_and_trends[sym]["price"] = m_info["ob_mid_price"]
+            enrich_microstructure_cvd(m_info, prices_and_trends.get(sym))
             liq_info = compute_liquidation_clusters(prices_and_trends.get(sym), m_info)
             if liq_info:
                 m_info.update(liq_info)
@@ -2221,6 +2252,7 @@ def enrich_24h_and_microstructure(
                     prices_and_trends,
                     cache_symbol_variants(msym, include_original=True, include_base=True),
                 )
+                enrich_microstructure_cvd(m_info_ref, p_ref)
                 liq_ref = compute_liquidation_clusters(p_ref, m_info_ref)
                 if liq_ref:
                     m_info_ref.update(liq_ref)
@@ -2465,7 +2497,8 @@ def harvest_recent_orders_and_enrich_positions(
                 is_flat_balance = fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
                 if pos_px_f > 0:
                     pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
-            cyc_flat = is_flat_balance and (cyc_qty is None or cyc_qty <= 1e-8) and not cyc.get("resting_orders")
+            cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
+            cyc_flat = is_flat_balance and not cyc_has_open_qty
             if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
                 cyc["qty"] = round(max(0.0, fb_cur), 6)
                 cyc["cost_usd"] = 0.0
@@ -2475,7 +2508,10 @@ def harvest_recent_orders_and_enrich_positions(
                 pos.pop("dd_from_peak_pct", None)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]
-            elif not is_flat_after_exit and (not is_flat_balance or (cyc_qty is not None and cyc_qty > 1e-8)):
+            elif cyc_flat:
+                pos.pop("trailing_peak", None)
+                pos.pop("dd_from_peak_pct", None)
+            elif not is_flat_after_exit and cyc_has_open_qty:
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)

@@ -491,7 +491,9 @@ def _format_microstructure_section(
             or minfo.get("cvd_regime") is None
             or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
         ):
-            enrich_microstructure_cvd(minfo, {"price": cur_px} if cur_px > 0.0 else None)
+            raw_p = prices_and_trends.get(sym) if isinstance(prices_and_trends.get(sym), dict) else {}
+            p_ctx = {**raw_p, "price": cur_px} if cur_px > 0.0 else (raw_p or None)
+            enrich_microstructure_cvd(minfo, p_ctx)
         d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
         depth_1pct_sfx = (
