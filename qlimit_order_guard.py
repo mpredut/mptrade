@@ -115,7 +115,12 @@ def check_qlimit2_order_guards(
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
-    from order_guard import _load_margins, is_intelligence_master_off, validate_guard_mode_cfg
+    from order_guard import (
+        _load_margins,
+        is_intelligence_master_off,
+        resolve_effective_trend_duration,
+        validate_guard_mode_cfg,
+    )
     m = _load_margins() if margins is None else margins
 
     if is_intelligence_master_off(m):
@@ -158,13 +163,10 @@ def check_qlimit2_order_guards(
                 return False, p_dec.reason, 0.0
 
     # 2. Weibull trend exhaustion check (calibrated past G_QLIMIT1's Gaussian Zone 2 when resolved from live cache)
-    dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
-    explicit_duration_override = dur_sec > 0.0
-    if dur_sec <= 0.0:
-        if regime_context is not None:
-            dur_sec = safe_pos_float(obj_attr(regime_context, "trend_duration_seconds", 0.0), 0.0)
-        if dur_sec <= 0.0:
-            dur_sec = safe_pos_float(_resolve_trend_duration(symbol), 0.0)
+    explicit_duration_override = safe_pos_float(trend_duration_seconds, 0.0) > 0.0
+    dur_sec = resolve_effective_trend_duration(
+        symbol, trend_duration_seconds, regime_context, fallback_resolver=_resolve_trend_duration
+    )
 
     if dur_sec > 0.0:
         ctx_rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")

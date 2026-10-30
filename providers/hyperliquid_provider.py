@@ -477,15 +477,11 @@ class HyperliquidProvider(MarketDataProvider):
             if qty <= 0:
                 print(f"[HL] place_order {side} {symbol}: refused non-positive qty={qty}")
                 return None
-            sig = inspect.signature(signer.spot_order)
-            call_kwargs = {"sz_decimals": sz_dec, "cloid": cloid}
-            has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-            if "is_market" in sig.parameters or has_var_kwargs:
-                call_kwargs["is_market"] = is_market
-            if "tif" in sig.parameters or has_var_kwargs:
-                call_kwargs["tif"] = order_tif
-            ok, oid, msg = signer.spot_order(
-                pair, is_buy, float(qty), float(submit_px), **call_kwargs)
+            ok, oid, msg = self._invoke_spot_order(
+                signer, pair, is_buy, float(qty), float(submit_px),
+                sz_decimals=sz_dec, is_market=is_market, tif=order_tif,
+                cloid=cloid, include_none_cloid=True,
+            )
             clean_oid = extract_order_id(oid, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
             if not (ok and clean_oid):
@@ -499,6 +495,36 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[HL] place_order({side} {symbol}) failed: {e}")
             return None
+
+    @staticmethod
+    def _invoke_spot_order(
+        signer,
+        pair: str,
+        is_buy: bool,
+        qty: float,
+        px: float,
+        *,
+        sz_decimals: int,
+        is_market: bool,
+        tif: str,
+        cloid: Optional[str] = None,
+        include_none_cloid: bool = False,
+    ):
+        sig = inspect.signature(signer.spot_order)
+        call_kwargs: dict = {"sz_decimals": sz_decimals}
+        if cloid is not None or include_none_cloid:
+            call_kwargs["cloid"] = cloid
+        has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if "is_market" in sig.parameters or has_var_kwargs:
+            call_kwargs["is_market"] = is_market
+        if "tif" in sig.parameters or has_var_kwargs:
+            call_kwargs["tif"] = tif
+        try:
+            return signer.spot_order(pair, is_buy, qty, px, **call_kwargs)
+        except TypeError:
+            call_kwargs.pop("is_market", None)
+            call_kwargs.pop("tif", None)
+            return signer.spot_order(pair, is_buy, qty, px, **call_kwargs)
 
     # -- StrategyExecutor contract using the real Hyperliquid API. -------------
     # get_current_price and free_balance already satisfy the contract.
@@ -590,24 +616,15 @@ class HyperliquidProvider(MarketDataProvider):
         try:
             signer = self._signer()
             szd = signer.sz_decimals(self._token)
-            order_kwargs = {
-                "sz_decimals": szd,
-                "is_market": is_market,
-                "tif": "Ioc" if is_market else "Gtc",
-            }
-            if client_order_id is not None:
-                order_kwargs["cloid"] = _cloid_for_client_order_id(
-                    client_order_id)
-            try:
-                ok, oid, msg = signer.spot_order(
-                    pair, is_buy, float(qty), float(px), **order_kwargs,
-                )
-            except TypeError:
-                order_kwargs.pop("is_market", None)
-                order_kwargs.pop("tif", None)
-                ok, oid, msg = signer.spot_order(
-                    pair, is_buy, float(qty), float(px), **order_kwargs,
-                )
+            cloid = (
+                _cloid_for_client_order_id(client_order_id)
+                if client_order_id is not None else None
+            )
+            ok, oid, msg = self._invoke_spot_order(
+                signer, pair, is_buy, float(qty), float(px),
+                sz_decimals=szd, is_market=is_market,
+                tif="Ioc" if is_market else "Gtc", cloid=cloid,
+            )
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001

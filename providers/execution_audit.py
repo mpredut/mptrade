@@ -203,17 +203,20 @@ class AuditedStrategyExecutor:
     def _norm_order_id_key(order_id: object) -> str:
         return _clean_single_order_id(order_id) or ""
 
+    @staticmethod
+    def _lru_put(cache: OrderedDict, key: Any, value: Any) -> None:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > _CACHE_MAX:
+            cache.popitem(last=False)
+
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         oid_key = self._norm_order_id_key(order_id)
         if not oid_key:
             return
         sym_key = self._norm_symbol_key(symbol)
         with self._lock:
-            key = (sym_key, oid_key)
-            self._intent_by_order[key] = intent_id
-            self._intent_by_order.move_to_end(key)
-            while len(self._intent_by_order) > _CACHE_MAX:
-                self._intent_by_order.popitem(last=False)
+            self._lru_put(self._intent_by_order, (sym_key, oid_key), intent_id)
 
     def _intent(self, symbol: str, order_id: str, explicit: Optional[str] = None) -> str:
         clean_exp = self._norm_order_id_key(explicit)
@@ -317,10 +320,7 @@ class AuditedStrategyExecutor:
         key = (self._norm_symbol_key(symbol), oid_key)
         with self._lock:
             changed = self._last_status.get(key) != fingerprint
-            self._last_status[key] = fingerprint
-            self._last_status.move_to_end(key)
-            while len(self._last_status) > _CACHE_MAX:
-                self._last_status.popitem(last=False)
+            self._lru_put(self._last_status, key, fingerprint)
         if changed:
             self.audit.record(
                 "order_status", intent_id=intent_id, venue=self.name, symbol=symbol,
@@ -415,6 +415,19 @@ class AuditedStrategyExecutor:
         )
 
 
+def _extract_intent_id(record: Any, default: str = "") -> str:
+    """Return a clean non-boolean intent_id (falling back to ``id``) from ``record``."""
+    if not isinstance(record, dict):
+        return default
+    for key in ("intent_id", "id"):
+        raw = record.get(key)
+        if raw is not None and not isinstance(raw, bool):
+            clean = str(raw).strip()
+            if clean:
+                return clean
+    return default
+
+
 def append_intent_history(intent: dict[str, Any], entry: dict[str, Any]) -> None:
     """Append an entry to ``intent['history']``, coercing null or non-list history fields."""
     hist = intent.get("history")
@@ -433,10 +446,7 @@ def reconcile_intents_from_execution_audit(
     for item in intents:
         if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() not in ("FAILED", "PENDING_EXECUTION"):
             continue
-        raw_id = item.get("intent_id") if item.get("intent_id") is not None else item.get("id")
-        if raw_id is None or isinstance(raw_id, bool):
-            continue
-        clean_id = str(raw_id).strip()
+        clean_id = _extract_intent_id(item)
         if clean_id:
             failed_by_id[clean_id] = item
     if not failed_by_id or not os.path.isdir(audit_dir):
@@ -445,11 +455,8 @@ def reconcile_intents_from_execution_audit(
     matched_records: dict[str, dict[str, Any]] = {}
     for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
         for rec in read_jsonl_dicts(audit_path):
-            raw_iid = rec.get("intent_id") if rec.get("intent_id") is not None else rec.get("id")
-            if raw_iid is None or isinstance(raw_iid, bool):
-                continue
-            iid = str(raw_iid).strip()
-            if iid not in failed_by_id:
+            iid = _extract_intent_id(rec)
+            if not iid or iid not in failed_by_id:
                 continue
             ev = str(rec.get("event") or "")
             if ev == "submit_accepted":
@@ -979,7 +986,7 @@ def generate_unique_intent_id(
 ) -> str:
     """Generate a unique intent_id for the durable intent queue."""
     base_id = f"intent_{int(now_ts)}_{side.lower()}_{symbol.lower()}"
-    existing_ids = {str(i.get("intent_id") or i.get("id")) for i in existing_intents if isinstance(i, dict)}
+    existing_ids = {_extract_intent_id(i) for i in existing_intents if isinstance(i, dict)} - {""}
     intent_id = base_id
     suffix = len(existing_intents) + 1
     while intent_id in existing_ids:
@@ -1208,12 +1215,7 @@ def normalize_intent_fields(
     now_ts: float,
 ) -> tuple[str, str, str, str]:
     """Extract and normalize (intent_id, decision, symbol, venue) from an intent dict."""
-    raw_iid = intent.get("intent_id")
-    if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
-        raw_iid = intent.get("id")
-    if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
-        raw_iid = f"intent_{int(now_ts)}"
-    intent_id = str(raw_iid).strip()
+    intent_id = _extract_intent_id(intent, default=f"intent_{int(now_ts)}")
     decision = extract_intent_side(intent)
     raw_sym = intent.get("symbol", "")
     symbol = "" if isinstance(raw_sym, bool) or raw_sym is None else str(raw_sym).strip().upper()

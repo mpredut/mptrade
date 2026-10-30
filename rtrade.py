@@ -1265,7 +1265,18 @@ class TradingBot:
                     cond.wait(timeout=remaining)
             return bool(getattr(self, "_round_aborted", False) and not opposite_filled_fn())
 
-    def repetitive_buy(self, current_price, filled_sell_price):
+    def _repetitive_side_loop(self, side: str, current_price, filled_opp_price):
+        is_buy = side == "BUY"
+        opp_side = "SELL" if is_buy else "BUY"
+        filled_attr = "filled_buy_price" if is_buy else "filled_sell_price"
+        is_side_filled = (lambda: self.is_buy_filled) if is_buy else (lambda: self.is_sell_filled)
+        is_opp_filled = (lambda: self.is_sell_filled) if is_buy else (lambda: self.is_buy_filled)
+        mark_filled = self.mark_buy_filled if is_buy else self.mark_sell_filled
+        decay_pct = RTRADE_BUY_DECAY_PCT if is_buy else RTRADE_SELL_DECAY_PCT
+        desp_hours_base = RTRADE_BUY_DESPERATE_HOURS_BASE if is_buy else RTRADE_SELL_DESPERATE_HOURS_BASE
+        normal_hours = RTRADE_BUY_NORMAL_HOURS if is_buy else RTRADE_SELL_NORMAL_HOURS
+        sign = -1.0 if is_buy else 1.0
+
         adjustment_percent = self.DEFAULT_ADJUSTMENT_PERCENT
         failure_count = 1  # Count placement failures.
         max_failures = RTRADE_MAX_FAILURES  # Maximum accepted failures.
@@ -1276,7 +1287,7 @@ class TradingBot:
         cumulative_cost = 0.0
         completed = False
 
-        def _complete_buy_followup(chunk_qty=0.0, chunk_price=0.0):
+        def _complete_followup(chunk_qty=0.0, chunk_price=0.0):
             nonlocal completed
             add_qty = max(0.0, float(chunk_qty or 0.0))
             total_qty = round(cumulative_filled_qty + add_qty, 8)
@@ -1286,88 +1297,98 @@ class TradingBot:
             avg_px = (
                 round(total_cost / total_qty, 4)
                 if total_cost > 0
-                else float(chunk_price or self.filled_buy_price)
+                else float(chunk_price or getattr(self, filled_attr))
             )
-            self.filled_buy_price = avg_px
-            sell_price = _followup_exit_price(self.symbol, "SELL", avg_px)
+            setattr(self, filled_attr, avg_px)
+            opp_price = _followup_exit_price(self.symbol, opp_side, avg_px)
+            followup_extra = {"allow_math_reference_sell": True} if opp_side == "SELL" else {}
             mkt.place(
-                self.symbol, "SELL", sell_price, total_qty,
-                force=_followup_force(self.symbol, "SELL"),
+                self.symbol, opp_side, opp_price, total_qty,
+                force=_followup_force(self.symbol, opp_side),
                 cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                bypass_guards={"G_PROF", "GLLM1"}, allow_math_reference_sell=True,
-                caller_owns_retry=True)
+                bypass_guards={"G_PROF", "GLLM1"},
+                caller_owns_retry=True,
+                **followup_extra)
             completed = True
-            return self.mark_buy_filled(avg_px)
+            return mark_filled(avg_px)
 
         try:
             while True:
                 _touch_rtrade_heartbeat()
-                if getattr(self, "_round_aborted", False) and not self.is_sell_filled:
-                    print(f"[{self.symbol}] Aborting BUY loop because SELL worker exited without fill.")
-                    return _complete_buy_followup()
+                if getattr(self, "_round_aborted", False) and not is_opp_filled():
+                    print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
+                    return _complete_followup()
                 latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
                 if latest_price > 0:
                     current_price = latest_price
                 current_price = _finite_pos_float(current_price, 0.0)
                 if current_price <= 0:
-                    current_price = _finite_pos_float(filled_sell_price, 0.0)
+                    current_price = _finite_pos_float(filled_opp_price, 0.0)
                 if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
                     if failure_count > max_failures:
-                        return _complete_buy_followup()
+                        return _complete_followup()
                     continue
 
-                if self.is_sell_filled:
-                    adjustment_percent = max(MIN_adjustment_percent, adjustment_percent - adjustment_percent * RTRADE_BUY_DECAY_PCT)
+                if is_opp_filled():
+                    adjustment_percent = max(
+                        MIN_adjustment_percent,
+                        adjustment_percent - adjustment_percent * decay_pct,
+                    )
 
                 calculated_price = round(
-                    current_price * (1 - adjustment_percent), 4)
-                target_buy_price = (
+                    current_price * (1.0 + sign * adjustment_percent), 4)
+                target_price = (
                     calculated_price if pending_replacement_price is None
                     else pending_replacement_price)
-                target_buy_qty = (
+                target_qty = (
                     self.qty if pending_replacement_qty is None
                     else pending_replacement_qty)
                 submit_cache_permit = pending_cache_permit
                 pending_cache_permit = pending_replacement_price = None
                 pending_replacement_qty = None
-                print(f"[{self.symbol}] BUY order initiated at {target_buy_price:.2f}; adjustment {adjustment_percent}%")
+                print(f"[{self.symbol}] {side} order initiated at {target_price:.2f}; adjustment {adjustment_percent}%")
 
-                if self.is_buy_filled:
-                    print(f"[{self.symbol}] Ignore BUY order. It was previously filled at {self.filled_buy_price:.2f}")
-                    self._finish_side_precheck("BUY", aborted=False)
+                if is_side_filled():
+                    cur_filled_px = getattr(self, filled_attr)
+                    print(f"[{self.symbol}] Ignore {side} order. It was previously filled at {cur_filled_px:.2f}")
+                    self._finish_side_precheck(side, aborted=False)
                     completed = True
-                    return self.mark_buy_filled(self.filled_buy_price)
+                    return mark_filled(cur_filled_px)
 
-                if getattr(self, "_round_aborted", False) and not self.is_sell_filled:
-                    print(f"[{self.symbol}] Aborting BUY order placement because SELL worker exited without fill.")
-                    return _complete_buy_followup()
+                if getattr(self, "_round_aborted", False) and not is_opp_filled():
+                    print(f"[{self.symbol}] Aborting {side} order placement because {opp_side} worker exited without fill.")
+                    return _complete_followup()
 
-                buy_order = None
+                placed_order = None
                 outcome_context = {}
-                h = RTRADE_BUY_DESPERATE_HOURS_BASE / failure_count
+                h = desp_hours_base / failure_count
                 try:
-                    if self.is_sell_filled:  # Desperate follow-up path.
+                    if is_opp_filled():  # Desperate follow-up path.
                         if adjustment_percent == MIN_adjustment_percent:
-                            print(f"[{self.symbol}] entering the urgent BUY path")
-                        buy_order = mkt.place(
-                            self.symbol, "BUY", target_buy_price, target_buy_qty,
+                            print(f"[{self.symbol}] entering the urgent {side} path")
+                        desp_extra = {} if is_buy else {"allow_math_reference_sell": True}
+                        placed_order = mkt.place(
+                            self.symbol, side, target_price, target_qty,
                             safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
                             force=False, cancelorders=True, hours=h, smart=False,
                             bypass_guards={"G_PROF", "GLLM1"},
                             kind="rtrade_legacy_quote", caller_owns_retry=True,
                             cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context)
+                            _outcome_context=outcome_context,
+                            **desp_extra)
                     else:
                         extra_place_kwargs = {}
                         if isinstance(getattr(self, "_pair_precheck_pending", None), set):
                             extra_place_kwargs["abort_if"] = (
-                                lambda: self._pair_abort_if("BUY", lambda: self.is_sell_filled)
+                                lambda: self._pair_abort_if(side, is_opp_filled)
                             )
-                        buy_order = mkt.place(
-                            self.symbol, "BUY", target_buy_price, target_buy_qty,
-                            cancelorders=True, hours=RTRADE_BUY_NORMAL_HOURS,
+                        if not is_buy:
+                            extra_place_kwargs["allow_math_reference_sell"] = bool(RTRADE_BYPASS_PROFIT_GUARD)
+                        placed_order = mkt.place(
+                            self.symbol, side, target_price, target_qty,
+                            cancelorders=True, hours=normal_hours,
                             smart=False, kind="rtrade_legacy_quote",
                             bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
                             caller_owns_retry=True,
@@ -1375,82 +1396,86 @@ class TradingBot:
                             _outcome_context=outcome_context,
                             **extra_place_kwargs)
                 except po.WeightLimitBlock as e:
-                    self._finish_side_precheck("BUY", aborted=not self.is_sell_filled)
-                    print(f"[{self.symbol}] 24h limit reached — exiting without retry ({e})")
-                    return _complete_buy_followup()
+                    self._finish_side_precheck(side, aborted=not is_opp_filled())
+                    side_tag = "" if is_buy else " (SELL)"
+                    print(f"[{self.symbol}] 24h limit reached{side_tag} — exiting without retry ({e})")
+                    return _complete_followup()
                 except Exception:
-                    self._finish_side_precheck("BUY", aborted=not self.is_sell_filled)
+                    self._finish_side_precheck(side, aborted=not is_opp_filled())
                     raise
 
-                if buy_order is None:
+                if placed_order is None:
                     refusal_reason = outcome_context.get("reason")
                     terminal_unfilled = refusal_reason in _TERMINAL_UNFILLED_REFUSALS
                     self._finish_side_precheck(
-                        "BUY",
-                        aborted=bool(terminal_unfilled and not self.is_sell_filled),
+                        side,
+                        aborted=bool(terminal_unfilled and not is_opp_filled()),
                     )
                     if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
-                        print(f"[{self.symbol}] 24h limit reached (BUY: {refusal_reason}) — exiting without retry")
-                        return _complete_buy_followup()
-                    if refusal_reason == "profit_guard":
-                        print(f"[{self.symbol}] Blocked by profit guard (BUY: {refusal_reason}) — exiting without retry")
-                        return _complete_buy_followup()
-                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not self.is_sell_filled:
-                        print(f"[{self.symbol}] Deferred by trend (BUY: {refusal_reason}) — exiting without retry")
-                        return _complete_buy_followup()
-                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not self.is_sell_filled:
-                        print(f"[{self.symbol}] Aborting BUY loop because SELL worker exited without fill.")
-                        return _complete_buy_followup()
-                    print(f"[{self.symbol}] Order BUY failed, retryed {failure_count} times. Retrying again ...")
+                        print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
+                        print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
+                        print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
+                        return _complete_followup()
+                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
+                        print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
+                        return _complete_followup()
+                    print(f"[{self.symbol}] Order {side} failed, retryed {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
                     if failure_count > max_failures:
-                        print(f"[{self.symbol}] Order BUY failed {failure_count} times. Exiting.")
-                        return _complete_buy_followup()
+                        print(f"[{self.symbol}] Order {side} failed {failure_count} times. Exiting.")
+                        return _complete_followup()
                     continue
 
-                self._finish_side_precheck("BUY", aborted=False)
-                failure_count = 1 # reset failure count after a successful order placement
+                self._finish_side_precheck(side, aborted=False)
+                failure_count = 1  # reset failure count after a successful order placement
                 with self.lock:
                     self._round_placed_order = True
-                
+
                 time.sleep(WAIT_FOR_ORDER)
                 order_id = (
-                    buy_order["orderId"]
-                    if isinstance(buy_order, dict) and "orderId" in buy_order
-                    else extract_order_id(buy_order)
+                    placed_order["orderId"]
+                    if isinstance(placed_order, dict) and "orderId" in placed_order
+                    else extract_order_id(placed_order)
                 )
-                extracted_buy_px = extract_order_price(buy_order, default=0.0)
-                self.filled_buy_price = round(float(extracted_buy_px if extracted_buy_px > 0 else target_buy_price), 4)
-                
+                extracted_px = extract_order_price(placed_order, default=0.0)
+                filled_px = round(float(extracted_px if extracted_px > 0 else target_price), 4)
+                setattr(self, filled_attr, filled_px)
+
                 if _order_fully_filled(self.symbol, order_id):
-                    print(f"[{self.symbol}] BUY order filled at {self.filled_buy_price:.2f}")
-                    print(f"[{self.symbol}] Starting urgent SELL follow-up (1)")
-                    return _complete_buy_followup(target_buy_qty, self.filled_buy_price)
+                    print(f"[{self.symbol}] {side} order filled at {filled_px:.2f}")
+                    print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (1)")
+                    return _complete_followup(target_qty, filled_px)
 
-
-                filled_buy_price = mkt.latest_fill_price(
-                    self.symbol, "BUY", WAIT_FOR_ORDER)
-                if filled_buy_price is not None:
-                    print(f"[{self.symbol}] BUY order may have been filled :-) at {filled_buy_price:.2f}")
-                    print(f"[{self.symbol}] Starting urgent SELL follow-up (2)")
-                    return _complete_buy_followup(target_buy_qty, filled_buy_price)
+                recent_fill_px = mkt.latest_fill_price(self.symbol, side, WAIT_FOR_ORDER)
+                if recent_fill_px is not None:
+                    print(f"[{self.symbol}] {side} order may have been filled :-) at {recent_fill_px:.2f}")
+                    print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (2)")
+                    return _complete_followup(target_qty, recent_fill_px)
 
                 latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
                 if latest_price > 0:
                     current_price = latest_price
-                if current_price > filled_sell_price and not u.are_close(current_price, filled_sell_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
-                    print(f"[{self.symbol}] Bed day :-(. Trying BUY at current price - x2 {current_price:.2f}")
+                bad_day = (
+                    current_price > filled_opp_price if is_buy else current_price < filled_opp_price
+                ) and not u.are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
+                if bad_day:
+                    op_sym = "-" if is_buy else "+"
+                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {op_sym} x2 {current_price:.2f}")
                     adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
-                aborting_unfilled = getattr(self, "_round_aborted", False) and not self.is_sell_filled
+                aborting_unfilled = getattr(self, "_round_aborted", False) and not is_opp_filled()
                 if not aborting_unfilled:
                     # Authorize the exact replacement before cancellation, then submit it
                     # on the next iteration.
                     replacement_price = round(
-                        current_price * (1 - adjustment_percent), 4)
+                        current_price * (1.0 + sign * adjustment_percent), 4)
                     replacement_cache_permit = _preflight_routed_order(
-                        self.symbol, "BUY", target_buy_qty, replacement_price,
+                        self.symbol, side, target_qty, replacement_price,
                         market=False, kind="rtrade_legacy_quote")
                 else:
                     replacement_price = None
@@ -1458,30 +1483,29 @@ class TradingBot:
                 final_status = _cancel_order_confirmed(self.symbol, order_id)
                 if not final_status:
                     if _order_fully_filled(self.symbol, order_id):
-                        print(f"[{self.symbol}] Cancel BUY order failed. Maybe it was filled :-)? Moving to SELL ...")
-                        print(f"[{self.symbol}] Starting urgent SELL follow-up (3)")
-                        return _complete_buy_followup(target_buy_qty, self.filled_buy_price)
+                        print(f"[{self.symbol}] Cancel {side} order failed. Maybe it was filled :-)? Moving to {opp_side} ...")
+                        print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (3)")
+                        return _complete_followup(target_qty, getattr(self, filled_attr))
                     else:
                         print(
-                            f"[{self.symbol}] Cancel BUY order remains ambiguous; "
+                            f"[{self.symbol}] Cancel {side} order remains ambiguous; "
                             "replacement is deferred.")
                         return None
                 else:
-                    remaining_qty = _remaining_after_canceled_order(
-                        final_status, target_buy_qty)
+                    remaining_qty = _remaining_after_canceled_order(final_status, target_qty)
                     if remaining_qty is None:
-                        print(f"[{self.symbol}] Invalid final BUY quantity; replacement deferred.")
+                        print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
                         return None
-                    if remaining_qty <= max(1e-12, target_buy_qty * 1e-9):
-                        print(f"[{self.symbol}] BUY filled during cancellation; moving to SELL.")
-                        return _complete_buy_followup(target_buy_qty, self.filled_buy_price)
-                    step_filled = max(0.0, target_buy_qty - remaining_qty)
+                    if remaining_qty <= max(1e-12, target_qty * 1e-9):
+                        print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")
+                        return _complete_followup(target_qty, getattr(self, filled_attr))
+                    step_filled = max(0.0, target_qty - remaining_qty)
                     if step_filled > 1e-12:
                         cumulative_filled_qty += step_filled
-                        cumulative_cost += step_filled * self.filled_buy_price
-                    if aborting_unfilled or (getattr(self, "_round_aborted", False) and not self.is_sell_filled):
-                        print(f"[{self.symbol}] Aborting BUY loop after cancel because SELL worker exited without fill.")
-                        return _complete_buy_followup()
+                        cumulative_cost += step_filled * getattr(self, filled_attr)
+                    if aborting_unfilled or (getattr(self, "_round_aborted", False) and not is_opp_filled()):
+                        print(f"[{self.symbol}] Aborting {side} loop after cancel because {opp_side} worker exited without fill.")
+                        return _complete_followup()
                     pending_cache_permit = replacement_cache_permit
                     pending_replacement_price = replacement_price
                     pending_replacement_qty = remaining_qty
@@ -1489,231 +1513,11 @@ class TradingBot:
             if not completed:
                 self._abort_round()
 
+    def repetitive_buy(self, current_price, filled_sell_price):
+        return self._repetitive_side_loop("BUY", current_price, filled_sell_price)
 
     def repetitive_sell(self, current_price, filled_buy_price):
-        adjustment_percent = self.DEFAULT_ADJUSTMENT_PERCENT
-        failure_count = 1  # Count placement failures.
-        max_failures = RTRADE_MAX_FAILURES  # Maximum accepted failures.
-        pending_cache_permit = None
-        pending_replacement_price = None
-        pending_replacement_qty = None
-        cumulative_filled_qty = 0.0
-        cumulative_cost = 0.0
-        completed = False
-
-        def _complete_sell_followup(chunk_qty=0.0, chunk_price=0.0):
-            nonlocal completed
-            add_qty = max(0.0, float(chunk_qty or 0.0))
-            total_qty = round(cumulative_filled_qty + add_qty, 8)
-            if total_qty <= 1e-12:
-                return None
-            total_cost = cumulative_cost + add_qty * float(chunk_price or 0.0)
-            avg_px = (
-                round(total_cost / total_qty, 4)
-                if total_cost > 0
-                else float(chunk_price or self.filled_sell_price)
-            )
-            self.filled_sell_price = avg_px
-            buy_price = _followup_exit_price(self.symbol, "BUY", avg_px)
-            mkt.place(
-                self.symbol, "BUY", buy_price, total_qty,
-                force=_followup_force(self.symbol, "BUY"),
-                cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                bypass_guards={"G_PROF", "GLLM1"},
-                caller_owns_retry=True)
-            completed = True
-            return self.mark_sell_filled(avg_px)
-
-        try:
-            while True:
-                _touch_rtrade_heartbeat()
-                if getattr(self, "_round_aborted", False) and not self.is_buy_filled:
-                    print(f"[{self.symbol}] Aborting SELL loop because BUY worker exited without fill.")
-                    return _complete_sell_followup()
-                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
-                if latest_price > 0:
-                    current_price = latest_price
-                current_price = _finite_pos_float(current_price, 0.0)
-                if current_price <= 0:
-                    current_price = _finite_pos_float(filled_buy_price, 0.0)
-                if current_price <= 0:
-                    time.sleep(WAIT_FOR_ORDER)
-                    failure_count += 1
-                    if failure_count > max_failures:
-                        return _complete_sell_followup()
-                    continue
-
-                if self.is_buy_filled:
-                    adjustment_percent = max(MIN_adjustment_percent, adjustment_percent - adjustment_percent * RTRADE_SELL_DECAY_PCT)
-
-                calculated_price = round(
-                    current_price * (1 + adjustment_percent), 4)
-                target_sell_price = (
-                    calculated_price if pending_replacement_price is None
-                    else pending_replacement_price)
-                target_sell_qty = (
-                    self.qty if pending_replacement_qty is None
-                    else pending_replacement_qty)
-                submit_cache_permit = pending_cache_permit
-                pending_cache_permit = pending_replacement_price = None
-                pending_replacement_qty = None
-                print(f"[{self.symbol}] SELL order initiated at {target_sell_price:.2f}; adjustment {adjustment_percent}%")
-
-                if self.is_sell_filled:
-                    print(f"[{self.symbol}] Ignore SELL order. It was previously filled at {self.filled_sell_price:.2f}")
-                    self._finish_side_precheck("SELL", aborted=False)
-                    completed = True
-                    return self.mark_sell_filled(self.filled_sell_price)
-
-                if getattr(self, "_round_aborted", False) and not self.is_buy_filled:
-                    print(f"[{self.symbol}] Aborting SELL order placement because BUY worker exited without fill.")
-                    return _complete_sell_followup()
-
-                sell_order = None
-                outcome_context = {}
-                h = RTRADE_SELL_DESPERATE_HOURS_BASE / failure_count
-                try:
-                    if self.is_buy_filled:  # Desperate follow-up path.
-                        if adjustment_percent == MIN_adjustment_percent:
-                            print(f"[{self.symbol}] entering the urgent SELL path")
-                        sell_order = mkt.place(
-                            self.symbol, "SELL", target_sell_price, target_sell_qty,
-                            safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
-                            force=False, cancelorders=True, hours=h, smart=False,
-                            bypass_guards={"G_PROF", "GLLM1"}, allow_math_reference_sell=True,
-                            kind="rtrade_legacy_quote", caller_owns_retry=True,
-                            cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context)
-                    else:
-                        extra_place_kwargs = {}
-                        if isinstance(getattr(self, "_pair_precheck_pending", None), set):
-                            extra_place_kwargs["abort_if"] = (
-                                lambda: self._pair_abort_if("SELL", lambda: self.is_buy_filled)
-                            )
-                        sell_order = mkt.place(
-                            self.symbol, "SELL", target_sell_price, target_sell_qty,
-                            cancelorders=True, hours=RTRADE_SELL_NORMAL_HOURS,
-                            smart=False, kind="rtrade_legacy_quote",
-                            bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
-                            allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD),
-                            caller_owns_retry=True,
-                            cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context,
-                            **extra_place_kwargs)
-                except po.WeightLimitBlock as e:
-                    self._finish_side_precheck("SELL", aborted=not self.is_buy_filled)
-                    print(f"[{self.symbol}] 24h limit reached (SELL) — exiting without retry ({e})")
-                    return _complete_sell_followup()
-                except Exception:
-                    self._finish_side_precheck("SELL", aborted=not self.is_buy_filled)
-                    raise
-
-                if sell_order is None:
-                    refusal_reason = outcome_context.get("reason")
-                    terminal_unfilled = refusal_reason in _TERMINAL_UNFILLED_REFUSALS
-                    self._finish_side_precheck(
-                        "SELL",
-                        aborted=bool(terminal_unfilled and not self.is_buy_filled),
-                    )
-                    if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
-                        print(f"[{self.symbol}] 24h limit reached (SELL: {refusal_reason}) — exiting without retry")
-                        return _complete_sell_followup()
-                    if refusal_reason == "profit_guard" and not self.is_buy_filled:
-                        print(f"[{self.symbol}] Blocked by profit guard (SELL: {refusal_reason}) — exiting without retry")
-                        return _complete_sell_followup()
-                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not self.is_buy_filled:
-                        print(f"[{self.symbol}] Deferred by trend (SELL: {refusal_reason}) — exiting without retry")
-                        return _complete_sell_followup()
-                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not self.is_buy_filled:
-                        print(f"[{self.symbol}] Aborting SELL loop because BUY worker exited without fill.")
-                        return _complete_sell_followup()
-                    print(f"[{self.symbol}] Order SELL failed, retryed {failure_count} times. Retrying again ...")
-                    _touch_rtrade_heartbeat()
-                    time.sleep(WAIT_FOR_ORDER)
-                    failure_count += 1
-                    if failure_count > max_failures:
-                        print(f"[{self.symbol}] Order SELL failed {failure_count} times. Exiting.")
-                        return _complete_sell_followup()
-                    continue
-                
-                self._finish_side_precheck("SELL", aborted=False)
-                failure_count = 1 # reset failure count after a successful order placement
-                with self.lock:
-                    self._round_placed_order = True
-
-                time.sleep(WAIT_FOR_ORDER)
-                order_id = (
-                    sell_order["orderId"]
-                    if isinstance(sell_order, dict) and "orderId" in sell_order
-                    else extract_order_id(sell_order)
-                )
-                extracted_sell_px = extract_order_price(sell_order, default=0.0)
-                self.filled_sell_price = round(float(extracted_sell_px if extracted_sell_px > 0 else target_sell_price), 4)
-
-                if _order_fully_filled(self.symbol, order_id):
-                    print(f"[{self.symbol}] SELL order filled at {self.filled_sell_price:.2f}")
-                    print(f"[{self.symbol}] Starting urgent BUY follow-up (1)")
-                    return _complete_sell_followup(target_sell_qty, self.filled_sell_price)
-
-
-                filled_sell_price = mkt.latest_fill_price(
-                    self.symbol, "SELL", WAIT_FOR_ORDER)
-                if filled_sell_price is not None:
-                    print(f"[{self.symbol}] SELL order may have been filled :-) at {filled_sell_price:.2f}")
-                    print(f"[{self.symbol}] Starting urgent BUY follow-up (2)")
-                    return _complete_sell_followup(target_sell_qty, filled_sell_price)
-
-                latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
-                if latest_price > 0:
-                    current_price = latest_price
-                if current_price < filled_buy_price and not u.are_close(current_price, filled_buy_price, RTRADE_BAD_DAY_TOLERANCE_PCT):
-                    print(f"[{self.symbol}] Bed day :-(. Trying SELL at current price + x2 {current_price:.2f}")
-                    adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
-                aborting_unfilled = getattr(self, "_round_aborted", False) and not self.is_buy_filled
-                if not aborting_unfilled:
-                    # Authorize the exact replacement before cancellation, then submit it
-                    # on the next iteration.
-                    replacement_price = round(
-                        current_price * (1 + adjustment_percent), 4)
-                    replacement_cache_permit = _preflight_routed_order(
-                        self.symbol, "SELL", target_sell_qty, replacement_price,
-                        market=False, kind="rtrade_legacy_quote")
-                else:
-                    replacement_price = None
-                    replacement_cache_permit = None
-                final_status = _cancel_order_confirmed(self.symbol, order_id)
-                if not final_status:
-                    if _order_fully_filled(self.symbol, order_id):
-                        print(f"[{self.symbol}] Cancel SELL order failed. Maybe it was filled :-)? Moving to BUY ...")
-                        print(f"[{self.symbol}] Starting urgent BUY follow-up (3)")
-                        return _complete_sell_followup(target_sell_qty, self.filled_sell_price)
-                    else:
-                        print(
-                            f"[{self.symbol}] Cancel SELL order remains ambiguous; "
-                            "replacement is deferred.")
-                        return None
-                else:
-                    remaining_qty = _remaining_after_canceled_order(
-                        final_status, target_sell_qty)
-                    if remaining_qty is None:
-                        print(f"[{self.symbol}] Invalid final SELL quantity; replacement deferred.")
-                        return None
-                    if remaining_qty <= max(1e-12, target_sell_qty * 1e-9):
-                        print(f"[{self.symbol}] SELL filled during cancellation; moving to BUY.")
-                        return _complete_sell_followup(target_sell_qty, self.filled_sell_price)
-                    step_filled = max(0.0, target_sell_qty - remaining_qty)
-                    if step_filled > 1e-12:
-                        cumulative_filled_qty += step_filled
-                        cumulative_cost += step_filled * self.filled_sell_price
-                    if aborting_unfilled or (getattr(self, "_round_aborted", False) and not self.is_buy_filled):
-                        print(f"[{self.symbol}] Aborting SELL loop after cancel because BUY worker exited without fill.")
-                        return _complete_sell_followup()
-                    pending_cache_permit = replacement_cache_permit
-                    pending_replacement_price = replacement_price
-                    pending_replacement_qty = remaining_qty
-        finally:
-            if not completed:
-                self._abort_round()
+        return self._repetitive_side_loop("SELL", current_price, filled_buy_price)
 
     def _run_pair(self, executor, current_price):
         """Run both sides concurrently on the bot's persistent workers.

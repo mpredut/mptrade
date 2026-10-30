@@ -540,9 +540,7 @@ def symbol_regime_context(
         provider_resolver=provider_resolver,
     )
     provider_name = getattr(provider, "name", None) or (provider if isinstance(provider, str) else None)
-    dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
-    if dur_sec <= 0.0 and symbol:
-        dur_sec = _resolve_trend_duration(symbol)
+    dur_sec = resolve_effective_trend_duration(symbol, trend_duration_seconds)
     return MarketRegimeContext.from_decision(
         decision,
         evaluated_at=now_ts,
@@ -1206,6 +1204,23 @@ def _resolve_trend_duration(symbol: str) -> float:
     return _read_cached_trend_duration(symbol)
 
 
+def resolve_effective_trend_duration(
+    symbol: str,
+    explicit_duration_sec: float = 0.0,
+    regime_context: Any = None,
+    *,
+    fallback_resolver: Optional[Callable[[str], float]] = None,
+) -> float:
+    """Resolve trend duration from explicit override -> regime_context -> live cache."""
+    dur_sec = safe_pos_float(explicit_duration_sec, 0.0)
+    if dur_sec <= 0.0 and regime_context is not None:
+        dur_sec = safe_pos_float(obj_attr(regime_context, "trend_duration_seconds", 0.0), 0.0)
+    if dur_sec <= 0.0 and symbol:
+        resolver = fallback_resolver or _resolve_trend_duration
+        dur_sec = safe_pos_float(resolver(symbol), 0.0)
+    return dur_sec
+
+
 def _read_cached_trend_direction(symbol: str) -> Optional[str]:
     return _scan_cached_long_trend(
         symbol, lambda e: _normalize_trend_dir_token(e.get("direction"))
@@ -1529,10 +1544,7 @@ def check_intelligence_guards(
             active_reason = q_reason
 
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
-    raw_ctx_dur = obj_attr(regime_context, "trend_duration_seconds", 0.0)
-    dur_sec = explicit_dur_sec or safe_pos_float(raw_ctx_dur, 0.0)
-    if dur_sec <= 0.0 and symbol:
-        dur_sec = _resolve_trend_duration(symbol)
+    dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
 
     from llm_order_guard import evaluate_high_stake_order_guard
     hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
