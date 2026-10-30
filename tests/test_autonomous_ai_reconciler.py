@@ -4299,6 +4299,41 @@ def test_iteration20_apply_asset_scope_filter_positions_and_cash():
     assert "smart_stop_loss_state" not in ps_eq
 
 
+def test_iteration21_execution_audit_kraken_xbt_variant_resolution():
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    st_fill = build_last_cycle_execution_status(
+        [
+            {
+                "intent_id": "kr_btc_1",
+                "timestamp": 1793300000.0,
+                "decision": "BUY",
+                "symbol": "BTCUSD",
+                "venue": "kraken",
+                "order_type": "LIMIT",
+                "limit_price": 81500.0,
+                "reference_price": 81600.0,
+                "suggested_notional_usd": 815.0,
+                "status": "EXECUTED",
+                "execution_payload": {"status": "OPEN"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        recent_orders={
+            "kraken:XBTUSD": {
+                "last_buy": {"price": 81490.0, "qty": 0.01, "ts_ms": 1793300010000, "actor": "AI"}
+            }
+        },
+        open_orders=[],
+    )
+    assert st_fill["status"] == "FILLED"
+    assert st_fill["fill_px"] == pytest.approx(81490.0)
+    assert st_fill["filled_qty"] == pytest.approx(0.01)
+
+
+
 
 
 
