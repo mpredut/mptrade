@@ -289,10 +289,7 @@ def cancel_order(symbol, order_id):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip().upper()
-        cleaned_oid = _resolve_valid_bapi_oid(order_id)
-        if cleaned_oid is None:
-            return False
-        oid_arg = _normalize_bapi_oid(order_id) if isinstance(order_id, (int, float)) else cleaned_oid
+        oid_arg = _normalize_bapi_oid(order_id)
         if oid_arg is None:
             return False
         client.cancel_order(symbol=symbol, orderId=oid_arg)

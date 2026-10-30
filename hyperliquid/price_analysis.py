@@ -18,8 +18,6 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-if _HERE not in sys.path:
-    sys.path.append(_HERE)
 from botcore import load_local_module  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")

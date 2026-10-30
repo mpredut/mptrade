@@ -31,7 +31,7 @@ from botcore import ensure_local_module_priority  # noqa: E402
 ensure_local_module_priority(_HERE, "common", "notify", "hl_client", "market_data", "signals")
 
 from common import (
-    _parse_bool_flag,
+    _parse_bool_flag, exact_pos_int,
     log, are_close, load_env_stack, required_env, required_float_env,
     required_int_env, required_bool_env, safe_float, safe_int,
     safe_nonneg_float, safe_pos_float, safe_pos_int,
@@ -189,9 +189,7 @@ def _normalize_stored_oid(raw_oid: object) -> int | str | None:
     clean_oid = _clean_oid(raw_oid)
     if clean_oid is None:
         return None
-    if isinstance(raw_oid, (int, float)) and not isinstance(raw_oid, bool) and clean_oid.isdigit():
-        return int(clean_oid)
-    return clean_oid
+    return exact_pos_int(raw_oid, default=clean_oid) if isinstance(raw_oid, (int, float)) else clean_oid
 
 
 def _is_live_order_oid(oid: object) -> bool:

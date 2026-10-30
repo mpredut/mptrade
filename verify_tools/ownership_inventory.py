@@ -21,7 +21,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
 from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402

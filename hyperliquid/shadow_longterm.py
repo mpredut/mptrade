@@ -33,11 +33,7 @@ from shadow_runtime import (  # noqa: E402
 from botcore import required_env, safe_pos_float  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
-
-try:
-    from kraken import shadow_live as shadow  # noqa: E402
-except ImportError:
-    import shadow_live as shadow  # noqa: E402
+from kraken import shadow_live as shadow  # noqa: E402
 
 
 LOG_DIR = os.path.join(ROOT, "logs", "hyperliquid_shadow")
