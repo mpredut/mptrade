@@ -66,8 +66,6 @@ except (ValueError, AttributeError):
 cprice = {}
 cprice_time = {}
 
-_INVALID_BAPI_ID_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "inf", "-inf", "+inf", "none", "null"}
-
 
 def _normalize_side(order_type):
     if isinstance(order_type, str):

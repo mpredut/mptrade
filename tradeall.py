@@ -342,7 +342,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     existing_str = set()
     for raw_oid in list(order_ids) + list(outbox_order_ids):
         clean_oid = extract_order_id(raw_oid, default=None)
-        if clean_oid and clean_oid not in {"0", "0.0", "-0", "+0"} and clean_oid not in existing_str:
+        if clean_oid and clean_oid not in existing_str:
             to_cancel.append(clean_oid)
             existing_str.add(clean_oid)
 
@@ -374,7 +374,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
         order = _fire_order(symbol, action, adjusted_price, reason, **kwargs)
         if order:
             oid = extract_order_id(order, default=None)
-            if oid and oid not in {"0", "0.0", "-0", "+0"}:
+            if oid:
                 raw_id = order.get("orderId") or order.get("id") if isinstance(order, dict) else None
                 if not isinstance(raw_id, bool) and isinstance(raw_id, int) and raw_id != 0:
                     order_ids.append(raw_id)

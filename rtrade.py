@@ -341,7 +341,7 @@ class _LivePairVenue:
 
     def _ticket_from_pending(self, pending, pair_id):
         order_id = extract_order_id(pending.get("order_id"), default=None)
-        if not order_id or order_id in {"0", "0.0", "-0", "+0"}:
+        if not order_id:
             return None
         ticket_price = _finite_pos_float(
             pending.get("submitted_price")
@@ -867,7 +867,7 @@ class _LivePairVenue:
                 "the persisted client ID must be reconciled")
             return None
         clean_oid = extract_order_id(order_id, default=None)
-        if not clean_oid or clean_oid in {"0", "0.0", "-0", "+0"}:
+        if not clean_oid:
             if self.pair_store is not None and pair_id:
                 self._set_pair_recovery_blocked(pair_id)
                 self._last_place_failures[side] = (

@@ -5,8 +5,9 @@ import builtins
 import time
 from typing import Any
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import exact_pos_int, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.base import (
+    clean_order_id,
     extract_order_price,
     extract_order_side,
     extract_timestamp_ms,
@@ -39,26 +40,14 @@ def _normalize_ws_order_id(raw_id: Any, *, strict_float: bool = False) -> int | 
         if strict_float:
             raise ValueError("boolean Binance order ID")
         return None
-    if isinstance(raw_id, float):
-        f = safe_float(raw_id, default=None)
-        if f is None or not f.is_integer():
-            if strict_float:
+    if isinstance(raw_id, (int, float)):
+        iv = exact_pos_int(raw_id, default=None)
+        if iv is None and strict_float and isinstance(raw_id, float):
+            f = safe_float(raw_id, default=None)
+            if f is None or not f.is_integer():
                 raise ValueError("non-integer Binance order ID")
-            return None
-        raw_id = int(f)
-    elif isinstance(raw_id, str):
-        raw_id = _strip_int_str(raw_id)
-        if raw_id is not None and (
-            raw_id.startswith("-")
-            or raw_id in {"0", "+0", "-0"}
-            or raw_id.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}
-        ):
-            raw_id = None
-    elif not isinstance(raw_id, int):
-        raw_id = None
-    if isinstance(raw_id, int) and raw_id <= 0:
-        raw_id = None
-    return raw_id
+        return iv
+    return clean_order_id(raw_id) if isinstance(raw_id, str) else None
 
 
 def _derive_ws_quote_fill_price(event: dict[str, Any], last_quantity: float) -> float:

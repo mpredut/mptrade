@@ -150,15 +150,8 @@ def _extract_trade_uid(trade: Any) -> str:
     if not isinstance(trade, dict):
         return ""
     for key in ("id", "tradeId", "a"):
-        val = extract_order_id(trade.get(key), default="") or ""
-        s = val.strip()
-        if s.endswith(".0") and s[:-2].lstrip("+-").isdigit():
-            s = s[:-2]
-        if s.startswith("-") and s[1:].replace(".", "", 1).isdigit():
-            continue
-        if s.startswith("+") and s[1:].isdigit():
-            s = s[1:]
-        if s not in ("", "0", "0.0", "-0", "+0"):
+        s = extract_order_id(trade.get(key), default="")
+        if s:
             return s
     return ""
 
@@ -219,8 +212,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
             # Group newly executed fills by orderId
             trades_by_order = {}
             for t in new_trades:
-                raw_oid = extract_order_id(t, default="") or ""
-                oid = raw_oid if raw_oid not in ("", "0", "0.0", "-0", "+0") else _extract_trade_uid(t)
+                oid = extract_order_id(t, default="") or _extract_trade_uid(t)
                 trades_by_order.setdefault(oid, []).append(t)
 
             for oid, group in trades_by_order.items():
@@ -443,7 +435,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     sell_orders = sell_orders if isinstance(sell_orders, list) else ([] if sell_orders is None or isinstance(sell_orders, bool) else list(sell_orders))
 
     now_ts = safe_pos_float(now_ts, default=time.time())
-    sym_key = str(symbol or "").strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    sym_key = cachepaths.canonical_symbol_key(symbol)
     maxage_f = safe_nonneg_float(maxage_trade_s, 0.0)
     cache_key = (_api_cache_identity(api), sym_key, maxage_f)
     total_buy_qty, total_buy_value, buy_sig = _summarize_orders(buy_orders)
@@ -1014,7 +1006,7 @@ def _is_pending_exit_active(
         try:
             found = prov.order_by_client_id(symbol, p_cid)
             found_oid = extract_order_id(found, default=None)
-            if found and found_oid not in (None, "0", "0.0", "-0", "+0"):
+            if found and found_oid:
                 st = str(found.get("status") or "").upper()
                 if st in ("FILLED", "RESOLVED"):
                     print(f"[{symbol}] Pending Stop-Loss {p_cid} resolved filled on venue.")
@@ -1078,8 +1070,8 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
         active_orders = open_orders_fn() if callable(open_orders_fn) else []
         for active_ord in (active_orders or []):
             if extract_order_side(active_ord) == "SELL":
-                oid = extract_order_id(active_ord, default="") or ""
-                if oid not in ("", "0", "0.0", "-0", "+0"):
+                oid = extract_order_id(active_ord, default="")
+                if oid:
                     print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
                     cancel_fn = getattr(inst, "cancel_order", None)
                     if callable(cancel_fn):

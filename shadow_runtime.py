@@ -4,15 +4,12 @@ from __future__ import annotations
 import os
 import sys
 
-from botcore import load_dotenv, load_env_stack
+from botcore import ensure_local_module_priority, load_dotenv, load_env_stack
 
 
 def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
     """Make repository modules importable and disable live Binance WebSockets."""
-    abs_root = os.path.abspath(root)
-    while abs_root in sys.path:
-        sys.path.remove(abs_root)
-    sys.path.insert(0, abs_root)
+    ensure_local_module_priority(root)
     for path in module_dirs:
         absolute = os.path.abspath(path)
         if absolute not in sys.path:

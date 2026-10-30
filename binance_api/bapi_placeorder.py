@@ -65,7 +65,6 @@ class WeightLimitBlock(Exception):
 
 _CACHE_SUBMIT_PERMIT_TTL_SEC = binance_cache_health.SUBMIT_PERMIT_TTL_SEC
 _CACHE_SUBMIT_PERMIT_ISSUER = object()
-_INVALID_BAPI_ID_STRINGS = api._INVALID_BAPI_ID_STRINGS
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,14 +408,7 @@ def _submit_binance_order(order_type, symbol, qty, *, price=None, market=False,
             raise SubmissionRefused("account_cache_not_fresh")
 
     target_client = api_client or client
-    cleaned_cid = (
-        extract_order_id(client_order_id, default=None)
-        if not isinstance(client_order_id, (dict, list, tuple, set, frozenset))
-        else None
-    )
-    if cleaned_cid is not None and str(cleaned_cid).strip().lower() in _INVALID_BAPI_ID_STRINGS:
-        cleaned_cid = None
-    client_order_id = cleaned_cid or rc.create_client_order_id()
+    client_order_id = api._resolve_valid_bapi_oid(client_order_id) or rc.create_client_order_id()
     if market:
         method = (
             target_client.order_market_buy

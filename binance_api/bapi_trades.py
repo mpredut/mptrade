@@ -74,6 +74,13 @@ def _trade_fill_key(trade_obj):
     return raw_key if raw_key is not None else _valid_fill_id(trade_obj.get('orderId'))
 
 
+def _resolve_trade_order_id(trade_obj):
+    raw_oid = _valid_fill_id(trade_obj.get('orderId'))
+    if raw_oid in (None, 0, "0", "0.0", "-0", "+0"):
+        return extract_order_id(trade_obj)
+    return raw_oid
+
+
 def _dedup_trades_by_fill_id(all_trades):
     """Deduplicate trade fills by individual fill ID (falling back to orderId when absent)."""
     latest_trades = {}
@@ -106,10 +113,7 @@ def aggregate_trades(trades):
     for trade in trades or ():
         if not isinstance(trade, dict):
             continue
-        raw_oid = _valid_fill_id(trade.get('orderId'))
-        if raw_oid in (0, "0", "0.0", "-0", "+0"):
-            raw_oid = None
-        orderId = raw_oid if raw_oid is not None else extract_order_id(trade)
+        orderId = _resolve_trade_order_id(trade)
         if orderId is None or isinstance(orderId, bool) or not str(orderId).strip():
             continue
         qty = extract_order_qty(trade)
@@ -463,11 +467,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
                 else symbol
             )
             clean_tid = _valid_fill_id(trade.get('id'))
-            clean_oid = _valid_fill_id(trade.get('orderId'))
-            if clean_oid in (0, "0", "0.0", "-0", "+0"):
-                clean_oid = None
-            if clean_oid is None:
-                clean_oid = extract_order_id(trade)
+            clean_oid = _resolve_trade_order_id(trade)
             filtered_trades.append({
                 'symbol': sym_out,
                 'id': clean_tid,

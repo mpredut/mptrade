@@ -12,8 +12,7 @@ CONFIG_ENV_PATH = os.path.join(ROOT_DIR, "config.env")
 CONFIG_TXT_PATH = os.path.join(ROOT_DIR, "config.txt")
 
 
-def _parse_bool(value, default: bool = False) -> bool:
-    return _parse_bool_flag(value, default)
+_parse_bool = _parse_bool_flag
 
 
 def _read_properties_file(path: str) -> dict:
