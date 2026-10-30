@@ -9,7 +9,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
-from cachepaths import canonical_base_asset
+from cachepaths import canonical_base_asset, compatible_quote_suffixes
 from intelligence.sentiment.guards.high_stake_guard import (
     _build_vp_position_dict,
     _compute_horizon_range_dict,
@@ -248,14 +248,24 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
     btc_entry = next(
         (
             entry for k, entry in prices_and_trends.items()
-            if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
+            if isinstance(entry, dict)
+            and canonical_base_asset(k) == "BTC"
+            and "USD" in compatible_quote_suffixes(k)
         ),
-        None,
+        next(
+            (
+                entry for k, entry in prices_and_trends.items()
+                if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
+            ),
+            None,
+        ),
     )
-    grouped_3a: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    grouped_3a: Dict[Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]] = {}
     for s_k, s_v in sorted(prices_and_trends.items()):
         if isinstance(s_v, dict):
-            grouped_3a.setdefault(canonical_base_asset(s_k), []).append((s_k, s_v))
+            grouped_3a.setdefault(
+                (canonical_base_asset(s_k), compatible_quote_suffixes(s_k)), []
+            ).append((s_k, s_v))
 
     for _, sym_group in sorted(grouped_3a.items(), key=lambda kv: kv[1][0][0]):
         sym_group.sort(
@@ -445,7 +455,10 @@ def _format_microstructure_section(
     seen_3b_bases: set[str] = set()
     sorted_3b = sorted(
         microstructure.items(),
-        key=lambda kv: (0 if kv[0].endswith("USDC") else 1, kv[0]),
+        key=lambda kv: (
+            0 if kv[0].endswith("USDC") else (1 if "USD" in compatible_quote_suffixes(kv[0]) else 2),
+            kv[0],
+        ),
     )
     for sym, minfo in sorted_3b:
         if not isinstance(minfo, dict):
@@ -498,7 +511,9 @@ def _format_microstructure_section(
                 (
                     v
                     for k, v in prices_and_trends.items()
-                    if isinstance(v, dict) and canonical_base_asset(k) == b_canon_3b
+                    if isinstance(v, dict)
+                    and canonical_base_asset(k) == b_canon_3b
+                    and compatible_quote_suffixes(k) == compatible_quote_suffixes(sym)
                 ),
                 {},
             )

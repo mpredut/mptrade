@@ -4793,3 +4793,47 @@ def test_iteration28_pretrade_telemetry_quote_isolation_and_mock_base_quote_deri
     assert "Liquidation Clusters (LONG vs SHORT)" in telem_eur
     assert telem_eur["Liquidation Clusters (LONG vs SHORT)"].startswith("LONG liq=$72")
 
+
+def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+    )
+
+    # 1. Section 3A groups USD siblings (BTCUSDC, XBTUSD) separately from EUR siblings (BTCEUR, XBTEUR)
+    lines_3a = _format_market_prices_section(
+        {
+            "BTCUSDC": {"price": 82000.0, "chg_15m_pct": 0.5, "poc_px": 81800.0, "val_px": 81200.0, "vah_px": 82300.0},
+            "XBTUSD": {"price": 82010.0, "chg_15m_pct": 0.5},
+            "BTCEUR": {"price": 74000.0, "chg_15m_pct": 0.5},
+            "XBTEUR": {"price": 74005.0, "chg_15m_pct": 0.5},
+        }
+    )
+    joined_3a = "\n".join(lines_3a)
+    assert "BTCUSDC (sibling venue: XBTUSD=$82,010.00 [+0.01%])" in joined_3a
+    assert "BTCEUR (sibling venue: XBTEUR=$74,005.00 [+0.01%])" in joined_3a
+    assert "[-9.76%]" not in joined_3a
+    assert "[+10.81%]" not in joined_3a
+
+    # 2. Section 3B prioritizes USD-family microstructure (XBTUSD) over stripped non-USD entry (BTCEUR)
+    lines_3b = _format_microstructure_section(
+        {
+            "BTCEUR": {"ob_imbalance": 0.61, "bid_depth_usd": 500000.0, "ask_depth_usd": 300000.0},
+            "XBTUSD": {
+                "ob_imbalance": 0.61,
+                "bid_depth_usd": 500000.0,
+                "ask_depth_usd": 300000.0,
+                "bid_wall_px": 81500.0,
+                "bid_wall_usd": 200000.0,
+                "ask_wall_px": 82500.0,
+                "ask_wall_usd": 250000.0,
+                "oi_usd": 100000000.0,
+            },
+        },
+        {"XBTUSD": {"price": 82000.0}, "BTCEUR": {"price": 74000.0}},
+    )
+    joined_3b = "\n".join(lines_3b)
+    assert "* XBTUSD (BTCEUR):" in joined_3b
+    assert "bid_wall=81500.0 ($200000.0, dist=-0.61%)" in joined_3b
+    assert "ask_wall=82500.0 ($250000.0, dist=+0.61%)" in joined_3b
+
