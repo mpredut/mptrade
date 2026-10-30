@@ -107,6 +107,16 @@ def _fmt_liq_usd(val: Any) -> str:
     return f"${vf:.0f}"
 
 
+def _fmt_px(px_f: float, raw_px: Any = None) -> str:
+    if px_f >= 1.0:
+        return f"${px_f:,.2f}"
+    if px_f > 0:
+        return f"${px_f:.6g}"
+    if raw_px is not None and not isinstance(raw_px, bool):
+        return f"${raw_px}"
+    return "N/A"
+
+
 def _format_macro_and_news_section(sensors: Any) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
@@ -286,21 +296,22 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 item[0],
             )
         )
-        sym, pinfo = sym_group[0]
+        sym, raw_pinfo = sym_group[0]
+        pinfo = dict(raw_pinfo)
         px = pinfo.get("price")
         px_f = _parse_finite_float(px, 0.0)
-        px_str = (
-            f"${px_f:,.2f}"
-            if px_f >= 1.0
-            else (f"${px_f:.6g}" if px_f > 0 else (f"${px}" if px is not None and not isinstance(px, bool) else "N/A"))
-        )
+        px_str = _fmt_px(px_f, px)
         sib_lbl = ""
         if len(sym_group) > 1:
             sib_parts: List[str] = []
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = _parse_finite_float(sib_info.get("price"), 0.0)
+                if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
+                    for sk, sv in sib_info.items():
+                        if pinfo.get(sk) is None and sv is not None:
+                            pinfo[sk] = sv
                 if s_px > 0:
-                    s_px_s = f"${s_px:,.2f}" if s_px >= 1.0 else f"${s_px:.6g}"
+                    s_px_s = _fmt_px(s_px)
                     if px_f > 0 and abs(s_px - px_f) > 1e-9:
                         sib_parts.append(f"{sib_sym}={s_px_s} [{(s_px - px_f) / px_f * 100.0:+.2f}%]")
                     else:
@@ -496,6 +507,20 @@ def _format_microstructure_section(
             for other_s, other_m in microstructure.items()
             if other_s != sym and isinstance(other_m, dict) and _group_key_3b(other_s, other_m) == grp_3b
         ]
+        minfo = dict(minfo)
+        sym_quotes_3b = compatible_quote_suffixes(sym)
+        _px_keys_3b = {
+            "ob_mid_price", "best_bid", "best_ask", "bid_wall_px", "ask_wall_px",
+            "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
+        }
+        for other_s in sib_3b:
+            other_m = microstructure.get(other_s)
+            if not isinstance(other_m, dict):
+                continue
+            same_q_3b = compatible_quote_suffixes(other_s) == sym_quotes_3b
+            for mk, mv in other_m.items():
+                if minfo.get(mk) is None and mv is not None and (same_q_3b or mk not in _px_keys_3b):
+                    minfo[mk] = mv
         sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
         cur_px = _resolve_symbol_price(sym, prices_and_trends)
         bw_px = minfo.get("bid_wall_px")
@@ -575,37 +600,22 @@ def _format_microstructure_section(
 
         liq_sfx = ""
         if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
-            ll_px = _parse_finite_float(minfo.get("long_liq_px"), 0.0)
-            sl_px = _parse_finite_float(minfo.get("short_liq_px"), 0.0)
-            ll_d = _parse_finite_float(
-                minfo.get("long_liq_dist_pct"),
-                ((ll_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and ll_px > 0 else 0.0,
-            )
-            sl_d = _parse_finite_float(
-                minfo.get("short_liq_dist_pct"),
-                ((sl_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and sl_px > 0 else 0.0,
-            )
-            liq_parts = [
-                f"long_liq=${minfo.get('long_liq_px')}[{_fmt_liq_usd(minfo.get('long_liq_usd'))}, {ll_d:+.2f}%]",
-                f"short_liq=${minfo.get('short_liq_px')}[{_fmt_liq_usd(minfo.get('short_liq_usd'))}, {sl_d:+.2f}%]",
-            ]
-            if minfo.get("long_liq_deep_px") is not None:
-                lld_px = _parse_finite_float(minfo.get("long_liq_deep_px"), 0.0)
-                lld_d = _parse_finite_float(
-                    minfo.get("long_liq_deep_dist_pct"),
-                    ((lld_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and lld_px > 0 else 0.0,
+            liq_parts: List[str] = []
+            for l_lbl, px_k, usd_k, dist_k in (
+                ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
+                ("short_liq", "short_liq_px", "short_liq_usd", "short_liq_dist_pct"),
+                ("deep_long", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
+                ("deep_short", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
+            ):
+                if minfo.get(px_k) is None:
+                    continue
+                l_px = _parse_finite_float(minfo.get(px_k), 0.0)
+                l_d = _parse_finite_float(
+                    minfo.get(dist_k),
+                    ((l_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and l_px > 0 else 0.0,
                 )
                 liq_parts.append(
-                    f"deep_long=${minfo.get('long_liq_deep_px')}[{_fmt_liq_usd(minfo.get('long_liq_deep_usd'))}, {lld_d:+.2f}%]"
-                )
-            if minfo.get("short_liq_deep_px") is not None:
-                sld_px = _parse_finite_float(minfo.get("short_liq_deep_px"), 0.0)
-                sld_d = _parse_finite_float(
-                    minfo.get("short_liq_deep_dist_pct"),
-                    ((sld_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and sld_px > 0 else 0.0,
-                )
-                liq_parts.append(
-                    f"deep_short=${minfo.get('short_liq_deep_px')}[{_fmt_liq_usd(minfo.get('short_liq_deep_usd'))}, {sld_d:+.2f}%]"
+                    f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {l_d:+.2f}%]"
                 )
             liq_parts.append(f"magnet={minfo.get('liq_magnet_bias') or 'BALANCED_LIQ_MAGNET'}")
             liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
@@ -657,6 +667,10 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         gateway_max_usd=max_usd,
     )
     eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
+    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd"):
+        cap_v = _parse_finite_float(eff_pos.get(cap_k), None)
+        if cap_v is not None and max_usd > 0 and cap_v > max_usd:
+            eff_pos[cap_k] = round(float(max_usd), 2)
     taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
     maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
     fee_tier = eff_pos.get("fee_tier") or "STANDARD"

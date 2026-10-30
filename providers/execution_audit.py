@@ -492,7 +492,7 @@ def reconcile_intents_from_execution_audit(
             "NEW"
             if (
                 str(rec.get("event") or "") == "submit_accepted"
-                and str(intent.get("order_type") or "").strip().upper() == "LIMIT"
+                and extract_intent_order_type(intent) == "LIMIT"
                 and (safe_pos_float(rec.get("filled_qty"), default=0.0) or 0.0) <= 0.0
             )
             else "FILLED"
@@ -525,18 +525,19 @@ def _filter_intents_by_scope(intents_data: list[dict[str, Any]], scope: str) -> 
     """Filter intent records to those matching the requested asset scope ('crypto', 'equities', or 'all')."""
     if not isinstance(intents_data, list):
         return []
+    scope_norm = str(scope or "all").strip().lower()
     out: list[dict[str, Any]] = []
     for i in intents_data:
         if not isinstance(i, dict):
             continue
-        if scope in ("equities", "crypto"):
+        if scope_norm in ("equities", "crypto"):
             v_norm = normalize_venue_name(i.get("venue"))
             is_eq = (
                 v_norm == "t212"
                 if v_norm
                 else str(i.get("symbol") or "").strip().upper().endswith(("_EQ", "_US_EQ"))
             )
-            if is_eq != (scope == "equities"):
+            if is_eq != (scope_norm == "equities"):
                 continue
         out.append(i)
     return out
@@ -553,7 +554,7 @@ def _resolve_intent_execution_details(
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
     symbol = str(i.get("symbol") or "").strip().upper()
     side = extract_intent_side(i) or str(i.get("decision") or "").strip().upper()
-    order_type = str(i.get("order_type") or "MARKET").strip().upper()
+    order_type = extract_intent_order_type(i)
     exec_pay = i.get("execution_payload") if isinstance(i.get("execution_payload"), dict) else {}
     hist = i.get("history") if isinstance(i.get("history"), list) else []
     last_hist = hist[-1] if hist and isinstance(hist[-1], dict) else {}
@@ -907,6 +908,11 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
             else:
                 raw_side = normalize_side(raw_val) or str(raw_val).strip().upper() or "HOLD"
             d["decision"] = raw_side
+            raw_sym = d.get("symbol")
+            if isinstance(raw_sym, str) and raw_sym.strip():
+                d["symbol"] = raw_sym.strip().upper()
+            elif isinstance(raw_sym, bool):
+                d.pop("symbol", None)
             v_norm = normalize_venue_name(d.get("venue"))
             if v_norm:
                 d["venue"] = v_norm
@@ -1536,9 +1542,11 @@ def preflight_intent_and_resolve_price(
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
     inst = resolve_instrument_fn(symbol, venue=venue, instruments_map=instruments_map)
+    inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+    inst_quote_u = str(getattr(inst, "quote", "") or "").strip().upper()
     if not inst or (
         normalize_venue_name(str(getattr(inst, "provider_name", ""))) != "t212"
-        and str(getattr(inst, "symbol", "")).upper().endswith("BTC")
+        and ((len(inst_sym_u) > 3 and inst_sym_u.endswith("BTC")) or inst_quote_u == "BTC")
     ):
         if log:
             log.warning(

@@ -5348,3 +5348,84 @@ def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(t
     assert "long_crowding_extreme" in dec_f.reason
 
 
+def test_iteration37_prompt_sibling_merge_max_usd_clamp_and_bare_btc_preflight():
+    from types import SimpleNamespace
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+    from providers.execution_audit import normalize_trading_decisions, preflight_intent_and_resolve_price
+
+    # 1. Section 3A & 3B merge missing telemetry from collapsed sibling entries and Section 3C clamps precomputed max_buy/max_sell to max_usd
+    sensors = SimpleNamespace(
+        prices_and_trends={
+            "BTCUSDC": {"price": 82000.0, "chg_15m_pct": 0.25},
+            "XBTUSD": {"price": 82010.0, "poc_px": 81500.0, "val_px": 81000.0, "vah_px": 82200.0},
+        },
+        microstructure={
+            "BTCUSDC": {"ob_imbalance": 0.64, "bid_wall_px": 81500.0, "bid_wall_usd": 450000.0, "ask_wall_px": 82500.0, "ask_wall_usd": 380000.0},
+            "BTCUSDT": {"funding_rate": 0.00012, "oi_usd": 95000000.0, "whale_long_pct": 0.61},
+        },
+        portfolio_summary={
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "base": "BTC",
+                    "quote": "USDC",
+                    "free_base": 0.05,
+                    "value_usd": 4100.0,
+                    "free_quote": 1800.0,
+                    "price": 82000.0,
+                    "effective_max_buy_usd": 1800.0,
+                    "effective_max_sell_usd": 2000.0,
+                }
+            ]
+        },
+    )
+    prompt = build_supervisor_prompt(sensors, [], max_usd=500.0)
+    assert "vol_profile(POC=81500.0" in prompt
+    assert "funding=0.00012" in prompt
+    assert "oi_usd=95000000.0" in prompt
+    assert "max_buy=$500.0, max_sell=$500.0" in prompt
+
+    # 2. normalize_trading_decisions uppercases/strips symbol and strips boolean symbol
+    decs = normalize_trading_decisions(
+        {
+            "market_trading_decisions": [
+                {"decision": "buy", "symbol": "  hypeusdc ", "venue": "hyperliquid", "confidence": 0.91},
+                {"decision": "hold", "symbol": True, "venue": "binance"},
+            ]
+        }
+    )
+    assert decs[0]["symbol"] == "HYPEUSDC"
+    assert "symbol" not in decs[1]
+
+    # 3. preflight_intent_and_resolve_price allows bare 'BTC' USD-quoted instrument while rejecting 'TAOBTC'
+    inst_btc = SimpleNamespace(symbol="BTC", base="BTC", quote="USDC", provider_name="hyperliquid", enabled=True)
+    inst_taobtc = SimpleNamespace(symbol="TAOBTC", base="TAO", quote="BTC", provider_name="binance", enabled=True)
+    intent_ok = {"intent_id": "i_btc", "decision": "BUY", "symbol": "BTC", "venue": "hyperliquid", "confidence": 0.92, "suggested_notional_usd": 300.0}
+    ok_btc, *_ = preflight_intent_and_resolve_price(
+        intent_ok,
+        min_confidence=0.85,
+        min_notional_usd=10.0,
+        max_notional_usd=2000.0,
+        resolve_instrument_fn=lambda s, venue=None, instruments_map=None: inst_btc,
+        get_live_price_fn=lambda inst: 82000.0,
+        instruments_map=None,
+        now_ts=1700000000.0,
+    )
+    assert ok_btc is True
+
+    intent_bad = {"intent_id": "i_taobtc", "decision": "BUY", "symbol": "TAOBTC", "venue": "binance", "confidence": 0.92, "suggested_notional_usd": 300.0}
+    ok_bad, *_ = preflight_intent_and_resolve_price(
+        intent_bad,
+        min_confidence=0.85,
+        min_notional_usd=10.0,
+        max_notional_usd=2000.0,
+        resolve_instrument_fn=lambda s, venue=None, instruments_map=None: inst_taobtc,
+        get_live_price_fn=lambda inst: 0.005,
+        instruments_map=None,
+        now_ts=1700000000.0,
+    )
+    assert ok_bad is False
+    assert intent_bad["status"] == "REJECTED_UNKNOWN_INSTRUMENT"
+
+
