@@ -21,6 +21,7 @@ import urllib.request
 
 from botcore import (
     _parse_bool_flag,
+    obj_attr,
     parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
@@ -900,29 +901,27 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
 
 def is_bot_or_code_error_report(report: Any) -> bool:
     """Return True strictly for trading bot exceptions, fleet/config anomalies, or code/config patches."""
-    for issue in getattr(report, "diagnosed_issues", None) or []:
+    for issue in obj_attr(report, "diagnosed_issues") or []:
         if not isinstance(issue, dict):
             continue
         cat = str(issue.get("category") or "").strip().upper()
         sev = str(issue.get("severity") or "").strip().upper()
         if cat in BOT_AND_ORDER_ERROR_CATEGORIES and sev in ACTIONABLE_ERROR_SEVERITIES:
             return True
-    code_rem = getattr(report, "code_remediation", None)
+    code_rem = obj_attr(report, "code_remediation")
     if isinstance(code_rem, dict) and _parse_bool_flag(code_rem.get("has_fix"), False):
         return True
-    if getattr(report, "tests_passed", None) is False:
+    if obj_attr(report, "tests_passed") is False:
         return True
-    for act in getattr(report, "venue_actions", None) or []:
-        if isinstance(act, dict):
-            norm_act = normalize_repair_action(act, "").get("action")
-            if norm_act in BOT_OR_FLEET_ERROR_ACTIONS:
-                return True
-    return False
+    return any(
+        isinstance(act, dict) and normalize_repair_action(act, "").get("action") in BOT_OR_FLEET_ERROR_ACTIONS
+        for act in (obj_attr(report, "venue_actions") or [])
+    )
 
 
 def is_system_os_error_report(report: Any) -> bool:
     """Return True for Linux OS, internet/VPN, memory, disk space, or server infrastructure anomalies."""
-    for issue in getattr(report, "diagnosed_issues", None) or []:
+    for issue in obj_attr(report, "diagnosed_issues") or []:
         if not isinstance(issue, dict):
             continue
         cat = str(issue.get("category") or "").strip().upper()
@@ -931,12 +930,10 @@ def is_system_os_error_report(report: Any) -> bool:
             return True
         if sev in ACTIONABLE_ERROR_SEVERITIES and cat not in BOT_AND_ORDER_ERROR_CATEGORIES:
             return True
-    for act in getattr(report, "venue_actions", None) or []:
-        if isinstance(act, dict):
-            norm_act = normalize_repair_action(act, "").get("action")
-            if norm_act in SYSTEM_OS_ERROR_ACTIONS:
-                return True
-    return False
+    return any(
+        isinstance(act, dict) and normalize_repair_action(act, "").get("action") in SYSTEM_OS_ERROR_ACTIONS
+        for act in (obj_attr(report, "venue_actions") or [])
+    )
 
 
 def is_error_report(report: Any) -> bool:
@@ -1151,21 +1148,21 @@ def format_supervisor_ntfy_notification(
     from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 
     issues_cnt = sum(
-        1 for i in (getattr(report, "diagnosed_issues", None) or [])
+        1 for i in (obj_attr(report, "diagnosed_issues") or [])
         if isinstance(i, dict) and str(i.get("category") or "").strip().upper() != "HEALTHY"
     )
     actions_cnt = sum(
-        1 for a in (getattr(report, "venue_actions", None) or [])
+        1 for a in (obj_attr(report, "venue_actions") or [])
         if isinstance(a, dict) and str(a.get("action") or "NONE").strip().upper() != "NONE"
     )
-    code_rem = getattr(report, "code_remediation", None)
+    code_rem = obj_attr(report, "code_remediation")
     has_fix = bool(
         isinstance(code_rem, dict)
         and _parse_bool_flag(code_rem.get("has_fix", False), False)
     )
     if has_fix:
         actions_cnt += 1
-    mode_label = str(getattr(report, "mode", "shadow")).upper()
+    mode_label = str(obj_attr(report, "mode", "shadow")).upper()
     if is_bot_error is None:
         is_bot_error = is_bot_or_code_error_report(report)
     if is_sys_error is None:
@@ -1191,10 +1188,10 @@ def format_supervisor_ntfy_notification(
         priority = "default"
 
     body_lines = [
-        f"Mode: {mode_label} · Status: {'Executed' if getattr(report, 'actions_executed', False) else 'Simulated/Observed'}",
-        f"{getattr(report, 'summary', '')}",
+        f"Mode: {mode_label} · Status: {'Executed' if obj_attr(report, 'actions_executed', False) else 'Simulated/Observed'}",
+        f"{obj_attr(report, 'summary', '')}",
     ]
-    diag_issues = getattr(report, "diagnosed_issues", None)
+    diag_issues = obj_attr(report, "diagnosed_issues")
     if diag_issues:
         top_issue = diag_issues[0]
         if isinstance(top_issue, dict):
@@ -1202,10 +1199,10 @@ def format_supervisor_ntfy_notification(
 
     if has_fix and isinstance(code_rem, dict):
         patch_file = code_rem.get("target_file", "unknown")
-        body_lines.append(f"Code Patch Proposed: {patch_file} (tests={getattr(report, 'tests_passed', None)})")
+        body_lines.append(f"Code Patch Proposed: {patch_file} (tests={obj_attr(report, 'tests_passed')})")
 
-    m_decs = getattr(report, "market_trading_decisions", None)
-    m_single = getattr(report, "market_trading_decision", None)
+    m_decs = obj_attr(report, "market_trading_decisions")
+    m_single = obj_attr(report, "market_trading_decision")
     decisions_to_show = m_decs or ([m_single] if m_single else [])
     for m_dec in decisions_to_show:
         if not isinstance(m_dec, dict):

@@ -62,10 +62,15 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     pos_sfx = ""
     if px_f > 0 and lo_f > 0 and hi_f > lo_f:
         fb_rng = _compute_horizon_range_dict(px_f, lo_f, hi_f, horizon)
-        pos_v = pinfo.get(f"pos_{horizon}_pct") if pinfo.get(f"pos_{horizon}_pct") is not None else fb_rng.get(f"pos_{horizon}_pct")
-        dd_v = pinfo.get(f"dd_{horizon}_high_pct") if pinfo.get(f"dd_{horizon}_high_pct") is not None else fb_rng.get(f"dd_{horizon}_high_pct")
-        bnc_v = pinfo.get(f"bounce_{horizon}_low_pct") if pinfo.get(f"bounce_{horizon}_low_pct") is not None else fb_rng.get(f"bounce_{horizon}_low_pct")
-        spn_v = pinfo.get(f"span_{horizon}_pct") if pinfo.get(f"span_{horizon}_pct") is not None else fb_rng.get(f"span_{horizon}_pct")
+        pos_v, dd_v, bnc_v, spn_v = (
+            pinfo[k] if pinfo.get(k) is not None else fb_rng.get(k)
+            for k in (
+                f"pos_{horizon}_pct",
+                f"dd_{horizon}_high_pct",
+                f"bounce_{horizon}_low_pct",
+                f"span_{horizon}_pct",
+            )
+        )
         pos_sfx = (
             f" pos_{horizon}={pos_v}% (dd_high={_parse_finite_float(dd_v, 0.0):+.2f}%, "
             f"bounce_low={_parse_finite_float(bnc_v, 0.0):+.2f}%, span={spn_v}%)"
@@ -359,16 +364,11 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 _parse_finite_float(pinfo.get("val_px"), 0.0),
                 _parse_finite_float(pinfo.get("vah_px"), 0.0),
             )
-            poc_d = _parse_finite_float(
-                pinfo.get("poc_dist_pct") if pinfo.get("poc_dist_pct") is not None else fb_vp.get("poc_dist_pct"), 0.0
+            poc_d, val_d, vah_d = (
+                _parse_finite_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
+                for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
             )
-            val_d = _parse_finite_float(
-                pinfo.get("val_dist_pct") if pinfo.get("val_dist_pct") is not None else fb_vp.get("val_dist_pct"), 0.0
-            )
-            vah_d = _parse_finite_float(
-                pinfo.get("vah_dist_pct") if pinfo.get("vah_dist_pct") is not None else fb_vp.get("vah_dist_pct"), 0.0
-            )
-            va_pos = pinfo.get("va_pos_pct") if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
+            va_pos = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
             va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
             extras.append(
                 f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%], "
@@ -682,16 +682,15 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     lim_parts: List[str] = []
     if eff_pos.get("exchange_min_notional_usd") is not None:
         lim_parts.append(f"min_notional=${_parse_finite_float(eff_pos.get('exchange_min_notional_usd'), 0.0):g}")
-    if eff_pos.get("min_qty") is not None:
-        lim_parts.append(f"min_qty={eff_pos.get('min_qty')}")
-    if eff_pos.get("step_size") is not None:
-        lim_parts.append(f"step={eff_pos.get('step_size')}")
-    if eff_pos.get("tick_size") is not None:
-        lim_parts.append(f"tick={eff_pos.get('tick_size')}")
-    if eff_pos.get("effective_max_buy_usd") is not None:
-        lim_parts.append(f"max_buy=${eff_pos.get('effective_max_buy_usd')}")
-    if eff_pos.get("effective_max_sell_usd") is not None:
-        lim_parts.append(f"max_sell=${eff_pos.get('effective_max_sell_usd')}")
+    for lim_pfx, lim_k in (
+        ("min_qty=", "min_qty"),
+        ("step=", "step_size"),
+        ("tick=", "tick_size"),
+        ("max_buy=$", "effective_max_buy_usd"),
+        ("max_sell=$", "effective_max_sell_usd"),
+    ):
+        if eff_pos.get(lim_k) is not None:
+            lim_parts.append(f"{lim_pfx}{eff_pos[lim_k]}")
     if lim_parts:
         t_extra += f", limits({', '.join(lim_parts)})"
     fb_val = pos.get("free_base")
@@ -716,12 +715,17 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
-    lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
-    ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-    lb_ts = normalize_timestamp_ms(lb.get("ts_ms"), default=0) or 0
-    ls_ts = normalize_timestamp_ms(ls.get("ts_ms"), default=0) or 0
-    lb_age_h = max(0.0, round((now_ms - lb_ts) / 3_600_000.0, 1)) if lb_ts > 0 else None
-    ls_age_h = max(0.0, round((now_ms - ls_ts) / 3_600_000.0, 1)) if ls_ts > 0 else None
+    def _side_summary(key: str) -> str:
+        entry = oinfo.get(key) if isinstance(oinfo.get(key), dict) else {}
+        px = _round_opt_px(entry.get("price"), 6)
+        if px is None:
+            return "none"
+        ts = normalize_timestamp_ms(entry.get("ts_ms"), default=0) or 0
+        age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
+        tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
+        by_sfx = f", by={tag}" if tag else ""
+        return f"{entry.get('qty')} @ {px} (age={age_h}h{by_sfx})"
+
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
     r_buys = oinfo.get("recent_buys") or []
@@ -730,14 +734,8 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
         tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
 
-    lb_px = _round_opt_px(lb.get("price"), 6)
-    ls_px = _round_opt_px(ls.get("price"), 6)
-    lb_tag = lb.get("actor_tag") or format_actor_tag(lb.get("actor"), lb.get("module"), lb.get("rule"))
-    ls_tag = ls.get("actor_tag") or format_actor_tag(ls.get("actor"), ls.get("module"), ls.get("rule"))
-    lb_by = f", by={lb_tag}" if lb_tag else ""
-    ls_by = f", by={ls_tag}" if ls_tag else ""
-    lb_str = f"{lb.get('qty')} @ {lb_px} (age={lb_age_h}h{lb_by})" if lb_px is not None else "none"
-    ls_str = f"{ls.get('qty')} @ {ls_px} (age={ls_age_h}h{ls_by})" if ls_px is not None else "none"
+    lb_str = _side_summary("last_buy")
+    ls_str = _side_summary("last_sell")
     last_act_tag = oinfo.get("last_action_actor_tag") or format_actor_tag(
         oinfo.get("last_action_actor"),
         oinfo.get("last_action_module"),
