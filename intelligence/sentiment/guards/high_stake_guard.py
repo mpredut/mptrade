@@ -2750,7 +2750,6 @@ def apply_asset_scope_filter(
             "hyperliquid_cycles",
             "hyperliquid_signal",
             "hyperliquid_readonly",
-            "recent_orders",
             "monitortrades_active_state",
             "trailing_peaks",
         ):
@@ -2761,6 +2760,26 @@ def apply_asset_scope_filter(
             if not str(k).upper().endswith(("_EQ", "_US_EQ"))
         }
         portfolio_summary.pop("t212_cycles", None)
+    if isinstance(portfolio_summary.get("recent_orders"), dict):
+        t212_sym_set = {str(s).upper() for s in t212_cycles}
+
+        def _is_eq_ro_key(rk: str) -> bool:
+            rk_up = str(rk).upper()
+            if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
+                return True
+            if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")):
+                return False
+            return rk_up in t212_sym_set
+
+        filtered_ro = {
+            rk: rv
+            for rk, rv in portfolio_summary["recent_orders"].items()
+            if _is_eq_ro_key(rk) == want_t212
+        }
+        if filtered_ro:
+            portfolio_summary["recent_orders"] = filtered_ro
+        else:
+            portfolio_summary.pop("recent_orders", None)
     for list_key in ("recent_ai_intents", "active_retry_queue", "open_orders"):
         if list_key in portfolio_summary and isinstance(portfolio_summary[list_key], list):
             filtered_items = [

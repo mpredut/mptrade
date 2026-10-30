@@ -1507,11 +1507,25 @@ def submit_supervisor_trading_decisions(
     is_rth_open_fn: Any,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
+    from cachepaths import normalize_venue_name
     from providers.execution_audit import normalize_trading_decisions
 
     if not getattr(spec, "can_trade", False):
         return [], {}, [], None, False
     decisions_list = normalize_trading_decisions(plan)
+    scope = getattr(spec, "asset_scope", "all")
+    if scope in ("equities", "crypto") and decisions_list:
+        want_t212 = scope == "equities"
+        decisions_list = [
+            d
+            for d in decisions_list
+            if str(d.get("decision") or "HOLD").upper() not in ("BUY", "SELL")
+            or (
+                normalize_venue_name(d.get("venue")) == "t212"
+                or str(d.get("symbol") or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+            )
+            == want_t212
+        ]
     market_decision = decisions_list[0] if decisions_list else {}
     intents_emitted: List[Dict[str, Any]] = []
     actionable_decs = [
@@ -1599,9 +1613,12 @@ def summarize_fleet_sensor_status(
     _rj = read_json_fn or read_json_recovering
     sensors: Dict[str, Any] = {}
 
-    def _read(fname: str) -> Optional[Dict[str, Any]]:
-        data = _rj(os.path.join(cachedb_dir, fname))
-        return data if isinstance(data, dict) else None
+    def _read(*fnames: str) -> Optional[Dict[str, Any]]:
+        for fname in fnames:
+            data = _rj(os.path.join(cachedb_dir, fname))
+            if isinstance(data, dict) and data:
+                return data
+        return None
 
     geo = _read("geopolitical_eval.json")
     if geo:
@@ -1611,7 +1628,7 @@ def summarize_fleet_sensor_status(
             "summary": str(geo.get("summary") or ""),
         }
 
-    macro = _read("sentiment_eval.json")
+    macro = _read("sentiment_eval.json", "sentiment_state.json")
     if macro:
         sensors["sentiment_advisor"] = {
             "market_bias": str(macro.get("market_bias") or "NEUTRAL"),
@@ -1619,7 +1636,11 @@ def summarize_fleet_sensor_status(
             "action": str(macro.get("recommended_action") or "HOLD"),
         }
 
-    sup = _read("auto_cryptotrade_executor_eval.json")
+    sup = _read(
+        "auto_cryptotrade_executor_eval.json",
+        "auto_trade_executor_eval.json",
+        "auto_sharetrade_executor_eval.json",
+    )
     if sup:
         raw_dec = sup.get("market_trading_decision")
         dec = raw_dec if isinstance(raw_dec, dict) else {}
@@ -1630,11 +1651,11 @@ def summarize_fleet_sensor_status(
             "summary": str(sup.get("summary") or ""),
         }
 
-    fg = _read("fear_greed_collect.json")
+    fg = _read("fear_greed_collect.json", "fear_greed_state.json")
     if fg:
         sensors["fear_greed"] = safe_float(fg.get("value"), default=None)
 
-    mb = _read("market_breadth_collect.json")
+    mb = _read("market_breadth_collect.json", "market_breadth_state.json")
     if mb:
         sensors["market_breadth"] = safe_float(mb.get("advance_ratio"), default=None)
 

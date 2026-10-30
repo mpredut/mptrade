@@ -3946,4 +3946,77 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     )
     assert "age=1.0h" in ro_line
 
+    from instruments_config import resolve_instrument_live_price
+    from intelligence.sentiment.guards.high_stake_guard import apply_asset_scope_filter
+    from orchestratorOS.lib.technical_repair_ssot import (
+        submit_supervisor_trading_decisions,
+        summarize_fleet_sensor_status,
+    )
+
+    # 1. apply_asset_scope_filter filters recent_orders by scope (preserving equities for equities scope)
+    p_eq = {
+        "recent_orders": {
+            "BTCUSDC": {"last_action_side": "BUY"},
+            "NVDA_US_EQ": {"last_action_side": "BUY"},
+            "t212:AAPL_US_EQ": {"last_action_side": "SELL"},
+        },
+        "positions": [],
+        "open_orders": [],
+    }
+    p_cr = {
+        "recent_orders": dict(p_eq["recent_orders"]),
+        "positions": [],
+        "open_orders": [],
+    }
+    apply_asset_scope_filter({}, {}, p_eq, "equities", {}, {})
+    apply_asset_scope_filter({}, {}, p_cr, "crypto", {}, {})
+    assert set(p_eq["recent_orders"].keys()) == {"NVDA_US_EQ", "t212:AAPL_US_EQ"}
+    assert set(p_cr["recent_orders"].keys()) == {"BTCUSDC"}
+
+    # 2. submit_supervisor_trading_decisions enforces asset scope isolation on BUY/SELL decisions
+    from types import SimpleNamespace
+    submitted_payloads = []
+    mock_gw = MagicMock()
+    mock_gw.submit.side_effect = lambda p, **kw: submitted_payloads.append(p) or {"status": "SHADOW_LOGGED"}
+    plan_cross = {
+        "market_trading_decisions": [
+            {"decision": "BUY", "venue": "binance", "symbol": "BTCUSDC", "target_usd": 100.0, "confidence": 0.9},
+            {"decision": "BUY", "venue": "t212", "symbol": "NVDA_US_EQ", "target_usd": 100.0, "confidence": 0.9},
+        ]
+    }
+    submit_supervisor_trading_decisions(
+        plan_cross,
+        SimpleNamespace(can_trade=True, asset_scope="crypto"),
+        topic_key="auto_cryptotrade_executor",
+        mode="shadow",
+        now_ts=1793300000.0,
+        intent_gateway=mock_gw,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert [p["symbol"] for p in submitted_payloads] == ["BTCUSDC"]
+    submitted_payloads.clear()
+    submit_supervisor_trading_decisions(
+        plan_cross,
+        SimpleNamespace(can_trade=True, asset_scope="equities"),
+        topic_key="auto_sharetrade_executor",
+        mode="shadow",
+        now_ts=1793300000.0,
+        intent_gateway=mock_gw,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert [p["symbol"] for p in submitted_payloads] == ["NVDA_US_EQ"]
+
+    # 3. summarize_fleet_sensor_status reads fallback state files and resolve_instrument_live_price uses ob_mid_price
+    (tmp_path / "fear_greed_collect.json").unlink(missing_ok=True)
+    (tmp_path / "fear_greed_state.json").write_text(json.dumps({"value": 33.0}), encoding="utf-8")
+    (tmp_path / "orderbook_depth_ADAUSD.json").write_text(
+        json.dumps({"best_bid": 0.70, "best_ask": 0.72, "mid_price": 0.71}),
+        encoding="utf-8",
+    )
+    f_stat = summarize_fleet_sensor_status(str(tmp_path))
+    assert f_stat["fear_greed"] == 33.0
+    ada_inst = MagicMock(symbol="ADAUSD", base="ADA", _provider=None)
+    assert resolve_instrument_live_price(ada_inst, str(tmp_path)) == pytest.approx(0.71)
+
+
 

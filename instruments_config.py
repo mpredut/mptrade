@@ -176,6 +176,13 @@ def load_tradable_instruments(
                 existing_hl_syms.add(pair)
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
+        if scope == "equities":
+            for k, inst in raw_map.items():
+                if (
+                    getattr(inst, "enabled", True) is not False
+                    and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212"
+                ):
+                    active_map[k] = inst
         load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
         existing_t212_syms = _existing_syms("t212")
         for inst_name, ticker, base, quote in discover_t212_equities(ws_dir):
@@ -252,15 +259,14 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
             items = raw_items if isinstance(raw_items, dict) else {}
             sym_u = str(inst.symbol or "").strip().upper()
             inst_base = getattr(inst, "base", None) or (split_symbol_assets(sym_u) or (sym_u, ""))[0]
-            candidates = cache_symbol_variants(inst.symbol, include_original=True)
+            candidates = cache_symbol_variants(inst.symbol, include_original=True, include_base=True)
             if inst_base:
-                for cand in cache_symbol_variants(str(inst_base)):
+                for cand in cache_symbol_variants(str(inst_base), include_original=True, include_base=True):
                     if cand not in candidates:
                         candidates.append(cand)
 
             for cand in candidates:
-                raw_entry = items.get(cand) if cand in items else casefold_get(items, cand)
-                px_f = extract_current_price_item(raw_entry)
+                px_f = extract_current_price_item(casefold_get(items, cand))
                 if px_f is not None:
                     return px_f
             if inst_base:
@@ -272,12 +278,20 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         pass
 
     try:
-        from intelligence.sentiment.guards.high_stake_guard import load_symbol_price_series
+        from intelligence.sentiment.guards.high_stake_guard import (
+            load_symbol_microstructure,
+            load_symbol_price_series,
+        )
         ser_24h, _ = load_symbol_price_series(cache_dir, str(inst.symbol or ""), include_7d=False)
         if ser_24h:
             px_f = safe_pos_float(ser_24h[-1][1], default=None)
             if px_f is not None:
                 return px_f
+        minfo = load_symbol_microstructure(cache_dir, str(inst.symbol or ""))
+        if isinstance(minfo, dict):
+            ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
+            if ob_mid is not None:
+                return ob_mid
     except Exception:
         pass
 
