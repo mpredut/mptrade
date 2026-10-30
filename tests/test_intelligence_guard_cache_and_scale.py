@@ -2315,7 +2315,8 @@ class TestBatch6IntelligenceAndRoutingFixes:
         # 3. resolve_assets strips separators while preserving unknown suffixes
         assert resolve_assets("HYPE/USDC") == ("HYPE", "USDC")
         assert resolve_assets("HYPE-USDC", base="HYPE") == ("HYPE", "USDC")
-        assert resolve_assets("TAOUSDT") == ("TAOUSDT", None)
+        assert resolve_assets("TAOUSDT") == ("TAO", "USDT")
+        assert resolve_assets("TAOBRL") == ("TAOBRL", None)
 
         # 4. monitortrades._resolve_exit and _handle_position_recovery clear _SL_EPISODE_STATE
         monkeypatch.setattr(monitortrades, "_save_mt_state", lambda: None)
@@ -16087,10 +16088,11 @@ def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygien
     with pytest.raises(bf.BinanceFilterError):
         bf.decimal_places(0)
 
-    # 2. providers.quantity.resolve_assets with FDUSD/GBP (preserving non-USDT contract) and _parse_bool_flag
-    assert qty_mod.resolve_assets("BTCUSDT") == ("BTCUSDT", None)
+    # 2. providers.quantity.resolve_assets with USDT/FDUSD/GBP and _parse_bool_flag
+    assert qty_mod.resolve_assets("BTCUSDT") == ("BTC", "USDT")
     assert qty_mod.resolve_assets("ETHFDUSD") == ("ETH", "FDUSD")
     assert qty_mod.resolve_assets("SOLGBP") == ("SOL", "GBP")
+    assert qty_mod.resolve_assets("BTCXYZ") == ("BTCXYZ", None)
     assert qty_mod._parse_bool_flag(2, default=False) is True
     assert qty_mod._parse_bool_flag("y", default=False) is True
     assert qty_mod._parse_bool_flag("n", default=True) is False

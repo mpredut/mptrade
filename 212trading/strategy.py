@@ -70,11 +70,12 @@ def state_path_for(ticker: str) -> str:
     return _shared_state_path_for(ticker, _HERE)
 
 
-def _clean_pos_float(val: object) -> float | None:
-    return safe_pos_float(val, default=None)
+def _clean_pos_float(val: object, default: float | None = None) -> float | None:
+    return safe_pos_float(val, default=default)
 
 
-_clean_nonneg_float = safe_nonneg_float
+def _clean_nonneg_float(val: object, default: float | None = None) -> float | None:
+    return safe_nonneg_float(val, default=default)
 
 
 

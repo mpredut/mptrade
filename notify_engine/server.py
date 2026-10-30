@@ -61,13 +61,7 @@ _SERVER_MARKERS = (
 )
 
 def _ensure_env_loaded() -> None:
-    env_p = os.path.join(ROOT_DIR, ".env")
-    if os.path.isfile(env_p):
-        load_env_stack(env_p)
-    else:
-        cfg_p = os.path.join(ROOT_DIR, "config.env")
-        if os.path.isfile(cfg_p):
-            load_env_stack(cfg_p)
+    load_env_stack(os.path.join(ROOT_DIR, ".env"))
 
 
 def resolve_topic(category: str) -> str:

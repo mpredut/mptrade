@@ -182,8 +182,7 @@ def _new_state() -> dict:
     }
 
 
-def _clean_oid(val: object) -> str | None:
-    return _clean_single_order_id(val)
+_clean_oid = _clean_single_order_id
 
 
 def _normalize_stored_oid(raw_oid: object) -> int | str | None:

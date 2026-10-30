@@ -57,8 +57,12 @@ _REGIME_BAR_SETTLE_MAX_SEC = 900.0
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
 
-_clean_pos_float = lambda val: safe_pos_float(val, default=None)
-_clean_nonneg_float = lambda val: safe_nonneg_float(val, default=None)
+def _clean_pos_float(val: object, default: float | None = None) -> float | None:
+    return safe_pos_float(val, default=default)
+
+
+def _clean_nonneg_float(val: object, default: float | None = None) -> float | None:
+    return safe_nonneg_float(val, default=default)
 
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:

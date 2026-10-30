@@ -57,9 +57,7 @@ run_replay = _hl_mod.run_replay
 funding_at = _hl_mod.funding_at
 
 
-def fetch_funding(coin, start_ms):
-    """Return hourly coin funding history sorted for time alignment."""
-    return fetch_funding_history(coin, start_ms)
+fetch_funding = fetch_funding_history
 
 
 def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):

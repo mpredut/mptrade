@@ -23,10 +23,7 @@ def _finite_float(val: object, default: float | None = None) -> float | None:
     return safe_float(val, default=default)
 
 
-def _bool_flag(val: object) -> bool:
-    return _parse_bool_flag(val, default=False)
-
-
+_bool_flag = _parse_bool_flag
 diff_percent = _botcore_diff_percent
 are_close = _botcore_are_close
 

@@ -39,7 +39,8 @@ class QuantityDecisionTest(unittest.TestCase):
     def test_resolver_covers_non_usdc_inventory_quotes_without_usdt(self):
         self.assertEqual(resolve_assets("TLVRON"), ("TLV", "RON"))
         self.assertEqual(resolve_assets("HYPEUSD"), ("HYPE", "USD"))
-        self.assertEqual(resolve_assets("TAOUSDT"), ("TAOUSDT", None))
+        self.assertEqual(resolve_assets("TAOUSDT"), ("TAO", "USDT"))
+        self.assertEqual(resolve_assets("TAOBRL"), ("TAOBRL", None))
 
     def test_buy_converts_quote_balance_to_base_quantity(self):
         cap, asset = balance_cap_quantity(
