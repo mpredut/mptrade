@@ -169,8 +169,12 @@ class TestModuleSpecifics(unittest.TestCase):
         self.assertFalse(hasattr(ag, "TARGET_DROP_PERCENT"))
         self.assertFalse(hasattr(ag, "TARGET_GROWTH_PERCENT"))
         self.assertEqual(
+            ag.BUY_TIERS,
+            ((7.0, 0.20), (10.0, 0.30), (14.0, 0.50)),
+        )
+        self.assertEqual(
             ag.SELL_TIERS,
-            ((9.0, 0.20), (12.0, 0.20), (15.0, 0.20), (25.0, 0.20), (35.0, 0.20)),
+            ((9.0, 0.12), (12.0, 0.16), (15.0, 0.20), (25.0, 0.24), (35.0, 0.28)),
         )
 
     def test_assetguardian_requires_every_config_key(self):
@@ -178,8 +182,6 @@ class TestModuleSpecifics(unittest.TestCase):
             "AG_CHECK_INTERVAL_SEC",
             "AG_REFERENCE_MINUTES_BACK",
             "AG_BUY_USE_CASH_RATIO",
-            "AG_BUY_TIERS",
-            "AG_SELL_TIERS",
             "AG_SELL_REARM_GROWTH_PCT",
             "AG_ORDER_MAX_AGE_SEC",
             "AG_ORDER_MISSING_CONFIRMATIONS",
@@ -227,19 +229,9 @@ class TestModuleSpecifics(unittest.TestCase):
                 os.environ[key] = previous
             importlib.reload(ag)
 
-    def test_assetguardian_rejects_incomplete_sell_allocations(self):
-        key = "AG_SELL_TIERS"
-        previous = os.environ.get(key)
-        os.environ[key] = "15:0.30,25:0.30"
-        try:
-            with self.assertRaisesRegex(ValueError, "exactly 1"):
-                importlib.reload(ag)
-        finally:
-            if previous is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = previous
-            importlib.reload(ag)
+    def test_assetguardian_rejects_invalid_progressive_initial_allocation(self):
+        with self.assertRaisesRegex(ValueError, "initial_allocation"):
+            ag._progressive_tier_allocations(3, 0.40)
 
     def test_assetguardian_rearm_must_be_below_first_sell_tier(self):
         key = "AG_SELL_REARM_GROWTH_PCT"

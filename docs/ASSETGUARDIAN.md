@@ -9,17 +9,20 @@ computed from each asset's own price rather than from the total portfolio value.
 
 ## Per-asset signals
 
-- Growth exit in tranches: at +15%/+25%/+35% above its own low it attempts a SELL on that
-  same asset, for 30%/30%/40% of the free quantity captured at the start of the campaign.
-  At the first tranche the window low and the initial quantity are frozen; the thresholds
-  do not move as the rolling window advances. The SELL profit guard stays active, because a
-  rise above the low does not automatically prove a profit above cost.
-- Drawdown buy in tranches: at -7%/-10%/-14% below the asset's own 24h high it attempts a
-  BUY on the same symbol, for 35%/35%/30% of that symbol's campaign budget. The initial
-  budget is 99.5% of the free USDC when the campaign begins. A submit does not complete the
-  tranche: only a terminal `closed` status with an executed quantity marks it complete. That
-  asset's campaign re-arms once the drawdown recovers below 3%, but never while a BUY intent
-  is pending.
+- Growth exit in tranches: at +9%/+12%/+15%/+25%/+35% above its own low (scaled dynamically by
+  the symbol's 24h volatility multiplier `0.75x..1.25x` and Pillar 3B sentiment) it attempts a
+  SELL on that same asset, with progressive allocations `12%/16%/20%/24%/28%` of the free
+  quantity captured at the start of the campaign. At the first tranche the window low and the
+  initial quantity are frozen; the thresholds do not move as the rolling window advances. The
+  SELL profit guard stays active, because a rise above the low does not automatically prove a
+  profit above cost.
+- Drawdown buy in tranches: at -7%/-10%/-14% below the asset's own 24h high (scaled dynamically
+  by the symbol's 24h volatility multiplier `0.75x..1.25x` and Pillar 3B sentiment) it attempts
+  a BUY on the same symbol, with progressive pyramid allocations `20%/30%/50%` of that symbol's
+  campaign budget. The initial budget is 99.5% of the free USDC when the campaign begins. A
+  submit does not complete the tranche: only a terminal `closed` status with an executed
+  quantity marks it complete. That asset's campaign re-arms once the drawdown recovers below
+  3%, but never while a BUY intent is pending.
 
 Example: a TAOUSDC fall from 242 to 225 is roughly -7.02% and may emit a BUY TAOUSDC intent.
 It can no longer produce a BTC intent merely because TAO fell. Mirrored, a TAO rise past the
@@ -37,14 +40,13 @@ solely of the current sample cannot produce an order.
 
 ## Execution and retry
 
-Orders go through `mkt.place`/`Instrument.place`. The AssetGuardian BUY sets
-`bypass_profit_reference=True`: it skips only the comparison against the old SELL reference,
-because the valid signal is the per-asset drawdown from its own high. The new flag is not
-`bypass_profit_guard=True`; the quantity/weight policy keeps capping the quantity. The SELL
-sets `bypass_quantity_policy=True`, which the core permits for SELL only: the explicit
-tranche replaces the dynamic weight cap, but it does not skip the profit reference, the real
-balance or the fee cap. The daily cap, anti-spam, the cooldown, balance reconciliation and
-the Binance mechanics all stay active. Neither BUY nor SELL uses the broad
+Orders go through `mkt.place`/`Instrument.place`. Both AssetGuardian BUY and SELL bypass
+`G_QLIMIT1` (`bypass_quantity_policy=True`), because AssetGuardian enforces its own progressive
+tranche budgets (`20% -> 30% -> 50%` on BUY, `12% -> 16% -> 20% -> 24% -> 28%` on SELL). The
+shallowest BUY tranche (-7% base) respects `G_PROF` (`respect_guard=True`), while deeper BUY
+tranches (-10%, -14% base) also bypass `G_PROF` (`bypass_profit_reference=True`). The SELL
+keeps `G_PROF`, real balance and fee caps active. The daily cap, anti-spam, cooldown, balance
+reconciliation and Binance mechanics all stay active. Neither BUY nor SELL uses the broad
 `bypass_profit_guard=True`.
 
 `Instrument.place` no longer uses any `sleep` or polling for the trend: the shared gate

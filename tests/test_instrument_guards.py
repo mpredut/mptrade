@@ -365,6 +365,22 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNone(order)
             self.assertEqual(p.placed, [])
 
+        with self.subTest("is_allowed_for_assetguardian_buy"):
+            self._clear_state()
+            class _ZeroPolicyProvider(_FakeProvider):
+                def policy_cap_quantity(self, *args, **kwargs):
+                    return 0.0
+
+            p = _ZeroPolicyProvider()
+            p.seed_trade("SELL", age_sec=400.0, price=100.0)
+            order = self._inst(p).place(
+                "BUY", 98.0, 1.0, smart=False, caller_owns_retry=True,
+                bypass_guards={"G_QLIMIT1"}, module="assetguardian")
+
+            self.assertIsNotNone(order)
+            self.assertEqual(len(p.placed), 1)
+            self.assertEqual(p.placed[0][3], 1.0)
+
         with self.subTest("keeps_balance_and_fee_caps"):
             self._clear_state()
             class _FeeCapProvider(_FakeProvider):

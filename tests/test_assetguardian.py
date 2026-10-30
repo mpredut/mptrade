@@ -42,14 +42,14 @@ class AssetGuardianTest(unittest.TestCase):
 
         with self.subTest(msg="test_config_preflight_reports_every_missing_setting"):
             env = {name: "1" for name in ag.REQUIRED_CONFIG_KEYS}
-            env["AG_BUY_TIERS"] = ""
-            env["AG_SELL_TIERS"] = "   "
+            env["AG_CHECK_INTERVAL_SEC"] = ""
+            env["AG_BUY_USE_CASH_RATIO"] = "   "
             with mock.patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError) as raised:
                     ag._validate_required_config_presence()
             message = str(raised.exception)
-            self.assertIn("AG_BUY_TIERS", message)
-            self.assertIn("AG_SELL_TIERS", message)
+            self.assertIn("AG_CHECK_INTERVAL_SEC", message)
+            self.assertIn("AG_BUY_USE_CASH_RATIO", message)
 
         with self.subTest(msg="test_every_assetguardian_setting_is_registered_as_mandatory"):
             self.assertEqual(
@@ -58,8 +58,6 @@ class AssetGuardianTest(unittest.TestCase):
                     "AG_CHECK_INTERVAL_SEC",
                     "AG_REFERENCE_MINUTES_BACK",
                     "AG_BUY_USE_CASH_RATIO",
-                    "AG_BUY_TIERS",
-                    "AG_SELL_TIERS",
                     "AG_SELL_REARM_GROWTH_PCT",
                     "AG_ORDER_MAX_AGE_SEC",
                     "AG_RECOVERY_RESET_PCT",
@@ -165,7 +163,7 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             buy.assert_called_once()
             self.assertEqual(buy.call_args.kwargs["buy_symbol"], "TAOUSDC")
-            self.assertEqual(buy.call_args.kwargs["cash_amount"], 348.25)
+            self.assertEqual(buy.call_args.kwargs["cash_amount"], 199.0)
             self.assertTrue(
                 buy.call_args.kwargs["client_order_id"].startswith("AGB"))
             sell.assert_not_called()
@@ -203,7 +201,7 @@ class AssetGuardianTest(unittest.TestCase):
                     symbols=("BTCUSDC", "TAOUSDC")))
             buy.assert_called_once()
             self.assertEqual(buy.call_args.kwargs["buy_symbol"], "TAOUSDC")
-            self.assertEqual(buy.call_args.kwargs["cash_amount"], 348.25)
+            self.assertEqual(buy.call_args.kwargs["cash_amount"], 199.0)
             sell.assert_not_called()
 
         with self.subTest(msg="test_default_9pct_tao_growth_selects_first_sell_tier"):
@@ -224,7 +222,7 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(ag, "buy_with_all_cash") as buy:
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             tier = submit.call_args.kwargs["tier"]
-            self.assertEqual(tier, (9.0, 0.20, 2.0))
+            self.assertEqual(tier, (9.0, 0.12, 1.2))
             self.assertEqual(submit.call_args.kwargs["current_price"], 109.5)
             self.assertEqual(
                 state.value["symbols"]["TAOUSDC"]["sell"]["trough_price"], 100.0)
@@ -267,7 +265,7 @@ class AssetGuardianTest(unittest.TestCase):
                 btc_tier, _ = ag._campaign_tier("BTCUSDC", 8, maximum, 650)
                 root = ag._load_state_root()
             self.assertIsNone(tao_tier)
-            self.assertEqual(btc_tier, (7.0, 0.35))
+            self.assertEqual(btc_tier, (7.0, 0.20))
             self.assertEqual(
                 root["symbols"]["TAOUSDC"]["buy"]["completed_tiers"], [7])
 
@@ -284,7 +282,7 @@ class AssetGuardianTest(unittest.TestCase):
             with mock.patch.object(ag, "STATE", state):
                 tier, campaign = ag._campaign_tier(
                     "TAOUSDC", 10.5, {"timestamp": 3, "price": 250}, 500)
-            self.assertEqual(tier, (10.0, 0.35))
+            self.assertEqual(tier, (10.0, 0.30))
             self.assertEqual(campaign["completed_tiers"], [7])
             self.assertEqual(campaign["initial_cash"], 1000)
             self.assertEqual(campaign["peak_price"], 250)
@@ -307,9 +305,9 @@ class AssetGuardianTest(unittest.TestCase):
                 shallow, _ = ag._campaign_tier("TAOUSDC", 9.6, maximum, 1000)
                 middle, _ = ag._campaign_tier("TAOUSDC", 10.5, maximum, 1000)
                 deepest, _ = ag._campaign_tier("TAOUSDC", 14.2, maximum, 1000)
-            self.assertEqual(shallow, (7.0, 0.35))
-            self.assertEqual(middle, (10.0, 0.35))
-            self.assertEqual(deepest, (14.0, 0.30))
+            self.assertEqual(shallow, (7.0, 0.20))
+            self.assertEqual(middle, (10.0, 0.30))
+            self.assertEqual(deepest, (14.0, 0.50))
             self.assertEqual(ag.GUARDED_BUY_THRESHOLD, 7.0)
 
         with self.subTest(msg="test_legacy_global_campaign_maps_only_to_btc"):
@@ -396,11 +394,16 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(ag.mkt, "place", return_value={"orderId": 7}) as place:
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5))
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
-            self.assertEqual(place.call_args.kwargs["bypass_guards"], {"G_PROF"})
+            self.assertEqual(place.call_args.kwargs["bypass_guards"], {"G_PROF", "G_QLIMIT1"})
             self.assertTrue(place.call_args.kwargs["wait_for_trend"])
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_drawdown_buy")
             self.assertEqual(place.call_args.args[0], "TAOUSDC")
+            with mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(ag.api, "get_current_price", return_value=100.0), \
+                 mock.patch.object(ag.mkt, "place", return_value={"orderId": 8}) as place_guarded:
+                self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5, respect_guard=True))
+            self.assertEqual(place_guarded.call_args.kwargs["bypass_guards"], {"G_QLIMIT1"})
 
         with self.subTest(msg="test_buy_submit_acceptance_is_pending_until_terminal_fill"):
             state = MemoryState()
@@ -987,7 +990,7 @@ class AssetGuardianTest(unittest.TestCase):
                 campaign = ag._symbol_campaign("TAOUSDC", "sell")
 
             self.assertNotIn("pending", campaign)
-            self.assertEqual(campaign.get("attempts_by_tier", {}).get("15", 0), 0)
+            self.assertEqual(campaign.get("attempts_by_tier", {}).get("9", 0), 0)
 
         with self.subTest(msg="test_locally_refused_buy_clears_pending_and_reuses_attempt"):
             state = MemoryState()
@@ -1095,7 +1098,7 @@ class AssetGuardianTest(unittest.TestCase):
                     "TAOUSDC", 110.0, {"timestamp": 10, "price": 100.0}, 10.0, provider)
             cancel2.assert_called_once_with(
                 "TAOUSDC", "716499872", provider_name="binance")
-            self.assertEqual(tier2, (9.0, 0.20, 2.0))
+            self.assertEqual(tier2, (9.0, 0.12, 1.2))
 
         with self.subTest(msg="test_terminal_buy_and_sell_tolerate_none_or_nan_cost_and_fee"):
             from types import SimpleNamespace
@@ -1184,7 +1187,7 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertTrue(ag.evaluate_symbol("TAOUSDC"))
             tier = submit.call_args.kwargs["tier"]
             # Canonical tier 9.0 is returned (not 4.5), preserving SSOT tier accounting.
-            self.assertEqual(tier, (9.0, 0.20, 2.0))
+            self.assertEqual(tier, (9.0, 0.12, 1.2))
             buy.assert_not_called()
 
             # Once canonical tier 9.0 is completed, even if P3B returns to HOLD (1.0x) and
@@ -1194,13 +1197,13 @@ class AssetGuardianTest(unittest.TestCase):
                 sell_camp = ag._symbol_campaign("TAOUSDC", "sell")
                 ag._complete_campaign_tier("TAOUSDC", "sell", sell_camp, 9.0)
                 next_tier, _, _ = ag._sell_campaign_tier(
-                    "TAOUSDC", 295.0, {"timestamp": 1, "price": 269.3}, 8.0, provider,
+                    "TAOUSDC", 295.0, {"timestamp": 1, "price": 269.3}, 8.8, provider,
                     portfolio_growth_pct=0.2)
                 self.assertIsNone(next_tier)
                 tier_12, _, _ = ag._sell_campaign_tier(
-                    "TAOUSDC", 302.0, {"timestamp": 1, "price": 269.3}, 8.0, provider,
+                    "TAOUSDC", 302.0, {"timestamp": 1, "price": 269.3}, 8.8, provider,
                     portfolio_growth_pct=0.2)
-                self.assertEqual(tier_12, (12.0, 0.20, 2.0))
+                self.assertEqual(tier_12, (12.0, 0.16, 1.6))
 
         with self.subTest(msg="test_p3b_trim_profits_compresses_moderately_while_bullish_keeps_static"):
             sell_mult_trim, buy_mult_trim, _ = ag._p3b_threshold_multipliers({
@@ -1250,7 +1253,36 @@ class AssetGuardianTest(unittest.TestCase):
                 # At -5.0% drawdown, ACCUMULATE requires 7.0 * 0.65 = 4.55% -> triggers canonical 7.0 BUY tier
                 tier_acc, _ = ag._campaign_tier(
                     "TAOUSDC", 5.0, maximum, 1000.0, p3b_assessment=accumulate_p3b)
-                self.assertEqual(tier_acc, (7.0, 0.35))
+                self.assertEqual(tier_acc, (7.0, 0.20))
+
+        with self.subTest(msg="test_dynamic_progressive_tiers_and_24h_volatility_scaling"):
+            self.assertEqual(
+                ag._progressive_tier_allocations(3, 0.20, mode="convex"),
+                (0.20, 0.30, 0.50),
+            )
+            self.assertEqual(
+                ag._progressive_tier_allocations(5, 0.12, mode="linear"),
+                (0.12, 0.16, 0.20, 0.24, 0.28),
+            )
+            # Low-volatility 24h series (like BTC ~0.18% per 15m bucket) scales mult down to 0.75x
+            low_vol_rows = [
+                {"timestamp": 1_000_000.0 + i * 300.0, "price": 80_000.0 * (1.0 + (0.0006 if i % 6 < 3 else -0.0006))}
+                for i in range(80)
+            ]
+            low_mult = ag._compute_symbol_volatility_multiplier(low_vol_rows)
+            self.assertEqual(low_mult, 0.75)
+            # At 0.75x volatility, canonical -7.0% BUY tier triggers at -5.25% (catching -6.2% BTC drop)
+            self.assertAlmostEqual(
+                ag._trigger_threshold_for_buy_tier(7.0, buy_mult=1.0, volatility_mult=low_mult),
+                5.25,
+            )
+            # High-volatility 24h series scales mult up to 1.25x
+            high_vol_rows = [
+                {"timestamp": 1_000_000.0 + i * 300.0, "price": 240.0 * (1.012 if (i // 3) % 2 == 0 else 1.0)}
+                for i in range(80)
+            ]
+            high_mult = ag._compute_symbol_volatility_multiplier(high_vol_rows)
+            self.assertEqual(high_mult, 1.25)
 
         with self.subTest(msg="test_combined_p3b_and_portfolio_growth_compress_all_sell_thresholds"):
             # 1. Neutral P3B (1.0x) + Portfolio Growth >= 2.2% compresses static tiers by 20%

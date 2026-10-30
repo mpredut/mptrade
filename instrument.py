@@ -313,6 +313,8 @@ class Instrument:
                 prefix=kwargs.get("prefix"),
                 client_order_id=kwargs.get("client_order_id"),
             )
+        else:
+            caller_module = order_guard.resolve_caller_module(caller_module)
         m = order_guard._load_margins()
         v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
         venue_key = f"{v_norm}_bypass_guards"
@@ -344,9 +346,15 @@ class Instrument:
                 "is allowed only for BUY")
             revoke_guard_bypass(bypassed_guards, "G_PROF")
             bypass_math_ref = False
-        # Quantity-policy bypass reduces exposure and is therefore SELL-only.
-        # Ignore it on BUY so a misplaced argument can never increase exposure.
-        if bypass_quantity_policy and not bypass_profit_guard and side_u != "SELL":
+        # Quantity-policy bypass reduces exposure and is therefore SELL-only by default,
+        # except for AssetGuardian staged drawdown BUY campaigns which enforce their own
+        # progressive tranche budget (0.20 -> 0.30 -> 0.50).
+        if (
+            bypass_quantity_policy
+            and not bypass_profit_guard
+            and side_u != "SELL"
+            and caller_module != "assetguardian"
+        ):
             print(
                 f"[GUARD] {side_u} {self.symbol}: bypass_quantity_policy ignored; "
                 "is allowed only for SELL")
@@ -817,16 +825,9 @@ class Instrument:
                         "current price unavailable")
                     return None
                 if retry_constraint_supplied:
-                    favorable = (
-                        final_market_price
-                        >= retry_requested_price
-                        * (1.0 - retry_price_tolerance)
-                        if side_u == "SELL" else
-                        final_market_price
-                        <= retry_requested_price
-                        * (1.0 + retry_price_tolerance)
-                    )
-                    if not favorable:
+                    if not order_retry.is_retry_price_favorable(
+                        side_u, final_market_price, retry_requested_price, retry_price_tolerance
+                    ):
                         reason = "retry_price_unfavorable"
                         return None
                 if final_profit_check:
