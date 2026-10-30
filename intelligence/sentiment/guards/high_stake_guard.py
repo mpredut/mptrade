@@ -34,6 +34,7 @@ from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
+    filter_valid_severity_keywords,
     get_cache_filenames,
     is_cache_fresh,
     normalize_order_side,
@@ -852,6 +853,20 @@ def apply_live_24trend_windows(
         entry["price"] = live_px
     entry.setdefault("trend", w222.get("final_trend", 0))
     entry.setdefault("growth_coefficient", w222.get("growth_coefficient", 0.0))
+    if entry.get("gradient_recent") is None and w222.get("gradient_recent") is not None:
+        entry["gradient_recent"] = w222.get("gradient_recent")
+    if entry.get("gradient_recent_fast") is None:
+        gf_live = (
+            w90.get("gradient_recent_fast")
+            or w222.get("gradient_recent_fast")
+            or w90.get("gradient_recent")
+        )
+        if gf_live is not None:
+            entry["gradient_recent_fast"] = gf_live
+    if entry.get("epsilon") is None:
+        eps_live = w222.get("epsilon") or w90.get("epsilon")
+        if eps_live is not None:
+            entry["epsilon"] = eps_live
     for w_dict, s_key, t_key, g_key, keep_existing_default in (
         (w90, "slope_90s", "trend_90s", "growth_90s", False),
         (w222, "slope_3_7m", "trend_3_7m", "growth_3_7m", True),
@@ -1167,11 +1182,23 @@ def enrich_microstructure_cvd(
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, b_dec)
     if not minfo.get("cvd_regime") or pinfo is not None:
         ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+        has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
         chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
+        div_reg = str(minfo.get("div_regime") or "").strip().lower()
         if cvd_usd > 0.0:
-            minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.54 and chg_15m <= 0.20) else "aggressive_buying"
+            if has_chg_15m:
+                minfo["cvd_regime"] = "ask_absorbing" if chg_15m <= 0.02 else "aggressive_buying"
+            else:
+                minfo["cvd_regime"] = "ask_absorbing" if ob_imb <= 0.44 else "aggressive_buying"
         elif cvd_usd < 0.0:
-            minfo["cvd_regime"] = "spot_absorbing" if (ob_imb >= 0.58 and chg_15m >= -0.05) else "aggressive_market_dumps"
+            if has_chg_15m:
+                is_bid_absorbing = chg_15m >= 0.05 or (
+                    chg_15m >= -0.05
+                    and (ob_imb >= 0.54 or div_reg in ("short_covering", "bullish_absorption"))
+                )
+            else:
+                is_bid_absorbing = ob_imb >= 0.58 or div_reg in ("short_covering", "bullish_absorption")
+            minfo["cvd_regime"] = "spot_absorbing" if is_bid_absorbing else "aggressive_market_dumps"
         else:
             minfo["cvd_regime"] = "balanced_flow"
 
@@ -1625,10 +1652,14 @@ def parse_venue_cycle_state(
         "last_exit_kind": st_data.get("last_exit_kind"),
         "dca_buys": st_data.get("dca_buys"),
         "dd_pct": dd_pct,
+        "pnl_vs_avg_pct": dd_pct,
     }
     pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
     if pos_peak is not None and qty > 1e-12:
         cyc_entry["pos_peak"] = pos_peak
+        if px_f > 0 and pos_peak > 0:
+            eff_peak = max(pos_peak, px_f)
+            cyc_entry["dd_from_peak_pct"] = round(((px_f - eff_peak) / eff_peak) * 100.0, 2)
     raw_realized = (
         st_data.get("realized_net")
         if st_data.get("realized_net") is not None
@@ -3142,7 +3173,19 @@ def harvest_macro_and_news_sensors(
     breaking_news: List[Dict[str, Any]] = []
     news_data = _rj(os.path.join(cache_dir, "news_feed_collect.json"))
     if isinstance(news_data, list) and news_data:
-        valid_news = [item for item in news_data if isinstance(item, dict) and item.get("title")]
+        valid_news: List[Dict[str, Any]] = []
+        for item in news_data:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
+            clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
+            is_high_sev = bool(item.get("is_high_severity"))
+            if raw_kws and not clean_kws:
+                is_high_sev = False
+            norm_item = dict(item)
+            norm_item["matched_keywords"] = clean_kws
+            norm_item["is_high_severity"] = is_high_sev
+            valid_news.append(norm_item)
         valid_news.sort(
             key=lambda x: (
                 1 if x.get("is_high_severity") else 0,
@@ -3626,7 +3669,9 @@ def collect_pretrade_telemetry(
             ef = safe_float(obj_attr(dec, "epsilon", None), default=None) if dec is not None else None
             trend_str = f"{trend}" if trend else "unspecified"
             if gf is not None and ef is not None:
-                trend_str += f" (gradient={gf:+.4f}, epsilon={ef:.4f})"
+                gf_s = f"{gf:+.2e}" if 0.0 < abs(gf) < 1e-4 else f"{gf:+.4f}"
+                ef_s = f"{ef:.2e}" if 0.0 < abs(ef) < 1e-4 else f"{ef:.4f}"
+                trend_str += f" (gradient={gf_s}, epsilon={ef_s})"
             telemetry["Technical Trend Regime"] = trend_str
         except Exception:
             pass
@@ -3790,8 +3835,9 @@ def collect_pretrade_telemetry(
                 s37 = safe_float(t_entry.get("slope_3_7m"), 0.0)
                 s15 = safe_float(t_entry.get("slope_15m"), 0.0)
                 s25 = safe_float(t_entry.get("slope_2_5h"), 0.0)
+                _fmt_s = lambda v: f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}"
                 telemetry["Dynamic Multi-Window Slopes"] = (
-                    f"3.7m={s37:+.5f}, 15m={s15:+.5f}, 2.5h={s25:+.5f}"
+                    f"3.7m={_fmt_s(s37)}, 15m={_fmt_s(s15)}, 2.5h={_fmt_s(s25)}"
                 )
     except Exception:
         pass

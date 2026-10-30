@@ -35,7 +35,12 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
     if cyc.get("pos_peak") is not None:
-        extra_parts.append(f"pos_peak={cyc.get('pos_peak')}")
+        pk_sfx = (
+            f" (dd_from_peak={cyc.get('dd_from_peak_pct')}%)"
+            if cyc.get("dd_from_peak_pct") is not None
+            else ""
+        )
+        extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
     if cyc.get("realized_pnl_usd") is not None:
         extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
     if cyc.get("tp_sold_levels"):
@@ -45,13 +50,18 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     extra_sfx = f", {', '.join(extra_parts)}" if extra_parts else ""
     exit_kind = cyc.get("last_exit_kind")
     exit_kind_sfx = f" ({exit_kind})" if exit_kind else ""
-    dd_val = cyc.get("dd_pct")
-    dd_str = f"{dd_val}%" if dd_val is not None else "N/A"
+    dd_val = cyc.get("pnl_vs_avg_pct") if cyc.get("pnl_vs_avg_pct") is not None else cyc.get("dd_pct")
+    dd_f = _parse_finite_float(dd_val, None)
+    if dd_f is not None and dd_f > 0.0:
+        dd_field = f"pnl_vs_avg={dd_f:+.2f}%"
+    else:
+        dd_str = f"{dd_val}%" if dd_val is not None else "N/A"
+        dd_field = f"dd={dd_str}"
     return (
         f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
         f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
         f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')}"
-        f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, dd={dd_str}{extra_sfx}"
+        f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, {dd_field}{extra_sfx}"
     )
 
 
@@ -121,6 +131,13 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     if raw_px is not None and not isinstance(raw_px, bool):
         return f"${raw_px}"
     return "N/A"
+
+
+def _fmt_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
+    vf = _parse_finite_float(val, 0.0)
+    if 0.0 < abs(vf) < 1e-4:
+        return f"{vf:+.2e}" if signed else f"{vf:.2e}"
+    return f"{vf:+.{decimals}f}" if signed else f"{vf:.{decimals}f}"
 
 
 def _format_macro_and_news_section(sensors: Any) -> List[str]:
@@ -445,22 +462,26 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             )
         if "slope_15m" in pinfo:
             s90_v = _parse_finite_float(pinfo.get("slope_90s"), None)
-            s90_pfx = f"90s={s90_v:+.5f}, " if s90_v is not None else ""
+            s90_pfx = f"90s={_fmt_slope_val(s90_v, 5)}, " if s90_v is not None else ""
             gr_v = _parse_finite_float(pinfo.get("gradient_recent"), None)
-            grad_rec_sfx = f", grad_rec={gr_v:+.4f}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
+            grad_rec_sfx = f", grad_rec={_fmt_slope_val(gr_v, 4)}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
             gf_v = _parse_finite_float(pinfo.get("gradient_recent_fast"), None)
             eps_v = _parse_finite_float(pinfo.get("epsilon"), None)
-            fast_sfx = f", grad_fast={gf_v:+.4f}/eps={eps_v:.4f}" if gf_v is not None and eps_v is not None else ""
+            fast_sfx = (
+                f", grad_fast={_fmt_slope_val(gf_v, 4)}/eps={_fmt_slope_val(eps_v, 4, signed=False)}"
+                if gf_v is not None and eps_v is not None
+                else ""
+            )
             g_parts = [
-                f"{g_lbl}={gv:+.5f}"
+                f"{g_lbl}={_fmt_slope_val(gv, 5)}"
                 for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
                 if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
             ]
             g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
             extras.append(
-                f"slopes({s90_pfx}3.7m={_parse_finite_float(pinfo.get('slope_3_7m'), 0.0):+.5f}, "
-                f"15m={_parse_finite_float(pinfo.get('slope_15m'), 0.0):+.5f}, "
-                f"2.5h={_parse_finite_float(pinfo.get('slope_2_5h'), 0.0):+.5f}{grad_rec_sfx}{fast_sfx}){g_sfx}"
+                f"slopes({s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
+                f"15m={_fmt_slope_val(pinfo.get('slope_15m'), 5)}, "
+                f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}{grad_rec_sfx}{fast_sfx}){g_sfx}"
             )
         if pinfo.get("vol_1h_pct") is not None:
             vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
@@ -470,7 +491,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 vol_part += f" adapt_dca={pinfo.get('adapt_dca_pct')}%"
             extras.append(vol_part)
         if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None:
-            extras.append(f"kalman_vel={kv:+.5f}")
+            extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
             if pinfo.get("long_trend_est_rem_hours") is not None:
@@ -554,12 +575,14 @@ def _format_microstructure_section(
             or (aw_px_f > 0 and cur_px > aw_px_f)
         ):
             cur_px = ob_mid
-        bw_dist = f", dist={(bw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and bw_px_f > 0 else ""
-        aw_dist = f", dist={(aw_px_f - cur_px) / cur_px * 100.0:+.2f}%" if cur_px > 0 and aw_px_f > 0 else ""
+        ob_ref_px = ob_mid if ob_mid > 0 else cur_px
+        bw_dist = f", dist={(bw_px_f - ob_ref_px) / ob_ref_px * 100.0:+.2f}%" if ob_ref_px > 0 and bw_px_f > 0 else ""
+        aw_dist = f", dist={(aw_px_f - ob_ref_px) / ob_ref_px * 100.0:+.2f}%" if ob_ref_px > 0 and aw_px_f > 0 else ""
         spread_sfx = ""
         if minfo.get("spread_bps") is not None:
             ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
-            spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}"
+            ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
+            spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
 
         raw_p = (
             prices_and_trends.get(sym)
@@ -582,6 +605,7 @@ def _format_microstructure_section(
             or minfo.get("cvd_15m_usd") is None
             or minfo.get("cvd_regime") is None
             or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
+            or (isinstance(p_ctx, dict) and p_ctx.get("chg_15m_pct") is not None)
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
         if any(

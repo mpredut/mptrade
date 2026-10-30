@@ -3612,7 +3612,7 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
     assert "by=BOT(module=assetguardian, rule=SL_PANIC)" in prompt
     assert "by=BOT(module=tradeall, rule=kalman_primary_up)" in prompt
     assert "depth_1pct=(bid=$45.0K/ask=$52.0K, slip_2k=3.2bps)" in prompt
-    assert "cvd_15m=+10 BTC (+$680.0K, spot_absorbing)" in prompt
+    assert "cvd_15m=+10 BTC (+$680.0K, aggressive_buying)" in prompt
 
 
 def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tmp_path):
@@ -5951,6 +5951,230 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
 
     assert HighStakeGuard(gemini_client=client).timeout_sec == 120.0
     assert PostStopReentryGuard(gemini_client=client, notify_enabled=False).timeout_sec == 120.0
+
+
+def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
+    """Verify the 6 telemetry & news lexicon refinements:
+    1. Sub-$1 coin (ARBUSDC) slopes, g_coeff, grad_fast/eps scientific notation when < 1e-4.
+    2. cvd_15m regime correlated with chg_15m_pct and CVD sign (ask_absorbing vs spot_absorbing vs aggressive_buying vs aggressive_market_dumps).
+    3. Section 3B ob_mid display and bid_wall/ask_wall dist anchored to ob_mid.
+    4. Section 3C pnl_vs_avg=+X.XX% when positive vs dd=-X.XX% when negative, plus dd_from_peak on pos_peak.
+    5. build_last_cycle_execution_status preserves active OPEN_RESTING limit orders from earlier cycles on other symbols.
+    6. News severity keyword filter strips generic stopwords, publisher names, and substring stem false positives.
+    """
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.macro_sentiment_ssot import (
+        discover_dynamic_terms_from_headlines,
+        filter_valid_severity_keywords,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        enrich_microstructure_cvd,
+        harvest_macro_and_news_sensors,
+        parse_venue_cycle_state,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+        _format_venue_cycle_line,
+    )
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    # 1. Sub-$1 coin slopes & g_coeff scientific formatting (< 1e-4)
+    lines_3a = _format_market_prices_section(
+        {
+            "ARBUSDC": {
+                "price": 0.163,
+                "trend": 0,
+                "slope_90s": -8.04e-6,
+                "slope_3_7m": 1.12e-5,
+                "slope_15m": -1.50e-6,
+                "slope_2_5h": 1.74e-7,
+                "gradient_recent_fast": 4.20e-6,
+                "epsilon": 3.50e-5,
+                "growth_90s": -8.04e-6,
+                "growth_3_7m": 1.12e-5,
+                "growth_15m": -1.50e-6,
+                "growth_2_5h": 1.74e-7,
+                "kalman_velocity": 0.14083,
+            }
+        }
+    )
+    joined_3a = "\n".join(lines_3a)
+    assert "slopes(90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07, grad_fast=+4.20e-06/eps=3.50e-05)" in joined_3a
+    assert "g_coeff(90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07)" in joined_3a
+
+    # 2. cvd_15m regime correlation with chg_15m_pct and CVD sign
+    m_pos_rally = {"cvd_15m_usd": 758_000.0, "ob_imbalance": 0.62}
+    enrich_microstructure_cvd(m_pos_rally, {"price": 0.25, "chg_15m_pct": 0.18})
+    assert m_pos_rally["cvd_regime"] == "aggressive_buying"
+
+    m_pos_stalled = {"cvd_15m_usd": 360_500.0, "ob_imbalance": 0.58}
+    enrich_microstructure_cvd(m_pos_stalled, {"price": 0.163, "chg_15m_pct": -0.05})
+    assert m_pos_stalled["cvd_regime"] == "ask_absorbing"
+
+    m_neg_rally = {"cvd_15m_usd": -3_870_000.0, "ob_imbalance": 0.48, "div_regime": "short_covering"}
+    enrich_microstructure_cvd(m_neg_rally, {"price": 93.0, "chg_15m_pct": 0.74})
+    assert m_neg_rally["cvd_regime"] == "spot_absorbing"
+
+    m_neg_dump = {"cvd_15m_usd": -1_200_000.0, "ob_imbalance": 0.42}
+    enrich_microstructure_cvd(m_neg_dump, {"price": 90.0, "chg_15m_pct": -0.65})
+    assert m_neg_dump["cvd_regime"] == "aggressive_market_dumps"
+
+    # 3. Section 3B ob_mid display and bid_wall/ask_wall dist anchored to ob_mid
+    lines_3b = _format_microstructure_section(
+        {
+            "BTCUSDC": {
+                "ob_imbalance": 0.55,
+                "spread_bps": 0.0013,
+                "best_bid": 77746.99,
+                "best_ask": 77747.00,
+                "ob_mid_price": 77746.995,
+                "bid_wall_px": 77746.99,
+                "bid_wall_usd": 120000.0,
+                "ask_wall_px": 77900.0,
+                "ask_wall_usd": 150000.0,
+                "cvd_15m_usd": 758000.0,
+                "cvd_15m_base": 9.75,
+                "cvd_regime": "spot_absorbing",
+            }
+        },
+        {"BTCUSDC": {"price": 77660.41, "chg_15m_pct": 0.15}},
+    )
+    joined_3b = "\n".join(lines_3b)
+    assert "spread=0.0013bps (bid=77746.99/ask=77747.0), ob_mid=77746.995" in joined_3b
+    assert "bid_wall=77746.99 ($120000.0, dist=-0.00%)" in joined_3b
+    assert "cvd_15m=+9.75 BTC (+$758.0K, aggressive_buying)" in joined_3b
+
+    # 4. Section 3C pnl_vs_avg=+6.89% when positive vs dd=-17.89% when negative + dd_from_peak on pos_peak
+    cyc_hl = parse_venue_cycle_state(
+        {"qty": 0.90913, "cost_usd": 79.19, "avg_cost": 87.109854, "pos_peak": 95.0, "realized_pnl": 179.25},
+        "HYPEUSDC",
+        {"HYPEUSDC": {"price": 93.11}},
+    )
+    assert cyc_hl["pnl_vs_avg_pct"] == pytest.approx(6.89, abs=0.01)
+    assert cyc_hl["dd_from_peak_pct"] == pytest.approx(-1.99, abs=0.01)
+    line_hl = _format_venue_cycle_line("hyperliquid", "HYPEUSDC", cyc_hl)
+    assert "pnl_vs_avg=+6.89%" in line_hl
+    assert "pos_peak=95.0 (dd_from_peak=-1.99%)" in line_hl
+
+    line_krk = _format_venue_cycle_line(
+        "kraken",
+        "TAOUSD",
+        {"qty": 1.5, "cost_usd": 500.0, "avg_cost_px": 333.33, "dd_pct": -17.89},
+    )
+    assert "dd=-17.89%" in line_krk
+
+    # 5. build_last_cycle_execution_status preserves resting open order on HYPEUSDC when a later cycle updates BTCUSDC
+    intents_multi = [
+        {
+            "intent_id": "hl_hype_1",
+            "timestamp": 1793300000.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 91.5,
+            "reference_price": 92.0,
+            "suggested_notional_usd": 50.0,
+            "status": "EXECUTED",
+            "execution_payload": {"status": "RESTING", "oid": "1001"},
+        },
+        {
+            "intent_id": "hl_btc_1",
+            "timestamp": 1793300010.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 76500.0,
+            "reference_price": 77000.0,
+            "suggested_notional_usd": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"status": "RESTING", "oid": "1002"},
+        },
+        {
+            "intent_id": "hl_btc_2",
+            "timestamp": 1793300660.0,
+            "decision": "BUY",
+            "symbol": "BTCUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 76800.0,
+            "reference_price": 77100.0,
+            "suggested_notional_usd": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"status": "RESTING", "oid": "1003"},
+        },
+    ]
+    open_ords = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "BUY", "order_id": "1001", "price": 91.5},
+        {"venue": "hyperliquid", "symbol": "BTCUSDC", "side": "BUY", "order_id": "1003", "price": 76800.0},
+    ]
+    st_carried = build_last_cycle_execution_status(
+        intents_multi,
+        "crypto",
+        1793300700.0,
+        extract_intent_notional,
+        recent_orders={},
+        open_orders=open_ords,
+    )
+    assert isinstance(st_carried, list)
+    assert len(st_carried) == 2
+    assert [x["symbol"] for x in st_carried] == ["HYPEUSDC", "BTCUSDC"]
+    assert [x["order_id"] for x in st_carried] == ["1001", "1003"]
+    assert all(x["status"] == "OPEN_RESTING" for x in st_carried)
+
+    # 6. News severity keyword filter strips generic lifestyle stopwords & substring stem collisions
+    assert list(filter_valid_severity_keywords(["more than", "was heartbroken", "leave everything", "financial times", "new york", "yahoo finance"])) == []
+    assert list(filter_valid_severity_keywords(["more than", "sanctions"])) == ["sanctions"]
+
+    collector = NewsFeedCollector(history_file=str(tmp_path / "news_hist.json"))
+    coerced_lifestyle = collector._coerce_headline(
+        {
+            "title": "Gen Z is ditching bars for run clubs — and finding more than friends along the way",
+            "source": "Yahoo",
+            "is_high_severity": True,
+            "matched_keywords": ["more than"],
+            "first_seen_ts": 1793300000.0,
+        }
+    )
+    assert coerced_lifestyle is not None
+    assert coerced_lifestyle.is_high_severity is False
+    assert list(coerced_lifestyle.matched_keywords) == []
+
+    # Substring stem collision ('ban' in 'husband'/'abandoned') must not discover lifestyle bigrams
+    discovered = discover_dynamic_terms_from_headlines(
+        [
+            "He was heartbroken: My husband's kids abandoned him when he was dying - Financial Times",
+            "She was heartbroken after her husband abandoned the house - Yahoo Finance",
+        ]
+    )
+    assert "was heartbroken" not in discovered
+    assert "financial times" not in discovered
+    assert "yahoo finance" not in discovered
+    assert "more than" not in discovered
+
+    # harvest_macro_and_news_sensors demotes cached false-alarm [HIGH-SEV] items
+    import json
+    (tmp_path / "news_feed_collect.json").write_text(
+        json.dumps(
+            [
+                {
+                    "title": "What killed Weil Gotshal? - Financial Times",
+                    "source": "FT",
+                    "is_high_severity": True,
+                    "matched_keywords": ["financial times"],
+                    "first_seen_ts": 1793300000.0,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _, b_news = harvest_macro_and_news_sensors(str(tmp_path), 1793300060.0)
+    assert len(b_news) == 1
+    assert b_news[0]["is_high_severity"] is False
+    assert b_news[0]["keywords"] == []
+
 
 
 

@@ -725,6 +725,7 @@ def _resolve_intent_execution_details(
         "raw_status": i.get("status"),
         "venue_status": venue_st or None,
         "exec_status": exec_status,
+        "is_open_in_venue": matched_open is not None,
         "order_id": str(order_id) if order_id is not None else None,
         "fill_px": round(fill_px, 6) if fill_px is not None else None,
         "ref_px": round(ref_px, 6) if ref_px is not None else None,
@@ -799,11 +800,13 @@ def build_last_cycle_execution_status(
         ]
     else:
         cycle_intents = [scoped_intents[-1]]
-    out: list[dict[str, Any]] = []
-    for i in cycle_intents:
-        det = _resolve_intent_execution_details(
-            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
-        )
+
+    def _intent_sym_key(intent_obj: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+        v_norm = normalize_venue_name(intent_obj.get("venue"))
+        s_raw = str(intent_obj.get("symbol") or "").strip().upper()
+        return (v_norm, canonical_base_asset(s_raw), compatible_quote_suffixes(s_raw))
+
+    def _build_status_rec(det: dict[str, Any]) -> dict[str, Any]:
         rec: dict[str, Any] = {
             "venue": det["venue"],
             "symbol": det["symbol"],
@@ -820,7 +823,35 @@ def build_last_cycle_execution_status(
             rec["order_id"] = det["order_id"]
         if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
             rec["age_min"] = round((now_ts - det["ts_val"]) / 60.0, 1)
-        out.append(rec)
+        return rec
+
+    out: list[dict[str, Any]] = []
+    seen_sym_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    cycle_ids = {id(i) for i in cycle_intents}
+    for i in cycle_intents:
+        seen_sym_keys.add(_intent_sym_key(i))
+        det = _resolve_intent_execution_details(
+            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
+        )
+        out.append(_build_status_rec(det))
+
+    if isinstance(open_orders, list) and open_orders:
+        carried_resting: list[dict[str, Any]] = []
+        for i in reversed(scoped_intents[-8:]):
+            if id(i) in cycle_ids:
+                continue
+            s_key = _intent_sym_key(i)
+            if s_key in seen_sym_keys:
+                continue
+            seen_sym_keys.add(s_key)
+            det = _resolve_intent_execution_details(
+                i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
+            )
+            if det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"):
+                carried_resting.append(_build_status_rec(det))
+        if carried_resting:
+            out = list(reversed(carried_resting)) + out
+
     if not out:
         return None
     return out[0] if len(out) == 1 else out

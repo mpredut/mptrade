@@ -17,6 +17,7 @@ from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
     build_dynamic_rss_url,
     discover_dynamic_terms_from_headlines,
+    filter_valid_severity_keywords,
     get_cache_filenames,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
@@ -110,10 +111,25 @@ class NewsFeedCollector:
             if not isinstance(raw_title, str) or not raw_title.strip():
                 return None
             kws = item.get("matched_keywords")
-            matched_kws = (
-                tuple(str(k).strip() for k in kws if isinstance(k, str) and str(k).strip())
+            raw_str_kws = (
+                [str(k).strip() for k in kws if isinstance(k, str) and str(k).strip()]
                 if isinstance(kws, (list, tuple))
+                else []
+            )
+            matched_kws = (
+                filter_valid_severity_keywords(
+                    raw_str_kws,
+                    title=raw_title.strip(),
+                    cache_dir=self._CacheDirOrNone(),
+                )
+                if raw_str_kws
                 else ()
+            )
+            had_only_noise_kws = bool(raw_str_kws) and not matched_kws
+            is_sev = (
+                False
+                if had_only_noise_kws
+                else self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0))
             )
             raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
             return NewsHeadline(
@@ -122,7 +138,7 @@ class NewsFeedCollector:
                 pub_date=raw_pub.strip() if isinstance(raw_pub, str) else "",
                 url=raw_url.strip() if isinstance(raw_url, str) else "",
                 matched_keywords=matched_kws,
-                is_high_severity=self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0)),
+                is_high_severity=is_sev,
             )
         return item if isinstance(getattr(item, "title", None), str) else None
 

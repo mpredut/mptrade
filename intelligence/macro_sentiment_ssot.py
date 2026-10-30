@@ -791,6 +791,97 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 _LEXICON_FILE_CACHE: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 _LEXICON_EVAL_CACHE: Dict[Tuple[Any, ...], Dict[str, Tuple[str, ...]]] = {}
 
+_NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
+    "more than", "first time", "yahoo finance", "financial times", "new york",
+    "york times", "wall street", "street journal", "jerusalem post", "military times",
+    "associated press", "was heartbroken", "leave everything", "united states",
+    "middle east", "according pentagon", "pentagon estimate", "cuba wins",
+    "shocks however", "profit thanks", "thanks gold", "insane plan", "focus live",
+})
+
+_STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
+    "ban": frozenset({"ban", "bans", "banned", "banning"}),
+    "war": frozenset({
+        "war", "wars", "warfare", "wartime", "warship", "warships",
+        "warhead", "warheads", "warplane", "warplanes", "warzone", "warring",
+    }),
+    "hack": frozenset({"hack", "hacks", "hacked", "hacker", "hackers", "hacking"}),
+    "halt": frozenset({"halt", "halts", "halted", "halting"}),
+}
+
+
+def _get_stopwords_set() -> Set[str]:
+    return set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
+
+
+def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
+    """Return True if ``tok`` is a genuine derivative of a configured crisis stem (avoiding substring false positives)."""
+    w = (tok or "").strip().lower()
+    if len(w) < 3:
+        return False
+    for stem in crisis_stems:
+        allowed = _STEM_EXACT_PREFIX_WHITELIST.get(stem)
+        if allowed is not None:
+            if w in allowed:
+                return True
+            continue
+        if w.startswith(stem):
+            return True
+    return False
+
+
+def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -> bool:
+    """Return True if ``term`` is a generic stopword/publisher/lifestyle phrase that must not trigger [HIGH-SEV]."""
+    if not isinstance(term, str):
+        return True
+    t = re.sub(r"\s+", " ", term.strip().lower())
+    if len(t) < 4 or t in _NOISE_LEXICON_PHRASES:
+        return True
+    sw = stopwords if stopwords is not None else _get_stopwords_set()
+    if t in sw:
+        return True
+    words = re.findall(r"[a-zA-Z]{2,}", t)
+    if not words or any(w in sw for w in words):
+        return True
+    return False
+
+
+def filter_valid_severity_keywords(
+    raw_keywords: Any,
+    *,
+    title: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> Tuple[str, ...]:
+    """Filter a headline's matched keywords, stripping generic stopword/publisher noise while keeping seed terms."""
+    seed_set = set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
+        _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    )
+    sw = _get_stopwords_set()
+    out: List[str] = []
+    if isinstance(raw_keywords, (list, tuple)):
+        for k in raw_keywords:
+            if not isinstance(k, str) or not k.strip():
+                continue
+            k_clean = re.sub(r"\s+", " ", k.strip()).lower()
+            if k_clean in seed_set or not _is_noise_dynamic_keyword(k_clean, sw):
+                if k.strip() not in out:
+                    out.append(k.strip())
+    if not out and isinstance(title, str) and title.strip():
+        for kw in match_high_severity_keywords(title, cache_dir=cache_dir, now_ts=now_ts):
+            if kw not in out:
+                out.append(kw)
+    return tuple(out)
+
+
+def _strip_headline_publisher_suffix(title: str) -> str:
+    """Strip trailing ' - Publisher Name' suffix from RSS headline titles before dynamic n-gram discovery."""
+    cleaned = (title or "").strip()
+    parts = re.split(r"\s+[-–—|]\s+", cleaned)
+    if len(parts) >= 2 and len(parts[-1].split()) <= 5 and len(parts[0]) >= 12:
+        return " - ".join(parts[:-1]).strip()
+    return cleaned
+
 
 def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
     fname = _cfg_str("cache_files", "dynamic_lexicon_file") or "macro_lexicon_collect.json"
@@ -818,12 +909,15 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         cached_eval = _LEXICON_EVAL_CACHE.get(eval_key)
         if cached_eval is not None:
             return cached_eval
+        stopwords = _get_stopwords_set()
         high_seen: Dict[str, None] = {}
         acute_seen: Dict[str, None] = {}
         for term, meta in entries.items():
             if not isinstance(term, str) or not term.strip():
                 continue
-            t_clean = term.strip().lower()
+            t_clean = re.sub(r"\s+", " ", term.strip().lower())
+            if _is_noise_dynamic_keyword(t_clean, stopwords):
+                continue
             ts = safe_float(meta.get("ts") if isinstance(meta, dict) else meta, 0.0)
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
             if ts > 0.0 and (now - ts) <= ttl:
@@ -859,23 +953,28 @@ def update_dynamic_lexicon(
     ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
     path = _dynamic_lexicon_path(cache_dir)
 
+    stopwords = _get_stopwords_set()
     existing_entries: Dict[str, Dict[str, Any]] = {}
+    pruned_existing = False
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
         for k, v in raw["entries"].items():
             if isinstance(k, str) and isinstance(v, dict):
+                k_clean = re.sub(r"\s+", " ", k.strip().lower())
+                if _is_noise_dynamic_keyword(k_clean, stopwords):
+                    pruned_existing = True
+                    continue
                 ts = safe_float(v.get("ts"), 0.0)
                 if ts > 0.0 and (now - ts) <= ttl:
-                    existing_entries[k.strip().lower()] = dict(v)
+                    existing_entries[k_clean] = dict(v)
 
-    stopwords = set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
-    changed = False
+    changed = pruned_existing
     for raw_t, tier_override in (
         *[(t, None) for t in new_high_terms],
         *[(a, "acute") for a in new_acute_terms],
     ):
         t = re.sub(r"\s+", " ", str(raw_t or "").strip().lower())
-        if len(t) < 4 or t in stopwords:
+        if _is_noise_dynamic_keyword(t, stopwords):
             continue
         tier = tier_override or existing_entries.get(t, {}).get("tier", "high")
         existing_entries[t] = {"ts": now, "tier": tier, "source": source}
@@ -914,33 +1013,46 @@ def discover_dynamic_terms_from_headlines(
 ) -> Tuple[str, ...]:
     """Extract emerging crisis bigrams/topics that surge across specialized feeds."""
     crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
-    stopwords = set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
+    stopwords = _get_stopwords_set()
     if not crisis_stems or not headlines:
         return ()
 
     phrase_sources: Dict[str, Set[str]] = {}
+    phrase_headlines: Dict[str, Set[str]] = {}
     phrase_counts: Dict[str, int] = {}
 
     for h in headlines:
-        title = obj_attr(h, "title", "")
+        raw_title = obj_attr(h, "title", "")
         source = obj_attr(h, "source", "")
-        if not isinstance(title, str) or not title.strip():
+        if not isinstance(raw_title, str) or not raw_title.strip():
             continue
-        tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", title.lower()) if tok not in stopwords]
+        title = _strip_headline_publisher_suffix(raw_title)
+        norm_title = re.sub(r"\s+", " ", title.lower()).strip()
+        tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", norm_title) if tok not in stopwords]
         if len(tokens) < 2:
             continue
-        if not any(any(tok.startswith(stem) or stem in tok for stem in crisis_stems) for tok in tokens):
+        stem_flags = [_token_matches_crisis_stem(tok, crisis_stems) for tok in tokens]
+        if not any(stem_flags):
             continue
         src_key = str(source or "unknown").strip().lower()
         for i in range(len(tokens) - 1):
+            # Require the bigram itself or an immediately adjacent token to be a crisis stem
+            win_lo = max(0, i - 1)
+            win_hi = min(len(tokens), i + 3)
+            if not any(stem_flags[win_lo:win_hi]):
+                continue
             bigram = f"{tokens[i]} {tokens[i + 1]}"
+            if _is_noise_dynamic_keyword(bigram, stopwords):
+                continue
             phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
             phrase_sources.setdefault(bigram, set()).add(src_key)
+            phrase_headlines.setdefault(bigram, set()).add(norm_title)
 
     discovered = [
         phrase
         for phrase, count in phrase_counts.items()
-        if count >= 2 or len(phrase_sources.get(phrase, set())) >= 2
+        if len(phrase_headlines.get(phrase, set())) >= 2
+        and (count >= 2 or len(phrase_sources.get(phrase, set())) >= 2)
     ]
     if discovered and persist:
         update_dynamic_lexicon(discovered, cache_dir=cache_dir, source="specialized_feed_salience", now_ts=now_ts)
@@ -957,16 +1069,16 @@ def record_dynamic_crisis_terms_from_assessment(
 ) -> Tuple[str, ...]:
     """Extract salient crisis phrases from AI geopolitical/sentiment assessments into dynamic lexicon."""
     crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
-    stopwords = set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
+    stopwords = _get_stopwords_set()
 
     extracted: List[str] = []
     for text in [str(summary or "")] + [str(r or "") for r in (key_risks or ())]:
         tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", text.lower()) if tok not in stopwords]
         for i in range(len(tokens) - 1):
             w1, w2 = tokens[i], tokens[i + 1]
-            if any(w.startswith(stem) or stem in w for stem in crisis_stems for w in (w1, w2)):
+            if any(_token_matches_crisis_stem(w, crisis_stems) for w in (w1, w2)):
                 bg = f"{w1} {w2}"
-                if bg not in extracted:
+                if not _is_noise_dynamic_keyword(bg, stopwords) and bg not in extracted:
                     extracted.append(bg)
 
     if extracted:
