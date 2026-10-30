@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import obj_attr, safe_float
+from botcore import obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from cachepaths import canonical_symbol_key
 from providers.base import normalize_side
 
 snap_attr = obj_attr
@@ -14,10 +15,7 @@ safe_guard_float = safe_float
 
 def safe_pos_guard_float(val: Any, default: Any = None, *, allow_zero: bool = False) -> Any:
     """Safely coerce ``val`` to a positive (or non-negative when ``allow_zero=True``) finite float."""
-    f = safe_float(val, None)
-    if f is None or (f < 0.0 if allow_zero else f <= 0.0):
-        return default
-    return f
+    return (safe_nonneg_float if allow_zero else safe_pos_float)(val, default)
 
 
 def normalize_guard_side(side: Any) -> str:
@@ -63,9 +61,7 @@ def resolve_hierarchical_guard_mode(
 
 def clean_guard_symbol_key(symbol: Any) -> str:
     """Return uppercase symbol stripped of '/', '-', '_'."""
-    if not isinstance(symbol, str):
-        return ""
-    return symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
+    return canonical_symbol_key(symbol) if isinstance(symbol, str) else ""
 
 
 def fetch_guard_snapshot(

@@ -8,9 +8,7 @@ from state_io import atomic_write_json, load_json_state
 # Repository imports.
 import utils as u
 import symbols as sym
-from botcore import safe_nonneg_float, safe_pos_float, safe_nonneg_int
-from cachepaths import cache_symbol_variants
-from instrument_registry import casefold_get
+from botcore import exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
 from . import bapi_allorders as apiorders
 from providers.base import (
@@ -55,13 +53,8 @@ _normalize_side = api._normalize_side
 
 
 def _valid_fill_id(val):
-    if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
-        return None
-    if isinstance(val, float):
-        val_f = safe_nonneg_float(val, default=None)
-        if val_f is None or not val_f.is_integer():
-            return None
-        return int(val_f)
+    if isinstance(val, (int, float)):
+        return exact_nonneg_int(val, default=None)
     if isinstance(val, str):
         s = val.strip()
         if not s or s.startswith("-") or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
@@ -71,8 +64,6 @@ def _valid_fill_id(val):
         if s.startswith("+") and s[1:].isdigit():
             s = s[1:]
         return s
-    if isinstance(val, int):
-        return val if val >= 0 else None
     return None
 
 
@@ -444,25 +435,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
     
-    manager = init_cache_trade_manager()
-    sync_reader = getattr(manager, "sync_account_reader_if_needed", None)
-    if callable(sync_reader):
-        sync_reader()
-
-    # Copy one coherent snapshot while the manager may reload a new generation.
-    with manager.lock:
-        raw_bucket = next(
-            (
-                b
-                for cand in cache_symbol_variants(symbol)
-                if isinstance(b := casefold_get(manager.cache, cand), (list, tuple)) and b
-            ),
-            [],
-        )
-        trades = [
-            dict(trade) for trade in raw_bucket
-            if isinstance(trade, dict)
-        ]
+    trades = apiorders.snapshot_cache_symbol_rows(init_cache_trade_manager(), symbol)
     if not trades:
         return []
         

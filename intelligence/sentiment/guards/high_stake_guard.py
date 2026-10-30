@@ -1319,18 +1319,12 @@ def resolve_venue_fee_and_limits(
     params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
     if params.get("fee_tier"):
         fee_tier = str(params["fee_tier"]).strip()
-    if safe_nonneg_float(params.get("maker_fee_bps"), default=None) is not None:
-        maker_bps = float(safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps))
-    if safe_nonneg_float(params.get("taker_fee_bps"), default=None) is not None:
-        taker_bps = float(safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps))
-    if safe_pos_float(params.get("min_notional"), default=None) is not None:
-        min_notional = float(safe_pos_float(params.get("min_notional"), default=min_notional))
-    if safe_pos_float(params.get("min_qty"), default=None) is not None:
-        min_qty = float(safe_pos_float(params.get("min_qty"), default=min_qty))
-    if safe_pos_float(params.get("step_size"), default=None) is not None:
-        step_size = float(safe_pos_float(params.get("step_size"), default=step_size))
-    if safe_pos_float(params.get("tick_size"), default=None) is not None:
-        tick_size = float(safe_pos_float(params.get("tick_size"), default=tick_size))
+    maker_bps = float(safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps))
+    taker_bps = float(safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps))
+    min_notional = float(safe_pos_float(params.get("min_notional"), default=min_notional))
+    min_qty = float(safe_pos_float(params.get("min_qty"), default=min_qty))
+    step_size = float(safe_pos_float(params.get("step_size"), default=step_size))
+    tick_size = float(safe_pos_float(params.get("tick_size"), default=tick_size))
 
     # Non-blocking inspection of already-cached provider metadata (Kraken / Hyperliquid / Binance)
     prov = getattr(inst, "_provider", None) if inst is not None else None
@@ -1920,9 +1914,15 @@ def harvest_tradable_positions_and_orders(
             params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
             v_norm = normalize_venue_name(venue)
             v_trail_map = trailing_by_venue.get(v_norm, {})
+            sym_quotes = compatible_quote_suffixes(sym, quote)
             t_state = _first_variant_dict(
                 v_trail_map,
-                cache_symbol_variants(sym, include_original=True, include_base=True),
+                cache_symbol_variants(
+                    sym,
+                    include_original=True,
+                    include_base="USD" in sym_quotes,
+                    quotes=sym_quotes,
+                ),
                 default={},
             )
             if not t_state and v_norm == "binance" and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
@@ -2509,6 +2509,10 @@ def harvest_recent_orders_and_enrich_positions(
         p_sym = str(pos.get("symbol") or "").upper()
         p_venue = normalize_venue_name(pos.get("venue"))
         p_variants = cache_symbol_variants(p_sym)
+        p_quote_variants = cache_symbol_variants(
+            p_sym,
+            quotes=compatible_quote_suffixes(p_sym, pos.get("quote")),
+        )
         pos_px_f = safe_float(pos.get("price"), 0.0)
         if pos_px_f <= 0:
             cand_px = resolve_symbol_price(p_sym, prices_and_trends)
@@ -2525,7 +2529,7 @@ def harvest_recent_orders_and_enrich_positions(
                         pos["trailing_peak"] = round(pk_val, 6)
                     pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
         v_ro_map = venue_recent_orders.get(p_venue, {})
-        ro = _first_variant_dict(v_ro_map, p_variants)
+        ro = _first_variant_dict(v_ro_map, p_quote_variants)
         fb_cur = safe_float(pos.get("free_base"), -1.0)
         is_flat_balance = fb_cur >= 0.0 and (
             fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
@@ -2566,7 +2570,7 @@ def harvest_recent_orders_and_enrich_positions(
             else ()
         )
         for cyc_map in venue_cyc_maps:
-            cyc = _first_variant_dict(cyc_map, (p_sym, *p_variants))
+            cyc = _first_variant_dict(cyc_map, (p_sym, *p_quote_variants))
             if not isinstance(cyc, dict):
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)

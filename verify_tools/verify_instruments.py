@@ -17,7 +17,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_pos_float
+from botcore import safe_float, safe_pos_float
 from instruments_config import load_instruments, load_for
 from providers.market_api import api
 from state_io import read_text_lines
@@ -93,10 +93,10 @@ def main() -> int:
     # globale -> mt.* pe TAO (oglindesc hard_tp_* + tp_reference)
     if tao and g:
         def _num_eq(a, b) -> bool:
-            try:
-                return float(a) == float(b)
-            except (TypeError, ValueError):
-                return str(a) == str(b)
+            fa, fb = safe_float(a, default=None), safe_float(b, default=None)
+            if fa is not None and fb is not None:
+                return fa == fb
+            return str(a) == str(b)
 
         check(_num_eq(tao.param("mt", "hardtp"), g.get("hard_tp_pct")),
               "hardtp == hard_tp_pct", f"{tao.param('mt','hardtp')} vs {g.get('hard_tp_pct')}")

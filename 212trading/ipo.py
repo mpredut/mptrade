@@ -106,12 +106,14 @@ def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
                  dry_run=strat_dry, desktop=desktop).run()
         return 0
 
-    if order_price:
-        qty = resolve_quantity(order_price, order_qty, order_budget_ron)
-        if not qty or qty <= 0:
+    px_f = safe_pos_float(order_price, default=None)
+    if px_f is not None:
+        qty = resolve_quantity(px_f, order_qty, order_budget_ron)
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
             log("  ! invalid qty/budget — the order was NOT SENT")
             return 1
-        ok = place_order_with_retry(client, t212_ticker, qty, order_price,
+        ok = place_order_with_retry(client, t212_ticker, qty_f, px_f,
                                     order_validity, order_dry, desktop=desktop)
         return 0 if ok else 1
 
@@ -305,14 +307,16 @@ def _cmd_test_notify(what: str, label: str, desktop: bool) -> int:
 
 def _cmd_test_order(client, ticker, order_price, order_qty, order_budget_ron,
                     order_validity, order_dry, desktop) -> int:
-    if not order_price:
+    px_f = safe_pos_float(order_price, default=None)
+    if px_f is None:
         log("! ORDER_PRICE missing in .env"); return 1
-    if not order_qty and not order_budget_ron:
+    if safe_pos_float(order_qty, default=None) is None and safe_pos_float(order_budget_ron, default=None) is None:
         log("! ORDER_QTY or ORDER_BUDGET_RON missing from .env"); return 1
-    qty = resolve_quantity(order_price, order_qty, order_budget_ron)
-    if not qty or qty <= 0:
+    qty = resolve_quantity(px_f, order_qty, order_budget_ron)
+    qty_f = safe_pos_float(qty, default=None)
+    if qty_f is None:
         log("! invalid quantity"); return 1
-    ok = place_order_with_retry(client, ticker, qty, order_price, order_validity,
+    ok = place_order_with_retry(client, ticker, qty_f, px_f, order_validity,
                                 order_dry, desktop=desktop, write_marker=False)
     return 0 if ok else 1
 

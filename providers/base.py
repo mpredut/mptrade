@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    exact_pos_int,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -118,12 +119,9 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
 def clean_order_id(val: Any) -> Optional[str]:
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
-    if isinstance(val, float):
-        if not math.isfinite(val) or not val.is_integer() or val <= 0:
-            return None
-        val = int(val)
-    if isinstance(val, int):
-        if val <= 0:
+    if isinstance(val, (int, float)):
+        val = exact_pos_int(val, default=None)
+        if val is None:
             return None
     if not isinstance(val, (str, int)):
         return None

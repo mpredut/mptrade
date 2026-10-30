@@ -57,6 +57,7 @@ def _load_hl_local(name: str):
 
 
 _common_mod = _load_hl_local("common")
+_load_hl_local = _common_mod.load_hl_local
 log = _common_mod.log
 _load_dotenv = _common_mod.load_dotenv
 _md_local = _load_hl_local("market_data")

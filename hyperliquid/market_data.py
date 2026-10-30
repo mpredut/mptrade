@@ -34,6 +34,7 @@ def _load_hl_local(name: str):
 
 
 _common = _load_hl_local("common")
+_load_hl_local = _common.load_hl_local
 log = _common.log
 safe_float = _common.safe_float
 safe_pos_float = _common.safe_pos_float

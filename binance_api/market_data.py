@@ -207,7 +207,7 @@ def fetch_ohlc_candles(
                 continue
             open_time_ms = int(ot_f)
             close_time_ms = int(ct_f)
-            if open_time_ms <= 0 or close_time_ms <= 0:
+            if open_time_ms <= 0 or close_time_ms < open_time_ms:
                 continue
             if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
                 continue

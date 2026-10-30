@@ -224,6 +224,28 @@ def get_recent_filled_orders(order_type, symbol, max_age_seconds):
 
 
 
+def snapshot_cache_symbol_rows(manager, symbol: str) -> list[dict]:
+    sync_reader = getattr(manager, "sync_account_reader_if_needed", None)
+    if callable(sync_reader):
+        sync_reader()
+
+    # A WebSocket can update a partially filled order in place. Copy each row
+    # under the manager lock so financial totals never observe a torn mutation.
+    with manager.lock:
+        raw_bucket = next(
+            (
+                b
+                for cand in cache_symbol_variants(symbol)
+                if isinstance(b := casefold_get(manager.cache, cand), (list, tuple)) and b
+            ),
+            [],
+        )
+        return [
+            dict(row) for row in raw_bucket
+            if isinstance(row, dict)
+        ]
+
+
 def get_trade_orders(order_type, symbol, max_age_seconds):
     import cacheManager as cm
     # Consumer processes read the cache written by the dedicated cacheManager process.
@@ -235,27 +257,7 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
 
-    sync_reader = getattr(
-        cache_order_manager, "sync_account_reader_if_needed", None
-    )
-    if callable(sync_reader):
-        sync_reader()
-
-    # A WebSocket can update a partially filled order in place. Copy each row
-    # under the manager lock so financial totals never observe a torn mutation.
-    with cache_order_manager.lock:
-        raw_bucket = next(
-            (
-                b
-                for cand in cache_symbol_variants(symbol)
-                if isinstance(b := casefold_get(cache_order_manager.cache, cand), (list, tuple)) and b
-            ),
-            [],
-        )
-        orders_for_symbol = [
-            dict(order) for order in raw_bucket
-            if isinstance(order, dict)
-        ]
+    orders_for_symbol = snapshot_cache_symbol_rows(cache_order_manager, symbol)
     if not orders_for_symbol:
         return []
 
