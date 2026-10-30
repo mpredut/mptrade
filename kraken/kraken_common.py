@@ -10,7 +10,9 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repository root
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from botcore import (  # noqa: E402,F401  (re-export: compat `from common import ...`)
     BUCHAREST, HTTP_TIMEOUT, log, load_dotenv, load_env_stack, parse_dotenv, float_env, int_env, http_get,
     http_post_form, http_request, fetch_public_json, single_instance, are_close, diff_percent,

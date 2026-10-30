@@ -20,20 +20,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-if _HERE not in sys.path:
-    sys.path.append(_HERE)
 
+import dataclasses
 from strategies.spot_engine import StratParams
 from offline.backtests.metrics import format_performance_summary
 from botcore import exact_nonneg_int, load_dotenv, parse_dotenv, safe_float, safe_pos_float
-
-import dataclasses
-try:
-    from kraken import replay as rp
-    from kraken.market_data import fetch_ohlc_candles
-except ImportError:
-    import replay as rp        # Faithful engine: the live strategy over OHLC data.
-    from market_data import fetch_ohlc_candles
+from kraken import replay as rp
+from kraken.market_data import fetch_ohlc_candles
 
 
 def _bt_params(base: dict, over: dict | None = None) -> "StratParams":

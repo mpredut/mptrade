@@ -23,19 +23,11 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_DIR)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-if _DIR not in sys.path:
-    sys.path.append(_DIR)
 
-try:
-    from kraken.backtest import _bt_params, fetch_candles, simulate
-    from kraken.kraken_common import safe_float, safe_int, safe_pos_float
-    from kraken.market_data import fetch_ohlc_candles
-    from kraken import replay as rp
-except ImportError:
-    from backtest import _bt_params, fetch_candles, simulate  # reuse existing fetch and fixed-TP engine
-    from kraken_common import safe_float, safe_int, safe_pos_float
-    from market_data import fetch_ohlc_candles
-    import replay as rp
+from kraken.backtest import _bt_params, fetch_candles, simulate
+from kraken.kraken_common import safe_float, safe_int, safe_pos_float
+from kraken.market_data import fetch_ohlc_candles
+from kraken import replay as rp
 
 
 def fetch_with_time(pair, interval):
