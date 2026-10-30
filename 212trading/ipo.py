@@ -29,6 +29,7 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import sys
 
@@ -122,7 +123,6 @@ def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
-    import glob
     here = os.path.dirname(os.path.abspath(__file__))
     env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(here, ".env")))
     profile = resolve_cli_arg(sys.argv, ("--profile", "-p"), os.environ.get("IPO_PROFILE"))

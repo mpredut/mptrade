@@ -26,7 +26,16 @@ if T212_DIR not in sys.path:
 
 from offline.backtests.evaluation import load_venue_module
 from offline.backtests.metrics import format_performance_summary
-from botcore import safe_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    float_env,
+    required_env,
+    required_float_env,
+    required_int_env,
+    safe_float,
+    safe_pos_float,
+)
+from ipo_common import load_t212_environment
 
 _replay_mod = load_venue_module("212trading", "replay.py", "t212_backtest_replay")
 run_replay = _replay_mod.run_replay
@@ -178,20 +187,11 @@ def main() -> int:
     args = ap.parse_args()
 
     profile = args.profile.lower() if args.profile else "nvda"
-    from ipo_common import load_t212_environment
     cfg_file = os.path.join(T212_DIR, f"config.{profile}.env")
     if not os.path.exists(cfg_file):
         print(f"! profile config not found: {cfg_file}")
         return 1
     load_t212_environment(os.path.join(T212_DIR, ".env"), profile_file=cfg_file)
-
-    from botcore import (
-        _parse_bool_flag,
-        float_env,
-        required_env,
-        required_float_env,
-        required_int_env,
-    )
 
     budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET")
     entry_pct = float_env("STRAT_ENTRY_PCT")

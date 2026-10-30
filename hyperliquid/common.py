@@ -7,6 +7,7 @@ with `from common import log, load_dotenv, ...`.
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import socket
@@ -20,7 +21,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)  # repository root
 from botcore import (  # noqa: E402,F401  (re-export compatibility)
-    BUCHAREST, log, load_dotenv, load_env_stack, float_env, int_env, single_instance, are_close,
+    BUCHAREST, log, load_dotenv, load_env_stack, float_env, int_env, fetch_public_json, single_instance, are_close,
     required_env, defined_env, required_float_env, required_int_env, required_bool_env,
     resolve_cli_arg,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
@@ -37,7 +38,6 @@ def load_hl_local(name: str):
     mod_file = getattr(mod, "__file__", None) if mod is not None else None
     if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == _HERE):
         return mod
-    import importlib.util
     orig_sys_path = list(sys.path)
     try:
         if _ROOT not in sys.path:

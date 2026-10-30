@@ -9,6 +9,8 @@ from state_io import atomic_write_json, load_json_state
 import utils as u
 import symbols as sym
 from botcore import safe_nonneg_float, safe_pos_float, safe_nonneg_int
+from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
 from . import bapi as api
 from providers.base import (
     extract_order_fee,
@@ -448,8 +450,6 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         sync_reader()
 
     # Copy one coherent snapshot while the manager may reload a new generation.
-    from cachepaths import cache_symbol_variants
-    from instrument_registry import casefold_get
     with manager.lock:
         raw_bucket = next(
             (

@@ -19,6 +19,7 @@ from botcore import _parse_bool_flag, exact_int, safe_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset
 from instrument_registry import casefold_get
 from providers.quantity import resolve_assets
+from state_io import read_text_lines
 
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
 _SETTING_KEYS = {
@@ -54,7 +55,6 @@ def load_config(path: str) -> dict:
         or not os.path.exists(path)
     ):
         raise ValueError(f"Required alert configuration file is missing: {path}")
-    from state_io import read_text_lines
 
     cfg: dict = {"alert_config": {"per_coin": {}}}
     ac = cfg["alert_config"]

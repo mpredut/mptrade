@@ -67,10 +67,14 @@ from providers.kraken_provider import (  # noqa: E402
 from order_retry import (  # noqa: E402
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
+    TrackedOrderResult,
 )
 from credentials import kraken_credentials  # noqa: E402
 from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset  # noqa: E402
+from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
 from instrument_registry import casefold_get  # noqa: E402
+from order_guard import check_intelligence_guards  # noqa: E402
+from state_io import read_json_dict  # noqa: E402
 
 STATE_FILE = os.path.join(_HERE, "trailing_state.json")
 CACHE_TREND = cache_path("cache_short_trend.json")
@@ -161,8 +165,6 @@ class KrakenTrailing:
         for cand in (asset, asset_norm, canon):
             if not cand:
                 continue
-            if cand in TRAIL_PCT:
-                return TRAIL_PCT[cand]
             val = casefold_get(TRAIL_PCT, cand)
             if val is not None:
                 return val
@@ -208,7 +210,6 @@ class KrakenTrailing:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown).
         Errors return 0, making trend filters a safe no-op."""
         try:
-            from state_io import read_json_dict
             data = read_json_dict(CACHE_TREND, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return 0.0
@@ -340,8 +341,6 @@ class KrakenTrailing:
         if bypass_guards is None:
             bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
 
-        from guard_hierarchy import normalize_bypassed_guards
-        from order_guard import check_intelligence_guards
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
             allowed, reason, suggested_scale = check_intelligence_guards(
@@ -352,7 +351,6 @@ class KrakenTrailing:
             if not allowed:
                 intent["refusal_reason"] = reason
                 persist(None)
-                from order_retry import TrackedOrderResult
                 return TrackedOrderResult(outcome="refused", intent=intent, status=None)
             scale_f = safe_pos_float(suggested_scale, default=None)
             if side.upper() == "BUY" and scale_f is not None and scale_f < 1.0:
@@ -372,7 +370,6 @@ class KrakenTrailing:
                 if sq_pos is None or (min_q > 0 and sq_pos < min_q):
                     intent["refusal_reason"] = f"downscaled_below_min_qty:{reason}"
                     persist(None)
-                    from order_retry import TrackedOrderResult
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
                 qty = sq_pos
                 intent["requested_qty"] = qty

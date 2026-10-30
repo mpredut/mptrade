@@ -16,7 +16,7 @@ import time
 
 try:
     # Package import for the generic provider or installed wheel.
-    from .ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
+    from .ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 except ImportError:
     # Compatibility with direct launch from the 212trading directory.
     import os as _os
@@ -27,7 +27,7 @@ except ImportError:
         _sys.path.insert(0, _ROOT)
     if _HERE not in _sys.path:
         _sys.path.append(_HERE)
-    from ipo_common import _parse_bool_flag, http_get, http_post_json, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
+    from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from providers.base import _clean_single_order_id, extract_order_id
 
@@ -384,10 +384,6 @@ class T212Client:
         target_oid = self._clean_order_id(order_id)
         if target_oid is None:
             return False
-        try:
-            from .ipo_common import http_request
-        except ImportError:
-            from ipo_common import http_request
         self._pace_order()
         status, _ = http_request("DELETE", f"{self.base}/equity/orders/{target_oid}",
                                  headers=self._headers())

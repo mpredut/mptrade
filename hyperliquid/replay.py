@@ -11,6 +11,7 @@ modeling through ExecutionModel.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from typing import Any
@@ -26,6 +27,7 @@ if _strat_mod is not None and os.path.dirname(os.path.abspath(getattr(_strat_mod
     sys.modules.pop("strategy", None)
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from strategies.spot_replay import make_spot_replay_adapter
 from strategy import Strategy, StratParams, HL_FEE_PCT
 from offline.backtests.execution import (
     ExecutionModel,
@@ -158,7 +160,6 @@ def _run_once(
     execution: ExecutionModel | None = None,
     fee_pct: float | None = None,
 ) -> dict:
-    import dataclasses
     exec_model = execution or ExecutionModel()
     if isinstance(params, StratParams):
         strat_params = dataclasses.replace(params)
@@ -375,8 +376,6 @@ def _run_once(
 
 def make_hyperliquid_spot_replay_adapter(params: Any, fee_pct: float = 0.035, **kwargs):
     """Return a spot ReplayFunction using strategies.spot_replay (SSOT) compatible with evaluation.py."""
-    from strategies.spot_replay import make_spot_replay_adapter
-
     return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
 
 

@@ -17,6 +17,8 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from cachepaths import cache_symbol_variants
+from instrument_registry import casefold_get
 from providers.base import (
     clean_order_id,
     extract_order_price,
@@ -241,8 +243,6 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
 
     # A WebSocket can update a partially filled order in place. Copy each row
     # under the manager lock so financial totals never observe a torn mutation.
-    from cachepaths import cache_symbol_variants
-    from instrument_registry import casefold_get
     with cache_order_manager.lock:
         raw_bucket = next(
             (

@@ -749,9 +749,7 @@ class NewCoinsMonitor:
         added_map = getattr(self.price_monitor, 'symbol_added_time', None)
         if not isinstance(added_map, dict):
             return True
-        added_time = added_map.get(symbol)
-        if added_time is None:
-            added_time = casefold_get(added_map, symbol)
+        added_time = casefold_get(added_map, symbol)
         ts_val = safe_float(added_time, 0.0)
         if ts_val <= 0.0:
             return True

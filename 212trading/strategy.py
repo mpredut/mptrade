@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dc_fields
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if sys.path[:1] != [_HERE]:
@@ -67,7 +67,6 @@ def log(msg: str) -> None:
     """Log with the asset's thread name: t212_bot runs one thread per asset into one log."""
     name = threading.current_thread().name
     _log(msg if name == "MainThread" else f"[{name}] {msg}")
-_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def state_path_for(ticker: str) -> str:
@@ -242,7 +241,6 @@ class StratParams:
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        from dataclasses import fields as _dc_fields
         base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
         if isinstance(defaults, dict):
             base_defaults.update(defaults)

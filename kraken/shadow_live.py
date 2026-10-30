@@ -39,6 +39,7 @@ import difflib
 import io
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
 from botcore import exact_pos_int, required_env, safe_float, safe_int, safe_pos_float  # noqa: E402
+from strategies import spot_engine as strat  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
 CONFIG_ENV = os.path.join(HERE, "config.env")
@@ -68,7 +70,6 @@ def _load_runtime_config(env_path: str | None = None,
 
 def _variants(interval: int):
     _load_runtime_config()
-    from strategies import spot_engine as strat
     replace = dataclasses.replace
     base = strat.StratParams.from_env()
     variants = {
@@ -114,7 +115,6 @@ def _variants(interval: int):
 def _replay_interval_error(interval: int) -> str | None:
     """Return why the live configuration cannot be replayed at this bar size, if it can't."""
     _load_runtime_config()
-    from strategies import spot_engine as strat
     base = strat.StratParams.from_env()
     required = {int(base.trend_interval)} if (
         base.trend_overlay or base.dca_trend_brake
@@ -141,7 +141,6 @@ def _fetch_with_ts(pair: str, interval: int):
 
 
 def _safe_pair(pair: str) -> str:
-    import re
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(pair or "").strip()).strip("._")
     return cleaned or "UNKNOWN"
 

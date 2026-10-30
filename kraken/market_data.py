@@ -13,10 +13,10 @@ import urllib.parse
 import urllib.request
 
 try:
-    from kraken.kraken_common import exact_nonneg_int, exact_pos_int, log, safe_nonneg_float, safe_pos_float
+    from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
     from kraken.kraken_client import KrakenClient, KrakenError
 except ImportError:
-    from kraken_common import exact_nonneg_int, exact_pos_int, log, safe_nonneg_float, safe_pos_float
+    from kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
     from kraken_client import KrakenClient, KrakenError
 
 
@@ -46,7 +46,6 @@ def fetch_ohlc_candles(
     interval = itv_i
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
-    from botcore import fetch_public_json
     data = fetch_public_json(url, timeout=to_f, user_agent="mptrade/kraken-ohlc-fetcher")
     if not isinstance(data, dict):
         raise RuntimeError(f"invalid Kraken OHLC payload: {data!r}")

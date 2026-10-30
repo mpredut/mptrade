@@ -180,8 +180,6 @@ class TrailingStop:
         for cand in (sym_norm, canon, symbol):
             if not cand:
                 continue
-            if cand in mapping:
-                return mapping[cand]
             val = casefold_get(mapping, cand)
             if val is not None:
                 return val

@@ -32,7 +32,7 @@ except ImportError:
     except ImportError:
         get_price_usd = load_t212_market_data().get_price_usd
 from alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
-from state_io import atomic_write_json  # noqa: E402
+from state_io import atomic_write_json, read_json_dict  # noqa: E402
 
 
 def _parse_armed_flag(raw_armed: object, default: bool = True) -> bool:
@@ -84,7 +84,6 @@ def main() -> int:
 
     safe_sym = "".join(c for c in str(args.symbol or "") if c.isalnum() or c in "._-=").strip("._-") or "unknown"
     state_path = args.state or os.path.join(_HERE, f".alert_{safe_sym}.json")
-    from state_io import read_json_dict
 
     st = read_json_dict(state_path, default={}, recover_previous=True)
     armed = _parse_armed_flag(st.get("armed", True), default=True)

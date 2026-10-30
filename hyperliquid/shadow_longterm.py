@@ -30,6 +30,8 @@ if ROOT not in sys.path:
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime, require_shadow_interval,
 )
+from botcore import required_env, safe_pos_float  # noqa: E402
+from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
 
 try:
@@ -48,7 +50,6 @@ def _load_config() -> None:
 def _variants(interval: int):
     require_shadow_interval(interval, 240, "shadow_longterm")
     _load_config()
-    from strategies.spot_engine import StratParams
 
     base = StratParams.from_env()
     variants = {
@@ -94,7 +95,6 @@ def _fetch_with_ts(_pair: str, interval: int):
     HLClient = hl_mod.HLClient
 
     _load_config()
-    from botcore import required_env, safe_pos_float
     token = required_env("HL_SPOT_TOKEN")
     client = HLClient.public()  # the unsigned client cannot submit orders
     candles = client.candles(token, "4h", lookback_hours=5000 * 4)

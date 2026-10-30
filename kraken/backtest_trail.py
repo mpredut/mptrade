@@ -14,6 +14,7 @@ walk-forward segments. TOTAL is realized P&L plus the open position, versus buy-
 from __future__ import annotations
 
 import argparse
+import collections
 import os
 import statistics
 import sys
@@ -148,7 +149,6 @@ def run_intraday(pair, tz_offset=3):
         rows = fetch_with_time(pair, 60)
     except Exception as e:  # noqa: BLE001
         print(f"EROARE: {e}"); return
-    import collections
     by_hour = collections.defaultdict(list)
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 5:

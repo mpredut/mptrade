@@ -29,6 +29,7 @@ from providers.base import (
     extract_timestamp_ms,
     normalize_side,
 )
+from providers.quantity import resolve_assets
 
 resolve_order_owner = rc.resolve_order_owner
 is_order_repriceable_by_monitororder = rc.is_order_repriceable_by_monitororder
@@ -121,11 +122,10 @@ def get_current_time():
 
 def split_symbol(symbol: str):
     # Split the symbol into base and quote; operational Binance pairs use USDC.
-   from providers.quantity import resolve_assets
-   base, quote = resolve_assets(symbol)
-   if not quote:
-       raise ValueError(f"Unknown symbol: {symbol}")
-   return base, quote
+    base, quote = resolve_assets(symbol)
+    if not quote:
+        raise ValueError(f"Unknown symbol: {symbol}")
+    return base, quote
 
 
 def get_free_balance(asset: str):
@@ -390,7 +390,6 @@ def check_order_filled_by_time(order_type, symbol, time_back_in_seconds, pret_mi
 
 
 # ---------------- Portfolio value query API ----------------
-import threading
 
 ASSET_VALUE_CACHE_TTL_SECONDS = 120
 

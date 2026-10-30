@@ -46,6 +46,7 @@ required_int_env = _common_mod.required_int_env
 safe_float = _common_mod.safe_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
 safe_pos_float = _common_mod.safe_pos_float
+from state_io import read_json_dict
 
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
 
@@ -89,7 +90,6 @@ def _file_signal(path: str) -> dict:
     if not path or isinstance(path, bool) or not str(path).strip() or not os.path.isfile(str(path)):
         return {**NEUTRAL, "source": "file(missing)"}
     try:
-        from state_io import read_json_dict
         d = read_json_dict(str(path), recover_previous=True)
     except (OSError, ValueError) as e:
         log(f"  ! an invalid signal file: {e}")

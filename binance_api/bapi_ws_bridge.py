@@ -12,6 +12,7 @@ from binance_api.bapi_ws_normalize import (
     parse_order_execution_report,
     parse_trade_execution_report,
 )
+from instrument_registry import casefold_get
 import log  # noqa: F401 - keep print behavior aligned with the rest of the runtime
 
 _ws_bridge = None
@@ -111,7 +112,6 @@ def persist_ws_updated_caches(
 def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
     """Refresh only one manager symbol efficiently for a WebSocket event."""
     try:
-        from instrument_registry import casefold_get
         start_time = casefold_get(
             manager.fetchtime_per_symbol, symbol, manager.fallback_time_default
         )

@@ -16,15 +16,19 @@ from botcore import (
     safe_nonneg_float,
     safe_nonneg_int,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import cache_path, normalize_venue_name
 from state_io import atomic_write_text, read_json_dict, read_text_lines
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _alert_attr,
+    _alerts_are_urgent,
     _external_notifications_disabled,
     _is_provider_daily_limit,
+    _mark_provider_daily_limit,
     format_ntfy_url,
     is_fake_alert_text,
+    pass_common_gate,
+    pop_due_bulk_batch,
 )
 from notify_engine.mailer import (
     is_configured as email_is_configured,
@@ -153,7 +157,6 @@ class NotificationServer:
         self.traceback_buffers: Dict[str, List[str]] = defaultdict(list)
         
         # Persistent Queue File
-        from cachepaths import cache_path
         self.queue_file = os.environ.get("NOTIFICATION_QUEUE_FILE") or cache_path("notify_queue.json")
         os.makedirs(os.path.dirname(self.queue_file), exist_ok=True)
 
@@ -200,7 +203,6 @@ class NotificationServer:
         *,
         urgent: bool = False,
     ) -> bool:
-        from notify_engine.alertnotifiers import pass_common_gate
         allowed, reason, _, out_payload = pass_common_gate(
             "ntfy",
             title,
@@ -228,7 +230,6 @@ class NotificationServer:
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
         """Flush and synthesize any buffered notifications once the 5-minute common gate opens."""
-        from notify_engine.alertnotifiers import pop_due_bulk_batch
         flushed = False
         batch = pop_due_bulk_batch("ntfy", now=now, force=force)
         if batch:
@@ -268,7 +269,6 @@ class NotificationServer:
             return True
 
         if not is_retry and not getattr(self, "_in_gated_dispatch", False):
-            from notify_engine.alertnotifiers import pass_common_gate
             allowed, reason, _, out_payload = pass_common_gate(
                 "ntfy",
                 title,
@@ -311,7 +311,6 @@ class NotificationServer:
                 if _is_provider_daily_limit(resp):
                     text = getattr(resp, "text", "") or ""
                     logging.warning(f"ntfy daily limit reached: {text}")
-                    from notify_engine.alertnotifiers import _mark_provider_daily_limit
                     _mark_provider_daily_limit("ntfy")
                     return False
                 retry_after = getattr(resp, "headers", {}).get("Retry-After")
@@ -494,7 +493,6 @@ class NotificationServer:
             logging.info(f"Skipping test/fake alert: {full_title}")
             return True
 
-        from notify_engine.alertnotifiers import _alerts_are_urgent
         urgent = _alerts_are_urgent(alerts)
         priority = "urgent" if urgent else "high"
         return self._gate_and_send_ntfy(

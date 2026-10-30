@@ -32,7 +32,7 @@ load_env_stack = _common_mod.load_env_stack
 required_int_env = _common_mod.required_int_env
 safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
-exact_int = _common_mod.exact_int
+from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend
 
 load_env_stack(os.path.join(_HERE, ".env"))
 
@@ -43,8 +43,6 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
                            min_consecutive_blocks=3, noise_tolerance=2,
                            min_points_per_window=MIN_POINTS_PER_WINDOW):
     """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
-    from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend
-
     res = _root_detect_long_term_trend(
         timestamps,
         prices,

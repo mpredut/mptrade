@@ -41,6 +41,7 @@ required_bool_env = _common_mod.required_bool_env
 resolve_cli_arg = _common_mod.resolve_cli_arg
 _parse_bool_flag = _common_mod._parse_bool_flag
 from strategies.spot_engine import Strategy, StratParams
+from providers.execution_audit import AuditedStrategyExecutor
 from providers.hyperliquid_provider import HyperliquidProvider
 
 
@@ -75,8 +76,6 @@ def main() -> int:
         single_instance(f"hl_bot_{args.test_strategy.strip()}")
     elif not any(a in sys.argv for a in ()):  # reserved for future one-shot commands
         single_instance(f"hl_bot_{token}")   # one instance per token
-
-    from providers.execution_audit import AuditedStrategyExecutor
 
     provider = AuditedStrategyExecutor(
         HyperliquidProvider(token=token), venue="Hyperliquid",

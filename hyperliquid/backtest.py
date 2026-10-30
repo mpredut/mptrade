@@ -33,7 +33,13 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 
-from botcore import safe_pos_float
+from botcore import (
+    float_env as _float_env,
+    required_env as _required_env,
+    required_float_env as _required_float_env,
+    required_int_env as _required_int_env,
+    safe_pos_float,
+)
 from offline.backtests.metrics import format_performance_summary
 
 
@@ -122,12 +128,6 @@ def main() -> int:
     ap.add_argument("--step", type=int, default=8)
     args = ap.parse_args()
 
-    from botcore import (
-        float_env as _float_env,
-        required_env as _required_env,
-        required_float_env as _required_float_env,
-        required_int_env as _required_int_env,
-    )
     try:
         _common_mod.load_env_stack(os.path.join(_HERE, ".env"))
     except Exception:
