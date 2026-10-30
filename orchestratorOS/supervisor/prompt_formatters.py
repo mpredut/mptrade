@@ -8,8 +8,8 @@ resolution from telemetry harvesting and order execution in
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import safe_float as _parse_finite_float
-from cachepaths import canonical_base_asset, normalize_venue_name
+from botcore import safe_float as _parse_finite_float, safe_pos_float
+from cachepaths import canonical_base_asset
 from intelligence.sentiment.guards.high_stake_guard import (
     _build_vp_position_dict,
     _compute_horizon_range_dict,
@@ -820,12 +820,10 @@ def build_supervisor_prompt(
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
     if spec is None:
         spec = topic_spec(topic_key or "auto_cryptotrade_executor")
-    if min_notional_usd is not None:
-        min_usd = float(min_notional_usd)
-    if max_notional_usd is not None:
-        max_usd = float(max_notional_usd)
-    if min_confidence is not None:
-        min_conf = float(min_confidence)
+    lookback_hours = safe_pos_float(lookback_hours, default=1.0)
+    min_usd = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_usd, default=10.0)
+    max_usd = safe_pos_float(max_notional_usd if max_notional_usd is not None else max_usd, default=2000.0)
+    min_conf = safe_pos_float(min_confidence if min_confidence is not None else min_conf, default=0.85)
 
     is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
     context_items: List[str] = []

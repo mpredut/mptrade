@@ -98,12 +98,20 @@ def _now_ms() -> int:
 
 def _pid_started_at_ms(pid: int) -> Optional[int]:
     """Return the Linux process start time, or None when it is unavailable."""
+    pid_val = exact_pos_int(pid, default=None)
+    if pid_val is None:
+        return None
     try:
-        with open(f"/proc/{int(pid)}/stat", "r", encoding="utf-8") as handle:
+        with open(f"/proc/{pid_val}/stat", "r", encoding="utf-8") as handle:
             stat = handle.read()
         # The command name can contain spaces and parentheses. Fields after the final
         # closing parenthesis start at field 3; process start ticks are field 22.
-        start_ticks = int(stat[stat.rfind(")") + 2:].split()[19])
+        rparen = stat.rfind(")")
+        if rparen < 0:
+            return None
+        start_ticks = int(stat[rparen + 2:].split()[19])
+        if start_ticks <= 0:
+            return None
         with open("/proc/stat", "r", encoding="utf-8") as handle:
             boot_seconds = next(
                 int(line.split()[1]) for line in handle if line.startswith("btime ")

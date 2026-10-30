@@ -1,14 +1,11 @@
 """Market breadth capitulation bounce and blowoff exhaustion trigger."""
 from __future__ import annotations
 
-import logging
 from typing import Optional, Tuple
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, resolve_now_ts, safe_float, safe_pos_float
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-
-logger = logging.getLogger("intelligence.sentiment.market_breadth_trigger")
 
 
 class MarketBreadthTrigger:

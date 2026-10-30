@@ -11,7 +11,7 @@ import sys
 from . import spot_engine
 
 from .spot_engine import *  # noqa: F401,F403
-from .spot_engine import (
+from .spot_engine import (  # noqa: F401 (re-export: test compat)
     StratParams,
     Strategy,
     state_path_for,

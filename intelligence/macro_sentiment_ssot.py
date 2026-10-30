@@ -45,6 +45,7 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     fetch_public_json as _fetch_public_json,
     obj_attr,
     parse_dotenv,
@@ -334,7 +335,7 @@ def inspect_daemon_heartbeat(
         return {"running": False, "reason": "no_heartbeat_file"}
 
     try:
-        pid = safe_int(data.get("pid", 0), 0)
+        pid = exact_pos_int(data.get("pid", 0), 0)
         ts = safe_float(data.get("ts", 0.0), 0.0)
         age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
         is_alive = False

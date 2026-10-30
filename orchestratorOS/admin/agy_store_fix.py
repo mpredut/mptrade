@@ -587,7 +587,8 @@ def last_store_activity() -> float:
 
 
 def mode_ui_sync_check(idle_sec: int) -> int:
-    if not isinstance(idle_sec, (int, float)) or safe_pos_float(idle_sec, default=None) is None:
+    idle_sec_f = safe_pos_float(idle_sec, default=None)
+    if idle_sec_f is None:
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
     if not (os.path.exists(PB) and os.path.exists(DB)):
         log.warning("ui-sync-check: summary store not initialised (%s / %s); skipping", PB, DB)
@@ -597,8 +598,8 @@ def mode_ui_sync_check(idle_sec: int) -> int:
         discard_generation_file(UI_SYNC_STATE, include_previous=True)
         return UI_SYNC_NOTHING
     idle_for = time.time() - last_store_activity()
-    if idle_for < idle_sec:
-        log.info("ui-sync-check: %d pending, store active %.0fs ago (< %ds); waiting", len(entries), idle_for, idle_sec)
+    if idle_for < idle_sec_f:
+        log.info("ui-sync-check: %d pending, store active %.0fs ago (< %gs); waiting", len(entries), idle_for, idle_sec_f)
         return UI_SYNC_BUSY
     fingerprint = hashlib.sha1("\n".join(entries).encode()).hexdigest()
     state = read_json_dict(UI_SYNC_STATE, default={}, recover_previous=True)

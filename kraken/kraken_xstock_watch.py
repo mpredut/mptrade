@@ -44,7 +44,7 @@ except ImportError:
     )
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
-from state_io import load_json_state, save_json_state
+from state_io import load_json_state, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
 
@@ -443,28 +443,25 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
         _save_state(st)
         log("  [proba] waiting 12s for it to adopt the position and place the paper TP...")
         time.sleep(12)
-        if bot_pid is not None:
-            os.kill(int(bot_pid), 15)                            # 4. watchdog
+        if (clean_pid := _clean_pid(bot_pid)) is not None:
+            os.kill(clean_pid, 15)                            # 4. watchdog
         time.sleep(1.0)
         verdict["moartea botului detectata"] = not _bot_alive(bot_pid)
         maybe_start_bot(st, alloc, desktop)
         bot_pid = st.get("bot_pid")
         verdict["bot restarted by watchdog"] = _bot_alive(bot_pid)
-        try:
-            with open(BOT_LOG, encoding="utf-8") as f:
-                tail = [ln.rstrip() for ln in f.readlines()[-14:]]
+        tail = [ln.rstrip() for ln in read_text_lines(BOT_LOG)[-14:]]
+        if tail:
             log("  [drill] the bot's log (what it did with the 'allocation'):")
             for ln in tail:
                 print("      " + ln)
-        except OSError:
-            pass
     finally:
         notify = orig_notify
-        if bot_pid:
+        if (clean_pid := _clean_pid(bot_pid)) is not None:
             try:
-                os.kill(int(bot_pid), 15)
+                os.kill(clean_pid, 15)
                 time.sleep(0.5)
-                _bot_alive(bot_pid)                              # reap the zombie process
+                _bot_alive(clean_pid)                            # reap the zombie process
             except (OSError, TypeError, ValueError):
                 pass
         if trial_pair:                                           # remove the bot's paper state

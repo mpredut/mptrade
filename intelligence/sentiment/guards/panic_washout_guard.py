@@ -1,7 +1,6 @@
 """Panic washout guard protecting against catching falling knives during macro panics."""
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -14,8 +13,6 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
-
-logger = logging.getLogger("intelligence.sentiment.panic_washout_guard")
 
 
 class PanicWashoutGuard:

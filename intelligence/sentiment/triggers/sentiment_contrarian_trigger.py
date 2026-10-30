@@ -1,7 +1,6 @@
 """Contrarian sentiment trigger exploiting extreme market psychology mispricings."""
 from __future__ import annotations
 
-import logging
 from typing import Optional, Tuple
 
 from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
@@ -13,8 +12,6 @@ from intelligence.macro_sentiment_ssot import (
     safe_thresh as _safe_thresh,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-
-logger = logging.getLogger("intelligence.sentiment.sentiment_contrarian_trigger")
 
 
 class SentimentContrarianTrigger:

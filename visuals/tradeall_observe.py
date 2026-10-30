@@ -68,7 +68,7 @@ MEMORY_TRIM_SECONDS = 300
 
 
 def _sanitize_field(value):
-    return str(value).replace("|", "/").replace("\n", " ")
+    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ") if value is not None else ""
 
 
 def _daily_log_path(prefix, date):

@@ -9,7 +9,7 @@ _LIB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lib"))
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
-from botcore import safe_float, safe_nonneg_int, safe_pos_int
+from botcore import exact_pos_int, safe_float, safe_nonneg_int, safe_pos_int
 from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
@@ -47,8 +47,8 @@ def _managed_script(proc):
         return None
     parts = str(proc.get("command") or "").split()
     scripts = _fleet_scripts()
-    pid = proc.get("pid")
-    if pid is None or isinstance(pid, bool):
+    pid = exact_pos_int(proc.get("pid"), default=None)
+    if pid is None or pid <= 1:
         return None
     for part in parts[1:]:
         name = os.path.basename(part)
@@ -91,11 +91,11 @@ def _restart_managed(proc, state, now):
     script = _managed_script(proc)
     if not AUTO_RESTART or not script or not _restart_allowed(state, script, now):
         return None
-    pid = proc.get("pid") if isinstance(proc, dict) else None
-    if pid is None or isinstance(pid, bool):
+    pid = exact_pos_int(proc.get("pid") if isinstance(proc, dict) else None, default=None)
+    if pid is None or pid <= 1:
         return False
     try:
-        os.kill(int(pid), signal.SIGTERM)
+        os.kill(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError, TypeError, ValueError):
         return False
     state.setdefault("restart_history", {}).setdefault(script, []).append(now)

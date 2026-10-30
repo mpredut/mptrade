@@ -21,6 +21,7 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import (
     _parse_bool_flag,
+    exact_pos_int,
     required_int_env,
     safe_float,
     safe_int,
@@ -254,10 +255,9 @@ def prepare_topic_session(
     base = resolve_bot_cli_base(cli_base)
     if compact_steps is None:
         compact_steps = required_int_env("LLM_TOPIC_COMPACT_STEPS")
-    compact_steps_f = safe_float(compact_steps, default=None)
-    if compact_steps_f is None or compact_steps_f <= 0 or not compact_steps_f.is_integer():
+    compact_steps_i = exact_pos_int(compact_steps, default=None)
+    if compact_steps_i is None:
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
-    compact_steps_i = int(compact_steps_f)
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)
@@ -393,13 +393,9 @@ def record_topic_turn(
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
     compacted = _parse_bool_flag(compacted, default=False)
-    if max_history_entries is None or isinstance(max_history_entries, bool):
+    max_history_entries = safe_nonneg_int(max_history_entries, default=None)
+    if max_history_entries is None:
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
-    else:
-        parsed_max = safe_int(max_history_entries, -1)
-        max_history_entries = (
-            parsed_max if parsed_max >= 0 else required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
-        )
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)

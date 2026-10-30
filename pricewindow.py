@@ -554,12 +554,16 @@ class IncrementalTrendBuffer:
                 if isinstance(e, (list, tuple)) and len(e) >= 2:
                     self.append(e[1], e[0])
 
-        if not self.timestamps:
+        if not self.timestamps or not isinstance(entries, (list, tuple, deque)):
             _rebuild()
             return
-        try:
-            first_ts, first_p = int(entries[0][0]), float(entries[0][1])
-        except (TypeError, ValueError, IndexError, OverflowError):
+        e0 = entries[0]
+        if not isinstance(e0, (list, tuple)) or len(e0) < 2:
+            _rebuild()
+            return
+        first_ts = safe_int(e0[0], default=None)
+        first_p = safe_float(e0[1], default=None)
+        if first_ts is None or first_p is None:
             _rebuild()
             return
         if self.timestamps[0] < first_ts:
@@ -575,9 +579,13 @@ class IncrementalTrendBuffer:
             _rebuild()
             return
         cur_len = len(self.timestamps)
-        try:
-            last_ts, last_p = int(entries[cur_len - 1][0]), float(entries[cur_len - 1][1])
-        except (TypeError, ValueError, IndexError, OverflowError):
+        ec = entries[cur_len - 1]
+        if not isinstance(ec, (list, tuple)) or len(ec) < 2:
+            _rebuild()
+            return
+        last_ts = safe_int(ec[0], default=None)
+        last_p = safe_float(ec[1], default=None)
+        if last_ts is None or last_p is None:
             _rebuild()
             return
         if self.timestamps[-1] != last_ts or self.prices[-1] != last_p:

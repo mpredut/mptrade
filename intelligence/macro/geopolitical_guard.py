@@ -1,7 +1,6 @@
 """Geopolitical shock guard protecting against flash dumps from war and energy crises."""
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -14,8 +13,6 @@ from intelligence.macro_sentiment_ssot import (
     obj_attr,
     obj_float,
 )
-
-logger = logging.getLogger("intelligence.macro.geopolitical_guard")
 
 
 class GeopoliticalShockGuard:

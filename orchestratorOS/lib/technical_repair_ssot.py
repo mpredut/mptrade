@@ -28,7 +28,13 @@ from botcore import (
 )
 from cachepaths import normalize_venue_name, resolve_cachedb_filepath
 from providers.base import extract_order_id
-from state_io import atomic_write_text, read_json_recovering, save_json_state
+from state_io import (
+    atomic_write_text,
+    read_json_recovering,
+    read_text_file,
+    read_text_lines,
+    save_json_state,
+)
 
 parse_finite_float = safe_float
 
@@ -290,56 +296,54 @@ def parse_procs_manifest(
         return procs
 
     try:
-        with open(procs_conf, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("|")
-                if len(parts) < 7:
-                    continue
-                pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
-                if role not in roles or (require_cmd and not cmd):
-                    continue
-                hb_val = safe_float(hbstale, default=0.0) or 0.0
-                hb_stale_s = hb_val if hb_val > 0 else 0.0
+        for line in read_text_lines(procs_conf, strip=True, skip_empty=True, errors="replace"):
+            if line.startswith("#"):
+                continue
+            parts = line.split("|")
+            if len(parts) < 7:
+                continue
+            pat, dr, cmd, label, hblog, hbstale, role = [p.strip() for p in parts[:7]]
+            if role not in roles or (require_cmd and not cmd):
+                continue
+            hb_val = safe_float(hbstale, default=0.0) or 0.0
+            hb_stale_s = hb_val if hb_val > 0 else 0.0
 
-                resolved_dir = dr.replace("$ROOT", workspace_dir)
-                resolved_cmd = cmd.replace("$ROOT", workspace_dir).replace("$VENV", venv)
-                resolved_hblog = hblog.replace("$ROOT", workspace_dir) if hblog else ""
-                name = label or pat
-                clean_pat = pat.rstrip("$")
+            resolved_dir = dr.replace("$ROOT", workspace_dir)
+            resolved_cmd = cmd.replace("$ROOT", workspace_dir).replace("$VENV", venv)
+            resolved_hblog = hblog.replace("$ROOT", workspace_dir) if hblog else ""
+            name = label or pat
+            clean_pat = pat.rstrip("$")
 
-                hb_paths, log_file = resolve_heartbeat_paths(
-                    workspace_dir,
-                    resolved_dir,
-                    name,
-                    pat,
-                    resolved_hblog,
-                    hb_stale_s,
-                    include_stdout_with_heartbeat_file=include_stdout_with_heartbeat_file,
-                )
+            hb_paths, log_file = resolve_heartbeat_paths(
+                workspace_dir,
+                resolved_dir,
+                name,
+                pat,
+                resolved_hblog,
+                hb_stale_s,
+                include_stdout_with_heartbeat_file=include_stdout_with_heartbeat_file,
+            )
 
-                aliases = _extract_script_tokens(pat, resolved_cmd)
-                aliases.add(name.lower())
-                if name.lower().endswith(".py"):
-                    aliases.add(name[:-3].lower())
+            aliases = _extract_script_tokens(pat, resolved_cmd)
+            aliases.add(name.lower())
+            if name.lower().endswith(".py"):
+                aliases.add(name[:-3].lower())
 
-                procs.append({
-                    "name": name,
-                    "pattern": pat,
-                    "clean_pattern": clean_pat,
-                    "dir": resolved_dir,
-                    "cmd": resolved_cmd,
-                    "hb_log": resolved_hblog,
-                    "hb_paths": hb_paths,
-                    "hb_files": hb_paths,
-                    "hb_file": hb_paths[0] if hb_paths else "",
-                    "log_file": log_file,
-                    "hb_stale_s": hb_stale_s,
-                    "role": role,
-                    "aliases": sorted(aliases),
-                })
+            procs.append({
+                "name": name,
+                "pattern": pat,
+                "clean_pattern": clean_pat,
+                "dir": resolved_dir,
+                "cmd": resolved_cmd,
+                "hb_log": resolved_hblog,
+                "hb_paths": hb_paths,
+                "hb_files": hb_paths,
+                "hb_file": hb_paths[0] if hb_paths else "",
+                "log_file": log_file,
+                "hb_stale_s": hb_stale_s,
+                "role": role,
+                "aliases": sorted(aliases),
+            })
     except Exception:
         pass
 
@@ -509,8 +513,7 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
             continue
         checked.append(cfg_name)
         try:
-            with open(cfg_path, "r", encoding="utf-8", errors="replace") as cf:
-                raw_lines = cf.readlines()
+            raw_lines = read_text_file(cfg_path, errors="replace").splitlines(keepends=True)
             if cfg_name == "procs.conf":
                 for idx, raw_l in enumerate(raw_lines, start=1):
                     line = raw_l.strip()
@@ -598,14 +601,13 @@ def gather_system_and_vpn_telemetry(
     try:
         if os.path.exists("/proc/meminfo"):
             mem_kv: Dict[str, int] = {}
-            with open("/proc/meminfo", "r", encoding="utf-8", errors="replace") as mf:
-                for mline in mf:
-                    parts = mline.split(":")
-                    if len(parts) == 2:
-                        k = parts[0].strip()
-                        v_parts = parts[1].strip().split()
-                        if v_parts and v_parts[0].isdigit():
-                            mem_kv[k] = int(v_parts[0])
+            for mline in read_text_lines("/proc/meminfo", errors="replace"):
+                parts = mline.split(":")
+                if len(parts) == 2:
+                    k = parts[0].strip()
+                    v_parts = parts[1].strip().split()
+                    if v_parts and v_parts[0].isdigit():
+                        mem_kv[k] = int(v_parts[0])
             if mem_kv.get("MemTotal", 0) > 0 and "MemAvailable" in mem_kv:
                 total_kb = mem_kv["MemTotal"]
                 avail_kb = mem_kv["MemAvailable"]
@@ -617,11 +619,7 @@ def gather_system_and_vpn_telemetry(
     vpn_if = os.environ.get("PIA_VPN_IF", "wgpia0").strip() or "wgpia0"
     vpn_net_dir = f"/sys/class/net/{vpn_if}"
     if os.path.exists(vpn_net_dir):
-        try:
-            with open(f"{vpn_net_dir}/operstate", "r", encoding="utf-8") as vf:
-                oper = vf.read().strip().lower()
-        except Exception:
-            oper = "unknown"
+        oper = str(read_text_file(f"{vpn_net_dir}/operstate", default="unknown") or "unknown").strip().lower() or "unknown"
         sys_vpn["vpn_interface"] = vpn_if
         sys_vpn["vpn_tunnel_up"] = oper in ("up", "unknown")
     else:
@@ -631,12 +629,11 @@ def gather_system_and_vpn_telemetry(
     try:
         default_route_present = False
         if os.path.exists("/proc/net/route"):
-            with open("/proc/net/route", "r", encoding="utf-8", errors="replace") as rf:
-                for rline in rf.readlines()[1:]:
-                    rcols = rline.strip().split()
-                    if len(rcols) >= 2 and rcols[1] == "00000000":
-                        default_route_present = True
-                        break
+            for rline in read_text_lines("/proc/net/route", strip=True, errors="replace")[1:]:
+                rcols = rline.split()
+                if len(rcols) >= 2 and rcols[1] == "00000000":
+                    default_route_present = True
+                    break
         sys_vpn["default_route_present"] = default_route_present
     except Exception:
         pass
@@ -644,13 +641,12 @@ def gather_system_and_vpn_telemetry(
     try:
         dns_servers: List[str] = []
         if os.path.exists("/etc/resolv.conf"):
-            with open("/etc/resolv.conf", "r", encoding="utf-8", errors="replace") as df:
-                for dline in df:
-                    dline = dline.split("#", 1)[0].strip()
-                    if dline.startswith("nameserver"):
-                        dparts = dline.split()
-                        if len(dparts) >= 2:
-                            dns_servers.append(dparts[1])
+            for dline in read_text_lines("/etc/resolv.conf", errors="replace"):
+                dline = dline.split("#", 1)[0].strip()
+                if dline.startswith("nameserver"):
+                    dparts = dline.split()
+                    if len(dparts) >= 2:
+                        dns_servers.append(dparts[1])
         if dns_servers:
             sys_vpn["dns_servers"] = dns_servers
     except Exception:
@@ -834,52 +830,55 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     if mtime < cutoff_ts:
                         continue
                     scanned_count += 1
-                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                        lines = recent_log_lines(f.readlines()[-1000:], mtime, cutoff_ts)
-                        total_lines = len(lines)
-                        tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
-                        file_sig_stats: Dict[str, Dict[str, Any]] = {}
-                        for idx, line in enumerate(lines):
-                            if supervisor_summary_pattern.search(line):
-                                continue
-                            if (
-                                ("Exception ignored in:" in line or "Traceback (most recent call last):" in line)
-                                and any(
-                                    "BaseSubprocessTransport.__del__" in lines[j]
-                                    for j in range(max(0, idx - 1), min(total_lines, idx + 3))
+                    lines = recent_log_lines(
+                        read_text_lines(fpath, keepends=True, errors="replace")[-1000:],
+                        mtime,
+                        cutoff_ts,
+                    )
+                    total_lines = len(lines)
+                    tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
+                    file_sig_stats: Dict[str, Dict[str, Any]] = {}
+                    for idx, line in enumerate(lines):
+                        if supervisor_summary_pattern.search(line):
+                            continue
+                        if (
+                            ("Exception ignored in:" in line or "Traceback (most recent call last):" in line)
+                            and any(
+                                "BaseSubprocessTransport.__del__" in lines[j]
+                                for j in range(max(0, idx - 1), min(total_lines, idx + 3))
+                            )
+                        ):
+                            continue
+                        if err_pattern.search(line) and not (
+                            benign_warn_pattern.search(line)
+                            and not re.search(
+                                r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)",
+                                line,
+                                re.IGNORECASE,
+                            )
+                        ):
+                            error_count += 1
+                            cleaned = line.strip()
+                            if cleaned not in critical_events and len(critical_events) < 50:
+                                critical_events.append(cleaned)
+                            sig = normalize_error_signature(cleaned)
+                            if sig:
+                                st = file_sig_stats.setdefault(
+                                    sig,
+                                    {"file": fname, "count": 0, "unresolved_at_tail": False, "sample": cleaned},
                                 )
-                            ):
-                                continue
-                            if err_pattern.search(line) and not (
-                                benign_warn_pattern.search(line)
-                                and not re.search(
-                                    r"(Traceback|CRITICAL(?!_SHOCK)|fail-closed|BUY BLOCKED)",
-                                    line,
-                                    re.IGNORECASE,
-                                )
-                            ):
-                                error_count += 1
-                                cleaned = line.strip()
-                                if cleaned not in critical_events and len(critical_events) < 50:
-                                    critical_events.append(cleaned)
-                                sig = normalize_error_signature(cleaned)
-                                if sig:
-                                    st = file_sig_stats.setdefault(
-                                        sig,
-                                        {"file": fname, "count": 0, "unresolved_at_tail": False, "sample": cleaned},
-                                    )
-                                    st["count"] += 1
-                                    st["sample"] = cleaned
-                                    if idx >= tail_start_idx:
-                                        st["unresolved_at_tail"] = True
-                            elif guard_pattern.search(line):
-                                warning_count += 1
-                                cleaned = line.strip()
-                                if cleaned not in guard_interventions and len(guard_interventions) < 50:
-                                    guard_interventions.append(cleaned)
-                        for st in file_sig_stats.values():
-                            if st["count"] >= 2 or st["unresolved_at_tail"]:
-                                persistent_errors.append(st)
+                                st["count"] += 1
+                                st["sample"] = cleaned
+                                if idx >= tail_start_idx:
+                                    st["unresolved_at_tail"] = True
+                        elif guard_pattern.search(line):
+                            warning_count += 1
+                            cleaned = line.strip()
+                            if cleaned not in guard_interventions and len(guard_interventions) < 50:
+                                guard_interventions.append(cleaned)
+                    for st in file_sig_stats.values():
+                        if st["count"] >= 2 or st["unresolved_at_tail"]:
+                            persistent_errors.append(st)
                 except Exception:
                     pass
         except Exception:
@@ -967,8 +966,7 @@ def apply_code_patch_safely(
 
     content: Optional[str] = None
     try:
-        with open(real_target, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = read_text_file(real_target)
 
         if search_block not in content:
             if log:

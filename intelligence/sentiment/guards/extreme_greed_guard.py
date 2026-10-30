@@ -1,7 +1,6 @@
 """Extreme greed anti-FOMO guard protecting against top-buying in euphoric conditions."""
 from __future__ import annotations
 
-import logging
 from typing import Optional
 
 from intelligence.internal.guards.guard_decision import GuardDecision
@@ -13,8 +12,6 @@ from intelligence.macro_sentiment_ssot import (
     safe_thresh as _safe_thresh,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-
-logger = logging.getLogger("intelligence.sentiment.extreme_greed_guard")
 
 
 class ExtremeGreedGuard:
