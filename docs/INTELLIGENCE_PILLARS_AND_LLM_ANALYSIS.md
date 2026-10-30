@@ -161,5 +161,5 @@ llm_timeout_sec=25.0                  # Timeout maxim pentru răspunsul LLM
 llm_fallback=allow                    # Acțiune de siguranță în caz de timeout LLM
 
 # GT_S: Garda de Trend Scurt (5m) — Obligatorie pe toate modulele (nu poate fi dezactivată prin bypass_guards)
-# Timerul pentru Stop-Loss pe trend ascendent este gestionat exclusiv în modulul de Stop-Loss (monitortrades.conf: sl_trend_defer_max_s)
+# Timerul de 7 minute (420s) pe trend ascendent există exclusiv în Trailing Stop (trailing.conf: sell_trend_defer_max_sec)
 ```

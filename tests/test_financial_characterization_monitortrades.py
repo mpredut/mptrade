@@ -744,11 +744,27 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
         self.run_tick(inst, trend_up=True, loss=0.025, now=NOW + 100)
         self.assertEqual(inst.placed, [])
 
-        # Tick 3 at t=230s: window expired (230s >= 220s), trend_up=True -> forces Stop-Loss!
+        # Tick 3 at t=230s: window expired (230s >= 220s), PositionExitManager triggers Stop-Loss,
+        # while wait_for_trend remains True (monitortrades never bypasses GT_S).
         self.run_tick(inst, trend_up=True, loss=0.025, now=NOW + 230)
         self.assertEqual(len(inst.placed), 1)
         self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]), ("SELL", 4.0))
+        self.assertIs(inst.placed[0]["kwargs"].get("wait_for_trend"), True)
         self.assertNotIn(sym, mt._SL_BOUNCE_STATE)
+
+        # If GT_S short_trend gate is active on live venue, _execute_stop_loss still defers
+        # and keeps resting TP orders intact even after bounce timeout.
+        inst_live = FakeInstrument(
+            price=97.0,
+            free=4.0,
+            fills=[_fill("BUY", 100, 4)],
+            open_orders=[{"orderId": "tp-keep-1", "side": "SELL", "price": 105.0, "origQty": 4.0}],
+        )
+        with patch.object(mt, "_is_trend_gate_deferred", return_value=True):
+            self.run_tick(inst_live, trend_up=True, loss=0.025, now=NOW)
+            self.run_tick(inst_live, trend_up=True, loss=0.025, now=NOW + 230)
+        self.assertEqual(inst_live.placed, [])
+        self.assertEqual(inst_live.cancelled, [])
 
     def test_mhdsl_bounce_rollover_forces_stop_loss(self):
         """Proposal 3: Dynamic micro-trailing on bounce rollover.

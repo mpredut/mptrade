@@ -326,7 +326,7 @@ class Instrument:
         bypass_quantity_policy = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(bypassed_guards) or bypass_profit_guard
         # GT_S (short_trend) ignores bypass_guards ("all" or "GT_S"); it is controlled
         # strictly by wait_for_trend (which defaults to True across all modules, and is
-        # only set to False by the Stop-Loss module after its own timer expires).
+        # only set to False by Trailing Stop after its 7-minute crash deferral timer expires).
         wait_for_trend = _parse_bool_flag(kwargs.pop("wait_for_trend", True), True)
         kwargs.pop("cooldown_pair_id", None)
         abort_if = kwargs.pop("abort_if", None)

@@ -1302,9 +1302,8 @@ def _execute_stop_loss(
         print(f"🛑 [{symbol}] MHDSL DISASTER CIRCUIT BREAKER: {sl_reason} — bypassing bounce deferral!")
     print(f"Price decreased with {snapshot.loss_pct}% by more than {lost_threshold * 100}% versus buy price! (decision={sl_reason})")
 
-    # Pre-flight gate check: GT_S (short_trend) cannot be bypassed by force=True or forced=True;
-    # ONLY the expiration of the Stop-Loss timer (sub_reason == "timeout" or elapsed >= MT_SL_TREND_DEFER_MAX_SEC)
-    # releases the Stop-Loss order while the trend is still ascending.
+    # Pre-flight gate check: GT_S (short_trend) is never bypassed in monitortrades;
+    # wait_for_trend is always True so resting TP orders remain intact while short trend is up.
     if not _state_matches_buy_price(prev_sl_state, snapshot.avg_buy_price):
         prev_sl_state = {}
     episode_state = _SL_EPISODE_STATE.get(symbol) or {}
@@ -1318,15 +1317,7 @@ def _execute_stop_loss(
         bounce_started_at = episode_started_at
     cand_bs = safe_pos_float(bounce_started_at, default=None)
     bounce_started_f = min(cand_bs, float(current_time_s)) if cand_bs is not None else None
-    sl_timer_expired = bool(
-        sl_decision.metadata.get("sub_reason") == "timeout"
-        or sl_decision.metadata.get("sl_timer_expired")
-        or (
-            bounce_started_f is not None
-            and (current_time_s - bounce_started_f) >= MT_SL_TREND_DEFER_MAX_SEC
-        )
-    )
-    if not sl_timer_expired and _is_trend_gate_deferred(symbol, inst):
+    if _is_trend_gate_deferred(symbol, inst):
         print(f"[{symbol}] Stop-Loss placement would be deferred by trend gate (trend up) — keeping resting TP orders intact!")
         if prev_sl_state:
             if bounce_started_f is not None and prev_sl_state.get("started_at") != bounce_started_f:
@@ -1365,7 +1356,7 @@ def _execute_stop_loss(
         place_kw = {
             "safeback_seconds": sbs, "force": True, "cancelorders": True,
             "hours": MT_SELL_SAFEBACK_HOURS,
-            "bypass_guards": {"all"}, "wait_for_trend": not sl_timer_expired,
+            "bypass_guards": {"all"}, "wait_for_trend": True,
             "kind": "STOP",
             "intent_id": stop_intent_id,
             "_outcome_context": outcome_ctx,

@@ -1424,10 +1424,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertIsNone(res_sell)
             self.assertEqual(out_sell.get("reason"), "trend_deferred")
 
-            # 2. Stop-Loss module (PositionExitManager) manages the timer (e.g. 300s):
-            # - While trend is ascendent (trend_up=True) and elapsed < 300s -> HOLD
-            # - If trend changes from ascendent to descendent (trend_up=False) -> SELL immediately
-            # - If after 300s trend is still ascendent (trend_up=True) -> SELL forced=True (timeout)
+            # 2. Stop-Loss module (monitortrades) always passes wait_for_trend=True even on timeout;
+            # only Trailing Stop sets wait_for_trend=False after its 7-minute (420s) crash timer expires.
             pem = PositionExitManager(PositionExitConfig(lost_threshold=0.05, sl_trend_defer_max_sec=300.0, smart_sl_enabled=False))
             t0 = 1000.0
             snap_init = PositionSnapshot(symbol=SYMBOL, current_price=94.0, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0, trend_up=True)
@@ -1439,18 +1437,28 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             dec_mid = pem.evaluate_stop_loss(snap_mid)
             self.assertEqual(dec_mid.action, ExitAction.HOLD)
 
-            # Still ascending at 305s (>= 300s) -> releases SELL order with sub_reason == "timeout"
+            # Still ascending at 305s (>= 300s) -> PositionExitManager returns timeout SELL,
+            # but monitortrades keeps wait_for_trend=True so GT_S continues to defer while trend is up!
             snap_timeout = PositionSnapshot(symbol=SYMBOL, current_price=94.2, avg_buy_price=100.0, net_qty=1.0, sellable_qty=1.0, current_time_s=t0 + 305.0, trend_up=True)
             dec_timeout = pem.evaluate_stop_loss(snap_timeout)
             self.assertEqual(dec_timeout.action, ExitAction.SELL)
             self.assertEqual(dec_timeout.metadata.get("sub_reason"), "timeout")
-            sl_timer_expired = (dec_timeout.metadata.get("sub_reason") == "timeout")
-            res_sl_released = inst.place(
+            out_mt_sl = {}
+            res_mt_sl = inst.place(
                 "SELL", 94.2, 1.0, smart=False,
-                bypass_guards={"all"}, wait_for_trend=not sl_timer_expired,
+                bypass_guards={"all"}, wait_for_trend=True,
+                caller_owns_retry=True, _outcome_context=out_mt_sl,
+            )
+            self.assertIsNone(res_mt_sl)
+            self.assertEqual(out_mt_sl.get("reason"), "trend_deferred")
+
+            # Trailing Stop (wait_for_trend=False after 7m timer expires) releases emergency SELL
+            res_ts_released = inst.place(
+                "SELL", 94.2, 1.0, smart=False,
+                bypass_guards={"all"}, wait_for_trend=False,
                 caller_owns_retry=True,
             )
-            self.assertIsNotNone(res_sl_released)
+            self.assertIsNotNone(res_ts_released)
             self.assertEqual(len(p.placed), 1)
 
 
