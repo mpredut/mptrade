@@ -989,6 +989,9 @@ def load_symbol_microstructure(
 
     if ob is None:
         ob, ob_cand = _first_telemetry_dict("orderbook_depth_")
+    else:
+        raw_ob_sym = obj_attr(ob, "symbol")
+        ob_cand = raw_ob_sym.strip() if isinstance(raw_ob_sym, str) and raw_ob_sym.strip() else None
     if deriv is None:
         deriv, _ = _first_telemetry_dict("derivatives_telemetry_")
     if whale is None:
@@ -999,16 +1002,11 @@ def load_symbol_microstructure(
     if ob_cand:
         m_info["_source_cand"] = ob_cand
     if ob is not None:
+        ob_same_quote = (not ob_cand) or (compatible_quote_suffixes(ob_cand) == compatible_quote_suffixes(sym))
         m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio", obj_attr(ob, "ob_imbalance"))
         ob_mid = safe_pos_float(obj_attr(ob, "mid_price", obj_attr(ob, "ob_mid_price")), default=None)
-        if ob_mid is not None:
-            m_info["ob_mid_price"] = ob_mid
         best_bid = safe_pos_float(obj_attr(ob, "best_bid"), default=None)
         best_ask = safe_pos_float(obj_attr(ob, "best_ask"), default=None)
-        if best_bid is not None:
-            m_info["best_bid"] = best_bid
-        if best_ask is not None:
-            m_info["best_ask"] = best_ask
         spread_bps = round_spread_bps(
             obj_attr(ob, "spread_bps"),
             best_bid=best_bid,
@@ -1017,6 +1015,13 @@ def load_symbol_microstructure(
         )
         if spread_bps is not None:
             m_info["spread_bps"] = spread_bps
+        if ob_same_quote:
+            if ob_mid is not None:
+                m_info["ob_mid_price"] = ob_mid
+            if best_bid is not None:
+                m_info["best_bid"] = best_bid
+            if best_ask is not None:
+                m_info["best_ask"] = best_ask
         for k_src, k_dst in (
             ("bid_depth_usd", "bid_depth_usd"),
             ("ask_depth_usd", "ask_depth_usd"),
@@ -1030,8 +1035,12 @@ def load_symbol_microstructure(
                 raw_v = obj_attr(ob, k_dst)
             val = safe_nonneg_float(raw_v, default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
-        m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px"))
-        m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px"))
+        if ob_same_quote:
+            m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px"))
+            m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px"))
+        else:
+            m_info["bid_wall_px"] = None
+            m_info["ask_wall_px"] = None
     if deriv is not None:
         m_info["funding_rate"] = obj_attr(deriv, "funding_rate")
         m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate"))
@@ -2116,6 +2125,7 @@ def enrich_cross_venue_trends(
                 entry["weibull_p90_d"] = tt.get("p90_d")
         if isinstance(watcher_price_items, dict):
             sym_px_cur = safe_float(entry.get("price"), 0.0)
+            sym_quotes = compatible_quote_suffixes(sym)
             m_series = None
             for ck in cand_keys:
                 cand_ser = casefold_get(watcher_price_items, ck)
@@ -2126,7 +2136,7 @@ def enrich_cross_venue_trends(
                     if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1
                     else 0.0
                 )
-                if ck != sym and _prices_diverged(sym_px_cur, last_m_px):
+                if ck != sym and (compatible_quote_suffixes(ck) != sym_quotes or _prices_diverged(sym_px_cur, last_m_px)):
                     continue
                 m_series = cand_ser
                 break
@@ -2389,10 +2399,7 @@ def sync_sibling_symbol_telemetry(
                 s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(
                     sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
                 )
-                micro_px_diverged = (
-                    (not cand_same_quote_family and (p_px_m <= 0.0 or _prices_diverged(p_px_m, s_ob_mid)))
-                    or _prices_diverged(p_px_m, s_ob_mid)
-                )
+                micro_px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px_m, s_ob_mid)
                 if sym not in microstructure:
                     microstructure[sym] = {
                         mk: mv
@@ -2511,11 +2518,18 @@ def harvest_recent_orders_and_enrich_positions(
                 )
                 if fills:
                     _record_venue_fills(cache_venue, sym, fills)
+    seen_hl_syms: set[str] = set()
     for inst in inst_by_sym.values():
         sym = str(getattr(inst, "symbol", "")).upper()
         v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
-        if not sym or v_inst != "hyperliquid" or sym in venue_recent_orders["hyperliquid"]:
+        if (
+            not sym
+            or v_inst != "hyperliquid"
+            or sym in seen_hl_syms
+            or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym)) is not None
+        ):
             continue
+        seen_hl_syms.add(sym)
         try:
             prov = getattr(inst, "_provider", None)
             if prov is not None and hasattr(prov, "get_orders"):
@@ -2885,12 +2899,16 @@ def apply_asset_scope_filter(
     if scope not in ("equities", "crypto"):
         return prices_and_trends, microstructure
     want_t212 = scope == "equities"
+    t212_sym_set = {str(s).upper() for s in t212_cycles} | {
+        str(s).split(":", 1)[-1].upper()
+        for s, iv in inst_by_sym.items()
+        if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
+    }
     if want_t212:
-        eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
         prices_and_trends = {
             k: v
             for k, v in prices_and_trends.items()
-            if k in eq_syms or str(k).upper().endswith(("_EQ", "_US_EQ"))
+            if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))
         }
         microstructure = {}
         for crypto_key in (
@@ -2908,7 +2926,7 @@ def apply_asset_scope_filter(
     else:
         prices_and_trends = {
             k: v for k, v in prices_and_trends.items()
-            if not str(k).upper().endswith(("_EQ", "_US_EQ"))
+            if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set
         }
         portfolio_summary.pop("t212_cycles", None)
     if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
@@ -2922,11 +2940,6 @@ def apply_asset_scope_filter(
         else:
             portfolio_summary.pop("venue_quote_cash", None)
     if isinstance(portfolio_summary.get("recent_orders"), dict):
-        t212_sym_set = {str(s).upper() for s in t212_cycles} | {
-            str(s).upper()
-            for s, iv in inst_by_sym.items()
-            if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
-        }
 
         def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
             if isinstance(rv, dict) and rv.get("venue"):
@@ -3413,7 +3426,7 @@ def collect_pretrade_telemetry(
         for cand in sym_variants:
             d = read_json_cached(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
             if isinstance(d, dict):
-                return d
+                return d if d.get("symbol") else {**d, "symbol": cand}
         return None
 
     def _fetch_pillar2(getter_fn: Callable[[], Any], prefix: str) -> Any:
@@ -3442,11 +3455,17 @@ def collect_pretrade_telemetry(
                 bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
                 ask_pct = 100 - bid_pct
                 telemetry["Orderbook Depth Imbalance"] = f"{imb_f:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
+            ob_sym_raw = obj_attr(ob_snap, "symbol")
+            ob_same_q = (
+                compatible_quote_suffixes(ob_sym_raw) == sym_quotes
+                if isinstance(ob_sym_raw, str) and ob_sym_raw.strip()
+                else is_usd_sym
+            )
             for side_lbl, usd_attr, px_attr in (
                 ("Ask", "largest_ask_wall_usd", "largest_ask_wall_price"),
                 ("Bid", "largest_bid_wall_usd", "largest_bid_wall_price"),
             ):
-                if not is_usd_sym:
+                if not ob_same_q:
                     continue
                 w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
                 w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)

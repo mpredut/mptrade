@@ -5166,6 +5166,138 @@ def test_iteration33_cross_market_bellwether_quote_isolation_and_collector_alias
     assert wp.open_interest_1h_change_pct == 3.25
 
 
+def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconcile(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.high_stake_guard import (
+        apply_asset_scope_filter,
+        enrich_cross_venue_trends,
+        load_symbol_microstructure,
+        sync_sibling_symbol_telemetry,
+    )
+    from providers.execution_audit import (
+        _resolve_intent_execution_details,
+        extract_intent_notional,
+        reconcile_intents_from_execution_audit,
+    )
+
+    # 1. load_symbol_microstructure strips USD price anchors when loading BTCUSDC orderbook for XBTEUR
+    # even when EUR/USD is 1.05 (78,000 EUR vs 82,000 USD, <10% difference)
+    ob_usd = {
+        "symbol": "BTCUSDC",
+        "imbalance_ratio": 0.62,
+        "mid_price": 82000.0,
+        "best_bid": 81995.0,
+        "best_ask": 82005.0,
+        "bid_depth_usd": 450000.0,
+        "ask_depth_usd": 300000.0,
+        "largest_bid_wall_price": 81500.0,
+        "largest_bid_wall_usd": 180000.0,
+        "largest_ask_wall_price": 82500.0,
+        "largest_ask_wall_usd": 140000.0,
+    }
+    m_eur = load_symbol_microstructure(str(tmp_path), "XBTEUR", ob=ob_usd)
+    assert m_eur is not None
+    assert m_eur["ob_imbalance"] == 0.62
+    assert m_eur.get("spread_bps") is not None
+    assert m_eur["bid_wall_usd"] == 180000.0
+    assert "ob_mid_price" not in m_eur
+    assert "best_bid" not in m_eur
+    assert m_eur.get("bid_wall_px") is None
+    assert m_eur.get("ask_wall_px") is None
+
+    # 2. sync_sibling_symbol_telemetry never copies USD price anchors onto XBTEUR even at 5% EUR/USD spread
+    prices = {
+        "BTCUSDC": {"price": 82000.0, "vol_1h_pct": 1.2},
+        "XBTEUR": {"price": 78000.0, "vol_1h_pct": 1.2},
+    }
+    micro = {
+        "BTCUSDC": {
+            "ob_imbalance": 0.60,
+            "ob_mid_price": 82000.0,
+            "bid_wall_px": 81500.0,
+            "oi_usd": 500000000.0,
+            "funding_rate": 0.0001,
+            "long_liq_px": 80500.0,
+            "short_liq_px": 83500.0,
+        }
+    }
+    sync_sibling_symbol_telemetry(prices, micro)
+    assert "XBTEUR" in micro
+    assert micro["XBTEUR"].get("ob_mid_price") is None
+    assert micro["XBTEUR"].get("bid_wall_px") is None
+    # Liquidation clusters for XBTEUR are computed around EUR 78,000, not inherited from USD 82,000
+    assert micro["XBTEUR"]["long_liq_px"] < 78000.0
+    assert micro["XBTEUR"]["short_liq_px"] < 81000.0
+
+    # 3. enrich_cross_venue_trends does not overwrite XBTEUR 7d range with BTCUSDC watcher_price_items at 5% EUR/USD spread
+    p_trends = {"XBTEUR": {"price": 78000.0}}
+    enrich_cross_venue_trends(
+        p_trends,
+        {},
+        {},
+        {},
+        {},
+        {},
+        {"BTCUSDC": [[1000, 81000.0], [2000, 82000.0]]},
+    )
+    assert "low_7d" not in p_trends["XBTEUR"]
+
+    # 4. apply_asset_scope_filter excludes non-T212 instruments from equities prices_and_trends
+    p_filtered, _ = apply_asset_scope_filter(
+        {"BTCUSDC": {"price": 82000.0}, "NVDA_US_EQ": {"price": 135.0}},
+        {},
+        {},
+        "equities",
+        {"BTCUSDC": SimpleNamespace(provider_name="binance"), "NVDA_US_EQ": SimpleNamespace(provider_name="t212")},
+        {},
+    )
+    assert "BTCUSDC" not in p_filtered
+    assert "NVDA_US_EQ" in p_filtered
+
+    # 5. reconcile_intents_from_execution_audit preserves price and keeps submit_accepted LIMIT as NEW/OPEN_RESTING
+    audit_file = tmp_path / "execution_audit_20261030.jsonl"
+    audit_file.write_text(
+        json.dumps(
+            {
+                "intent_id": "intent_lim_1",
+                "event": "submit_accepted",
+                "order_id": "oid_77",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "price": 81500.0,
+                "ts": 1700000000.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    intents = [
+        {
+            "intent_id": "intent_lim_1",
+            "status": "FAILED",
+            "order_type": "LIMIT",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "decision": "BUY",
+            "limit_price": 81500.0,
+            "timestamp": 1700000000.0,
+        }
+    ]
+    assert reconcile_intents_from_execution_audit(intents, str(tmp_path)) is True
+    assert intents[0]["execution_payload"]["status"] == "NEW"
+    assert intents[0]["execution_payload"]["price"] == 81500.0
+    det = _resolve_intent_execution_details(
+        intents[0],
+        1700000060.0,
+        extract_intent_notional,
+        open_orders=[{"venue": "binance", "symbol": "ETHUSDC", "orderId": "oid_77", "filled": 0.5}],
+    )
+    assert det["exec_status"] == "OPEN_RESTING"
+    assert det["filled_qty"] is None
+
+
+
 
 
 

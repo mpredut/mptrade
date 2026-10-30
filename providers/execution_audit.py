@@ -480,24 +480,34 @@ def reconcile_intents_from_execution_audit(
     for iid, rec in matched_records.items():
         intent = failed_by_id[iid]
         filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+        f_q = safe_pos_float(filled_qty, default=None)
+        f_px = safe_pos_float(
+            rec.get("price") if rec.get("price") is not None else rec.get("reference_price"),
+            default=None,
+        )
         raw_cost = rec.get("cost")
-        if raw_cost is None:
-            f_q = safe_pos_float(filled_qty, default=None)
-            f_px = safe_pos_float(
-                rec.get("price") if rec.get("price") is not None else rec.get("reference_price"),
-                default=None,
+        if raw_cost is None and f_q is not None and f_px is not None:
+            raw_cost = round(f_q * f_px, 8)
+        default_v_status = (
+            "NEW"
+            if (
+                str(rec.get("event") or "") == "submit_accepted"
+                and str(intent.get("order_type") or "").strip().upper() == "LIMIT"
+                and (safe_pos_float(rec.get("filled_qty"), default=0.0) or 0.0) <= 0.0
             )
-            if f_q is not None and f_px is not None:
-                raw_cost = round(f_q * f_px, 8)
+            else "FILLED"
+        )
         exec_payload: dict[str, Any] = {
             "orderId": rec.get("order_id"),
             "symbol": rec.get("symbol") or intent.get("symbol"),
             "side": str(rec.get("side") or intent.get("decision") or "").upper(),
             "executedQty": str(filled_qty) if filled_qty is not None else "",
             "cummulativeQuoteQty": str(raw_cost) if raw_cost is not None else "",
-            "status": str(rec.get("venue_status") or "FILLED").upper(),
+            "status": str(rec.get("venue_status") or default_v_status).upper(),
             "reconciled_from_audit": True,
         }
+        if f_px is not None:
+            exec_payload["price"] = f_px
         intent["status"] = "EXECUTED"
         intent["execution_payload"] = exec_payload
         rec_ts = safe_pos_float(rec.get("ts"), time.time())
@@ -568,6 +578,12 @@ def _resolve_intent_execution_details(
             oo_venue = normalize_venue_name(oo.get("venue"))
             if oo_venue and venue and oo_venue != venue:
                 continue
+            oo_sym = str(oo.get("symbol") or "").strip().upper()
+            if oo_sym and symbol and (
+                canonical_base_asset(oo_sym) != canonical_base_asset(symbol)
+                or compatible_quote_suffixes(oo_sym) != compatible_quote_suffixes(symbol)
+            ):
+                continue
             oo_oid = extract_order_id(oo, default=None)
             if order_id is not None and oo_oid is not None and str(oo_oid) == str(order_id):
                 matched_open = oo
@@ -576,8 +592,7 @@ def _resolve_intent_execution_details(
                 order_id is None
                 and order_type == "LIMIT"
                 and oo_venue == venue
-                and canonical_symbol_key(oo.get("symbol")) == canonical_symbol_key(symbol)
-                and compatible_quote_suffixes(oo.get("symbol")) == compatible_quote_suffixes(symbol)
+                and oo_sym
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
             ):
                 matched_open = oo
