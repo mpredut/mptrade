@@ -30,7 +30,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # monitortrades — see UNIFIED_BACKTEST_PLAN.md §7/§8), passed to
 # TrendState(now_fn=...) so that fast-forward is correct (A5). The
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
 from providers.replay_clock import SimClock as _SimClock  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
@@ -427,8 +427,6 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
         n = 0
         first_price = None
         prev_ktrend = 0
-        state_interval = 5000 if speed == "fast" else 100
-        last_state = None
         slope = slope_big = gradient = _gc = _sf = _gr = 0.0
         fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
         def _persist_analysis_state(cur_px, cur_ts, cur_shadow):

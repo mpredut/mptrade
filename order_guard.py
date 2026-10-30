@@ -17,18 +17,28 @@ The profit threshold is configured per venue in versioned, non-sensitive
 import os
 import statistics
 import time
-import json
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     parse_dotenv,
     safe_float,
-    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
 from typing import Optional, Callable, Any, List, Tuple, Dict
 import utils as u
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    get_cachedb_dir,
+    normalize_venue_name,
+)
+from guard_hierarchy import (
+    GUARD_REGISTRY,
+    is_category_bypassed,
+    make_intel_cache_key,
+    normalize_bypassed_guards,
+)
 from intelligence.macro_sentiment_ssot import resolve_order_notional
 from instrument_registry import casefold_get
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
@@ -40,6 +50,7 @@ from providers.base import (
     normalize_side,
 )
 from providers.strategy_executor import ProviderError
+from state_io import read_json_dict_cached
 
 _DEFAULT_REGIME_SERVICE = MarketRegimeService()
 _MARGINS = None   # cache: {provider_lower: percentage, "default": 1.15}
@@ -287,7 +298,6 @@ _load_margins()
 
 
 def _provider_name(provider):
-    from cachepaths import normalize_venue_name
     return normalize_venue_name(provider, default="")
 
 
@@ -1044,7 +1054,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     Return (True, None) or (False, "daily_limit" | "history_unavailable").
     """
     if bypass_guards:
-        from guard_hierarchy import normalize_bypassed_guards, GUARD_REGISTRY
         bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None

@@ -36,11 +36,13 @@ from botcore import (
 from cachepaths import cache_path
 from intelligence.internal.guards.guard_decision import (
     clean_guard_symbol_key,
+    fetch_guard_snapshot,
     normalize_guard_mode,
     resolve_hierarchical_guard_mode,
     snap_attr as _obj_attr,
 )
 from intelligence.macro_sentiment_ssot import check_cooldown_gate
+from state_io import read_json_dict_cached, save_json_state
 
 _safe_float = safe_float
 
@@ -110,7 +112,6 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
     state_file = _effective_smart_sl_state_file()
-    from state_io import read_json_dict_cached
     data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
     if not isinstance(data, dict):
         return _GRACE_TRACKER
@@ -139,7 +140,6 @@ def _save_grace_state() -> None:
     global _LOADED_STATE_FILE_KEY
     state_file = _effective_smart_sl_state_file()
     try:
-        from state_io import save_json_state
         save_json_state(state_file, _GRACE_TRACKER, indent=2)
         _GRACE_FILE_MEMO.clear()
         _LOADED_STATE_FILE_KEY = (state_file, None) if not _GRACE_TRACKER else None
@@ -312,7 +312,6 @@ class SmartStopLossGuard:
 
         # 3. Microstructure Telemetry Retrieval (0 ms cache lookup; skipped in replay unless explicitly injected)
         from external_order_guard import get_orderbook_collector, get_whale_collector
-        from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 
         if whale_snapshot is not None:
             w_snap = whale_snapshot

@@ -26,6 +26,7 @@ from botcore import (
     safe_int,
     safe_nonneg_int,
 )
+from cachepaths import cache_path, resolve_cachedb_filepath
 from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
 from orchestratorOS.agy.summary_store import (
     get_thread_step_count,
@@ -37,6 +38,7 @@ from orchestratorOS.agy.ui_mirror import (
     mirror_topic_thread_to_ui,
     sync_topic_thread_from_ui,
 )
+from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("orchestratorOS.agy.topics")
 
@@ -109,7 +111,6 @@ def topic_spec(topic_key: str) -> TopicSpec:
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
     """Registry JSON path: explicit, LLM_TOPIC_REGISTRY_PATH (tests/ops override), or cachedb/llm_topic_threads.json."""
-    from cachepaths import cache_path, resolve_cachedb_filepath
     raw = registry_path or os.environ.get("LLM_TOPIC_REGISTRY_PATH", "").strip()
     if raw:
         return str(resolve_cachedb_filepath(expand_config_path(raw)))
@@ -120,8 +121,6 @@ def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
 
 
 def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
-    from state_io import read_json_dict
-
     data = dict(read_json_dict(get_topic_registry_path(registry_path), default={}, recover_previous=True))
     for old_key, new_key in TOPIC_ALIASES.items():
         if old_key in data:
@@ -133,8 +132,6 @@ def load_topic_registry(registry_path: Optional[str] = None) -> Dict[str, dict]:
 
 
 def save_topic_registry(registry: Dict[str, dict], registry_path: Optional[str] = None) -> None:
-    from state_io import save_json_state
-
     path = get_topic_registry_path(registry_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     save_json_state(path, registry, indent=2)

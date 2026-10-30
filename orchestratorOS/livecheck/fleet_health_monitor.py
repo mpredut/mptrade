@@ -29,6 +29,7 @@ if ROOT_DIR not in sys.path:
 
 from botcore import _parse_bool_flag, parse_dotenv, safe_float, safe_pos_float, safe_pos_int
 from cachepaths import resolve_cachedb_filepath
+from state_io import save_json_state
 from orchestratorOS.lib.technical_repair_ssot import (
     clean_json_value,
     evaluate_heartbeat_files_freshness,
@@ -109,8 +110,7 @@ class FleetHealthMonitor:
 
     def check_processes(self, now: Optional[float] = None) -> List[ProcessHealth]:
         """Audits process running state and heartbeat timestamps."""
-        now_val = safe_float(now, default=None)
-        now_ts = now_val if (now_val is not None and now_val > 0) else time.time()
+        now_ts = safe_pos_float(now, default=None) or time.time()
         results: List[ProcessHealth] = []
 
         for p in self.parse_process_manifest():
@@ -242,8 +242,6 @@ class FleetHealthMonitor:
         if do_persist:
             try:
                 os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
-                from state_io import save_json_state
-
                 save_json_state(self.status_file, clean_json_value(asdict(report)), indent=2)
             except Exception as e:
                 logger.warning("Could not persist overnight status: %s", e)

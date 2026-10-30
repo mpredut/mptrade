@@ -49,7 +49,7 @@ stop = False
 
 # Function to handle Ctrl+C and shut down the WebSocket properly
 def signal_handler(sig, frame):
-    global websocket_thread, stop
+    global stop
     stop = True
     print("Shutting down...")
     bapi_ws.bapi_ws_manager.stop()
@@ -458,7 +458,7 @@ def get_total_assets_value_usdc(use_cache=True, cache_ttl_seconds=ASSET_VALUE_CA
             _asset_value_cache["value"] = total_value
             _asset_value_cache["timestamp"] = now
         else:
-            print(f"Error: get_total_assets_value_usdc: Total value can't be calculated")
+            print("Error: get_total_assets_value_usdc: Total value can't be calculated")
             return None
 
     return _asset_value_cache["value"]

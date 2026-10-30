@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from botcore import safe_float, safe_pos_float
-from intelligence.internal.guards.guard_decision import snap_attr
+from intelligence.internal.guards.guard_decision import fetch_guard_snapshot, snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
@@ -54,10 +54,7 @@ class WhaleAccumulationTrigger:
 
         t_now = resolve_now_ts(now)
         if snapshot is None and self.collector is not None:
-            try:
-                snapshot = self.collector.fetch(symbol, now=t_now) if now is not None else self.collector.fetch(symbol)
-            except TypeError:
-                snapshot = self.collector.fetch(symbol)
+            snapshot = fetch_guard_snapshot(self.collector, symbol, now=t_now if now is not None else None)
 
         if snapshot is None:
             return None

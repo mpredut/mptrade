@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 
 from botcore import _parse_bool_flag, safe_float
 from cachepaths import cache_path, resolve_cachedb_filepath
+from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
     build_dynamic_rss_url,
@@ -126,7 +127,6 @@ class NewsFeedCollector:
         return item if isinstance(getattr(item, "title", None), str) else None
 
     def _load_history(self) -> None:
-        from state_io import read_json_file
         hist_file = self._effective_history_file()
         now = time.time()
         for load_path in (hist_file,):
@@ -150,7 +150,6 @@ class NewsFeedCollector:
     def _save_history(self) -> None:
         hist_file = self._effective_history_file()
         try:
-            from state_io import save_json_state
             payload = [
                 {
                     "title": h.title,

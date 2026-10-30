@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from botcore import safe_float, safe_pos_float
+from botcore import obj_attr, safe_float, safe_pos_float
 from cachepaths import telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
@@ -263,10 +263,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 prev_snap = cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached
             else:
                 prev_snap = self._load_from_disk(symbol, now, ignore_ttl=True)
-            prev_reg = (
-                (prev_snap.get("divergence_regime") if isinstance(prev_snap, dict) else getattr(prev_snap, "divergence_regime", None))
-                if prev_snap else None
-            )
+            prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
             funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
 
             regime = self.classify_regime(

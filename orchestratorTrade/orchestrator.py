@@ -129,8 +129,7 @@ class BotManager:
             config_env_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(config_env_path):
                 try:
-                    from botcore import _dotenv_pairs
-                    pairs, ok = _dotenv_pairs(config_env_path)
+                    pairs, ok = botcore._dotenv_pairs(config_env_path)
                     if ok:
                         for k, v in pairs:
                             fresh_env[k] = v

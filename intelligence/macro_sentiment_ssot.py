@@ -48,6 +48,7 @@ from botcore import (
     fetch_public_json as _fetch_public_json,
     obj_attr,
     parse_dotenv,
+    required_float_env,
     safe_float,
     safe_int,
     safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
@@ -56,7 +57,7 @@ from botcore import (
 )
 
 fetch_public_json = _fetch_public_json
-from cachepaths import cache_path, cache_symbol_variants, resolve_cachedb_filepath
+from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset, resolve_cachedb_filepath
 from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
@@ -217,10 +218,6 @@ def detect_active_binance_symbols(
     """Detect enabled symbols from ``instruments.conf`` plus optional Kraken reference pairs."""
     out: List[str] = []
     seen_bases: Set[str] = set()
-    try:
-        from cachepaths import canonical_base_asset
-    except Exception:
-        canonical_base_asset = lambda x: str(x).strip().upper()
     if include_kraken_cache:
         try:
             from instrument_registry import tracked_price_instruments
@@ -405,7 +402,6 @@ def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) ->
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
     try:
-        from botcore import required_float_env
         from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
         from orchestratorOS.agy.paths import resolve_bot_cli_base
 

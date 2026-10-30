@@ -58,6 +58,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     should_sell,
     sync_trailing_retry_count,
 )
+should_sell = should_sell  # Re-exported for test compatibility
 from botcore import (_parse_bool_flag, load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)  # noqa: E402
 from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
@@ -520,7 +521,7 @@ class TrailingStop:
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
         self.log(f"=== TRAILING STOP started — {mode} ===")
-        self.log(f"    coins/thresholds: " +
+        self.log("    coins/thresholds: " +
                  ", ".join(f"{symbol}={trail}%" for symbol, _asset, _pair, trail in self.assets()))
         while True:
             try:

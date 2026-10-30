@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from botcore import safe_float, safe_pos_float
-from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+from intelligence.internal.triggers.trigger_event import TriggerEvent
 
 
 class LinearGradientTrigger:

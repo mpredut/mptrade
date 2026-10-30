@@ -288,7 +288,7 @@ def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
         print(f" [{len(trades)}] found ")
         all_trades.extend(_filter_trades_by_side(trades, order_type))
 
-    print(f"")
+    print("")
     return all_trades
         
         
@@ -325,7 +325,7 @@ def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=
     symbol = str(symbol).strip().upper().replace("/", "")
     years_to_keep = years_to_keep or 2
 
-    print(f"save_trades_to_file")
+    print("save_trades_to_file")
     print(f"{symbol} symbol and order_type {order_type} ")
      
     # Initialize the main collection as a list.

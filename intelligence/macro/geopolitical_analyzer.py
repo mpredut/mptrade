@@ -26,6 +26,7 @@ from intelligence.sentiment.gemini_client import GeminiClient
 from orchestratorOS.agy.topics import topic_spec
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
 from cachepaths import cache_path
+from state_io import read_json_dict, save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -113,7 +114,6 @@ class GeopoliticalThreatAnalyzer:
         )
 
     def _load_from_disk(self) -> None:
-        from state_io import read_json_dict
         state_file = self._effective_state_file()
         try:
             data = read_json_dict(state_file, default=None, recover_previous=True)
@@ -129,7 +129,6 @@ class GeopoliticalThreatAnalyzer:
     def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
         state_file = self._effective_state_file()
         try:
-            from state_io import save_json_state
             data = asdict(assessment)
             data["headlines_digest"] = self._last_headlines_digest
             save_json_state(state_file, data, indent=2)

@@ -27,6 +27,7 @@ diverges is moved into ~/agy_store_fix_backups/<timestamp>/ instead of being ove
 """
 from __future__ import annotations
 
+import collections
 import fcntl
 import glob
 import hashlib
@@ -414,7 +415,6 @@ def mode_check() -> int:
     linked = sum(1 for f in d1 & d2 if same_file(os.path.join(D1, f), os.path.join(D2, f)))
     print(f"visible dir files={len(d2)}  content dir files={len(d1)}  hard-linked={linked}  only-in-content-dir={len(d1 - d2)}  webrtc_mesh={webrtc_mesh_status()}")
     if os.path.exists(DB):
-        import collections
         c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         try:
             cnt = collections.Counter(

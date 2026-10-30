@@ -18,6 +18,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+from orchestratorOS.agy.paths import visible_conversations_dir
 from orchestratorOS.agy.protobuf import drop_entries, replace_summary_entry, summary_ui_visible
 from botcore import _parse_bool_flag, safe_nonneg_int
 from state_io import (
@@ -139,7 +140,6 @@ def get_thread_step_count(cid: str, cli_base: str) -> Tuple[bool, int, str]:
     clean_cid = cid.strip()
     exists = os.path.exists(conversation_db(cli_base, clean_cid))
     if not exists and isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        from orchestratorOS.agy.paths import visible_conversations_dir
         exists = os.path.exists(os.path.join(visible_conversations_dir(cli_base), f"{clean_cid}.db"))
     row = read_summary_row(cli_base, clean_cid)
     if not row:
@@ -279,7 +279,6 @@ def delete_threads(cids: Set[str], cli_base: str, dry_run: bool = False) -> Tupl
         return (0, 0)
     vis_dir = ""
     if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        from orchestratorOS.agy.paths import visible_conversations_dir
         vis_dir = visible_conversations_dir(cli_base)
     freed = 0
     seen_inodes: set[Tuple[int, int]] = set()
@@ -330,7 +329,6 @@ def clean_orphan_summaries(cli_base: str, dry_run: bool = False) -> int:
         conn.close()
     vis_dir = ""
     if isinstance(cli_base, str) and os.path.basename(os.path.normpath(cli_base)) == "antigravity-cli":
-        from orchestratorOS.agy.paths import visible_conversations_dir
         vis_dir = visible_conversations_dir(cli_base)
     active = (os.environ.get("CURRENT_CONVERSATION_ID") or "").strip()
     orphans = {

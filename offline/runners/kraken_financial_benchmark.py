@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 if str(KRAKEN_DIR) not in sys.path:
     sys.path.append(str(KRAKEN_DIR))
 
-from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
+from botcore import safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
 from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402

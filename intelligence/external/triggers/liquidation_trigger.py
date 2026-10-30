@@ -7,7 +7,7 @@ Identifies high-probability reversal points triggered by forced liquidations:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import snap_attr

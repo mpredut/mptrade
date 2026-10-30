@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -399,8 +400,6 @@ class GeminiClient:
     @staticmethod
     def _remove_detached_thread(bot_cli_base: str, cid: str) -> None:
         """Delete a one-off fallback conversation from the isolated bot store so orphans never accumulate."""
-        import sqlite3
-
         if not bot_cli_base or not isinstance(cid, str):
             return
         cid = cid.strip()

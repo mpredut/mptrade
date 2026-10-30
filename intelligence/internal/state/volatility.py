@@ -9,7 +9,9 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from botcore import float_env, safe_float, safe_nonneg_float, safe_pos_float
+from cachepaths import cache_path, cache_symbol_variants, normalize_cache_base_asset
 from instrument_registry import casefold_get
+from state_io import read_json_dict_cached
 
 
 def _f_env(name: str, default: float) -> float:
@@ -195,7 +197,6 @@ def vol_ratio_to_pct(vol_ratio: float) -> float:
 
 def get_kalman_state_path() -> str:
     """Return the canonical path to cache_kalman_trend.json honoring MPTRADE_CACHEDB_DIR."""
-    from cachepaths import cache_path
     return cache_path("cache_kalman_trend.json")
 
 
@@ -208,7 +209,6 @@ def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
     clean = raw.replace("/", "").replace("-", "").replace("_", "")
     if clean == "USDCUSDT":
         return ("USDCUSDT",)
-    from cachepaths import cache_symbol_variants, normalize_cache_base_asset
     base = normalize_cache_base_asset(raw)
     variants = [raw]
     for cand in (*cache_symbol_variants(raw, include_base=True), f"{base}/USDC" if base else ""):
@@ -224,7 +224,6 @@ def _extract_vol_ratio_from_file(path: str, symbol: str) -> Optional[float]:
     if not path or not isinstance(path, str) or not isinstance(symbol, str):
         return None
     try:
-        from state_io import read_json_dict_cached
         data = read_json_dict_cached(path, _VOL_FILE_CACHE, max_entries=32)
         if isinstance(data, dict):
             search_maps = [data]

@@ -524,8 +524,8 @@ if __name__ == "__main__":
                 "full_composite": asdict(full),
             }
             print(f"\n======================================== COMPREHENSIVE 4-PILLAR BACKTEST FOR {sym} ========================================")
-            print(f"| Metric                      | Baseline (Unguarded) | Pillar 1 (Price/Trend) | Pillar 1+2 (Microstructure) | Full Composite (All 4) | Total Improvement |")
-            print(f"|-----------------------------|----------------------|------------------------|-----------------------------|------------------------|-------------------|")
+            print("| Metric                      | Baseline (Unguarded) | Pillar 1 (Price/Trend) | Pillar 1+2 (Microstructure) | Full Composite (All 4) | Total Improvement |")
+            print("|-----------------------------|----------------------|------------------------|-----------------------------|------------------------|-------------------|")
             print(f"| Net Profit (USD)            | ${base.net_profit_usd:+,.2f}          | ${p1.net_profit_usd:+,.2f}            | ${p2.net_profit_usd:+,.2f}                  | ${full.net_profit_usd:+,.2f}               | ${full.net_profit_usd - base.net_profit_usd:+,.2f}          |")
             print(f"| Net Return (%)              | {base.net_return_pct:+.2f}%               | {p1.net_return_pct:+.2f}%                 | {p2.net_return_pct:+.2f}%                       | {full.net_return_pct:+.2f}%                    | {full.net_return_pct - base.net_return_pct:+.2f}%             |")
             print(f"| Max Drawdown (%)            | {base.max_drawdown_pct:.2f}%                | {p1.max_drawdown_pct:.2f}%                  | {p2.max_drawdown_pct:.2f}%                        | {full.max_drawdown_pct:.2f}%                     | {base.max_drawdown_pct - full.max_drawdown_pct:+.2f}% (Reduction) |")
@@ -541,7 +541,7 @@ if __name__ == "__main__":
             print(f"| Funding Crowding Downscales | 0                    | 0                      | {p2.funding_downscales}                          | {full.funding_downscales}                      | +{full.funding_downscales} Crowding down |")
             print(f"| Geopolitical Shock Vetoes   | 0                    | 0                      | 0                           | {full.geopolitical_vetoes}                      | +{full.geopolitical_vetoes} Swans avoided    |")
             print(f"| Extreme Greed Downscales    | 0                    | 0                      | 0                           | {full.sentiment_downscales}                      | +{full.sentiment_downscales} Greed down   |")
-            print(f"========================================================================================================================================================\n")
+            print("========================================================================================================================================================\n")
         except Exception as e:
             logger.error("Failed backtest for %s: %s", sym, e, exc_info=True)
 

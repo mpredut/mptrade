@@ -13,7 +13,9 @@ import time
 from typing import Any, Dict, Optional
 
 from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
+from cachepaths import cache_symbol_variants
 from intelligence.macro_sentiment_ssot import (
+    clean_symbol_key,
     get_cache_filenames,
     inspect_daemon_heartbeat,
     load_cached_geopolitical_eval,
@@ -21,6 +23,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_int,
 )
+from state_io import read_json_dict
 
 
 def _format_age(seconds: Any) -> str:
@@ -95,8 +98,6 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
         "guard_preview": {},
     }
 
-    from state_io import read_json_dict
-
     # 1. Pillar 1: Internal Quantitative & Trend Survival
     try:
         from intelligence.internal.state.survival import _lookup_t_cache_entry, estimate_T
@@ -121,8 +122,6 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
-        from cachepaths import cache_symbol_variants
-        from intelligence.macro_sentiment_ssot import clean_symbol_key
         sym_candidates = list(
             dict.fromkeys(
                 c for v in (symbol, *cache_symbol_variants(symbol)) if (c := clean_symbol_key(v))
@@ -278,16 +277,14 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
         print("  • Macro Threat:   [No threat assessment in cachedb]")
 
     # Order Guard Preview
-    _as_bool_preview = _parse_bool_flag
-
     print("\n🚦 [ORDER GUARD EXECUTION PREVIEW (order_guard.py)]")
     buy_std = gp.get("buy_standard")
     if isinstance(buy_std, dict) and buy_std:
-        status_std = "✅ ALLOWED" if _as_bool_preview(buy_std.get("allowed")) else "⛔ BLOCKED"
+        status_std = "✅ ALLOWED" if _parse_bool_flag(buy_std.get("allowed")) else "⛔ BLOCKED"
         print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {safe_float(buy_std.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
     buy_hi = gp.get("buy_high_stake")
     if isinstance(buy_hi, dict) and buy_hi:
-        status_hi = "✅ ALLOWED" if _as_bool_preview(buy_hi.get("allowed")) else "⛔ BLOCKED"
+        status_hi = "✅ ALLOWED" if _parse_bool_flag(buy_hi.get("allowed")) else "⛔ BLOCKED"
         print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {safe_float(buy_hi.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
 
     print("=" * 76 + "\n")

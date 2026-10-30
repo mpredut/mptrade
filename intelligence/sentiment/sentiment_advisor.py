@@ -26,6 +26,7 @@ from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnap
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 from orchestratorOS.agy.topics import topic_spec
 from cachepaths import cache_path
+from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.sentiment.sentiment_advisor")
 
@@ -89,7 +90,6 @@ class SentimentAdvisor:
         )
 
     def _load_from_disk(self) -> None:
-        from state_io import read_json_dict
         cache_file = self._effective_cache_file()
         try:
             data = read_json_dict(cache_file, default=None, recover_previous=True)
@@ -103,7 +103,6 @@ class SentimentAdvisor:
     def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
         cache_file = self._effective_cache_file()
         try:
-            from state_io import save_json_state
             save_json_state(cache_file, asdict(assessment), indent=2)
         except Exception as e:
             logger.warning("Could not persist LLM assessment to %s: %s", cache_file, e)

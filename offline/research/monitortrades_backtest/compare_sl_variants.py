@@ -33,9 +33,9 @@ def main():
     orig_break_enabled = getattr(mt, "MT_SL_STRUCTURAL_BREAK_ENABLED", True)
     try:
         for label, enabled in variants:
-            print(f"\n=======================================================")
+            print("\n=======================================================")
             print(f"  RUNNING {label}")
-            print(f"=======================================================")
+            print("=======================================================")
             mt.MT_SL_STRUCTURAL_BREAK_ENABLED = enabled
             results[label] = {}
 

@@ -31,6 +31,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from cachepaths import cache_path, cache_symbol_variants, normalize_cache_base_asset
 from instrument_registry import casefold_get
 from state_io import read_json_dict_cached, save_json_state
 
@@ -46,8 +47,7 @@ def _effective_t_cache_file() -> str:
     if isinstance(facade_file, str) and facade_file.strip() and facade_file != _DEFAULT_T_CACHE_FILE:
         return facade_file
     try:
-        import cachepaths
-        return cachepaths.cache_path("cache_T_trend.json")
+        return cache_path("cache_T_trend.json")
     except Exception:
         return T_CACHE_FILE
 
@@ -308,9 +308,7 @@ def hybrid_T(dur_hours, prior_T: float = 14.0, k: float = 30.0, t_min: int = 4, 
     }
 
 
-def _extract_base_symbol(symbol: str) -> str:
-    from cachepaths import normalize_cache_base_asset
-    return normalize_cache_base_asset(symbol)
+_extract_base_symbol = normalize_cache_base_asset
 
 
 _T_CACHE_FILE_MEMO: dict = {}
@@ -323,7 +321,6 @@ def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
     if not isinstance(data, dict) or not isinstance(symbol, str) or not symbol.strip():
         return None
-    from cachepaths import cache_symbol_variants
     for cand in (symbol, *cache_symbol_variants(symbol)):
         ent = casefold_get(data, cand)
         if isinstance(ent, dict):

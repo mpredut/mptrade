@@ -19,6 +19,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from state_io import save_json_state
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
@@ -98,7 +99,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         return detect_active_binance_symbols(self.cache_dir, include_kraken_cache=True)
 
     def _save_dual_cache(self, prefix: str, payload: Dict[str, Any]) -> None:
-        from state_io import save_json_state
         save_json_state(os.path.join(self.cache_dir, f"{prefix}_collect.json"), payload, indent=2)
 
     def update_news(self, force: bool = False) -> bool:

@@ -9,14 +9,25 @@ Centralizes:
 """
 from __future__ import annotations
 
-import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 import os
+import re
 import shutil
 import subprocess
+import time
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
+import urllib.request
 
-from botcore import _parse_bool_flag, safe_float
-from state_io import read_json_recovering
+from botcore import (
+    _parse_bool_flag,
+    parse_notify_enabled_flag,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
+from cachepaths import normalize_venue_name, resolve_cachedb_filepath
+from state_io import atomic_write_text, read_json_recovering, save_json_state
 
 parse_finite_float = safe_float
 
@@ -245,7 +256,6 @@ def resolve_heartbeat_paths(
             if os.path.isabs(part):
                 hb_paths.append(part)
             elif part.startswith("cachedb/"):
-                from cachepaths import resolve_cachedb_filepath
                 hb_paths.append(str(resolve_cachedb_filepath(os.path.join(workspace_dir, part))))
             elif part.startswith("logs/"):
                 hb_paths.append(os.path.join(workspace_dir, part))
@@ -399,7 +409,6 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
     action_type = ACTION_SYNONYM_MAP.get(action_type, action_type) or "NONE"
 
     raw_venue = act.get("venue") if act.get("venue") is not None else act.get("provider")
-    from cachepaths import normalize_venue_name
     venue = normalize_venue_name(raw_venue, default="binance")
 
     raw_sym = (
@@ -671,11 +680,6 @@ def gather_system_and_vpn_telemetry(
 # 7. Log Anomaly Harvesting & Audit Error Classification SSOT
 # ---------------------------------------------------------------------------
 
-from dataclasses import dataclass, field
-import re
-import time
-from botcore import safe_nonneg_float, safe_pos_float
-
 _FULL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2}):(\d{2})")
 _GLOG_TS_RE = re.compile(r"^[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})")
 _CLOCK_TS_RE = re.compile(r"^\.*\[?(\d{2}):(\d{2}):(\d{2})\b")
@@ -694,8 +698,6 @@ class LogEventSummary:
 
 def recent_log_lines(lines: List[str], file_mtime: float, cutoff_ts: float) -> List[str]:
     """Return the tail of ``lines`` whose own timestamps are >= cutoff_ts (chronological order)."""
-    from datetime import datetime, timedelta
-
     if not isinstance(lines, (list, tuple)) or not lines:
         return []
     fm = safe_pos_float(file_mtime, default=None) or time.time()
@@ -973,8 +975,6 @@ def apply_code_patch_safely(
                 log.warning("Search block not found in %s. Skipping patch.", target_file)
             return False
 
-        from state_io import atomic_write_text
-
         new_content = content.replace(search_block, replace_block, 1)
         atomic_write_text(real_target, new_content)
 
@@ -1005,7 +1005,6 @@ def apply_code_patch_safely(
             log.error("Error during safe code patching: %s. Performing rollback.", e)
         if content is not None:
             try:
-                from state_io import atomic_write_text
                 atomic_write_text(real_target, content)
             except OSError:
                 pass
@@ -1151,7 +1150,6 @@ def format_supervisor_ntfy_notification(
     is_sys_error: Optional[bool] = None,
 ) -> Tuple[str, str, str, str, bool]:
     """Build (title, body, priority, target_topic, is_any_error) for a SupervisorAuditReport ntfy push."""
-    from botcore import safe_nonneg_float
     from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 
     issues_cnt = sum(
@@ -1236,8 +1234,6 @@ def persist_supervisor_audit_artifact(
     """Persist full SupervisorAuditReport dict and heartbeat JSON to disk in cachedb/."""
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        from state_io import save_json_state
-
         cleaned_report = clean_json_value(report_dict)
         save_json_state(state_file, cleaned_report, indent=2)
 
@@ -1346,8 +1342,6 @@ def send_supervisor_ntfy_http(
     log: Optional[Any] = None,
 ) -> bool:
     """Gate and send a supervisor ntfy push notification via HTTP POST."""
-    import urllib.request
-
     try:
         from notify_engine.alertnotifiers import pass_common_gate
         allowed, reason, _, out_payload = pass_common_gate(
@@ -1445,8 +1439,6 @@ def parse_supervisor_config(
     notify_enabled: Optional[bool] = None,
 ) -> Tuple[str, bool, str, str, str, str, str]:
     """Validate and parse (mode, notify_enabled, ntfy_url, ntfy_topic_guard, ntfy_topic_server, ntfy_topic_error, ntfy_token)."""
-    from botcore import parse_notify_enabled_flag
-
     if mode is not None:
         if isinstance(mode, bool):
             raise ValueError(f"Invalid supervisor_mode {mode!r}; must be one of ['enforce', 'off', 'shadow']")
@@ -1480,8 +1472,6 @@ def parse_supervisor_config(
 
 def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Collect fleet process status via FleetHealthMonitor and Linux OS / VPN / DNS / config audit telemetry."""
-    from dataclasses import asdict
-
     fleet_processes: List[Dict[str, Any]] = []
     base_res: Dict[str, Any] = {}
     try:
@@ -1507,7 +1497,6 @@ def submit_supervisor_trading_decisions(
     is_rth_open_fn: Any,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """Normalize and submit LLM trading decisions to AutonomousIntentGateway."""
-    from cachepaths import normalize_venue_name
     from providers.execution_audit import normalize_trading_decisions
 
     if not getattr(spec, "can_trade", False):
@@ -1569,8 +1558,6 @@ def evaluate_heartbeat_files_freshness(
 
     Returns ``(is_fresh, max_existing_age_sec, max_stale_duration_sec, stale_or_missing_path)``.
     """
-    from cachepaths import resolve_cachedb_filepath
-
     if not hb_paths:
         return True, 0.0, 0.0, ""
     mtimes: List[float] = []

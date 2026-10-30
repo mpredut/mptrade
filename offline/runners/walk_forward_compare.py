@@ -58,7 +58,6 @@ from strategies.spot_engine import StratParams
 from strategies.spot_replay import (
     align_spot_interval_params,
     make_spot_replay_adapter,
-    run_replay,
 )
 
 DEFAULT_FEE_STRESS = {
