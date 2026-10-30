@@ -267,9 +267,7 @@ def is_trend_up(symbol, window_seconds=None, now=None):
 
 def _order_timestamp_ms(order: dict) -> float:
     """Extract normalized millisecond timestamp from an order or fill record."""
-    if not isinstance(order, dict):
-        return 0.0
-    return safe_nonneg_float(extract_timestamp_ms(order, default=0), default=0.0) or 0.0
+    return float(extract_timestamp_ms(order, default=0) or 0)
 
 
 def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
@@ -329,14 +327,14 @@ def _summarize_orders(orders):
     for o in orders:
         q = safe_pos_float(extract_order_qty(o), default=0.0) or 0.0
         p = safe_pos_float(extract_order_price(o), default=0.0) or 0.0
-        ts = safe_nonneg_int(_order_timestamp_ms(o), default=0) or 0
+        ts = extract_timestamp_ms(o, default=0) or 0
         if q > 0.0 and p > 0.0:
             total_qty += q
             total_val += p * q
         if ts > latest_ts:
             latest_ts = ts
     first = orders[0]
-    first_ts = safe_nonneg_int(_order_timestamp_ms(first), default=0) or 0
+    first_ts = extract_timestamp_ms(first, default=0) or 0
     first_id = (first.get("id") or first.get("orderId") or first_ts) if isinstance(first, dict) else first_ts
     sig = (len(orders), round(total_qty, 8), round(total_val, 4), latest_ts, first_id)
     return total_qty, total_val, sig

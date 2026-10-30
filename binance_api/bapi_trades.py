@@ -12,6 +12,7 @@ from botcore import exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_no
 from . import bapi as api
 from . import bapi_allorders as apiorders
 from providers.base import (
+    clean_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -55,16 +56,9 @@ _normalize_side = api._normalize_side
 def _valid_fill_id(val):
     if isinstance(val, (int, float)):
         return exact_nonneg_int(val, default=None)
-    if isinstance(val, str):
-        s = val.strip()
-        if not s or s.startswith("-") or s.lower() in {"nan", "inf", "-inf", "+inf", "none", "null"}:
-            return None
-        if s.endswith(".0") and s[:-2].lstrip("+").isdigit():
-            s = s[:-2]
-        if s.startswith("+") and s[1:].isdigit():
-            s = s[1:]
-        return s
-    return None
+    if isinstance(val, str) and val.strip() in {"0", "0.0", "+0", "+0.0"}:
+        return "0"
+    return clean_order_id(val) if isinstance(val, str) else None
 
 
 def _trade_fill_key(trade_obj):
@@ -76,7 +70,7 @@ def _trade_fill_key(trade_obj):
 
 def _resolve_trade_order_id(trade_obj):
     raw_oid = _valid_fill_id(trade_obj.get('orderId'))
-    if raw_oid in (None, 0, "0", "0.0", "-0", "+0"):
+    if raw_oid in (None, 0, "0"):
         return extract_order_id(trade_obj)
     return raw_oid
 

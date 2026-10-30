@@ -70,6 +70,7 @@ from botcore import (
     required_int_env,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
     single_instance,
@@ -2970,14 +2971,11 @@ class Cache365PriceManager(Cache24PriceManager):
                         def _clean_ts_map(raw_map):
                             if not isinstance(raw_map, dict):
                                 return {}
-                            out = {}
-                            for s, v in raw_map.items():
-                                if s not in self.symbols:
-                                    continue
-                                vf = safe_nonneg_float(v, default=None)
-                                if vf is not None:
-                                    out[s] = int(vf)
-                            return out
+                            return {
+                                s: vi
+                                for s, v in raw_map.items()
+                                if s in self.symbols and (vi := safe_nonneg_int(v, default=None)) is not None
+                            }
 
                         raw_ft = meta_payload.get("fetchtime")
                         self.fetchtime_per_symbol = _clean_ts_map(raw_ft)

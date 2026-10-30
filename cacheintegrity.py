@@ -93,17 +93,9 @@ def trade_records_digest(
 
 
 def _strict_int_field(val: Any) -> int:
-    if not isinstance(val, (int, float, str)):
+    if isinstance(val, str) and not val.strip().removesuffix(".0").lstrip("+-").isdigit():
         raise ValueError("invalid Trade row field type")
-    if isinstance(val, str):
-        s = val.strip()
-        if s.endswith(".0"):
-            s = s[:-2]
-        digits = s[1:] if s.startswith(("+", "-")) else s
-        if not digits or not digits.isdigit():
-            raise ValueError("invalid Trade row field type")
-        val = s
-    parsed = exact_int(val, default=None)
+    parsed = exact_int(val, default=None) if isinstance(val, (int, float, str)) else None
     if parsed is None:
         raise ValueError("invalid Trade row field type")
     return parsed

@@ -45,7 +45,9 @@ from botcore import (
     required_int_env,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
 )
 _finite_pos_float = safe_pos_float
 from cachepaths import cache_path, resolve_cachedb_filepath
@@ -299,19 +301,7 @@ class _LivePairVenue:
         )
         return prefix if rev == 0 else f"{prefix}_{rev}"
 
-    @staticmethod
-    def _revision_from_kind(kind, prefix: str):
-        kind = str(kind)
-        if kind == prefix:
-            return 0
-        pfx = f"{prefix}_"
-        if not kind.startswith(pfx):
-            return None
-        suffix = kind.removeprefix(pfx)
-        if not suffix.isdigit():
-            return None
-        revision = int(suffix)
-        return revision if 0 < revision <= 1_000_000 else None
+    _revision_from_kind = staticmethod(PairCoordinator._intent_revision)
 
     @classmethod
     def _limit_kind(cls, revision):
@@ -359,10 +349,10 @@ class _LivePairVenue:
                 or pending.get("requested_qty")),
             pair_id=pair_id,
             revision=(
-                self._limit_revision(pending.get("kind"))
-                if self._limit_revision(pending.get("kind")) is not None
-                else self._hard_stop_revision_from_kind(
-                    pending.get("kind")) or 0),
+                rev
+                if (rev := self._limit_revision(pending.get("kind"))) is not None
+                else self._hard_stop_revision_from_kind(pending.get("kind")) or 0
+            ),
         )
         return self._remember_ticket(ticket)
 
@@ -413,10 +403,8 @@ class _LivePairVenue:
         kind = str(pending.get("kind") or "limit")
         requested_qty = pending.get("requested_qty", pending.get("qty"))
         requested_price = pending.get("requested_price", pending.get("price"))
-        att_f = safe_float(pending.get("attempt"), default=None)
-        att_int = int(att_f) if (att_f is not None and att_f >= 1) else 1
-        mf = safe_nonneg_float(pending.get("lookup_misses"), default=None)
-        misses_int = int(mf) if mf is not None else 0
+        att_int = safe_pos_int(pending.get("attempt"), default=1)
+        misses_int = safe_nonneg_int(pending.get("lookup_misses"), default=0)
         pending.update({
             "intent_id": pending.get("intent_id")
                          or self._intent_id(record["pair_id"], side, kind),

@@ -491,8 +491,8 @@ class HyperliquidProvider(MarketDataProvider):
             if not (ok and clean_oid):
                 return None
             out_oid = (
-                int(clean_oid)
-                if (isinstance(oid, (int, float)) and not isinstance(oid, bool) and clean_oid.isdigit())
+                exact_pos_int(oid, default=clean_oid)
+                if isinstance(oid, (int, float))
                 else clean_oid
             )
             return {"orderId": out_oid, "ok": ok, "msg": msg}
@@ -709,8 +709,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     @staticmethod
     def _parse_oid(order_id: object, caller: str) -> int:
-        cleaned = _clean_single_order_id(order_id)
-        oid_i = exact_pos_int(cleaned if cleaned is not None else order_id, default=None)
+        oid_i = exact_pos_int(_clean_single_order_id(order_id), default=None)
         if oid_i is not None:
             return oid_i
         raise ProviderError(f"{caller}({order_id}): invalid order id")

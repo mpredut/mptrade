@@ -205,8 +205,8 @@ def _sanitize_state(raw: dict) -> dict:
     for k in ("realized_gross", "realized_net"):
         merged[k] = safe_float(merged.get(k, 0.0), 0.0)
     for k, default_i in (("cycle", 1), ("cycles_completed", 0), ("wins", 0), ("dca_buys", 0)):
-        vf = safe_float(merged.get(k, default_i), None)
-        merged[k] = max(default_i if k == "cycle" else 0, int(vf)) if vf is not None else default_i
+        vi = safe_int(merged.get(k, default_i), None)
+        merged[k] = max(default_i if k == "cycle" else 0, vi) if vi is not None else default_i
     for k in ("entry_price", "last_open_price"):
         merged[k] = safe_pos_float(merged.get(k), None)
     raw_orders = merged.get("orders")

@@ -12,6 +12,7 @@ from binance.exceptions import BinanceAPIException
 from .bapi_client import client
 import symbols as sym
 from botcore import (
+    exact_pos_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -36,8 +37,7 @@ from .bapi import (
 
 
 def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
-    cleaned = clean_order_id(raw_tid)
-    return int(cleaned) if cleaned is not None and cleaned.isdigit() else None
+    return exact_pos_int(clean_order_id(raw_tid), default=None)
 
 
 def _build_trade_order_record(order_id: Any, price: float, qty: float, timestamp_ms: int, side: str) -> dict[str, Any]:

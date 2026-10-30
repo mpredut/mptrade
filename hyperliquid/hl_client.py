@@ -576,13 +576,8 @@ class HLClient:
         ):
             return False
         coin = coin.strip()
-        if isinstance(oid, str):
-            s_oid = oid.strip()
-            if s_oid.endswith(".0") and s_oid[:-2].lstrip("+").isdigit():
-                s_oid = s_oid[:-2]
-            if not s_oid.lstrip("+").isdigit():
-                return False
-            oid = s_oid
+        if isinstance(oid, str) and not oid.strip().removesuffix(".0").lstrip("+").isdigit():
+            return False
         oid_i = _exact_int_in_range(oid, 1)
         if oid_i is None:
             return False

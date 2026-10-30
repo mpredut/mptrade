@@ -17,7 +17,7 @@ from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
 import instrument_registry
-from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float
+from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_int, safe_pos_float, safe_nonneg_float
 from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_venue_name
 from instrument_registry import casefold_get
 from .base import (
@@ -136,10 +136,10 @@ def _resolve_evaluated_at(now: Any) -> float:
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
-    clean_id = clean_order_id(order_id)
-    if clean_id is None or not clean_id.isdigit():
+    oid = exact_pos_int(clean_order_id(order_id), default=None)
+    if oid is None:
         raise ProviderError(f"{context}: invalid order id")
-    return int(clean_id)
+    return oid
 
 
 def _step_decimals(step: str) -> int:

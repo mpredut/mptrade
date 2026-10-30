@@ -571,7 +571,7 @@ class PairCoordinator:
         if not kind.startswith(marker):
             return None
         suffix = kind[len(marker):]
-        if not suffix.isdigit():
+        if not suffix.isascii() or not suffix.isdigit():
             return None
         revision = int(suffix)
         return revision if 0 < revision <= _MAX_LIMIT_REVISION else None
