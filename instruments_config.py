@@ -14,6 +14,7 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -244,22 +245,18 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         pass
 
     sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
-    inst_parts = split_symbol_assets(sym_u)
     raw_base = getattr(inst, "base", None)
     inst_base = (
         raw_base.strip().upper()
         if isinstance(raw_base, str) and raw_base.strip()
-        else (inst_parts[0] if inst_parts else sym_u)
+        else ((split_symbol_assets(sym_u) or (sym_u, ""))[0])
     )
-    raw_quote = getattr(inst, "quote", None)
-    inst_quote = (
-        raw_quote.strip().upper()
-        if isinstance(raw_quote, str) and raw_quote.strip()
-        else (inst_parts[1] if inst_parts and inst_parts[1] else "USD")
+    allowed_quotes = compatible_quote_suffixes(
+        sym_u,
+        getattr(inst, "quote", None),
+        default_usd=("USDC", "USDT", "USD", "FDUSD"),
     )
-    usd_quotes = ("USDC", "USDT", "USD", "FDUSD")
-    is_usd_quote = inst_quote in usd_quotes
-    allowed_quotes = usd_quotes if is_usd_quote else (inst_quote,)
+    is_usd_quote = "USD" in allowed_quotes
 
     cache_path = os.path.join(cache_dir, "cache_current_price.json")
     try:
@@ -291,12 +288,9 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
                 base_u = canonical_base_asset(str(inst_base))
                 for k, v in items.items():
                     k_str = str(k).strip().upper()
-                    k_parts = split_symbol_assets(k_str)
-                    k_quote = k_parts[1] if k_parts else ""
-                    if is_usd_quote:
-                        if k_quote and k_quote not in allowed_quotes:
-                            continue
-                    elif k_quote not in allowed_quotes:
+                    if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
+                        continue
+                    if not is_usd_quote and not (split_symbol_assets(k_str) or ("", ""))[1]:
                         continue
                     if canonical_base_asset(k_str) == base_u and (px_f := extract_current_price_item(v)) is not None:
                         return px_f

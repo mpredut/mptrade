@@ -21,6 +21,7 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    compatible_quote_suffixes,
     get_cachedb_dir,
     legacy_filenames_for,
     normalize_venue_name,
@@ -361,12 +362,13 @@ def load_symbol_price_series(
     current_price_items: Optional[Dict[str, Any]] = None,
     *,
     include_7d: bool = True,
-    quotes: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
+    quotes: Optional[tuple[str, ...]] = None,
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
+    eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
     cands = [
         c
-        for c in cache_symbol_variants(symbol, include_original=True, quotes=quotes)
+        for c in cache_symbol_variants(symbol, include_original=True, quotes=eff_quotes)
         if isinstance(c, str) and "/" not in c
     ]
     series_24h: list = []
@@ -1446,10 +1448,10 @@ def resolve_symbol_price(
     prices_and_trends: Dict[str, Any],
     fallback_prices: Optional[Dict[str, float]] = None,
 ) -> float:
-    """Resolve a positive live price for ``symbol`` across canonical symbol variants and optional fallback map."""
+    """Resolve a positive live price for ``symbol`` across quote-compatible symbol variants and optional fallback map."""
     if not symbol:
         return 0.0
-    sym_variants = cache_symbol_variants(symbol)
+    sym_variants = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
     for cand in sym_variants:
         entry = casefold_get(prices_and_trends, cand)
         cand_px = safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0
@@ -2261,17 +2263,17 @@ def enrich_24h_and_microstructure(
 
         m_info = load_symbol_microstructure(cache_dir, sym, _rj)
         if m_info:
+            is_usd_sym = "USD" in compatible_quote_suffixes(sym)
             sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
             if (
-                isinstance(prices_and_trends.get(sym), dict)
+                is_usd_sym
+                and isinstance(prices_and_trends.get(sym), dict)
                 and sym_px_m <= 0.0
                 and safe_pos_float(m_info.get("ob_mid_price"), default=None)
             ):
                 prices_and_trends[sym]["price"] = m_info["ob_mid_price"]
-            elif (
-                sym_px_m > 0.0
-                and _prices_diverged(sym_px_m, m_info.get("ob_mid_price"))
-                and (split_symbol_assets(sym) or ("", "USD"))[1] not in ("USD", "USDC", "USDT", "FDUSD")
+            elif not is_usd_sym and (
+                sym_px_m <= 0.0 or _prices_diverged(sym_px_m, m_info.get("ob_mid_price"))
             ):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     m_info.pop(k_strip, None)
@@ -2300,9 +2302,15 @@ def enrich_24h_and_microstructure(
         for msym in ref_micro_syms:
             m_info_ref = load_symbol_microstructure(cache_dir, msym, _rj)
             if m_info_ref:
+                msym_quotes = compatible_quote_suffixes(msym)
                 p_ref = _first_variant_dict(
                     prices_and_trends,
-                    cache_symbol_variants(msym, include_original=True, include_base=True),
+                    cache_symbol_variants(
+                        msym,
+                        include_original=True,
+                        include_base="USD" in msym_quotes,
+                        quotes=msym_quotes,
+                    ),
                 )
                 enrich_microstructure_cvd(m_info_ref, p_ref)
                 liq_ref = compute_liquidation_clusters(p_ref, m_info_ref)
@@ -2326,20 +2334,22 @@ def sync_sibling_symbol_telemetry(
     for sym, pinfo in list(prices_and_trends.items()):
         if not isinstance(pinfo, dict):
             continue
+        sym_quotes = compatible_quote_suffixes(sym)
         sym_variants = cache_symbol_variants(sym, include_original=True, include_base=True)
         for cand in sym_variants:
             if cand == sym:
                 continue
+            cand_same_quote_family = compatible_quote_suffixes(cand) == sym_quotes
             sib_pinfo = casefold_get(prices_and_trends, cand)
             if isinstance(sib_pinfo, dict):
                 p_px = safe_float(pinfo.get("price"), 0.0)
                 s_px = safe_float(sib_pinfo.get("price"), 0.0)
-                if p_px <= 0.0 and s_px > 0.0:
+                if cand_same_quote_family and p_px <= 0.0 and s_px > 0.0:
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
-                px_diverged = _prices_diverged(p_px, s_px)
+                px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px, s_px)
                 for k, v in sib_pinfo.items():
-                    if v is None:
+                    if v is None or k == "price":
                         continue
                     if px_diverged and k in range_bound_keys:
                         continue
@@ -2353,7 +2363,10 @@ def sync_sibling_symbol_telemetry(
                 s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(
                     sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
                 )
-                micro_px_diverged = _prices_diverged(p_px_m, s_ob_mid)
+                micro_px_diverged = (
+                    (not cand_same_quote_family and (p_px_m <= 0.0 or _prices_diverged(p_px_m, s_ob_mid)))
+                    or _prices_diverged(p_px_m, s_ob_mid)
+                )
                 if sym not in microstructure:
                     microstructure[sym] = {
                         mk: mv
@@ -2376,9 +2389,15 @@ def sync_sibling_symbol_telemetry(
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
             continue
+        msym_quotes = compatible_quote_suffixes(msym)
         p_match = _first_variant_dict(
             prices_and_trends,
-            cache_symbol_variants(msym, include_original=True, include_base=True),
+            cache_symbol_variants(
+                msym,
+                include_original=True,
+                include_base="USD" in msym_quotes,
+                quotes=msym_quotes,
+            ),
         )
         liq_clusters = compute_liquidation_clusters(p_match, minfo)
         if liq_clusters:

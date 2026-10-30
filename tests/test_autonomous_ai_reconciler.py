@@ -4569,3 +4569,79 @@ def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tm
     assert math.isnan(resolve_instrument_live_price(inst_xbtusd, str(tmp_path)))
 
 
+def test_iteration26_compatible_quote_suffixes_and_unpriced_fiat_isolation(tmp_path):
+    import json
+    from cachepaths import compatible_quote_suffixes
+    from intelligence.sentiment.guards.high_stake_guard import (
+        enrich_24h_and_microstructure,
+        parse_venue_cycle_state,
+        resolve_symbol_price,
+        sync_sibling_symbol_telemetry,
+    )
+
+    # 1. compatible_quote_suffixes and resolve_symbol_price isolate USD vs EUR valuation families
+    assert compatible_quote_suffixes("BTCUSDC") == ("USDC", "USDT", "USD")
+    assert compatible_quote_suffixes("BTCEUR") == ("EUR",)
+    assert compatible_quote_suffixes("TLV.RO", quote="RON") == ("RON",)
+
+    prices_mixed = {"BTCUSDC": {"price": 82000.0}, "XBTEUR": {"price": 74000.0}}
+    assert resolve_symbol_price("BTCEUR", prices_mixed) == pytest.approx(74000.0)
+    assert resolve_symbol_price("XBTUSD", prices_mixed) == pytest.approx(82000.0)
+    assert resolve_symbol_price("BTCEUR", {"BTCUSDC": {"price": 82000.0}}) == 0.0
+    assert resolve_symbol_price("XBTUSD", {"BTCEUR": {"price": 74000.0}}) == 0.0
+
+    # 2. parse_venue_cycle_state on XBTEUR does not compute a fake +10.8% profit from BTCUSDC USD price
+    cyc_eur = parse_venue_cycle_state(
+        {"qty": 0.1, "cost_usd": 7400.0, "avg_cost": 74000.0},
+        "XBTEUR",
+        {"BTCUSDC": {"price": 82000.0}},
+    )
+    assert cyc_eur["dd_pct"] is None
+
+    # 3. Unpriced BTCEUR does not inherit USD price, USD range_bound_keys, or USD liquidation clusters from BTCUSDC
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    now_ts = 1793300000.0
+    (cache_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        [int((now_ts - 3600) * 1000), 81000.0, 10.0],
+                        [int((now_ts - 900) * 1000), 81500.0, 12.0],
+                        [int((now_ts - 60) * 1000), 82000.0, 15.0],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDC",
+                "imbalance_ratio": 0.62,
+                "best_bid": 81990.0,
+                "best_ask": 82010.0,
+                "ob_mid_price": 82000.0,
+                "bid_depth_usd": 500000.0,
+                "ask_depth_usd": 300000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    prices = {
+        "BTCUSDC": {"price": 82000.0, "vol_1h_pct": 1.2},
+        "BTCEUR": {"price": None, "vol_1h_pct": 1.2},
+    }
+    micro = {}
+    enrich_24h_and_microstructure(str(cache_dir), str(tmp_path), prices, micro, {}, {}, now_ts)
+    sync_sibling_symbol_telemetry(prices, micro)
+
+    assert prices["BTCEUR"]["price"] is None
+    assert prices["BTCEUR"]["chg_1h_pct"] == pytest.approx(prices["BTCUSDC"]["chg_1h_pct"])
+    assert "low_24h" not in prices["BTCEUR"]
+    assert "poc_px" not in prices["BTCEUR"]
+    assert "ob_mid_price" not in micro["BTCEUR"]
+    assert "long_liq_px" not in micro["BTCEUR"]
+

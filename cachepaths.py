@@ -743,6 +743,26 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
 
 
+_USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD")
+
+
+def compatible_quote_suffixes(
+    symbol: object,
+    quote: object = None,
+    *,
+    default_usd: tuple[str, ...] = ("USDC", "USDT", "USD"),
+) -> tuple[str, ...]:
+    """Return quote suffixes that share the same currency valuation family as ``symbol`` / ``quote``."""
+    q_str = quote.strip().upper() if isinstance(quote, str) and quote.strip() else ""
+    if not q_str and isinstance(symbol, str) and symbol.strip():
+        parts = split_symbol_assets(symbol.strip().upper())
+        if parts is not None and parts[1]:
+            q_str = parts[1]
+    if not q_str or q_str in _USD_FAMILY_QUOTES:
+        return default_usd
+    return (q_str,)
+
+
 def cache_symbol_variants(
     symbol: object,
     *,
