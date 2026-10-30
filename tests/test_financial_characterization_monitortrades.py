@@ -1571,9 +1571,14 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
                     return_value=fake_guard,
                 ),
             ):
-                # 406.0 ARB * 0.5 = 203.0 ARB ($36.54 < $50 min_notional) -> must defer (allowed=False)
-                allowed, bb, bq, q = mt._apply_post_stop_ai_guard(
+                # Below last_sell (0.18 < 0.19) -> does not consult AI guard, allows immediately
+                allowed_below, _, _, _ = mt._apply_post_stop_ai_guard(
                     "ARBUSDC", 0.18, 0.19, NOW - 3600, snap, 250.0, None, 1.0, inst=live_inst
+                )
+                self.assertTrue(allowed_below)
+                # Above last_sell (0.18 >= 0.178): 406.0 ARB * 0.5 = 203.0 ARB ($36.54 < $50 min_notional) -> must defer (allowed=False)
+                allowed, bb, bq, q = mt._apply_post_stop_ai_guard(
+                    "ARBUSDC", 0.18, 0.178, NOW - 3600, snap, 250.0, None, 1.0, inst=live_inst
                 )
                 self.assertFalse(allowed)
 

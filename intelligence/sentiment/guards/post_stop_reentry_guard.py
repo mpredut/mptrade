@@ -106,6 +106,9 @@ class PostStopReentryGuard:
 
         now_ts = resolve_now_ts(now)
         safe_sell_px = safe_float(last_sell_price, 0.0)
+        safe_curr_px = safe_float(current_price, 0.0)
+        if 0.0 < safe_curr_px < safe_sell_px:
+            return GuardDecision.allow("PostStopReentryGuard", "below_last_sell_price")
         safe_sell_ts_f = safe_float(last_sell_time_s, 0.0)
         safe_sell_ts = int(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
         cache_key = (clean_symbol_key(symbol), round(safe_sell_px, 6), safe_sell_ts)
@@ -115,7 +118,6 @@ class PostStopReentryGuard:
                 return cached[1]
 
         safe_trough = safe_float(trough, 0.0)
-        safe_curr_px = safe_float(current_price, 0.0)
         safe_qty = safe_pos_float(qty, 1.0)
         safe_bounce = safe_float(bounce_pct, 0.0)
         drop_after_sl_pct = (

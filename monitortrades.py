@@ -1508,7 +1508,12 @@ def _eval_reentry_buy_quantity_decision(
 
 
 def _can_pass_buy_quantity_policy(
-    inst, symbol: str, current_price: float, requested_qty: float, min_qty: float = 0.0
+    inst,
+    symbol: str,
+    current_price: float,
+    requested_qty: float,
+    min_qty: float = 0.0,
+    sell_price: Optional[float] = None,
 ) -> bool:
     """Verify whether provider balance, 24h weight policy, and intelligence/geopolitical
     scaling permit a valid executable BUY quantity before invoking external AI guards
@@ -1521,9 +1526,11 @@ def _can_pass_buy_quantity_policy(
     if not callable(getattr(provider, "free_balance", None)):
         return True
     try:
-        reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass={"G_PROF", "GLLM1"})
+        below_sell = 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0)
+        extra_bg = {"all"} if below_sell else {"G_PROF", "GLLM1"}
+        reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass=extra_bg)
         decision, quote_asset = _eval_reentry_buy_quantity_decision(
-            inst, provider, symbol, current_price, requested_qty, reentry_bg
+            inst, provider, symbol, current_price, requested_qty, {"G_PROF", "GLLM1"} | _resolve_inst_bypass_guards(inst, provider=provider)
         )
         if decision is None:
             return True
@@ -1569,44 +1576,45 @@ def _can_pass_buy_quantity_policy(
                     f"{dl_reason or 'daily_limit'}"
                 )
                 return False
-        intel_ok, intel_reason, intel_scale = order_guard.check_intelligence_guards(
-            provider,
-            symbol,
-            "BUY",
-            current_price,
-            qty=final_qty,
-            bypass_guards=reentry_bg,
-        )
-        if not intel_ok:
-            print(
-                f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
-                f"intelligence_guard ({intel_reason})"
-            )
-            return False
-        intel_scale_f = safe_float(intel_scale, 1.0)
-        if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
-            scaled_qty = round_provider_qty(provider, symbol, final_qty * intel_scale_f)
-            if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
-                print(
-                    f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
-                    f"late-scaled qty {scaled_qty} below min_qty {min_qty} (scale={float(intel_scale):.2f})"
-                )
-                return False
-            scaled_refusal = check_order_filter_refusal(
+        if not below_sell:
+            intel_ok, intel_reason, intel_scale = order_guard.check_intelligence_guards(
                 provider,
                 symbol,
                 "BUY",
                 current_price,
-                scaled_qty,
-                market=False,
-                enforce_business_minimum=True,
+                qty=final_qty,
+                bypass_guards=reentry_bg,
             )
-            if scaled_refusal:
+            if not intel_ok:
                 print(
                     f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
-                    f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
+                    f"intelligence_guard ({intel_reason})"
                 )
                 return False
+            intel_scale_f = safe_float(intel_scale, 1.0)
+            if intel_scale_f is not None and 0.0 < intel_scale_f < 1.0:
+                scaled_qty = round_provider_qty(provider, symbol, final_qty * intel_scale_f)
+                if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
+                    print(
+                        f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                        f"late-scaled qty {scaled_qty} below min_qty {min_qty} (scale={float(intel_scale):.2f})"
+                    )
+                    return False
+                scaled_refusal = check_order_filter_refusal(
+                    provider,
+                    symbol,
+                    "BUY",
+                    current_price,
+                    scaled_qty,
+                    market=False,
+                    enforce_business_minimum=True,
+                )
+                if scaled_refusal:
+                    print(
+                        f"[{symbol}] Post-STOP re-entry deferred before AI guard: "
+                        f"late-scaled qty {scaled_qty} (scale={float(intel_scale):.2f}) refused by filter ({scaled_refusal})"
+                    )
+                    return False
         if not _is_simulated_env_or_inst(inst) and _is_trend_gate_deferred(symbol, inst, side="BUY"):
             print(f"[{symbol}] Post-STOP re-entry deferred before AI guard: trend_deferred")
             return False
@@ -1645,6 +1653,8 @@ def _apply_post_stop_ai_guard(
         _ps_guard = get_post_stop_reentry_guard()
         if getattr(_ps_guard, "mode", None) in ("off", "shadow"):
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
+        if 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0):
+            return True, buy_budget, buy_qty_cfg, qty
         raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
         _trough_px = raw_trough if raw_trough is not None else min(sell_price, current_price)
         _bounce_ratio = reentry_snap.bounce_ratio(_trough_px)
@@ -2146,7 +2156,9 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
 
         _reentry_applied_scale = 1.0
         if last_exit_kind == "STOP":
-            if not _can_pass_buy_quantity_policy(inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty):
+            if not _can_pass_buy_quantity_policy(
+                inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty, sell_price=sell_price
+            ):
                 if prev_reentry_state:
                     _REENTRY_STATE[symbol] = prev_reentry_state
                     _save_mt_state()

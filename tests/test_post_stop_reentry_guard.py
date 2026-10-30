@@ -449,7 +449,7 @@ def test_monitortrades_skips_ai_guard_when_intelligence_downscale_triggers_below
         buy_qty=1360.91,
         orders_dict={
             "SELL": [{
-                "price": 0.1884,
+                "price": 0.1820,
                 "time": 1000.0,
                 "timestamp": 1000000,
                 "qty": 1318.56,
@@ -562,7 +562,7 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
         api=mock_api,
     )
     real_inst.orders = lambda side, since_s: (
-        [{"price": 0.1884, "time": 1000.0, "timestamp": 1000000, "qty": 600.0, "kind": "STOP"}]
+        [{"price": 0.1820, "time": 1000.0, "timestamp": 1000000, "qty": 600.0, "kind": "STOP"}]
         if side == "SELL" else []
     )
     real_inst.price = lambda: 0.1833
@@ -632,7 +632,7 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
     dec_shadow = shadow_guard.check(
         symbol="BTCUSDC",
         current_price=65000.0,
-        last_sell_price=66000.0,
+        last_sell_price=64500.0,
         trough=64000.0,
         bounce_pct=0.0156,
         qty=0.1,
@@ -658,7 +658,7 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
     dec_veto = enforce_guard.check(
         symbol="ETHUSDC",
         current_price=2000.0,
-        last_sell_price=2100.0,
+        last_sell_price=1980.0,
         trough=1950.0,
         bounce_pct=0.025,
         qty=1.0,
@@ -666,6 +666,20 @@ def test_post_stop_reentry_shadow_mode_on_timeout_and_null_suggested_scale():
         now=3000.0,
     )
     assert dec_veto.allowed is False
+
+    # 2b. Re-entry below last_sell_price skips LLM consultation and allows immediately
+    dec_below = enforce_guard.check(
+        symbol="ETHUSDC",
+        current_price=2000.0,
+        last_sell_price=2100.0,
+        trough=1950.0,
+        bounce_pct=0.025,
+        qty=1.0,
+        telemetry={},
+        now=3000.0,
+    )
+    assert dec_below.allowed is True
+    assert dec_below.reason == "below_last_sell_price"
 
     hs_guard = HighStakeGuard(gemini_client=null_scale_client, min_notional_eur=1000.0, cache_ttl_sec=0.0)
     hs_dec = hs_guard.check("ETHUSDC", "BUY", 2000.0, 1.0, notional_eur=2000.0, telemetry={})
