@@ -4,6 +4,9 @@ Integrates sentiment telemetry, contrarian drivers, euphoric/panic brakes, and H
 - collectors:
   * FearGreedCollector (Alternative.me Crypto Fear & Greed Index with 14d trend)
   * MarketBreadthCollector (Binance 24h market-wide advance/decline and dispersion)
+  * microstructure_collector (24h/7d price series, volume profile POC/VAH/VAL, CVD, liquidation clusters)
+  * portfolio_collector (spot positions, venue DCA cycles, trailing peaks, recent fills, cross-venue trends)
+  * macro_telemetry_collector (macro benchmarks, news sensors, snapshot orchestrator, pre-trade telemetry)
 - advisor:
   * SentimentAdvisor (Periodic macro market synthesis via LLM)
 - triggers:

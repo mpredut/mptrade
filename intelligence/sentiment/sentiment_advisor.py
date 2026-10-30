@@ -146,7 +146,7 @@ class SentimentAdvisor:
                 os.path.exists(os.path.join(cache_dir, fn))
                 for fn in ("cache_24_price_BTCUSDC.json", "cache_24_price_BTCUSDT.json")
             ):
-                from intelligence.sentiment.guards.high_stake_guard import (
+                from intelligence.sentiment.collectors.microstructure_collector import (
                     compute_24h_price_metrics,
                     load_symbol_price_series,
                 )

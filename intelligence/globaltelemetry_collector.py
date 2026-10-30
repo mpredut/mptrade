@@ -32,8 +32,8 @@ from intelligence.macro_sentiment_ssot import (
     write_daemon_heartbeat_files,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
-from intelligence.sentiment.guards.high_stake_guard import collect_macro_benchmarks_snapshot
 from state_io import save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

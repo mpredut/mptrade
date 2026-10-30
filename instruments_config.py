@@ -317,7 +317,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
         pass
 
     try:
-        from intelligence.sentiment.guards.high_stake_guard import (
+        from intelligence.sentiment.collectors.microstructure_collector import (
             load_symbol_microstructure,
             load_symbol_price_series,
         )

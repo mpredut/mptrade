@@ -10,16 +10,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
 from cachepaths import canonical_base_asset, compatible_quote_suffixes
-from intelligence.sentiment.guards.high_stake_guard import (
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    format_bottom_structure_6h_parts,
+    format_macro_benchmarks_summary_line,
+)
+from intelligence.sentiment.collectors.microstructure_collector import (
     _build_vp_position_dict,
     _compute_horizon_range_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
-    format_bottom_structure_6h_parts,
-    format_macro_benchmarks_summary_line,
+    round_opt_px as _round_opt_px,
+)
+from intelligence.sentiment.collectors.portfolio_collector import (
     resolve_symbol_price as _resolve_symbol_price,
     resolve_venue_fee_and_limits,
-    round_opt_px as _round_opt_px,
 )
 from orchestratorOS.agy.topics import topic_spec
 from orchestratorOS.lib.technical_repair_ssot import (

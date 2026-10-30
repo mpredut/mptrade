@@ -35,13 +35,17 @@ from botcore import (
     safe_pos_float,
 )
 from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.guards.high_stake_guard import (
+from intelligence.sentiment.collectors.macro_telemetry_collector import (
+    populate_market_and_portfolio_snapshot,
+)
+from intelligence.sentiment.collectors.microstructure_collector import (
     apply_short_trend_item as _apply_short_trend_item,  # noqa: F401 (re-export: test compat)
     compute_liquidation_clusters,  # noqa: F401 (re-export: test compat)
     compute_swing_wave_metrics as _compute_swing_wave_metrics,  # noqa: F401 (re-export: test compat)
     compute_volume_profile_metrics,  # noqa: F401 (re-export: test compat)
+)
+from intelligence.sentiment.collectors.portfolio_collector import (
     parse_venue_cycle_state as _parse_venue_cycle_state,  # noqa: F401 (re-export: test compat)
-    populate_market_and_portfolio_snapshot,
     resolve_venue_fee_and_limits,  # noqa: F401 (re-export: test compat)
 )
 from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
