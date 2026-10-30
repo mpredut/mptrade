@@ -39,7 +39,6 @@ from botcore import (
     extract_current_price_item,
     is_us_rth_open as _is_us_rth_open,
     load_key_value_conf,
-    parse_notify_enabled_flag as _parse_notify_enabled_flag,
     safe_float,
 )
 from instruments_config import (

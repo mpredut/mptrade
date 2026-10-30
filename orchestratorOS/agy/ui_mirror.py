@@ -39,6 +39,7 @@ from orchestratorOS.agy.summary_store import (
 )
 from state_io import durable_replace_file
 
+_fallback_safe_step_count = safe_nonneg_int
 _safe_step_count = safe_nonneg_int
 
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")

@@ -131,6 +131,20 @@ class ProcessOnceTest(unittest.TestCase):
                 mkt.status_calls,
                 [("ABCUSD", "1", "Second")])
 
+    class _AllowedSlot:
+        allowed = True
+        info = {}
+
+        def commit(self, order_id=None):
+            return None
+
+    class _SlotContext:
+        def __enter__(self):
+            return self._AllowedSlot()
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
     def test_market_retry_price_and_protective_minimum_policies(self):
         with self.subTest("market_retry_rechecks_price_after_worker_gate_before_submit"):
             oq.rewrite([])
@@ -159,20 +173,6 @@ class ProcessOnceTest(unittest.TestCase):
                     self.submit_calls.append((symbol, side, price, qty, kwargs))
                     return {"orderId": "unexpected-duplicate"}
 
-            class AllowedSlot:
-                allowed = True
-                info = {}
-
-                def commit(self, order_id=None):
-                    return None
-
-            class SlotContext:
-                def __enter__(self):
-                    return AllowedSlot()
-
-                def __exit__(self, exc_type, exc, traceback):
-                    return False
-
             provider = MovingMarketProvider()
             market = MarketApi([provider])
             oq.enqueue(
@@ -188,7 +188,7 @@ class ProcessOnceTest(unittest.TestCase):
                 patch("instrument.order_guard.get_margin_cfg", return_value=0.01),
                 patch("instrument.order_guard.profit_guard", return_value=True),
                 patch("instrument.trade_cooldown.trade_slot",
-                      return_value=SlotContext()),
+                      return_value=self._SlotContext()),
             ):
                 stats = worker.process_once(market, now=1400.0)
 
@@ -231,20 +231,6 @@ class ProcessOnceTest(unittest.TestCase):
                     self.submit_calls.append((symbol, side, price, qty, kwargs))
                     return {"orderId": "protective-retry"}
 
-            class AllowedSlot:
-                allowed = True
-                info = {}
-
-                def commit(self, order_id=None):
-                    return None
-
-            class SlotContext:
-                def __enter__(self):
-                    return AllowedSlot()
-
-                def __exit__(self, exc_type, exc, traceback):
-                    return False
-
             provider = ProtectiveProvider()
             market = MarketApi([provider])
             oq.enqueue(
@@ -260,7 +246,7 @@ class ProcessOnceTest(unittest.TestCase):
                     return_value=(True, None)),
                 patch(
                     "instrument.trade_cooldown.trade_slot",
-                    return_value=SlotContext()),
+                    return_value=self._SlotContext()),
             ):
                 stats = worker.process_once(market, now=1400.0)
 

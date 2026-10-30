@@ -362,5 +362,57 @@ def _raw_param_presence():
     }
 
 
+def test_resolve_tradable_instrument_filtering_and_variants():
+    from types import SimpleNamespace
+
+    btc_usd = SimpleNamespace(symbol="BTC/USD", provider_name="kraken", base="BTC", quote="USD", enabled=True)
+    btc_eur = SimpleNamespace(symbol="BTC/EUR", provider_name="kraken", base="BTC", quote="EUR", enabled=True)
+    hype_usdc = SimpleNamespace(symbol="HYPEUSDC", provider_name="hyperliquid", base="HYPE", quote="USDC", enabled=True)
+    disabled_eth = SimpleNamespace(symbol="ETHUSDC", provider_name="binance", base="ETH", quote="USDC", enabled=False)
+
+    inst_map = {
+        "KRAKEN_BTC": btc_usd,
+        "KRAKEN_BTC_EUR": btc_eur,
+        "HYPERLIQUID_HYPE": hype_usdc,
+        "BINANCE_ETH": disabled_eth,
+    }
+
+    # Rejects junk test symbols and empty/bool
+    assert ic.resolve_tradable_instrument("", instruments_map=inst_map) is None
+    assert ic.resolve_tradable_instrument(None, instruments_map=inst_map) is None
+    assert ic.resolve_tradable_instrument(False, instruments_map=inst_map) is None
+    assert ic.resolve_tradable_instrument("BTCUSDC", venue=True, instruments_map=inst_map) is None
+    assert ic.resolve_tradable_instrument("BTCX.T", instruments_map=inst_map) is None
+    assert ic.resolve_tradable_instrument("BTC.T", instruments_map=inst_map) is None
+
+    # Disabled instrument not returned
+    assert ic.resolve_tradable_instrument("ETHUSDC", instruments_map=inst_map) is None
+
+    # Exact symbol and variant matching
+    assert ic.resolve_tradable_instrument("BTC/USD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_tradable_instrument("BTCUSD", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_tradable_instrument("BTCUSDT", venue="kraken", instruments_map=inst_map) is btc_usd
+    assert ic.resolve_tradable_instrument("BTC", venue="kraken", instruments_map=inst_map) is btc_usd
+
+    # Quote isolation: BTC/EUR should resolve to btc_eur, not btc_usd
+    assert ic.resolve_tradable_instrument("BTC/EUR", venue="kraken", instruments_map=inst_map) is btc_eur
+    assert ic.resolve_tradable_instrument("BTCEUR", venue="kraken", instruments_map=inst_map) is btc_eur
+
+    # Venue filtering
+    assert ic.resolve_tradable_instrument("HYPEUSDC", venue="hyperliquid", instruments_map=inst_map) is hype_usdc
+    assert ic.resolve_tradable_instrument("HYPEUSDC", venue="kraken", instruments_map=inst_map) is None
+
+
+def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "instruments_config.discover_kraken_cache_pairs",
+        lambda ws: [("BTC/USD", "BTC", "USD"), ("BTC/EUR", "BTC", "EUR")]
+    )
+    monkeypatch.setattr("instruments_config.load_registry", lambda path: {})
+    res = ic.load_tradable_instruments(str(tmp_path), asset_scope="crypto")
+    assert "KRAKEN_BTC" in res
+    assert "KRAKEN_BTC/EUR" in res
+
+
 if __name__ == "__main__":
     unittest.main()
