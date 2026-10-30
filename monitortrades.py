@@ -1744,17 +1744,23 @@ def _execute_reentry_buy(
     last_exit_kind: str,
     prev_reentry_state: dict,
     applied_scale: float = 1.0,
+    sell_price: Optional[float] = None,
 ) -> bool:
     """Submit guarded re-entry BUY order and clear tracking state upon submission."""
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
+    below_sell = 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0)
     if last_exit_kind == "STOP":
         ai_not_enforced = symbol in _POST_STOP_AI_NOT_ENFORCED and not _is_simulated_env_or_inst(inst)
         _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
         reentry_bypass = {"G_PROF"} if ai_not_enforced else {"G_PROF", "GLLM1"}
     else:
         reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
+    if below_sell:
+        reentry_bypass = (reentry_bypass or set()) | {
+            "G_PROF", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"
+        }
     extra_kwargs = {}
     applied_scale_f = safe_float(applied_scale, 1.0)
     if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):
@@ -2194,6 +2200,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 inst, symbol, current_price, _buy_qty, min_qty, sbs,
                 last_exit_kind, prev_reentry_state,
                 applied_scale=_reentry_applied_scale,
+                sell_price=sell_price,
             )
 
     _save_mt_state()

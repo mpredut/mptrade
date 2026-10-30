@@ -394,7 +394,10 @@ class AssetGuardianTest(unittest.TestCase):
                  mock.patch.object(ag.mkt, "place", return_value={"orderId": 7}) as place:
                 self.assertTrue(ag.buy_with_all_cash("TAOUSDC", cash_ratio=0.5))
             self.assertTrue(place.call_args.kwargs["caller_owns_retry"])
-            self.assertEqual(place.call_args.kwargs["bypass_guards"], {"G_PROF", "G_QLIMIT1"})
+            self.assertEqual(
+                place.call_args.kwargs["bypass_guards"],
+                {"G_PROF", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"},
+            )
             self.assertTrue(place.call_args.kwargs["wait_for_trend"])
             self.assertEqual(place.call_args.kwargs["motivation"],
                              "assetguardian_drawdown_buy")

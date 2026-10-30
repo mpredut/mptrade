@@ -846,9 +846,14 @@ def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
         # of initial_cash * AG_BUY_USE_CASH_RATIO), so it bypasses the 24h rolling
         # weight limit (G_QLIMIT1) just like sell_asset does.
         # respect_guard=True keeps the historical-price anti-chasing guard (G_PROF)
-        # active on the shallowest tier; deeper tiers bypass both G_PROF and G_QLIMIT1.
+        # and intelligence/LLM guards active on the shallowest tier; deeper tiers
+        # bypass G_PROF, G_QLIMIT1, and intelligence/LLM guards so crash drawdowns execute cleanly.
         respect_guard_flag = _parse_bool_flag(respect_guard, default=False)
-        bypass_guards = {"G_QLIMIT1"} if respect_guard_flag else {"G_PROF", "G_QLIMIT1"}
+        bypass_guards = (
+            {"G_QLIMIT1"}
+            if respect_guard_flag
+            else {"G_PROF", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"}
+        )
         order = mkt.place(
             buy_symbol, "BUY", current_price, qty,
             force=False, smart=False, caller_owns_retry=True,
