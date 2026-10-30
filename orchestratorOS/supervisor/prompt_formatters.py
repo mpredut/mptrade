@@ -452,7 +452,19 @@ def _format_microstructure_section(
 ) -> List[str]:
     """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
     lines = ["\n### 3B. PILLAR 2 MICROSTRUCTURE, ORDERBOOK WALLS, DERIVATIVES & WHALE FLOW:"]
-    seen_3b_bases: set[str] = set()
+    seen_3b_groups: set[Tuple[str, Tuple[str, ...]]] = set()
+
+    def _group_key_3b(s: str, m: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:
+        b_c = canonical_base_asset(s)
+        q_s = compatible_quote_suffixes(s)
+        has_px_anchors = any(
+            m.get(k) is not None
+            for k in ("ob_mid_price", "bid_wall_px", "ask_wall_px", "long_liq_px", "short_liq_px")
+        )
+        if "USD" in q_s or not has_px_anchors:
+            return (b_c, ("USDC", "USDT", "USD"))
+        return (b_c, q_s)
+
     sorted_3b = sorted(
         microstructure.items(),
         key=lambda kv: (
@@ -464,13 +476,14 @@ def _format_microstructure_section(
         if not isinstance(minfo, dict):
             continue
         b_canon_3b = canonical_base_asset(sym)
-        if b_canon_3b in seen_3b_bases:
+        grp_3b = _group_key_3b(sym, minfo)
+        if grp_3b in seen_3b_groups:
             continue
-        seen_3b_bases.add(b_canon_3b)
+        seen_3b_groups.add(grp_3b)
         sib_3b = [
             other_s
-            for other_s in microstructure
-            if other_s != sym and canonical_base_asset(other_s) == b_canon_3b
+            for other_s, other_m in microstructure.items()
+            if other_s != sym and isinstance(other_m, dict) and _group_key_3b(other_s, other_m) == grp_3b
         ]
         sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
         cur_px = _resolve_symbol_price(sym, prices_and_trends)
@@ -607,7 +620,7 @@ def _format_microstructure_section(
     return lines
 
 
-def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
+def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
     """Format a single tradable position line for Section 3C."""
     t_extra = ""
     if pos.get("active_avg_buy_px") is not None:
@@ -638,6 +651,7 @@ def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
         free_quote=pos.get("free_quote"),
         free_base=pos.get("free_base"),
         spread_bps=pos.get("spread_bps"),
+        gateway_max_usd=max_usd,
     )
     eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
     taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
@@ -689,8 +703,8 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
     lb_ts = normalize_timestamp_ms(lb.get("ts_ms"), default=0) or 0
     ls_ts = normalize_timestamp_ms(ls.get("ts_ms"), default=0) or 0
-    lb_age_h = round((now_ms - lb_ts) / 3_600_000.0, 1) if lb_ts > 0 else None
-    ls_age_h = round((now_ms - ls_ts) / 3_600_000.0, 1) if ls_ts > 0 else None
+    lb_age_h = max(0.0, round((now_ms - lb_ts) / 3_600_000.0, 1)) if lb_ts > 0 else None
+    ls_age_h = max(0.0, round((now_ms - ls_ts) / 3_600_000.0, 1)) if ls_ts > 0 else None
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
     r_buys = oinfo.get("recent_buys") or []
@@ -721,7 +735,12 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     )
 
 
-def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]:
+def _format_portfolio_section(
+    ps: Dict[str, Any],
+    asset_scope: str,
+    *,
+    max_usd: float = 2000.0,
+) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
     if ps.get("total_value_usdc") is not None:
@@ -743,7 +762,7 @@ def _format_portfolio_section(ps: Dict[str, Any], asset_scope: str) -> List[str]
     if ps.get("tradable_positions"):
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
         for pos in ps["tradable_positions"]:
-            lines.append(_format_tradable_position_line(pos))
+            lines.append(_format_tradable_position_line(pos, max_usd=max_usd))
     open_lim = (
         ps.get("open_limit_orders")
         if isinstance(ps.get("open_limit_orders"), list)
@@ -855,7 +874,11 @@ def build_supervisor_prompt(
         context_items.extend(_format_microstructure_section(microstructure, prices_and_trends))
     if not is_pure_sre and portfolio_summary:
         context_items.extend(
-            _format_portfolio_section(portfolio_summary, getattr(spec, "asset_scope", "all"))
+            _format_portfolio_section(
+                portfolio_summary,
+                getattr(spec, "asset_scope", "all"),
+                max_usd=max_usd,
+            )
         )
     if not is_pure_sre and focus_symbols:
         raw_focus = [focus_symbols] if isinstance(focus_symbols, str) else focus_symbols

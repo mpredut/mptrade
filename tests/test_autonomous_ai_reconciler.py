@@ -5028,4 +5028,83 @@ def test_iteration31_binance_lookup_orderbook_quote_isolation_and_audit_dedup(tm
     assert st_cross_oid["fill_px"] == 300.0
 
 
+def test_iteration32_resolve_assets_usdt_and_prompt_formatters_max_usd_and_eur_3b():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_microstructure_section,
+        _format_recent_order_line,
+        build_supervisor_prompt,
+    )
+    from providers.quantity import clamp_notional_to_wallet_balance, resolve_assets
+
+    # 1. resolve_assets and clamp_notional_to_wallet_balance support USDT pairs and unset MagicMock base/quote
+    assert resolve_assets("BTCUSDT") == ("BTC", "USDT")
+    assert resolve_assets("HYPEUSDT", MagicMock(), MagicMock()) == ("HYPE", "USDT")
+    mock_usdt_inst = MagicMock(symbol="BTCUSDT", provider_name="binance")
+    mock_usdt_inst._provider.free_balance.side_effect = lambda a: 500.0 if a == "USDT" else 0.0
+    ok, clamped_usd, _ = clamp_notional_to_wallet_balance(mock_usdt_inst, "BUY", 82000.0, 1000.0)
+    assert ok is True
+    assert clamped_usd == pytest.approx(500.0 * 0.998)
+
+    # 2. _format_microstructure_section renders separate 3B entry when non-USD pair has its own EUR orderbook anchors
+    lines_3b_eur = _format_microstructure_section(
+        {
+            "XBTUSD": {"ob_imbalance": 0.60, "ob_mid_price": 82000.0, "bid_wall_px": 81500.0, "bid_wall_usd": 200000.0},
+            "XBTEUR": {"ob_imbalance": 0.55, "ob_mid_price": 74000.0, "bid_wall_px": 73500.0, "bid_wall_usd": 150000.0},
+        },
+        {"XBTUSD": {"price": 82000.0}, "XBTEUR": {"price": 74000.0}},
+    )
+    joined_3b_eur = "\n".join(lines_3b_eur)
+    assert "* XBTUSD:" in joined_3b_eur
+    assert "* XBTEUR:" in joined_3b_eur
+    assert "bid_wall=73500.0 ($150000.0, dist=-0.68%)" in joined_3b_eur
+
+    # 3. build_supervisor_prompt forwards max_usd to lazy resolve_venue_fee_and_limits in Section 3C
+    sensors = SimpleNamespace(
+        macro_and_sentiment={},
+        fear_greed=None,
+        market_breadth=None,
+        sentiment_advisor=None,
+        geopolitical_threat=None,
+        macro_benchmarks=None,
+        breaking_news=[],
+        prices_and_trends={"BTCUSDC": {"price": 80000.0}},
+        microstructure={},
+        portfolio_summary={
+            "tradable_positions": [
+                {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "base": "BTC",
+                    "quote": "USDC",
+                    "free_base": 0.05,
+                    "value_usd": 4000.0,
+                    "free_quote": 5000.0,
+                    "price": 80000.0,
+                }
+            ]
+        },
+    )
+    prompt_1k = build_supervisor_prompt(
+        sensors,
+        SimpleNamespace(),
+        max_usd=1000.0,
+        topic_key="auto_cryptotrade_executor",
+    )
+    assert "max_buy=$1000.0, max_sell=$1000.0" in prompt_1k
+
+    # 4. _format_recent_order_line clamps negative age_h on slightly ahead exchange timestamps
+    ro_line = _format_recent_order_line(
+        "BTCUSDC",
+        {
+            "last_action_side": "BUY",
+            "last_buy": {"qty": 0.01, "price": 82000.0, "ts_ms": 1793300010000, "actor": "AI"},
+        },
+        now_ms=1793300000000,
+    )
+    assert "age=0.0h" in ro_line
+
+
+
 

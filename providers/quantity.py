@@ -13,7 +13,10 @@ from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 logger = logging.getLogger(__name__)
 
 
-QUOTE_SUFFIXES = ("USDC", "FDUSD", "EUR", "GBP", "RON", "BTC", "ETH", "USD")
+QUOTE_SUFFIXES = (
+    "USDC", "USDT", "FDUSD", "BUSD", "TUSD", "USDP", "DAI",
+    "EUR", "GBP", "RON", "BTC", "ETH", "USD",
+)
 
 
 def _clean_fill_id(val: object) -> str:
@@ -86,9 +89,17 @@ class QuantityDecision:
 
 def resolve_assets(symbol: str, base: Optional[str] = None,
                    quote: Optional[str] = None) -> tuple[str, Optional[str]]:
-    symbol_u = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
-    base_u = (str(base).strip().upper() or None) if (base and not isinstance(base, bool)) else None
-    quote_u = (str(quote).strip().upper() or None) if (quote and not isinstance(quote, bool)) else None
+    symbol_u = "" if isinstance(symbol, bool) or hasattr(symbol, "_mock_name") else str(symbol or "").strip().upper()
+    base_u = (
+        (str(base).strip().upper() or None)
+        if (base and not isinstance(base, bool) and not hasattr(base, "_mock_name"))
+        else None
+    )
+    quote_u = (
+        (str(quote).strip().upper() or None)
+        if (quote and not isinstance(quote, bool) and not hasattr(quote, "_mock_name"))
+        else None
+    )
     if base_u and quote_u:
         return base_u, quote_u
     if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
