@@ -1,16 +1,28 @@
 """LLM high-stake guard validating large BUY orders (e.g. >= 1000 EUR)."""
 from __future__ import annotations
 
+import glob as _glob
 import logging
 import math
 import os
+import re
 import statistics
+import sys as _sys
+import time as _time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import urllib.parse as _urlparse
 
-from botcore import _parse_bool_flag, extract_current_price_item, load_key_value_conf
+from botcore import (
+    _parse_bool_flag,
+    extract_current_price_item,
+    fetch_public_json,
+    load_key_value_conf,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    get_cachedb_dir,
+    legacy_filenames_for,
     normalize_venue_name,
     split_symbol_assets,
 )
@@ -19,6 +31,7 @@ from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
+    get_cache_filenames,
     is_cache_fresh,
     normalize_order_side,
     obj_attr,
@@ -32,11 +45,35 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.gemini_client import GeminiClient
 from instrument_registry import casefold_get
 from orchestratorOS.agy.topics import topic_spec
+from providers.base import (
+    _EXEC_QTY_KEYS,
+    _UNFILLED_ORDER_STATUSES,
+    aggregate_fills_by_order_id,
+    extract_executed_qty,
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
+    extract_timestamp_ms,
+    extract_timestamp_s,
+    format_actor_tag,
+    normalize_open_order,
+    resolve_order_origin,
+)
+from providers.execution_audit import (
+    build_last_cycle_execution_status,
+    collect_known_ai_order_ids,
+    extract_intent_notional,
+    summarize_recent_ai_intents,
+)
+from providers.quantity import venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as read_json_cached,
     read_json_recovering,
+    read_last_jsonl_dict,
+    read_tail_jsonl_dicts,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
+    save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
@@ -310,8 +347,6 @@ def load_symbol_price_series(
     include_7d: bool = True,
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
-    from cachepaths import cache_symbol_variants, legacy_filenames_for, resolve_cachedb_filepath
-
     cands = [c for c in cache_symbol_variants(symbol, include_original=True) if isinstance(c, str) and "/" not in c]
     series_24h: list = []
     vals_7d: list = []
@@ -541,19 +576,6 @@ def extract_symbol_recent_fills(
     """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
         return None
-    from providers.base import (
-        _EXEC_QTY_KEYS,
-        _UNFILLED_ORDER_STATUSES,
-        aggregate_fills_by_order_id,
-        extract_executed_qty,
-        extract_order_id,
-        extract_order_price,
-        extract_order_side,
-        extract_timestamp_ms,
-        format_actor_tag,
-        resolve_order_origin,
-    )
-
     _explicit_exec_keys = (*_EXEC_QTY_KEYS, "filled", "origSz", "resting", "msg")
     valid = [
         o
@@ -1241,8 +1263,6 @@ def resolve_venue_fee_and_limits(
     gateway_max_usd: float = 2000.0,
 ) -> Dict[str, Any]:
     """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
-    from providers.quantity import venue_fee_cap_quantity
-
     v_norm = normalize_venue_name(venue)
     fee_tier, maker_bps, taker_bps, min_notional = _VENUE_DEFAULT_FEE_SPECS.get(
         v_norm, ("STANDARD", 15.0, 15.0, 5.0)
@@ -1290,8 +1310,6 @@ def resolve_venue_fee_and_limits(
         client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
         cache_dict = getattr(client, "_CACHE", None)
         if not isinstance(cache_dict, dict):
-            import sys as _sys
-
             kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
             cache_dict = getattr(kc_mod, "_CACHE", None)
         if isinstance(cache_dict, dict):
@@ -1519,12 +1537,10 @@ def harvest_venue_cycles(
     read_json_fn: Any,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
-    import glob
-
     kraken_cycles: Dict[str, Any] = {}
     kraken_dir = os.path.join(workspace_dir, "kraken")
     if os.path.isdir(kraken_dir):
-        for st_path in sorted(glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
+        for st_path in sorted(_glob.glob(os.path.join(kraken_dir, ".state_*.json"))):
             pair_name = os.path.basename(st_path)[len(".state_") : -len(".json")].upper()
             if not pair_name.isalnum() or not pair_name.endswith(("USD", "EUR", "USDC", "USDT")):
                 continue
@@ -1538,7 +1554,7 @@ def harvest_venue_cycles(
     hl_dir = os.path.join(workspace_dir, "hyperliquid")
     if os.path.isdir(hl_dir):
         hl_state_paths = sorted(
-            glob.glob(os.path.join(hl_dir, ".state_*.json")),
+            _glob.glob(os.path.join(hl_dir, ".state_*.json")),
             key=lambda p: (
                 0 if os.path.basename(p).upper().endswith(("_LONG.JSON", "_SHORT.JSON")) else 1,
                 os.path.basename(p),
@@ -1564,7 +1580,7 @@ def harvest_venue_cycles(
     all_t212_cycles: Dict[str, Any] = {}
     t212_dir = os.path.join(workspace_dir, "212trading")
     if os.path.isdir(t212_dir):
-        for st_path in sorted(glob.glob(os.path.join(t212_dir, ".state_*.json"))):
+        for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
             fname = os.path.basename(st_path)
             if fname.startswith(".."):
                 continue
@@ -1587,8 +1603,6 @@ def harvest_kraken_xstocks(
     read_json_fn: Any,
 ) -> Optional[Dict[str, Any]]:
     """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
-    import re
-
     xst_path = os.path.join(kraken_dir, "xstock_state.json")
     xst_data = read_json_fn(xst_path) if os.path.exists(xst_path) else None
     if not isinstance(xst_data, dict):
@@ -1776,8 +1790,6 @@ def harvest_tradable_positions_and_orders(
     gateway_max_usd: float = 2000.0,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
-    from providers.base import normalize_open_order
-
     tradable_positions: List[Dict[str, Any]] = []
     open_orders_list: List[Dict[str, Any]] = []
     venue_quote_cash: Dict[str, Dict[str, Any]] = {}
@@ -2079,9 +2091,6 @@ def enrich_24h_and_microstructure(
     read_json_fn: Any = None,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
-    import glob as _glob
-    import sys as _sys
-
     _rj = read_json_fn or read_json_cached
     btc_series_24h, _ = load_symbol_price_series(
         cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
@@ -2347,9 +2356,6 @@ def sync_sibling_symbol_telemetry(
 
 def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
     """Load recent orderId/clientOrderId -> (module, rule) mappings from execution_audit jsonl logs."""
-    from providers.base import resolve_order_origin
-    from state_io import read_tail_jsonl_dicts
-
     out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
     cand_dirs = [
         os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit"),
@@ -2582,8 +2588,6 @@ def harvest_bot_runtime_states(
     read_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
-    from state_io import read_tail_jsonl_dicts
-
     _rj = read_json_fn or read_json_cached
     out: Dict[str, Any] = {}
     retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
@@ -2685,11 +2689,6 @@ def collect_macro_benchmarks_snapshot(
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y 24h/1h/15m deltas from Yahoo Finance and persist to cachedb."""
-    import time as _time
-    import urllib.parse as _urlparse
-    from botcore import fetch_public_json
-    from state_io import save_json_state
-
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
     _fetch = fetch_fn or fetch_public_json
     items: Dict[str, Dict[str, Any]] = {}
@@ -2903,8 +2902,6 @@ def _read_first_cached_dict(
     read_json_fn: Any = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Read the first non-empty dict matching `get_cache_filenames(group_key)` (or `default_file`) in `cache_dir`."""
-    from intelligence.macro_sentiment_ssot import get_cache_filenames
-
     rj = read_json_cached if read_json_fn is None else read_json_fn
     for fname in (get_cache_filenames(group_key) or (default_file,)):
         fpath = os.path.join(cache_dir, fname)
@@ -2920,8 +2917,6 @@ def harvest_macro_and_news_sensors(
     read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
-    from providers.base import extract_timestamp_s
-
     _rj = read_json_fn or read_json_recovering
 
     def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
@@ -2995,8 +2990,6 @@ def harvest_initial_prices_and_trends(
     read_json_fn: Any = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build initial prices_and_trends map from cache_current_price, cache_short_trend, and 24trend/live_*.json."""
-    import glob as _glob
-
     _rj = read_json_fn or read_json_cached
     prices_and_trends: Dict[str, Dict[str, Any]] = {}
     price_map: Dict[str, float] = {}
@@ -3072,8 +3065,6 @@ def harvest_portfolio_and_venue_cycles(
     read_json_fn: Any = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
-    from state_io import read_last_jsonl_dict
-
     _rj = read_json_fn or read_json_cached
     last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
     if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
@@ -3139,13 +3130,6 @@ def populate_market_and_portfolio_snapshot(
     log: Optional[Any] = None,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
-    from providers.execution_audit import (
-        build_last_cycle_execution_status,
-        collect_known_ai_order_ids,
-        extract_intent_notional,
-        summarize_recent_ai_intents,
-    )
-
     _rj = read_json_fn or read_json_recovering
 
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
@@ -3332,8 +3316,6 @@ def collect_pretrade_telemetry(
     cachedb_dir: str = "cachedb",
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
-    from cachepaths import get_cachedb_dir
-
     default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
         cachedb_dir = default_cdir
@@ -3584,8 +3566,6 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        from providers.execution_audit import collect_known_ai_order_ids
-
         known_ai_oids = collect_known_ai_order_ids(
             read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
         )

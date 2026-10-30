@@ -10,7 +10,6 @@ a valid price. HYPE qualifies; an unlisted future pair does not.
 from __future__ import annotations
 
 import urllib.parse
-import urllib.request
 
 try:
     from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float

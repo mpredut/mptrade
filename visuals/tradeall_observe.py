@@ -40,13 +40,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+from active_intents import build_active_intent_index
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
 from state_io import atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
-try:
-    from intelligence.internal.state.volatility import get_kalman_state_path
-except ImportError:
-    from intelligence import get_kalman_state_path
+from intelligence.internal.state.volatility import get_kalman_state_path
 from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 from instrument_registry import casefold_get, symbols_for
 LOGGER_DIR = os.path.join(ROOT, "logger")
@@ -644,7 +642,6 @@ def render_chart(symbol, window_label, window_start, window_end,
 def _get_active_summary():
     """Safely fetch current active intent summary without raising."""
     try:
-        from active_intents import build_active_intent_index
         return build_active_intent_index(ROOT).get("summary")
     except Exception:
         return None

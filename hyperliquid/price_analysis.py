@@ -30,7 +30,6 @@ if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.
     _c_spec.loader.exec_module(_common_mod)
 load_env_stack = _common_mod.load_env_stack
 required_int_env = _common_mod.required_int_env
-safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
 from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend
 

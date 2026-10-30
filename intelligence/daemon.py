@@ -20,6 +20,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env, single_instance
+from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
@@ -71,9 +73,6 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self.skip_external = _as_bool(skip_external)
         self.running = False
         self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
-
-        from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
-        from intelligence.macro.news_feed_collector import NewsFeedCollector
 
         self._init_external_collectors(logger)
         self.news_collector = NewsFeedCollector(

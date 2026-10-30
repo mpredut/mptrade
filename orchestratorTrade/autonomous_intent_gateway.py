@@ -64,6 +64,7 @@ from providers.execution_audit import (
     save_durable_intents_state,
     validate_and_build_intent_dict,
 )
+from providers.quantity import clamp_notional_to_wallet_balance
 
 # Symmetric guard bypass set for autonomous AI orders across both BUY and SELL:
 # Trade thesis, profit/loss protection, multi-tranche scaling, trend timing, microstructure, and
@@ -211,7 +212,6 @@ class AutonomousIntentGateway:
         desired_usd: float,
     ) -> Tuple[bool, float, str]:
         """Clamp desired USD notional to real spot wallet liquidity via unified SSOT in providers.quantity."""
-        from providers.quantity import clamp_notional_to_wallet_balance
         return clamp_notional_to_wallet_balance(
             inst,
             decision,

@@ -40,6 +40,7 @@ safe_pos_float = _common_mod.safe_pos_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
 from botcore import exact_int
 from instrument_registry import casefold_get
+from providers.http_resilience import mount_connect_retry
 
 try:
     import eth_account
@@ -161,7 +162,6 @@ def _force_timeout(api_obj, seconds: float = 30.0) -> None:
         # (read/status stay 0, so a POST that may already have reached the exchange is
         # never replayed). Shrinks the "blind" ticks the systemd-resolved cache alone
         # cannot fully prevent.
-        from providers.http_resilience import mount_connect_retry
         mount_connect_retry(sess)
     except Exception:  # noqa: BLE001 — do not block startup if SDK internals change
         pass

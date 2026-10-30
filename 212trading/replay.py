@@ -36,6 +36,7 @@ finally:
     else:
         sys.modules.pop("market_data", None)
 from botcore import safe_float, safe_pos_float
+from offline.backtests.datasets import align_previous_values
 from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
@@ -314,7 +315,6 @@ def make_t212_replay_adapter(
         ts = list(context.timestamps) if context and getattr(context, "timestamps", None) else ()
         rate = fx_to_usd if fx_to_usd is not None else 1.0
         if fx_records is not None and ts:
-            from offline.backtests.datasets import align_previous_values
             rate = align_previous_values(
                 ts,
                 fx_records,

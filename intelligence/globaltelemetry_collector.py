@@ -19,7 +19,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from botcore import _parse_bool_flag, load_dotenv, required_float_env
-from state_io import save_json_state
+from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
@@ -30,6 +30,10 @@ from intelligence.macro_sentiment_ssot import (
     sanitize_heartbeat_status,
     write_daemon_heartbeat_files,
 )
+from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+from intelligence.sentiment.guards.high_stake_guard import collect_macro_benchmarks_snapshot
+from state_io import save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -70,10 +74,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.skip_external = _as_bool(skip_external)
         self.running = False
         self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
-
-        from intelligence.macro.news_feed_collector import NewsFeedCollector
-        from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
-        from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
         self._init_external_collectors(logger)
         self.news_collector = NewsFeedCollector(
@@ -172,8 +172,6 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def update_macro_benchmarks(self, force: bool = False) -> bool:
         """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
         try:
-            from intelligence.sentiment.guards.high_stake_guard import collect_macro_benchmarks_snapshot
-
             snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True)
             if isinstance(snap, dict) and snap.get("items"):
                 logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", ""))

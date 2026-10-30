@@ -16,9 +16,18 @@ from intelligence.sentiment.guards.high_stake_guard import (
     _compute_horizon_range_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    format_macro_benchmarks_summary_line,
     resolve_symbol_price as _resolve_symbol_price,
     round_opt_px as _round_opt_px,
 )
+from orchestratorOS.agy.topics import topic_spec
+from orchestratorOS.lib.technical_repair_ssot import (
+    ALL_DIAGNOSED_CATEGORIES,
+    ALL_REPAIR_ACTIONS,
+    AUDITED_CONFIG_FILES,
+    DIAGNOSED_SEVERITIES,
+)
+from providers.base import format_actor_tag, normalize_timestamp_ms
 
 
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
@@ -68,8 +77,6 @@ def _extract_macro_benchmarks_line(mb_raw: Any) -> str:
     """Extract or synthesize the 1-line SPY / QQQ / ES=F / NQ=F / DXY / US10Y benchmark summary."""
     if not isinstance(mb_raw, dict) or not mb_raw:
         return ""
-    from intelligence.sentiment.guards.high_stake_guard import format_macro_benchmarks_summary_line
-
     summary_s = str(mb_raw.get("summary_line") or "").strip()
     if not summary_s:
         summary_s = format_macro_benchmarks_summary_line(mb_raw)
@@ -631,8 +638,6 @@ def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
-    from providers.base import format_actor_tag, normalize_timestamp_ms
-
     lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
     ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
     lb_ts = normalize_timestamp_ms(lb.get("ts_ms"), default=0) or 0
@@ -781,16 +786,7 @@ def build_supervisor_prompt(
     **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
-    from orchestratorOS.lib.technical_repair_ssot import (
-        ALL_DIAGNOSED_CATEGORIES,
-        ALL_REPAIR_ACTIONS,
-        AUDITED_CONFIG_FILES,
-        DIAGNOSED_SEVERITIES,
-    )
-
     if spec is None:
-        from orchestratorOS.agy.topics import topic_spec
-
         spec = topic_spec(topic_key or "auto_cryptotrade_executor")
     if min_notional_usd is not None:
         min_usd = float(min_notional_usd)

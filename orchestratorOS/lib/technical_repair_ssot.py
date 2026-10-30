@@ -27,6 +27,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import normalize_venue_name, resolve_cachedb_filepath
+from providers.base import extract_order_id
 from state_io import atomic_write_text, read_json_recovering, save_json_state
 
 parse_finite_float = safe_float
@@ -425,7 +426,6 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
         if act.get("order_id") is not None
         else (act.get("orderId") if act.get("orderId") is not None else act.get("oid"))
     )
-    from providers.base import extract_order_id
     order_id = extract_order_id(raw_oid, default="") or ""
 
     raw_reason = act.get("reason")

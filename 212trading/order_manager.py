@@ -35,22 +35,17 @@ from providers.base import extract_order_id, extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
-    from .ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from .ipo_common import load_t212_market_data, log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from .ipo_notify import notify
     from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     from .t212_client import T212Client
 except ImportError:
-    from ipo_common import log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
+    from ipo_common import load_t212_market_data, log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from ipo_notify import notify
     try:
         from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     except ImportError:
-        import importlib.util as _ilu
-        _md_spec = _ilu.spec_from_file_location(
-            "t212_order_manager_md", os.path.join(_HERE, "market_data.py")
-        )
-        _md_mod = _ilu.module_from_spec(_md_spec)
-        _md_spec.loader.exec_module(_md_mod)
+        _md_mod = load_t212_market_data()
         get_usd_ron = _md_mod.get_usd_ron
         get_price_usd = _md_mod.get_price_usd
         t212_to_yahoo = _md_mod.t212_to_yahoo
