@@ -11,6 +11,7 @@ from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    obj_attr,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -351,9 +352,8 @@ def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[fl
         order = getattr(order, "native", None)
         if order is None or isinstance(order, bool):
             return default
-    is_dict = isinstance(order, dict)
     for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
-        raw = order.get(key) if is_dict else getattr(order, key, None)
+        raw = obj_attr(order, key)
         if raw is not None:
             val = abs(safe_float(raw, default=0.0))
             if val > 0:

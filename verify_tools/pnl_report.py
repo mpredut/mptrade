@@ -31,8 +31,8 @@ def binance_symbol(symbol):
     qty = cost = realized = 0.0
     buys = sells = 0
     for t in fills:
-        p = safe_pos_float(extract_order_price(t), default=0.0)
-        q = safe_pos_float(extract_order_qty(t), default=0.0)
+        p = extract_order_price(t)
+        q = extract_order_qty(t)
         if p <= 0 or q <= 0:
             continue
         side = extract_order_side(t)

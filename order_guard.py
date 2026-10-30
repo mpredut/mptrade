@@ -20,6 +20,7 @@ import time
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    obj_attr,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
@@ -732,10 +733,11 @@ def get_weight_proxy_cfg(provider_name):
 def _order_ts_qty_price(o):
     if not isinstance(o, dict):
         return 0.0, 0.0, 0.0
-    ts = safe_nonneg_float(extract_timestamp_s(o, default=0.0), default=0.0) or 0.0
-    qty = safe_nonneg_float(extract_order_qty(o, default=0.0), default=0.0) or 0.0
-    px = safe_nonneg_float(extract_order_price(o, default=0.0), default=0.0) or 0.0
-    return ts, qty, px
+    return (
+        extract_timestamp_s(o, default=0.0) or 0.0,
+        extract_order_qty(o, default=0.0) or 0.0,
+        extract_order_price(o, default=0.0) or 0.0,
+    )
 
 
 def _aggregate_reference_prices(active_lots, valid_opp, side: str, mode: str):
@@ -863,7 +865,7 @@ def _resolve_window_ref_from_orders(
     prices = [
         px
         for o in recent
-        if (px := safe_pos_float(extract_order_price(o, default=0.0), 0.0)) > 0.0
+        if (px := extract_order_price(o, default=0.0)) > 0.0
     ]
     if not prices:
         return None
@@ -1084,9 +1086,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
     if antispam_sec > 0 and trades:
         now_s = time.time()
         for t in trades:
-            if not isinstance(t, dict):
-                continue
-            ts_s = safe_pos_float(extract_timestamp_s(t, default=0.0), 0.0)
+            ts_s = extract_timestamp_s(t, default=0.0) or 0.0
             if ts_s > 0:
                 elapsed_s = max(0.0, now_s - ts_s)
                 if elapsed_s < antispam_sec:
@@ -1215,10 +1215,7 @@ def _read_cached_trend_direction(symbol: str) -> Optional[str]:
 def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
     """Resolve long-term trend direction ('up'/'down'/'bull'/'bear') from regime_context or cache."""
     if regime_context is not None:
-        if isinstance(regime_context, dict):
-            rt = regime_context.get("resolved_trend") or regime_context.get("regime")
-        else:
-            rt = getattr(regime_context, "resolved_trend", None) or getattr(regime_context, "regime", None)
+        rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")
         norm_rt = _normalize_trend_dir_token(rt)
         if norm_rt is not None:
             return norm_rt
@@ -1532,11 +1529,7 @@ def check_intelligence_guards(
             active_reason = q_reason
 
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
-    raw_ctx_dur = (
-        regime_context.get("trend_duration_seconds", 0.0)
-        if isinstance(regime_context, dict)
-        else getattr(regime_context, "trend_duration_seconds", 0.0)
-    )
+    raw_ctx_dur = obj_attr(regime_context, "trend_duration_seconds", 0.0)
     dur_sec = explicit_dur_sec or safe_pos_float(raw_ctx_dur, 0.0)
     if dur_sec <= 0.0 and symbol:
         dur_sec = _resolve_trend_duration(symbol)

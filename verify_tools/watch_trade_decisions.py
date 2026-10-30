@@ -48,20 +48,20 @@ def position(symbol, maxage=17 * 24 * 3600):
         (o, q, p)
         for o in (apiorders.get_trade_orders("BUY", symbol, maxage) or [])
         if isinstance(o, dict)
-        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
-        and (p := safe_pos_float(extract_order_price(o), default=0.0) or 0.0) > 0.0
+        and (q := extract_order_qty(o)) > 0.0
+        and (p := extract_order_price(o)) > 0.0
     ]
     sells_q = [
         q
         for o in (apiorders.get_trade_orders("SELL", symbol, maxage) or [])
         if isinstance(o, dict)
-        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
+        and (q := extract_order_qty(o)) > 0.0
     ]
     tq = sum(q for _, q, _ in buys)
     tv = sum(q * p for _, q, p in buys)
     sq = sum(sells_q)
     last_buy = (
-        safe_float(extract_order_price(max((o for o, _, _ in buys), key=lambda o: safe_float(extract_timestamp_ms(o, default=0), 0.0))), 0.0)
+        extract_order_price(max((o for o, _, _ in buys), key=lambda o: extract_timestamp_ms(o, default=0) or 0))
         if buys else 0.0
     )   # ca get_relevant_trade (referinta botului)
     return (tv / tq if tq else 0.0), tq - sq, len(sells_q), last_buy

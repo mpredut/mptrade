@@ -115,7 +115,7 @@ def parse_order_execution_report(
                 safe_pos_float(event.get("z"), default=None)
                 or safe_pos_float(event.get("q"), default=0.0)
             )
-        last_price = safe_pos_float(extract_order_price(event, default=0.0), default=0.0)
+        last_price = extract_order_price(event, default=0.0)
         if last_price <= 0 and last_quantity > 0:
             last_price = _derive_ws_quote_fill_price(event, last_quantity)
         fallback_ms = _clean_now_ms(now_ms)

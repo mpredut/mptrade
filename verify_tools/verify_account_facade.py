@@ -56,14 +56,14 @@ def position_from(buy_orders, sell_orders):
         (q, p)
         for o in (buy_orders or [])
         if isinstance(o, dict)
-        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
-        and (p := safe_pos_float(extract_order_price(o), default=0.0) or 0.0) > 0.0
+        and (q := extract_order_qty(o)) > 0.0
+        and (p := extract_order_price(o)) > 0.0
     ]
     sells_q = [
         q
         for o in (sell_orders or [])
         if isinstance(o, dict)
-        and (q := safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
+        and (q := extract_order_qty(o)) > 0.0
     ]
     tq = sum(q for q, _ in buy_pairs)
     tv = sum(q * p for q, p in buy_pairs)
@@ -76,9 +76,9 @@ def order_key(o):
     if not isinstance(o, dict):
         return (0.0, 0.0, 0.0, "")
     return (
-        safe_float(extract_timestamp_ms(o, default=0), 0.0),
-        safe_float(extract_order_price(o), 0.0),
-        safe_float(extract_order_qty(o), 0.0),
+        float(extract_timestamp_ms(o, default=0) or 0),
+        extract_order_price(o),
+        extract_order_qty(o),
         str(extract_order_side(o) or "").upper(),
     )
 

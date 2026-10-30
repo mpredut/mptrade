@@ -112,17 +112,15 @@ def main():
     print("\n==== POZITIE (logica get_position_stats) ====")
     valid_buys = [
         o for o in buys
-        if isinstance(o, dict)
-        and (safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
-        and (safe_pos_float(extract_order_price(o), default=0.0) or 0.0) > 0.0
+        if isinstance(o, dict) and extract_order_qty(o) > 0.0 and extract_order_price(o) > 0.0
     ]
     valid_sells = [
         o for o in sells
-        if isinstance(o, dict) and (safe_pos_float(extract_order_qty(o), default=0.0) or 0.0) > 0.0
+        if isinstance(o, dict) and extract_order_qty(o) > 0.0
     ]
-    tbq = sum(_f(extract_order_qty(o), 0.0) for o in valid_buys)
-    tbv = sum(_f(extract_order_price(o), 0.0) * _f(extract_order_qty(o), 0.0) for o in valid_buys)
-    tsq = sum(_f(extract_order_qty(o), 0.0) for o in valid_sells)
+    tbq = sum(extract_order_qty(o) for o in valid_buys)
+    tbv = sum(extract_order_price(o) * extract_order_qty(o) for o in valid_buys)
+    tsq = sum(extract_order_qty(o) for o in valid_sells)
     avg_buy = tbv / tbq if tbq else 0.0
     net = tbq - tsq
     print(f"  buy_qty={tbq:.6f} sell_qty={tsq:.6f} net_qty={net:.6f} avg_buy={avg_buy:.4f}")

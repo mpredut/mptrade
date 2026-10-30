@@ -325,8 +325,8 @@ def _summarize_orders(orders):
     total_val = 0.0
     latest_ts = 0
     for o in orders:
-        q = safe_pos_float(extract_order_qty(o), default=0.0) or 0.0
-        p = safe_pos_float(extract_order_price(o), default=0.0) or 0.0
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
         ts = extract_timestamp_ms(o, default=0) or 0
         if q > 0.0 and p > 0.0:
             total_qty += q
@@ -364,9 +364,9 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         tot_q = 0.0
         tot_v = 0.0
         for o in buy_orders:
-            q = safe_pos_float(extract_order_qty(o), default=None)
-            p = safe_pos_float(extract_order_price(o), default=None)
-            if q is None or p is None:
+            q = extract_order_qty(o)
+            p = extract_order_price(o)
+            if q <= 0.0 or p <= 0.0:
                 continue
             tot_q += q
             tot_v += q * p
@@ -374,19 +374,16 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
         return tot_q, avg_px, avg_px
     events = []
     for o in buy_orders:
-        q = safe_pos_float(extract_order_qty(o), default=None)
-        p = safe_pos_float(extract_order_price(o), default=None)
-        if q is None or p is None:
+        q = extract_order_qty(o)
+        p = extract_order_price(o)
+        if q <= 0.0 or p <= 0.0:
             continue
-        ts = safe_float(_order_timestamp_ms(o), default=0.0)
-        events.append((ts, 0, q, p))
+        events.append((_order_timestamp_ms(o), 0, q, p))
     for o in sell_orders:
-        q = safe_pos_float(extract_order_qty(o), default=None)
-        if q is None:
+        q = extract_order_qty(o)
+        if q <= 0.0:
             continue
-        p = safe_nonneg_float(extract_order_price(o), default=0.0)
-        ts = safe_float(_order_timestamp_ms(o), default=0.0)
-        events.append((ts, 1, q, p))
+        events.append((_order_timestamp_ms(o), 1, q, extract_order_price(o)))
     events.sort(key=lambda x: (x[0], x[1]))
     owned = 0.0
     cost_qty = 0.0

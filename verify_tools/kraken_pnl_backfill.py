@@ -76,8 +76,8 @@ def main():
         if not isinstance(t, dict):
             continue
         pair = str(t.get('pair') or '?').strip() or '?'
-        px = safe_pos_float(extract_order_price(t), default=0.0)
-        qty = safe_pos_float(extract_order_qty(t), default=0.0)
+        px = extract_order_price(t)
+        qty = extract_order_qty(t)
         side = extract_order_side(t)
         if px <= 0.0 or qty <= 0.0 or side not in ('BUY', 'SELL'):
             continue
