@@ -1126,9 +1126,9 @@ def _append_order_history(rec, *, observed_at, status=None):
         row.update({
             "status": str(getattr(status, "status", "") or ""),
             "venue_status": str(getattr(status, "venue_status", "") or ""),
-            "filled_qty": float(getattr(status, "filled_qty", 0.0) or 0.0),
-            "cost": float(getattr(status, "cost", 0.0) or 0.0),
-            "fee": float(getattr(status, "fee", 0.0) or 0.0),
+            "filled_qty": safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0),
+            "cost": safe_nonneg_float(getattr(status, "cost", None), default=0.0),
+            "fee": safe_nonneg_float(getattr(status, "fee", None), default=0.0),
         })
     history = list(rec.get("order_history") or [])
     if not history or history[-1].get("order_id") != row["order_id"]:
@@ -1236,7 +1236,7 @@ def claim(ids, now=None, lease_sec=None):
         for rec in existing:
             if rec.get("id") not in ids:
                 continue
-            if float(rec.get("claim_until", 0) or 0) > now:
+            if safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
             revision = max(0, _rev_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
@@ -1441,7 +1441,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 continue
             if str(rec.get("lifecycle") or "").lower() != "awaiting_cancel":
                 break
-            current_qty = float(rec.get("qty") or 0.0)
+            current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
             replaced_order_id = _clean_retry_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
@@ -1542,12 +1542,12 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
 
     if not status.terminal:
         fingerprint = (
-            str(status.status), float(status.filled_qty),
+            str(status.status), safe_nonneg_float(status.filled_qty, default=0.0),
             str(status.venue_status),
         )
         previous = (
             str(claimed.get("last_status") or ""),
-            float(claimed.get("filled_qty") or 0.0),
+            safe_nonneg_float(claimed.get("filled_qty"), default=0.0),
             str(claimed.get("venue_status") or ""),
         )
         complete_claim(claimed, "observed", now, status=status)
@@ -1558,7 +1558,7 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
         complete_claim(claimed, "success", now, status=status)
         return OutboxStatusTransition("filled", status_changed=True)
 
-    current_qty = float(claimed.get("qty") or 0.0)
+    current_qty = safe_nonneg_float(claimed.get("qty"), default=0.0)
     status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
     if status_orig is not None:
         current_qty = status_orig
@@ -1646,14 +1646,14 @@ def resolve(symbol, side):
     """
     if isinstance(symbol, bool) or isinstance(side, bool):
         return 0
-    target_sym = str(symbol or "").strip()
+    target_sym = str(symbol or "").strip().upper()
     side_u = normalize_side(side)
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
         remaining = [
             rec for rec in existing
-            if not (str(rec.get("symbol") or "").strip() == target_sym
+            if not (str(rec.get("symbol") or "").strip().upper() == target_sym
                     and str(rec.get("side") or "").strip().upper() == side_u
                     and str(rec.get("lifecycle") or "submit_pending").lower()
                     == "submit_pending")

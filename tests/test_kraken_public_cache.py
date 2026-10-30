@@ -112,7 +112,6 @@ class PublicCacheTest(unittest.TestCase):
 
     def test_wait_for_listing_suppresses_alert_on_transient_network_recovery(self):
         import kraken.kraken_bot as kb
-        import kraken.market_data as kmd
 
         client = kc.KrakenClient()
         # 1. Transient empty/network error (0, b"") followed by online pair -> NO listing notification

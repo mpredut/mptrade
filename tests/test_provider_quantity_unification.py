@@ -15,7 +15,7 @@ from instrument import Instrument
 from providers.base import MarketDataProvider
 from providers.kraken_provider import KrakenProvider
 from providers.hyperliquid_provider import HyperliquidProvider
-from providers.market_api import BinanceProvider, MarketApi
+from providers.market_api import MarketApi
 from providers.quantity import decide_quantity
 from providers.replay_provider import ReplayMarketDataProvider
 from providers.strategy_executor import PairPrecision

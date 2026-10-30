@@ -304,8 +304,6 @@ class TestStepWolsGeneralization(unittest.TestCase):
         import monitortrades as mt
         mgr = cm.CacheShortTrendManager(["TAOUSDC"])
         queried = []
-        orig_get_for_win = mgr.get_short_trend_for_window
-        orig_should_wait = mgr.should_wait
 
         def fake_get_for_win(symbol, window_sec=None):
             if symbol == "TAOUSDC" and window_sec == 90.0:

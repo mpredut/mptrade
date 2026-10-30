@@ -118,7 +118,7 @@ class TestOrderRollback(unittest.TestCase):
         restored = []
 
         try:
-            with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append, reason="crash") as guard:
+            with AtomicOrderRollbackGuard(cancelled, restore_fn=restored.append, reason="crash"):
                 # Simulated failure / exception before commit
                 raise ValueError("placement exploded")
         except ValueError:

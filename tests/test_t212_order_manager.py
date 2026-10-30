@@ -280,7 +280,6 @@ class TestT212OrderManager(unittest.TestCase):
             self._reset_env()
             
             # This test requires the unmocked _marker_path
-            original_marker_path = getattr(order_manager, "_marker_path")
             self.monkeypatch.undo() # this undoes ALL mocks from the monkeypatch fixture for this subtest!
             
             self.monkeypatch.setenv("IPO_PROFILE", "account one")

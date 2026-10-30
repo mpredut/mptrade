@@ -14,9 +14,7 @@ import alertnotifiers
 import botcore
 from botcore import load_env_stack, parse_dotenv
 from cachepaths import (
-    CACHEDB_SUBDOMAINS,
     cache_path,
-    ensure_cachedb_subdomains,
     get_cachedb_dir,
     organize_cachedb_subdomains,
     resolve_cache_subdomain,
@@ -585,6 +583,37 @@ def test_execution_audit_json_safe_value():
     assert _json_safe_value(float("inf")) is None
     assert _json_safe_value({"a": Decimal("10.0"), "b": [1, 2.5]}) == {"a": 10.0, "b": [1, 2.5]}
     assert _parse_cache_max() >= 100
+
+
+def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_tags(tmp_path):
+    from botcore import load_local_module
+    from notify_engine.alertnotifiers import strip_owner_tags
+    from pricewindow import should_wait_short_trend
+    from trailing_core import vwap_or_fallback
+
+    # 1. strip_owner_tags cleans bracketed and parenthesized bot attribution tags
+    assert strip_owner_tags("[TRADEALL] BUY BTCUSDC") == " BUY BTCUSDC"
+    assert strip_owner_tags("(MANUAL) SELL ETHUSDC") == " SELL ETHUSDC"
+    assert strip_owner_tags("[ASSETGUARDIAN] REENTRY") == " REENTRY"
+    assert strip_owner_tags(None) == ""
+    assert strip_owner_tags(True) == ""
+
+    # 2. vwap_or_fallback computes weighted average or safely falls back
+    assert vwap_or_fallback(100.0, 2.0, 45.0) == pytest.approx(50.0)
+    assert vwap_or_fallback(0.0, 2.0, 45.0) == pytest.approx(45.0)
+    assert vwap_or_fallback(100.0, 0.0, 45.0) == pytest.approx(45.0)
+    assert vwap_or_fallback(None, None, 45.0) == pytest.approx(45.0)
+    assert vwap_or_fallback("nan", 2.0, "bad") == pytest.approx(0.0)
+
+    # 3. should_wait_short_trend evaluates short trend deferral
+    class DummyShortTM:
+        def __init__(self, wait_res):
+            self.wait_res = wait_res
+        def should_wait(self, side, symbol, **kw):
+            return self.wait_res
+
+    assert should_wait_short_trend(DummyShortTM(True), "SELL", "BTCUSDC") is True
+    assert should_wait_short_trend(DummyShortTM(False), "SELL", "BTCUSDC") is False
 
 
 if __name__ == "__main__":

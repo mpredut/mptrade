@@ -20,7 +20,6 @@ blindly selecting the maximum.
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 

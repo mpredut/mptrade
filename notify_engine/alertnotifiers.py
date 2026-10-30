@@ -66,6 +66,17 @@ _TRADE_MARKERS = (
 _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
 )
+_OWNER_TAG_RE = re.compile(
+    r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]"
+    r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_owner_tags(text: Any) -> str:
+    """Remove bot/manual owner bracket or paren tags from an alert title."""
+    s = "" if isinstance(text, bool) or text is None else str(text)
+    return _OWNER_TAG_RE.sub("", s)
 
 
 def is_fake_alert_text(*parts: Any) -> bool:
@@ -156,13 +167,7 @@ def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
             continue
         title = str(alert.get("name") or alert.get("title") or "").upper()
         source = str(alert.get("source") or "").lower()
-        title_no_owner = re.sub(
-            r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]"
-            r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
-            "",
-            title,
-            flags=re.IGNORECASE,
-        )
+        title_no_owner = strip_owner_tags(title)
         if (
             any(marker in title_no_owner for marker in _ERROR_AND_OPS_TITLE_MARKERS)
             or any(src in source for src in _ERROR_AND_OPS_SOURCES)

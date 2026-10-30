@@ -226,7 +226,6 @@ class TestExternalGuards(unittest.TestCase):
 
     def test_disk_serialization_round_trip(self):
         import tempfile
-        import os
         from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
         from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
         from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector

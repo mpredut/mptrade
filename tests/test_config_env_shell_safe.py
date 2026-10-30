@@ -145,7 +145,6 @@ def test_botcore_env_helpers_handle_zero_booleans_and_non_finite_values():
 
 
 def test_shadow_and_outcome_log_hardening(tmp_path, monkeypatch):
-    import json
     import pytest
     import order_outcomes_log
     import shadow_runtime

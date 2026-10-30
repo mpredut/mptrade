@@ -20,6 +20,7 @@ from cachepaths import cache_path, normalize_venue_name
 from state_io import atomic_write_text, read_json_dict, read_text_lines
 from notify_engine.alertnotifiers import (
     AlertNotifier,
+    _TRADE_MARKERS,
     _alert_attr,
     _alerts_are_urgent,
     _external_notifications_disabled,
@@ -29,6 +30,7 @@ from notify_engine.alertnotifiers import (
     is_fake_alert_text,
     pass_common_gate,
     pop_due_bulk_batch,
+    strip_owner_tags,
 )
 from notify_engine.mailer import (
     is_configured as email_is_configured,
@@ -50,9 +52,6 @@ _GUARD_MARKERS = (
 _OPS_MARKERS = (
     "FAILED", "ERROR", "MANUAL", "GONE",
     "ESUAT", "ERORI", "DISPARUT",
-)
-_TRADE_MARKERS = (
-    "BUY", "SELL", "FILLED", "TREND_ENTRY", "ADOPT", "EXECUTION", "📝", "🎉",
 )
 _EXPLICIT_ERROR_MARKERS = (
     "FAILED", "ERROR", "EXCEPTION", "CRASH", "ESUAT", "ERORI", "DISPARUT", "GONE",
@@ -101,12 +100,7 @@ def _category_for_title_and_source(title: str, source: str) -> str:
         return "TRADES"
 
     # Strip owner tags like [manual] or (manual) so operational error check is not tricked by order attribution
-    t_no_owner = re.sub(
-        r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
-        "",
-        t,
-        flags=re.IGNORECASE,
-    )
+    t_no_owner = strip_owner_tags(t)
     if any(m in t_no_owner for m in _OPS_MARKERS) or "watchdog" in s:
         return "ERROR"
 

@@ -61,7 +61,7 @@ def _cmd_status(client: HLClient, params: DNParams) -> int:
         flag = "⚠ PERICOL" if dist < params.liq_alert_pct else "ok"
         log(f"  LIQUIDATION : the short at {liq:.4f}  (the price can still rise {dist:.1f}% before that)  [{flag}]")
     else:
-        log(f"  LIQUIDATION : (no short open)")
+        log("  LIQUIDATION : (no short open)")
     log(f"  FUNDING     : {fhr*100:+.5f}%/ora  (~{fhr*24*365*100:.1f}%/an)  est. ~${est_day:+.3f}/zi pe pozitia curenta")
     log(f"  FUNDING real: ${earned:+.4f} incasat (ultimele 7 zile)")
     log(f"  COLATERAL   : USDC ${usdc:,.2f} (unified: spot+perp impart colateralul)  perp_acct=${ms.get('accountValue',0):,.2f}  margine_folosita=${ms.get('totalMarginUsed',0):,.2f}")

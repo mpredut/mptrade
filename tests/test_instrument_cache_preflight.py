@@ -308,7 +308,6 @@ class InstrumentCachePreflightTest(unittest.TestCase):
                 provider = _WeightedBinanceProvider()
                 instrument = self._binance_instrument(provider)
                 outcome = {}
-                stats_effect = stats_error if stats_error is not None else stats
                 weight_effect = weight if isinstance(weight, Exception) else None
                 weight_return = None if isinstance(weight, Exception) else weight
                 with (

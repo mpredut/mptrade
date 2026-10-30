@@ -162,19 +162,13 @@ class CacheLongTrendManager(CacheManagerInterface):
 
         if not isinstance(data, dict):
             return []
-        variants = _short_trend_symbol_variants(symbol)
-        for cand in variants:
-            if cand in data:
+        _sentinel = object()
+        for cand in _short_trend_symbol_variants(symbol):
+            val = casefold_get(data, cand, _sentinel)
+            if val is not _sentinel:
                 # An explicitly published null is a neutral snapshot, distinct from a
                 # missing symbol. Preserve it so stale in-memory trends are cleared.
-                return [data[cand]]
-        for cand in variants:
-            if not isinstance(cand, str):
-                continue
-            cand_cf = cand.casefold()
-            for k, v in data.items():
-                if isinstance(k, str) and k.casefold() == cand_cf:
-                    return [v]
+                return [val]
         return []
 
 

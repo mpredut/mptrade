@@ -737,15 +737,19 @@ def _save_symbol_campaign(symbol, kind, campaign):
         raise ValueError(f"unknown AssetGuardian campaign: {kind}")
     root = _load_state_root()
     symbols_state = dict(root["symbols"])
-    row = dict(symbols_state.get(symbol, {}))
+    sym_cf = str(symbol or "").strip().casefold()
+    row = {}
+    for k in list(symbols_state):
+        if isinstance(k, str) and k.strip().casefold() == sym_cf:
+            existing = symbols_state.pop(k, None)
+            if isinstance(existing, dict):
+                row.update(existing)
     if campaign:
         row[kind] = dict(campaign)
     else:
         row.pop(kind, None)
     if row:
         symbols_state[symbol] = row
-    else:
-        symbols_state.pop(symbol, None)
     STATE.save({"version": 3, "symbols": symbols_state})
 
 
@@ -764,23 +768,9 @@ def _trend_defer_ready(symbol, kind, side, threshold, state):
                   if same_intent else None)
     try:
         short_tm = cm.get_short_trend_manager()
-        fast_w = pw.fast_trend_window_for_symbol(symbol)
-        if (
-            fast_w is not None
-            and isinstance(short_tm, cm.CacheShortTrendManager)
-            and isinstance(short_tm.get_short_trend_for_window(symbol, fast_w), dict)
-        ):
-            should_wait = bool(
-                short_tm.should_wait(
-                    side, symbol, window_seconds=fast_w, use_noise_gate=False
-                )
-            )
-        else:
-            try:
-                should_wait = bool(
-                    short_tm.should_wait(side, symbol, use_noise_gate=False))
-            except TypeError:
-                should_wait = bool(short_tm.should_wait(side, symbol))
+        should_wait = pw.should_wait_short_trend(
+            short_tm, side, symbol, short_trend_cls=cm.CacheShortTrendManager
+        )
     except Exception as exc:
         print(f"[{symbol}] Trend defer unavailable; continue submit: {exc}")
         should_wait = False

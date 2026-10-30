@@ -483,7 +483,6 @@ def test_monitortrades_post_stop_ai_downscale_does_not_double_scale_in_instrumen
     the order is scaled once (to 50%) rather than twice (to 25% below min_notional)."""
     from instrument import Instrument
     from providers.quantity import QuantityDecision
-    import order_guard
 
     class LiveScaleProvider:
         name = "binance"

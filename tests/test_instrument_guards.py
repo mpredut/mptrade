@@ -404,7 +404,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             class _InspectProvider(_FakeProvider):
                 def place_order(self, symbol, side, price, qty, **kwargs):
                     queued = oq.load_all()
-                    self.persisted_during_submit = copy = dict(queued[0])
+                    self.persisted_during_submit = dict(queued[0])
                     self.submitted_client_id = kwargs.get("client_order_id")
                     return {"orderId": "persisted-1"}
 

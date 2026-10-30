@@ -35,6 +35,7 @@ if _HERE not in sys.path:
 
 from botcore import (
     float_env as _float_env,
+    load_local_module,
     required_env as _required_env,
     required_float_env as _required_float_env,
     required_int_env as _required_int_env,
@@ -43,20 +44,7 @@ from botcore import (
 from offline.backtests.metrics import format_performance_summary
 
 
-def _load_hl_local(name: str):
-    mod = sys.modules.get(name)
-    mod_file = getattr(mod, "__file__", None) if mod is not None else None
-    if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == _HERE):
-        return mod
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(name, os.path.join(_HERE, f"{name}.py"))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_common_mod = _load_hl_local("common")
+_common_mod = load_local_module(_HERE, "common")
 _load_hl_local = _common_mod.load_hl_local
 log = _common_mod.log
 _load_dotenv = _common_mod.load_dotenv

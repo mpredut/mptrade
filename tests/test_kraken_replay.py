@@ -407,7 +407,6 @@ class PercentageSizingReplayTest(unittest.TestCase):
         self.assertIn("ambiguous_bars", res["metrics"])
 
     def test_fetch_ohlc_candles_parsing_and_drop_forming_bar(self):
-        import io
         import json
         from unittest.mock import MagicMock, patch
         from kraken.market_data import fetch_ohlc_candles

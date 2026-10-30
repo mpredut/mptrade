@@ -191,7 +191,7 @@ def _clear_exit_progress(st: dict) -> None:
         st.pop(k, None)
 
 
-def _vwap_or_fallback(cost: object, qty: object, fallback: object) -> float:
+def vwap_or_fallback(cost: object, qty: object, fallback: object) -> float:
     cost_f = safe_nonneg_float(cost, default=0.0)
     qty_f = safe_nonneg_float(qty, default=0.0)
     if qty_f > 0 and cost_f > 0:
@@ -199,6 +199,9 @@ def _vwap_or_fallback(cost: object, qty: object, fallback: object) -> float:
         if vwap is not None:
             return vwap
     return safe_pos_float(fallback, default=0.0) or 0.0
+
+
+_vwap_or_fallback = vwap_or_fallback
 
 
 def should_sell(current: float, peak: float, trail_pct: float) -> bool:

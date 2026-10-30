@@ -181,6 +181,26 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     return _lookup_symbol_param(symbol, _load_symbol_fast_window_map())
 
 
+def should_wait_short_trend(short_tm, side: str, symbol: str, *, short_trend_cls=None) -> bool:
+    """Evaluate short-trend (GT_S) deferral using the per-symbol fast window when available."""
+    fast_w = fast_trend_window_for_symbol(symbol)
+    if (
+        fast_w is not None
+        and (short_trend_cls is None or isinstance(short_tm, short_trend_cls))
+        and callable(getattr(short_tm, "get_short_trend_for_window", None))
+        and isinstance(short_tm.get_short_trend_for_window(symbol, fast_w), dict)
+    ):
+        return bool(
+            short_tm.should_wait(
+                side, symbol, window_seconds=fast_w, use_noise_gate=False
+            )
+        )
+    try:
+        return bool(short_tm.should_wait(side, symbol, use_noise_gate=False))
+    except TypeError:
+        return bool(short_tm.should_wait(side, symbol))
+
+
 def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     """Resolve Step-WOLS exponent p for ``symbol``.
 

@@ -147,7 +147,6 @@ class WalkForwardCompareTest(unittest.TestCase):
 
     def test_format_number_non_finite(self):
         from offline.backtests.comparison import format_number
-        import math
         self.assertEqual(format_number(None), "n/a")
         self.assertEqual(format_number(float("nan")), "n/a")
         self.assertEqual(format_number(float("inf")), "n/a")

@@ -27,7 +27,6 @@ from intelligence.macro.geopolitical_analyzer import (
 )
 from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
 from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
 
 _BASE_MARGINS = dict(order_guard._load_margins())
 
@@ -812,7 +811,7 @@ def test_batch39_composite_daemon_and_cli_hardening(tmp_path, monkeypatch):
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.daemon import IntelligenceTelemetryDaemon
     from intelligence.cli import inspect_symbol_intelligence
-    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+    from intelligence.internal.guards.guard_decision import BrakeAction
 
     # 1. CompositeMarketIntelligence.evaluate_guards normalizes LONG/BID/SHORT/ASK and percentage scale
     comp = CompositeMarketIntelligence()
@@ -1490,7 +1489,6 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeyp
 
 
 def test_batch51_verify_tools_hardening(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     import verify_tools.translation_audit as ta_mod
     import verify_tools.watch_trade_decisions as wtd_mod
 

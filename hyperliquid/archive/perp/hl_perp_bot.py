@@ -35,7 +35,7 @@ for _mod_name in ("common", "hl_client", "market_data", "notify", "strategy"):
         sys.modules.pop(_mod_name, None)
 
 from common import (
-    load_env_stack, log, now_str, required_env, required_int_env,
+    load_env_stack, log, required_env, required_int_env,
     required_bool_env, single_instance,
 )
 from hl_client import HLClient, HLError

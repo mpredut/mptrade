@@ -26,19 +26,13 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 
-_common_mod = sys.modules.get("common")
-_common_file = getattr(_common_mod, "__file__", None) if _common_mod is not None else None
-if _common_mod is None or (isinstance(_common_file, str) and os.path.dirname(os.path.abspath(_common_file)) != _HERE):
-    import importlib.util as _ilu
-    _c_spec = _ilu.spec_from_file_location("common", os.path.join(_HERE, "common.py"))
-    _common_mod = _ilu.module_from_spec(_c_spec)
-    sys.modules["common"] = _common_mod
-    _c_spec.loader.exec_module(_common_mod)
+from botcore import exact_int, load_local_module  # noqa: E402
+
+_common_mod = load_local_module(_HERE, "common")
 log = _common_mod.log
 safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
-from botcore import exact_int
 from instrument_registry import casefold_get
 from providers.http_resilience import mount_connect_retry
 

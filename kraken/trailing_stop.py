@@ -55,6 +55,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     reconcile_trailing_pending_order,
     should_sell,
     sync_trailing_retry_count,
+    vwap_or_fallback,
 )
 should_sell = should_sell  # Re-exported for kraken tests/compatibility
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
@@ -324,9 +325,11 @@ class KrakenTrailing:
                 notify_action = act_norm or "ORDER"
                 notify_asset = asset_norm or (result.intent.get("symbol") if isinstance(result.intent, dict) else None)
                 qty = filled
-                cost = safe_nonneg_float(getattr(result.status, "cost", None), default=0.0)
-                req_px = safe_nonneg_float(result.intent.get("requested_price"), default=0.0)
-                avg = cost / qty if cost > 0 and qty > 0 else req_px
+                avg = vwap_or_fallback(
+                    getattr(result.status, "cost", None),
+                    qty,
+                    result.intent.get("requested_price") if isinstance(result.intent, dict) else 0.0,
+                )
                 notify(
                     title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
                           f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",

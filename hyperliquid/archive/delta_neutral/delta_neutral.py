@@ -14,7 +14,6 @@ closes based on funding, while _open/_rebalance/_close move toward target size.
 from __future__ import annotations
 
 import fcntl
-import json
 import math
 import os
 import sys
@@ -33,7 +32,7 @@ from common import (
     required_int_env, required_bool_env,
 )
 from notify import notify
-from hl_client import HLClient, HLError
+from hl_client import HLClient
 from state_io import atomic_write_json, load_json_state
 
 
@@ -371,7 +370,7 @@ class DeltaNeutral:
             log("  [DN] the position disappeared from the account (closed manually?)")
             self._cancel_open_orders()
             notify(title=f"DN {self.p.coin}: the position disappeared — moving to flat",
-                   body=f"both legs gone (closed manually?) — clearing the orders, 1h cooldown",
+                   body="both legs gone (closed manually?) — clearing the orders, 1h cooldown",
                    source="dn", desktop=self.desktop)
             self._go_flat("both legs disappeared")
             return True

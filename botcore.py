@@ -630,3 +630,27 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     label = "notify_enabled" if notify_enabled is not None else conf_key
     raise ValueError(f"Invalid {label} {raw!r}")
 
+
+def load_local_module(directory: str, name: str):
+    """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
+    abs_dir = os.path.abspath(directory)
+    mod = sys.modules.get(name)
+    mod_file = getattr(mod, "__file__", None) if mod is not None else None
+    if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == abs_dir):
+        return mod
+    import importlib.util
+    orig_sys_path = list(sys.path)
+    try:
+        if _REPO_ROOT not in sys.path:
+            sys.path.insert(0, _REPO_ROOT)
+        if abs_dir not in sys.path:
+            sys.path.append(abs_dir)
+        spec = importlib.util.spec_from_file_location(name, os.path.join(abs_dir, f"{name}.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        sys.path[:] = orig_sys_path
+
+

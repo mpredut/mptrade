@@ -27,7 +27,7 @@ from orchestratorOS.agy.topics import (
     record_topic_turn,
     topic_spec,
 )
-from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui, sync_topic_thread_from_ui
+from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
 
 
 @pytest.fixture(autouse=True)
