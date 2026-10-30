@@ -2334,6 +2334,15 @@ def enrich_24h_and_microstructure(
     btc_series_24h, _ = load_symbol_price_series(
         cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
     )
+    t212_dir = os.path.join(workspace_dir, "212trading")
+    if os.path.isdir(t212_dir):
+        for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
+            fname = os.path.basename(st_path)
+            if fname.startswith(".."):
+                continue
+            ticker = fname[len(".state_") : -len(".json")].upper()
+            if ticker.replace("_", "").isalnum() and ticker not in prices_and_trends:
+                prices_and_trends[ticker] = {"price": None, "trend": 0, "growth_coefficient": 0.0}
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
         matched_series_24h, arch_vals_7d = load_symbol_price_series(
@@ -2388,62 +2397,63 @@ def enrich_24h_and_microstructure(
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
                 except Exception:
                     pass
-            if not m24 and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212":
-                try:
-                    _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
-                    yahoo_sym = sym.split("_", 1)[0]
-                    chart_res = _chart(yahoo_sym, rng="5d", interval="5m")
-                    pts_5d: List[List[Any]] = []
-                    if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
-                        pts_5d = [
-                            (
-                                [int(ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
-                                if len(bar) >= 3
-                                else [int(ts_f * 1000), round(px_f, 4)]
-                            )
-                            for bar in chart_res[1]
-                            if isinstance(bar, (list, tuple))
-                            and len(bar) >= 2
-                            and (ts_f := safe_pos_float(bar[0], default=None)) is not None
-                            and (px_f := safe_pos_float(bar[1], default=None)) is not None
+        is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
+        if not m24 and (is_t212_inst or (sym.endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ)):
+            try:
+                _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
+                yahoo_sym = sym.split("_", 1)[0]
+                chart_res = _chart(yahoo_sym, rng="5d", interval="5m")
+                pts_5d: List[List[Any]] = []
+                if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+                    pts_5d = [
+                        (
+                            [int(ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                            if len(bar) >= 3
+                            else [int(ts_f * 1000), round(px_f, 4)]
+                        )
+                        for bar in chart_res[1]
+                        if isinstance(bar, (list, tuple))
+                        and len(bar) >= 2
+                        and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                        and (px_f := safe_pos_float(bar[1], default=None)) is not None
+                    ]
+                elif isinstance(chart_res, dict):
+                    ts_list = chart_res.get("timestamp") or []
+                    q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
+                    closes = q_obj.get("close") or []
+                    vols = q_obj.get("volume") or []
+                    pts_5d = [
+                        [
+                            int(ts_f * 1000),
+                            round(c_f, 4),
+                            safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
                         ]
-                    elif isinstance(chart_res, dict):
-                        ts_list = chart_res.get("timestamp") or []
-                        q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
-                        closes = q_obj.get("close") or []
-                        vols = q_obj.get("volume") or []
-                        pts_5d = [
-                            [
-                                int(ts_f * 1000),
-                                round(c_f, 4),
-                                safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
-                            ]
-                            for idx, (ts, c) in enumerate(zip(ts_list, closes))
-                            if (ts_f := safe_pos_float(ts, default=None)) is not None
-                            and (c_f := safe_pos_float(c, default=None)) is not None
-                        ]
-                    if pts_5d:
-                        cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
-                        pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
-                        if len(pts_24h) < 10:
-                            pts_24h = list(pts_5d[-78:])
-                        if (
-                            pts_24h
-                            and sym_px_cur > 0
-                            and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
-                            and abs(sym_px_cur - pts_24h[-1][1]) > 1e-9
-                        ):
-                            pts_24h = list(pts_24h) + [[int(now_ts * 1000), sym_px_cur]]
-                        m24 = compute_24h_price_metrics(pts_24h) or {}
-                        if m24:
-                            matched_series_24h = pts_24h
-                        vals_5d = [pt[1] for pt in pts_5d]
-                        if len(vals_5d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
-                            prices_and_trends[sym].update(
-                                compute_7d_range_metrics(vals_5d, decimals=4)
-                            )
-                except Exception:
-                    pass
+                        for idx, (ts, c) in enumerate(zip(ts_list, closes))
+                        if (ts_f := safe_pos_float(ts, default=None)) is not None
+                        and (c_f := safe_pos_float(c, default=None)) is not None
+                    ]
+                if pts_5d:
+                    cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
+                    pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+                    if len(pts_24h) < 10:
+                        pts_24h = list(pts_5d[-78:])
+                    if (
+                        pts_24h
+                        and sym_px_cur > 0
+                        and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
+                        and abs(sym_px_cur - pts_24h[-1][1]) > 1e-9
+                    ):
+                        pts_24h = list(pts_24h) + [[int(now_ts * 1000), sym_px_cur]]
+                    m24 = compute_24h_price_metrics(pts_24h) or {}
+                    if m24:
+                        matched_series_24h = pts_24h
+                    vals_5d = [pt[1] for pt in pts_5d]
+                    if len(vals_5d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
+                        prices_and_trends[sym].update(
+                            compute_7d_range_metrics(vals_5d, decimals=4)
+                        )
+            except Exception:
+                pass
         if m24:
             prices_and_trends[sym].update(m24)
             if matched_series_24h and safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0:
