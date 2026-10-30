@@ -9,8 +9,53 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from botcore import _parse_bool_flag
+from dataclasses import fields as _dc_fields
+from botcore import _parse_bool_flag, safe_pos_float
 from state_io import StateReadError, load_json_state, save_json_state
+
+
+def build_dataclass_from_dict(
+    cls: type,
+    values: dict | None,
+    *,
+    defaults: dict | None = None,
+    warn_dropped: bool = False,
+):
+    """Build a dataclass instance from a dict, merging class ``_DEFAULT_DICT_FIELDS`` and ignoring removed fields."""
+    base_defaults = dict(getattr(cls, "_DEFAULT_DICT_FIELDS", {}) or {})
+    if isinstance(defaults, dict):
+        base_defaults.update(defaults)
+    base_values = dict(values) if isinstance(values, dict) else {}
+    merged = {**base_defaults, **base_values}
+    valid = {f.name for f in _dc_fields(cls) if f.init}
+    if _parse_bool_flag(warn_dropped, False):
+        dropped = sorted(set(merged) - valid)
+        if dropped:
+            print(f"[params] ignoring parameters removed from {cls.__name__}: {dropped}")
+    return cls(**{k: v for k, v in merged.items() if k in valid})
+
+
+def update_post_sell_anchors(
+    state: dict,
+    price: float,
+    *,
+    include_last_sell_alias: bool = True,
+    track_stop_sl_low: bool = False,
+) -> float | None:
+    """Resolve ``last_sell_price`` and update ``post_sell_peak`` / ``post_sell_trough`` (and optional ``sl_low``)."""
+    lsp = safe_pos_float(state.get("last_sell_price"), None)
+    if not lsp and include_last_sell_alias:
+        lsp = safe_pos_float(state.get("last_sell"), None)
+    if not lsp:
+        return None
+    cur_peak = safe_pos_float(state.get("post_sell_peak"), lsp)
+    state["post_sell_peak"] = max(cur_peak, price)
+    cur_trough = safe_pos_float(state.get("post_sell_trough"), lsp)
+    state["post_sell_trough"] = min(cur_trough, price)
+    if track_stop_sl_low and state.get("last_exit_kind") == "STOP":
+        cur_sl_low = safe_pos_float(state.get("sl_low"), price)
+        state["sl_low"] = min(cur_sl_low, price)
+    return lsp
 
 
 def safe_state_token(val: object, default: str = "unknown", *, lower: bool = False) -> str:

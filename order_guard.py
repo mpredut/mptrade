@@ -302,6 +302,29 @@ def _provider_name(provider):
     return normalize_venue_name(provider, default="")
 
 
+def resolve_effective_bypass_guards(
+    venue: Any = None,
+    *,
+    bypass_guards: Any = None,
+    inst_bypass: Any = None,
+    margins: Optional[Dict[str, Any]] = None,
+) -> set[str]:
+    """Return normalized bypass guards unioning venue config, instrument config, and caller overrides."""
+    m = margins if isinstance(margins, dict) else _load_margins()
+    v_norm = normalize_venue_name(venue, default="") or str(venue or "").strip().lower()
+    venue_bg = (
+        m.get(f"{v_norm}_bypass_guards", m.get("default_bypass_guards"))
+        if v_norm
+        else m.get("default_bypass_guards")
+    )
+    res = normalize_bypassed_guards(bypass_guards=venue_bg)
+    if inst_bypass:
+        res |= normalize_bypassed_guards(bypass_guards=inst_bypass)
+    if bypass_guards:
+        res |= normalize_bypassed_guards(bypass_guards=bypass_guards)
+    return res
+
+
 _PROCESS_TO_MODULE = {
     "AG": "assetguardian",
     "MT": "monitortrades",

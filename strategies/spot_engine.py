@@ -38,7 +38,12 @@ from intelligence.internal.state.volatility import (
 )
 
 from . import spot_rules as sr
-from .state_store import JsonStateStore, state_path_for as _shared_state_path_for
+from .state_store import (
+    JsonStateStore,
+    build_dataclass_from_dict,
+    state_path_for as _shared_state_path_for,
+    update_post_sell_anchors,
+)
 from .position_exit_manager import (
     ExitAction,
     PositionExitConfig,
@@ -333,17 +338,7 @@ class StratParams:
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
-        if isinstance(defaults, dict):
-            base_defaults.update(defaults)
-        base_values = dict(values) if isinstance(values, dict) else {}
-        merged = {**base_defaults, **base_values}
-        valid = {f.name for f in _dc_fields(cls)}
-        if _parse_bool_flag(warn_dropped, False):
-            dropped = sorted(set(merged) - valid)
-            if dropped:
-                print(f"[params] ignoring parameters removed from StratParams: {dropped}")
-        return cls(**{k: v for k, v in merged.items() if k in valid})
+        return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
@@ -2051,18 +2046,10 @@ class Strategy:
         self, price: float, regime: MarketRegimeDecision | None, tick_time: float
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across trend overlay and DCA entries."""
-        lsp = safe_pos_float(self.s.get("last_sell_price"), None) or safe_pos_float(self.s.get("last_sell"), None)
+        lsp = update_post_sell_anchors(self.s, price, track_stop_sl_low=True)
         if not lsp:
             return True, "no_last_sell"
-
-        cur_peak = safe_pos_float(self.s.get("post_sell_peak"), lsp)
-        self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = safe_pos_float(self.s.get("post_sell_trough"), lsp)
-        self.s["post_sell_trough"] = min(cur_trough, price)
         last_kind = self.s.get("last_exit_kind")
-        if last_kind == "STOP":
-            cur_sl_low = safe_pos_float(self.s.get("sl_low"), price)
-            self.s["sl_low"] = min(cur_sl_low, price)
 
         # Symmetrical Re-entry Evaluation via PositionExitManager
         if self.exit_manager is None:

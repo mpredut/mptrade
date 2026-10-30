@@ -42,7 +42,12 @@ from providers.base import (
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
-from strategies.state_store import JsonStateStore, state_path_for as _shared_state_path_for
+from strategies.state_store import (
+    JsonStateStore,
+    build_dataclass_from_dict,
+    state_path_for as _shared_state_path_for,
+    update_post_sell_anchors,
+)
 from strategies.position_exit_manager import (
     PositionExitManager,
     PositionExitConfig,
@@ -235,17 +240,7 @@ class StratParams:
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        base_defaults = dict(cls._DEFAULT_DICT_FIELDS)
-        if isinstance(defaults, dict):
-            base_defaults.update(defaults)
-        base_values = dict(values) if isinstance(values, dict) else {}
-        merged = {**base_defaults, **base_values}
-        valid = {f.name for f in _dc_fields(cls) if f.init}
-        if _parse_bool_flag(warn_dropped, False):
-            dropped = sorted(set(merged) - valid)
-            if dropped:
-                print(f"[params] ignoring parameters removed from StratParams: {dropped}")
-        return cls(**{k: v for k, v in merged.items() if k in valid})
+        return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
@@ -1826,14 +1821,9 @@ class Strategy:
 
     def _evaluate_reentry_gate(self, price: float) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically with PositionExitManager or legacy fallback."""
-        lsp = _clean_pos_float(self.s.get("last_sell_price"))
+        lsp = update_post_sell_anchors(self.s, price, include_last_sell_alias=False)
         if not lsp:
             return True, "no_last_sell"
-
-        cur_peak = safe_pos_float(self.s.get("post_sell_peak"), lsp)
-        self.s["post_sell_peak"] = max(cur_peak, price)
-        cur_trough = safe_pos_float(self.s.get("post_sell_trough"), lsp)
-        self.s["post_sell_trough"] = min(cur_trough, price)
 
         last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
         if self.p.reentry_ttl_hours > 0 and last_sell_ts:

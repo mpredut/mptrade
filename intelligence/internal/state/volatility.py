@@ -198,20 +198,11 @@ def get_kalman_state_path() -> str:
 
 
 def _vol_symbol_variants(symbol: str) -> Tuple[str, ...]:
-    if not isinstance(symbol, str):
+    if not isinstance(symbol, str) or not symbol.strip():
         return ()
-    raw = symbol.strip().upper()
-    if not raw:
-        return ()
-    clean = canonical_symbol_key(raw)
-    if clean == "USDCUSDT":
+    if canonical_symbol_key(symbol) == "USDCUSDT":
         return ("USDCUSDT",)
-    base = normalize_cache_base_asset(raw)
-    variants = [raw]
-    for cand in (*cache_symbol_variants(raw, include_base=True), f"{base}/USDC" if base else ""):
-        if cand and cand not in variants:
-            variants.append(cand)
-    return tuple(variants)
+    return tuple(cache_symbol_variants(symbol, include_base=True))
 
 
 _VOL_FILE_CACHE: dict = {}

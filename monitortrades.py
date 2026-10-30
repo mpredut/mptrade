@@ -1476,15 +1476,11 @@ def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_by
         or getattr(inst, "provider_label", None)
         or "binance"
     )
-    venue_key = cachepaths.normalize_venue_name(raw_venue) or str(raw_venue).strip().lower()
-    m_cfg = order_guard._load_margins()
-    venue_bg = m_cfg.get(f"{venue_key}_bypass_guards", m_cfg.get("default_bypass_guards"))
-    res = normalize_bypassed_guards(bypass_guards=venue_bg)
-    if inst_bg:
-        res = res | normalize_bypassed_guards(bypass_guards=inst_bg)
-    if extra_bypass:
-        res = res | normalize_bypassed_guards(bypass_guards=extra_bypass)
-    return res
+    return order_guard.resolve_effective_bypass_guards(
+        raw_venue,
+        bypass_guards=extra_bypass,
+        inst_bypass=inst_bg,
+    )
 
 
 def _eval_reentry_buy_quantity_decision(

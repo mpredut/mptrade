@@ -815,7 +815,7 @@ def cache_symbol_variants(
                     variants.append(eq_cand)
                 for xst_cand in (
                     f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
-                    f"{b}x/USD", f"{b}xUSD",
+                    f"{b}x/USD", f"{b}xUSD", f"{b}/USDC", f"{b}/USD",
                 ):
                     if xst_cand not in variants:
                         variants.append(xst_cand)

@@ -506,6 +506,7 @@ def _symbol_volatility_mult(symbol):
 def _get_symbol_window_extrema(symbol, current_price,
                                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Return validated per-symbol price minimum/maximum for the rolling window."""
+    symbol = str(symbol or "").strip().upper()
     minutes_back = _finite_float(minutes_back, positive=True)
     current_price = _finite_float(current_price, positive=True)
     if minutes_back is None or current_price is None:
@@ -636,12 +637,7 @@ def _p3b_threshold_multipliers(assessment=None, bypass_guards=None):
       AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT; DEFENSIVE expands drawdown thresholds by
       up to AG_P3B_BUY_DEFENSIVE_MAX_PENALTY to avoid catching falling knives early.
     """
-    m = _og._load_margins()
-    venue_bg = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
-    eff_bypass = (
-        normalize_bypassed_guards(bypass_guards=bypass_guards)
-        | normalize_bypassed_guards(bypass_guards=venue_bg)
-    )
+    eff_bypass = _og.resolve_effective_bypass_guards("binance", bypass_guards=bypass_guards)
     if GUARD_REGISTRY["GLLM2"].is_bypassed(eff_bypass):
         return 1.0, 1.0, None
     if assessment is None:
@@ -1689,7 +1685,7 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         symbol,
         {"growth": None, "drawdown": None, "pending_tier": False, "volatility_mult": 1.0},
     )
-    evaluation.update(growth=None, drawdown=None, pending_tier=False, volatility_mult=1.0)
+    evaluation.update(growth=None, drawdown=None, pending_tier=False)
     if symbol not in TRACKED_SYMBOLS:
         print(f"[{symbol}] Invalid AssetGuardian symbol; skip evaluation.")
         return False

@@ -314,15 +314,11 @@ class Instrument:
             )
         else:
             caller_module = order_guard.resolve_caller_module(caller_module)
-        m = order_guard._load_margins()
         v_norm = normalize_venue_name(getattr(self._provider, "name", "") or self.provider_name)
-        venue_key = f"{v_norm}_bypass_guards"
-        venue_bypass_raw = m.get(venue_key, m.get("default_bypass_guards"))
-
-        bypassed_guards = (
-            normalize_bypassed_guards(bypass_guards=bypass_guards_raw)
-            | normalize_bypassed_guards(bypass_guards=inst_bypass_raw)
-            | normalize_bypassed_guards(bypass_guards=venue_bypass_raw)
+        bypassed_guards = order_guard.resolve_effective_bypass_guards(
+            v_norm,
+            bypass_guards=bypass_guards_raw,
+            inst_bypass=inst_bypass_raw,
         )
         bypass_all = "all" in bypassed_guards
         bypass_profit_guard = "profit_guard" in bypassed_guards or bypass_all
