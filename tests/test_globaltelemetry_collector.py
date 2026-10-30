@@ -37,8 +37,14 @@ def test_collector_initialization(temp_cache_dir):
     )
     assert collector.symbols == ["BTCUSDC", "TAOUSDC"]
     assert collector.orderbook_interval_sec == 10.0
+    assert collector.orderbook_collector.cache_ttl_sec == 8.0
+    assert collector.orderbook_collector.disk_ttl_sec == 8.0
     assert collector.derivatives_interval_sec == 20.0
+    assert collector.derivatives_collector.cache_ttl_sec == 16.0
+    assert collector.derivatives_collector.disk_ttl_sec == 16.0
     assert collector.whale_interval_sec == 30.0
+    assert collector.whale_collector.cache_ttl_sec == 24.0
+    assert collector.whale_collector.disk_ttl_sec == 24.0
     assert collector.news_interval_sec == 60.0
     assert collector.fear_greed_interval_sec == 120.0
     assert collector.breadth_interval_sec == 90.0

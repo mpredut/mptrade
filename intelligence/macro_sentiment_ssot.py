@@ -499,20 +499,23 @@ class ExternalTelemetryMixin:
         from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
 
         self._telemetry_logger = logger_inst
+        ob_ttl = max(5.0, self.orderbook_interval_sec * 0.8)
+        deriv_ttl = max(10.0, self.derivatives_interval_sec * 0.8)
+        whale_ttl = max(15.0, self.whale_interval_sec * 0.8)
         self.orderbook_collector = OrderbookDepthCollector(
-            cache_ttl_sec=max(5.0, self.orderbook_interval_sec * 0.8),
+            cache_ttl_sec=ob_ttl,
             cache_dir=self.cache_dir,
-            disk_ttl_sec=60.0,
+            disk_ttl_sec=ob_ttl,
         )
         self.derivatives_collector = DerivativesTelemetryCollector(
-            cache_ttl_sec=max(10.0, self.derivatives_interval_sec * 0.8),
+            cache_ttl_sec=deriv_ttl,
             cache_dir=self.cache_dir,
-            disk_ttl_sec=120.0,
+            disk_ttl_sec=deriv_ttl,
         )
         self.whale_collector = WhalePositioningCollector(
-            cache_ttl_sec=max(15.0, self.whale_interval_sec * 0.8),
+            cache_ttl_sec=whale_ttl,
             cache_dir=self.cache_dir,
-            disk_ttl_sec=300.0,
+            disk_ttl_sec=whale_ttl,
         )
 
     @staticmethod
