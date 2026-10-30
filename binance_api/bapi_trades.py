@@ -12,6 +12,7 @@ from botcore import safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from . import bapi as api
+from . import bapi_allorders as apiorders
 from providers.base import (
     extract_order_fee,
     extract_order_id,
@@ -299,7 +300,6 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
     )
 
     try:
-        from . import bapi_allorders as apiorders
         # Paginate the entire window with ``fromId`` so days containing more than 1,000
         # fills are not truncated.
         start_time = int(time.time() * 1000) - (backdays + 1) * 24 * 60 * 60 * 1000

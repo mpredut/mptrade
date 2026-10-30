@@ -9,13 +9,16 @@ from binance.exceptions import BinanceAPIException
 
 #### MYLIB
 import order_guard
+import order_outcomes_log as _outcomes_log
 import symbols as sym
 import config as cfg
 import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
 _ = pa
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
 from . import order_id_context as rc   # client_order_id and tag context moved into binance_api.
 
 from . import bapi as api
+from . import bapi_allorders as apiorders
 from .bapi_client import client
 import importlib
 import providers.base as _providers_base
@@ -28,6 +31,12 @@ from providers.base import (
     extract_timestamp_ms,
     resolve_market_flag,
 )
+from providers.binance_filters import (
+    BinanceFilterError,
+    BinanceOrderRules,
+    binance_filter_refusal_reason,
+)
+from providers.quantity import balance_cap_quantity, fee_cap_quantity
 from providers.strategy_executor import SubmissionRefused
 import binance_cache_health
 
@@ -159,7 +168,6 @@ def _fresh_price(symbol):
 
 
 def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
-    from . import bapi_allorders as apiorders
     auto_qty = required_qty is None
     if isinstance(order_type, bool) or not isinstance(order_type, str):
         raise SubmissionRefused("invalid_weight_policy_inputs")
@@ -311,7 +319,6 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
     price_tick_size = 0.0
     if not market:
         try:
-            from providers.binance_filters import BinanceOrderRules
             target_client = api_client or client
             rules = BinanceOrderRules.from_symbol_info(
                 target_client.get_symbol_info(symbol))
@@ -521,8 +528,6 @@ def if_place_safe_order(order_type, symbol, price, qty, time_back_in_seconds,
     Validates daily trade counts, dynamic market regimes,
     and historical price profit references before order placement.
     """
-    from . import bapi_allorders as apiorders
-    from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
     from providers.market_api import BinanceProvider
 
     order_type = _normalize_side(order_type)
@@ -730,7 +735,6 @@ def place_safe_order(order_type, symbol, price, qty=None,
 
 # The fleet-wide journal lives in order_outcomes_log.py as a single source used by
 # Instrument.place for every provider. Re-export the directory for backward compatibility.
-import order_outcomes_log as _outcomes_log
 ORDER_OUTCOMES_LOG_DIR = _outcomes_log.ORDER_OUTCOMES_LOG_DIR
 
 
@@ -864,7 +868,6 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
     enforce_business_minimum = _parse_bool_flag(enforce_business_minimum, True)
     is_market = resolve_market_flag(force=force, market=market, **kwargs)
     try:
-        from providers.quantity import balance_cap_quantity, fee_cap_quantity
         balance_fn = (
             (lambda _asset: kwargs["known_balance"])
             if kwargs.get("known_balance") is not None
@@ -894,11 +897,6 @@ def place_order_mechanics(order_type, symbol, price, qty, force=False,
         current_price = api.get_current_price(symbol)
         cp_val = safe_pos_float(current_price, default=None)
         ref_price = cp_val if cp_val is not None else price
-        from providers.binance_filters import (
-            BinanceFilterError,
-            BinanceOrderRules,
-            binance_filter_refusal_reason,
-        )
         rules = BinanceOrderRules.from_symbol_info(client.get_symbol_info(symbol))
         candidate_price = order_candidate_price(
             order_type, price, current_price, market=is_market)

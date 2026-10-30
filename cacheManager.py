@@ -33,8 +33,9 @@ from cachepaths import (
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, tracked_price_instruments
 import cacheintegrity as _cache_integrity
+from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
 from binance_api import bapi_ws_health as _bapi_ws_health
 from lock import FileLock
@@ -2362,7 +2363,6 @@ class CacheTradeManager(CacheManagerInterface):
     def get_remote_items(self, symbol, startTime):
         # Paginate through the injected client so periods with more than 1,000 trades
         # are not truncated.
-        from binance_api import bapi_allorders as apiorders
         new_trades = apiorders.paginate_my_trades(
             self.api_client.client, symbol, startTime, limit=1000, strict=True)
 
@@ -2553,7 +2553,6 @@ class CacheOrderManager(CacheManagerInterface):
         )
 
     def get_remote_items(self, symbol, startTime):
-        from binance_api import bapi_allorders as apiorders
         fills = apiorders.paginate_my_trades(
             self.api_client.client, symbol, startTime, limit=1000, strict=True
         )
@@ -3633,7 +3632,6 @@ _current_price_lock = threading.RLock()
 
 def _default_price_tracking():
     """Return ``(symbols, nonbinance_symbols, provider_names)`` from ``instruments.conf``."""
-    from instrument_registry import tracked_price_instruments
     return tracked_price_instruments()
 
 

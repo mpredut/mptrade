@@ -4,6 +4,7 @@ import threading
 
 from binance.client import Client
 from botcore import exact_pos_int, safe_nonneg_float
+from providers.http_resilience import mount_connect_retry
 
 ####MYLIB
 _client = None
@@ -38,7 +39,6 @@ def _install_retry(cl):
     (kept by the shared helper) excludes POST. Together with the timeout, a transient
     fault fails quickly and GET requests retry internally instead of hanging.
     """
-    from providers.http_resilience import mount_connect_retry
     if not mount_connect_retry(cl.session, attempts=3, backoff=1.0, read=3,
                                status_forcelist=[429, 500, 502, 503, 504],
                                raise_on_status=True):

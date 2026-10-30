@@ -161,7 +161,6 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse
     parser = argparse.ArgumentParser(description="Send an alert email (SMTP).")
     parser.add_argument("--topic", help="Only send if this ntfy topic is email-mirrored.")
     parser.add_argument("subject")
@@ -174,7 +173,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if ROOT_DIR not in sys.path:
-        sys.path.insert(0, ROOT_DIR)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] mailer: %(message)s")
     sys.exit(main())

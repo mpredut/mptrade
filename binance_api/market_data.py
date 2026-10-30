@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import time
 import urllib.parse
-import urllib.request
 
 from botcore import _parse_bool_flag, exact_pos_int, fetch_public_json, safe_float, safe_pos_float
 
