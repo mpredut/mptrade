@@ -243,17 +243,43 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     except Exception:
         pass
 
+    sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+    inst_parts = split_symbol_assets(sym_u)
+    raw_base = getattr(inst, "base", None)
+    inst_base = (
+        raw_base.strip().upper()
+        if isinstance(raw_base, str) and raw_base.strip()
+        else (inst_parts[0] if inst_parts else sym_u)
+    )
+    raw_quote = getattr(inst, "quote", None)
+    inst_quote = (
+        raw_quote.strip().upper()
+        if isinstance(raw_quote, str) and raw_quote.strip()
+        else (inst_parts[1] if inst_parts and inst_parts[1] else "USD")
+    )
+    usd_quotes = ("USDC", "USDT", "USD", "FDUSD")
+    is_usd_quote = inst_quote in usd_quotes
+    allowed_quotes = usd_quotes if is_usd_quote else (inst_quote,)
+
     cache_path = os.path.join(cache_dir, "cache_current_price.json")
     try:
         cdata = read_json_dict_recovering(cache_path)
         if isinstance(cdata, dict):
             raw_items = cdata.get("items")
             items = raw_items if isinstance(raw_items, dict) else {}
-            sym_u = str(inst.symbol or "").strip().upper()
-            inst_base = getattr(inst, "base", None) or (split_symbol_assets(sym_u) or (sym_u, ""))[0]
-            candidates = cache_symbol_variants(inst.symbol, include_original=True, include_base=True)
-            if inst_base:
-                for cand in cache_symbol_variants(str(inst_base), include_original=True, include_base=True):
+            candidates = cache_symbol_variants(
+                inst.symbol,
+                include_original=True,
+                include_base=is_usd_quote,
+                quotes=allowed_quotes,
+            )
+            if inst_base and is_usd_quote:
+                for cand in cache_symbol_variants(
+                    str(inst_base),
+                    include_original=True,
+                    include_base=True,
+                    quotes=allowed_quotes,
+                ):
                     if cand not in candidates:
                         candidates.append(cand)
 
@@ -264,7 +290,15 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
             if inst_base:
                 base_u = canonical_base_asset(str(inst_base))
                 for k, v in items.items():
-                    if canonical_base_asset(str(k)) == base_u and (px_f := extract_current_price_item(v)) is not None:
+                    k_str = str(k).strip().upper()
+                    k_parts = split_symbol_assets(k_str)
+                    k_quote = k_parts[1] if k_parts else ""
+                    if is_usd_quote:
+                        if k_quote and k_quote not in allowed_quotes:
+                            continue
+                    elif k_quote not in allowed_quotes:
+                        continue
+                    if canonical_base_asset(k_str) == base_u and (px_f := extract_current_price_item(v)) is not None:
                         return px_f
     except Exception:
         pass
@@ -274,16 +308,22 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
             load_symbol_microstructure,
             load_symbol_price_series,
         )
-        ser_24h, _ = load_symbol_price_series(cache_dir, str(inst.symbol or ""), include_7d=False)
+        ser_24h, _ = load_symbol_price_series(
+            cache_dir,
+            str(inst.symbol or ""),
+            include_7d=False,
+            quotes=allowed_quotes,
+        )
         if ser_24h:
             px_f = safe_pos_float(ser_24h[-1][1], default=None)
             if px_f is not None:
                 return px_f
-        minfo = load_symbol_microstructure(cache_dir, str(inst.symbol or ""))
-        if isinstance(minfo, dict):
-            ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
-            if ob_mid is not None:
-                return ob_mid
+        if is_usd_quote:
+            minfo = load_symbol_microstructure(cache_dir, str(inst.symbol or ""))
+            if isinstance(minfo, dict):
+                ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
+                if ob_mid is not None:
+                    return ob_mid
     except Exception:
         pass
 

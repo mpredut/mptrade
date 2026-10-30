@@ -4518,13 +4518,54 @@ def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
     assert "magnet=BALANCED_LIQ_MAGNET" in joined_3b
 
 
+def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tmp_path):
+    import json
+    import math
+    from types import SimpleNamespace
+    from cachepaths import cache_symbol_variants
+    from instruments_config import resolve_instrument_live_price
 
+    # 1. cache_symbol_variants prioritizes same-quote cross-venue equivalents and USD family before EUR
+    v_xbtusd = cache_symbol_variants("XBTUSD")
+    assert v_xbtusd.index("BTCUSD") < v_xbtusd.index("XBTEUR")
+    assert v_xbtusd.index("BTCUSDC") < v_xbtusd.index("XBTEUR")
 
+    v_btceur = cache_symbol_variants("BTCEUR")
+    assert v_btceur.index("XBTEUR") < v_btceur.index("BTCUSDC")
 
+    # 2. resolve_instrument_live_price isolates quote currency families (USD vs EUR)
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": 82000.0, "XBTEUR": 74000.0}}),
+        encoding="utf-8",
+    )
+    inst_btceur = SimpleNamespace(symbol="BTCEUR", base="BTC", quote="EUR", _provider=None)
+    assert resolve_instrument_live_price(inst_btceur, str(tmp_path)) == pytest.approx(74000.0)
 
+    inst_xbtusd = SimpleNamespace(symbol="XBTUSD", base="XBT", quote="USD", _provider=None)
+    assert resolve_instrument_live_price(inst_xbtusd, str(tmp_path)) == pytest.approx(82000.0)
 
+    # 3. Non-USD fiat instrument does not fall back to USD price when only USD cache entries exist
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": 82000.0}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[1000, 81900.0], [2000, 82000.0]]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps({"symbol": "BTCUSDC", "ob_mid_price": 82005.0}),
+        encoding="utf-8",
+    )
+    assert math.isnan(resolve_instrument_live_price(inst_btceur, str(tmp_path)))
 
-
-
+    # 4. USD instrument does not fall back to EUR price when only EUR cache entries exist
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCEUR": 74000.0}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "cache_24_price_BTCUSDC.json").unlink()
+    (tmp_path / "orderbook_depth_BTCUSDC.json").unlink()
+    assert math.isnan(resolve_instrument_live_price(inst_xbtusd, str(tmp_path)))
 
 

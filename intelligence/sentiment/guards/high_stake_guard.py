@@ -361,9 +361,14 @@ def load_symbol_price_series(
     current_price_items: Optional[Dict[str, Any]] = None,
     *,
     include_7d: bool = True,
+    quotes: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
-    cands = [c for c in cache_symbol_variants(symbol, include_original=True) if isinstance(c, str) and "/" not in c]
+    cands = [
+        c
+        for c in cache_symbol_variants(symbol, include_original=True, quotes=quotes)
+        if isinstance(c, str) and "/" not in c
+    ]
     series_24h: list = []
     vals_7d: list = []
 

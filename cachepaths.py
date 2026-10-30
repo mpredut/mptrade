@@ -773,22 +773,32 @@ def cache_symbol_variants(
         for eq_b in _CROSS_VENUE_BASE_EQUIVALENTS.get(base, ()):
             if eq_b not in bases:
                 bases.append(eq_b)
-        for b in bases:
-            for suffix in quotes:
+        sym_parts = split_symbol_assets(cleaned)
+        sym_quote = sym_parts[1] if sym_parts is not None else ""
+        if sym_quote and sym_quote in quotes:
+            for b in bases:
+                cand = f"{b}{sym_quote}"
+                if cand and cand not in variants:
+                    variants.append(cand)
+        for suffix in quotes:
+            for b in bases:
                 cand = f"{b}{suffix}"
                 if cand and cand not in variants:
                     variants.append(cand)
+        include_usd_equities = any(q in ("USDC", "USDT", "USD", "FDUSD") for q in quotes)
+        for b in bases:
             if include_base and b not in variants:
                 variants.append(b)
-            eq_cand = f"{b}_US_EQ"
-            if eq_cand not in variants:
-                variants.append(eq_cand)
-            for xst_cand in (
-                f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
-                f"{b}x/USD", f"{b}xUSD",
-            ):
-                if xst_cand not in variants:
-                    variants.append(xst_cand)
+            if include_usd_equities:
+                eq_cand = f"{b}_US_EQ"
+                if eq_cand not in variants:
+                    variants.append(eq_cand)
+                for xst_cand in (
+                    f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
+                    f"{b}x/USD", f"{b}xUSD",
+                ):
+                    if xst_cand not in variants:
+                        variants.append(xst_cand)
     return variants
 
 
