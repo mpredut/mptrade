@@ -1498,9 +1498,7 @@ def _eval_reentry_buy_quantity_decision(
     return decision, quote_asset
 
 
-_REENTRY_BELOW_SELL_BYPASS_GUARDS = frozenset({
-    "G_PROF", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"
-})
+_REENTRY_BELOW_SELL_BYPASS_GUARDS = frozenset({"all"})
 
 
 def _can_pass_buy_quantity_policy(
@@ -1560,7 +1558,7 @@ def _can_pass_buy_quantity_policy(
                 f"qty {final_qty} refused by filter ({refusal})"
             )
             return False
-        if callable(getattr(provider, "get_orders", None)):
+        if not below_sell and callable(getattr(provider, "get_orders", None)):
             dl_res = order_guard.daily_limit_guard(
                 provider, symbol, "BUY", bypass_guards=reentry_bg
             )
@@ -1747,14 +1745,15 @@ def _execute_reentry_buy(
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
     reentry_outcome_ctx = {}
     below_sell = 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0)
-    if last_exit_kind == "STOP":
+    if below_sell:
+        _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
+        reentry_bypass = set(_REENTRY_BELOW_SELL_BYPASS_GUARDS)
+    elif last_exit_kind == "STOP":
         ai_not_enforced = symbol in _POST_STOP_AI_NOT_ENFORCED and not _is_simulated_env_or_inst(inst)
         _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
         reentry_bypass = {"G_PROF"} if ai_not_enforced else {"G_PROF", "GLLM1"}
     else:
         reentry_bypass = {"G_PROF"} if MT_REENTRY_HYBRID_ENABLED else None
-    if below_sell:
-        reentry_bypass = (reentry_bypass or set()) | _REENTRY_BELOW_SELL_BYPASS_GUARDS
     extra_kwargs = {}
     applied_scale_f = safe_float(applied_scale, 1.0)
     if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):
