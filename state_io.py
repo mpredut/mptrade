@@ -18,7 +18,12 @@ import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
-from botcore import _parse_bool_flag, exact_nonneg_int, exact_pos_int
+from botcore import (
+    _parse_bool_flag,
+    exact_nonneg_int,
+    exact_pos_int,
+    fetch_public_json,  # noqa: F401 (re-export: SSOT compat)
+)
 from cachepaths import resolve_cachedb_filepath
 
 T = TypeVar("T")

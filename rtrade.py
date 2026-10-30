@@ -17,7 +17,7 @@ import cacheManager as cm
 import order_guard
 import utils as u
 import symbols as sym
-from external_order_guard import get_whale_collector
+import external_order_guard as eog
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from instrument_registry import single_symbol_for
 from lock import trade_cooldown
@@ -985,7 +985,7 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tu
     if not _is_gi_whale_enforced(bypass_guards):
         return False, "gi_whale_bypassed_or_off"
     try:
-        collector = get_whale_collector()
+        collector = eog.get_whale_collector()
         if collector is None:
             return False, "no_collector"
         snap = collector.fetch(symbol, allow_network=False)
@@ -1014,7 +1014,7 @@ def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypas
     if not _is_gi_whale_enforced(bypass_guards):
         return base_adjustment
     try:
-        collector = get_whale_collector()
+        collector = eog.get_whale_collector()
         if collector is not None:
             snap = collector.fetch(symbol, allow_network=False)
             ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) if snap is not None else 0.0
