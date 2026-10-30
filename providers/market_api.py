@@ -17,7 +17,8 @@ from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_pos_float, safe_nonneg_float
-from cachepaths import canonical_symbol_key, normalize_venue_name
+from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_venue_name
+from instrument_registry import casefold_get, select_instruments
 from .base import (
     MarketDataProvider,
     _normalize_order,
@@ -36,6 +37,7 @@ from .binance_filters import (
     binance_filter_refusal_reason,
     decimal_places,
 )
+from .quantity import fee_cap_quantity, remaining_average_cost, resolve_assets
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -205,9 +207,6 @@ class BinanceProvider(MarketDataProvider):
         """Use current immutable fills, not order aggregates or a BUY-only average."""
         import binance_cache_health as health
         import cacheManager as cm
-        from cachepaths import cache_symbol_variants
-        from instrument_registry import casefold_get, select_instruments
-        from .quantity import remaining_average_cost
 
         since_s = _require_pos_since_s(since_s)
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
@@ -464,7 +463,6 @@ class BinanceProvider(MarketDataProvider):
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
                          available_qty: float) -> float:
         from binance_api import bapi_placeorder as _po
-        from providers.quantity import fee_cap_quantity
         return fee_cap_quantity(available_qty, _po.PLACE_ORDER_FEE_PCT)
 
     def guards_internally(self) -> bool:
@@ -1328,7 +1326,6 @@ class MarketApi:
         prov_name = provider.name
         if inst_params is None:
             try:
-                from instrument_registry import select_instruments
                 sym_canon = canonical_symbol_key(symbol)
                 for spec in select_instruments(prov_name).values():
                     if sym_canon and canonical_symbol_key(spec.symbol) == sym_canon:
@@ -1339,7 +1336,6 @@ class MarketApi:
             except Exception:
                 inst_params = {}
         if base is None or quote is None:
-            from providers.quantity import resolve_assets
             res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)
             base = base or res_base or None
             quote = quote or res_quote or ("USDC" if normalize_venue_name(prov_name) == "hyperliquid" else None)

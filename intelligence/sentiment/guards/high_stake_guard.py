@@ -2806,7 +2806,9 @@ def apply_asset_scope_filter(
     if want_t212:
         eq_syms = set(inst_by_sym.keys()) | set(t212_cycles.keys())
         prices_and_trends = {
-            k: v for k, v in prices_and_trends.items() if k in eq_syms
+            k: v
+            for k, v in prices_and_trends.items()
+            if k in eq_syms or str(k).upper().endswith(("_EQ", "_US_EQ"))
         }
         microstructure = {}
         for crypto_key in (
@@ -2816,6 +2818,8 @@ def apply_asset_scope_filter(
             "hyperliquid_signal",
             "hyperliquid_readonly",
             "monitortrades_active_state",
+            "assetguardian_state",
+            "smart_stop_loss_state",
             "trailing_peaks",
         ):
             portfolio_summary.pop(crypto_key, None)
@@ -2825,8 +2829,22 @@ def apply_asset_scope_filter(
             if not str(k).upper().endswith(("_EQ", "_US_EQ"))
         }
         portfolio_summary.pop("t212_cycles", None)
+    if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
+        filtered_cash = {
+            ck: cv
+            for ck, cv in portfolio_summary["venue_quote_cash"].items()
+            if isinstance(cv, dict) and (normalize_venue_name(cv.get("venue")) == "t212") == want_t212
+        }
+        if filtered_cash:
+            portfolio_summary["venue_quote_cash"] = filtered_cash
+        else:
+            portfolio_summary.pop("venue_quote_cash", None)
     if isinstance(portfolio_summary.get("recent_orders"), dict):
-        t212_sym_set = {str(s).upper() for s in t212_cycles}
+        t212_sym_set = {str(s).upper() for s in t212_cycles} | {
+            str(s).upper()
+            for s, iv in inst_by_sym.items()
+            if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
+        }
 
         def _is_eq_ro_key(rk: str) -> bool:
             rk_up = str(rk).upper()
@@ -2845,7 +2863,7 @@ def apply_asset_scope_filter(
             portfolio_summary["recent_orders"] = filtered_ro
         else:
             portfolio_summary.pop("recent_orders", None)
-    for list_key in ("recent_ai_intents", "active_retry_queue", "open_orders"):
+    for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
         if list_key in portfolio_summary and isinstance(portfolio_summary[list_key], list):
             filtered_items = [
                 item for item in portfolio_summary[list_key]
@@ -3074,7 +3092,7 @@ def harvest_portfolio_and_venue_cycles(
         portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
     has_active_t212 = any(
-        str(getattr(inst, "provider_name", "")).lower() == "t212"
+        normalize_venue_name(getattr(inst, "provider_name", "")) == "t212"
         for inst in inst_by_sym.values()
     )
     t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}

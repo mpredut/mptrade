@@ -7,10 +7,10 @@ import threading
 import time
 
 from botcore import _parse_bool_flag, safe_nonneg_float, safe_nonneg_int, safe_pos_float
-from cachepaths import canonical_symbol_key
+from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
 from providers.base import _clean_single_order_id, normalize_side
 from lock import FileLock
-from state_io import atomic_write_json
+from state_io import atomic_write_json, read_json_file
 
 
 def rtrade_client_order_id(pair_id, side, kind="limit"):
@@ -239,8 +239,6 @@ class RTradePairStore:
     def _read(self):
         if not self.path:
             return self._validate(json.loads(json.dumps(self._mem_data)))
-        from cachepaths import resolve_cachedb_filepath
-        from state_io import read_json_file
         eff_path = str(resolve_cachedb_filepath(self.path))
 
         try:
@@ -253,7 +251,6 @@ class RTradePairStore:
         if not self.path:
             self._mem_data = json.loads(json.dumps(data))
             return
-        from cachepaths import resolve_cachedb_filepath
         eff_path = str(resolve_cachedb_filepath(self.path))
         atomic_write_json(
             eff_path, data, sort_keys=True, separators=(",", ":"),

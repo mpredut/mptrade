@@ -217,7 +217,7 @@ def main():
     if actions:
         print(f"  ACTIONS: {actions}")
     else:
-        print(f"  ACTIONS: no intervention needed")
+        print("  ACTIONS: no intervention needed")
     print(f"{'='*60}\n")
 
     c.close()

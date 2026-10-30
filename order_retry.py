@@ -39,14 +39,17 @@ from botcore import (
     exact_int,
     exact_nonneg_int,
     exact_pos_int,
+    load_dotenv as _load_dotenv,
+    required_bool_env,
+    required_float_env,
+    required_int_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key, normalize_venue_name
-
+from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from lock import FileLock
 from providers.base import (
     extract_order_id,
@@ -59,9 +62,8 @@ from providers.strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
 )
+from state_io import atomic_text_writer
 
-from botcore import (load_dotenv as _load_dotenv, required_bool_env,
-                     required_float_env, required_int_env)
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_ROOT, "config.env"))
 
@@ -244,13 +246,11 @@ class RetryQueueCorruptionError(RuntimeError):
 
 
 def _ensure_dir():
-    from cachepaths import resolve_cachedb_filepath
     os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
 
 
 def _read_nolock(*, validate=False):
     """Read the complete queue or fail closed while the caller holds the lock."""
-    from cachepaths import resolve_cachedb_filepath
     q_path = str(resolve_cachedb_filepath(QUEUE_FILE))
     if not os.path.exists(q_path):
         return []
@@ -1666,8 +1666,6 @@ def resolve(symbol, side):
 
 def _write_nolock(items):
     """Replace the queue file atomically while the caller holds the lock."""
-    from state_io import atomic_text_writer
-
     with atomic_text_writer(QUEUE_FILE) as f:
         for rec in items:
             f.write(json.dumps(rec) + "\n")

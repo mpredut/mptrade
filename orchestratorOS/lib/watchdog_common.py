@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
-from botcore import (  # noqa: E402
+from botcore import (  # noqa: E402 (re-exports for watchdogs)
     _parse_bool_flag,
     load_env_stack,
     required_bool_env,

@@ -17,7 +17,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float, safe_pos_float
+from botcore import safe_pos_float
 from instruments_config import load_instruments, load_for
 from providers.market_api import api
 from state_io import read_text_lines
@@ -66,7 +66,6 @@ def main() -> int:
     for name in ("BINANCE_BTC", "BINANCE_TAO", "HYPERLIQUID_HYPE"):
         check(name in inst, f"sectiune {name} prezenta")
     tao = inst.get("BINANCE_TAO")
-    btc = inst.get("BINANCE_BTC")
     hype = inst.get("HYPERLIQUID_HYPE")
 
     if tao:

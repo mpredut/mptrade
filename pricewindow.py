@@ -29,6 +29,8 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
+from cachepaths import canonical_base_asset, canonical_symbol_key
+from instrument_registry import load_registry
 import utils as u
 
 # ── Window constants ──────────────────────────────────────────────────────────
@@ -113,14 +115,9 @@ def _load_symbol_power_map() -> dict[str, float]:
     if _SYMBOL_POWER_CACHE["mtime_ns"] == mtime_ns and _SYMBOL_POWER_CACHE["map"]:
         return _SYMBOL_POWER_CACHE["map"]
     try:
-        from instrument_registry import load_registry
         registry = load_registry(conf_path)
     except Exception:
         return {}
-    try:
-        from cachepaths import canonical_base_asset
-    except Exception:
-        canonical_base_asset = lambda x: ""  # noqa: E731
     mapping: dict[str, float] = {}
     fast_win_map: dict[str, float] = {}
     for spec in registry.values():
@@ -161,7 +158,6 @@ def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> flo
     if s_clean in param_map:
         return param_map[s_clean]
     try:
-        from cachepaths import canonical_base_asset, canonical_symbol_key
         ck = canonical_symbol_key(symbol)
         if ck and ck in param_map:
             return param_map[ck]
@@ -1021,9 +1017,7 @@ class PriceWindow:
     def _std_of_gradient(prices) -> float:
         """Return std(np.gradient(prices)) in a single centered pass using the exact telescoping mean."""
         n = len(prices)
-        if n < 2:
-            return 0.0
-        if n == 2:
+        if n < 3:
             return 0.0
         mean_g = (1.5 * (prices[n - 1] - prices[0]) - 0.5 * (prices[n - 2] - prices[1])) / n
         d0 = (prices[1] - prices[0]) - mean_g

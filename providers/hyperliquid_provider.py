@@ -25,14 +25,17 @@ from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    required_bool_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
+from cachepaths import canonical_base_asset
 from .base import (
     MarketDataProvider,
     _clean_single_order_id,
     _derive_128bit_client_order_id,
+    aggregate_fills_by_order_id,
     bool_env,
     extract_client_order_id,
     extract_order_fee,
@@ -66,7 +69,6 @@ _LIVE_ENV = "HL_LIVE_ORDERS"
 
 def _mainnet_setting() -> bool:
     try:
-        from botcore import required_bool_env
         return required_bool_env("HL_MAINNET")
     except ValueError as exc:
         raise ProviderError(
@@ -297,7 +299,6 @@ class HyperliquidProvider(MarketDataProvider):
                 return None
             target_coins = [asset_u]
             if asset_u not in {"USDC", "USDT", "USD"}:
-                from cachepaths import canonical_base_asset
                 canon = canonical_base_asset(asset_u)
                 if canon and canon not in target_coins:
                     target_coins.append(canon)
@@ -343,7 +344,6 @@ class HyperliquidProvider(MarketDataProvider):
                 f for f in fills
                 if isinstance(f, dict) and f.get("coin") == pair
             ]
-            from .base import aggregate_fills_by_order_id
             return aggregate_fills_by_order_id(spot_fills, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise
@@ -633,8 +633,7 @@ class HyperliquidProvider(MarketDataProvider):
             # ``spot_order`` returned a synchronous venue rejection, proving that
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
-            from order_retry import OrderSubmissionRefused
-            raise OrderSubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
+            raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
         return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,

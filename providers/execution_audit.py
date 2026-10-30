@@ -5,6 +5,7 @@ Writes are best-effort, so an audit I/O failure does not change the executor res
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import os
@@ -19,15 +20,31 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
+    conf_or_override,
     exact_pos_int,
     float_env,
+    parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import canonical_symbol_key
-
+from cachepaths import canonical_base_asset, canonical_symbol_key, normalize_venue_name
+from instrument_registry import casefold_get
+from market_regime import ClosedPriceSeries
+from state_io import load_json_state, read_jsonl_dicts, save_json_state
+from .base import (
+    _UNFILLED_ORDER_STATUSES,
+    _clean_single_order_id,
+    extract_executed_qty,
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
+    extract_orig_qty,
+    normalize_side,
+    normalize_timestamp_ms,
+    resolve_order_actor,
+)
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
@@ -74,7 +91,6 @@ def _json_safe_value(val: Any) -> Any:
 
 def new_intent_id(venue: str, symbol: str, kind: Optional[str] = None) -> str:
     """Create a unique intent ID before submission; callers persist it as needed."""
-    from cachepaths import normalize_venue_name
     v_slug = _slug(venue).lower()
     v_norm = normalize_venue_name(v_slug) or v_slug
     prefix = "-".join((v_norm, _slug(symbol), _slug(kind or "order").lower()))
@@ -89,8 +105,6 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     """
     if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
         return None
-    from cachepaths import normalize_venue_name
-    from .base import _clean_single_order_id
     raw = _clean_single_order_id(intent_id)
     if not raw:
         return None
@@ -181,7 +195,6 @@ class AuditedStrategyExecutor:
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:
-        from .base import _clean_single_order_id
         return _clean_single_order_id(order_id) or ""
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
@@ -342,7 +355,6 @@ class AuditedStrategyExecutor:
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Delegate deterministic recovery without inventing audit acceptance."""
-        from .base import _clean_single_order_id
         clean_cid = _clean_single_order_id(client_order_id)
         if not clean_cid:
             raise ProviderError("client_order_id is required")
@@ -391,7 +403,6 @@ class AuditedStrategyExecutor:
         interval_i = exact_pos_int(interval_min, default=None)
         if interval_i is None:
             raise ProviderError(f"ohlc_series({symbol}): invalid interval_min={interval_min!r}")
-        from market_regime import ClosedPriceSeries
         return ClosedPriceSeries(
             tuple(self._executor.ohlc_closes(symbol, interval_i) or ()),
             interval_i,
@@ -412,8 +423,6 @@ def reconcile_intents_from_execution_audit(
     audit_dir: str,
 ) -> bool:
     """Reconcile FAILED or PENDING_EXECUTION intents against execution_audit_*.jsonl if later filled."""
-    import glob
-
     failed_by_id: dict[str, dict[str, Any]] = {}
     for item in intents:
         if not isinstance(item, dict) or str(item.get("status") or "").strip().upper() not in ("FAILED", "PENDING_EXECUTION"):
@@ -426,8 +435,6 @@ def reconcile_intents_from_execution_audit(
             failed_by_id[clean_id] = item
     if not failed_by_id or not os.path.isdir(audit_dir):
         return False
-
-    from state_io import read_jsonl_dicts
 
     matched_records: dict[str, dict[str, Any]] = {}
     for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
@@ -500,8 +507,6 @@ def reconcile_intents_from_execution_audit(
 
 def _filter_intents_by_scope(intents_data: list[dict[str, Any]], scope: str) -> list[dict[str, Any]]:
     """Filter intent records to those matching the requested asset scope ('crypto', 'equities', or 'all')."""
-    from cachepaths import normalize_venue_name
-
     if not isinstance(intents_data, list):
         return []
     return [
@@ -523,18 +528,6 @@ def _resolve_intent_execution_details(
     open_orders: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
-    from cachepaths import normalize_venue_name
-    from instrument_registry import casefold_get
-    from .base import (
-        _UNFILLED_ORDER_STATUSES,
-        extract_executed_qty,
-        extract_order_id,
-        extract_order_price,
-        extract_order_side,
-        extract_orig_qty,
-        normalize_timestamp_ms,
-    )
-
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
     symbol = str(i.get("symbol") or "").strip().upper()
     side = extract_intent_side(i) or str(i.get("decision") or "").strip().upper()
@@ -791,8 +784,6 @@ def _parse_currency_pos_float(raw: Any, default: Any = None) -> Any:
 
 def extract_intent_side(data: dict[str, Any]) -> str:
     """Extract normalized BUY/SELL/HOLD side from an intent dictionary."""
-    from .base import normalize_side
-
     for k in ("decision", "action", "side"):
         if data.get(k) is not None:
             return normalize_side(data.get(k))
@@ -852,9 +843,6 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract and deduplicate single or multi-coin trading decisions from Gemini's JSON plan."""
     if not isinstance(plan, dict):
         return []
-    from cachepaths import canonical_base_asset, normalize_venue_name
-    from .base import normalize_side
-
     raw_multi = None
     for k in ("market_trading_decisions", "trading_decisions", "decisions"):
         if isinstance(plan.get(k), list):
@@ -1093,8 +1081,6 @@ def execute_enforce_intent_order(
                 break
             time.sleep(0.25)
         if order_res:
-            from providers.base import extract_order_id
-
             if log:
                 log.info(
                     "[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
@@ -1171,8 +1157,6 @@ def normalize_intent_fields(
     now_ts: float,
 ) -> tuple[str, str, str, str]:
     """Extract and normalize (intent_id, decision, symbol, venue) from an intent dict."""
-    from cachepaths import normalize_venue_name
-
     raw_iid = intent.get("intent_id")
     if raw_iid is None or isinstance(raw_iid, bool) or not str(raw_iid).strip():
         raw_iid = intent.get("id")
@@ -1204,8 +1188,6 @@ def validate_and_build_intent_dict(
     log: Optional[Any] = None,
 ) -> Optional[dict[str, Any]]:
     """Validate an LLM trading decision and build a canonical TradeIntentRecord dict, or return None if non-actionable."""
-    from cachepaths import normalize_venue_name
-
     if not isinstance(decision, dict):
         return None
     side = extract_intent_side(decision)
@@ -1276,8 +1258,6 @@ def collect_known_ai_order_ids(
     initial_ids: Optional[set[str]] = None,
 ) -> set[str]:
     """Collect all venue order IDs recorded in ``execution_payload`` and ``history`` across intent records."""
-    from .base import extract_order_id
-
     ai_oids: set[str] = set(initial_ids or ())
     if not isinstance(intents, list):
         return ai_oids
@@ -1315,8 +1295,6 @@ def cancel_existing_ai_open_orders(
         raw_open = open_fn()
         if not isinstance(raw_open, list):
             return canceled_ids
-        from providers.base import extract_order_id, extract_order_side, normalize_side, resolve_order_actor
-
         ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
         for oo in raw_open:
             if not isinstance(oo, dict):
@@ -1358,8 +1336,6 @@ def parse_intent_gateway_config(
     notify_enabled: Optional[bool] = None,
 ) -> tuple[str, float, float, float, bool]:
     """Validate and parse (mode, min_notional_usd, max_notional_usd, min_confidence, notify_enabled) from config."""
-    from botcore import conf_or_override, parse_notify_enabled_flag
-
     raw_mode = conf_or_override(conf, "autonomous_trading_mode", mode)
     norm_mode = "" if isinstance(raw_mode, bool) else str(raw_mode).strip().lower()
     if norm_mode not in ("off", "shadow", "enforce"):
@@ -1445,8 +1421,6 @@ def load_durable_intents_state(
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
 ) -> list[dict[str, Any]]:
     """Load all trade intents from the durable JSON queue with `.previous` crash recovery."""
-    from state_io import load_json_state
-
     data = load_json_state(
         intents_file,
         default_factory=list,
@@ -1467,7 +1441,6 @@ def save_durable_intents_state(
 ) -> bool:
     """Transactionally persist all intents to disk using `.previous` staging and atomic replace."""
     from orchestratorOS.lib.technical_repair_ssot import clean_json_value
-    from state_io import save_json_state
 
     try:
         cleaned = clean_json_value(intents if isinstance(intents, list) else [])
@@ -1492,8 +1465,6 @@ def preflight_intent_and_resolve_price(
     log: Optional[Any] = None,
 ) -> tuple[bool, str, str, str, str, float, Any, float, float, bool]:
     """Validate intent fields, confidence, instrument, and live/limit price before order execution."""
-    from cachepaths import normalize_venue_name
-
     intent_id, decision, symbol, venue = normalize_intent_fields(intent, now_ts)
     if decision not in ("BUY", "SELL"):
         intent["status"] = "REJECTED_INVALID_DECISION"
@@ -1563,9 +1534,4 @@ def preflight_intent_and_resolve_price(
 
     intent["requested_price"] = round(price, 8)
     return True, intent_id, decision, symbol, venue, confidence, inst, effective_usd, price, is_limit
-
-
-
-
-
 

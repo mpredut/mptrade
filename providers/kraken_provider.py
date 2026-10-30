@@ -30,6 +30,7 @@ from .base import (
     _clean_single_order_id,
     _derive_128bit_client_order_id,
     _normalize_order,
+    aggregate_fills_by_order_id,
     bool_env,
     env_value,
     extract_client_order_id,
@@ -44,6 +45,7 @@ from .strategy_executor import (
     SubmissionRefused,
     extract_order_id,
 )
+from cachepaths import _LEGACY_KRAKEN_X_BASES, canonical_base_asset
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
@@ -55,9 +57,6 @@ _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
 _KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cache_trade_kraken.json")
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
-
-
-from cachepaths import _LEGACY_KRAKEN_X_BASES
 
 _KRAKEN_QUOTES = (
     "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
@@ -85,7 +84,6 @@ def _split_kraken_pair(value: str) -> tuple[str, str]:
         base_raw = raw[: -len(quote)].strip(" -_/")
     else:
         base_raw = key[: -len(quote)]
-    from cachepaths import canonical_base_asset
     base = canonical_base_asset(base_raw) or "".join(ch for ch in base_raw.upper() if ch.isalnum())
     if quote == "XBT":
         quote = "BTC"
@@ -127,7 +125,6 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
     elif len(asset_u) == 4 and (asset_u in _LEGACY_KRAKEN_X_BASES or asset_u.startswith("Z")):
         stripped = asset_u[1:]
         candidates.extend([stripped, f"{stripped}.F", f"{stripped}.S"])
-    from cachepaths import canonical_base_asset
     canon = canonical_base_asset(raw)
     if canon and canon != asset_u:
         candidates.extend([canon, f"{canon}.F", f"{canon}.S", f"{canon}x.T", f"{canon}X.T", f"{canon}x"])
@@ -429,7 +426,6 @@ class KrakenProvider(MarketDataProvider):
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
             cutoff_ms = (time.time() - since_val) * 1000.0
-            from .base import aggregate_fills_by_order_id
             return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise

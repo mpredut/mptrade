@@ -26,7 +26,6 @@ if _ROOT not in sys.path:
 from providers.base import (                         # noqa: E402
     extract_order_price,
     extract_order_qty,
-    extract_order_side,
     extract_timestamp_ms,
 )
 from providers.market_api import api as mkt          # noqa: E402  (facada singleton)

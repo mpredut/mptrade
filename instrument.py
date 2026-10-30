@@ -15,10 +15,18 @@ import sys
 from typing import Optional, List, Callable, Any
 
 from cachepaths import normalize_venue_name
+from guard_hierarchy import (
+    GUARD_CATALOG,  # noqa: F401
+    GUARD_REGISTRY,
+    normalize_bypassed_guards,
+    revoke_guard_bypass,
+)
+from instrument_registry import casefold_get
 from providers.base import extract_order_id, normalize_side, resolve_market_flag
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
+from providers.quantity import check_order_filter_refusal, resolve_assets, round_provider_qty
 from providers.strategy_executor import SubmissionRefused
 import order_guard
 import order_outcomes_log as _outcomes_log
@@ -49,14 +57,6 @@ def _is_terminal_filter_refusal(reason) -> bool:
     """Use the retry subsystem's shared deterministic-refusal classification."""
     import order_retry
     return order_retry.is_terminal_filter_refusal(reason)
-
-
-from guard_hierarchy import (
-    GUARD_CATALOG,  # noqa: F401
-    GUARD_REGISTRY,
-    normalize_bypassed_guards,
-    revoke_guard_bypass,
-)
 
 
 class Instrument:
@@ -125,7 +125,6 @@ class Instrument:
                 pass
 
     def _round_provider_qty(self, qty: float) -> float:
-        from providers.quantity import round_provider_qty
         return round_provider_qty(self._provider, self.symbol, qty)
 
     def _resolve_regime_context(self):
@@ -188,7 +187,6 @@ class Instrument:
         if scale_f is None or app_f is None:
             return qty, applied_scale, None
         if 0.0 < scale_f < app_f:
-            from providers.quantity import check_order_filter_refusal
             ratio = scale_f / app_f
             scaled_qty = self._round_provider_qty(qty_f * ratio)
             refusal = check_order_filter_refusal(
@@ -505,7 +503,6 @@ class Instrument:
                     return None
                 price = price_f
 
-            from providers.quantity import resolve_assets
             base_asset, quote_asset = resolve_assets(self.symbol, self.base, self.quote)
             target_asset = quote_asset if side_u == "BUY" else base_asset
 
@@ -706,7 +703,6 @@ class Instrument:
                         if qty <= 0:
                             reason = "medium_trend_qty_zero"
                             return None
-                        from providers.quantity import check_order_filter_refusal
                         gt2_refusal = check_order_filter_refusal(
                             self._provider, self.symbol, side_u,
                             quantity_price if is_market else price, qty,
@@ -1074,7 +1070,6 @@ class Instrument:
         """Return ``consumer.key`` or ``default`` when missing or conversion fails."""
         if isinstance(consumer, bool) or isinstance(key, bool):
             return default
-        from instrument_registry import casefold_get
         k_lookup = f"{str(consumer or '').strip()}.{str(key or '').strip()}"
         v = casefold_get(self.params, k_lookup)
         if v is None:

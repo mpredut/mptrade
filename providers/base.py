@@ -768,6 +768,7 @@ def aggregate_fills_by_order_id(
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 
+from .quantity import decide_quantity, venue_fee_cap_quantity  # noqa: E402
 from .strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,
     PairPrecision,
@@ -966,12 +967,10 @@ class MarketDataProvider(ABC):
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
                          available_qty: float) -> float:
-        from providers.quantity import venue_fee_cap_quantity
         return venue_fee_cap_quantity(self.name, side, price, available_qty)
 
     def quantity_decision(self, symbol: str, side: str, price: float,
                           qty: float, **kwargs):
-        from providers.quantity import decide_quantity
         return decide_quantity(self, symbol, side, price, qty, **kwargs)
 
     def adjust_order_price(self, symbol: str, side: str, price: float,
