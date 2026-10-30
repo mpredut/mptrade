@@ -118,7 +118,10 @@ class _DiskBackedSymbolCollector:
                 data = read_json_dict(p, default=None, recover_previous=True)
                 if not isinstance(data, dict):
                     continue
-                snapshot = self._SNAPSHOT_CLS.from_dict(data)
+                try:
+                    snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
+                except TypeError:
+                    snapshot = self._SNAPSHOT_CLS.from_dict(data)
                 if is_cache_fresh(snapshot.ts, now, max_age):
                     self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
                     return snapshot
@@ -234,10 +237,10 @@ class OrderbookSnapshot:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> OrderbookSnapshot:
+    def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> OrderbookSnapshot:
         if not isinstance(data, dict):
             data = {}
-        raw_sym = data.get("symbol")
+        raw_sym = data.get("symbol") or symbol
         sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         mid_price = max(
             0.0,
@@ -371,26 +374,28 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 return None
 
             def _accumulate_side(
-                levels: List[Tuple[float, float]], bound: float, is_bid: bool
-            ) -> Tuple[float, float, float]:
-                depth_usd = max_usd = max_px = 0.0
+                levels: List[Tuple[float, float]], bound: float, bound_1pct: float, is_bid: bool
+            ) -> Tuple[float, float, float, float]:
+                depth_usd = depth_1pct = max_usd = max_px = 0.0
+                limit_px = min(bound, bound_1pct) if is_bid else max(bound, bound_1pct)
                 for p, q in levels:
-                    if (p < bound) if is_bid else (p > bound):
+                    if (p < limit_px) if is_bid else (p > limit_px):
                         break
                     val = p * q
-                    depth_usd += val
-                    if val > max_usd:
-                        max_usd, max_px = val, p
-                return depth_usd, max_usd, max_px
+                    if (p >= bound) if is_bid else (p <= bound):
+                        depth_usd += val
+                        if val > max_usd:
+                            max_usd, max_px = val, p
+                    if (p >= bound_1pct) if is_bid else (p <= bound_1pct):
+                        depth_1pct += val
+                return depth_usd, depth_1pct, max_usd, max_px
 
-            bid_depth_usd, max_bid_usd, max_bid_px = _accumulate_side(
-                bids, mid * (1.0 - self.depth_band_pct / 100.0), True
+            bid_depth_usd, depth_1pct_bid_usd, max_bid_usd, max_bid_px = _accumulate_side(
+                bids, mid * (1.0 - self.depth_band_pct / 100.0), mid * 0.99, True
             )
-            ask_depth_usd, max_ask_usd, max_ask_px = _accumulate_side(
-                asks, mid * (1.0 + self.depth_band_pct / 100.0), False
+            ask_depth_usd, depth_1pct_ask_usd, max_ask_usd, max_ask_px = _accumulate_side(
+                asks, mid * (1.0 + self.depth_band_pct / 100.0), mid * 1.01, False
             )
-            depth_1pct_bid_usd, _, _ = _accumulate_side(bids, mid * 0.99, True)
-            depth_1pct_ask_usd, _, _ = _accumulate_side(asks, mid * 1.01, False)
 
             total_depth = bid_depth_usd + ask_depth_usd
             imbalance = bid_depth_usd / total_depth if total_depth > 0 else 0.5

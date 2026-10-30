@@ -26,6 +26,7 @@ from cachepaths import (
     get_cachedb_dir,
     legacy_filenames_for,
     normalize_venue_name,
+    resolve_kraken_lookup_symbol,
     split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
@@ -1054,6 +1055,14 @@ def load_symbol_microstructure(
         m_info["taker_sell_vol_usd"] = obj_attr(whale, "taker_sell_vol_usd")
         m_info["oi_1h_chg_pct"] = obj_attr(whale, "open_interest_1h_change_pct", obj_attr(whale, "oi_1h_chg_pct"))
         m_info["divergence_regime"] = obj_attr(whale, "divergence_regime")
+        if not safe_pos_float(m_info.get("oi_usd"), default=None):
+            w_oi = safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)
+            if w_oi is not None:
+                m_info["oi_usd"] = w_oi
+        if m_info.get("funding_rate") is None:
+            w_fr = safe_float(obj_attr(whale, "funding_rate"), default=None)
+            if w_fr is not None:
+                m_info["funding_rate"] = w_fr
     enrich_microstructure_cvd(m_info)
     return m_info
 
@@ -1343,9 +1352,20 @@ def resolve_venue_fee_and_limits(
     prov = getattr(inst, "_provider", None) if inst is not None else None
     if v_norm == "kraken" and prov is not None:
         sym_u = str(symbol or "").strip().upper()
+        kr_cands: list[str] = []
+        for kc in (symbol, sym_u, clean_symbol_key(sym_u)):
+            if isinstance(kc, str) and kc and kc not in kr_cands:
+                kr_cands.append(kc)
+        if "USD" in compatible_quote_suffixes(sym_u):
+            kr_lk = resolve_kraken_lookup_symbol(sym_u)
+            if kr_lk and kr_lk not in kr_cands:
+                kr_cands.append(kr_lk)
         minqty_map = getattr(prov, "_minqty", None)
         if isinstance(minqty_map, dict):
-            mq_cached = safe_pos_float(minqty_map.get(sym_u) or minqty_map.get(symbol), default=None)
+            mq_cached = next(
+                (v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None),
+                None,
+            )
             if mq_cached is not None:
                 min_qty = mq_cached
         client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
@@ -1354,13 +1374,29 @@ def resolve_venue_fee_and_limits(
             kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
             cache_dict = getattr(kc_mod, "_CACHE", None)
         if isinstance(cache_dict, dict):
-            cached_pair = cache_dict.get(f"pair:{symbol}") or cache_dict.get(f"pair:{sym_u}")
-            p_meta = cached_pair[1] if isinstance(cached_pair, tuple) and len(cached_pair) >= 2 else None
+            p_meta = None
+            for kc in kr_cands:
+                cached_pair = cache_dict.get(f"pair:{kc}")
+                cand_meta = cached_pair[1] if isinstance(cached_pair, tuple) and len(cached_pair) >= 2 else None
+                if isinstance(cand_meta, dict):
+                    p_meta = cand_meta
+                    break
             if not isinstance(p_meta, dict):
-                ap_hit = cache_dict.get(("AssetPairs", (("pair", sym_u),)))
-                ap_res = ap_hit[1] if isinstance(ap_hit, tuple) and len(ap_hit) >= 2 else None
-                if isinstance(ap_res, dict):
-                    p_meta = next((v for v in ap_res.values() if isinstance(v, dict)), None)
+                for kc in kr_cands:
+                    ap_hit = cache_dict.get(("AssetPairs", (("pair", kc),)))
+                    ap_res = ap_hit[1] if isinstance(ap_hit, tuple) and len(ap_hit) >= 2 else None
+                    if isinstance(ap_res, dict):
+                        p_meta = next((v for v in ap_res.values() if isinstance(v, dict)), None)
+                        if isinstance(p_meta, dict):
+                            break
+            if not isinstance(p_meta, dict):
+                ap_all = cache_dict.get(("AssetPairs", ()))
+                ap_all_res = ap_all[1] if isinstance(ap_all, tuple) and len(ap_all) >= 2 else None
+                if isinstance(ap_all_res, dict):
+                    for kc in kr_cands:
+                        if isinstance(ap_all_res.get(kc), dict):
+                            p_meta = ap_all_res[kc]
+                            break
             if isinstance(p_meta, dict):
                 fees_m = p_meta.get("fees_maker")
                 fees_t = p_meta.get("fees")
@@ -1434,13 +1470,14 @@ def resolve_venue_fee_and_limits(
     sp_rounded = round_spread_bps(spread_bps)
     if sp_rounded is not None:
         out["spread_bps"] = sp_rounded
+    gw_max = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
     fq_f = safe_nonneg_float(free_quote, default=None)
     if fq_f is not None:
-        out["effective_max_buy_usd"] = round(min(float(gateway_max_usd), fq_f * 0.995), 2)
+        out["effective_max_buy_usd"] = round(min(gw_max, fq_f * 0.995), 2)
     fb_f = safe_nonneg_float(free_base, default=None)
     if fb_f is not None and px_f > 0.0:
         sellable_qty = venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f)
-        out["effective_max_sell_usd"] = round(min(float(gateway_max_usd), sellable_qty * px_f), 2)
+        out["effective_max_sell_usd"] = round(min(gw_max, sellable_qty * px_f), 2)
     return out
 
 

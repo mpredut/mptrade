@@ -5429,3 +5429,64 @@ def test_iteration37_prompt_sibling_merge_max_usd_clamp_and_bare_btc_preflight()
     assert intent_bad["status"] == "REJECTED_UNKNOWN_INSTRUMENT"
 
 
+def test_iteration38_whale_oi_fallback_kraken_cache_alias_and_orderbook_from_dict(tmp_path):
+    from types import SimpleNamespace
+    from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
+    from intelligence.sentiment.guards.high_stake_guard import (
+        load_symbol_microstructure,
+        resolve_venue_fee_and_limits,
+    )
+
+    # 1. load_symbol_microstructure populates oi_usd and funding_rate from whale snapshot when deriv is absent
+    m_info = load_symbol_microstructure(
+        str(tmp_path),
+        "BTCUSDC",
+        whale={
+            "top_traders_long_pct": 0.63,
+            "top_traders_long_ratio": 1.70,
+            "taker_buy_sell_ratio": 1.25,
+            "taker_buy_vol_usd": 1_200_000.0,
+            "taker_sell_vol_usd": 960_000.0,
+            "open_interest_usd": 85_000_000.0,
+            "open_interest_1h_change_pct": 1.8,
+            "divergence_regime": "accumulation",
+            "funding_rate": 0.00015,
+        },
+    )
+    assert m_info is not None
+    assert m_info["oi_usd"] == 85_000_000.0
+    assert m_info["funding_rate"] == 0.00015
+
+    # 2. resolve_venue_fee_and_limits resolves Kraken 'BTCUSD' / 'HYPE/USD' against 'XBTUSD' / 'HYPEUSD' in _CACHE
+    fake_cli = SimpleNamespace(
+        _CACHE={
+            "pair:XBTUSD": (
+                1700000000.0,
+                {
+                    "fees_maker": [[0, 0.12]],
+                    "fees": [[0, 0.22]],
+                    "ordermin": "0.0002",
+                    "costmin": "2.0",
+                    "lot_decimals": 5,
+                    "pair_decimals": 1,
+                },
+            )
+        }
+    )
+    fake_inst = SimpleNamespace(params={}, _provider=SimpleNamespace(_cli=fake_cli, _minqty={"XBTUSD": 0.0002}))
+    fees = resolve_venue_fee_and_limits(
+        "kraken", "BTCUSD", fake_inst, price=82000.0, free_quote=1500.0, gateway_max_usd=None
+    )
+    assert fees["maker_fee_bps"] == 12.0
+    assert fees["taker_fee_bps"] == 22.0
+    assert fees["min_qty"] == 0.0002
+    assert fees["exchange_min_notional_usd"] == 2.0
+    assert fees["step_size"] == 1e-05
+    assert fees["tick_size"] == 0.1
+    assert fees["effective_max_buy_usd"] == round(1500.0 * 0.995, 2)
+
+    # 3. OrderbookSnapshot.from_dict accepts optional symbol fallback
+    ob_snap = OrderbookSnapshot.from_dict({"mid_price": 82000.0, "imbalance_ratio": 0.58}, symbol="BTCUSDC")
+    assert ob_snap.symbol == "BTCUSDC"
+
+
