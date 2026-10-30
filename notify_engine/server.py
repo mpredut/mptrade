@@ -17,7 +17,7 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import normalize_venue_name
-from state_io import read_json_dict
+from state_io import atomic_write_text, read_json_dict, read_text_lines
 from notify_engine.alertnotifiers import (
     AlertNotifier,
     _alert_attr,
@@ -390,7 +390,6 @@ class NotificationServer:
         bot_name = "" if isinstance(bot_name, bool) else str(bot_name or "")
 
         first = alerts[0]
-        from notify_engine.alertnotifiers import AlertNotifier
         # Resolve title, body, and source intelligently based on alert payload type
         if isinstance(first, str):
             title = "Alert" if len(alerts) == 1 else f"Alerts ({len(alerts)})"
@@ -708,8 +707,6 @@ class NotificationServer:
                 continue
             
             try:
-                from state_io import atomic_write_text, read_text_lines
-
                 lines = read_text_lines(self.queue_file, keepends=True, errors="replace")
                 if not lines:
                     continue

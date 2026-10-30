@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
-import urllib.request
 
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,

@@ -121,11 +121,11 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 2. Pillar 2: External Microstructure & Derivatives
     try:
-        from intelligence.external.collectors.orderbook_depth import _symbol_variants
+        from cachepaths import cache_symbol_variants
         from intelligence.macro_sentiment_ssot import clean_symbol_key
         sym_candidates = list(
             dict.fromkeys(
-                c for v in (symbol, *_symbol_variants(symbol)) if (c := clean_symbol_key(v))
+                c for v in (symbol, *cache_symbol_variants(symbol)) if (c := clean_symbol_key(v))
             )
         ) or [symbol]
 

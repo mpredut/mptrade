@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict, deque
+import hashlib
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     evaluate_heartbeat_files_freshness,
     parse_procs_manifest,
 )
+from state_io import read_bytes_file
 
 
 class BotManager:
@@ -288,9 +290,6 @@ class BotManager:
             self.processes.pop(name, None)
 
     def _hash_file(self, filepath: str) -> str:
-        import hashlib
-        from state_io import read_bytes_file
-
         data = read_bytes_file(filepath, default=None)
         return hashlib.md5(data).hexdigest() if data is not None else ""
 

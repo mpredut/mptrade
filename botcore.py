@@ -299,6 +299,14 @@ def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
     return i if (i is not None and i >= 0) else default
 
 
+def obj_attr(obj: object, key: str, default: object = None) -> object:
+    """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
+    if obj is None:
+        return default
+    val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+    return default if val is None else val
+
+
 def float_env(key: str, env: dict | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     The optional `env` argument preserves compatibility with legacy float_env(key) calls."""

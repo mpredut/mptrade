@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover
 from botcore import (
     _parse_bool_flag,
     fetch_public_json as _fetch_public_json,
+    obj_attr,
     parse_dotenv,
     safe_float,
     safe_int,
@@ -55,7 +56,7 @@ from botcore import (
 )
 
 fetch_public_json = _fetch_public_json
-from cachepaths import cache_path, resolve_cachedb_filepath
+from cachepaths import cache_path, cache_symbol_variants, resolve_cachedb_filepath
 from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
@@ -174,14 +175,6 @@ def extract_high_severity_headlines_and_digest(
     )
     digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
     return high_sev, digest
-
-
-def obj_attr(obj: Any, key: str, default: Any = None) -> Any:
-    """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
-    if obj is None:
-        return default
-    val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
-    return default if val is None else val
 
 
 def obj_float(obj: Any, key: str, default: float = 0.0) -> float:
@@ -1389,11 +1382,9 @@ def load_cached_whale_telemetry(
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
-    from intelligence.external.collectors.orderbook_depth import _symbol_variants
-
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (list(symbols) if symbols else ["BTCUSDC"]):
-        for cand_sym in ([sym] + [v for v in _symbol_variants(sym) if v != sym]):
+        for cand_sym in ([sym] + [v for v in cache_symbol_variants(sym) if v != sym]):
             safe_sym = clean_symbol_key(cand_sym)
             if not safe_sym:
                 continue

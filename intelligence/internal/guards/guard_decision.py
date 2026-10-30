@@ -5,9 +5,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import safe_float
+from botcore import obj_attr, safe_float
 from providers.base import normalize_side
 
+snap_attr = obj_attr
 safe_guard_float = safe_float
 
 
@@ -65,14 +66,6 @@ def clean_guard_symbol_key(symbol: Any) -> str:
     if not isinstance(symbol, str):
         return ""
     return symbol.strip().upper().replace("/", "").replace("-", "").replace("_", "")
-
-
-def snap_attr(obj: Any, key: str, default: Any = None) -> Any:
-    """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
-    if obj is None:
-        return default
-    val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
-    return default if val is None else val
 
 
 def fetch_guard_snapshot(

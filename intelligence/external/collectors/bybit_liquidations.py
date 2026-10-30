@@ -18,7 +18,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 import websockets
 
 from botcore import safe_float, safe_nonneg_float, safe_pos_float
-from intelligence.external.collectors.orderbook_depth import _symbol_variants
+from cachepaths import cache_symbol_variants
 from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
 from providers.base import normalize_side
 
@@ -219,9 +219,10 @@ class BybitLiquidationCollector:
         with self._lock:
             items = list(self._events.get(symbol, ()))
             if not items:
-                for cand in _symbol_variants(symbol):
-                    if cand in self._events:
-                        items = list(self._events[cand])
+                for cand in cache_symbol_variants(symbol):
+                    cand_k = clean_symbol_key(cand)
+                    if cand_k and cand_k in self._events:
+                        items = list(self._events[cand_k])
                         break
 
         for ts, side, notional in items:

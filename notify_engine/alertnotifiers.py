@@ -5,7 +5,8 @@ import hashlib
 import json
 import os
 import re
-import subprocess  # noqa: F401
+import subprocess
+subprocess = subprocess  # Kept at module namespace for monkeypatching in tests
 import sys
 import time
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from botcore import (
     exact_pos_int as _safe_pos_int,
     float_env,
     int_env,
+    obj_attr as _alert_attr,
     safe_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -83,15 +85,6 @@ def format_ntfy_url(topic: Any) -> str:
         return clean
     clean_topic = clean.lstrip("/")
     return f"https://ntfy.sh/{clean_topic}" if clean_topic else ""
-
-
-def _alert_attr(item: Any, key: str, default: Any = None) -> Any:
-    """Extract an attribute or dict key from an alert payload."""
-    if isinstance(item, dict):
-        val = item.get(key, default)
-    else:
-        val = getattr(item, key, default)
-    return default if val is None else val
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -950,7 +943,6 @@ def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol:
 
 
 def bind_notify(symbol_env_keys: tuple, default_symbol: str):
-    import os
     def bound_notify(title: str, body: str, source: str, price: float = None, desktop: bool = False, symbol: str = None, email: bool = None):
         sym_clean = symbol.strip() if isinstance(symbol, str) and symbol.strip() else None
         resolved = sym_clean or next(
