@@ -149,6 +149,11 @@ class KrakenClient:
                 "API-Sign": self._signature(urlpath, data, self.api_secret),
             }
             status, body = http_post_form(API_URL + urlpath, data, headers=headers)
+            if status == 0 or not body:
+                if method not in _WRITE_METHODS and attempt < max_attempts - 1:
+                    time.sleep(0.15 * (attempt + 1))
+                    continue
+                raise KrakenError(f"eroare retea/raspuns gol la {method} (HTTP {status})")
             try:
                 result = self._parse(status, body)
                 break
@@ -157,7 +162,7 @@ class KrakenClient:
                     time.sleep(0.15 * (attempt + 1))
                     continue
                 raise
-        if ttl and result is not None:
+        if ttl and result:
             _cache_put(method, data, ttl, result)
         if method in _WRITE_METHODS:                # AddOrder/CancelOrder changed account state
             _cache_invalidate(_INVALIDATE_ON_WRITE)

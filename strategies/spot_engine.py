@@ -2338,6 +2338,21 @@ class Strategy:
                 log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
                 return
             tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
+            if self.observe_only and ledger_qty + tolerance < held:
+                try:
+                    raw_cli = getattr(self.client, "_inner", self.client)
+                    if hasattr(raw_cli, "open_orders"):
+                        open_rows = raw_cli.open_orders(self.pair)
+                        if isinstance(open_rows, list):
+                            open_sell_qty = sum(
+                                _clean_pos_float(r.get("remaining_qty") or r.get("origQty") or r.get("qty")) or 0.0
+                                for r in open_rows
+                                if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
+                            )
+                            if open_sell_qty > 0.0:
+                                ledger_qty = min(held, ledger_qty + open_sell_qty)
+                except Exception:
+                    pass
             if ledger_qty <= tolerance:
                 if held > 1e-12:
                     log(
@@ -2378,16 +2393,31 @@ class Strategy:
                     f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
                     f"{held:.{self.vol_dec}f} -> {ledger_qty:.{self.vol_dec}f}); synchronizing state"
                 )
-                added_cost = (ledger_qty - held) * price
+                fill_px = price
+                fill_ts = clean_ts if clean_ts is not None else self._now()
+                try:
+                    raw_cli = getattr(self.client, "_inner", self.client)
+                    if hasattr(raw_cli, "get_orders"):
+                        buy_rows = raw_cli.get_orders(self.pair, "BUY", 3600.0)
+                        if isinstance(buy_rows, list) and buy_rows and isinstance(buy_rows[-1], dict):
+                            cand_px = _clean_pos_float(buy_rows[-1].get("price"))
+                            if cand_px is not None:
+                                fill_px = cand_px
+                            cand_ts_ms = _clean_pos_float(buy_rows[-1].get("timestamp"))
+                            if cand_ts_ms is not None:
+                                fill_ts = cand_ts_ms / 1000.0 if cand_ts_ms > 1e11 else cand_ts_ms
+                except Exception:
+                    pass
+                added_cost = (ledger_qty - held) * fill_px
                 self.s["qty"] = ledger_qty
                 self.s["cost"] = float(self.s.get("cost", 0.0)) + added_cost
                 self.s["spent"] = float(self.s.get("spent", 0.0)) + added_cost
                 if held <= tolerance or self.s.get("entry_price") is None:
-                    self.s["entry_price"] = price
-                    self.s["entry_ts"] = clean_ts if clean_ts is not None else self._now()
+                    self.s["entry_price"] = fill_px
+                    self.s["entry_ts"] = fill_ts
                 else:
                     self.s["dca_buys"] = int(self.s.get("dca_buys") or 0) + 1
-                self.s["last_buy_price"] = price
+                self.s["last_buy_price"] = fill_px
                 self.s["ledger_reconcile_required"] = False
                 self._save()
                 return

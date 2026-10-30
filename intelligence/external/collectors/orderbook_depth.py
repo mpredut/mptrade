@@ -20,6 +20,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from cachepaths import (
     cache_symbol_variants,
+    canonical_symbol_key,
     compatible_quote_suffixes,
     normalize_cache_base_asset,
     resolve_binance_lookup_symbol,
@@ -316,12 +317,21 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return ready
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
+        canon_sym = canonical_symbol_key(symbol)
         try:
             data = None
             last_err: Optional[Exception] = None
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
+            spot_urls = (
+                (
+                    f"https://api.binance.com/api/v3/depth?symbol={canon_sym}&limit=500",
+                    f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+                )
+                if (canon_sym.endswith("USDC") and canon_sym != lookup_sym and not canon_sym.startswith("HYPE"))
+                else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
+            )
             urls = (
-                f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+                *spot_urls,
                 f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
                 f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
             )

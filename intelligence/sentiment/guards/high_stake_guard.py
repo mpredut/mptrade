@@ -2953,16 +2953,22 @@ def harvest_recent_orders_and_enrich_positions(
             ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
             ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
             cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
-            if ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95:
-                r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
-                buys_after = [
-                    b
-                    for b in r_buys_c
-                    if isinstance(b, dict)
-                    and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
-                    and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
-                    and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-                ]
+            r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
+            buys_after = [
+                b
+                for b in r_buys_c
+                if isinstance(b, dict)
+                and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
+                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+            ]
+            reconciled_external_buy = bool(
+                buys_after
+                and cyc_qty_cur > 1e-8
+                and float(entry_ts_ms) > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
+                and abs(sum(float(b["qty"]) for b in buys_after) - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
+            )
+            if (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
                 if buys_after:
                     new_qty = sum(float(b["qty"]) for b in buys_after)
                     new_cost = sum(float(b["qty"]) * float(b["price"]) for b in buys_after)

@@ -6852,13 +6852,109 @@ def test_reconcile_executed_intents_from_audit_and_kraken_t212_fill_attribution(
     assert ro_out["SPCX_US_EQ"]["last_buy"]["price"] == pytest.approx(137.58)
     assert t212_pos[0]["active_avg_buy_px"] == pytest.approx(150.921)
 
+    # 4. Reconcile observe_only cycle where entry_ts was recorded after external BUY fill
+    (cache_dir / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    {
+                        "symbol": "HYPEUSD",
+                        "id": "TEUGID-NDEDW-YJAF2M",
+                        "orderId": "TEUGID-NDEDW-YJAF2M",
+                        "price": 93.299997,
+                        "qty": 11.7548,
+                        "timestamp": 1793287711318,
+                        "side": "SELL",
+                    },
+                    {
+                        "symbol": "HYPEUSD",
+                        "id": "TZHKJT-VEG3G-YZAXLQ",
+                        "orderId": "TZHKJT-VEG3G-YZAXLQ",
+                        "price": 91.209992,
+                        "qty": 4.9358342,
+                        "timestamp": 1793365871000,
+                        "side": "BUY",
+                    },
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hype_cyc = parse_venue_cycle_state(
+        {
+            "qty": 4.9358342,
+            "cost": 448.864762,
+            "entry_price": 90.94,
+            "last_buy_price": 90.94,
+            "last_sell_price": 91.21,
+            "dca_buys": 0,
+            "entry_ts": 1793369041.459,
+        },
+        "HYPEUSD",
+        {"HYPEUSD": {"price": 90.36}},
+        avg_decimals=6,
+        include_meta=True,
+    )
+    krk_hype_cycles = {"HYPEUSD": hype_cyc}
+    harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        {},
+        [],
+        {"HYPEUSD": {"price": 90.36}},
+        krk_hype_cycles,
+        {},
+        {},
+    )
+    assert krk_hype_cycles["HYPEUSD"]["avg_cost_px"] == pytest.approx(91.209992)
+    assert krk_hype_cycles["HYPEUSD"]["entry_price"] == pytest.approx(91.209992)
+    assert krk_hype_cycles["HYPEUSD"]["last_buy_price"] == pytest.approx(91.209992)
+    assert krk_hype_cycles["HYPEUSD"]["last_sell_price"] == pytest.approx(93.299997)
+    assert krk_hype_cycles["HYPEUSD"]["cost_usd"] == pytest.approx(450.20)
 
 
+def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_path, monkeypatch):
+    """Verify OrderbookDepthCollector queries native <BASE>USDC spot first and KrakenClient._private fails closed on (0, b'')."""
+    import base64
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    import kraken.kraken_client as kc
+    from providers.kraken_provider import KrakenProvider
 
+    # 1. OrderbookDepthCollector queries symbol=BTCUSDC before symbol=BTCUSDT
+    fetched_urls = []
 
+    def _fake_fetch_json(url, label, lookup_sym, **kwargs):
+        fetched_urls.append(url)
+        return {
+            "bids": [["76400.00", "1.5"], ["76390.00", "2.0"]],
+            "asks": [["76401.00", "1.5"], ["76410.00", "2.0"]],
+        }
 
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=0.0)
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_fetch_json)
+    snap = ob_col.fetch("BTCUSDC", allow_network=True)
+    assert snap is not None
+    assert snap.best_bid == pytest.approx(76400.0)
+    assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=BTCUSDC&limit=500"
 
+    # 2. KrakenClient._private retries transient (0, b"") on Balance and raises KrakenError if all attempts fail
+    kc._CACHE.clear()
+    cli = kc.KrakenClient(api_key="k", api_secret=base64.b64encode(b"secret").decode())
+    post_calls = []
 
+    def _flaky_post(url, data, headers=None):
+        post_calls.append(url)
+        if len(post_calls) == 1:
+            return 0, b""
+        return 200, b'{"error":[],"result":{"HYPE":"4.9358342"}}'
 
+    monkeypatch.setattr(kc, "http_post_form", _flaky_post)
+    monkeypatch.setattr(kc.time, "sleep", lambda _s: None)
+    assert cli.balance() == {"HYPE": "4.9358342"}
+    assert len(post_calls) == 2
+
+    kc._CACHE.clear()
+    monkeypatch.setattr(kc, "http_post_form", lambda url, data, headers=None: (0, b""))
+    kp = KrakenProvider(client=cli)
+    assert kp.free_balance("HYPE") is None
 
 
