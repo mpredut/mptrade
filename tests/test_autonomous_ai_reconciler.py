@@ -6935,6 +6935,10 @@ def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_
     assert snap is not None
     assert snap.best_bid == pytest.approx(76400.0)
     assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=BTCUSDC&limit=500"
+    fetched_urls.clear()
+    snap_hype = ob_col.fetch("HYPEUSD", allow_network=True)
+    assert snap_hype is not None
+    assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=HYPEUSDC&limit=500"
 
     # 2. KrakenClient._private retries transient (0, b"") on Balance and raises KrakenError if all attempts fail
     kc._CACHE.clear()

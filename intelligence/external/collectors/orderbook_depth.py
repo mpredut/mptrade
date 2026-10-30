@@ -322,12 +322,13 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             data = None
             last_err: Optional[Exception] = None
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
+            usdc_sym = f"{_extract_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
             spot_urls = (
                 (
-                    f"https://api.binance.com/api/v3/depth?symbol={canon_sym}&limit=500",
+                    f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
                     f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
                 )
-                if (canon_sym.endswith("USDC") and canon_sym != lookup_sym and not canon_sym.startswith("HYPE"))
+                if (usdc_sym and usdc_sym != lookup_sym)
                 else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
             )
             urls = (
