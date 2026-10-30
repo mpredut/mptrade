@@ -31,6 +31,25 @@ class BapiWsShutdownHandlingTests(unittest.TestCase):
         )
         self.assertFalse(manager._is_shutdown_error(RuntimeError("boom")))
 
+    def test_process_message_clamps_stale_last_trade_outside_bid_ask_to_mid(self):
+        import json
+        manager = BinanceWebSocketManager()
+        received = []
+        manager.subscribe(types.SimpleNamespace(on_items_update=lambda sym, items: received.append((sym, items))))
+        # Stale last trade c=233.20 while live orderbook moved to 234.40 / 234.60 -> mid 234.50
+        manager._process_message(json.dumps({
+            "stream": "taousdc@ticker",
+            "data": {"s": "TAOUSDC", "c": "233.20", "b": "234.40", "a": "234.60", "E": 1700000005000},
+        }))
+        self.assertEqual(manager.get_price("TAOUSDC"), 234.5)
+        self.assertEqual(received[-1], ("TAOUSDC", [[1700000005000, 234.5]]))
+        # Active last trade c=234.45 inside [234.40, 234.60] -> keeps exact trade price 234.45
+        manager._process_message(json.dumps({
+            "stream": "taousdc@ticker",
+            "data": {"s": "TAOUSDC", "c": "234.45", "b": "234.40", "a": "234.60", "E": 1700000006000},
+        }))
+        self.assertEqual(manager.get_price("TAOUSDC"), 234.45)
+
 
 class TestUserDataClassify(unittest.TestCase):
     """_classify decides between ping / command reply / real event."""

@@ -355,6 +355,18 @@ class BinancePriceStream(BinanceWSBase):
             price = safe_pos_float(data["c"], default=None)
             if price is None:
                 raise ValueError(f"invalid ticker price: {data['c']!r}")
+            raw_b = data.get("b")
+            raw_a = data.get("a")
+            bid = safe_pos_float(raw_b, default=None) if not isinstance(raw_b, bool) else None
+            ask = safe_pos_float(raw_a, default=None) if not isinstance(raw_a, bool) else None
+            if (
+                bid is not None
+                and ask is not None
+                and bid <= ask
+                and (ask - bid) / bid <= 0.05
+                and (price < bid or price > ask)
+            ):
+                price = round((bid + ask) * 0.5, 8)
             raw_ts = (
                 data.get("E")
                 if not isinstance(data.get("E"), bool) and data.get("E") is not None

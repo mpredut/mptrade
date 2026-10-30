@@ -792,7 +792,10 @@ def apply_short_trend_item(
         )
     ):
         return False
-    cur_px = tinfo.get("current_price", fallback_price)
+    cur_px = (
+        safe_pos_float(fallback_price, default=None)
+        or safe_pos_float(tinfo.get("current_price"), default=None)
+    )
     if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
         entry["price"] = cur_px
     trend = tinfo.get("final_trend", entry.get("trend", 0))
@@ -839,7 +842,11 @@ def apply_live_24trend_windows(
     w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else w90
     w900 = lt_win.get("900") if isinstance(lt_win.get("900"), dict) else {}
     w9000 = lt_win.get("9000") if isinstance(lt_win.get("9000"), dict) else {}
-    live_px = w222.get("current_price") or w900.get("current_price") or fallback_price
+    live_px = (
+        safe_pos_float(fallback_price, default=None)
+        or safe_pos_float(w222.get("current_price"), default=None)
+        or safe_pos_float(w900.get("current_price"), default=None)
+    )
     if entry.get("price") is None and live_px is not None:
         entry["price"] = live_px
     entry.setdefault("trend", w222.get("final_trend", 0))
