@@ -103,7 +103,7 @@ class TestIntelligenceGuardDynamicEvaluation:
         monkeypatch.setattr(order_guard, "_load_margins", lambda: margins)
         monkeypatch.setattr(order_guard, "_resolve_trend_duration", lambda s: 3600.0)
 
-        from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+        from intelligence.internal.guards.guard_decision import GuardDecision
 
         gemini_called = []
 
@@ -818,7 +818,7 @@ class TestSisterArchitecturalDefects:
     def test_sister3_gemini_decision_preserved_on_identical_subsequent_check(self, monkeypatch):
         """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
         on identical subsequent checks rather than reverting to allow/1.0."""
-        from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
+        from intelligence.internal.guards.guard_decision import GuardDecision
         ctx = _build_test_context()
         calls = []
 
@@ -3343,8 +3343,7 @@ def test_iteration14_monitortrades_reentry_qlimit1_bypass_rtrade_gi_whale_bypass
     import order_guard
     import rtrade
     import external_order_guard
-    import utils as u
-    from providers.quantity import resolve_assets, QuantityDecision
+    from providers.quantity import QuantityDecision
     from cachetrend import _short_trend_symbol_variants
     from intelligence.external.collectors.whale_positioning import (
         WhalePositioningSnapshot,
@@ -4896,7 +4895,6 @@ def test_iteration23_p3b_bypass_union_collector_from_dict_cachetrend_slice_and_o
     from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
     from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
     from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
-    from types import SimpleNamespace
     from cachetrend import CacheShortTrendManager
     import order_retry
 
@@ -6588,7 +6586,6 @@ def test_iteration35_compute_weight_inf_auto_qty_and_instrument_nan_bool_safety(
 
 
 def test_iteration36_daily_limit_and_order_retry_nan_bool_safety():
-    import math
     from types import SimpleNamespace
     import pytest
     import order_guard as og
@@ -7109,7 +7106,6 @@ def test_iteration43_ws_health_market_data_execution_audit_replay_and_trailing_n
 
 def test_iteration44_trailing_core_and_order_retry_nan_bool_safety(monkeypatch, tmp_path):
     from types import SimpleNamespace
-    import pytest
     import trailing_core
     import order_retry
 
@@ -7229,7 +7225,7 @@ def test_iteration45_spot_rules_and_order_retry_worker_nan_bool_safety(monkeypat
             terminal=True,
         ),
     )
-    stats = orw.process_once(fake_mkt, now=2000.0)
+    orw.process_once(fake_mkt, now=2000.0)
     rec_after = oq.get(rid)
     assert rec_after is not None
     assert rec_after["lifecycle"] == "awaiting_cancel"
@@ -7548,6 +7544,7 @@ def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety
         sys.path.insert(0, t212_dir)
         import t212_client as t212c
         import market_data as t212_md
+        _ = t212_md
         import strategy as t212_strat
         import replay as t212_rep
     finally:
@@ -7615,7 +7612,6 @@ def test_iteration50_t212_client_market_data_strategy_and_replay_nan_bool_safety
 
 
 def test_iteration51_binance_api_and_providers_nan_bool_safety(monkeypatch):
-    import os
     from types import SimpleNamespace
     import pytest
     from binance_api import bapi_placeorder, bapi_allorders, trailing_stop
@@ -8229,7 +8225,6 @@ def test_iteration56_portfolio_snapshot_new_coins_overnight_monitor_and_reconcil
 
 
 def test_iteration57_agy_store_drawprices_trailing_and_t212_strategy_safety(monkeypatch):
-    import importlib
     import numpy as np
     from orchestratorOS.agy.summary_store import _safe_step_count, get_thread_step_count
     from orchestratorOS.agy.topics import _safe_int, prepare_topic_session
@@ -8761,9 +8756,8 @@ def test_iteration63_liquidation_credentials_pricewindow_and_assetguardian_safet
 
 def test_iteration64_cooldown_state_io_spot_rules_and_rtrade_pair_safety(tmp_path):
     """Iteration 64: Cooldown slot expected_timestamp rollback guard, state_io NaN recovery, spot_rules shadow parsing, and rtrade_pair _cancel exception safety."""
-    import json
     from lock.cooldown import Cooldown
-    from state_io import previous_generation_path, read_recovering_previous, read_tail_lines
+    from state_io import read_tail_lines
     from strategies import spot_rules as sr
     from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
 
@@ -8911,7 +8905,6 @@ def test_iteration65_trailing_core_kraken_trailing_and_autonomous_gateway_safety
 
 def test_iteration66_notify_engine_and_market_monitor_safety(tmp_path, monkeypatch):
     """Iteration 66: notify_engine (alertnotifiers, server, mailer) and market_monitor (pricechecker, new_coins_discovery) boundary safety."""
-    import json
     from types import SimpleNamespace
     import pytest
     from notify_engine.alertnotifiers import (
@@ -9601,7 +9594,6 @@ def test_iteration78_pricechecker_thresholds_alertnotifiers_and_sim_window_norma
 def test_iteration79_alerts_config_price_watcher_and_verify_tools_safety(tmp_path):
     """Verify Iteration 79 alerts_config validation/resolve, price_watcher status safety, and gen_alert_thresholds guards."""
     import pytest
-    from types import SimpleNamespace
     from market_monitor import alerts_config
     from verify_tools import gen_alert_thresholds
 
@@ -10148,8 +10140,6 @@ def test_iteration90_kraken_client_cachemanager_and_t212_client_safety(monkeypat
 def test_iteration91_market_data_order_manager_and_trailing_core_safety(monkeypatch):
     """Verify Iteration 91 Yahoo/Kraken market_data validation, T212 order_manager ticker/validity/order_id safety, and TrailingCore 0-fill target_exit_qty cleanup."""
     import importlib
-    import os
-    import sys
     import pytest
     import kraken.market_data as kmd
     import trailing_core as tcore
@@ -10340,7 +10330,6 @@ def test_iteration93_replay_params_isolation_and_t212_ladder_validation(monkeypa
     from strategies.spot_engine import StratParams as SpotStratParams
     from strategies.spot_replay import run_replay
 
-    import dataclasses
     orig_params = SpotStratParams(
         currency="USD",
         entry_amount=100.0,
@@ -11061,7 +11050,6 @@ def test_iteration101_intelligence_guards_side_and_fill_extraction_safety():
 def test_iteration102_composite_priceanalysis_survival_and_volatility_safety():
     """Iteration 102: Verify CompositeMarketIntelligence bypass_guards='all' & side/scale handling, priceAnalysis, survival, and volatility safety."""
     from intelligence.composite import CompositeMarketIntelligence
-    from intelligence.internal.guards.guard_decision import GuardDecision
     from intelligence.internal.state import survival, volatility
     import priceAnalysis as pa
 
@@ -14092,7 +14080,6 @@ def test_iteration142_hybrid_reentry_replay_cache_key_and_runner_report_safety(t
        offline.runners.kraken_financial_benchmark (strat_params_from_dict & markdown_report)
        safely handle NaN/bool calmar and empty scenarios dicts.
     """
-    import math
     from offline.research.hybrid_reentry.harness import load_ohlc_csv, format_ablation_result
     from offline.research.hybrid_reentry.report import _fmt_pct
     from offline.research.monitortrades_backtest.run_replay_backtest import (
@@ -15006,7 +14993,6 @@ def test_iteration154_t212_market_data_import_and_quantity_filters_base_hygiene(
     import os
     import sys
     from decimal import Decimal
-    from types import SimpleNamespace
 
     from providers.base import aggregate_fills_by_order_id, extract_order_id
     from providers.binance_filters import BinanceOrderRules
@@ -15723,7 +15709,7 @@ def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tm
     state_io.truncate_file_bytes(str(bin_file), "4.0")
     assert bin_file.read_bytes() == b"0123"
 
-    gz_path = state_io.atomic_gzip_file(str(bin_file), remove_source="false")
+    _ = state_io.atomic_gzip_file(str(bin_file), remove_source="false")
     assert bin_file.exists()
     assert (tmp_path / "data.bin.gz").exists()
 
@@ -16967,7 +16953,6 @@ def test_iteration183_collector_json_fetch_hierarchical_mode_and_directional_tri
     from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
     from intelligence.sentiment.guards.high_stake_guard import resolve_llm_guard_cache_ttl
     from intelligence.external.collectors.orderbook_depth import _DiskBackedSymbolCollector
-    import intelligence.macro_sentiment_ssot as ssot
 
     # 1. resolve_hierarchical_guard_mode cascades intelligence_guards_mode -> pillar_master -> guard_key
     assert resolve_hierarchical_guard_mode({}, "smart_sl_mode", "external_guard_mode") == "enforce"

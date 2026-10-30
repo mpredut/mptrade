@@ -2301,10 +2301,26 @@ def sync_sibling_symbol_telemetry(
                         pinfo[k] = v
             sib_micro = casefold_get(microstructure, cand)
             if isinstance(sib_micro, dict) and sib_micro:
+                _micro_px_keys = {
+                    "best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px",
+                    "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
+                    "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
+                }
+                p_px_m = safe_float(pinfo.get("price"), 0.0)
+                s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(
+                    sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
+                )
+                micro_px_diverged = p_px_m > 0.0 and s_ob_mid > 0.0 and abs(p_px_m - s_ob_mid) / s_ob_mid > 0.10
                 if sym not in microstructure:
-                    microstructure[sym] = dict(sib_micro)
+                    microstructure[sym] = {
+                        mk: mv
+                        for mk, mv in sib_micro.items()
+                        if not (micro_px_diverged and mk in _micro_px_keys)
+                    }
                 else:
                     for mk, mv in sib_micro.items():
+                        if micro_px_diverged and mk in _micro_px_keys:
+                            continue
                         if microstructure[sym].get(mk) is None and mv is not None:
                             microstructure[sym][mk] = mv
         p_cur = safe_pos_float(pinfo.get("price"), default=0.0) or 0.0

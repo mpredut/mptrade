@@ -11,7 +11,6 @@ import importlib.util
 import os
 import sys
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:

@@ -18,10 +18,11 @@ import json
 import math
 import os
 import sys
+import time as _time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 from zoneinfo import ZoneInfo
 
 HTTP_TIMEOUT = 25
@@ -544,9 +545,6 @@ ET = ZoneInfo("America/New_York")
 
 def is_us_rth_open(now_ts: float | None = None) -> bool:
     """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
-    import time as _time
-    from datetime import time as dt_time
-
     ts = safe_pos_float(now_ts, _time.time()) or _time.time()
     try:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)

@@ -1423,7 +1423,6 @@ def test_provider_env_value_and_order_price_validation(tmp_path):
 def test_venue_market_data_client_and_strategy_edge_cases(tmp_path, monkeypatch):
     """Verify null-safe Yahoo/Kraken/Hyperliquid payloads and T212/HL strategy edge cases."""
     import importlib.util
-    import io
     import os
     from unittest.mock import MagicMock
 
@@ -2152,10 +2151,8 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
     from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
     from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
-    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
     from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
-    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
     from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
     from intelligence.sentiment.guards.high_stake_guard import compute_24h_price_metrics, extract_symbol_recent_fills
     from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
@@ -2840,12 +2837,11 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     spec_pa.loader.exec_module(t212_pa)
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
-    # 7. cachepaths, tradeall_price_archiver._symbols, kraken backtest_trail, and binance_api.trailing_stop
+    # 7. cachepaths, tradeall_price_archiver._symbols, and kraken backtest_trail
     import cachepaths
     import pytest
     import tradeall_price_archiver
     from kraken import backtest_trail as k_bt_tr
-    from binance_api import trailing_stop as b_ts
 
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
     monkeypatch.setenv("BINANCE_CACHE_DIR", str(tmp_path))
@@ -3239,9 +3235,9 @@ def test_batch8_hardening():
 
 def test_batch9_hardening(tmp_path):
     import pandas as pd
-    from offline.legacy_tools import convertor, gen_cryptography, test as legacy_test, test2 as legacy_test2
+    from offline.legacy_tools import gen_cryptography, test as legacy_test, test2 as legacy_test2
 
-    # 3. legacy_tools convertor, gen_cryptography, test, test2 are import-safe and handle NaN
+    # 3. legacy_tools gen_cryptography, test, test2 are import-safe and handle NaN
     p_priv = tmp_path / "priv.pem"
     p_pub = tmp_path / "pub.pem"
     pub_b64 = gen_cryptography.generate_ed25519_keypair(str(p_priv), str(p_pub))
@@ -4222,7 +4218,6 @@ def test_batch25_datasets_rtrade_pair_exit_manager_and_verify_tools_hardening():
 def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(tmp_path, monkeypatch):
     import asyncio
     from collections import defaultdict, deque
-    from types import SimpleNamespace
     import orchestratorOS.agy.protobuf as pb
     from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
     from orchestratorOS.supervisor.autonomous_ai_reconciler import AutonomousAIReconciler
@@ -4303,7 +4298,6 @@ def test_batch26_orchestrator_protobuf_monitor_reconciler_and_gateway_hardening(
 def test_batch27_research_syspath_and_ml_forecast_hardening():
     import numpy as np
     import sys
-    import offline.research.hybrid_reentry.harness as hr_harness
     from offline.research.ml_forecast.forecast import build_dataset
     from offline.research.ml_forecast.vol_chronos import realized_vol_series
 
@@ -5368,7 +5362,6 @@ def test_batch37b_survival_t_cache_qlimit_external_guard_and_mt_state_hardening(
     import external_order_guard as eog
     from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
     import monitortrades as mt
-    from state_io import previous_generation_path
 
     # 1. survival._effective_t_cache_file respects MPTRADE_CACHEDB_DIR and estimate_T strips slashes before fetch_klines
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
@@ -6393,7 +6386,6 @@ def test_chunked_window_signals_downsample_zero_ts_and_benchmark_alignment():
     )
     from offline.research.monitortrades_backtest.sweep_mt_models import (
         compute_all_signals,
-        compute_window_signals_from_bounds,
     )
     from offline.runners.kraken_financial_benchmark import _scenario_windows
     from strategies.spot_engine import StratParams

@@ -12,6 +12,9 @@ from botcore import safe_float as _parse_finite_float
 from cachepaths import canonical_base_asset, normalize_venue_name
 from intelligence.sentiment.guards.high_stake_guard import (
     _VENUE_DEFAULT_FEE_SPECS,
+    _build_vp_position_dict,
+    _compute_horizon_range_dict,
+    compute_liquidation_clusters,
     enrich_microstructure_cvd,
     resolve_symbol_price as _resolve_symbol_price,
     round_opt_px as _round_opt_px,
@@ -49,26 +52,11 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     hi_f = _parse_finite_float(hi, 0.0)
     pos_sfx = ""
     if px_f > 0 and lo_f > 0 and hi_f > lo_f:
-        pos_v = (
-            pinfo.get(f"pos_{horizon}_pct")
-            if pinfo.get(f"pos_{horizon}_pct") is not None
-            else round(((px_f - lo_f) / (hi_f - lo_f)) * 100.0, 1)
-        )
-        dd_v = (
-            pinfo.get(f"dd_{horizon}_high_pct")
-            if pinfo.get(f"dd_{horizon}_high_pct") is not None
-            else round((px_f / hi_f - 1.0) * 100.0, 2)
-        )
-        bnc_v = (
-            pinfo.get(f"bounce_{horizon}_low_pct")
-            if pinfo.get(f"bounce_{horizon}_low_pct") is not None
-            else round((px_f / lo_f - 1.0) * 100.0, 2)
-        )
-        spn_v = (
-            pinfo.get(f"span_{horizon}_pct")
-            if pinfo.get(f"span_{horizon}_pct") is not None
-            else round((hi_f / lo_f - 1.0) * 100.0, 2)
-        )
+        fb_rng = _compute_horizon_range_dict(px_f, lo_f, hi_f, horizon)
+        pos_v = pinfo.get(f"pos_{horizon}_pct") if pinfo.get(f"pos_{horizon}_pct") is not None else fb_rng.get(f"pos_{horizon}_pct")
+        dd_v = pinfo.get(f"dd_{horizon}_high_pct") if pinfo.get(f"dd_{horizon}_high_pct") is not None else fb_rng.get(f"dd_{horizon}_high_pct")
+        bnc_v = pinfo.get(f"bounce_{horizon}_low_pct") if pinfo.get(f"bounce_{horizon}_low_pct") is not None else fb_rng.get(f"bounce_{horizon}_low_pct")
+        spn_v = pinfo.get(f"span_{horizon}_pct") if pinfo.get(f"span_{horizon}_pct") is not None else fb_rng.get(f"span_{horizon}_pct")
         pos_sfx = (
             f" pos_{horizon}={pos_v}% (dd_high={_parse_finite_float(dd_v, 0.0):+.2f}%, "
             f"bounce_low={_parse_finite_float(bnc_v, 0.0):+.2f}%, span={spn_v}%)"
@@ -326,11 +314,23 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             and pinfo.get("val_px") is not None
             and pinfo.get("vah_px") is not None
         ):
-            poc_d = _parse_finite_float(pinfo.get("poc_dist_pct"), 0.0)
-            val_d = _parse_finite_float(pinfo.get("val_dist_pct"), 0.0)
-            vah_d = _parse_finite_float(pinfo.get("vah_dist_pct"), 0.0)
-            va_pos = pinfo.get("va_pos_pct")
-            va_reg = pinfo.get("va_regime") or "INSIDE_VA"
+            fb_vp = _build_vp_position_dict(
+                px_f,
+                _parse_finite_float(pinfo.get("poc_px"), 0.0),
+                _parse_finite_float(pinfo.get("val_px"), 0.0),
+                _parse_finite_float(pinfo.get("vah_px"), 0.0),
+            )
+            poc_d = _parse_finite_float(
+                pinfo.get("poc_dist_pct") if pinfo.get("poc_dist_pct") is not None else fb_vp.get("poc_dist_pct"), 0.0
+            )
+            val_d = _parse_finite_float(
+                pinfo.get("val_dist_pct") if pinfo.get("val_dist_pct") is not None else fb_vp.get("val_dist_pct"), 0.0
+            )
+            vah_d = _parse_finite_float(
+                pinfo.get("vah_dist_pct") if pinfo.get("vah_dist_pct") is not None else fb_vp.get("vah_dist_pct"), 0.0
+            )
+            va_pos = pinfo.get("va_pos_pct") if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
+            va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
             extras.append(
                 f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%], "
                 f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
@@ -484,6 +484,19 @@ def _format_microstructure_section(
                 return f"${vf / 1_000.0:.1f}K"
             return f"${vf:.0f}"
 
+        raw_p = (
+            prices_and_trends.get(sym)
+            if isinstance(prices_and_trends.get(sym), dict)
+            else next(
+                (
+                    v
+                    for k, v in prices_and_trends.items()
+                    if isinstance(v, dict) and canonical_base_asset(k) == b_canon_3b
+                ),
+                {},
+            )
+        )
+        p_ctx = {**raw_p, "price": cur_px} if cur_px > 0.0 else (raw_p or None)
         if (
             minfo.get("depth_1pct_bid_usd") is None
             or minfo.get("est_slip_2k_bps") is None
@@ -491,9 +504,11 @@ def _format_microstructure_section(
             or minfo.get("cvd_regime") is None
             or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
         ):
-            raw_p = prices_and_trends.get(sym) if isinstance(prices_and_trends.get(sym), dict) else {}
-            p_ctx = {**raw_p, "price": cur_px} if cur_px > 0.0 else (raw_p or None)
             enrich_microstructure_cvd(minfo, p_ctx)
+        if minfo.get("long_liq_px") is None or minfo.get("short_liq_px") is None:
+            liq_lazy = compute_liquidation_clusters(p_ctx, minfo)
+            if liq_lazy:
+                minfo.update(liq_lazy)
         d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
         depth_1pct_sfx = (

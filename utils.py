@@ -1,15 +1,22 @@
 import base64
+from datetime import datetime
+from functools import lru_cache
+import math
 import os
 import platform
 import random
 import re as _re
 import time
-import math
-from datetime import datetime
 import nacl.signing
 import numpy as np
 
 import botcore   # single are_close/diff_percent source shared by fleet and bots
+from cachepaths import (
+    cache_path as _cp_cache_path,
+    get_cachedb_dir,
+    resolve_cachedb_filepath,
+)
+from state_io import read_text_file
 
 
 # Known quote suffixes in matching order; the first match wins. Centralized on
@@ -112,9 +119,6 @@ def timestampToTime(timestamp_ms):
 def timeMsToHMS(timestamp_ms):
     ts_ms = botcore.safe_nonneg_float(timestamp_ms, default=None)
     return timeToHMS(ts_ms / 1000.0) if ts_ms is not None else "N/A"
-
-
-from functools import lru_cache
 
 
 @lru_cache(maxsize=256)
@@ -230,8 +234,6 @@ gaussian_weights = gaussian_weights_from_idx
 # ── Ed25519 signing ──
 def _load_ed25519_signing_key():
     try:
-        from state_io import read_text_file
-
         pem_data = read_text_file("keys/ed25519_private.pem")
         b64match = _re.search(
             r"-----BEGIN PRIVATE KEY-----(.*?)-----END PRIVATE KEY-----",
@@ -269,12 +271,6 @@ All cache files (cache_*.json/.jsonl + .meta) live in the
 
 The folder can be overridden through the environment variable BINANCE_CACHE_DIR.
 """
-from cachepaths import (
-    cache_path as _cp_cache_path,
-    get_cachedb_dir,
-    resolve_cachedb_filepath,
-)
-
 CACHE_DIR = get_cachedb_dir()
 
 
