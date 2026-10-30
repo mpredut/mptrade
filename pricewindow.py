@@ -237,7 +237,7 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     falling back to ``DEFAULT_STEP_WOLS_POWER`` (2.0).
     """
     if "MPTRADE_STEP_WOLS_POWER" in os.environ:
-        return max(0.0, _env_float("MPTRADE_STEP_WOLS_POWER", DEFAULT_STEP_WOLS_POWER))
+        return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
     raw_est = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
     if raw_est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
         return 3.0
@@ -966,7 +966,7 @@ class PriceWindow:
         blen = len(self._trend_buf.prices)
         if eff_power is None:
             eff_power = step_wols_power_for_symbol(self.symbol)
-        noise_gate_k = max(0.0, _env_float("MPTRADE_TREND_NOISE_GATE_K", TREND_NOISE_GATE_K))
+        noise_gate_k = max(0.0, float_env("MPTRADE_TREND_NOISE_GATE_K", default=TREND_NOISE_GATE_K))
         key = (blen, self._trend_buf.offset, n, self.sample_rate_sec, self.window_seconds,
                _active_estimator(), eff_power, noise_gate_k)
         if self._cached_eval_key != key or self._cached_eval_val is None:

@@ -3479,7 +3479,7 @@ def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external
     monkeypatch.setattr(order_guard, "_load_margins", lambda: m_llm_shadow)
     snap = ReentrySnapshot(
         symbol="TAOUSDC",
-        current_price=200.0,
+        current_price=210.0,
         last_sell_price=210.0,
         last_exit_kind="STOP",
         post_sell_peak=210.0,
@@ -3490,7 +3490,7 @@ def test_iteration15_post_stop_reentry_mode_hierarchy_smart_sl_recovery_external
         trend_down=False,
     )
     allowed, _, _, _ = mt._apply_post_stop_ai_guard(
-        "TAOUSDC", 200.0, 210.0, 1000.0, snap, 1000.0, None, 5.0, inst=None
+        "TAOUSDC", 210.0, 210.0, 1000.0, snap, 1000.0, None, 5.0, inst=None
     )
     assert allowed is True
     assert "TAOUSDC" in mt._POST_STOP_AI_NOT_ENFORCED
@@ -6396,7 +6396,7 @@ def test_iteration33_zero_timestamp_fidelity_and_monitortrades_reentry_nan_safet
 
     re_snap = ReentrySnapshot(
         symbol="BTCUSDC",
-        current_price=102.0,
+        current_price=105.0,
         last_sell_price=105.0,
         last_exit_kind="STOP",
         post_sell_trough=float("nan"),
@@ -6404,7 +6404,7 @@ def test_iteration33_zero_timestamp_fidelity_and_monitortrades_reentry_nan_safet
     )
     allowed, _, _, _ = mt._apply_post_stop_ai_guard(
         symbol="BTCUSDC",
-        current_price=102.0,
+        current_price=105.0,
         sell_price=105.0,
         sell_time=1700000000.0,
         reentry_snap=re_snap,
@@ -6414,7 +6414,7 @@ def test_iteration33_zero_timestamp_fidelity_and_monitortrades_reentry_nan_safet
         inst=SimpleNamespace(provider_name="binance", params={"bypass_guards": []}),
     )
     assert allowed is True
-    assert len(captured_trough) == 1 and math.isfinite(captured_trough[0]) and captured_trough[0] == 102.0
+    assert len(captured_trough) == 1 and math.isfinite(captured_trough[0]) and captured_trough[0] == 105.0
 
 
 def test_iteration34_order_guard_reference_nan_safety_and_llm_order_guard(monkeypatch):
