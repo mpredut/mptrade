@@ -1248,7 +1248,7 @@ def enrich_microstructure_cvd(
         ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
         has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
         chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
-        div_reg = str(minfo.get("div_regime") or "").strip().lower()
+        div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
         if cvd_usd > 0.0:
             if has_chg_15m:
                 minfo["cvd_regime"] = "ask_absorbing" if chg_15m <= 0.02 else "aggressive_buying"

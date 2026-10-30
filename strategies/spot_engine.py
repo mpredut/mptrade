@@ -548,6 +548,7 @@ class Strategy:
             state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
         )
         self._state_write_failed = False
+        self._state_file_mtime: float = 0.0
         raw_state = initial_state if isinstance(initial_state, dict) else self._load()
         self.s = self._sanitize_spot_state(raw_state)
         self.exit_manager: PositionExitManager | None = (
@@ -614,8 +615,30 @@ class Strategy:
             logger=log, fail_closed=not self.dry_run,
         )
 
+    def _record_state_file_mtime(self) -> None:
+        if self.replay_mode or not isinstance(self.state_file, str):
+            return
+        try:
+            if os.path.exists(self.state_file):
+                self._state_file_mtime = float(os.path.getmtime(self.state_file))
+        except OSError:
+            pass
+
+    def _reload_if_externally_modified(self) -> None:
+        if self.replay_mode or self._state_write_failed or not isinstance(self.state_file, str):
+            return
+        try:
+            if os.path.exists(self.state_file):
+                disk_mtime = float(os.path.getmtime(self.state_file))
+                if disk_mtime > self._state_file_mtime + 1e-3:
+                    self.s = self._load()
+        except OSError:
+            pass
+
     def _load(self) -> dict:
-        return self._sanitize_spot_state(self._store().load())
+        loaded = self._sanitize_spot_state(self._store().load())
+        self._record_state_file_mtime()
+        return loaded
 
     @staticmethod
     def _sanitize_spot_state(state: dict | None) -> dict:
@@ -715,6 +738,7 @@ class Strategy:
         self._state_write_failed = True
         if self._store().save(self.s):
             self._state_write_failed = False
+            self._record_state_file_mtime()
 
     def _persist_pending_intent(self, pending: dict | None) -> None:
         self.s["pending_intent"] = None if pending is None else dict(pending)
@@ -2809,6 +2833,7 @@ class Strategy:
                         if self._state_write_failed:
                             time.sleep(sleep_sec)
                             continue
+                    self._reload_if_externally_modified()
                     self.reconcile(price)
                     self.step(price)
                     self._save()
