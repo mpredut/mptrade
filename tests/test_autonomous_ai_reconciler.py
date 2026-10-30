@@ -1806,7 +1806,6 @@ def test_xbt_alias_7d_archive_with_24h_present_and_cross_venue_inheritance(tmp_p
     assert snap.portfolio_summary["kraken_cycles"]["XBTUSD"]["dd_pct"] == 6.0
 
     # 3. Verify gateway resolves BTCUSD -> XBTUSD on Kraken and falls back to cache_24_price when cache_current_price is absent
-    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
     fake_kraken_xbt = SimpleNamespace(
         name="KRAKEN_XBT",
@@ -3522,7 +3521,6 @@ def test_harvest_recent_orders_multi_venue_cache_and_symbol_collision(temp_env):
 
 def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
     from intelligence.sentiment.guards.high_stake_guard import (
-        extract_symbol_recent_fills,
         harvest_recent_orders_and_enrich_positions,
     )
     from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
@@ -4139,6 +4137,91 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert hl_fill_st["status"] == "FILLED"
     assert hl_fill_st["fill_px"] == pytest.approx(61.42)
     assert hl_fill_st["filled_qty"] == pytest.approx(32.5)
+
+
+def test_iteration18_normalize_order_partial_fills_and_pretrade_freshest_venue(tmp_path):
+    from intelligence.sentiment.guards.high_stake_guard import (
+        collect_pretrade_telemetry,
+        extract_symbol_recent_fills,
+        harvest_recent_orders_and_enrich_positions,
+    )
+    from providers.base import normalize_order
+
+    # 1. normalize_order and extract_symbol_recent_fills use executed qty on partial fills and skip resting HL orders
+    norm_partial = normalize_order(
+        {"orderId": "501", "side": "BUY", "price": "100.0", "qty": "10.0", "executedQty": "4.0", "time": 1000}
+    )
+    assert norm_partial["qty"] == pytest.approx(4.0)
+
+    hl_fills = extract_symbol_recent_fills(
+        [
+            {"oid": 701, "side": "B", "limitPx": "50.0", "origSz": "10.0", "sz": "10.0", "timestamp": 1000},
+            {"oid": 702, "side": "B", "limitPx": "52.0", "origSz": "10.0", "sz": "6.0", "status": "OPEN", "timestamp": 2000},
+        ]
+    )
+    assert hl_fills is not None
+    assert len(hl_fills["recent_buys"]) == 1
+    assert hl_fills["last_buy"]["price"] == pytest.approx(52.0)
+    assert hl_fills["last_buy"]["qty"] == pytest.approx(4.0)
+
+    # 2. harvest_recent_orders_and_enrich_positions clears stale active_avg_buy_px when cyc_flat is True
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_trade_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "SOLUSDC": [
+                        {"ordertxid": "K1", "type": "buy", "price": "150.0", "vol_exec": "2.0", "time": 1000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    positions = [{"symbol": "SOLUSDC", "venue": "kraken", "free_base": 0.0, "free_quote": 500.0, "price": 140.0}]
+    ro_map = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        {},
+        positions,
+        {"SOLUSDC": {"price": 140.0}},
+        {"SOLUSDC": {"qty": 0.0, "resting_orders": [], "last_buy_price": 150.0}},
+        {},
+        {},
+    )
+    assert "active_avg_buy_px" not in positions[0]
+    assert "lowest_buy_px" not in positions[0]
+    assert "active_avg_buy_px" not in ro_map["SOLUSDC"]
+
+    # 3. collect_pretrade_telemetry selects the freshest venue fills across all 4 order caches
+    (cache_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        {"orderId": 1, "side": "BUY", "status": "FILLED", "price": "280.0", "executedQty": "1.0", "time": 1000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_trade_hyperliquid.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        {"oid": 2, "side": "A", "px": "325.0", "sz": "1.5", "time": 5000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    tel = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cache_dir))
+    assert "Last Action=SELL" in tel.get("Recent Venue Fills", "")
+    assert "325.0" in tel.get("Recent Venue Fills", "")
+
 
 
 

@@ -461,7 +461,7 @@ def normalize_order(order: dict) -> dict:
     return {
         "side": extract_order_side(order),
         "price": extract_order_price(order),
-        "qty": extract_order_qty(order),
+        "qty": extract_executed_qty(order),
         "timestamp": extract_timestamp_ms(order),
     }
 

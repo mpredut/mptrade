@@ -554,13 +554,17 @@ def extract_symbol_recent_fills(
         resolve_order_origin,
     )
 
+    _explicit_exec_keys = (*_EXEC_QTY_KEYS, "filled", "origSz", "resting", "msg")
     valid = [
         o
         for o in orders_list
         if isinstance(o, dict)
         and (
-            str(o.get("status") or "").strip().upper() not in _UNFILLED_ORDER_STATUSES
-            or any((safe_pos_float(o.get(k), 0.0) or 0.0) > 0.0 for k in _EXEC_QTY_KEYS)
+            extract_executed_qty(o, default=0.0) > 0.0
+            or (
+                str(o.get("status") or "").strip().upper() not in _UNFILLED_ORDER_STATUSES
+                and not any(k in o for k in _explicit_exec_keys)
+            )
         )
     ]
     if not valid:
@@ -2504,8 +2508,17 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc["cost_usd"] = 0.0
                 cyc["avg_cost_px"] = None
                 cyc["dd_pct"] = None
-                pos.pop("trailing_peak", None)
-                pos.pop("dd_from_peak_pct", None)
+                if isinstance(ro, dict):
+                    ro.pop("active_avg_buy_px", None)
+                for _stale_k in (
+                    "active_avg_buy_px",
+                    "pnl_vs_avg_pct",
+                    "lowest_buy_px",
+                    "pnl_vs_lowest_buy_pct",
+                    "trailing_peak",
+                    "dd_from_peak_pct",
+                ):
+                    pos.pop(_stale_k, None)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]
             elif cyc_flat:
@@ -3543,7 +3556,8 @@ def collect_pretrade_telemetry(
             read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
         )
         audit_origin_map = _load_recent_audit_origins(cachedb_dir)
-        fills = {}
+        fills: Optional[Dict[str, Any]] = None
+        best_fill_ts = -1.0
         for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
             ord_path = os.path.join(cachedb_dir, ord_file)
             ord_data = read_json_cached(ord_path)
@@ -3551,13 +3565,19 @@ def collect_pretrade_telemetry(
             if not isinstance(o_items, dict):
                 continue
             orders_for_sym = next((val for cand in sym_variants if (val := casefold_get(o_items, cand))), [])
-            fills = extract_symbol_recent_fills(
+            cand_fills = extract_symbol_recent_fills(
                 orders_for_sym,
                 known_ai_order_ids=known_ai_oids,
                 audit_origin_map=audit_origin_map,
             )
-            if fills:
-                break
+            if cand_fills:
+                cand_ts = max(
+                    safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
+                    safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
+                )
+                if fills is None or cand_ts > best_fill_ts:
+                    fills = cand_fills
+                    best_fill_ts = cand_ts
         if fills:
             lb = fills.get("last_buy") or {}
             ls = fills.get("last_sell") or {}
