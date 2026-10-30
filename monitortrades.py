@@ -1743,9 +1743,13 @@ def _execute_reentry_buy(
     """Submit guarded re-entry BUY order and clear tracking state upon submission."""
     _default_offset = min(MT_BUY_PRICE_OFFSET, current_price * 0.01)
     _buy_offset = inst.param("mt", "buy_price_offset", _default_offset, float)
+    order_price = current_price + _buy_offset
     reentry_outcome_ctx = {}
-    below_sell = 0.0 < safe_float(current_price, 0.0) < safe_float(sell_price, 0.0)
+    sell_price_f = safe_float(sell_price, 0.0)
+    below_sell = 0.0 < safe_float(current_price, 0.0) < sell_price_f
     if below_sell:
+        if order_price >= sell_price_f:
+            order_price = current_price
         _POST_STOP_AI_NOT_ENFORCED.discard(symbol)
         reentry_bypass = set(_REENTRY_BELOW_SELL_BYPASS_GUARDS)
     elif last_exit_kind == "STOP":
@@ -1759,7 +1763,7 @@ def _execute_reentry_buy(
     if applied_scale_f is not None and 0.0 < applied_scale_f < 1.0 and not _is_simulated_env_or_inst(inst):
         extra_kwargs["applied_scale"] = applied_scale_f
     placed = _place_guarded(
-        inst, "BUY", current_price + _buy_offset, buy_qty, min_qty,
+        inst, "BUY", order_price, buy_qty, min_qty,
         safeback_seconds=sbs, cancelorders=True,
         hours=MT_BUY_SAFEBACK_HOURS,
         bypass_guards=reentry_bypass,

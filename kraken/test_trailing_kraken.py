@@ -479,6 +479,42 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(c.orders[0]["side"], "sell")
         self.assertTrue(any("sell trend deferral expired" in m for m in logs))
 
+    def test_rebuy_clamps_limit_below_sell_price_and_enforces_daily_limit_above_sell_price(self):
+        from unittest.mock import patch
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        ts.check_once()  # peak=60.0
+        c.price = 48.0   # -20% > 18% -> SELL @ 48.0
+        ts.check_once()
+        c.total = 0.0
+        ts.check_once()  # terminal SELL fill confirmed -> rebuy armed with sell_price=48.0, low=48.0
+
+        # Dip to 47.0, then bounce to 47.80 (+1.7% > 1.2% bounce, and 47.80 < 48.0 sell_price,
+        # while 47.80 * 1.005 = 48.039 >= 48.0 sell_price -> limit must clamp to 47.80!)
+        c.price = 47.0
+        ts.check_once()
+        c.price = 47.80
+        ts.check_once()
+        buy_orders = [o for o in c.orders if o["side"] == "buy"]
+        self.assertEqual(len(buy_orders), 1)
+        self.assertAlmostEqual(buy_orders[0]["price"], 47.80)
+
+        # Now test rebuy above sell_price (price=49.0 >= sell_price=48.0) when daily_limit_guard blocks GO1
+        self.tearDown(); self.setUp()
+        c2 = FakeK(60.0, total=25.0, held=0.0)
+        ts2 = self.ts(c2)
+        ts2.check_once()
+        c2.price = 48.0
+        ts2.check_once()
+        c2.total = 0.0
+        ts2.check_once()  # rebuy armed with sell_price=48.0
+        c2.price = 49.0   # +2.08% > 1.2%, above sell_price=48.0
+        ts2.executor._executor.get_orders = lambda *_a, **_k: []
+        with patch("kraken.trailing_stop.order_guard.daily_limit_guard", return_value=(False, "daily_limit_exceeded")):
+            ts2.check_once()
+        self.assertEqual([o for o in c2.orders if o["side"] == "buy"], [])
+
+
 
 
 if __name__ == "__main__":

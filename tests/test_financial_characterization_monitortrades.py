@@ -1760,6 +1760,24 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
             self.run_tick(inst_reentry, trend_up=True, gain=0.05, loss=0.03, now=NOW + 60)
             self.assertEqual(len(inst_reentry.placed), 1)
 
+            # Verify sub-sell re-entry clamps order_price when current_price + _buy_offset >= sell_price:
+            inst_clamp = FakeInstrument(
+                price=99.5,
+                free=0.0,
+                fills=[],
+                params={"mt.buy_price_offset": 1.0},
+            )
+            placed_clamp = mt._execute_reentry_buy(
+                inst_clamp, sym, 99.5, 2.0, 0.001, 60.0,
+                "STOP", {"sell_time": float(stop_sell_ts)},
+                sell_price=100.0,
+            )
+            self.assertTrue(placed_clamp)
+            self.assertEqual(len(inst_clamp.placed), 1)
+            self.assertAlmostEqual(inst_clamp.placed[0]["price"], 99.5)
+            self.assertEqual(inst_clamp.placed[0]["kwargs"].get("bypass_guards"), {"all"})
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -534,7 +534,8 @@ class TrailingCore:
                     f"  ⚠ [TRAIL] {asset}: -{trail}% sell trend deferral expired "
                     f"({elapsed:.0f}s >= {self.sell_trend_defer_max_sec:.0f}s) — forcing emergency SELL"
                 )
-            st.pop("sell_defer_started_at", None)
+            else:
+                st.pop("sell_defer_started_at", None)
             if self.enabled:
                 st.pop("warmup_at", None)
                 # Emergency stop triggered: attempt to unlock coins locked in resting TP orders

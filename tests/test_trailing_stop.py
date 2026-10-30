@@ -1003,6 +1003,33 @@ class TestMinProfit(Base):
             self.assertEqual(st["peak"], 250.0)
             self.assertNotIn("warmup_at", st)
 
+        with self.subTest(msg="expired_sell_trend_deferral_persists_if_order_canceled_zero_fill"):
+            self.tearDown(); self.setUp()
+            from unittest.mock import patch
+            api = FakeApi(250.0, free=2.0)
+            ts = self.ts(api)
+            ts._trend_value = lambda _s: 1.0
+            with patch("trailing_core.time.time", return_value=1000.0):
+                ts.check_once()  # peak = 250.0
+                api.price = 190.0  # -24% > 22%
+                ts.check_once()  # t=1000s: deferred by UP trend
+            self.assertEqual(self.po.orders, [])
+
+            # At t=1420s (420s elapsed), deferral expires -> SELL attempt 1
+            with patch("trailing_core.time.time", return_value=1420.0):
+                ts.check_once()
+            self.assertEqual(len(self.po.orders), 1)
+
+            # Suppose SELL attempt 1 is canceled with 0 fill; next tick must retry immediately
+            # at t=1425s without starting a new 420s deferral timer!
+            self.po.status = "canceled"
+            with patch("trailing_core.time.time", return_value=1425.0):
+                ts.check_once()  # reconciles canceled 0-fill
+                self.po.status = "closed"
+                ts.check_once()  # retries immediately because sell_defer_started_at=1000.0 is preserved
+            self.assertEqual(len(self.po.orders), 2)
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

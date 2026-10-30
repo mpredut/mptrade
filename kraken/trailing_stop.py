@@ -322,6 +322,16 @@ class KrakenTrailing(TrailingAdapterBase):
 
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
+            if callable(getattr(self.executor._executor, "get_orders", None)):
+                dl_res = order_guard.daily_limit_guard(
+                    self.executor._executor, pair, side.upper(), bypass_guards=bypass_guards,
+                )
+                dl_ok = dl_res[0] if isinstance(dl_res, tuple) else bool(dl_res)
+                dl_reason = dl_res[1] if isinstance(dl_res, tuple) and len(dl_res) > 1 else "daily_limit"
+                if not dl_ok:
+                    intent["refusal_reason"] = dl_reason or "daily_limit"
+                    persist(None)
+                    return TrackedOrderResult(outcome="refused", intent=intent, status=None)
             allowed, reason, suggested_scale = order_guard.check_intelligence_guards(
                 self.executor._executor, pair, side.upper(), price,
                 qty=qty,
@@ -352,6 +362,7 @@ class KrakenTrailing(TrailingAdapterBase):
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
                 qty = sq_pos
                 intent["requested_qty"] = qty
+                intent["submitted_qty"] = qty
 
         result = self.order_lifecycle.submit(
             intent, persist=persist,
@@ -392,6 +403,8 @@ class KrakenTrailing(TrailingAdapterBase):
         self._sync_retry_count_from_state(pair, "REBUY", persist)
         anchor_val, sell_price_val = extract_rebuy_anchors(rb, price)
         bypass_guards = resolve_rebuy_bypass_guards(price, sell_price_val)
+        if "all" in bypass_guards and sell_price_val > 0 and limit >= sell_price_val:
+            limit = price
         intent = self._order_intent(
             "REBUY", key, asset, pair, qty, limit,
             anchor=anchor_val,
