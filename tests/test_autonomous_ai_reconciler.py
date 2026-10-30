@@ -4269,6 +4269,37 @@ def test_iteration19_sibling_diverged_micro_px_and_lazy_prompt_vp_liq_formatting
     assert "short_liq=$" in joined_3b
 
 
+def test_iteration20_apply_asset_scope_filter_positions_and_cash():
+    from intelligence.sentiment.guards.high_stake_guard import apply_asset_scope_filter
+
+    ps_eq = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "BTCUSDC"},
+            {"venue": "Trading212", "symbol": "NVDA_US_EQ"},
+        ],
+        "venue_quote_cash": {
+            "binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1200.0},
+            "t212:USD": {"venue": "Trading212", "asset": "USD", "free": 850.0},
+        },
+        "assetguardian_state": {"BTCUSDC": {"mode": "protect"}},
+        "smart_stop_loss_state": {"BTCUSDC": {"active": True}},
+    }
+    pt_eq, _ = apply_asset_scope_filter(
+        {"BTCUSDC": {"price": 80000.0}, "NVDA_US_EQ": {"price": 135.0}},
+        {},
+        ps_eq,
+        "equities",
+        {},
+        {},
+    )
+    assert list(pt_eq.keys()) == ["NVDA_US_EQ"]
+    assert [p["symbol"] for p in ps_eq["tradable_positions"]] == ["NVDA_US_EQ"]
+    assert list(ps_eq["venue_quote_cash"].keys()) == ["t212:USD"]
+    assert "assetguardian_state" not in ps_eq
+    assert "smart_stop_loss_state" not in ps_eq
+
+
+
 
 
 
