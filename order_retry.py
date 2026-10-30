@@ -62,7 +62,7 @@ from providers.strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
 )
-from state_io import atomic_text_writer
+from state_io import atomic_write_jsonl
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_ROOT, "config.env"))
@@ -1666,9 +1666,7 @@ def resolve(symbol, side):
 
 def _write_nolock(items):
     """Replace the queue file atomically while the caller holds the lock."""
-    with atomic_text_writer(QUEUE_FILE) as f:
-        for rec in items:
-            f.write(json.dumps(rec) + "\n")
+    atomic_write_jsonl(QUEUE_FILE, items)
 
 
 def rewrite(items):

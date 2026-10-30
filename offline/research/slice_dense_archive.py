@@ -8,7 +8,6 @@ rulata intreaga (14 iul->azi: ~1M puncte/simbol, ~8h/rulare la rata observata).
 
 Usage: slice_dense_archive.py <symbol> <days> [out_path]
 """
-import json
 import os
 import sys
 
@@ -17,7 +16,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from botcore import safe_pos_float
 from cachepaths import cache_path, cache_symbol_variants
-from state_io import atomic_write_text, read_jsonl_records
+from state_io import atomic_write_jsonl, read_jsonl_records
 
 
 def ts_of(r) -> float:
@@ -64,7 +63,7 @@ def main():
     cutoff = last_ts - days * 86400.0 * ts_scale
     sliced = [r for r in rows if ts_of(r) >= cutoff]
 
-    atomic_write_text(out, "".join(json.dumps(r) + "\n" for r in sliced))
+    atomic_write_jsonl(out, sliced)
 
     print(f"[slice] {symbol}: {len(rows)} -> {len(sliced)} puncte (ultimele {days}z) -> {out}")
 

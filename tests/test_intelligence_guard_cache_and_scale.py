@@ -17051,4 +17051,61 @@ def test_iteration184_centralized_state_io_json_helpers_and_fetch_public_json(tm
     assert len(memo) == 1
 
 
+def test_iteration185_atomic_write_jsonl_bapi_snapshot_cache_rows_and_clean_order_id(tmp_path, monkeypatch):
+    import threading
+    import state_io
+    from binance_api import bapi_allorders as ao
+    import binance_api.market_data as md
+    from providers.base import clean_order_id
+
+    # 1. state_io.atomic_write_jsonl writes iterable of dicts atomically and matches read_jsonl_dicts
+    p_jsonl = tmp_path / "orders.jsonl"
+    data = [{"order_id": 1, "sym": "BTCUSDC"}, {"order_id": 2, "sym": "ETHUSDC"}]
+    state_io.atomic_write_jsonl(str(p_jsonl), data)
+    assert state_io.read_jsonl_dicts(str(p_jsonl)) == data
+
+    # 2. bapi_allorders.snapshot_cache_symbol_rows copies rows safely under lock and resolves variants
+    class DummyCacheManager:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.cache = {"BTCUSDC": [{"orderId": 100, "status": "FILLED"}]}
+            self.sync_called = False
+
+        def sync_account_reader_if_needed(self):
+            self.sync_called = True
+
+    mgr = DummyCacheManager()
+    rows = ao.snapshot_cache_symbol_rows(mgr, "BTC/USDC")
+    assert mgr.sync_called is True
+    assert rows == [{"orderId": 100, "status": "FILLED"}]
+    # Ensure rows are defensive copies (mutating snapshot does not mutate cache)
+    rows[0]["status"] = "CANCELED"
+    assert mgr.cache["BTCUSDC"][0]["status"] == "FILLED"
+
+    # 3. clean_order_id strictly validates positive integers, integer floats, and valid numeric strings
+    assert clean_order_id(12345) == "12345"
+    assert clean_order_id(12345.0) == "12345"
+    assert clean_order_id(0) is None
+    assert clean_order_id(-1) is None
+    assert clean_order_id(123.45) is None
+    assert clean_order_id(float("nan")) is None
+    assert clean_order_id(float("inf")) is None
+    assert clean_order_id(True) is None
+    assert clean_order_id(False) is None
+    assert clean_order_id({"id": 1}) is None
+    assert clean_order_id([1]) is None
+
+    # 4. market_data.fetch_ohlc_candles discards candles with inverted timestamps (close_time < open_time)
+    fake_klines = [
+        [1000, "10.0", "15.0", "9.0", "12.0", "1.0", 900, "12.0", 1, "0.5", "6.0", "0"],
+        [2000, "12.0", "18.0", "11.0", "17.0", "2.0", 2500, "34.0", 2, "1.0", "17.0", "0"],
+    ]
+    monkeypatch.setattr(md, "fetch_public_json", lambda *a, **kw: fake_klines)
+    candles = md.fetch_ohlc_candles("BTCUSDC", "1h", start_ms=1000, end_ms=3000)
+    assert len(candles) == 1
+    assert candles[0]["timestamp"] == 2
+    assert candles[0]["close"] == 17.0
+
+
+
 

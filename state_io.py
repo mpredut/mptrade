@@ -202,6 +202,16 @@ def atomic_write_json(path: str, value: Any, *, indent: int | None = None,
         )
 
 
+def atomic_write_jsonl(path: str, items: Any, *, ensure_ascii: bool = True,
+                       default: Any = None) -> None:
+    """Serialize an iterable of JSON-encodable objects to a JSONL file through ``atomic_text_writer``."""
+    dump_kwargs = {"default": default} if default is not None else {}
+    ea = _parse_bool_flag(ensure_ascii, True)
+    with atomic_text_writer(path) as handle:
+        for item in (items or ()):
+            handle.write(json.dumps(item, ensure_ascii=ea, **dump_kwargs) + "\n")
+
+
 def _rollback_generation(
     target_path: str,
     backup_path: str | None,

@@ -373,7 +373,7 @@ def test_atomic_write_json_default(tmp_path):
 
 
 def test_read_json_dict(tmp_path):
-    from state_io import read_json_dict, read_json_file, read_jsonl_dicts, read_jsonl_records
+    from state_io import atomic_write_jsonl, read_json_dict, read_json_file, read_jsonl_dicts, read_jsonl_records
     p_ok = tmp_path / "ok.json"
     atomic_write_json(p_ok, {"k": "v"})
     assert read_json_dict(str(p_ok)) == {"k": "v"}
@@ -401,6 +401,11 @@ def test_read_json_dict(tmp_path):
     assert read_jsonl_dicts(str(tmp_path / "missing.jsonl")) == []
     with pytest.raises(ValueError):
         read_jsonl_dicts(str(p_jsonl), strict=True)
+
+    p_out_jsonl = tmp_path / "written.jsonl"
+    atomic_write_jsonl(str(p_out_jsonl), [{"x": 10}, {"y": 20}])
+    assert read_jsonl_dicts(str(p_out_jsonl)) == [{"x": 10}, {"y": 20}]
+    assert p_out_jsonl.read_text(encoding="utf-8") == '{"x": 10}\n{"y": 20}\n'
 
 
 def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
