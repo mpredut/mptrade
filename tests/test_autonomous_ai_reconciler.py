@@ -5490,3 +5490,98 @@ def test_iteration38_whale_oi_fallback_kraken_cache_alias_and_orderbook_from_dic
     assert ob_snap.symbol == "BTCUSDC"
 
 
+def test_iteration39_cross_quote_trend_price_isolation_resolve_assets_and_bare_base_price(tmp_path):
+    from types import SimpleNamespace
+    from intelligence.sentiment.guards.high_stake_guard import (
+        enrich_cross_venue_trends,
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+        resolve_symbol_price,
+    )
+
+    # 1. enrich_cross_venue_trends inherits dimensionless slopes from BTCUSDC for XBTEUR without copying USD current_price
+    pt = {
+        "XBTEUR": {"price": None, "trend": 0, "growth_coefficient": 0.0},
+        "BTCUSD": {"price": None, "trend": 0, "growth_coefficient": 0.0},
+    }
+    trends_data = {
+        "items": {
+            "BTCUSDC": {
+                "current_price": 82000.0,
+                "final_trend": 1,
+                "slope_full": 0.0012,
+                "dynamic": {
+                    "222": {"slope_full": 0.0012, "final_trend": 1},
+                    "900": {"slope_full": 0.0008, "final_trend": 1},
+                    "9000": {"slope_full": 0.0004, "final_trend": 1},
+                },
+            }
+        }
+    }
+    enrich_cross_venue_trends(pt, trends_data, {}, {}, {}, {}, {})
+    assert pt["XBTEUR"]["slope_3_7m"] == 0.0012
+    assert pt["XBTEUR"]["price"] is None  # Must not leak USD price into EUR entry
+    assert pt["BTCUSD"]["price"] == 82000.0  # Compatible USD-family quote updates price
+
+    # 2. resolve_symbol_price resolves bare base key ('HYPE') for USD-family pairs ('HYPEUSDC') but not EUR pairs ('XBTEUR')
+    assert resolve_symbol_price("HYPEUSDC", {"HYPE": {"price": 24.5}}) == 24.5
+    assert resolve_symbol_price("XBTEUR", {"BTC": {"price": 82000.0}}) == 0.0
+    assert resolve_symbol_price("BTC", {"BTCUSDC": {"price": 82000.0}}, explicit_quote="EUR") == 0.0
+
+    # 3. harvest_tradable_positions_and_orders reuses resolve_assets (preserving T212 full ticker base)
+    t212_inst = SimpleNamespace(
+        symbol="NVDA_US_EQ",
+        provider_name="t212",
+        base=None,
+        quote=None,
+        params={},
+        _provider=SimpleNamespace(
+            get_current_price=lambda s: 120.0,
+            free_balance=lambda a: 2.0 if a == "NVDA_US_EQ" else (500.0 if a == "USD" else 0.0),
+        ),
+        open_orders=lambda: [],
+    )
+    positions, _, _, _ = harvest_tradable_positions_and_orders(
+        {"T212_NVDA": t212_inst},
+        {},
+        {},
+        {},
+    )
+    assert len(positions) == 1
+    assert positions[0]["base"] == "NVDA_US_EQ"
+    assert positions[0]["quote"] == "USD"
+    assert positions[0]["free_base"] == 2.0
+
+    # 4. harvest_recent_orders_and_enrich_positions matches bare Hyperliquid fills ('HYPE') for 'HYPEUSDC' position
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    (cache_dir / "cache_trade_hyperliquid.json").write_text(
+        '{"items": {"HYPE": [{"oid": 11, "side": "B", "px": "22.0", "sz": "5.0", "time": 1700000000000}]}}',
+        encoding="utf-8",
+    )
+    hl_pos = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "base": "HYPE",
+            "quote": "USDC",
+            "price": 0.0,
+            "free_base": 5.0,
+            "free_quote": 100.0,
+        }
+    ]
+    harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        {},
+        hl_pos,
+        {"HYPE": {"price": 24.5}},
+        {},
+        {},
+        {},
+    )
+    assert hl_pos[0]["price"] == 24.5
+    assert hl_pos[0]["active_avg_buy_px"] == 22.0
+    assert hl_pos[0]["effective_max_sell_usd"] == 122.5
+
+
+

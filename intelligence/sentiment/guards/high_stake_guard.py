@@ -68,7 +68,7 @@ from providers.execution_audit import (
     extract_intent_notional,
     summarize_recent_ai_intents,
 )
-from providers.quantity import venue_fee_cap_quantity
+from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as read_json_cached,
     read_json_recovering,
@@ -729,6 +729,7 @@ def apply_short_trend_item(
     *,
     fallback_price: Any = None,
     require_any_slope: bool = False,
+    allow_price_update: bool = True,
 ) -> bool:
     """Populate short/dynamic trend slopes (90s, 3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
     dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
@@ -752,7 +753,7 @@ def apply_short_trend_item(
     ):
         return False
     cur_px = tinfo.get("current_price", fallback_price)
-    if safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
+    if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
         entry["price"] = cur_px
     trend = tinfo.get("final_trend", entry.get("trend", 0))
     entry["trend"] = trend
@@ -1491,11 +1492,18 @@ def resolve_symbol_price(
     symbol: str,
     prices_and_trends: Dict[str, Any],
     fallback_prices: Optional[Dict[str, float]] = None,
+    *,
+    explicit_quote: Optional[str] = None,
 ) -> float:
     """Resolve a positive live price for ``symbol`` across quote-compatible symbol variants and optional fallback map."""
     if not symbol:
         return 0.0
-    sym_variants = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
+    sym_quotes = compatible_quote_suffixes(symbol, explicit_quote)
+    sym_variants = cache_symbol_variants(
+        symbol,
+        include_base="USD" in sym_quotes,
+        quotes=sym_quotes,
+    )
     for cand in sym_variants:
         entry = casefold_get(prices_and_trends, cand)
         cand_px = safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0
@@ -1914,19 +1922,9 @@ def harvest_tradable_positions_and_orders(
             venue = raw_venue.strip().lower() if isinstance(raw_venue, str) else str(raw_venue or "").lower()
             if not sym or not venue:
                 continue
-            sym_parts = split_symbol_assets(sym)
-            raw_base = getattr(inst, "base", None)
-            base = (
-                raw_base.strip().upper()
-                if isinstance(raw_base, str) and raw_base.strip()
-                else (sym_parts[0] if sym_parts else sym)
-            )
-            raw_quote = getattr(inst, "quote", None)
-            quote = (
-                raw_quote.strip().upper()
-                if isinstance(raw_quote, str) and raw_quote.strip()
-                else (sym_parts[1] if sym_parts and sym_parts[1] else "USD")
-            )
+            res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
+            base = res_b or sym
+            quote = res_q or "USD"
             inst_by_sym[sym] = inst
             inst_by_sym[f"{normalize_venue_name(venue)}:{sym}"] = inst
 
@@ -1944,7 +1942,7 @@ def harvest_tradable_positions_and_orders(
                     px = None
                     px_f = 0.0
             if px_f <= 0:
-                px_f = resolve_symbol_price(sym, prices_and_trends)
+                px_f = resolve_symbol_price(sym, prices_and_trends, explicit_quote=quote)
                 if px_f > 0:
                     px = px_f
             sym_entry = prices_and_trends.setdefault(
@@ -2082,6 +2080,7 @@ def enrich_cross_venue_trends(
         else (trends_data if isinstance(trends_data, dict) else {})
     )
     for sym, entry in list(prices_and_trends.items()):
+        sym_quotes = compatible_quote_suffixes(sym)
         cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
 
         has_slopes = any(
@@ -2090,7 +2089,12 @@ def enrich_cross_venue_trends(
         if not has_slopes and isinstance(trends_items_map, dict):
             for ck in cand_keys[1:]:
                 tinfo = casefold_get(trends_items_map, ck)
-                if isinstance(tinfo, dict) and apply_short_trend_item(entry, tinfo, require_any_slope=True):
+                if isinstance(tinfo, dict) and apply_short_trend_item(
+                    entry,
+                    tinfo,
+                    require_any_slope=True,
+                    allow_price_update=(compatible_quote_suffixes(ck) == sym_quotes),
+                ):
                     has_slopes = True
                     break
         if not has_slopes:
@@ -2163,7 +2167,6 @@ def enrich_cross_venue_trends(
                 entry["weibull_p90_d"] = tt.get("p90_d")
         if isinstance(watcher_price_items, dict):
             sym_px_cur = safe_float(entry.get("price"), 0.0)
-            sym_quotes = compatible_quote_suffixes(sym)
             m_series = None
             for ck in cand_keys:
                 cand_ser = casefold_get(watcher_price_items, ck)
@@ -2561,7 +2564,7 @@ def harvest_recent_orders_and_enrich_positions(
             not sym
             or v_inst != "hyperliquid"
             or sym in seen_hl_syms
-            or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym)) is not None
+            or _first_variant_dict(venue_recent_orders["hyperliquid"], cache_symbol_variants(sym, include_base=True)) is not None
         ):
             continue
         seen_hl_syms.add(sym)
@@ -2583,14 +2586,16 @@ def harvest_recent_orders_and_enrich_positions(
             continue
         p_sym = str(pos.get("symbol") or "").upper()
         p_venue = normalize_venue_name(pos.get("venue"))
-        p_variants = cache_symbol_variants(p_sym)
+        p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
         p_quote_variants = cache_symbol_variants(
             p_sym,
-            quotes=compatible_quote_suffixes(p_sym, pos.get("quote")),
+            include_base="USD" in p_quotes,
+            quotes=p_quotes,
         )
+        p_variants = (*p_quote_variants, *cache_symbol_variants(p_sym))
         pos_px_f = safe_float(pos.get("price"), 0.0)
         if pos_px_f <= 0:
-            cand_px = resolve_symbol_price(p_sym, prices_and_trends)
+            cand_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))
             if cand_px > 0:
                 pos_px_f = cand_px
                 pos["price"] = round(cand_px, 6)
