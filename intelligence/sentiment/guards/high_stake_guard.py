@@ -2289,7 +2289,7 @@ def sync_sibling_symbol_telemetry(
                 if p_px <= 0.0 and s_px > 0.0:
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
-                px_diverged = p_px > 0.0 and s_px > 0.0 and abs(p_px - s_px) / s_px > 0.10
+                px_diverged = p_px > 0.0 and s_px > 0.0 and abs(p_px - s_px) / min(p_px, s_px) > 0.10
                 for k, v in sib_pinfo.items():
                     if v is None:
                         continue
@@ -2310,7 +2310,7 @@ def sync_sibling_symbol_telemetry(
                 s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(
                     sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
                 )
-                micro_px_diverged = p_px_m > 0.0 and s_ob_mid > 0.0 and abs(p_px_m - s_ob_mid) / s_ob_mid > 0.10
+                micro_px_diverged = p_px_m > 0.0 and s_ob_mid > 0.0 and abs(p_px_m - s_ob_mid) / min(p_px_m, s_ob_mid) > 0.10
                 if sym not in microstructure:
                     microstructure[sym] = {
                         mk: mv
