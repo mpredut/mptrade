@@ -14173,8 +14173,8 @@ def test_iteration143_hl_place_order_int_oid_and_research_trigger_gate_safety():
        safely handles non-numeric/NaN/bool parameters and timestamps.
     3. offline.research.compare_mhdsl_reentry_replay.run_comparison safely handles missing/bool paths.
     """
-    from offline.research.compare_mhdsl_reentry_replay import run_comparison, _safe_f as mhdsl_safe_f, _safe_int as mhdsl_safe_int
-    from offline.research.comprehensive_surge_sweep.run_deep_surge_sweep import _safe_f as surge_safe_f, _safe_int as surge_safe_int
+    from offline.research.compare_mhdsl_reentry_replay import run_comparison, safe_float as mhdsl_safe_f, safe_nonneg_int as mhdsl_safe_int
+    from offline.research.comprehensive_surge_sweep.run_deep_surge_sweep import safe_float as surge_safe_f, safe_nonneg_int as surge_safe_int
 
     # 1. compare_mhdsl_reentry_replay and run_deep_surge_sweep helpers
     assert run_comparison(True) == []
@@ -14315,10 +14315,10 @@ def test_iteration145_continuous_grid_and_ml_forecast_safety(tmp_path):
     import math
     from offline.research.kraken_continuous_grid.grid import load as k_grid_load
     from offline.research.kraken_continuous_grid.report import q as k_report_q
-    from offline.research.kraken_continuous_grid.report3 import _safe_f as k_rep3_safe_f
-    from offline.research.ml_forecast.forecast import _safe_f as fc_safe_f, _safe_int as fc_safe_int
+    from offline.research.kraken_continuous_grid.report3 import safe_float as k_rep3_safe_f
+    from offline.research.ml_forecast.forecast import safe_float as fc_safe_f, safe_pos_int as fc_safe_int
     from offline.research.ml_forecast.priceprediction import PricePrediction
-    from offline.research.ml_forecast.vol_chronos import _safe_int as vc_safe_int
+    from offline.research.ml_forecast.vol_chronos import safe_pos_int as vc_safe_int
 
     # 1. kraken_continuous_grid.grid.load & report.q
     assert k_grid_load(True) == []
@@ -14545,8 +14545,8 @@ def test_iteration148_report2_scheduled_pilot_and_run_suite_safety(tmp_path):
     """
     import json
     from offline.research.kraken_continuous_grid.report2 import generate_report as gen_report2
-    from offline.research.monitortrades_backtest.scheduled_pilot import _edge, _safe_f as sp_safe_f
-    from offline.research.hybrid_reentry.run_suite import _safe_f as rs_safe_f, _safe_int as rs_safe_int
+    from offline.research.monitortrades_backtest.scheduled_pilot import _edge, safe_float as sp_safe_f
+    from offline.research.hybrid_reentry.run_suite import safe_float as rs_safe_f, safe_nonneg_int as rs_safe_int
 
     # 1. report2.generate_report with None/bool/NaN values
     exp_dir = tmp_path / "grid2_exp"

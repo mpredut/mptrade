@@ -72,9 +72,6 @@ def _env_float(name: str, default: float) -> float:
     return default if val is None else val
 
 
-_safe_f = safe_float
-
-
 INSTRUMENTS_CONF = os.path.join(ROOT, "instruments.conf")
 AUDIT_LOG = os.path.join(ROOT, "logger", "backtest_pilot_audit.jsonl")
 MIN_DAYS_BETWEEN_CHANGES = _env_float("PILOT_MIN_DAYS_BETWEEN_CHANGES", 7.0)
