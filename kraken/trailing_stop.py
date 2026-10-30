@@ -56,6 +56,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     should_sell,
     sync_trailing_retry_count,
 )
+should_sell = should_sell  # Re-exported for kraken tests/compatibility
 from providers.execution_audit import AuditedStrategyExecutor  # noqa: E402
 from providers.base import extract_order_side, extract_timestamp_s  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402
@@ -472,8 +473,8 @@ class KrakenTrailing:
 
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
-        self.log(f"=== TRAILING STOP KRAKEN started — {mode} ===")
-        self.log(f"    protejez: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items()) +
+        self.log("=== TRAILING STOP KRAKEN started — " + mode + " ===")
+        self.log("    protejez: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items()) +
                  "  (FREE balance only, not the bot position)")
         self.log(f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (recul +{REBUY_BOUNCE_PCT}% de la minim)")
         while True:

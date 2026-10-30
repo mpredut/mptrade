@@ -136,7 +136,7 @@ def main() -> int:
     drop = round(max(med_dip, atr5 * 1.5), 1)                     # DCA at a typical dip
     daily_rng = statistics.fmean([pct(b[2], b[3]) for b in daily[-10:]]) if daily else 10
     stop = round(min(max(daily_rng * 1.3, tp * 2.5), 25), 0)      # above a typical daily swing, capped at 25%
-    print(f"\n  ===> SUGESTIE (euristic, pt budget $3000):")
+    print("\n  ===> SUGESTIE (euristic, pt budget $3000):")
     print(f"       TP            = {tp}%   (a fee of {fee}% plus 2xATR5 {2*atr5:.1f}%, or 1.3x the median dip)")
     print(f"       DCA_DROP_PCT  = {drop}%")
     print(f"       STOP_LOSS_PCT = {stop:.0f}%")

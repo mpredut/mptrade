@@ -1332,14 +1332,6 @@ class Strategy:
             status = self._tracked_order_status(order, cache)
             if status is None or isinstance(status, str):
                 continue
-            raw_vals = (
-                status.filled_qty,
-                status.cost,
-                status.fee,
-                order.get("applied_fill_qty"),
-                order.get("applied_fill_cost"),
-                order.get("applied_fill_fee"),
-            )
             cq = safe_nonneg_float(status.filled_qty, default=None)
             cc = safe_nonneg_float(status.cost, default=None)
             cf = safe_float(status.fee, default=0.0)

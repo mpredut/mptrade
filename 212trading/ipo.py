@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import time
 
 from botcore import safe_pos_float
 
@@ -51,7 +50,7 @@ try:
         load_t212_environment, log, now_str, float_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
-    from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
+    from .listing_watcher import verify_instrument_isin, wait_for_launch
     from .market_data import check_market, t212_to_yahoo
     from .t212_client import T212Client
     from .ipo_notify import notify
@@ -62,7 +61,7 @@ except ImportError:
         load_t212_environment, load_t212_market_data, log, now_str, float_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
-    from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
+    from listing_watcher import verify_instrument_isin, wait_for_launch
     try:
         from market_data import check_market, t212_to_yahoo
     except ImportError:
