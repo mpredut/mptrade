@@ -221,8 +221,7 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
     assert asf.pending_ui_sync() == []
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_NOTHING
 
-    # 3. Mirrored topic turn (unlinked in D2) and new topic thread trigger ui-sync even if daemon logged background heartbeats
-    os.remove(d2 / "topic-10m.db")
+    # 3. Background heartbeat lines (fetchAvailableModels / loadCodeAssist) do NOT block ui-sync when a new topic thread appears
     (d1 / "new-topic.db").write_text("first-turn")
     _set_rows(["topic-10m", "webui-chat", "new-topic"])
     with open(asf.TOPIC_REGISTRY, "w", encoding="utf-8") as f:
@@ -239,7 +238,7 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
         "I1026 10:05:00.000000 3 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist\n"
         "I1026 10:05:01.000000 4 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
     )
-    assert len(asf.pending_ui_sync()) == 3
+    assert len(asf.pending_ui_sync()) == 2
     assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
 
 

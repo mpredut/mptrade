@@ -467,7 +467,6 @@ def pending_ui_sync() -> list[str]:
         if os.path.isdir(d):
             disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
     active_rows = rows & disk_cids
-    topic_cids = mirrored_topic_cids()
     entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
     if os.path.isdir(D1):
         for name in os.listdir(D1):
@@ -476,7 +475,7 @@ def pending_ui_sync() -> list[str]:
                 continue
             p1 = os.path.join(D1, name)
             p2 = os.path.join(D2, name)
-            if (cid not in known or os.path.exists(p2) or cid in topic_cids) and not same_file(p1, p2):
+            if (cid not in known or os.path.exists(p2)) and not same_file(p1, p2):
                 try:
                     entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
                 except OSError:

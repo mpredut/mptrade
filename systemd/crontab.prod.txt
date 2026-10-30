@@ -13,14 +13,14 @@ SHELL=/bin/bash
 27 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh hyperliquid/shadow_longterm.py --quiet >> logs/hyperliquid_shadow.log 2>&1
 */5 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh orchestratorOS/livecheck/os_resources_watchdog.py >> logs/os_resources_watchdog.log 2>&1
 */2 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh watchdog >> logs/manage_agy.log 2>&1
-# Idle-gated UI daemon sync: surfaces newly mirrored topic turns into the Web UI daemon when interactive sessions are idle
-3-58/5 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+# Idle-gated UI daemon sync: routine topic turns hard-link D1<->D2 in-place (0 restarts); restarts only on new:/gone: cid
+3-59/10 * * * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 
 15 4 1,15 * * cd $HOME/mptrade && ./orchestratorOS/admin/manage_agy.sh cron-update >> logs/manage_agy.log 2>&1
 
 # Nightly technical audit + verified self-heal on the permanent auto_technical_repair thread (never trades)
-35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1
 # 10-min 24/7 crypto trade executor on the permanent auto_cryptotrade_executor thread (Binance, Kraken, Hyperliquid)
-*/10 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_cryptotrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor >> logs/auto_trade_executor.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+*/10 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_cryptotrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor >> logs/auto_trade_executor.log 2>&1
 # 10-min staggered US RTH share trade executor on the permanent auto_sharetrade_executor thread (Trading212 SPCX, NVDA, RGNT)
-5-55/10 * * * 1-5 cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_sharetrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_sharetrade_executor >> logs/auto_sharetrade_executor.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
+5-55/10 * * * 1-5 cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_sharetrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_sharetrade_executor >> logs/auto_sharetrade_executor.log 2>&1
