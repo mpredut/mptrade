@@ -6424,6 +6424,48 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     # 5. monitororder grants ai_executor 24h TTL
     assert monitororder.resolve_effective_order_ttl("1", "AI_intent_123_buy_btcusdc") == 86400.0
 
+    # 6. harvest_bot_runtime_states & assetguardian._sell_campaign_tier clear dust (<$5) sell campaigns
+    import assetguardian as ag
+    from intelligence.sentiment.guards.high_stake_guard import harvest_bot_runtime_states
+
+    ag_file = tmp_path / "assetguardian_state.json"
+    ag_file.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "symbols": {
+                    "ARBUSDC": {"sell": {"initial_qty": 6596.16, "completed_tiers": [9.0]}},
+                    "BTCUSDC": {"buy": {"initial_cash": 3000.0, "completed_tiers": [7.0]}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    bot_states = harvest_bot_runtime_states(
+        str(tmp_path),
+        1793365000.0,
+        tradable_positions=pos_arb,
+    )
+    assert "ARBUSDC" not in bot_states.get("assetguardian_state", {})
+    assert "BTCUSDC" in bot_states.get("assetguardian_state", {})
+
+    ag_mem = ag.AssetGuardianState(str(ag_file), fail_closed=False)
+    old_ag_state = ag.STATE
+    try:
+        ag.STATE = ag_mem
+        tier_dust, camp_dust, _ = ag._sell_campaign_tier(
+            "ARBUSDC",
+            0.1625,
+            {"price": 0.1479, "timestamp": 1793319542.0},
+            6.66268,
+            SimpleNamespace(open_orders=lambda _s: []),
+        )
+        assert tier_dust is None
+        assert camp_dust == {}
+    finally:
+        ag.STATE = old_ag_state
+
+
 
 
 

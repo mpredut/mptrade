@@ -2875,6 +2875,7 @@ def harvest_bot_runtime_states(
     cache_dir: str,
     now_ts: float,
     read_json_fn: Any = None,
+    tradable_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
     _rj = read_json_fn or read_json_cached
@@ -2912,7 +2913,29 @@ def harvest_bot_runtime_states(
 
     ag_state = _rj(os.path.join(cache_dir, "assetguardian_state.json"))
     if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
-        out["assetguardian_state"] = ag_state["symbols"]
+        dust_binance_syms: set[str] = set()
+        if isinstance(tradable_positions, list):
+            for pos in tradable_positions:
+                if not isinstance(pos, dict) or normalize_venue_name(pos.get("venue")) != "binance":
+                    continue
+                p_sym = str(pos.get("symbol") or "").upper()
+                val_usd = safe_float(pos.get("value_usd"), -1.0)
+                min_not = max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
+                if p_sym and 0.0 <= val_usd < min_not:
+                    dust_binance_syms.add(p_sym)
+        cleaned_ag_syms: Dict[str, Any] = {}
+        for ag_sym, ag_val in ag_state["symbols"].items():
+            if not isinstance(ag_val, dict):
+                continue
+            sym_copy = dict(ag_val)
+            if str(ag_sym).upper() in dust_binance_syms and "sell" in sym_copy:
+                sell_st = sym_copy.get("sell")
+                if not isinstance(sell_st, dict) or not sell_st.get("pending"):
+                    sym_copy.pop("sell", None)
+            if sym_copy:
+                cleaned_ag_syms[ag_sym] = sym_copy
+        if cleaned_ag_syms:
+            out["assetguardian_state"] = cleaned_ag_syms
 
     ssl_state = _rj(os.path.join(cache_dir, "smart_stop_loss_state.json"))
     if isinstance(ssl_state, dict) and ssl_state:
@@ -3591,7 +3614,14 @@ def populate_market_and_portfolio_snapshot(
         if last_exec_status is not None:
             snapshot.portfolio_summary["last_cycle_execution_status"] = last_exec_status
 
-    snapshot.portfolio_summary.update(harvest_bot_runtime_states(cache_dir, now_ts, _rj))
+    snapshot.portfolio_summary.update(
+        harvest_bot_runtime_states(
+            cache_dir,
+            now_ts,
+            _rj,
+            tradable_positions=snapshot.portfolio_summary.get("tradable_positions"),
+        )
+    )
 
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends,

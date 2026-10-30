@@ -1430,7 +1430,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     free_qty = _finite_float(free_qty)
     if current_price is None or free_qty is None or free_qty < 0:
         return None, state, None
-    if free_qty == 0:
+    if free_qty == 0 or (free_qty * current_price) < 5.0:
         open_sells = _active_sell_orders(provider, symbol)
         if open_sells is None or open_sells:
             print(f"[{symbol}] Zero free qty with unknown/active SELL orders; preserve state.")
