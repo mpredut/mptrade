@@ -32,6 +32,7 @@ ADAPTER contract (duck typing; see the two adapter classes):
 from __future__ import annotations
 
 import os
+import time
 
 import pricewindow as pw
 from botcore import (
@@ -185,7 +186,7 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
 extract_short_trend_slope = pw.extract_short_trend_slope
 
 
-_EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost")
+_EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost", "sell_defer_started_at")
 
 
 def _clear_exit_progress(st: dict) -> None:
@@ -219,7 +220,8 @@ def should_sell(current: float, peak: float, trail_pct: float) -> bool:
 class TrailingCore:
     def __init__(self, adapter, *, log, enabled, state_file, min_notional,
                  rebuy_enabled, rebuy_bounce_pct, rebuy_skip_if_trend_down,
-                 sell_skip_if_trend_up=False, sell_fraction=1.0, item_isolation=True,
+                 sell_skip_if_trend_up=False, sell_trend_defer_max_sec=420.0,
+                 sell_fraction=1.0, item_isolation=True,
                  min_profit_pct=0.0):
         self.a = adapter
         self.log = log
@@ -230,6 +232,7 @@ class TrailingCore:
         self.rebuy_bounce_pct = safe_nonneg_float(rebuy_bounce_pct, default=0.0)
         self.rebuy_skip_if_trend_down = _parse_bool_flag(rebuy_skip_if_trend_down, default=False)
         self.sell_skip_if_trend_up = _parse_bool_flag(sell_skip_if_trend_up, default=False)
+        self.sell_trend_defer_max_sec = safe_nonneg_float(sell_trend_defer_max_sec, default=420.0)
         sf = safe_nonneg_float(sell_fraction, default=1.0)
         self.sell_fraction = min(1.0, sf) if sf > 0.0 else 1.0
         self.min_profit_pct = safe_nonneg_float(min_profit_pct, default=0.0)
@@ -514,12 +517,24 @@ class TrailingCore:
             _clear_exit_progress(st)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
-        # Emergency crash circuit breaker (zona de avarie) — brute force unconditional exit.
+        # Emergency crash circuit breaker (zona de avarie) — brute force exit with bounded trend deferral.
         # Extreme crash protection is decoupled from profit warm-up.
         if should_sell(price, st["peak"], trail):
             if self.sell_skip_if_trend_up and self._safe_trend(pair) > 0:
-                self.a.log_skip_sell_trend(key, asset, pair, trail)
-                return
+                now_ts = time.time()
+                defer_start = safe_pos_float(st.get("sell_defer_started_at"), default=None)
+                if defer_start is None or defer_start > now_ts:
+                    defer_start = now_ts
+                    st["sell_defer_started_at"] = defer_start
+                elapsed = max(0.0, now_ts - defer_start)
+                if self.sell_trend_defer_max_sec <= 0 or elapsed < self.sell_trend_defer_max_sec:
+                    self.a.log_skip_sell_trend(key, asset, pair, trail)
+                    return
+                self.log(
+                    f"  ⚠ [TRAIL] {asset}: -{trail}% sell trend deferral expired "
+                    f"({elapsed:.0f}s >= {self.sell_trend_defer_max_sec:.0f}s) — forcing emergency SELL"
+                )
+            st.pop("sell_defer_started_at", None)
             if self.enabled:
                 st.pop("warmup_at", None)
                 # Emergency stop triggered: attempt to unlock coins locked in resting TP orders
@@ -557,6 +572,7 @@ class TrailingCore:
                 self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
             return
 
+        st.pop("sell_defer_started_at", None)
         if safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
             st.pop("target_exit_qty", None)
 

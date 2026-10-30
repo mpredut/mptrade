@@ -459,6 +459,26 @@ class TestRebuyGuardsKraken(Base):
         self.assertTrue(ts.unlock_qty("HYPEUSD"))
         self.assertEqual(cancelled, ["TX-NULL-DESCR"])
 
+    def test_sell_trend_defer_up_to_7m_then_forces_sell(self):
+        from unittest.mock import patch
+        c = FakeK(60.0, total=25.0, held=0.0)
+        logs = []
+        ts = KrakenTrailing(c, log=logs.append, enabled=True, state_file=self.sf)
+        ts._trend_value = lambda _pair: 1.0  # short trend UP
+        with patch("trailing_core.time.time", return_value=2000.0):
+            ts.check_once()  # peak=60.0
+            c.price = 48.0   # -20% > 18% stop
+            ts.check_once()  # t=2000s (0s < 420s): deferred by UP trend
+        self.assertEqual(c.orders, [])
+        self.assertTrue(any("instant trend is UP" in m for m in logs))
+
+        # After 420s (7 minutes) at t=2420s, timer expires and forces emergency SELL
+        with patch("trailing_core.time.time", return_value=2420.0):
+            ts.check_once()
+        self.assertEqual(len(c.orders), 1)
+        self.assertEqual(c.orders[0]["side"], "sell")
+        self.assertTrue(any("sell trend deferral expired" in m for m in logs))
+
 
 
 if __name__ == "__main__":

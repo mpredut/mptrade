@@ -108,6 +108,8 @@ REBUY_TRANCHES = required_int_env("TRAILING_REBUY_TRANCHES")
 # default so the circuit breaker remains reliable; enable the sell filter to avoid
 # selling while the instant trend is clearly up (anti-wick behavior).
 REBUY_SKIP_IF_TREND_DOWN = required_bool_env("TRAILING_REBUY_SKIP_IF_TREND_DOWN")
+SELL_SKIP_IF_TREND_UP = required_bool_env("TRAILING_SELL_SKIP_IF_TREND_UP")
+SELL_TREND_DEFER_MAX_SEC = required_float_env("TRAILING_SELL_TREND_DEFER_MAX_SEC")
 # Minimum profit before trailing activates (0 means immediate activation as before).
 # This prevents selling at a loss after a normal dip immediately following a purchase.
 MIN_PROFIT_PCT = required_float_env("TRAILING_MIN_PROFIT_PCT")
@@ -160,6 +162,8 @@ class TrailingStop:
             min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
+            sell_skip_if_trend_up=SELL_SKIP_IF_TREND_UP,
+            sell_trend_defer_max_sec=SELL_TREND_DEFER_MAX_SEC,
             sell_fraction=self.sell_fraction, item_isolation=True,
             min_profit_pct=min_profit_pct)
         self.order_lifecycle = TrackedOrderLifecycle(
@@ -426,7 +430,7 @@ class TrailingStop:
             response = self.po.place(
                 pair, side, price, qty, force=True,
                 bypass_guards=bypass_guards, smart=False,
-                caller_owns_retry=True, wait_for_trend=True,
+                caller_owns_retry=True, wait_for_trend=(side != "SELL"),
                 client_order_id=intent["client_order_id"],
                 _outcome_context=outcome_context)
             return propagate_submission_refusal(response, outcome_context)

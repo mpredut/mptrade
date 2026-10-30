@@ -328,6 +328,7 @@ class TestPerCoinRebuy(Base):
             import binance_api.trailing_stop as m
             from unittest.mock import patch
             api = FakeApi(250.0); ts = self.ts(api)
+            ts.core.sell_skip_if_trend_up = False
             with patch.dict(m.REBUY_MODE_BY_SYMBOL, TAOUSDC="auto"):
                 ts._long_trend_up = lambda symbol: False
                 ts.trend = lambda pair: 1.0
@@ -866,17 +867,32 @@ class TestMinProfit(Base):
 
         with self.subTest(msg="sell_skip_if_trend_up_defers_sell_when_enabled"):
             self.tearDown(); self.setUp()
+            from unittest.mock import patch
             api = FakeApi(250.0, free=2.0)
             logs = []
             ts = TrailingStop(api, self.po, FakeSym(), log=logs.append,
                               enabled=True, state_file=self.sf)
             ts.core.sell_skip_if_trend_up = True
+            ts.core.sell_trend_defer_max_sec = 420.0
             ts.trend = lambda _pair: 1.0
-            ts.check_once()  # peak = 250.0
-            api.price = 190.0
-            ts.check_once()
+            with patch("trailing_core.time.time", return_value=1000.0):
+                ts.check_once()  # peak = 250.0
+                api.price = 190.0
+                ts.check_once()  # t=1000s (0s elapsed < 420s): deferred by UP trend
             self.assertEqual(self.po.orders, [])
             self.assertTrue(any("instant trend is UP" in m for m in logs))
+
+            # At t=1200s (200s elapsed < 420s): still deferred
+            with patch("trailing_core.time.time", return_value=1200.0):
+                ts.check_once()
+            self.assertEqual(self.po.orders, [])
+
+            # At t=1421s (421s elapsed >= 420s = 7m): timer expires -> forces emergency SELL!
+            with patch("trailing_core.time.time", return_value=1421.0):
+                ts.check_once()
+            self.assertEqual(len(self.po.orders), 1)
+            self.assertEqual(self.po.orders[0]["side"], "SELL")
+            self.assertTrue(any("sell trend deferral expired" in m for m in logs))
 
         with self.subTest(msg="fractional_exit_sub_notional_remainder_completes_without_infinite_unlock_loop"):
             self.tearDown(); self.setUp()
