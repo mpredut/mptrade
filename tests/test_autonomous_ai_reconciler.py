@@ -6237,6 +6237,195 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert cash_fb["binance:USDC"]["free"] == 1450.25
 
 
+def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_retry_ttl(tmp_path):
+    """Verify:
+    1. KrakenProvider open_orders / order_status fall back to BOT client when auto-created SPARE client raises Permission denied or returns empty {}.
+    2. _resolve_intent_execution_details treats Kraken add_order payload without explicit 'status' as OPEN_RESTING (not FILLED), and marks >10m missing limit orders as CANCELED_OR_EXPIRED.
+    3. Dust balances below venue min_notional_usd ($1.08 ARB < $5.0 on Binance) do not retain stale trailing_peak / dd_from_peak_pct.
+    4. order_retry does not wipe accumulated ttl_started_ts when transitioning out of a transient non-failure deferral at attempts > 0.
+    5. monitororder.MODULE_ORDER_TTLS grants ai_executor a 24h default TTL instead of the 4h fallback.
+    """
+    from types import SimpleNamespace
+    import monitororder
+    import order_retry as oq
+    from intelligence.sentiment.guards.high_stake_guard import (
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+    )
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        summarize_recent_ai_intents,
+    )
+    from providers.kraken_provider import KrakenProvider
+
+    # 1. KrakenProvider falls back to _bot_fallback_cli on Permission denied / missing order in SPARE
+    kp = KrakenProvider()
+    spare_cli = SimpleNamespace(
+        api_key="spare_k",
+        open_orders=lambda: (_ for _ in ()).throw(RuntimeError("EGeneral:Permission denied")),
+        query_orders=lambda oid: {},
+    )
+    bot_cli = SimpleNamespace(
+        api_key="bot_k",
+        open_orders=lambda: {
+            "OWZ3YO-EKP5O-IPKB2Y": {
+                "status": "open",
+                "vol": "4.87693127",
+                "vol_exec": "0.00000000",
+                "descr": {"pair": "HYPEUSD", "type": "sell", "ordertype": "limit", "price": "93.85"},
+            }
+        },
+        query_orders=lambda oid: {
+            oid: {
+                "status": "open",
+                "vol": "4.87693127",
+                "vol_exec": "0.00000000",
+                "cost": "0.00000",
+                "fee": "0.00000",
+            }
+        },
+    )
+    kp._cli = spare_cli
+    kp._auto_cli = spare_cli
+    kp._bot_fallback_cli = bot_cli
+
+    oo_list = kp.open_orders("HYPEUSD")
+    assert len(oo_list) == 1
+    assert oo_list[0]["orderId"] == "OWZ3YO-EKP5O-IPKB2Y"
+    assert oo_list[0]["price"] == 93.85
+    st_ord = kp.order_status("HYPEUSD", "OWZ3YO-EKP5O-IPKB2Y")
+    assert st_ord.status == "open"
+    assert st_ord.orig_qty == pytest.approx(4.87693127)
+
+    # 2. Kraken add_order payload without 'status' field is OPEN_RESTING, and stale >10m missing limit is CANCELED_OR_EXPIRED
+    krk_intent = {
+        "intent_id": "krk_lim_sell",
+        "timestamp": 1793360000.0,
+        "decision": "SELL",
+        "symbol": "HYPEUSD",
+        "venue": "kraken",
+        "order_type": "LIMIT",
+        "limit_price": 93.85,
+        "reference_price": 92.61,
+        "suggested_notional_usd": 457.70,
+        "status": "EXECUTED",
+        "execution_payload": {
+            "txid": ["OWZ3YO-EKP5O-IPKB2Y"],
+            "descr": {"order": "sell 4.87693127 HYPEUSD @ limit 93.85"},
+        },
+    }
+    st_krk = build_last_cycle_execution_status(
+        [krk_intent],
+        "crypto",
+        1793360060.0,
+        extract_intent_notional,
+        recent_orders={},
+        open_orders=[],
+    )
+    assert st_krk["status"] == "OPEN_RESTING"
+    assert st_krk["fill_px"] is None
+    assert st_krk["filled_qty"] is None
+    assert st_krk["slippage_bps"] is None
+
+    stale_btc_intent = {
+        "intent_id": "bin_lim_stale",
+        "timestamp": 1793340000.0,
+        "decision": "BUY",
+        "symbol": "BTCUSDC",
+        "venue": "binance",
+        "order_type": "LIMIT",
+        "limit_price": 76450.0,
+        "reference_price": 77100.0,
+        "suggested_notional_usd": 449.53,
+        "status": "EXECUTED",
+        "execution_payload": {
+            "orderId": "10685631358",
+            "status": "NEW",
+            "price": "76450.0",
+            "origQty": "0.00588",
+            "executedQty": "0.0",
+        },
+    }
+    sum_stale = summarize_recent_ai_intents(
+        [stale_btc_intent],
+        "crypto",
+        1793360000.0,
+        extract_intent_notional,
+        recent_orders={},
+        open_orders=[],
+    )
+    assert sum_stale[0]["venue_status"] == "CANCELED_OR_EXPIRED"
+
+    # 3. Dust balance ($1.08 ARB < $5.0 min_notional on Binance) strips trailing_peak / dd_from_peak_pct
+    class _ArbProv:
+        def free_balance(self, asset):
+            return 6.66268 if asset == "ARB" else 1500.0
+
+    class _ArbInst:
+        symbol = "ARBUSDC"
+        provider_name = "binance"
+        base = "ARB"
+        quote = "USDC"
+        params = {}
+        _provider = _ArbProv()
+
+    pos_arb, _, _, inst_by_sym = harvest_tradable_positions_and_orders(
+        {"ARBUSDC": _ArbInst()},
+        {"ARBUSDC": {"price": 0.1624}},
+        {"ARBUSDC": 0.1636},
+        {},
+    )
+    assert len(pos_arb) == 1
+    assert pos_arb[0]["value_usd"] == pytest.approx(1.08, abs=0.02)
+    assert "trailing_peak" not in pos_arb[0]
+    assert "dd_from_peak_pct" not in pos_arb[0]
+
+    pos_arb[0]["trailing_peak"] = 0.1636
+    pos_arb[0]["dd_from_peak_pct"] = -0.73
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path), inst_by_sym, pos_arb, {"ARBUSDC": {"price": 0.1624}}, {}, {}, {}
+    )
+    assert "trailing_peak" not in pos_arb[0]
+    assert "dd_from_peak_pct" not in pos_arb[0]
+
+    # 4. order_retry complete_claim preserves prior elapsed TTL when attempts > 0 transitions out of deferral
+    rec_existing = {
+        "id": "r_tao_1",
+        "symbol": "TAOUSDC",
+        "side": "BUY",
+        "qty": 1.0,
+        "place_kwargs": {"client_order_id": "MT_OR_r_tao_1_0"},
+        "revision": 0,
+        "claim_token": "tok1",
+        "claim_until": 20100.0,
+        "claim_revision": 0,
+        "created_ts": 1000.0,
+        "ttl_started_ts": 1000.0,
+        "attempts": 10,
+        "last_attempt_ts": 19700.0,
+        "last_failure_reason": "account_cache_not_fresh",
+        "submission_state": "refused",
+        "safe_to_discard": True,
+    }
+    oq.rewrite([rec_existing])
+    oq.complete_claim(
+        rec_existing,
+        "failure",
+        now=20000.0,
+        failure_reason="qty_zero_after_policy",
+        submission_state="refused",
+    )
+    updated_rec = oq.load_all()[0]
+    assert updated_rec["attempts"] == 11
+    # Only shifted by the 300s deferral window (19700 -> 20000), not reset to 20000.0
+    assert updated_rec["ttl_started_ts"] == pytest.approx(1300.0)
+
+    # 5. monitororder grants ai_executor 24h TTL
+    assert monitororder.resolve_effective_order_ttl("1", "AI_intent_123_buy_btcusdc") == 86400.0
+
+
+
 
 
 

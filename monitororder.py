@@ -29,6 +29,7 @@ import order_retry
 import accepted_order_persistence
 import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
+    float_env,
     load_dotenv as _load_dotenv,
     required_float_env,
     required_int_env,
@@ -52,6 +53,7 @@ MODULE_ORDER_TTLS = {
     "tradeall": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),       # 2 hours
     "spot_dca": required_float_env("SPOT_DCA_DEFAULT_ORDER_TTL_SEC"),     # 24 hours
     "manual": required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC"),         # 24 hours
+    "ai_executor": float_env("AI_EXECUTOR_DEFAULT_ORDER_TTL_SEC", default=required_float_env("MANUAL_DEFAULT_ORDER_TTL_SEC")),  # 24 hours
     "monitororder": required_float_env("TRADEALL_DEFAULT_ORDER_TTL_SEC"),   # 2 hours
 }
 

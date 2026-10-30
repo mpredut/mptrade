@@ -182,6 +182,8 @@ class KrakenProvider(MarketDataProvider):
         # kraken_bot can inject its _BOT client to share connection and nonce.
         # None lazily builds a fleet client using the _SPARE credentials.
         self._cli = client
+        self._auto_cli = None
+        self._bot_fallback_cli = None
         self._minqty = {}  # Cache symbol-to-ordermin from pair_info.
 
     @property
@@ -234,10 +236,35 @@ class KrakenProvider(MarketDataProvider):
         # loading them on the next tick so the process can recover without restart.
         if api_key and api_secret:
             self._cli = cli
+            self._auto_cli = cli
         else:
             print("[Kraken] ⚠ STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
                   " -> the account reads (balance/orders) will fail; NOT caching, retrying on the next tick.")
         return cli
+
+    def _order_query_fallback_client(self):
+        """Return a KrakenClient using the BOT profile when the auto-created fleet/SPARE key lacks order-query permission."""
+        if self._cli is not None and self._cli is not getattr(self, "_auto_cli", None):
+            return None
+        fb = getattr(self, "_bot_fallback_cli", None)
+        if fb is not None:
+            return fb
+        try:
+            KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
+            names = ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT")
+            values = {
+                name: os.environ.get(name) or env_value(_KRAKEN_DIR, name)
+                for name in names
+            }
+            creds = kraken_credentials("bot", values=values)
+            primary_key = getattr(self._cli, "api_key", None)
+            if creds.key and creds.secret and creds.key != primary_key:
+                fb = KrakenClient(creds.key, creds.secret)
+                self._bot_fallback_cli = fb
+                return fb
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     # -- Public market data without keys. --------------------------------------
     def get_current_price(self, symbol: str) -> Optional[float]:
@@ -430,7 +457,14 @@ class KrakenProvider(MarketDataProvider):
         try:
             raw_orders = self._client().open_orders()
         except Exception as exc:  # noqa: BLE001
-            raise ProviderError(f"open_orders({symbol}): {exc}") from exc
+            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
+            if fb_cli is not None:
+                try:
+                    raw_orders = fb_cli.open_orders()
+                except Exception as fb_exc:  # noqa: BLE001
+                    raise ProviderError(f"open_orders({symbol}): {fb_exc}") from fb_exc
+            else:
+                raise ProviderError(f"open_orders({symbol}): {exc}") from exc
         if not isinstance(raw_orders, dict):
             raise ProviderError(
                 f"open_orders({symbol}): payload Kraken invalid")
@@ -506,7 +540,14 @@ class KrakenProvider(MarketDataProvider):
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
         cli = self._client()
-        res = cli._private("TradesHistory")
+        try:
+            res = cli._private("TradesHistory")
+        except Exception as exc:  # noqa: BLE001
+            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
+            if fb_cli is not None:
+                res = fb_cli._private("TradesHistory")
+            else:
+                raise
         if not isinstance(res, dict) or "trades" not in res:
             raise ProviderError(f"TradesHistory({symbol}): trades history payload missing or invalid")
         trades = res.get("trades")
@@ -681,12 +722,30 @@ class KrakenProvider(MarketDataProvider):
         try:
             res = self._client().query_orders(clean_id) or {}
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"order_status {order_id}: {e}") from e
+            fb_cli = self._order_query_fallback_client() if "permission denied" in str(e).lower() else None
+            if fb_cli is not None:
+                try:
+                    res = fb_cli.query_orders(clean_id) or {}
+                except Exception as fb_e:  # noqa: BLE001
+                    raise ProviderError(f"order_status {order_id}: {fb_e}") from fb_e
+            else:
+                raise ProviderError(f"order_status {order_id}: {e}") from e
         if not isinstance(res, dict):
             raise ProviderError(f"order_status {order_id}: invalid Kraken response")
         info = casefold_get(res, clean_id)
         if info is None:
             info = casefold_get(res, order_id)
+        if not isinstance(info, dict):
+            fb_cli = self._order_query_fallback_client()
+            if fb_cli is not None:
+                try:
+                    fb_res = fb_cli.query_orders(clean_id) or {}
+                    if isinstance(fb_res, dict):
+                        info = casefold_get(fb_res, clean_id)
+                        if info is None:
+                            info = casefold_get(fb_res, order_id)
+                except Exception:  # noqa: BLE001
+                    pass
         if not isinstance(info, dict):
             raise ProviderError(f"order_status: the order {order_id} was not found")
         raw_status = str(info.get("status") or "").strip()
@@ -724,8 +783,16 @@ class KrakenProvider(MarketDataProvider):
         try:
             groups = (self._client().open_orders(), self._client().closed_orders())
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(
-                f"order_by_client_id({symbol},{client_order_id}): {e}") from e
+            fb_cli = self._order_query_fallback_client() if "permission denied" in str(e).lower() else None
+            if fb_cli is not None:
+                try:
+                    groups = (fb_cli.open_orders(), fb_cli.closed_orders())
+                except Exception as fb_e:  # noqa: BLE001
+                    raise ProviderError(
+                        f"order_by_client_id({symbol},{client_order_id}): {fb_e}") from fb_e
+            else:
+                raise ProviderError(
+                    f"order_by_client_id({symbol},{client_order_id}): {e}") from e
         for orders in groups:
             if not isinstance(orders, dict):
                 continue

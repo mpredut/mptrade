@@ -620,7 +620,19 @@ def _resolve_intent_execution_details(
     venue_st = str(
         exec_pay.get("status")
         or ("RESTING" if str(exec_pay.get("msg") or "").strip().lower() == "resting" else "")
+        or (
+            "OPEN"
+            if (
+                order_type == "LIMIT"
+                and filled_qty <= 0
+                and isinstance(exec_pay, dict)
+                and any(k in exec_pay for k in ("txid", "ordertxid", "descr", "orderId", "order_id", "oid"))
+            )
+            else ""
+        )
     ).strip().upper()
+    if matched_open is not None and not venue_st:
+        venue_st = str(matched_open.get("status") or "OPEN").strip().upper()
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
@@ -657,9 +669,17 @@ def _resolve_intent_execution_details(
                         filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
     is_unfilled_resting_limit = (
         order_type == "LIMIT"
-        and venue_st in _UNFILLED_ORDER_STATUSES
+        and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
+    if (
+        is_unfilled_resting_limit
+        and matched_open is None
+        and isinstance(open_orders, list)
+        and ts_val > 0
+        and (now_ts - ts_val) > 600.0
+    ):
+        venue_st = "CANCELED_OR_EXPIRED"
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:
         fill_px = safe_pos_float(
             last_hist.get("price")
@@ -672,7 +692,7 @@ def _resolve_intent_execution_details(
     if matched_open is not None:
         exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
     elif raw_intent_st == "EXECUTED":
-        if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+        if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
             exec_status = venue_st
         elif is_unfilled_resting_limit:
             exec_status = "OPEN_RESTING"
@@ -693,7 +713,7 @@ def _resolve_intent_execution_details(
         or fill_px,
         default=None,
     )
-    if exec_status in ("OPEN_RESTING", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED") and filled_qty <= 0:
+    if exec_status in ("OPEN_RESTING", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED") and filled_qty <= 0:
         fill_px = None
     slippage_bps: Optional[float] = None
     if (

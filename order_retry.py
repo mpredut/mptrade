@@ -1085,9 +1085,16 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None,
                 continue
             previous = rec.get("last_failure_reason")
             reason = str(failure_reason) if failure_reason is not None else None
+            prev_attempts = max(0, _rev_int(rec.get("attempts"), 0))
             if (is_non_failure_deferral(previous)
                     and not is_non_failure_deferral(reason)):
-                rec["ttl_started_ts"] = now
+                if prev_attempts == 0:
+                    rec["ttl_started_ts"] = now
+                else:
+                    prev_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
+                    ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
+                    if prev_ts is not None and ttl_ts is not None and now > prev_ts >= ttl_ts:
+                        rec["ttl_started_ts"] = ttl_ts + (now - prev_ts)
             rec["last_failure_reason"] = reason
             if submission_state is not None:
                 rec["submission_state"] = submission_state
@@ -1372,18 +1379,25 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                     rec.get("id", ""), revision, prefix=pfx)
                 rec["place_kwargs"] = placement
             elif outcome == "failure" and same_revision:
-                rec["attempts"] = max(
+                prev_attempts = max(
                     max(0, _rev_int(rec.get("attempts"), 0)),
                     max(0, _rev_int(claimed.get("attempts"), 0)),
-                ) + 1
+                )
+                prev_last_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
+                rec["attempts"] = prev_attempts + 1
                 rec["last_attempt_ts"] = now
                 next_reason = (str(failure_reason)
                                if failure_reason is not None else None)
                 if (is_non_failure_deferral(rec.get("last_failure_reason"))
                         and not is_non_failure_deferral(next_reason)):
-                    # TTL begins only after a non-failure deferral ends. Waiting for
-                    # trend or current account state cannot discard an intent.
-                    rec["ttl_started_ts"] = now
+                    # TTL begins fresh only after an initial non-failure deferral ends;
+                    # if attempts > 0, only shift ttl_started_ts by the deferral pause.
+                    if prev_attempts == 0:
+                        rec["ttl_started_ts"] = now
+                    else:
+                        ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
+                        if prev_last_ts is not None and ttl_ts is not None and now > prev_last_ts >= ttl_ts:
+                            rec["ttl_started_ts"] = ttl_ts + (now - prev_last_ts)
                 rec["last_failure_reason"] = next_reason
             elif outcome == "deferred" and same_revision:
                 rec["last_attempt_ts"] = now

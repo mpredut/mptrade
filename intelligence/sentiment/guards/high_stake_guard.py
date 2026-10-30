@@ -2113,17 +2113,6 @@ def harvest_tradable_positions_and_orders(
             }
             if quote_breakdown:
                 pos_entry["free_quote_breakdown"] = quote_breakdown
-            has_held_base = base_free is None or (
-                base_free > 1e-8 and (px_f <= 0.0 or base_free * px_f >= 1.0)
-            )
-            if peak is not None and peak_f > 0 and has_held_base:
-                pos_entry["trailing_peak"] = round(peak_f, 6)
-                pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
-            if params.get("trailing.pct"):
-                pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
-            if params.get("mt.gain") or params.get("mt.lost"):
-                pos_entry["mt_gain_pct"] = params.get("mt.gain")
-                pos_entry["mt_lost_pct"] = params.get("mt.lost")
             pos_entry.update(
                 resolve_venue_fee_and_limits(
                     venue,
@@ -2135,6 +2124,21 @@ def harvest_tradable_positions_and_orders(
                     gateway_max_usd=gateway_max_usd,
                 )
             )
+            min_notional_f = max(
+                1.0,
+                safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0),
+            )
+            has_held_base = base_free is None or (
+                base_free > 1e-8 and (px_f <= 0.0 or base_free * px_f >= min_notional_f)
+            )
+            if peak is not None and peak_f > 0 and has_held_base:
+                pos_entry["trailing_peak"] = round(peak_f, 6)
+                pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
+            if params.get("trailing.pct"):
+                pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
+            if params.get("mt.gain") or params.get("mt.lost"):
+                pos_entry["mt_gain_pct"] = params.get("mt.gain")
+                pos_entry["mt_lost_pct"] = params.get("mt.lost")
             tradable_positions.append(pos_entry)
 
             open_fn = getattr(inst, "open_orders", None)
@@ -2752,9 +2756,16 @@ def harvest_recent_orders_and_enrich_positions(
         v_ro_map = venue_recent_orders.get(p_venue, {})
         ro = _first_variant_dict(v_ro_map, p_quote_variants)
         fb_cur = safe_float(pos.get("free_base"), -1.0)
-        is_flat_balance = fb_cur >= 0.0 and (
-            fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
+        min_notional_f = max(
+            1.0,
+            safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 1.0),
         )
+        is_flat_balance = fb_cur >= 0.0 and (
+            fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < min_notional_f)
+        )
+        if is_flat_balance:
+            pos.pop("trailing_peak", None)
+            pos.pop("dd_from_peak_pct", None)
         last_side_ro = str(ro.get("last_action_side") or "").upper() if isinstance(ro, dict) else ""
         is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
         if isinstance(ro, dict):
