@@ -20,6 +20,7 @@ from intelligence.external.collectors.derivatives_telemetry import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )
+from intelligence.macro_sentiment_ssot import clean_scale
 
 
 class FundingCrowdingGuard:
@@ -39,8 +40,7 @@ class FundingCrowdingGuard:
         self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005
         pol_norm = str(crowding_policy or "downscale").strip().lower() if not isinstance(crowding_policy, bool) else "downscale"
         self.crowding_policy = pol_norm if pol_norm in ("downscale", "defer") else "downscale"
-        scale_f = safe_pos_float(crowded_scale, default=0.50) or 0.50
-        self.crowded_scale = scale_f if scale_f <= 1.0 else 0.50
+        self.crowded_scale = clean_scale(crowded_scale, default=0.50, min_positive=True)
 
     def check(
         self,
@@ -48,6 +48,8 @@ class FundingCrowdingGuard:
         side: str,
         telemetry: Optional[DerivativesTelemetry] = None,
         now: Optional[float] = None,
+        *,
+        snapshot: Optional[DerivativesTelemetry] = None,
     ) -> GuardDecision:
         """Evaluate if perpetual funding rate warrants a brake."""
         side_norm = normalize_guard_side(side)
@@ -56,6 +58,8 @@ class FundingCrowdingGuard:
                 guard_name="FundingCrowdingGuard",
                 reason="unsupported_side_allowed",
             )
+        if telemetry is None and snapshot is not None:
+            telemetry = snapshot
         if telemetry is None and self.collector is not None:
             telemetry = fetch_guard_snapshot(self.collector, symbol, now=now)
 

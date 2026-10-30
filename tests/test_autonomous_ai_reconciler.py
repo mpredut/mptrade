@@ -5297,7 +5297,54 @@ def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconc
     assert det["filled_qty"] is None
 
 
+def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(tmp_path):
+    from types import SimpleNamespace
+    from instruments_config import discover_kraken_cache_pairs, resolve_tradable_instrument
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
 
+    # 1. discover_kraken_cache_pairs excludes read-only Kraken xStocks (.T / X.T)
+    kr_dir = tmp_path / "kraken"
+    kr_dir.mkdir(parents=True, exist_ok=True)
+    (kr_dir / "config.env").write_text(
+        "KRAKEN_CACHE_PAIRS=TAOUSD,SPCXx.T/USD,NVDAX.TUSD,XBTUSD\n",
+        encoding="utf-8",
+    )
+    pairs = discover_kraken_cache_pairs(str(tmp_path))
+    assert [p[0] for p in pairs] == ["TAOUSD", "XBTUSD"]
 
+    # 2. resolve_tradable_instrument enforces quote compatibility on exact/variant loops even for bare symbols
+    inst_eur = SimpleNamespace(symbol="BTC", base="BTC", quote="EUR", provider_name="kraken", enabled=True)
+    inst_usd = SimpleNamespace(symbol="XBTUSD", base="BTC", quote="USD", provider_name="kraken", enabled=True)
+    inst_xstock = SimpleNamespace(symbol="SPCXX.T/USD", base="SPCXX.T", quote="USD", provider_name="kraken", enabled=True)
+    imap = {"KR_EUR": inst_eur, "KR_USD": inst_usd, "KR_X": inst_xstock}
+    assert resolve_tradable_instrument("BTC", "kraken", imap) is inst_usd
+    assert resolve_tradable_instrument("BTCEUR", "kraken", imap) is inst_eur
+    assert resolve_tradable_instrument("SPCXX.T/USD", "kraken", imap) is None
+
+    # 3. OrderbookWallGuard, WhaleDivergenceGuard, and FundingCrowdingGuard accept normalized telemetry aliases
+    ob_guard = OrderbookWallGuard(min_buy_imbalance=0.25, whale_wall_usd_limit=1_000_000.0)
+    dec_ob = ob_guard.check(
+        "BTCUSDC",
+        "BUY",
+        snapshot={"ob_imbalance": 0.40, "ask_wall_usd": 1_500_000.0, "ask_wall_px": 83000.0},
+    )
+    assert not dec_ob.allowed
+    assert "whale_sell_wall_blocking" in dec_ob.reason
+
+    w_guard = WhaleDivergenceGuard(severe_cascade_oi_pct=-5.0)
+    dec_w = w_guard.check(
+        "BTCUSDC",
+        "BUY",
+        snapshot={"divergence_regime": "long_liquidation", "oi_1h_chg_pct": -6.2, "taker_buy_sell_ratio": 0.70, "whale_long_pct": 62.0},
+    )
+    assert not dec_w.allowed
+    assert "liquidation_cascade_active" in dec_w.reason
+
+    f_guard = FundingCrowdingGuard(max_long_funding_rate=0.0005, crowding_policy="defer")
+    dec_f = f_guard.check("BTCUSDC", "BUY", snapshot={"funding_rate": 0.0008})
+    assert not dec_f.allowed
+    assert "long_crowding_extreme" in dec_f.reason
 
 

@@ -19,6 +19,7 @@ from intelligence.external.collectors.whale_positioning import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )
+from intelligence.macro_sentiment_ssot import clean_scale
 
 
 class WhaleDivergenceGuard:
@@ -42,8 +43,7 @@ class WhaleDivergenceGuard:
         self.severe_cascade_oi_pct = safe_float(severe_cascade_oi_pct, default=-5.0) or -5.0
         self.min_taker_ratio = safe_pos_float(min_taker_ratio, default=0.75) or 0.75
         self.taker_downscale_threshold = safe_pos_float(taker_downscale_threshold, default=0.90) or 0.90
-        scale_f = safe_pos_float(taker_downscaled_scale, default=0.50) or 0.50
-        self.taker_downscaled_scale = scale_f if scale_f <= 1.0 else 0.50
+        self.taker_downscaled_scale = clean_scale(taker_downscaled_scale, default=0.50, min_positive=True)
 
     def check(
         self,
@@ -69,9 +69,15 @@ class WhaleDivergenceGuard:
             )
 
         regime = str(snap_attr(snapshot, "divergence_regime") or "neutral").strip().lower()
-        oi_1h = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct"), default=0.0)
+        raw_oi_1h = snap_attr(snapshot, "open_interest_1h_change_pct")
+        if raw_oi_1h is None:
+            raw_oi_1h = snap_attr(snapshot, "oi_1h_chg_pct")
+        oi_1h = safe_float(raw_oi_1h, default=0.0)
         taker_ratio = safe_nonneg_float(snap_attr(snapshot, "taker_buy_sell_ratio"), default=1.0)
-        top_long_pct = safe_nonneg_float(snap_attr(snapshot, "top_traders_long_pct"), default=0.5)
+        raw_long_pct = snap_attr(snapshot, "top_traders_long_pct")
+        if raw_long_pct is None:
+            raw_long_pct = snap_attr(snapshot, "whale_long_pct")
+        top_long_pct = clean_scale(raw_long_pct, default=0.5, allow_percentage=True)
 
         # 1. Buying into a short-covering fakeout (price up, but OI falling: no new whale money and passive taker flow)
         if side_norm == "BUY" and self.block_short_covering_fakeout and regime == "short_covering":
