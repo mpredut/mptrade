@@ -154,9 +154,7 @@ def _normalize(txid, tr):
     qty = extract_order_qty(tr, default=0.0)
     price = extract_order_price(tr, default=0.0)
     raw_oid = tr.get("ordertxid", tr.get("orderId"))
-    order_id = extract_order_id({"orderId": raw_oid}, default=None) if raw_oid is not None else None
-    if order_id is None:
-        order_id = extract_order_id(tr)
+    order_id = extract_order_id(raw_oid, default=None) or extract_order_id(tr)
     raw_sym = tr.get("pair", tr.get("symbol"))
     sym_val = raw_sym.strip() if isinstance(raw_sym, str) and raw_sym.strip() else None
     fee_info = extract_order_fee(tr)

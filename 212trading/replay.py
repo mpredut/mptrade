@@ -18,24 +18,17 @@ if ROOT not in sys.path:
 if _T212_DIR not in sys.path:
     sys.path.append(_T212_DIR)
 
-import importlib.util
-_md_spec = importlib.util.spec_from_file_location("t212_market_data", os.path.join(_T212_DIR, "market_data.py"))
-_md = importlib.util.module_from_spec(_md_spec)
-sys.modules[_md_spec.name] = _md
+from botcore import load_local_module, safe_float, safe_pos_float
+_md = load_local_module(_T212_DIR, "market_data", module_key="t212_market_data")
 _prev_md = sys.modules.get("market_data")
 sys.modules["market_data"] = _md
-_md_spec.loader.exec_module(_md)
 try:
-    _strat_spec = importlib.util.spec_from_file_location("t212_strategy_replay", os.path.join(_T212_DIR, "strategy.py"))
-    _strat = importlib.util.module_from_spec(_strat_spec)
-    sys.modules[_strat_spec.name] = _strat
-    _strat_spec.loader.exec_module(_strat)
+    _strat = load_local_module(_T212_DIR, "strategy", module_key="t212_strategy_replay")
 finally:
     if _prev_md is not None:
         sys.modules["market_data"] = _prev_md
     else:
         sys.modules.pop("market_data", None)
-from botcore import safe_float, safe_pos_float
 from offline.backtests.datasets import align_previous_values
 from offline.backtests.execution import (
     ExecutionModel,

@@ -802,7 +802,7 @@ class Strategy:
             order for order in active_orders
             if isinstance(order, dict) and self._active_matches_pending(order, pending)
         ]
-        matched_oid = T212Client._clean_order_id(extract_order_id(matches[0])) if len(matches) == 1 else None
+        matched_oid = extract_order_id(matches[0]) if len(matches) == 1 else None
         if len(matches) == 1 and matched_oid is not None:
             order = self._adopt_pending_submit(matched_oid)
             log(f"  [STRAT] T212 submit recovered from the active orders: {order['id']}")
@@ -1285,7 +1285,7 @@ class Strategy:
         for o in orders:
             if not isinstance(o, dict) or not _t212_tickers_match(self._active_order_identity(o)[0], self.ticker):
                 continue
-            oid = T212Client._clean_order_id(extract_order_id(o))
+            oid = extract_order_id(o)
             if oid is not None:
                 active_ids.add(oid)
         return active_ids

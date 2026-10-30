@@ -144,7 +144,7 @@ def _write_marker(ticker: str, result: dict) -> None:
     res_dict = result if isinstance(result, dict) else {}
     _persist_marker({
         "version": 2, "at": now_str(), "ticker": ticker,
-        "lifecycle": "accepted", "order_id": T212Client._clean_order_id(extract_order_id(res_dict)),
+        "lifecycle": "accepted", "order_id": extract_order_id(res_dict),
         "venue_status": res_dict.get("status"), "order": res_dict,
     }, _marker_path(ticker))
     log(f"  [ORDER] marker written: {_marker_path(ticker)}")
@@ -334,7 +334,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
     matches = _matching_active_orders(client, record)
     if matches is None:
         return "waiting"
-    matched_oid = T212Client._clean_order_id(extract_order_id(matches[0])) if len(matches) == 1 else None
+    matched_oid = extract_order_id(matches[0]) if len(matches) == 1 else None
     if matched_oid is not None:
         record.update({
             "order_id": matched_oid, "lifecycle": "accepted",
@@ -443,7 +443,7 @@ def place_order_with_retry(
         ver_i = safe_int(record.get("version"), 1)
         if ver_i < 2:
             legacy = record.get("order") if isinstance(record.get("order"), dict) else {}
-            legacy_id = T212Client._clean_order_id(extract_order_id(legacy))
+            legacy_id = extract_order_id(legacy)
             if legacy_id:
                 info = poll_order_until_terminal(client, legacy_id, ticker, desktop)
                 record["last_status"] = info.get("status") if isinstance(info, dict) else None
@@ -528,7 +528,7 @@ def place_order_with_retry(
         log(f"  ! [ORDER] raspuns submit ambiguu ({exc}) — intentia ramane pending")
         return False
 
-    oid = T212Client._clean_order_id(extract_order_id(data)) if isinstance(data, dict) else None
+    oid = extract_order_id(data) if isinstance(data, dict) else None
     if status in (200, 201) and oid is not None:
         venue_status = str(data.get("status") or "").upper()
         lifecycle = _classify_t212_venue_status(venue_status, post_submit=True)

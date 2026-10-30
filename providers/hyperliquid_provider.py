@@ -373,7 +373,7 @@ class HyperliquidProvider(MarketDataProvider):
                     continue
                 exec_sz = safe_nonneg_float(o.get("executedQty", orig_sz - sz), default=0.0) or 0.0
                 oid_val = extract_order_id(o, default=None)
-                if not oid_val or oid_val == "0":
+                if not oid_val:
                     continue
                 side = extract_order_side(o) or "SELL"
                 out.append({
@@ -486,9 +486,9 @@ class HyperliquidProvider(MarketDataProvider):
                 call_kwargs["tif"] = order_tif
             ok, oid, msg = signer.spot_order(
                 pair, is_buy, float(qty), float(submit_px), **call_kwargs)
-            clean_oid = extract_order_id({"oid": oid}, default=None)
+            clean_oid = extract_order_id(oid, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
-            if not (ok and clean_oid and clean_oid != "0"):
+            if not (ok and clean_oid):
                 return None
             out_oid = (
                 int(clean_oid)
@@ -612,8 +612,8 @@ class HyperliquidProvider(MarketDataProvider):
             raise
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"submit_order({symbol}): {e}") from e
-        clean_oid = extract_order_id({"oid": oid}, default=None)
-        if not ok or not clean_oid or clean_oid == "0":
+        clean_oid = extract_order_id(oid, default=None)
+        if not ok or not clean_oid:
             # ``spot_order`` returned a synchronous venue rejection, proving that
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
@@ -693,8 +693,8 @@ class HyperliquidProvider(MarketDataProvider):
             if not isinstance(order, dict):
                 order = {}
             oid = order.get("oid", payload.get("oid"))
-            clean_oid = extract_order_id({"oid": oid}, default=None)
-            if not clean_oid or clean_oid == "0":
+            clean_oid = extract_order_id(oid, default=None)
+            if not clean_oid:
                 raise ProviderError(
                     f"order_by_client_id({symbol}): response without order ID")
             return {

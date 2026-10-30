@@ -308,7 +308,7 @@ class T212Client:
             if not isinstance(item, dict):
                 continue
             order = item.get("order") if isinstance(item.get("order"), dict) else item
-            cand_oid = self._clean_order_id(extract_order_id(order))
+            cand_oid = extract_order_id(order)
             if cand_oid is not None and cand_oid == target_oid:
                 matches.append((order, item.get("fill")))
         if not matches:

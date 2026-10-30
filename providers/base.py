@@ -705,7 +705,7 @@ def aggregate_fills_by_order_id(
         parent_oid = None
         for k in _PARENT_ORDER_ID_KEYS:
             cleaned_oid = _clean_single_order_id(r.get(k))
-            if cleaned_oid is not None and cleaned_oid != "0":
+            if cleaned_oid is not None:
                 parent_oid = cleaned_oid
                 break
         norm = normalize_order(r)
