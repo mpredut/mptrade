@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from botcore import exact_int, exact_nonneg_int, safe_float, safe_nonneg_float, safe_pos_float
-from .base import _clean_single_order_id, extract_order_id, extract_orig_qty
 
 
 class ProviderError(Exception):
@@ -96,10 +95,6 @@ def capture_submission(submit: Callable[[], object]) -> SubmissionOutcome:
         return SubmissionOutcome(
             "unknown", reason="response_without_order_id", native=native)
     return SubmissionOutcome("accepted", order_id=order_id, native=native)
-
-
-# Compatibility alias retained for existing imports.
-extract_order_qty = extract_orig_qty
 
 
 @dataclass(frozen=True)
@@ -245,6 +240,12 @@ def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
     if not isinstance(capabilities, OrderReconciliationCapabilities):
         raise ProviderError(f"{name}: invalid reconciliation capabilities")
     return capabilities
+
+
+from .base import _clean_single_order_id, extract_order_id, extract_orig_qty  # noqa: E402
+
+# Compatibility alias retained for existing imports.
+extract_order_qty = extract_orig_qty
 
 
 @runtime_checkable

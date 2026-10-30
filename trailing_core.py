@@ -163,7 +163,7 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
             if clear_pending:
                 persist(None)
 
-    if result.outcome in ("absent", "retryable"):
+    if result.outcome in ("absent", "retryable", "refused"):
         _bump_retry(clear_pending=True)
     elif result.outcome == "terminal":
         filled = safe_nonneg_float(getattr(result.status, "filled_qty", 0.0), 0.0)

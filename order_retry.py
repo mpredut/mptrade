@@ -1900,6 +1900,24 @@ def _status_from_terminal_payload(payload) -> Optional[OrderStatus]:
     return status if status.terminal else None
 
 
+def _is_definitive_submit_refusal(error: object) -> bool:
+    text = str(error or "").lower()
+    return any(
+        token in text
+        for token in (
+            "insufficient funds",
+            "insufficient margin",
+            "order minimum not met",
+            "volume minimum not met",
+            "cost minimum not met",
+            "invalid price",
+            "invalid arguments",
+            "positions limit exceeded",
+            "tick size check failed",
+        )
+    )
+
+
 def propagate_submission_refusal(response, outcome_context):
     """Bridge Instrument's result channel into the strict lifecycle contract.
 
@@ -2160,6 +2178,12 @@ class TrackedOrderLifecycle:
         raw_order_id = pending.get("order_id")
         order_id = _clean_retry_order_id(raw_order_id)
         if not order_id:
+            if (
+                str(pending.get("submission_outcome") or "").strip().lower() == "refused"
+                or _is_definitive_submit_refusal(pending.get("submit_error") or pending.get("refusal_reason"))
+            ):
+                persist(None)
+                return TrackedOrderResult("refused", pending)
             try:
                 native = self.market_api.order_by_client_id(
                     symbol, client_order_id, provider_name=self.provider_name)

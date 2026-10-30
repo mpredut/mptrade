@@ -292,6 +292,17 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reserved key"):
             self.intent(metadata={"submitted_price": 1.0})
 
+    def test_reconcile_clears_definitive_submit_refusal_without_order_id(self):
+        pending = self.intent()
+        pending["submission_outcome"] = "unknown"
+        pending["submit_error"] = "ProviderError: submit_order HYPEUSD buy: EOrder:Insufficient funds"
+
+        result = self.lifecycle.reconcile(pending, persist=self.store.persist)
+
+        self.assertEqual(result.outcome, "refused")
+        self.assertIsNone(self.store.value)
+        self.assertEqual(self.api.lookup_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

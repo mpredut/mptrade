@@ -3108,6 +3108,10 @@ def harvest_recent_orders_and_enrich_positions(
                     pos_px_f,
                     overwrite=(p_venue == "t212" and cyc.get("avg_cost_px") is not None),
                 )
+                if p_venue == "t212" and cyc.get("avg_cost_px") is not None and isinstance(ro, dict):
+                    _t212_avg = safe_pos_float(cyc.get("avg_cost_px"), default=0.0) or 0.0
+                    if _t212_avg > 0:
+                        ro["active_avg_buy_px"] = round(_t212_avg, 6)
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
