@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from binance_api.trailing_stop import TrailingStop, should_sell  # noqa: E402
+import binance_api.trailing_stop as binance_ts_mod  # noqa: E402
 from providers.strategy_executor import OrderStatus  # noqa: E402
 
 
@@ -70,7 +71,14 @@ class Base(unittest.TestCase):
         fd, self.sf = tempfile.mkstemp(suffix=".json"); os.close(fd); os.remove(self.sf)
         self.po = FakePo()
         os.environ.pop("TRAILING_ENABLED", None)
+        self._orig_trail_pct = dict(binance_ts_mod.TRAIL_PCT)
+        binance_ts_mod.TRAIL_PCT["TAOUSDC"] = 22.0
+        binance_ts_mod.TRAIL_PCT["BTCUSDC"] = 13.0
+        binance_ts_mod.TRAIL_PCT["ARBUSDC"] = 26.0
+
     def tearDown(self):
+        binance_ts_mod.TRAIL_PCT.clear()
+        binance_ts_mod.TRAIL_PCT.update(self._orig_trail_pct)
         for p in (self.sf, self.sf + ".tmp"):
             if os.path.exists(p):
                 os.remove(p)
@@ -416,7 +424,7 @@ class TestPerCoin(Base):
             ts = self.ts(FakeApi(1.0))
             expected_trails = ic.trail_pct_map()
             for sym in ("BTCUSDC", "TAOUSDC", "ARBUSDC"):
-                self.assertEqual(ts.trail_pct_for(sym), expected_trails[sym])
+                self.assertEqual(self._orig_trail_pct[sym], expected_trails[sym])
             with self.assertRaises(KeyError):
                 ts.trail_pct_for("XYZUSDC")  # No invented policy for an unconfigured asset.
 

@@ -53,7 +53,14 @@ class Base(unittest.TestCase):
         os.environ["KRAKEN_LIVE_ORDERS"] = "true"
         fd, self.sf = tempfile.mkstemp(suffix=".json"); os.close(fd); os.remove(self.sf)
         ts_mod.notify = lambda **kw: None
+        self._orig_trail_pct = dict(ts_mod.TRAIL_PCT)
+        ts_mod.TRAIL_PCT["HYPE"] = 18.0
+        ts_mod.TRAIL_PCT["TAO"] = 22.0
+        ts_mod.TRAIL_PCT["ADA"] = 25.0
+
     def tearDown(self):
+        ts_mod.TRAIL_PCT.clear()
+        ts_mod.TRAIL_PCT.update(self._orig_trail_pct)
         if self.previous_live is None:
             os.environ.pop("KRAKEN_LIVE_ORDERS", None)
         else:
