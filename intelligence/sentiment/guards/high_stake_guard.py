@@ -2437,6 +2437,14 @@ def harvest_recent_orders_and_enrich_positions(
         "hyperliquid": {},
         "t212": {},
     }
+    def _record_venue_fills(c_venue: str, sym_k: str, fills_d: Dict[str, Any]) -> None:
+        fills_d.setdefault("venue", c_venue)
+        venue_recent_orders[c_venue][sym_k] = fills_d
+        if sym_k in recent_orders and c_venue != "binance":
+            recent_orders[f"{c_venue}:{sym_k}"] = fills_d
+        else:
+            recent_orders.setdefault(sym_k, fills_d)
+
     for order_cache_name, cache_venue in (
         ("cache_order.json", "binance"),
         ("cache_trade_kraken.json", "kraken"),
@@ -2452,11 +2460,7 @@ def harvest_recent_orders_and_enrich_positions(
                     audit_origin_map=audit_origin_map,
                 )
                 if fills:
-                    venue_recent_orders[cache_venue][sym] = fills
-                    if sym in recent_orders and cache_venue != "binance":
-                        recent_orders[f"{cache_venue}:{sym}"] = fills
-                    else:
-                        recent_orders.setdefault(sym, fills)
+                    _record_venue_fills(cache_venue, sym, fills)
     for inst in inst_by_sym.values():
         sym = str(getattr(inst, "symbol", "")).upper()
         v_inst = normalize_venue_name(getattr(inst, "provider_name", ""))
@@ -2472,11 +2476,7 @@ def harvest_recent_orders_and_enrich_positions(
                     audit_origin_map=audit_origin_map,
                 )
                 if fills:
-                    venue_recent_orders["hyperliquid"][sym] = fills
-                    if sym in recent_orders:
-                        recent_orders[f"hyperliquid:{sym}"] = fills
-                    else:
-                        recent_orders[sym] = fills
+                    _record_venue_fills("hyperliquid", sym, fills)
         except Exception:
             pass
     for pos in tradable_positions:
@@ -2874,7 +2874,9 @@ def apply_asset_scope_filter(
             if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
         }
 
-        def _is_eq_ro_key(rk: str) -> bool:
+        def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
+            if isinstance(rv, dict) and rv.get("venue"):
+                return normalize_venue_name(rv.get("venue")) == "t212"
             rk_up = str(rk).upper()
             if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
                 return True
@@ -2885,7 +2887,7 @@ def apply_asset_scope_filter(
         filtered_ro = {
             rk: rv
             for rk, rv in portfolio_summary["recent_orders"].items()
-            if _is_eq_ro_key(rk) == want_t212
+            if _is_eq_ro_key(rk, rv) == want_t212
         }
         if filtered_ro:
             portfolio_summary["recent_orders"] = filtered_ro

@@ -589,12 +589,18 @@ def _resolve_intent_execution_details(
         and isinstance(recent_orders, dict)
         and symbol
     ):
+        sym_cands = cache_symbol_variants(symbol)
         ro_entry = next(
             (
                 val
-                for cand in cache_symbol_variants(symbol)
-                for key_cand in (f"{venue}:{cand}", cand)
+                for key_cand in (*(f"{venue}:{cand}" for cand in sym_cands), *sym_cands)
                 if isinstance((val := casefold_get(recent_orders, key_cand)), dict)
+                and (
+                    ":" in key_cand
+                    or not venue
+                    or not val.get("venue")
+                    or normalize_venue_name(val.get("venue")) == venue
+                )
             ),
             None,
         )

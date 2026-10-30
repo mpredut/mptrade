@@ -4411,6 +4411,71 @@ def test_iteration22_diverged_fiat_series_overlay_and_micro_strip(tmp_path):
     assert ctx["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["qty"] == pytest.approx(10.0)
 
 
+def test_iteration23_execution_audit_cross_venue_recent_orders_isolation(tmp_path):
+    from intelligence.sentiment.guards.high_stake_guard import harvest_recent_orders_and_enrich_positions
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    # Binance has BTCUSDC @ 80000, Kraken has XBTUSD @ 81490
+    (cache_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {"orderId": 1, "side": "BUY", "status": "FILLED", "price": "80000.0", "executedQty": "0.05", "time": 1793300010000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_trade_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "XBTUSD": [
+                        {"ordertxid": "K_AI_1", "type": "buy", "price": "81490.0", "vol_exec": "0.01", "time": 1793300010.0}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    ro_map = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir), {}, [], {}, {}, {}, {}, known_ai_order_ids={"1", "K_AI_1"}
+    )
+    assert ro_map["BTCUSDC"]["venue"] == "binance"
+    assert ro_map["XBTUSD"]["venue"] == "kraken"
+
+    st_fill = build_last_cycle_execution_status(
+        [
+            {
+                "intent_id": "kr_btc_2",
+                "timestamp": 1793300000.0,
+                "decision": "BUY",
+                "symbol": "BTCUSD",
+                "venue": "kraken",
+                "order_type": "LIMIT",
+                "limit_price": 81500.0,
+                "reference_price": 81600.0,
+                "suggested_notional_usd": 815.0,
+                "status": "EXECUTED",
+                "execution_payload": {"status": "OPEN"},
+            }
+        ],
+        "crypto",
+        1793300060.0,
+        extract_intent_notional,
+        recent_orders=ro_map,
+        open_orders=[],
+    )
+    assert st_fill["status"] == "FILLED"
+    assert st_fill["fill_px"] == pytest.approx(81490.0)
+    assert st_fill["filled_qty"] == pytest.approx(0.01)
+
+
+
 
 
 
