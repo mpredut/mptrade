@@ -10,7 +10,9 @@ There is no ``side`` field, and the ticker key is not ``instrumentTicker``.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import os
 import threading
 import time
 
@@ -80,6 +82,60 @@ class T212Client:
         )
         # On TTL expiry, one thread fetches while others wait and reuse its result.
         self._fetch_lock = threading.Lock()
+        key_hash = hashlib.sha256(self.api_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
+        self._shared_cache_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            f".t212_shared_cache_{self.env}_{key_hash}.json",
+        )
+        self._enable_shared_disk_cache: bool | None = None
+
+    def _shared_cache_enabled(self) -> bool:
+        if self._enable_shared_disk_cache is not None:
+            return bool(self._enable_shared_disk_cache)
+        return "PYTEST_CURRENT_TEST" not in os.environ and bool(getattr(self, "_shared_cache_path", ""))
+
+    def _read_shared_cache(self, attr: str, max_age_sec: float) -> tuple[bool, list | dict | None, float]:
+        if not self._shared_cache_enabled() or max_age_sec <= 0.0:
+            return False, None, 0.0
+        try:
+            with open(self._shared_cache_path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if not isinstance(payload, dict):
+                return False, None, 0.0
+            entry = payload.get(attr)
+            if not isinstance(entry, dict):
+                return False, None, 0.0
+            ts = safe_pos_float(entry.get("ts"), default=None)
+            data = entry.get("data")
+            if ts is None or not isinstance(data, (list, dict)):
+                return False, None, 0.0
+            age = time.time() - ts
+            if 0.0 <= age < max_age_sec:
+                return True, data, age
+        except Exception:
+            pass
+        return False, None, 0.0
+
+    def _write_shared_cache(self, attr: str, data: list | dict) -> None:
+        if not self._shared_cache_enabled():
+            return
+        try:
+            payload: dict = {}
+            if os.path.exists(self._shared_cache_path):
+                try:
+                    with open(self._shared_cache_path, "r", encoding="utf-8") as fh:
+                        raw = json.load(fh)
+                    if isinstance(raw, dict):
+                        payload = raw
+                except Exception:
+                    payload = {}
+            payload[attr] = {"ts": time.time(), "data": data}
+            tmp_path = f"{self._shared_cache_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp_path, self._shared_cache_path)
+        except Exception:
+            pass
 
     def notify_rate_limit(self, backoff_sec: float = 5.0) -> None:
         """Pause all subsequent requests across all threads after HTTP 429."""
@@ -94,6 +150,12 @@ class T212Client:
         self._fetch_fail.pop("_pf_cache", None)
         self._cash_cache = None
         self._fetch_fail.pop("_cash_cache", None)
+        if self._shared_cache_enabled():
+            try:
+                if os.path.exists(self._shared_cache_path):
+                    os.remove(self._shared_cache_path)
+            except Exception:
+                pass
 
     def _pace(self) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
@@ -443,10 +505,22 @@ class T212Client:
                 hit, val = self._peek_cached_locked(attr)
                 if hit:
                     return val
+            s_hit, s_val, s_age = self._read_shared_cache(attr, self._pf_ttl)
+            if s_hit and s_val is not None:
+                with self._lock:
+                    setattr(self, attr, (time.monotonic() - s_age, s_val))
+                    self._fetch_fail.pop(attr, None)
+                return s_val
             status, body = http_get(f"{self.base}{path}", headers=self._headers())
-            if status == 429:
-                self.notify_rate_limit(max(5.0, self._pf_ttl))
             if status != 200 or not body:
+                s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, 60.0)
+                if s_fb_hit and s_fb_val is not None:
+                    with self._lock:
+                        setattr(self, attr, (time.monotonic() - min(s_fb_age, self._pf_ttl * 0.5), s_fb_val))
+                        self._fetch_fail[attr] = time.monotonic()
+                    return s_fb_val
+                if status == 429:
+                    self.notify_rate_limit(max(5.0, self._pf_ttl))
                 self._log_read_fail(what, status)
                 with self._lock:
                     self._fetch_fail[attr] = time.monotonic()
@@ -464,6 +538,7 @@ class T212Client:
             with self._lock:
                 setattr(self, attr, (time.monotonic(), data))
                 self._fetch_fail.pop(attr, None)
+            self._write_shared_cache(attr, data)
             return data
 
     def get_portfolio(self) -> list[dict] | None:

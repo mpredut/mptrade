@@ -6615,6 +6615,62 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     assert krk_cycles["TAOUSD"]["dd_pct"] == pytest.approx(-1.12)
 
 
+def test_t212_client_cross_process_shared_disk_cache(tmp_path, monkeypatch):
+    """Verify T212Client shares fresh portfolio/order snapshots across processes and falls back on HTTP 429."""
+    import importlib
+    t212_mod = importlib.import_module("212trading.t212_client")
+    T212Client = t212_mod.T212Client
+
+    shared_file = str(tmp_path / ".t212_shared_cache_live_test.json")
+    http_calls = []
+
+    def _fake_http_get(url, headers=None):
+        http_calls.append(url)
+        if url.endswith("/equity/portfolio"):
+            return 200, json.dumps([{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]).encode("utf-8")
+        if url.endswith("/equity/orders"):
+            return 200, json.dumps([{"id": 991, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 135.0}]).encode("utf-8")
+        return 404, b""
+
+    monkeypatch.setattr(t212_mod, "http_get", _fake_http_get)
+
+    # 1. Producer process (T212-bot) fetches and populates shared disk cache
+    producer = T212Client("test_key", "test_sec", "live", min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0)
+    producer._shared_cache_path = shared_file
+    producer._enable_shared_disk_cache = True
+    assert producer.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
+    assert producer.list_active_orders() == [{"id": 991, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 135.0}]
+    assert len(http_calls) == 2
+
+    # 2. Consumer process (auto_sharetrade_executor) reuses fresh (<6s) shared disk cache with 0 HTTP calls
+    consumer = T212Client("test_key", "test_sec", "live", min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0)
+    consumer._shared_cache_path = shared_file
+    consumer._enable_shared_disk_cache = True
+    assert consumer.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
+    assert consumer.list_active_orders() == [{"id": 991, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 135.0}]
+    assert len(http_calls) == 2
+
+    # 3. When shared disk cache is >6s old (<60s) and consumer hits HTTP 429, it falls back to the <60s shared cache
+    with open(shared_file, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    for k in payload:
+        payload[k]["ts"] = time.time() - 12.0
+    with open(shared_file, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+    monkeypatch.setattr(t212_mod, "http_get", lambda url, headers=None: (429, b"rate limit"))
+    consumer2 = T212Client("test_key", "test_sec", "live", min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0)
+    consumer2._shared_cache_path = shared_file
+    consumer2._enable_shared_disk_cache = True
+    assert consumer2.get_portfolio() == [{"ticker": "NVDA_US_EQ", "quantity": 0.21, "currentPrice": 202.35}]
+    assert consumer2.list_active_orders() == [{"id": 991, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 135.0}]
+
+    # 4. Cache invalidation removes the shared disk cache file
+    with producer._lock:
+        producer._invalidate_order_caches_locked()
+    assert not os.path.exists(shared_file)
+
+
 
 
 
