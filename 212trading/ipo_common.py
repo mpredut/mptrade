@@ -7,7 +7,6 @@ compatibility with `from ipo_common import log, http_get, float_env, ...`.
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 from datetime import datetime, timezone
@@ -19,7 +18,7 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common im
     BUCHAREST, ET, HTTP_TIMEOUT, log, load_dotenv, parse_dotenv, float_env, int_env,
     http_get, http_post_json, http_request, fetch_public_json, single_instance, are_close, diff_percent,
     defined_env, required_env, required_float_env, required_int_env, required_bool_env,
-    resolve_cli_arg,
+    resolve_cli_arg, ensure_local_module_priority, load_local_module,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
     is_us_rth_open,
@@ -29,10 +28,7 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common im
 def load_t212_market_data():
     """Load ``212trading/market_data.py`` without colliding with other venue ``market_data`` modules."""
     here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location("t212_market_data", os.path.join(here, "market_data.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return load_local_module(here, "market_data", module_key="t212_market_data", register=False)
 
 
 def load_t212_environment(env_file: str, *, profile_file: str | None = None) -> None:

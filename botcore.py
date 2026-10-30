@@ -631,13 +631,36 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     raise ValueError(f"Invalid {label} {raw!r}")
 
 
-def load_local_module(directory: str, name: str):
+def ensure_local_module_priority(directory: str, *module_names: str) -> None:
+    """Ensure ``directory`` is first on ``sys.path`` (with repo root available) and evict foreign cached modules."""
+    abs_dir = os.path.abspath(directory)
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    if sys.path[:1] != [abs_dir]:
+        if abs_dir in sys.path:
+            sys.path.remove(abs_dir)
+        sys.path.insert(0, abs_dir)
+    for mod_name in module_names:
+        mod_file = getattr(sys.modules.get(mod_name), "__file__", None)
+        if isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir:
+            sys.modules.pop(mod_name, None)
+
+
+def load_local_module(
+    directory: str,
+    name: str,
+    *,
+    module_key: str | None = None,
+    register: bool = True,
+):
     """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
     abs_dir = os.path.abspath(directory)
-    mod = sys.modules.get(name)
-    mod_file = getattr(mod, "__file__", None) if mod is not None else None
-    if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == abs_dir):
-        return mod
+    key = module_key or name
+    if register:
+        mod = sys.modules.get(key)
+        mod_file = getattr(mod, "__file__", None) if mod is not None else None
+        if mod is not None and (not isinstance(mod_file, str) or os.path.dirname(os.path.abspath(mod_file)) == abs_dir):
+            return mod
     import importlib.util
     orig_sys_path = list(sys.path)
     try:
@@ -645,9 +668,10 @@ def load_local_module(directory: str, name: str):
             sys.path.insert(0, _REPO_ROOT)
         if abs_dir not in sys.path:
             sys.path.append(abs_dir)
-        spec = importlib.util.spec_from_file_location(name, os.path.join(abs_dir, f"{name}.py"))
+        spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{name}.py"))
         mod = importlib.util.module_from_spec(spec)
-        sys.modules[name] = mod
+        if register:
+            sys.modules[key] = mod
         spec.loader.exec_module(mod)
         return mod
     finally:

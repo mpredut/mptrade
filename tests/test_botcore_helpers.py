@@ -615,6 +615,27 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
     assert should_wait_short_trend(DummyShortTM(True), "SELL", "BTCUSDC") is True
     assert should_wait_short_trend(DummyShortTM(False), "SELL", "BTCUSDC") is False
 
+    # 4. load_local_module supports custom module_key and register=False, and ensure_local_module_priority evicts foreign modules
+    import sys
+    from botcore import ensure_local_module_priority
+    mod_dir = tmp_path / "venue_mod"
+    mod_dir.mkdir()
+    (mod_dir / "sample_local.py").write_text("VALUE = 42\n", encoding="utf-8")
+    mod = load_local_module(str(mod_dir), "sample_local", module_key="custom_sample_local", register=False)
+    assert mod.VALUE == 42
+    assert "custom_sample_local" not in sys.modules
+
+    foreign_mod = type(sys)("sample_local")
+    foreign_mod.__file__ = str(tmp_path / "other_dir" / "sample_local.py")
+    sys.modules["sample_local"] = foreign_mod
+    orig_sys_path = list(sys.path)
+    try:
+        ensure_local_module_priority(str(mod_dir), "sample_local")
+        assert "sample_local" not in sys.modules
+        assert sys.path[0] == os.path.abspath(str(mod_dir))
+    finally:
+        sys.path[:] = orig_sys_path
+
 
 if __name__ == "__main__":
     unittest.main()

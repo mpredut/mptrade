@@ -21,14 +21,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
-if sys.path[:1] != [_HERE]:
-    if _HERE in sys.path:
-        sys.path.remove(_HERE)
-    sys.path.insert(0, _HERE)
-for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
-    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
-    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
-        sys.modules.pop(_mod_name, None)
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "market_data", "t212_client")
 
 from state_io import atomic_write_json, previous_generation_path, read_json_dict
 from providers.base import extract_order_id, extract_order_side

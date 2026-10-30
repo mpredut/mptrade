@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from strategies.state_store import JsonStateStore, StatePersistenceError
+from strategies.state_store import (
+    JsonStateStore,
+    StatePersistenceError,
+    safe_state_token,
+    state_path_for,
+)
 
 
 def _defaults():
@@ -67,6 +72,16 @@ class JsonStateStoreTest(unittest.TestCase):
                 self.assertFalse(store.save(_defaults()))
             self.assertIn("cannot save the state", messages[-1])
             self.assertEqual(os.listdir(directory), [])
+
+    def test_safe_state_token_and_state_path_for_sanitize_and_fallback(self):
+        self.assertEqual(safe_state_token("HYPE/USD", "unknown"), "HYPEUSD")
+        self.assertEqual(safe_state_token(" LONG ", "long", lower=True), "long")
+        self.assertEqual(safe_state_token(True, "unknown"), "unknown")
+        self.assertEqual(safe_state_token("...", "unknown"), "unknown")
+        self.assertEqual(
+            state_path_for("TAO/USD", None, default_dir="/tmp/kraken").replace("\\", "/"),
+            "/tmp/kraken/.state_TAOUSD.json",
+        )
 
 
 if __name__ == "__main__":

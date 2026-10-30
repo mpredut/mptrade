@@ -24,9 +24,11 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
-from botcore import _parse_bool_flag, parse_dotenv, required_float_env, safe_float  # noqa: E402
+from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
+from kraken.kraken_client import KrakenClient  # noqa: E402
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 from state_io import read_json_dict, save_json_state  # noqa: E402
+from strategies.state_store import state_path_for  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 
@@ -40,21 +42,15 @@ KRAKEN_PAIRS = [("HYPEUSD", "HYPE", False), ("TAOUSD", "TAO", False), ("ADAUSD",
 
 
 def _load_state(pair: str) -> dict | None:
-    path = os.path.join(KRAKEN_DIR, f".state_{pair}.json")
+    path = state_path_for(pair, KRAKEN_DIR)
     return read_json_dict(path, default=None, recover_previous=True)
 
 
 def _kraken_price(pair: str):
-    saved_path = list(sys.path)
     try:
-        if sys.path[:1] != [KRAKEN_DIR]:
-            sys.path[:] = [KRAKEN_DIR] + [p for p in sys.path if p != KRAKEN_DIR]
-        from kraken_client import KrakenClient
         return KrakenClient.public().last_price(pair)
     except Exception:  # noqa: BLE001 — the snapshot must not die on one missed price
         return None
-    finally:
-        sys.path[:] = saved_path
 
 
 _f = safe_float
@@ -96,19 +92,13 @@ def kraken_rows() -> list[dict]:
 
 
 def hl_row() -> dict | None:
-    saved_path = list(sys.path)
-    saved_common = sys.modules.get("common")
     try:
         hl_dir = os.path.join(ROOT, "hyperliquid")
-        if sys.path[:1] != [hl_dir]:
-            sys.path[:] = [hl_dir] + [p for p in sys.path if p != hl_dir]
-        sys.modules.pop("common", None)
         # load_dotenv/HLClient write logs to stdout — we suppress them so they do not
         # pollute the --json output (the cron jsonl).
         with contextlib.redirect_stdout(io.StringIO()):
-            from common import load_env_stack
-            load_env_stack(os.path.join(ROOT, "hyperliquid", ".env"))
-            from hl_client import HLClient
+            load_env_stack(os.path.join(hl_dir, ".env"))
+            HLClient = load_local_module(hl_dir, "hl_client").HLClient
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             c = HLClient.public(account_address=addr, mainnet=True)
             ss = c.info.spot_user_state(addr)
@@ -120,12 +110,6 @@ def hl_row() -> dict | None:
                 "value_usd": round(hype * mid, 2), "cash_usd": round(usdc, 2)}
     except Exception as e:  # noqa: BLE001
         return {"engine": "HL", "error": str(e)[:60]}
-    finally:
-        sys.path[:] = saved_path
-        if saved_common is None:
-            sys.modules.pop("common", None)
-        else:
-            sys.modules["common"] = saved_common
 
 
 ALERT_STATE = os.path.join(ROOT, "logs", ".risk_alert_state.json")

@@ -38,7 +38,7 @@ from intelligence.internal.state.volatility import (
 )
 
 from . import spot_rules as sr
-from .state_store import JsonStateStore
+from .state_store import JsonStateStore, state_path_for as _shared_state_path_for
 from .position_exit_manager import (
     ExitAction,
     PositionExitConfig,
@@ -63,17 +63,7 @@ _clean_nonneg_float = lambda val: safe_nonneg_float(val, default=None)
 
 def state_path_for(pair: str, state_dir: str | None = None) -> str:
     """Return the state path, retaining the Kraken fallback for live compatibility."""
-    if isinstance(pair, bool) or not isinstance(pair, str):
-        safe = "unknown"
-    else:
-        safe = "".join(c for c in pair if c.isalnum() or c in "._-").strip("._-") or "unknown"
-    if isinstance(state_dir, os.PathLike):
-        directory = os.fspath(state_dir) or _LEGACY_STATE_DIR
-    elif isinstance(state_dir, str) and state_dir.strip():
-        directory = state_dir.strip()
-    else:
-        directory = _LEGACY_STATE_DIR
-    return os.path.join(directory, f".state_{safe}.json")
+    return _shared_state_path_for(pair, state_dir, default_dir=_LEGACY_STATE_DIR)
 
 
 @dataclass

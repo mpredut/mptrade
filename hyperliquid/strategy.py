@@ -24,14 +24,11 @@ import time
 from dataclasses import dataclass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if sys.path[:1] != [_HERE]:
-    if _HERE in sys.path:
-        sys.path.remove(_HERE)
-    sys.path.insert(0, _HERE)
-for _mod_name in ("common", "notify", "hl_client", "market_data", "signals"):
-    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
-    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
-        sys.modules.pop(_mod_name, None)
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "common", "notify", "hl_client", "market_data", "signals")
 
 from common import (
     _parse_bool_flag,
@@ -42,19 +39,13 @@ from common import (
 from notify import notify
 from providers.base import _clean_single_order_id
 from state_io import load_json_state, save_json_state
+from strategies.state_store import safe_state_token as _safe_state_token
 from hl_client import HLClient
 from market_data import get_price
 from signals import _normalize_signal_trend, get_signal
 
 load_env_stack(os.path.join(_HERE, ".env"))
 HL_FEE_PCT = required_float_env("HL_FEE_PCT")
-
-
-def _safe_state_token(val: object, default: str, *, lower: bool = False) -> str:
-    if isinstance(val, bool) or not isinstance(val, str):
-        return default
-    s = val.strip().lower() if lower else val
-    return "".join(c for c in s if c.isalnum() or c in "._-").strip("._-") or default
 
 
 def state_path_for(coin: str, direction: str) -> str:

@@ -7,7 +7,6 @@ on the next idle `manage_agy.sh ui-sync` restart.
 from __future__ import annotations
 
 import fcntl
-import importlib
 import logging
 import os
 import shutil
@@ -26,12 +25,6 @@ from orchestratorOS.agy.paths import (
     resolve_ui_cli_base,
     visible_conversations_dir,
 )
-import orchestratorOS.agy.summary_store as _summary_store
-if not hasattr(_summary_store, "_safe_step_count"):
-    try:
-        importlib.reload(_summary_store)
-    except Exception:
-        pass
 from orchestratorOS.agy.summary_store import (
     _clean_cid_set,
     checkpoint_db,
@@ -46,11 +39,7 @@ from orchestratorOS.agy.summary_store import (
 )
 from state_io import durable_replace_file
 
-
-_fallback_safe_step_count = safe_nonneg_int
-
-
-_safe_step_count = getattr(_summary_store, "_safe_step_count", _fallback_safe_step_count)
+_safe_step_count = safe_nonneg_int
 
 logger = logging.getLogger("orchestratorOS.agy.ui_mirror")
 

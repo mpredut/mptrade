@@ -19,14 +19,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, fields as _dc_fields
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if sys.path[:1] != [_HERE]:
-    if _HERE in sys.path:
-        sys.path.remove(_HERE)
-    sys.path.insert(0, _HERE)
-for _mod_name in ("ipo_common", "ipo_notify", "market_data", "t212_client"):
-    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
-    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
-        sys.modules.pop(_mod_name, None)
+_ROOT_DIR = os.path.dirname(_HERE)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "market_data", "t212_client")
 
 from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
@@ -45,7 +42,7 @@ from providers.base import (
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
-from strategies.state_store import JsonStateStore
+from strategies.state_store import JsonStateStore, state_path_for as _shared_state_path_for
 from strategies.position_exit_manager import (
     PositionExitManager,
     PositionExitConfig,
@@ -70,11 +67,7 @@ def log(msg: str) -> None:
 
 
 def state_path_for(ticker: str) -> str:
-    if isinstance(ticker, bool) or not isinstance(ticker, str):
-        safe = "unknown"
-    else:
-        safe = "".join(c for c in ticker if c.isalnum() or c in "._-").strip("._-") or "unknown"
-    return os.path.join(_HERE, f".state_{safe}.json")
+    return _shared_state_path_for(ticker, _HERE)
 
 
 def _clean_pos_float(val: object) -> float | None:

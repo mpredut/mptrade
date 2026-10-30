@@ -7,9 +7,35 @@ duplicate entry.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from botcore import _parse_bool_flag
 from state_io import StateReadError, load_json_state, save_json_state
+
+
+def safe_state_token(val: object, default: str = "unknown", *, lower: bool = False) -> str:
+    """Sanitize a symbol/ticker/direction token for use in a ``.state_<token>.json`` filename."""
+    if isinstance(val, bool) or not isinstance(val, str):
+        return default
+    s = val.strip().lower() if lower else val
+    return "".join(c for c in s if c.isalnum() or c in "._-").strip("._-") or default
+
+
+def state_path_for(
+    symbol: str,
+    state_dir: str | os.PathLike | None = None,
+    *,
+    default_dir: str = "",
+) -> str:
+    """Return ``<dir>/.state_<safe_symbol>.json`` using ``default_dir`` when ``state_dir`` is blank."""
+    safe = safe_state_token(symbol, "unknown")
+    if isinstance(state_dir, os.PathLike):
+        directory = os.fspath(state_dir) or default_dir
+    elif isinstance(state_dir, str) and state_dir.strip():
+        directory = state_dir.strip()
+    else:
+        directory = default_dir
+    return os.path.join(directory, f".state_{safe}.json")
 
 
 class StatePersistenceError(RuntimeError):

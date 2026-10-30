@@ -29,14 +29,10 @@ import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
-for _p in (_ROOT_DIR, _HERE):
-    if _p in sys.path:
-        sys.path.remove(_p)
-    sys.path.insert(0, _p)
-for _mod_name in ("ipo_common", "ipo_notify", "listing_watcher", "strategy", "t212_client"):
-    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
-    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
-        sys.modules.pop(_mod_name, None)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+from botcore import ensure_local_module_priority  # noqa: E402
+ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "listing_watcher", "strategy", "t212_client")
 try:
     from .ipo_common import (  # noqa: E402
         load_t212_environment, log, parse_dotenv, single_instance,
