@@ -24,7 +24,13 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
 )
-from cachepaths import cache_path, canonical_symbol_key
+from cachepaths import cache_path, canonical_base_asset, canonical_symbol_key
+from intelligence.internal.state.persistence import (
+    calculate_hurst_exponent as hurst_rs,
+    calculate_mann_kendall as mann_kendall,
+    classify_hurst_regime as hurst_regime,
+)
+from intelligence.internal.state.survival import estimate_T
 from instrument_registry import casefold_get
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
@@ -634,7 +640,6 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     if mk_alpha:
         # Mann-Kendall requires the current window's slope to be statistically
         # significant rather than noise before reporting a direction.
-        from intelligence.internal.state.persistence import calculate_mann_kendall as mann_kendall
         _, _, p_mk = mann_kendall(prices[cur_idx[0]:cur_idx[1]])
         if p_mk > mk_alpha:
             return _store_trend_memo(cache_key, None)
@@ -713,7 +718,6 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
 
     # Hurst regime is informational: persistence favors trend following, while
     # mean reversion suggests trends decay quickly.
-    from intelligence.internal.state.persistence import calculate_hurst_exponent as hurst_rs, classify_hurst_regime as hurst_regime
     h = hurst_rs(prices)
     res['hurst'] = h
     res['regime'] = hurst_regime(h)
@@ -819,7 +823,6 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
 
     if T_quanta is None:
         try:
-            from intelligence.internal.state.survival import estimate_T
             est = estimate_T(symbol)
             T_quanta = est["T"]
             print(f"[{symbol}] T AUTO (empiric hibrid): {T_quanta} zile  "
@@ -841,10 +844,9 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     )
     if not items:
         # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)
-        from order_guard import _normalize_base_asset
-        s_base = _normalize_base_asset(symbol)
+        s_base = canonical_base_asset(symbol)
         for k, v in all_trend_data.items():
-            if v and _normalize_base_asset(k) == s_base:
+            if v and canonical_base_asset(k) == s_base:
                 items = v
                 break
     if not items:

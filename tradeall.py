@@ -5,6 +5,9 @@ import threading
 
 # Local imports.
 import alertnotifiers as alert
+import cacheManager as cm
+from intelligence.internal.state.volatility import get_kalman_state_path
+import order_retry
 import utils as u
 import symbols as sym
 from instrument_registry import casefold_get, select_instruments, symbols_for
@@ -327,7 +330,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     # Cancel any existing active orders from previous iterations (including outbox-accepted orders)
     outbox_order_ids = []
     try:
-        import order_retry
         if (
             not hasattr(_fire_order, "_mock_name")
             or hasattr(order_retry.get_accepted_order_ids_for_owner, "_mock_name")
@@ -349,7 +351,6 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             try:
                 mkt.cancel_order(symbol, str(order_id))
                 try:
-                    import order_retry
                     order_retry.resolve_accepted_order(symbol, order_id)
                 except Exception:
                     pass
@@ -676,7 +677,6 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     # Refresh the observed sampling rate from ``CacheCurrentPriceManager``.
     try:
-        import cacheManager as cm
         actual_rate = cm.get_current_price_manager().get_sample_rate(
             symbol, fallback=TIME_SLEEP_GET_PRICE)
         price_window.set_sample_rate(actual_rate)
@@ -781,7 +781,6 @@ class TrendCoordinator:
         # KALMAN_PRIMARY_SYMBOLS. Guard setup and calls so a failure cannot stop trading.
         try:
             import shadow_signals
-            from intelligence.internal.state.volatility import get_kalman_state_path
             self._kalman_state = shadow_signals.KalmanStateTracker(
                 state_path=get_kalman_state_path())
             global _kalman_ref
@@ -968,7 +967,6 @@ if __name__ == "__main__":
     # Price chain: WebSocket market data -> CacheCurrentPrice -> Cache24 -> PriceWindow.
     # Create CacheCurrentPrice before Cache24 with the correct sync_ts; otherwise
     # Cache24.get_remote_items creates it internally with sync_ts=30.
-    import cacheManager as cm
     from binance_api import bapi_ws
     # The user-data WebSocket bridge is opt-in; tradeall needs execution reports.
     cm.enable_real_ws_event_sync()

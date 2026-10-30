@@ -6,6 +6,18 @@ import math
 from typing import Optional, Tuple, Dict, Any
 
 # my imports
+import alertnotifiers as alert
+import cacheManager as cm
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from intelligence.internal.state.volatility import resolve_cached_volatility_1h
+import order_guard
+import order_retry
+import pricewindow as pw
+from providers.quantity import (
+    check_order_filter_refusal,
+    resolve_assets,
+    round_provider_qty,
+)
 import symbols as sym
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
@@ -160,7 +172,6 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
     Fills sharing the same order ID in the same tick are aggregated into a single notification.
     """
     global _notified_trade_ids, _trades_monitor_initialized, _trades_monitor_warmup_failed_symbols
-    import alertnotifiers as alert
 
     symbols_to_check = symbols_list or sym.symbols
     if not _trades_monitor_initialized:
@@ -247,8 +258,6 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
 def is_trend_up(symbol, window_seconds=None, now=None):
     """Evaluate upward trend via CacheShortTrendManager (primary snapshot, per-symbol fast window, or dynamic window)."""
     try:
-        import cacheManager as cm
-        import pricewindow as pw
         mgr = cm.get_short_trend_manager()
         if window_seconds is None:
             fast_w = pw.fast_trend_window_for_symbol(symbol)
@@ -808,9 +817,6 @@ def _load_mt_conf(path=None):
 
 _load_mt_conf()
 
-
-from intelligence.internal.state.volatility import resolve_cached_volatility_1h
-
 # Canonical Single Source of Truth (SSOT) alias for 1h realized volatility decimal ratio
 get_symbol_volatility_1h = resolve_cached_volatility_1h
 
@@ -959,7 +965,6 @@ def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
     if not reason:
         return False
     try:
-        import order_retry
         return order_retry.is_terminal_filter_refusal(str(reason))
     except Exception:
         r = str(reason)
@@ -972,7 +977,6 @@ def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: f
         return True
     prov = getattr(inst, "_provider", None)
     if prov is not None and current_price and current_price > 0:
-        from providers.quantity import check_order_filter_refusal
         refusal = check_order_filter_refusal(
             prov, symbol, "SELL", current_price, sellable_qty,
             market=True, enforce_business_minimum=False,
@@ -1061,8 +1065,6 @@ def _is_trend_gate_deferred(symbol: str, inst: Any = None, side: str = "SELL") -
     if prov and str(prov).strip().lower() in ("replay", "backtest", "sim"):
         return False
     try:
-        import cacheManager as cm
-        import pricewindow as pw
         short_tm = cm.get_short_trend_manager()
         fast_w = pw.fast_trend_window_for_symbol(symbol)
         if (
@@ -1096,7 +1098,6 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
                         if res is not False:
                             cancelled.append(active_ord)
                             try:
-                                import order_retry
                                 order_retry.resolve_accepted_order(symbol, oid)
                             except Exception:
                                 pass
@@ -1489,8 +1490,6 @@ def _handle_position_recovery(
 
 def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_bypass: Any = None) -> set[str]:
     """Resolve normalized bypass guards combining venue margins, instrument params, and caller extras."""
-    import order_guard
-    from guard_hierarchy import normalize_bypassed_guards
     if provider is None and inst is not None:
         provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
     inst_params = getattr(inst, "params", None) if inst is not None else None
@@ -1515,8 +1514,6 @@ def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_by
 def _eval_reentry_buy_quantity_decision(
     inst, provider, symbol: str, current_price: float, requested_qty: float, reentry_bg: set[str]
 ):
-    from guard_hierarchy import GUARD_REGISTRY
-    from providers.quantity import resolve_assets
     bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
     base_asset, quote_asset = resolve_assets(
         symbol,
@@ -1552,8 +1549,6 @@ def _can_pass_buy_quantity_policy(
     if not callable(getattr(provider, "free_balance", None)):
         return True
     try:
-        import order_guard
-        from providers.quantity import check_order_filter_refusal, round_provider_qty
         reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass={"G_PROF", "GLLM1"})
         decision, quote_asset = _eval_reentry_buy_quantity_decision(
             inst, provider, symbol, current_price, requested_qty, reentry_bg
@@ -1669,7 +1664,6 @@ def _apply_post_stop_ai_guard(
     if _is_simulated_env_or_inst(inst):
         return True, buy_budget, buy_qty_cfg, qty
     try:
-        from guard_hierarchy import GUARD_REGISTRY
         from intelligence.sentiment.guards.high_stake_guard import is_llm_guard_exempt
         from intelligence.sentiment.guards.post_stop_reentry_guard import get_post_stop_reentry_guard
         provider = (getattr(inst, "provider", None) or getattr(inst, "_provider", None)) if inst is not None else None
@@ -1722,7 +1716,6 @@ def _apply_post_stop_ai_guard(
             scale = float(ps_scale)
             scaled_qty = _est_qty * scale
             if provider is not None and not isinstance(provider, str):
-                from providers.quantity import check_order_filter_refusal, round_provider_qty
                 scaled_qty = round_provider_qty(provider, symbol, scaled_qty)
                 min_qty_fn = getattr(inst, "min_qty", None)
                 min_q = float(min_qty_fn() or 0.0) if callable(min_qty_fn) else 0.0
@@ -2098,17 +2091,11 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 _LAST_EXIT_KIND[symbol] = "STOP"
         last_exit_kind = "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
-        def _valid_reentry_px(val, fallback: float) -> float:
-            return safe_pos_float(val, default=fallback)
-
-        def _valid_reentry_ts(val) -> Optional[float]:
-            return safe_pos_float(val, default=None)
-
-        sell_time_clean = _valid_reentry_ts(sell_time)
+        sell_time_clean = safe_pos_float(sell_time, default=None)
         prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
         if prev_reentry_state and sell_time_clean is not None:
-            state_sell_time = _valid_reentry_ts(prev_reentry_state.get("sell_time"))
-            state_started_at = _valid_reentry_ts(prev_reentry_state.get("started_at"))
+            state_sell_time = safe_pos_float(prev_reentry_state.get("sell_time"), default=None)
+            state_started_at = safe_pos_float(prev_reentry_state.get("started_at"), default=None)
             if (
                 (state_sell_time is not None and state_sell_time != sell_time_clean)
                 or (state_sell_time is None and state_started_at is not None and state_started_at < sell_time_clean)
@@ -2124,17 +2111,17 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
                 "sell_time": sell_time_clean,
             }
         else:
-            if sell_time_clean is not None and _valid_reentry_ts(prev_reentry_state.get("sell_time")) is None:
+            if sell_time_clean is not None and safe_pos_float(prev_reentry_state.get("sell_time"), default=None) is None:
                 prev_reentry_state["sell_time"] = sell_time_clean
-            prev_trough = _valid_reentry_px(prev_reentry_state.get("trough"), min(sell_price, current_price))
-            prev_peak_bounce = _valid_reentry_px(prev_reentry_state.get("peak_bounce"), current_price)
+            prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sell_price, current_price))
+            prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=current_price)
             if current_price < prev_trough:
                 prev_reentry_state["trough"] = current_price
                 prev_reentry_state["peak_bounce"] = current_price
             else:
                 prev_reentry_state["trough"] = min(prev_trough, current_price)
                 prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, current_price)
-            prev_peak = _valid_reentry_px(prev_reentry_state.get("peak"), max(sell_price, current_price))
+            prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sell_price, current_price))
             prev_reentry_state["peak"] = max(prev_peak, current_price)
         _REENTRY_STATE[symbol] = dict(prev_reentry_state)
 
@@ -2238,7 +2225,6 @@ def main():
 
     # Explicit user-data bridge lets each process update Order/Trade memory through
     # its own WebSocket and polling without rereading files.
-    import cacheManager as cm
     cm.enable_real_ws_event_sync()
 
     filename = "trades.json"

@@ -13,15 +13,20 @@ from concurrent.futures import ThreadPoolExecutor, wait
 
 
 # my imports
+import cacheManager as cm
+import order_guard
 import utils as u
 import symbols as sym
+from external_order_guard import get_whale_collector
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 from instrument_registry import single_symbol_for
+from lock import trade_cooldown
 from binance_api import bapi as api
 from binance_api import bapi_placeorder as po   # Retained for the dead-safe WeightLimitBlock path.
 from providers.base import extract_client_order_id, extract_order_id, extract_order_price
 from providers.market_api import api as mkt      # Single guarded Instrument.place proxy.
 from providers.execution_audit import AuditedStrategyExecutor
-from providers.quantity import decide_quantity
+from providers.quantity import balance_cap_quantity, decide_quantity
 from providers.strategy_executor import ProviderError, SubmissionRefused
 from market_regime import MarketRegimeDecision
 from order_retry import (
@@ -34,12 +39,17 @@ from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from botcore import (
     _parse_bool_flag,
     exact_int,
+    load_dotenv as _load_dotenv,
+    required_bool_env,
+    required_env,
+    required_float_env,
+    required_int_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
 _finite_pos_float = safe_pos_float
-from cachepaths import cache_path
+from cachepaths import cache_path, resolve_cachedb_filepath
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
     OrderTicket as PairOrderTicket,
@@ -72,7 +82,6 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
         if not force_flag and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
             return
         try:
-            from cachepaths import resolve_cachedb_filepath
             hb_path = str(resolve_cachedb_filepath(_RTRADE_HEARTBEAT_PATH))
             os.makedirs(os.path.dirname(hb_path), exist_ok=True)
             with open(hb_path, "a", encoding="utf-8"):
@@ -87,8 +96,6 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
 
 # Load versioned, non-secret tuning parameters before reading the environment below.
 # ``botcore.load_dotenv`` does not overwrite variables already set in the real environment.
-from botcore import (load_dotenv as _load_dotenv, required_bool_env,
-                     required_env, required_float_env, required_int_env)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -698,7 +705,6 @@ class _LivePairVenue:
             self._last_place_failures[side] = (
                 f"{side.lower()}_recovery_pending")
             return None
-        from providers.quantity import balance_cap_quantity
         available_qty, required_asset = balance_cap_quantity(
             self.executor.free_balance, self.symbol, side, price)
         if required_asset:
@@ -889,7 +895,6 @@ class _LivePairVenue:
             self.executor.cancel_order(self.symbol, str(order_id))
             for ticket in getattr(self, "_known_tickets", []):
                 if ticket.order_id == str(order_id) and ticket.pair_id:
-                    from lock import trade_cooldown
                     trade_cooldown.release_pair_leg(
                         self.symbol, ticket.pair_id, ticket.side)
                     break
@@ -956,8 +961,6 @@ def _market_regime_decision(symbol) -> MarketRegimeDecision:
 def _is_gi_whale_enforced(bypass_guards=None) -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
     try:
-        import order_guard
-        from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
         m = order_guard._load_margins()
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
             if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
@@ -982,7 +985,6 @@ def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tu
     if not _is_gi_whale_enforced(bypass_guards):
         return False, "gi_whale_bypassed_or_off"
     try:
-        from external_order_guard import get_whale_collector
         collector = get_whale_collector()
         if collector is None:
             return False, "no_collector"
@@ -1012,7 +1014,6 @@ def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypas
     if not _is_gi_whale_enforced(bypass_guards):
         return base_adjustment
     try:
-        from external_order_guard import get_whale_collector
         collector = get_whale_collector()
         if collector is not None:
             snap = collector.fetch(symbol, allow_network=False)
@@ -1850,8 +1851,7 @@ class TradingBot:
                 client_id = extract_client_order_id(order)
                 venue.executor.cancel_order(self.symbol, order_id)
                 try:
-                    import order_retry
-                    order_retry.resolve_accepted_order(self.symbol, order_id)
+                    resolve_accepted_order(self.symbol, order_id)
                 except Exception:
                     pass
                 print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
@@ -2198,7 +2198,6 @@ if __name__ == "__main__":
     symbol = single_symbol_for("binance", "rtrade")
     # Explicit user-data bridge: placement guards inspect order/fill history, so the WS
     # keeps that cache fresh instead of relying solely on three-minute polling.
-    import cacheManager as cm
     cm.enable_real_ws_event_sync()
 
     # A VPN/feed blip at startup must not crash with a traceback (which trips the
