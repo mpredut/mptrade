@@ -166,21 +166,7 @@ def reconcile_trailing_pending_order(order_lifecycle, retry_counts: dict, pendin
     return result
 
 
-def extract_short_trend_slope(snap: dict, symbol: str) -> float:
-    """Extract the short-trend slope from a trend snapshot, preferring the symbol's dynamic window."""
-    if not isinstance(snap, dict):
-        return 0.0
-    target = snap
-    fast_w = pw.fast_trend_window_for_symbol(symbol)
-    dyn = snap.get("dynamic")
-    if fast_w is not None and isinstance(dyn, dict):
-        w_snap = dyn.get(f"{float(fast_w):g}")
-        if isinstance(w_snap, dict):
-            target = w_snap
-    raw_val = target.get("growth_coefficient")
-    if raw_val is None or isinstance(raw_val, bool):
-        raw_val = target.get("gradient_recent", target.get("slope_small", 0.0))
-    return safe_float(raw_val, default=0.0)
+extract_short_trend_slope = pw.extract_short_trend_slope
 
 
 _EXIT_PROGRESS_KEYS = ("target_exit_qty", "exit_sold_qty", "exit_sold_cost")

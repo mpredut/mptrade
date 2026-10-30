@@ -37,6 +37,7 @@ try:
     )
     from kraken.notify import notify
     from kraken.kraken_client import KrakenClient, KrakenError
+    from kraken.market_data import is_pair_status_tradable
 except ImportError:
     from kraken_common import (
         _parse_bool_flag, exact_pos_int, log, load_env_stack, single_instance, required_env,
@@ -44,6 +45,7 @@ except ImportError:
     )
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
+    from market_data import is_pair_status_tradable
 from state_io import load_json_state, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
@@ -210,13 +212,7 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
         (k, v)
         for k, v in pairs.items()
         if isinstance(v, dict)
-        and (
-            v.get("status") is None
-            or (
-                isinstance(v.get("status"), str)
-                and (not v.get("status").strip() or v.get("status").strip().lower() in ("online", "limit_only", "post_only"))
-            )
-        )
+        and is_pair_status_tradable(v)[0]
         and re.search(rx, f"{k} {v.get('wsname') or ''} {v.get('base') or ''}", re.I)
     ]
     if not matches:

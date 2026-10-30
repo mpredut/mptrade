@@ -181,6 +181,30 @@ def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
     return _lookup_symbol_param(symbol, _load_symbol_fast_window_map())
 
 
+def resolve_dynamic_trend_snapshot(snap, symbol: str | None = None):
+    """Return the symbol's dynamic-window sub-snapshot from ``snap`` when configured."""
+    if not isinstance(snap, dict):
+        return snap
+    fw = safe_pos_float(fast_trend_window_for_symbol(symbol), default=None)
+    dyn = snap.get("dynamic")
+    if fw is not None and isinstance(dyn, dict):
+        w_snap = dyn.get(f"{fw:g}")
+        if isinstance(w_snap, dict):
+            return w_snap
+    return snap
+
+
+def extract_short_trend_slope(snap: dict, symbol: str | None = None) -> float:
+    """Extract the short-trend slope from a trend snapshot, preferring the symbol's dynamic window."""
+    if not isinstance(snap, dict):
+        return 0.0
+    target = resolve_dynamic_trend_snapshot(snap, symbol)
+    raw_val = target.get("growth_coefficient")
+    if raw_val is None or isinstance(raw_val, bool):
+        raw_val = target.get("gradient_recent", target.get("slope_small", 0.0))
+    return safe_float(raw_val, default=0.0)
+
+
 def should_wait_short_trend(short_tm, side: str, symbol: str, *, short_trend_cls=None) -> bool:
     """Evaluate short-trend (GT_S) deferral using the per-symbol fast window when available."""
     fast_w = fast_trend_window_for_symbol(symbol)
@@ -865,75 +889,37 @@ class PriceWindow:
     def get_newest_index(self):
         return len(self.prices) - 1 if self.prices else None
 
+    @staticmethod
+    def _average_extreme_cluster(extreme: float, neighbors) -> float:
+        total = extreme
+        count = 1
+        for price in neighbors:
+            if extreme > 0.0 and price > 0.0:
+                close = price == extreme or abs(price - extreme) <= (price + extreme) * 0.00005
+            elif extreme <= 0.0:
+                close = u.are_close(price, extreme, 0.01)
+            else:
+                close = False
+            if close:
+                total += price
+                count += 1
+            else:
+                break
+        return extreme if count == 1 else total / count
+
     def get_min(self):
         with self._lock:
             sp = self.sorted_prices
             if not sp:
                 return None
-            min_price = sp[0]
-            if len(sp) == 1:
-                return min_price
-            if min_price > 0.0:
-                p1 = sp[1]
-                if p1 != min_price and (p1 - min_price) > (p1 + min_price) * 0.00005:
-                    return min_price
-                total = min_price + p1
-                count = 2
-                for price in sp[2:]:
-                    if price == min_price or (price - min_price) <= (price + min_price) * 0.00005:
-                        total += price
-                        count += 1
-                    else:
-                        break
-                return total / count
-            if not u.are_close(sp[1], min_price, 0.01):
-                return min_price
-            total = min_price
-            count = 1
-            for price in sp[1:]:
-                if u.are_close(price, min_price, 0.01):
-                    total += price
-                    count += 1
-                else:
-                    break
-            return total / count
+            return self._average_extreme_cluster(sp[0], sp[1:])
 
     def get_max(self):
         with self._lock:
             sp = self.sorted_prices
             if not sp:
                 return None
-            max_price = sp[-1]
-            if len(sp) == 1:
-                return max_price
-            p_prev = sp[-2]
-            if p_prev > 0.0:
-                if p_prev != max_price and (max_price - p_prev) > (max_price + p_prev) * 0.00005:
-                    return max_price
-                total = max_price + p_prev
-                count = 2
-                for i in range(len(sp) - 3, -1, -1):
-                    price = sp[i]
-                    if price == max_price or (
-                        price > 0.0 and (max_price - price) <= (max_price + price) * 0.00005
-                    ):
-                        total += price
-                        count += 1
-                    else:
-                        break
-                return total / count
-            if not u.are_close(p_prev, max_price, 0.01):
-                return max_price
-            total = max_price
-            count = 1
-            for i in range(len(sp) - 2, -1, -1):
-                price = sp[i]
-                if u.are_close(price, max_price, 0.01):
-                    total += price
-                    count += 1
-                else:
-                    break
-            return total / count
+            return self._average_extreme_cluster(sp[-1], reversed(sp[:-1]))
 
     def _centroid_index_for(self, target_price):
         if target_price is not None and target_price > 0:

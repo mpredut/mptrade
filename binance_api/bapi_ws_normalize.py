@@ -63,6 +63,15 @@ def _derive_ws_quote_fill_price(event: dict[str, Any], last_quantity: float) -> 
     return 0.0
 
 
+def _extract_ws_symbol(event: Any) -> str | None:
+    if not isinstance(event, dict):
+        return None
+    raw_symbol = event.get("s")
+    if not raw_symbol or not isinstance(raw_symbol, str):
+        return None
+    return raw_symbol.strip().upper() or None
+
+
 def parse_order_execution_report(
     event: dict[str, Any],
     *,
@@ -73,12 +82,7 @@ def parse_order_execution_report(
     Returns ``None`` when the report is not a fill (e.g. ``NEW`` or ``CANCELED``
     without execution) or when required fields are malformed.
     """
-    if not isinstance(event, dict):
-        return None
-    raw_symbol = event.get("s")
-    if not raw_symbol or not isinstance(raw_symbol, str):
-        return None
-    symbol = raw_symbol.strip().upper()
+    symbol = _extract_ws_symbol(event)
     if not symbol:
         return None
 
@@ -156,10 +160,7 @@ def parse_trade_execution_report(
     """
     if not isinstance(event, dict) or event.get("x") != "TRADE":
         return None
-    raw_symbol = event.get("s")
-    if not raw_symbol or not isinstance(raw_symbol, str):
-        return None
-    symbol = raw_symbol.strip().upper()
+    symbol = _extract_ws_symbol(event)
     if not symbol:
         return None
 

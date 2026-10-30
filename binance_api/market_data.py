@@ -37,10 +37,6 @@ INTERVALS_MIN_TO_STR: dict[int, str] = {
 INTERVALS_STR_TO_MIN: dict[str, int] = {
     v: k for k, v in INTERVALS_MIN_TO_STR.items()
 }
-# Additional standard aliases
-INTERVALS_STR_TO_MIN["1d"] = 1440
-INTERVALS_STR_TO_MIN["1w"] = 10080
-INTERVALS_STR_TO_MIN["1M"] = 43200
 
 _CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
     "1H": "1h",
@@ -78,11 +74,6 @@ def parse_interval_minutes(interval: int | str) -> int:
 
 def interval_to_binance_str(interval: int | str) -> str:
     """Convert an interval in minutes or string notation into Binance interval format."""
-    if isinstance(interval, str):
-        cleaned = interval.strip()
-        cleaned = _CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
-        if cleaned in INTERVALS_STR_TO_MIN:
-            return cleaned
     minutes = parse_interval_minutes(interval)
     if minutes in INTERVALS_MIN_TO_STR:
         return INTERVALS_MIN_TO_STR[minutes]

@@ -97,15 +97,7 @@ def _runtime_market_regime_snapshot(symbol: str, now=None):
         mgr = cm.get_short_trend_manager()
         snap_fn = getattr(mgr, "get_fresh_snapshot", None)
         snap = snap_fn(symbol, now=now) if callable(snap_fn) else None
-        if isinstance(snap, dict):
-            fast_w = pw.fast_trend_window_for_symbol(symbol)
-            fw = safe_pos_float(fast_w, default=None)
-            dyn = snap.get("dynamic")
-            if fw is not None and isinstance(dyn, dict):
-                w_snap = dyn.get(f"{fw:g}")
-                if isinstance(w_snap, dict):
-                    return w_snap
-        return snap
+        return pw.resolve_dynamic_trend_snapshot(snap, symbol)
     except Exception:
         return None
 

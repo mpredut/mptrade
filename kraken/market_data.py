@@ -101,6 +101,22 @@ def get_price(client: KrakenClient, pair: str) -> float | None:
         return None
 
 
+TRADABLE_PAIR_STATUSES = ("online", "limit_only", "post_only")
+
+
+def is_pair_status_tradable(info: dict) -> tuple[bool, str]:
+    """Return ``(is_tradable, normalized_status)`` for a Kraken AssetPairs entry."""
+    if not isinstance(info, dict):
+        return False, "invalid"
+    raw_status = info.get("status")
+    if raw_status is None:
+        return True, "online"
+    if not isinstance(raw_status, str):
+        return False, str(raw_status)
+    status = raw_status.strip().lower() or "online"
+    return status in TRADABLE_PAIR_STATUSES, status
+
+
 def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bool]:
     """Return (pair_metadata, confirmed_unlisted).
 
@@ -119,9 +135,8 @@ def check_pair_listing(client: KrakenClient, pair: str) -> tuple[dict | None, bo
     if not info:
         return None, False
     # Status 'online' means tradable; Kraken also reports cancel/post/limit/reduce-only.
-    raw_status = info.get("status", "online")
-    status = raw_status.strip().lower() if isinstance(raw_status, str) and raw_status.strip() else "online"
-    if status not in ("online", "limit_only", "post_only"):
+    tradable, status = is_pair_status_tradable(info)
+    if not tradable:
         log(f"  [market] {pair} listed but status={status} (still not tradable)")
         return None, True
     return info, False

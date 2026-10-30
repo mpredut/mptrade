@@ -779,17 +779,12 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
         is_adverse = (order_px < req_px) if order_type == "BUY" else (order_px > req_px)
         if order_px > 0 and is_adverse:
             try:
-                canceled = api.cancel_order(symbol, order_id)
+                canceled = api._cancel_and_resolve(symbol, order_id)
             except Exception as exc:
                 raise SubmissionRefused(
                     "opposing_cancel_unconfirmed") from exc
             if not canceled:
                 raise SubmissionRefused("opposing_cancel_unconfirmed")
-            try:
-                import order_retry
-                order_retry.resolve_accepted_order(symbol, order_id)
-            except Exception:
-                pass
 
 
 def adjust_price_and_cancel_opposite(order_type, symbol, price,

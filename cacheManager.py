@@ -2711,22 +2711,12 @@ class CacheOrderManager(CacheManagerInterface):
                     float(existing["price"]) * previous_quantity
                     + float(incoming["price"]) * additional_quantity
                 ) / total_quantity
-                rounded_price = (
-                    round(aggregate_price, 8)
-                    if aggregate_price >= 1e-8
-                    else round(aggregate_price, 12)
-                )
-                rounded_qty = (
-                    round(total_quantity, 8)
-                    if total_quantity >= 1e-8
-                    else round(total_quantity, 12)
-                )
                 merged = dict(existing)
                 merged.update(incoming)
                 merged.update({
                     "orderId": int(existing["orderId"]),
-                    "price": rounded_price if rounded_price > 0 else aggregate_price,
-                    "quantity": rounded_qty if rounded_qty > 0 else total_quantity,
+                    "price": apiorders._round_fill_val(aggregate_price),
+                    "quantity": apiorders._round_fill_val(total_quantity),
                     "timestamp": max(
                         int(existing["timestamp"]),
                         int(incoming["timestamp"]),
@@ -3033,6 +3023,24 @@ class Cache365PriceManager(Cache24PriceManager):
                 int(cur or 0),
             )
 
+    def _snapshot_memory_state_locked(self):
+        return (
+            {symbol: list(items) for symbol, items in self.cache.items()},
+            dict(self._persisted_counts),
+            dict(self.fetchtime_per_symbol),
+            dict(self._rest_sync_cursor_per_symbol),
+        )
+
+    def _restore_memory_state_locked(self, state):
+        if state is None:
+            return
+        (
+            self.cache,
+            self._persisted_counts,
+            self.fetchtime_per_symbol,
+            self._rest_sync_cursor_per_symbol,
+        ) = state
+
     def maintain_append_persist(self):
         """Prune the full disk archive with bounded memory, then reload its recent tail."""
         if not self.save_state:
@@ -3042,18 +3050,16 @@ class Cache365PriceManager(Cache24PriceManager):
             return False
         changed = False
         backup_path = None
-        original_cache = None
-        original_persisted_counts = None
-        original_fetchtimes = None
-        original_rest_cursors = None
+        original_state = None
         try:
             with self.lock:
-                original_cache = {
-                    symbol: list(items) for symbol, items in self.cache.items()
-                }
-                original_persisted_counts = dict(self._persisted_counts)
-                original_fetchtimes = dict(self.fetchtime_per_symbol)
-                original_rest_cursors = dict(self._rest_sync_cursor_per_symbol)
+                original_state = self._snapshot_memory_state_locked()
+                (
+                    original_cache,
+                    original_persisted_counts,
+                    original_fetchtimes,
+                    original_rest_cursors,
+                ) = original_state
                 backup_path = self.filename + ".maint_backup"
                 atomic_snapshot_file(self.filename, backup_path)
                 with atomic_write(self.filename) as target, open(backup_path, encoding="utf-8") as source:
@@ -3088,10 +3094,7 @@ class Cache365PriceManager(Cache24PriceManager):
                         "fetchtime": dict(self.fetchtime_per_symbol),
                         "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
                     }):
-                        self.cache = original_cache
-                        self._persisted_counts = original_persisted_counts
-                        self.fetchtime_per_symbol = original_fetchtimes
-                        self._rest_sync_cursor_per_symbol = original_rest_cursors
+                        self._restore_memory_state_locked(original_state)
                         self._restore_previous_generation(backup_path)
                         backup_path = None
                         return False
@@ -3104,11 +3107,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 return self._rotate_disk_archive()
             return True
         except OSError as exc:
-            if original_cache is not None:
-                self.cache = original_cache
-                self._persisted_counts = original_persisted_counts
-                self.fetchtime_per_symbol = original_fetchtimes
-                self._rest_sync_cursor_per_symbol = original_rest_cursors
+            self._restore_memory_state_locked(original_state)
             if backup_path is not None and os.path.exists(backup_path):
                 try:
                     self._restore_previous_generation(backup_path)
@@ -3132,12 +3131,13 @@ class Cache365PriceManager(Cache24PriceManager):
             except OSError as exc:
                 builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
                 return False
-            original_cache = {
-                symbol: list(items) for symbol, items in self.cache.items()
-            }
-            original_persisted_counts = dict(self._persisted_counts)
-            original_fetchtimes = dict(self.fetchtime_per_symbol)
-            original_rest_cursors = dict(self._rest_sync_cursor_per_symbol)
+            original_state = self._snapshot_memory_state_locked()
+            (
+                original_cache,
+                original_persisted_counts,
+                original_fetchtimes,
+                original_rest_cursors,
+            ) = original_state
             try:
                 archive_size = os.path.getsize(archive)
                 keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
@@ -3173,10 +3173,7 @@ class Cache365PriceManager(Cache24PriceManager):
                 builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
                 meta_ok = False
             if not meta_ok:
-                self.cache = original_cache
-                self._persisted_counts = original_persisted_counts
-                self.fetchtime_per_symbol = original_fetchtimes
-                self._rest_sync_cursor_per_symbol = original_rest_cursors
+                self._restore_memory_state_locked(original_state)
                 try:
                     self._restore_previous_generation(archive)
                 except OSError as restore_err:
@@ -3494,11 +3491,13 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def _timestamps_deque_locked(self, symbol: str):
+        if symbol in self._update_timestamps:
+            return self._update_timestamps.get(symbol)
         sym_u = str(symbol or "").strip().upper()
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
         return (
-            self._update_timestamps.get(symbol)
-            if symbol in self._update_timestamps
-            else casefold_get(self._update_timestamps, sym_u)
+            casefold_get(self._update_timestamps, sym_u)
+            or casefold_get(self._update_timestamps, sym_clean)
         )
 
     def get_sample_rate(self, symbol: str, fallback: float = 1.0) -> float:

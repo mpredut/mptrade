@@ -91,17 +91,7 @@ def main():
         if not isinstance(snap, dict):
             snap = {}
         px = safe_float(snap.get("current_price"), default=0.0) or safe_float(api.get_current_price(s), default=0.0) or 0.0
-        target = snap
-        fast_w = pw.fast_trend_window_for_symbol(s)
-        dyn = snap.get("dynamic")
-        if fast_w is not None and isinstance(dyn, dict):
-            w_snap = dyn.get(f"{float(fast_w):g}")
-            if isinstance(w_snap, dict):
-                target = w_snap
-        raw_gc = target.get("growth_coefficient")
-        if raw_gc is None or isinstance(raw_gc, bool):
-            raw_gc = target.get("gradient_recent", 0.0)
-        gr = safe_float(raw_gc, default=0.0)
+        gr = pw.extract_short_trend_slope(snap, s)
         avg, net, n_sells, last_buy = position(s)
         free = free_qty(s)
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").

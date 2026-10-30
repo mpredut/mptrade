@@ -1738,6 +1738,21 @@ def is_due(rec, now=None):
     return claim_until <= now_f and (now_f - base) >= RETRY_INTERVAL_SEC
 
 
+def is_retry_price_favorable(side, current_price, requested_price, tol=None) -> bool:
+    """Return whether ``current_price`` is within ``tol`` of ``requested_price`` for ``side``."""
+    current_price = safe_pos_float(current_price, default=None)
+    req = safe_pos_float(requested_price, default=None)
+    tol = safe_nonneg_float(RETRY_PRICE_TOL if tol is None else tol, default=None)
+    if current_price is None or req is None or tol is None:
+        return False
+    side_u = normalize_side(side)
+    if side_u == "SELL":
+        return current_price >= req * (1.0 - tol)
+    if side_u == "BUY":
+        return current_price <= req * (1.0 + tol)
+    return False
+
+
 def price_gate_ok(rec, current_price, tol=None):
     """Return whether the current price is favorable relative to the stored request.
 
@@ -1746,17 +1761,9 @@ def price_gate_ok(rec, current_price, tol=None):
     """
     if not isinstance(rec, dict):
         return False
-    current_price = safe_pos_float(current_price, default=None)
-    req = safe_pos_float(rec.get("requested_price"), default=None)
-    tol = safe_nonneg_float(RETRY_PRICE_TOL if tol is None else tol, default=None)
-    if current_price is None or req is None or tol is None:
-        return False
-    side = normalize_side(rec.get("side"))
-    if side == "SELL":
-        return current_price >= req * (1.0 - tol)
-    if side == "BUY":
-        return current_price <= req * (1.0 + tol)
-    return False
+    return is_retry_price_favorable(
+        rec.get("side"), current_price, rec.get("requested_price"), tol=tol
+    )
 
 
 # ---------------------------------------------------------------------------

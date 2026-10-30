@@ -40,6 +40,11 @@ def _parse_tail_trade_id(raw_tid: Any) -> Optional[int]:
     return exact_pos_int(clean_order_id(raw_tid), default=None)
 
 
+def _round_fill_val(val: float) -> float:
+    rounded = round(val, 8 if val >= 1e-8 else 12)
+    return rounded if rounded > 0 else val
+
+
 def _build_trade_order_record(order_id: Any, price: float, qty: float, timestamp_ms: int, side: str) -> dict[str, Any]:
     return {
         'orderId': order_id,
@@ -171,10 +176,6 @@ def get_filled_orders(order_type, symbol, startTime, limit=1000, *, strict=False
             grouped[key]['quantity'] += t['quantity']
             grouped[key]['timestamp'] = max(grouped[key]['timestamp'], t['timestamp'])
             grouped[key]['side'] = t['side']
-
-        def _round_fill_val(val: float) -> float:
-            rounded = round(val, 8 if val >= 1e-8 else 12)
-            return rounded if rounded > 0 else val
 
         result = []
         for oid, data in grouped.items():
