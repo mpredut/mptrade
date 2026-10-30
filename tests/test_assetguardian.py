@@ -1256,6 +1256,15 @@ class AssetGuardianTest(unittest.TestCase):
                 self.assertEqual(tier_acc, (7.0, 0.20))
 
         with self.subTest(msg="test_dynamic_progressive_tiers_and_24h_volatility_scaling"):
+            for forbidden in (
+                "DEFAULT_BUY_THRESHOLDS",
+                "DEFAULT_SELL_THRESHOLDS",
+                "DEFAULT_BUY_INITIAL_ALLOCATION",
+                "DEFAULT_SELL_INITIAL_ALLOCATION",
+                "BUY_TIERS_RAW",
+                "SELL_TIERS_RAW",
+            ):
+                self.assertFalse(hasattr(ag, forbidden), forbidden)
             self.assertEqual(
                 ag._progressive_tier_allocations(3, 0.20, mode="convex"),
                 (0.20, 0.30, 0.50),
@@ -1264,25 +1273,32 @@ class AssetGuardianTest(unittest.TestCase):
                 ag._progressive_tier_allocations(5, 0.12, mode="linear"),
                 (0.12, 0.16, 0.20, 0.24, 0.28),
             )
-            # Low-volatility 24h series (like BTC ~0.18% per 15m bucket) scales mult down to 0.75x
+            # Verify tiers recalculate dynamically when underlying config bounds change
+            with mock.patch.object(ag, "RECOVERY_RESET_PERCENT", 4.0):
+                self.assertEqual(
+                    ag._build_dynamic_buy_tiers(),
+                    ((8.0, 0.20), (12.0, 0.30), (17.0, 0.50)),
+                )
+            min_mult, max_mult = ag._volatility_mult_bounds()
+            # Low-volatility 24h series (like BTC ~0.12% per 15m bucket) scales mult down to min_mult
             low_vol_rows = [
                 {"timestamp": 1_000_000.0 + i * 300.0, "price": 80_000.0 * (1.0 + (0.0006 if i % 6 < 3 else -0.0006))}
                 for i in range(80)
             ]
             low_mult = ag._compute_symbol_volatility_multiplier(low_vol_rows)
-            self.assertEqual(low_mult, 0.75)
-            # At 0.75x volatility, canonical -7.0% BUY tier triggers at -5.25% (catching -6.2% BTC drop)
+            self.assertEqual(low_mult, min_mult)
+            # At min_mult (0.76x), canonical -7.0% BUY tier triggers at -5.32% (catching -6.2% BTC drop)
             self.assertAlmostEqual(
                 ag._trigger_threshold_for_buy_tier(7.0, buy_mult=1.0, volatility_mult=low_mult),
-                5.25,
+                round(7.0 * min_mult, 4),
             )
-            # High-volatility 24h series scales mult up to 1.25x
+            # High-volatility 24h series scales mult up to max_mult
             high_vol_rows = [
                 {"timestamp": 1_000_000.0 + i * 300.0, "price": 240.0 * (1.012 if (i // 3) % 2 == 0 else 1.0)}
                 for i in range(80)
             ]
             high_mult = ag._compute_symbol_volatility_multiplier(high_vol_rows)
-            self.assertEqual(high_mult, 1.25)
+            self.assertEqual(high_mult, max_mult)
 
         with self.subTest(msg="test_combined_p3b_and_portfolio_growth_compress_all_sell_thresholds"):
             # 1. Neutral P3B (1.0x) + Portfolio Growth >= 2.2% compresses static tiers by 20%

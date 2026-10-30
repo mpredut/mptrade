@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import hashlib
+import math
 import time
 
 from binance_api import bapi as api
@@ -121,11 +122,6 @@ P3B_BUY_ACCUMULATE_MAX_DISCOUNT = _required_float_config(
 P3B_BUY_DEFENSIVE_MAX_PENALTY = _required_float_config(
     "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
 
-DEFAULT_BUY_THRESHOLDS = (7.0, 10.0, 14.0)
-DEFAULT_BUY_INITIAL_ALLOCATION = 0.20
-DEFAULT_SELL_THRESHOLDS = (9.0, 12.0, 15.0, 25.0, 35.0)
-DEFAULT_SELL_INITIAL_ALLOCATION = 0.12
-
 
 def _parse_tiers(raw):
     tiers = []
@@ -140,9 +136,9 @@ def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
     """Build monotonically increasing tier allocations starting at ``initial_allocation``.
 
     - ``mode='convex'`` (pyramid BUY scaling): distributes the surplus ``1 - n * w0``
-      using triangular numbers ``i*(i+1)/2`` -> e.g. ``(0.20, 0.30, 0.50)`` for 3 tiers.
+      using triangular numbers ``i*(i+1)/2``.
     - ``mode='linear'`` (progressive SELL scaling): distributes the surplus linearly
-      using ``i`` -> e.g. ``(0.12, 0.16, 0.20, 0.24, 0.28)`` for 5 tiers.
+      using ``i``.
     """
     n = int(count)
     if n <= 0:
@@ -175,10 +171,35 @@ def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
 
 
 def _build_dynamic_buy_tiers(
-    thresholds=DEFAULT_BUY_THRESHOLDS,
-    initial_allocation=DEFAULT_BUY_INITIAL_ALLOCATION,
+    thresholds=None,
+    initial_allocation=None,
 ):
-    ordered = tuple(sorted(float(t) for t in thresholds))
+    """Derive BUY drawdown thresholds and pyramid allocations dynamically from config bounds."""
+    if thresholds is None:
+        count = max(
+            2,
+            round(
+                (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
+                / max(1e-6, PORTFOLIO_SELL_ALLOCATION)
+            ),
+        )
+        discount_floor = math.ceil(
+            (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT)
+            / max(1e-6, 1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
+        )
+        first_thr = max(
+            RECOVERY_RESET_PERCENT + 2.0 * NEAR_TRIGGER_DISTANCE_PCT,
+            float(discount_floor),
+        )
+        computed = [round(first_thr, 4)]
+        for idx in range(1, count):
+            step = RECOVERY_RESET_PERCENT + (idx - 1) * (0.5 * NEAR_TRIGGER_DISTANCE_PCT)
+            computed.append(round(computed[-1] + step, 4))
+        ordered = tuple(computed)
+    else:
+        ordered = tuple(sorted(float(t) for t in thresholds))
+    if initial_allocation is None:
+        initial_allocation = min(PORTFOLIO_SELL_ALLOCATION, 1.0 / len(ordered))
     allocations = _progressive_tier_allocations(
         len(ordered), initial_allocation, mode="convex"
     )
@@ -186,10 +207,39 @@ def _build_dynamic_buy_tiers(
 
 
 def _build_dynamic_sell_tiers(
-    thresholds=DEFAULT_SELL_THRESHOLDS,
-    initial_allocation=DEFAULT_SELL_INITIAL_ALLOCATION,
+    thresholds=None,
+    initial_allocation=None,
 ):
-    ordered = tuple(sorted(float(t) for t in thresholds))
+    """Derive SELL growth thresholds and progressive allocations dynamically from config bounds."""
+    if thresholds is None:
+        count = max(2, round(1.0 / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
+        core_count = max(
+            2,
+            round(
+                (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
+                / max(1e-6, PORTFOLIO_SELL_ALLOCATION)
+            ),
+        )
+        first_thr = float(
+            math.ceil(
+                PORTFOLIO_ASSET_MIN_GROWTH_PERCENT
+                / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT)
+            )
+        )
+        breakout_step = first_thr + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
+        computed = [round(first_thr, 4)]
+        for idx in range(1, count):
+            step = RECOVERY_RESET_PERCENT if idx < core_count else breakout_step
+            computed.append(round(computed[-1] + step, 4))
+        ordered = tuple(computed)
+    else:
+        ordered = tuple(sorted(float(t) for t in thresholds))
+    if initial_allocation is None:
+        mean_alloc = 1.0 / len(ordered)
+        initial_allocation = round(
+            mean_alloc * (1.0 - ((len(ordered) - 1) / 2.0) * PORTFOLIO_SELL_MAX_DISCOUNT),
+            6,
+        )
     allocations = _progressive_tier_allocations(
         len(ordered), initial_allocation, mode="linear"
     )
@@ -372,23 +422,42 @@ def _read_symbol_price_rows(symbol):
         return []
 
 
+def _volatility_mult_bounds():
+    """Derive symmetric volatility multiplier bounds from configured discount parameters."""
+    max_swing = min(0.45, PORTFOLIO_SELL_MAX_DISCOUNT * (1.0 + PORTFOLIO_SELL_MAX_DISCOUNT))
+    return round(1.0 - max_swing, 4), round(1.0 + max_swing, 4)
+
+
 def _compute_symbol_volatility_multiplier(
     normalized_rows,
     *,
-    bucket_sec=900.0,
-    ref_step_pct=0.45,
-    min_mult=0.75,
-    max_mult=1.25,
+    bucket_sec=None,
+    ref_step_pct=None,
+    min_mult=None,
+    max_mult=None,
 ):
     """Compute a bounded per-symbol 24h volatility multiplier around 1.0.
 
-    - Uses 15-minute (900s) bucketed absolute returns over the rolling window.
+    - Uses bucketed absolute returns over the rolling window (defaulting bucket
+      width to ``ORDER_MAX_AGE_SECONDS`` and reference step to Brownian scaling of
+      the recovery/near-trigger band across ``ASSET_REFERENCE_MINUTES_BACK_DEFAULT``).
     - Returns ``1.0`` when price history is sparse (< 60 samples, < 2h span, or
       < 8 buckets), keeping unit tests and cold-start evaluations deterministic.
-    - Lower-volatility symbols (e.g. BTC) scale down toward ``0.75x`` so moderate
-      drawdowns/rallies are caught; higher-volatility symbols (e.g. TAO) scale up
-      toward ``1.25x``.
     """
+    if bucket_sec is None:
+        bucket_sec = max(60.0, float(ORDER_MAX_AGE_SECONDS))
+    if ref_step_pct is None:
+        buckets_per_window = max(
+            1.0, (float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT) * 60.0) / bucket_sec
+        )
+        ref_step_pct = (
+            RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
+        ) / math.sqrt(buckets_per_window)
+    default_min, default_max = _volatility_mult_bounds()
+    if min_mult is None:
+        min_mult = default_min
+    if max_mult is None:
+        max_mult = default_max
     if not isinstance(normalized_rows, (list, tuple)) or len(normalized_rows) < 60:
         return 1.0
     ordered = sorted(
@@ -401,7 +470,7 @@ def _compute_symbol_volatility_multiplier(
         ),
         key=lambda item: item[0],
     )
-    if len(ordered) < 60 or (ordered[-1][0] - ordered[0][0]) < 7200.0:
+    if len(ordered) < 60 or (ordered[-1][0] - ordered[0][0]) < 8.0 * bucket_sec:
         return 1.0
     buckets = {}
     for ts, px in ordered:
@@ -424,7 +493,8 @@ def _compute_symbol_volatility_multiplier(
 
 
 def _clamp_volatility_mult(val) -> float:
-    return max(0.75, min(1.25, safe_pos_float(val, default=1.0)))
+    min_mult, max_mult = _volatility_mult_bounds()
+    return max(min_mult, min(max_mult, safe_pos_float(val, default=1.0)))
 
 
 def _symbol_volatility_mult(symbol):
