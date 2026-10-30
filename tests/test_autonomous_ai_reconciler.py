@@ -4333,6 +4333,85 @@ def test_iteration21_execution_audit_kraken_xbt_variant_resolution():
     assert st_fill["filled_qty"] == pytest.approx(0.01)
 
 
+def test_iteration22_diverged_fiat_series_overlay_and_micro_strip(tmp_path):
+    from intelligence.sentiment.guards.high_stake_guard import (
+        build_cross_market_context,
+        enrich_24h_and_microstructure,
+        sync_sibling_symbol_telemetry,
+    )
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    now_ts = 1793300000.0
+    now_ms = int(now_ts * 1000)
+
+    # 1. Only BTCUSDC 24h series and orderbook exist on disk; cur_p_items has both BTCEUR (74000) and BTCUSDC (82000)
+    (cache_dir / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        [now_ms - 3600_000, 81500.0],
+                        [now_ms - 900_000, 81800.0],
+                        [now_ms - 60_000, 82000.0],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps(
+            {
+                "imbalance_ratio": 0.62,
+                "mid_price": 82000.0,
+                "best_bid": 81995.0,
+                "best_ask": 82005.0,
+                "spread_bps": 1.22,
+                "bid_depth_usd": 450000.0,
+                "ask_depth_usd": 300000.0,
+                "largest_bid_wall_price": 81000.0,
+                "largest_ask_wall_price": 83000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps({"funding_rate": 0.0001, "open_interest_usd": 500_000_000.0}),
+        encoding="utf-8",
+    )
+
+    prices = {
+        "BTCUSDC": {"price": 82000.0, "vol_1h_pct": 1.2},
+        "BTCEUR": {"price": 74000.0, "vol_1h_pct": 1.2},
+    }
+    micro = {}
+    cur_p_items = {"BTCEUR": 74000.0, "BTCUSDC": 82000.0}
+
+    enrich_24h_and_microstructure(
+        str(cache_dir), str(tmp_path), prices, micro, cur_p_items, {}, now_ts
+    )
+    sync_sibling_symbol_telemetry(prices, micro)
+
+    # BTCEUR must not suffer a fake -9.76% crash from appending 74000 EUR onto 82000 USD series
+    assert prices["BTCEUR"]["price"] == pytest.approx(74000.0)
+    assert prices["BTCEUR"]["chg_15m_pct"] == pytest.approx(prices["BTCUSDC"]["chg_15m_pct"])
+    assert prices["BTCEUR"]["chg_15m_pct"] > 0.0
+    assert "low_24h" not in prices["BTCEUR"]
+    assert "poc_px" not in prices["BTCEUR"]
+    assert "ob_mid_price" not in micro["BTCEUR"]
+    assert micro["BTCEUR"]["long_liq_px"] < 74000.0 < micro["BTCEUR"]["short_liq_px"]
+
+    # 2. build_cross_market_context resolves T212 cycles keyed by base ticker via _first_variant_dict
+    ctx = build_cross_market_context(
+        {"NVDA_US_EQ": {"price": 138.5, "chg_1h_pct": 1.2}},
+        {},
+        {"NVDA": {"qty": 10.0, "avg_cost_px": 130.0, "dd_pct": 6.54}},
+    )
+    assert ctx["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["qty"] == pytest.approx(10.0)
+
+
+
 
 
 

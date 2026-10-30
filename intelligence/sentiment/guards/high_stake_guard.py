@@ -92,6 +92,22 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return (tf * 1000.0 if tf < 1e11 else tf), pf
 
 
+_MICRO_PRICE_ANCHOR_KEYS: frozenset[str] = frozenset({
+    "best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px",
+    "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
+    "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
+})
+
+
+def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
+    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
+    a_f = safe_pos_float(px_a, default=0.0) or 0.0
+    b_f = safe_pos_float(px_b, default=0.0) or 0.0
+    if a_f <= 0.0 or b_f <= 0.0:
+        return False
+    return abs(a_f - b_f) / min(a_f, b_f) > threshold
+
+
 def _build_vp_position_dict(
     cur_px: float,
     poc_px: float,
@@ -443,26 +459,33 @@ def load_symbol_price_series(
                 if len(pts_7d_vals) >= 2:
                     vals_7d = pts_7d_vals
                 if need_24h_supplement and pts_24:
-                    series_24h = (pts_24 + series_24h) if series_24h else pts_24
+                    s0_pt = _parse_ts_px_row(series_24h[0]) if series_24h else None
+                    if s0_pt is None or not _prices_diverged(pts_24[-1][1], s0_pt[1]):
+                        series_24h = (pts_24 + series_24h) if series_24h else pts_24
         except Exception:
             pass
 
     # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
     if isinstance(current_price_items, dict) and current_price_items:
+        last_24_pt = _parse_ts_px_row(series_24h[-1]) if series_24h else None
         for cand in cands:
             cur_item = casefold_get(current_price_items, cand)
             if isinstance(cur_item, list) and cur_item:
-                series_24h = list(series_24h) + [
+                cand_pts = [
                     [pt[0], pt[1]]
                     for pt in cur_item
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2
                 ]
+                cand_last = _parse_ts_px_row(cand_pts[-1]) if cand_pts else None
+                if last_24_pt is not None and cand_last is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
+                    continue
+                series_24h = list(series_24h) + cand_pts
                 break
             elif (px_f := extract_current_price_item(cur_item)) is not None:
-                if series_24h:
-                    last_pt = _parse_ts_px_row(series_24h[-1])
-                    if last_pt is not None:
-                        series_24h = list(series_24h) + [[last_pt[0] + 1000.0, px_f]]
+                if series_24h and last_24_pt is not None:
+                    if _prices_diverged(last_24_pt[1], px_f):
+                        continue
+                    series_24h = list(series_24h) + [[last_24_pt[0] + 1000.0, px_f]]
                     break
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] (or [tms, px, vol]) points
@@ -492,7 +515,7 @@ def load_symbol_price_series(
 
     if vals_7d and series_24h:
         latest_px = safe_pos_float(series_24h[-1][1], default=None)
-        if latest_px is not None and vals_7d[-1] != latest_px:
+        if latest_px is not None and vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
             vals_7d.append(latest_px)
 
     return series_24h, vals_7d
@@ -948,22 +971,26 @@ def load_symbol_microstructure(
         read_json_fn = read_json_cached
     sym_cands = cache_symbol_variants(sym)
 
-    def _first_telemetry_dict(prefix: str) -> Optional[Dict[str, Any]]:
+    ob_cand = None
+
+    def _first_telemetry_dict(prefix: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         for cand in sym_cands:
             d = read_json_fn(os.path.join(cache_dir, f"{prefix}{cand}.json"))
             if isinstance(d, dict):
-                return d
-        return None
+                return d, cand
+        return None, None
 
     if ob is None:
-        ob = _first_telemetry_dict("orderbook_depth_")
+        ob, ob_cand = _first_telemetry_dict("orderbook_depth_")
     if deriv is None:
-        deriv = _first_telemetry_dict("derivatives_telemetry_")
+        deriv, _ = _first_telemetry_dict("derivatives_telemetry_")
     if whale is None:
-        whale = _first_telemetry_dict("whale_snapshot_")
+        whale, _ = _first_telemetry_dict("whale_snapshot_")
     if not (ob or deriv or whale):
         return None
     m_info: Dict[str, Any] = {}
+    if ob_cand:
+        m_info["_source_cand"] = ob_cand
     if ob is not None:
         m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio")
         ob_mid = safe_pos_float(obj_attr(ob, "mid_price"), default=None)
@@ -1129,7 +1156,7 @@ def compute_liquidation_clusters(
     ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=0.0) or (
         (b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else 0.0
     )
-    if ob_mid > 0.0 and (cur_px <= 0.0 or abs(cur_px - ob_mid) / ob_mid > 0.10):
+    if ob_mid > 0.0 and (cur_px <= 0.0 or _prices_diverged(cur_px, ob_mid)):
         cur_px = ob_mid
     if cur_px <= 0.0:
         return {}
@@ -1655,7 +1682,7 @@ def harvest_kraken_xstocks(
         xst_summary["live_price"] = live_px
         if alloc_px > 0:
             xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
-    sib_cyc = all_t212_cycles.get(t212_sib)
+    sib_cyc = _first_variant_dict(all_t212_cycles, (t212_sib, underlying))
     if isinstance(sib_cyc, dict):
         xst_summary["t212_sibling_cycle"] = sib_cyc
     return xst_summary
@@ -1726,7 +1753,11 @@ def build_cross_market_context(
     )
     for eq_sym in eq_syms:
         pinfo = prices_and_trends.get(eq_sym) if isinstance(prices_and_trends.get(eq_sym), dict) else {}
-        t_cyc = all_t212_cycles.get(eq_sym) if isinstance(all_t212_cycles.get(eq_sym), dict) else {}
+        t_cyc = _first_variant_dict(
+            all_t212_cycles,
+            cache_symbol_variants(eq_sym, include_original=True, include_base=True),
+            default={},
+        )
         eq_entry: Dict[str, Any] = {"symbol": eq_sym}
         if pinfo.get("price") is not None:
             eq_entry["price"] = pinfo.get("price")
@@ -2062,12 +2093,7 @@ def enrich_cross_venue_trends(
                     if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1
                     else 0.0
                 )
-                if (
-                    ck != sym
-                    and sym_px_cur > 0
-                    and last_m_px > 0
-                    and abs(sym_px_cur - last_m_px) / last_m_px > 0.10
-                ):
+                if ck != sym and _prices_diverged(sym_px_cur, last_m_px):
                     continue
                 m_series = cand_ser
                 break
@@ -2102,13 +2128,13 @@ def enrich_24h_and_microstructure(
         )
         if sym_px_cur > 0 and matched_series_24h:
             last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
-            if last_24_px > 0 and abs(sym_px_cur - last_24_px) / last_24_px > 0.10:
+            if _prices_diverged(sym_px_cur, last_24_px):
                 matched_series_24h = []
             elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
                 matched_series_24h = list(matched_series_24h) + [[int(now_ts * 1000), sym_px_cur]]
         if sym_px_cur > 0 and arch_vals_7d:
             last_7d_px = safe_float(arch_vals_7d[-1], 0.0)
-            if last_7d_px > 0 and abs(sym_px_cur - last_7d_px) / last_7d_px > 0.10:
+            if _prices_diverged(sym_px_cur, last_7d_px):
                 arch_vals_7d = []
         if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0 and matched_series_24h:
             prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
@@ -2193,7 +2219,7 @@ def enrich_24h_and_microstructure(
                         if (
                             pts_24h
                             and sym_px_cur > 0
-                            and abs(sym_px_cur - pts_24h[-1][1]) / pts_24h[-1][1] <= 0.10
+                            and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
                             and abs(sym_px_cur - pts_24h[-1][1]) > 1e-9
                         ):
                             pts_24h = list(pts_24h) + [[int(now_ts * 1000), sym_px_cur]]
@@ -2230,12 +2256,20 @@ def enrich_24h_and_microstructure(
 
         m_info = load_symbol_microstructure(cache_dir, sym, _rj)
         if m_info:
+            sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
             if (
                 isinstance(prices_and_trends.get(sym), dict)
-                and safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0
+                and sym_px_m <= 0.0
                 and safe_pos_float(m_info.get("ob_mid_price"), default=None)
             ):
                 prices_and_trends[sym]["price"] = m_info["ob_mid_price"]
+            elif (
+                sym_px_m > 0.0
+                and _prices_diverged(sym_px_m, m_info.get("ob_mid_price"))
+                and (split_symbol_assets(sym) or ("", "USD"))[1] not in ("USD", "USDC", "USDT", "FDUSD")
+            ):
+                for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
+                    m_info.pop(k_strip, None)
             enrich_microstructure_cvd(m_info, prices_and_trends.get(sym))
             liq_info = compute_liquidation_clusters(prices_and_trends.get(sym), m_info)
             if liq_info:
@@ -2298,7 +2332,7 @@ def sync_sibling_symbol_telemetry(
                 if p_px <= 0.0 and s_px > 0.0:
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
-                px_diverged = p_px > 0.0 and s_px > 0.0 and abs(p_px - s_px) / min(p_px, s_px) > 0.10
+                px_diverged = _prices_diverged(p_px, s_px)
                 for k, v in sib_pinfo.items():
                     if v is None:
                         continue
@@ -2310,25 +2344,20 @@ def sync_sibling_symbol_telemetry(
                         pinfo[k] = v
             sib_micro = casefold_get(microstructure, cand)
             if isinstance(sib_micro, dict) and sib_micro:
-                _micro_px_keys = {
-                    "best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px",
-                    "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
-                    "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
-                }
                 p_px_m = safe_float(pinfo.get("price"), 0.0)
                 s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(
                     sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0
                 )
-                micro_px_diverged = p_px_m > 0.0 and s_ob_mid > 0.0 and abs(p_px_m - s_ob_mid) / min(p_px_m, s_ob_mid) > 0.10
+                micro_px_diverged = _prices_diverged(p_px_m, s_ob_mid)
                 if sym not in microstructure:
                     microstructure[sym] = {
                         mk: mv
                         for mk, mv in sib_micro.items()
-                        if not (micro_px_diverged and mk in _micro_px_keys)
+                        if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS)
                     }
                 else:
                     for mk, mv in sib_micro.items():
-                        if micro_px_diverged and mk in _micro_px_keys:
+                        if micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS:
                             continue
                         if microstructure[sym].get(mk) is None and mv is not None:
                             microstructure[sym][mk] = mv

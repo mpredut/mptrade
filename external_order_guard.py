@@ -17,9 +17,9 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import _parse_bool_flag
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
-from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+import intelligence.external.guards.funding_crowding_guard as fcg
+import intelligence.external.guards.orderbook_wall_guard as owg
+import intelligence.external.guards.whale_divergence_guard as wdg
 from intelligence.internal.guards.guard_decision import BrakeAction, fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
@@ -199,7 +199,7 @@ def check_external_order_guards(
     # 1. GI_WHALE: Whale Flow & Open Interest Divergence Guard
     if (veto := _eval_ext_guard(
         "whale_guard_mode", "GI_WHALE", get_whale_collector,
-        lambda: WhaleDivergenceGuard(
+        lambda: wdg.WhaleDivergenceGuard(
             severe_cascade_oi_pct=m["severe_cascade_oi_pct"],
             min_taker_ratio=m["min_taker_ratio"],
             taker_downscale_threshold=m["taker_downscale_threshold"],
@@ -212,7 +212,7 @@ def check_external_order_guards(
     # 2. GI_OBOOK: Orderbook Depth & Whale Limit Wall Guard
     if (veto := _eval_ext_guard(
         "orderbook_wall_guard_mode", "GI_OBOOK", get_orderbook_collector,
-        lambda: OrderbookWallGuard(
+        lambda: owg.OrderbookWallGuard(
             min_buy_imbalance=m["min_buy_imbalance"],
             max_sell_imbalance=m["max_sell_imbalance"],
             whale_wall_usd_limit=m["whale_wall_usd_limit"],
@@ -224,7 +224,7 @@ def check_external_order_guards(
     # 3. GI_FUNDING (GI_CROWD): Perpetual Derivatives Funding Rate Crowding Guard
     if (veto := _eval_ext_guard(
         "funding_guard_mode", "GI_FUNDING", get_derivatives_collector,
-        lambda: FundingCrowdingGuard(
+        lambda: fcg.FundingCrowdingGuard(
             max_long_funding_rate=m["funding_max_long_rate"],
             min_short_funding_rate=m["funding_min_short_rate"],
             crowding_policy=str(m["funding_crowding_policy"] or "").strip().lower(),
