@@ -1042,7 +1042,11 @@ def execute_enforce_intent_order(
         )
 
     try:
-        cid_body = f"{intent_id[:16]}_{intent_id[-11:]}" if intent_id and len(intent_id) > 28 else intent_id
+        cid_body = (
+            f"{intent_id[:18]}_{hashlib.sha1(intent_id.encode('utf-8')).hexdigest()[:6]}_{intent_id[-7:]}"
+            if intent_id and len(intent_id) > 33
+            else intent_id
+        )
         intent_cid = f"AI_{cid_body}" if cid_body else None
         outcome_ctx: dict[str, Any] = {}
         order_res = None

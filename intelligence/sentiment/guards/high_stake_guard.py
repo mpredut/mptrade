@@ -613,8 +613,7 @@ def extract_symbol_recent_fills(
     def _norm_fill(o: Dict[str, Any]) -> Tuple[Optional[float], Optional[float], Any]:
         p_f = extract_order_price(o, default=0.0)
         q_f = extract_executed_qty(o, default=0.0)
-        ts_ms = extract_timestamp_ms(o, default=None)
-        ts_raw = ts_ms if ts_ms is not None else (o.get("timestamp") if o.get("timestamp") is not None else o.get("time"))
+        ts_raw = extract_timestamp_ms(o, default=None)
         return (round(p_f, 6) if p_f > 0 else None), (q_f if q_f > 0 else None), ts_raw
 
     cost_qty = 0.0
@@ -1769,9 +1768,7 @@ def harvest_tradable_positions_and_orders(
         val_f: Optional[float] = None
         if callable(free_fn):
             try:
-                raw = free_fn(asset)
-                if isinstance(raw, (int, float)):
-                    val_f = safe_float(raw, default=None)
+                val_f = safe_nonneg_float(free_fn(asset), default=None)
             except Exception:
                 val_f = None
         balance_memo[key] = val_f
@@ -1821,9 +1818,9 @@ def harvest_tradable_positions_and_orders(
                         raw_bd = bd_fn()
                         if isinstance(raw_bd, dict) and raw_bd:
                             quote_breakdown = {
-                                str(k): round(float(v), 2)
+                                str(k): round(vf, 2)
                                 for k, v in raw_bd.items()
-                                if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                                if (vf := safe_pos_float(v, default=None)) is not None
                             } or None
                     except Exception:
                         quote_breakdown = None
@@ -2464,6 +2461,8 @@ def harvest_recent_orders_and_enrich_positions(
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
             if pos.get("free_base") is None and cyc_qty is not None:
                 pos["free_base"] = round(cyc_qty, 6)
+                fb_cur = cyc_qty
+                is_flat_balance = fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
                 if pos_px_f > 0:
                     pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
             cyc_flat = is_flat_balance and (cyc_qty is None or cyc_qty <= 1e-8) and not cyc.get("resting_orders")
@@ -2476,7 +2475,7 @@ def harvest_recent_orders_and_enrich_positions(
                 pos.pop("dd_from_peak_pct", None)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]
-            elif not is_flat_after_exit:
+            elif not is_flat_after_exit and (not is_flat_balance or (cyc_qty is not None and cyc_qty > 1e-8)):
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", cyc_avg, pos_px_f, overwrite=False)
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)

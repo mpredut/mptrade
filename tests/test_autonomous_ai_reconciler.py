@@ -3889,3 +3889,61 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     assert w_snap.taker_buy_vol_usd == pytest.approx(8_800_000.0)
     assert w_snap.taker_sell_vol_usd == pytest.approx(8_000_000.0)
 
+    from intelligence.sentiment.guards.high_stake_guard import harvest_recent_orders_and_enrich_positions
+    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+    from providers.execution_audit import execute_enforce_intent_order
+
+    mock_inst = MagicMock(symbol="BTCUSDC", provider_name="binance")
+    mock_inst.place.return_value = {"orderId": "ok_cid"}
+    for iid in (
+        "intent_1793317660_sell_btcusdc",
+        "intent_1793317661_sell_btcusdc",
+        "intent_1793317660_sell_nvda_us_eq_1",
+        "intent_1793317661_sell_nvda_us_eq_1",
+    ):
+        execute_enforce_intent_order(
+            mock_inst,
+            {"intent_id": iid},
+            intent_id=iid,
+            decision="SELL",
+            target_qty=0.025,
+            price=80000.0,
+            effective_usd=2000.0,
+            guard_allowed=True,
+            guard_reason="PASSED",
+            thesis="test",
+            trade_tag="[auto_cryptotrade_executor]",
+            now_ts=1793317660.0,
+            bypass_guards=frozenset(),
+        )
+    cids = [c.kwargs["client_order_id"] for c in mock_inst.place.call_args_list]
+    assert len(set(cids)) == 4
+    assert all(len(c) <= 36 and c.startswith("AI_") for c in cids)
+
+    flat_pos = [{"venue": "kraken", "symbol": "SOLUSD", "price": 150.0, "free_base": 0.0, "free_quote": 500.0}]
+    krk_cyc = {
+        "SOLUSD": {
+            "qty": 0.0,
+            "cost_usd": 0.0,
+            "avg_cost_px": None,
+            "entry_price": 140.0,
+            "last_buy_price": 140.0,
+            "pos_peak": 165.0,
+            "resting_orders": [{"side": "buy", "px": 135.0, "sz": 1.0}],
+        }
+    }
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path), {}, flat_pos, {"SOLUSD": {"price": 150.0}}, krk_cyc, {}, {}
+    )
+    assert "active_avg_buy_px" not in flat_pos[0]
+    assert "trailing_peak" not in flat_pos[0]
+    assert flat_pos[0]["last_buy_px"] == 140.0
+
+    ro_line = _format_recent_order_line(
+        "BTCUSDC",
+        {"last_action_side": "BUY", "last_buy": {"qty": 0.1, "price": 80000.0, "ts_ms": 1793300000.0}},
+        1793303600000,
+    )
+    assert "age=1.0h" in ro_line
+
+

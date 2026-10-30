@@ -389,31 +389,17 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
             )
         if "slope_15m" in pinfo:
-            s90_pfx = (
-                f"90s={_parse_finite_float(pinfo.get('slope_90s'), 0.0):+.5f}, "
-                if pinfo.get("slope_90s") is not None and not isinstance(pinfo.get("slope_90s"), bool)
-                else ""
-            )
-            grad_rec_sfx = (
-                f", grad_rec={_parse_finite_float(pinfo.get('gradient_recent'), 0.0):+.4f}"
-                if isinstance(pinfo.get("gradient_recent"), (int, float))
-                and not isinstance(pinfo.get("gradient_recent"), bool)
-                and abs(_parse_finite_float(pinfo.get("gradient_recent"), 0.0)) > 1e-9
-                else ""
-            )
-            fast_sfx = (
-                f", grad_fast={_parse_finite_float(pinfo.get('gradient_recent_fast'), 0.0):+.4f}"
-                f"/eps={_parse_finite_float(pinfo.get('epsilon'), 0.0):.4f}"
-                if isinstance(pinfo.get("gradient_recent_fast"), (int, float))
-                and not isinstance(pinfo.get("gradient_recent_fast"), bool)
-                and isinstance(pinfo.get("epsilon"), (int, float))
-                and not isinstance(pinfo.get("epsilon"), bool)
-                else ""
-            )
+            s90_v = _parse_finite_float(pinfo.get("slope_90s"), None)
+            s90_pfx = f"90s={s90_v:+.5f}, " if s90_v is not None else ""
+            gr_v = _parse_finite_float(pinfo.get("gradient_recent"), None)
+            grad_rec_sfx = f", grad_rec={gr_v:+.4f}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
+            gf_v = _parse_finite_float(pinfo.get("gradient_recent_fast"), None)
+            eps_v = _parse_finite_float(pinfo.get("epsilon"), None)
+            fast_sfx = f", grad_fast={gf_v:+.4f}/eps={eps_v:.4f}" if gf_v is not None and eps_v is not None else ""
             g_parts = [
-                f"{g_lbl}={_parse_finite_float(pinfo.get(g_k), 0.0):+.5f}"
+                f"{g_lbl}={gv:+.5f}"
                 for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
-                if isinstance(pinfo.get(g_k), (int, float)) and not isinstance(pinfo.get(g_k), bool)
+                if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
             ]
             g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
             extras.append(
@@ -428,8 +414,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             if pinfo.get("adapt_dca_pct") is not None:
                 vol_part += f" adapt_dca={pinfo.get('adapt_dca_pct')}%"
             extras.append(vol_part)
-        if pinfo.get("kalman_vel") is not None and not isinstance(pinfo.get("kalman_vel"), bool):
-            extras.append(f"kalman_vel={_parse_finite_float(pinfo.get('kalman_vel'), 0.0):+.5f}")
+        if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None:
+            extras.append(f"kalman_vel={kv:+.5f}")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
             if pinfo.get("long_trend_est_rem_hours") is not None:
@@ -628,12 +614,14 @@ def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
 
 def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> str:
     """Format a single recent order summary line for Section 3C."""
+    from providers.base import format_actor_tag, normalize_timestamp_ms
+
     lb = oinfo.get("last_buy") if isinstance(oinfo.get("last_buy"), dict) else {}
     ls = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-    lb_ts = _parse_finite_float(lb.get("ts_ms"), 0.0)
-    ls_ts = _parse_finite_float(ls.get("ts_ms"), 0.0)
-    lb_age_h = round((now_ms - int(lb_ts)) / 3_600_000.0, 1) if lb_ts > 0 else None
-    ls_age_h = round((now_ms - int(ls_ts)) / 3_600_000.0, 1) if ls_ts > 0 else None
+    lb_ts = normalize_timestamp_ms(lb.get("ts_ms"), default=0) or 0
+    ls_ts = normalize_timestamp_ms(ls.get("ts_ms"), default=0) or 0
+    lb_age_h = round((now_ms - lb_ts) / 3_600_000.0, 1) if lb_ts > 0 else None
+    ls_age_h = round((now_ms - ls_ts) / 3_600_000.0, 1) if ls_ts > 0 else None
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
     r_buys = oinfo.get("recent_buys") or []
@@ -641,7 +629,6 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     if len(r_buys) > 1:
         t_parts = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in r_buys if isinstance(b, dict)]
         tranches_str = f" | Recent BUY Tranches=[{', '.join(t_parts)}]"
-    from providers.base import format_actor_tag
 
     lb_px = _round_opt_px(lb.get("price"), 6)
     ls_px = _round_opt_px(ls.get("price"), 6)
