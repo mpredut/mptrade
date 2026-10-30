@@ -11,13 +11,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import safe_float as _parse_finite_float
 from cachepaths import canonical_base_asset, normalize_venue_name
 from intelligence.sentiment.guards.high_stake_guard import (
-    _VENUE_DEFAULT_FEE_SPECS,
     _build_vp_position_dict,
     _compute_horizon_range_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
     format_macro_benchmarks_summary_line,
     resolve_symbol_price as _resolve_symbol_price,
+    resolve_venue_fee_and_limits,
     round_opt_px as _round_opt_px,
 )
 from orchestratorOS.agy.topics import topic_spec
@@ -512,10 +512,14 @@ def _format_microstructure_section(
             or (minfo.get("cvd_15m_base") is None and cur_px > 0.0)
         ):
             enrich_microstructure_cvd(minfo, p_ctx)
-        if minfo.get("long_liq_px") is None or minfo.get("short_liq_px") is None:
+        if any(
+            minfo.get(k) is None
+            for k in ("long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px", "liq_magnet_bias")
+        ):
             liq_lazy = compute_liquidation_clusters(p_ctx, minfo)
-            if liq_lazy:
-                minfo.update(liq_lazy)
+            for lk, lv in liq_lazy.items():
+                if minfo.get(lk) is None:
+                    minfo[lk] = lv
         d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
         depth_1pct_sfx = (
@@ -540,18 +544,40 @@ def _format_microstructure_section(
 
         liq_sfx = ""
         if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
-            ll_d = _parse_finite_float(minfo.get("long_liq_dist_pct"), 0.0)
-            sl_d = _parse_finite_float(minfo.get("short_liq_dist_pct"), 0.0)
-            lld_d = _parse_finite_float(minfo.get("long_liq_deep_dist_pct"), 0.0)
-            sld_d = _parse_finite_float(minfo.get("short_liq_deep_dist_pct"), 0.0)
-            liq_sfx = (
-                f", liq_clusters("
-                f"long_liq=${minfo.get('long_liq_px')}[{_fmt_liq_usd(minfo.get('long_liq_usd'))}, {ll_d:+.2f}%], "
-                f"short_liq=${minfo.get('short_liq_px')}[{_fmt_liq_usd(minfo.get('short_liq_usd'))}, {sl_d:+.2f}%], "
-                f"deep_long=${minfo.get('long_liq_deep_px')}[{_fmt_liq_usd(minfo.get('long_liq_deep_usd'))}, {lld_d:+.2f}%], "
-                f"deep_short=${minfo.get('short_liq_deep_px')}[{_fmt_liq_usd(minfo.get('short_liq_deep_usd'))}, {sld_d:+.2f}%], "
-                f"magnet={minfo.get('liq_magnet_bias')})"
+            ll_px = _parse_finite_float(minfo.get("long_liq_px"), 0.0)
+            sl_px = _parse_finite_float(minfo.get("short_liq_px"), 0.0)
+            ll_d = _parse_finite_float(
+                minfo.get("long_liq_dist_pct"),
+                ((ll_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and ll_px > 0 else 0.0,
             )
+            sl_d = _parse_finite_float(
+                minfo.get("short_liq_dist_pct"),
+                ((sl_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and sl_px > 0 else 0.0,
+            )
+            liq_parts = [
+                f"long_liq=${minfo.get('long_liq_px')}[{_fmt_liq_usd(minfo.get('long_liq_usd'))}, {ll_d:+.2f}%]",
+                f"short_liq=${minfo.get('short_liq_px')}[{_fmt_liq_usd(minfo.get('short_liq_usd'))}, {sl_d:+.2f}%]",
+            ]
+            if minfo.get("long_liq_deep_px") is not None:
+                lld_px = _parse_finite_float(minfo.get("long_liq_deep_px"), 0.0)
+                lld_d = _parse_finite_float(
+                    minfo.get("long_liq_deep_dist_pct"),
+                    ((lld_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and lld_px > 0 else 0.0,
+                )
+                liq_parts.append(
+                    f"deep_long=${minfo.get('long_liq_deep_px')}[{_fmt_liq_usd(minfo.get('long_liq_deep_usd'))}, {lld_d:+.2f}%]"
+                )
+            if minfo.get("short_liq_deep_px") is not None:
+                sld_px = _parse_finite_float(minfo.get("short_liq_deep_px"), 0.0)
+                sld_d = _parse_finite_float(
+                    minfo.get("short_liq_deep_dist_pct"),
+                    ((sld_px - cur_px) / cur_px) * 100.0 if cur_px > 0 and sld_px > 0 else 0.0,
+                )
+                liq_parts.append(
+                    f"deep_short=${minfo.get('short_liq_deep_px')}[{_fmt_liq_usd(minfo.get('short_liq_deep_usd'))}, {sld_d:+.2f}%]"
+                )
+            liq_parts.append(f"magnet={minfo.get('liq_magnet_bias') or 'BALANCED_LIQ_MAGNET'}")
+            liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
@@ -590,30 +616,36 @@ def _format_tradable_position_line(pos: Dict[str, Any]) -> str:
     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
         t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
     venue = pos.get("venue")
-    def_tier, def_maker, def_taker, _ = _VENUE_DEFAULT_FEE_SPECS.get(
-        normalize_venue_name(venue), ("INVEST_RTH", 15.0, 15.0, 1.0)
+    fb_fees = resolve_venue_fee_and_limits(
+        str(venue or "t212"),
+        str(pos.get("symbol") or ""),
+        price=_parse_finite_float(pos.get("price"), 0.0),
+        free_quote=pos.get("free_quote"),
+        free_base=pos.get("free_base"),
+        spread_bps=pos.get("spread_bps"),
     )
-    taker_bps = _parse_finite_float(pos.get("taker_fee_bps"), def_taker)
-    maker_bps = _parse_finite_float(pos.get("maker_fee_bps"), def_maker)
-    fee_tier = pos.get("fee_tier") or def_tier
-    sp_part = f", spread={pos.get('spread_bps')}bps" if pos.get("spread_bps") is not None else ""
+    eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
+    taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
+    maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
+    fee_tier = eff_pos.get("fee_tier") or "STANDARD"
+    sp_part = f", spread={eff_pos.get('spread_bps')}bps" if eff_pos.get("spread_bps") is not None else ""
     t_extra += (
         f", venue_fee_per_leg={taker_bps:g}bps "
         f"(tier={fee_tier}, maker={maker_bps:g}bps/taker={taker_bps:g}bps{sp_part})"
     )
     lim_parts: List[str] = []
-    if pos.get("exchange_min_notional_usd") is not None:
-        lim_parts.append(f"min_notional=${_parse_finite_float(pos.get('exchange_min_notional_usd'), 0.0):g}")
-    if pos.get("min_qty") is not None:
-        lim_parts.append(f"min_qty={pos.get('min_qty')}")
-    if pos.get("step_size") is not None:
-        lim_parts.append(f"step={pos.get('step_size')}")
-    if pos.get("tick_size") is not None:
-        lim_parts.append(f"tick={pos.get('tick_size')}")
-    if pos.get("effective_max_buy_usd") is not None:
-        lim_parts.append(f"max_buy=${pos.get('effective_max_buy_usd')}")
-    if pos.get("effective_max_sell_usd") is not None:
-        lim_parts.append(f"max_sell=${pos.get('effective_max_sell_usd')}")
+    if eff_pos.get("exchange_min_notional_usd") is not None:
+        lim_parts.append(f"min_notional=${_parse_finite_float(eff_pos.get('exchange_min_notional_usd'), 0.0):g}")
+    if eff_pos.get("min_qty") is not None:
+        lim_parts.append(f"min_qty={eff_pos.get('min_qty')}")
+    if eff_pos.get("step_size") is not None:
+        lim_parts.append(f"step={eff_pos.get('step_size')}")
+    if eff_pos.get("tick_size") is not None:
+        lim_parts.append(f"tick={eff_pos.get('tick_size')}")
+    if eff_pos.get("effective_max_buy_usd") is not None:
+        lim_parts.append(f"max_buy=${eff_pos.get('effective_max_buy_usd')}")
+    if eff_pos.get("effective_max_sell_usd") is not None:
+        lim_parts.append(f"max_sell=${eff_pos.get('effective_max_sell_usd')}")
     if lim_parts:
         t_extra += f", limits({', '.join(lim_parts)})"
     fb_val = pos.get("free_base")

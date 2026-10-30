@@ -4475,6 +4475,50 @@ def test_iteration23_execution_audit_cross_venue_recent_orders_isolation(tmp_pat
     assert st_fill["filled_qty"] == pytest.approx(0.01)
 
 
+def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_microstructure_section,
+        _format_tradable_position_line,
+    )
+
+    # 1. _format_tradable_position_line populates limits(...) lazily via resolve_venue_fee_and_limits
+    line_pos = _format_tradable_position_line(
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "base": "HYPE",
+            "quote": "USDC",
+            "price": 40.0,
+            "free_base": 5.0,
+            "value_usd": 200.0,
+            "free_quote": 100.0,
+        }
+    )
+    assert "tier=SPOT_TIER0, maker=4bps/taker=7bps" in line_pos
+    assert "limits(min_notional=$10, min_qty=0.01, step=0.01, tick=0.001, max_buy=$99.5, max_sell=$200.0)" in line_pos
+
+    # 2. _format_microstructure_section computes missing dist_pct and never emits $None when deep_liq is absent
+    lines_3b = _format_microstructure_section(
+        {
+            "TAOUSDC": {
+                "ob_imbalance": 0.58,
+                "long_liq_px": 290.0,
+                "long_liq_usd": 1_500_000.0,
+                "short_liq_px": 310.0,
+                "short_liq_usd": 2_000_000.0,
+            }
+        },
+        {"TAOUSDC": {"price": 300.0}},
+    )
+    joined_3b = "\n".join(lines_3b)
+    assert "long_liq=$290.0[$1.50M, -3.33%]" in joined_3b
+    assert "short_liq=$310.0[$2.00M, +3.33%]" in joined_3b
+    assert "deep_long=$None" not in joined_3b
+    assert "deep_short=$None" not in joined_3b
+    assert "magnet=BALANCED_LIQ_MAGNET" in joined_3b
+
+
+
 
 
 
