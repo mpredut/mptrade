@@ -41,7 +41,7 @@ APPROVED_BOUNDARIES = {
     "212trading/order_manager.py": {"place_limit_order"},
     "binance_api/bapi.py": {"cancel_order"},
     "binance_api/bapi_placeorder.py": {
-        "cancel_order", "order_limit_buy", "order_limit_sell",
+        "order_limit_buy", "order_limit_sell",
         "order_market_buy", "order_market_sell",
     },
     "monitororder.py": {"cancel_order"},

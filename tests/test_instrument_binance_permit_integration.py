@@ -79,6 +79,9 @@ class _FakeBapi:
         self.canceled = True
         return True
 
+    def _cancel_and_resolve(self, symbol, order_id):
+        return self.cancel_order(symbol, order_id)
+
     @staticmethod
     def _resolve_valid_bapi_oid(order_id):
         return clean_order_id(order_id)

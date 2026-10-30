@@ -31,6 +31,7 @@ from providers.strategy_executor import SubmissionRefused
 import order_guard
 import order_outcomes_log as _outcomes_log
 import accepted_order_persistence
+import order_retry
 import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 
 
@@ -55,7 +56,6 @@ def _order_id_from_payload(payload):
 
 def _is_terminal_filter_refusal(reason) -> bool:
     """Use the retry subsystem's shared deterministic-refusal classification."""
-    import order_retry
     return order_retry.is_terminal_filter_refusal(reason)
 
 
@@ -157,7 +157,6 @@ class Instrument:
     @staticmethod
     def _sync_claimed_qty(prequeued_claim, qty, applied_scale):
         try:
-            import order_retry
             if order_retry.RETRY_ENABLED:
                 synced_claim = order_retry.update_claimed_qty(
                     prequeued_claim, qty, applied_scale=applied_scale)
@@ -746,7 +745,6 @@ class Instrument:
             # their own campaign state and opt out with caller_owns_retry=True.
             if not caller_owns_retry:
                 try:
-                    import order_retry
                     if order_retry.RETRY_ENABLED:
                         prequeue_kwargs = dict(retry_kwargs)
                         prequeue_kwargs["smart"] = smart
@@ -870,7 +868,6 @@ class Instrument:
                     # Revalidate exact durable ownership next to the external side
                     # effect. An expired/stolen/revision-changed claim must never
                     # race a worker or allow two provider submissions.
-                    import order_retry
                     refreshed_claim = order_retry.begin_claimed_submit(
                         prequeued_claim, qty=qty, applied_scale=applied_scale)
                     if refreshed_claim is None:
@@ -956,7 +953,6 @@ class Instrument:
             # client ID remain available for response-loss recovery.
             if order is not None and not caller_owns_retry:
                 try:
-                    import order_retry
                     if prequeued_claim is not None:
                         tracked = (
                             accepted_order_persistence.complete_accepted_claim(
@@ -989,7 +985,6 @@ class Instrument:
                            "invalid_price"}
                            and not terminal_filter_refusal))):
                 try:
-                    import order_retry
                     if prequeued_intent_id:
                         _EXECUTION_AUDIT.record(
                             "submit_unknown" if submit_attempted else "submit_refused",
