@@ -207,7 +207,7 @@ def test_current_execution_policy_is_preserved():
     assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
-        "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC"},
+        "mt": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "assetguardian": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
         "archive": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "rtrade": {"TAOUSDC"},
         "force_sell": {"BTCUSDC", "TAOUSDC"},
         "trailing": {"BTCUSDC", "TAOUSDC", "ARBUSDC"},
@@ -319,7 +319,7 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         assert tradeall._kalman_gate_blocks("TESTUSDC", "BUY") == (False, "off", None)
         assert "TESTUSDC" in assetguardian.TRACKED_SYMBOLS
         assert "ARBUSDC" in tradeall.TRADEALL_FIRE_SYMBOLS
-        assert "ARBUSDC" not in assetguardian.TRACKED_SYMBOLS
+        assert "ARBUSDC" in assetguardian.TRACKED_SYMBOLS
         assert "TESTUSDC" in registry.symbols_for("binance", "archive")
         assert "BINANCE_TEST" in load_for("mt")
         assert trailing_stop.TRAIL_PCT["TESTUSDC"] == 18
