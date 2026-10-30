@@ -52,13 +52,9 @@ def save_state(state_file, state):
 
 
 def _valid_webhook_url(raw_url: str) -> str | None:
-    if not isinstance(raw_url, str) or not raw_url.strip():
+    if not isinstance(raw_url, str):
         return None
-    u = raw_url.strip()
-    if u.startswith(("http://", "https://")):
-        rest = u.split("://", 1)[1].rstrip("/")
-        return u if "/" in rest and rest.split("/", 1)[1].strip() else None
-    return format_ntfy_url(u) or None
+    return format_ntfy_url(raw_url) or None
 
 
 def send_ntfy(title, message):

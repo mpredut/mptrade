@@ -93,7 +93,8 @@ def format_ntfy_url(topic: Any) -> str:
     if not clean:
         return ""
     if clean.startswith(("http://", "https://")):
-        return clean
+        rest = clean.split("://", 1)[1].rstrip("/")
+        return clean if "/" in rest and rest.split("/", 1)[1].strip() else ""
     clean_topic = clean.lstrip("/")
     return f"https://ntfy.sh/{clean_topic}" if clean_topic else ""
 

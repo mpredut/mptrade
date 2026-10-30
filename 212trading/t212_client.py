@@ -275,9 +275,7 @@ class T212Client:
             "extendedHours": ext_flag,
         })
 
-    @staticmethod
-    def _clean_order_id(order_id: object) -> str | None:
-        return _clean_single_order_id(order_id)
+    _clean_order_id = staticmethod(_clean_single_order_id)
 
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.

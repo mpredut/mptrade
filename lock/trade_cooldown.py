@@ -64,8 +64,7 @@ def _cooldown():
     return _cd
 
 
-def _clean_pair_id(pair_id):
-    return _clean_single_order_id(pair_id)
+_clean_pair_id = _clean_single_order_id
 
 
 def _valid_pair_id(pair_id) -> bool:

@@ -33,18 +33,17 @@ import glob
 import os
 import sys
 
-from botcore import safe_pos_float
+from botcore import ensure_local_module_priority, safe_pos_float
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
-for _p in (_ROOT_DIR, _HERE):
-    if _p in sys.path:
-        sys.path.remove(_p)
-    sys.path.insert(0, _p)
-for _mod_name in ("ipo_common", "ipo_notify", "listing_watcher", "market_data", "t212_client", "order_manager", "strategy"):
-    _mod_file = getattr(sys.modules.get(_mod_name), "__file__", None)
-    if _mod_file and os.path.dirname(os.path.abspath(_mod_file)) != _HERE:
-        sys.modules.pop(_mod_name, None)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+ensure_local_module_priority(
+    _HERE,
+    "ipo_common", "ipo_notify", "listing_watcher", "market_data",
+    "t212_client", "order_manager", "strategy",
+)
 
 try:
     from .ipo_common import (

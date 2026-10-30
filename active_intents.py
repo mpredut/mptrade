@@ -47,8 +47,7 @@ def _is_backup(path: str) -> bool:
     return any(token in name for token in (".pre_", ".bak", ".backup", ".tmp"))
 
 
-def _clean_id(val) -> str | None:
-    return _clean_single_order_id(val)
+_clean_id = _clean_single_order_id
 
 
 def _first(row: dict, *names):

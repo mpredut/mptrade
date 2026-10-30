@@ -1535,7 +1535,7 @@ def submit_supervisor_trading_decisions(
         emitted = intent_gateway.submit(dec, source=topic_key, max_mode=effective_max_mode)
         if isinstance(emitted, dict):
             intents_emitted.append(emitted)
-            if mode == "enforce" and emitted.get("status") == "EXECUTED":
+            if effective_max_mode == "enforce" and emitted.get("status") == "EXECUTED":
                 any_executed = True
     primary_intent = intents_emitted[0] if intents_emitted else None
     return decisions_list, market_decision, intents_emitted, primary_intent, any_executed

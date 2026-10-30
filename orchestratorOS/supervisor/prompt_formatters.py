@@ -86,6 +86,27 @@ def _extract_macro_benchmarks_line(mb_raw: Any) -> str:
     return f"{summary_s}{age_sfx}"
 
 
+_AI_THREAT_LEVEL_MAP = {
+    "CRITICAL_SHOCK": "HIGH_VOLATILITY_SHOCK",
+    "CRITICAL": "HIGH_VOLATILITY",
+}
+_AI_BRAKE_MAP = {
+    "HARD_VETO_NEW_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+    "BLOCK_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+    "HALT_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+    "VETO_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
+}
+
+
+def _fmt_liq_usd(val: Any) -> str:
+    vf = _parse_finite_float(val, 0.0)
+    if vf >= 1_000_000.0:
+        return f"${vf / 1_000_000.0:.2f}M"
+    if vf >= 1_000.0:
+        return f"${vf / 1_000.0:.1f}K"
+    return f"${vf:.0f}"
+
+
 def _format_macro_and_news_section(sensors: Any) -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
@@ -128,16 +149,6 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
         if sa else "None"
     )
-    _AI_THREAT_LEVEL_MAP = {
-        "CRITICAL_SHOCK": "HIGH_VOLATILITY_SHOCK",
-        "CRITICAL": "HIGH_VOLATILITY",
-    }
-    _AI_BRAKE_MAP = {
-        "HARD_VETO_NEW_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-        "BLOCK_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-        "HALT_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-        "VETO_BUYS": "SELECTIVE_DIP_SCALE_IN_ONLY",
-    }
     raw_gt_level = str(gt.get("threat_level", "N/A"))
     raw_gt_brake = str(gt.get("recommended_brake", "N/A"))
     ai_gt_level = _AI_THREAT_LEVEL_MAP.get(raw_gt_level.strip().upper(), raw_gt_level)
@@ -508,14 +519,6 @@ def _format_microstructure_section(
         if minfo.get("spread_bps") is not None:
             ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
             spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}"
-
-        def _fmt_liq_usd(val: Any) -> str:
-            vf = _parse_finite_float(val, 0.0)
-            if vf >= 1_000_000.0:
-                return f"${vf / 1_000_000.0:.2f}M"
-            if vf >= 1_000.0:
-                return f"${vf / 1_000.0:.1f}K"
-            return f"${vf:.0f}"
 
         raw_p = (
             prices_and_trends.get(sym)
