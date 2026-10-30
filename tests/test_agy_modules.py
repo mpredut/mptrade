@@ -262,7 +262,7 @@ class TestMirrorTopicThreadToUi:
 
         dst = os.path.join(ui_base, "conversations", f"{cid}.db")
         assert sqlite3.connect(dst).execute("SELECT source FROM trajectory_meta").fetchone()[0] == 1
-        assert os.path.exists(stale) and os.path.samefile(dst, stale)
+        assert not os.path.exists(stale)
         assert not os.path.exists(stale_dup_db)
         rows = sqlite3.connect(os.path.join(ui_base, "conversation_summaries.db")).execute(
             "SELECT conversation_id, title, source, raw_summary FROM conversation_summaries"

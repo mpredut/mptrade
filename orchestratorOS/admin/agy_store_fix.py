@@ -44,7 +44,7 @@ _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _ROOT_DIR not in sys.path:   # executed directly by the systemd drop-in with /usr/bin/python3
     sys.path.insert(0, _ROOT_DIR)
 
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
 from state_io import (  # noqa: E402
     atomic_write_bytes,
     discard_generation_file,
@@ -54,14 +54,24 @@ from state_io import (  # noqa: E402
     save_json_state,
 )
 
-from orchestratorOS.agy.paths import resolve_store_lock_path, visible_conversations_dir  # noqa: E402
+from orchestratorOS.agy.paths import (  # noqa: E402
+    resolve_bot_cli_base,
+    resolve_store_lock_path,
+    visible_conversations_dir,
+)
 from orchestratorOS.agy.protobuf import (  # noqa: E402
     enc_fields,
     list_entry_cids,
     summary_annotation_title,
     summary_ui_visible,
 )
-from orchestratorOS.agy.summary_store import checkpoint_db, drop_wal_sidecars, read_annotation_title  # noqa: E402
+from orchestratorOS.agy.summary_store import (  # noqa: E402
+    checkpoint_db,
+    drop_wal_sidecars,
+    read_annotation_title,
+    read_summary_row,
+    upsert_ui_visible_summary,
+)
 from orchestratorOS.agy.topics import (  # noqa: E402
     get_active_topic_cids,
     get_topic_canonical_titles,
@@ -292,6 +302,23 @@ def repair_summaries(mt: dict) -> int:
     if not os.path.exists(DB):
         return 0
     topic_titles = topic_canonical_titles()
+    if topic_titles and os.environ.get("AGY_FIX_HOME") is None:
+        try:
+            bot_base = resolve_bot_cli_base()
+            if os.path.isdir(bot_base) and os.path.abspath(bot_base) != os.path.abspath(CLI):
+                for cid, ttl in topic_titles.items():
+                    if cid not in mt:
+                        continue
+                    bot_row = read_summary_row(bot_base, cid)
+                    ui_row = read_summary_row(CLI, cid)
+                    if bot_row is not None and (
+                        ui_row is None
+                        or safe_nonneg_int(bot_row.get("step_count"), 0)
+                        >= safe_nonneg_int(ui_row.get("step_count"), 0)
+                    ):
+                        upsert_ui_visible_summary(CLI, bot_row, ttl)
+        except Exception as e:
+            log.warning("pre: failed refreshing topic summaries from bot store: %s", e)
     con = sqlite3.connect(DB, timeout=15)
     try:
         rows = con.execute("SELECT conversation_id, title, raw_summary FROM conversation_summaries").fetchall()
@@ -467,6 +494,7 @@ def pending_ui_sync() -> list[str]:
         if os.path.isdir(d):
             disk_cids.update(n[:-3] for n in os.listdir(d) if n.endswith(".db"))
     active_rows = rows & disk_cids
+    topic_cids = mirrored_topic_cids()
     entries = [f"new:{cid}" for cid in active_rows - known] + [f"gone:{cid}" for cid in known - active_rows]
     if os.path.isdir(D1):
         for name in os.listdir(D1):
@@ -475,7 +503,7 @@ def pending_ui_sync() -> list[str]:
                 continue
             p1 = os.path.join(D1, name)
             p2 = os.path.join(D2, name)
-            if (cid not in known or os.path.exists(p2)) and not same_file(p1, p2):
+            if (cid not in known or os.path.exists(p2) or cid in topic_cids) and not same_file(p1, p2):
                 try:
                     entries.append(f"content:{cid}:{os.stat(p1).st_ino}")
                 except OSError:
