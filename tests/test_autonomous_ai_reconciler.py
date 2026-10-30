@@ -5584,4 +5584,87 @@ def test_iteration39_cross_quote_trend_price_isolation_resolve_assets_and_bare_b
     assert hl_pos[0]["effective_max_sell_usd"] == 122.5
 
 
+def test_iteration40_monolithic_cache24_isolation_and_bare_base_series_micro_pretrade(tmp_path):
+    import json
+    from intelligence.sentiment.guards.high_stake_guard import (
+        collect_pretrade_telemetry,
+        load_symbol_microstructure,
+        load_symbol_price_series,
+    )
+
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(exist_ok=True)
+    # Monolithic legacy cache_24_price.json containing only BTCUSDC must not leak into SOLUSDC or XBTEUR
+    (cache_dir / "cache_24_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": [[1700000000000, 82000.0], [1700003600000, 82500.0]]}}),
+        encoding="utf-8",
+    )
+    sol_24h, _ = load_symbol_price_series(str(cache_dir), "SOLUSDC", include_7d=False)
+    assert sol_24h == []
+    eur_24h, _ = load_symbol_price_series(str(cache_dir), "XBTEUR", include_7d=False)
+    assert eur_24h == []
+
+    # Bare-base Hyperliquid files ('cache_24_price_HYPE.json', 'orderbook_depth_HYPE.json', 'cache_short_trend.json', 'cache_trade_hyperliquid.json')
+    # resolve cleanly for 'HYPEUSDC' while keeping EUR pairs isolated
+    (cache_dir / "cache_24_price_HYPE.json").write_text(
+        json.dumps({"items": {"HYPE": [[1700000000000, 24.0, 100.0], [1700003600000, 25.2, 150.0]]}}),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_HYPE.json").write_text(
+        json.dumps({
+            "symbol": "HYPE",
+            "mid_price": 25.2,
+            "best_bid": 25.19,
+            "best_ask": 25.21,
+            "imbalance_ratio": 0.62,
+            "bid_depth_usd": 150000.0,
+            "ask_depth_usd": 90000.0,
+        }),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_short_trend.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPE": {
+                    "current_price": 25.2,
+                    "final_trend": 1,
+                    "slope_full": 0.0025,
+                    "dynamic": {
+                        "222": {"slope_full": 0.0025, "final_trend": 1},
+                        "900": {"slope_full": 0.0018, "final_trend": 1},
+                        "9000": {"slope_full": 0.0009, "final_trend": 1},
+                    },
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    (cache_dir / "cache_trade_hyperliquid.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPE": [
+                    {"oid": 77, "side": "B", "px": "23.5", "sz": "10.0", "time": 1700001000000}
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    hype_24h, _ = load_symbol_price_series(str(cache_dir), "HYPEUSDC", include_7d=False)
+    assert len(hype_24h) == 2
+    assert hype_24h[-1][1] == 25.2
+
+    m_hype = load_symbol_microstructure(str(cache_dir), "HYPEUSDC")
+    assert m_hype is not None
+    assert m_hype["ob_mid_price"] == 25.2
+    assert m_hype["ob_imbalance"] == 0.62
+
+    telem = collect_pretrade_telemetry("HYPEUSDC", cachedb_dir=str(cache_dir))
+    assert "Dynamic Multi-Window Slopes" in telem
+    assert "+0.00250" in telem["Dynamic Multi-Window Slopes"]
+    assert "Recent Venue Fills" in telem
+    assert "23.5" in telem["Recent Venue Fills"]
+
+
+
 

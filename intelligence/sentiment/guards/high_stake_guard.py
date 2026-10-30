@@ -350,9 +350,14 @@ def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
             ser = casefold_get(raw_items, k_cand, [])
             if isinstance(ser, list) and ser:
                 return ser
-        if "items" in data and raw_items:
-            first_val = next(iter(raw_items.values()), [])
-            return first_val if isinstance(first_val, list) else []
+        if "items" in data and len(raw_items) == 1 and cands:
+            only_k, first_val = next(iter(raw_items.items()))
+            if (
+                isinstance(first_val, list)
+                and canonical_base_asset(only_k) == canonical_base_asset(cands[0])
+                and compatible_quote_suffixes(only_k) == compatible_quote_suffixes(cands[0])
+            ):
+                return first_val
     elif isinstance(raw_items, list):
         return raw_items
     return []
@@ -370,7 +375,12 @@ def load_symbol_price_series(
     eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
     cands = [
         c
-        for c in cache_symbol_variants(symbol, include_original=True, quotes=eff_quotes)
+        for c in cache_symbol_variants(
+            symbol,
+            include_original=True,
+            include_base="USD" in eff_quotes,
+            quotes=eff_quotes,
+        )
         if isinstance(c, str) and "/" not in c
     ]
     series_24h: list = []
@@ -979,7 +989,7 @@ def load_symbol_microstructure(
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     if read_json_fn is None:
         read_json_fn = read_json_cached
-    sym_cands = cache_symbol_variants(sym)
+    sym_cands = cache_symbol_variants(sym, include_base=True)
 
     ob_cand = None
 
@@ -3459,8 +3469,8 @@ def collect_pretrade_telemetry(
         cachedb_dir = default_cdir
     sym_quotes = compatible_quote_suffixes(symbol)
     is_usd_sym = "USD" in sym_quotes
-    sym_variants = cache_symbol_variants(symbol)
-    quote_variants = cache_symbol_variants(symbol, quotes=sym_quotes)
+    sym_variants = cache_symbol_variants(symbol, include_base=True)
+    quote_variants = cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes)
 
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
         for cand in sym_variants:
