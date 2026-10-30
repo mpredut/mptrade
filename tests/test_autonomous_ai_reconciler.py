@@ -6465,6 +6465,88 @@ def test_iteration40_kraken_bot_fallback_unfilled_limit_status_dust_peak_and_ret
     finally:
         ag.STATE = old_ag_state
 
+    # 7. Filled MARKET/LIMIT intents normalize venue_status ("NEW"/"RESTING" -> "FILLED")
+    t212_mkt_intent = {
+        "intent_id": "t212_mkt_1",
+        "timestamp": 1793367352.0,
+        "decision": "BUY",
+        "symbol": "SPCX_US_EQ",
+        "venue": "t212",
+        "order_type": "MARKET",
+        "reference_price": 137.69,
+        "suggested_notional_usd": 150.0,
+        "status": "EXECUTED",
+        "execution_payload": {"id": "59656394943", "status": "NEW"},
+    }
+    hl_lim_filled_intent = {
+        "intent_id": "hl_lim_filled_1",
+        "timestamp": 1793355669.0,
+        "decision": "BUY",
+        "symbol": "HYPEUSDC",
+        "venue": "hyperliquid",
+        "order_type": "LIMIT",
+        "limit_price": 90.85,
+        "reference_price": 91.74,
+        "suggested_notional_usd": 250.0,
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "590563846044", "status": "RESTING"},
+    }
+    sum_eq = summarize_recent_ai_intents(
+        [t212_mkt_intent],
+        "equities",
+        1793380000.0,
+        extract_intent_notional,
+        recent_orders={"t212:SPCX_US_EQ": {"venue": "t212", "last_buy": {"price": 137.69, "qty": 1.08, "ts_ms": 1793367355000, "actor": "AI"}}},
+        open_orders=[],
+    )
+    assert sum_eq[0]["venue_status"] == "FILLED"
+
+    sum_hl = summarize_recent_ai_intents(
+        [hl_lim_filled_intent],
+        "crypto",
+        1793380000.0,
+        extract_intent_notional,
+        recent_orders={"hyperliquid:HYPEUSDC": {"venue": "hyperliquid", "last_buy": {"price": 90.85, "qty": 2.75, "ts_ms": 1793360000000, "actor": "AI"}}},
+        open_orders=[],
+    )
+    assert sum_hl[0]["venue_status"] == "FILLED"
+
+    # 8. _fmt_slope_val zeroes sub-5e-8 IEEE-754 polyfit noise while keeping low-price slopes >= 5e-8
+    from orchestratorOS.supervisor.prompt_formatters import _fmt_slope_val
+    from intelligence.sentiment.guards.high_stake_guard import _compute_kalman_from_series
+
+    assert _fmt_slope_val(-1.22e-8) == "+0.00000"
+    assert _fmt_slope_val(2.72e-7) == "+2.72e-07"
+
+    # 9. _compute_kalman_from_series derives kalman_vel for non-Binance symbols from 24h series
+    synth_series = [[(1793375000 + i * 60) * 1000, 90.0 + i * 0.05] for i in range(30)]
+    k_res = _compute_kalman_from_series(synth_series)
+    assert isinstance(k_res, dict)
+    assert k_res["kalman_vel"] > 0
+
+    # 10. Fast short-window impulse kinds (accel_surge_up) honor place_kwargs.hours TTL and expire from active_retry_queue
+    surge_rec = {
+        "id": "surge123",
+        "provider_name": "Binance",
+        "symbol": "TAOUSDC",
+        "side": "BUY",
+        "kind": "accel_surge_up",
+        "qty": 1.0794,
+        "requested_price": 237.1626,
+        "created_ts": 1793340806.0,
+        "ttl_started_ts": 1793377545.0,
+        "attempts": 99,
+        "last_failure_reason": "qty_zero_after_policy",
+        "lifecycle": "submit_pending",
+        "place_kwargs": {"hours": 0.3, "kind": "accel_surge_up", "module": "tradeall"},
+    }
+    assert oq.resolve_record_ttl(surge_rec) == pytest.approx(1080.0)
+    assert oq.is_expired(surge_rec, 1793381000.0) is True
+    (tmp_path / "order_retry_queue.jsonl").write_text(json.dumps(surge_rec) + "\n", encoding="utf-8")
+    bot_states_after_exp = harvest_bot_runtime_states(str(tmp_path), 1793381000.0)
+    assert "active_retry_queue" not in bot_states_after_exp
+
+
 
 
 

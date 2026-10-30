@@ -1681,11 +1681,25 @@ def rewrite(items):
         _write_nolock(items)
 
 
+_FAST_IMPULSE_KIND_PREFIXES = (
+    "small_window_",
+    "accel_surge_",
+    "accel_plunge_",
+)
+
+
 def resolve_record_ttl(rec):
     """Return the effective active retry TTL for ``rec``, honoring custom ``ttl_sec``."""
-    custom_ttl = safe_pos_float(rec.get("ttl_sec") if isinstance(rec, dict) else None, default=None)
-    if custom_ttl is not None:
-        return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+    if isinstance(rec, dict):
+        custom_ttl = safe_pos_float(rec.get("ttl_sec"), default=None)
+        if custom_ttl is not None:
+            return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
+        kind_s = _clean_str(rec.get("kind"))
+        if kind_s.startswith(_FAST_IMPULSE_KIND_PREFIXES):
+            raw_kw = rec.get("place_kwargs")
+            kw_hours = safe_pos_float(raw_kw.get("hours") if isinstance(raw_kw, dict) else None, default=None)
+            fast_ttl = kw_hours * 3600.0 if kw_hours is not None else 1800.0
+            return min(fast_ttl, float(RETRY_TTL_SEC), MAX_GLOBAL_ORDER_TTL_SEC)
     return float(RETRY_TTL_SEC)
 
 

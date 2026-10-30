@@ -135,7 +135,9 @@ def _fmt_px(px_f: float, raw_px: Any = None) -> str:
 
 def _fmt_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
     vf = _parse_finite_float(val, 0.0)
-    if 0.0 < abs(vf) < 1e-4:
+    if abs(vf) < 5e-8:
+        vf = 0.0
+    elif 0.0 < abs(vf) < 1e-4:
         return f"{vf:+.2e}" if signed else f"{vf:.2e}"
     return f"{vf:+.{decimals}f}" if signed else f"{vf:.{decimals}f}"
 

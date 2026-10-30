@@ -32,6 +32,7 @@ from cachepaths import (
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.internal.guards.guard_decision import GuardDecision
 from intelligence.internal.state.volatility import adaptive_thresholds
+from intelligence.internal.triggers.kalman_trigger import KalmanTrend
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
@@ -2323,6 +2324,52 @@ def enrich_cross_venue_trends(
                 entry.update(compute_7d_range_metrics(vals))
 
 
+def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
+    """Derive Kalman velocity (% per min), std, and trend from a 24h price series when cache_kalman_trend lacks the symbol."""
+    pts: List[Tuple[float, float]] = []
+    for row in series_24h:
+        parsed = _parse_ts_px_row(row)
+        if parsed is not None:
+            pts.append((parsed[0] / 1000.0, parsed[1]))
+    if len(pts) < 5:
+        return None
+    cutoff_s = pts[-1][0] - 7200.0
+    subsampled: List[Tuple[float, float]] = []
+    last_ts = -1e18
+    for ts_s, px_v in pts:
+        if ts_s < cutoff_s:
+            continue
+        if ts_s - last_ts >= 55.0:
+            subsampled.append((ts_s, px_v))
+            last_ts = ts_s
+    if subsampled and pts[-1][0] > subsampled[-1][0]:
+        subsampled.append(pts[-1])
+    if len(subsampled) < 5:
+        subsampled = pts[-min(len(pts), 30) :]
+    if len(subsampled) < 5:
+        return None
+    kf = KalmanTrend(gap_reset_sec=900.0)
+    fed: List[float] = []
+    last_out: Optional[Dict[str, Any]] = None
+    for ts_s, px_v in subsampled[-60:]:
+        fed.append(px_v)
+        if len(fed) >= 3:
+            diffs = [fed[i] - fed[i - 1] for i in range(1, len(fed))]
+            mean_d = sum(diffs) / len(diffs)
+            var_d = sum((d - mean_d) ** 2 for d in diffs) / len(diffs)
+            eps_eff = max(math.sqrt(max(0.0, var_d)), px_v * 1e-4)
+        else:
+            eps_eff = max(px_v * 8e-4, 1e-9)
+        last_out = kf.update(ts_s, px_v, eps_eff)
+    if not isinstance(last_out, dict):
+        return None
+    return {
+        "kalman_vel": last_out.get("vel"),
+        "kalman_vel_std": last_out.get("vel_std"),
+        "kalman_trend": last_out.get("trend"),
+    }
+
+
 def enrich_24h_and_microstructure(
     cache_dir: str,
     workspace_dir: str,
@@ -2478,6 +2525,12 @@ def enrich_24h_and_microstructure(
                 for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct"):
                     if cross_btc.get(ck) is not None:
                         prices_and_trends[sym][ck] = cross_btc[ck]
+            if prices_and_trends[sym].get("kalman_vel") is None and matched_series_24h:
+                k_fb = _compute_kalman_from_series(matched_series_24h)
+                if isinstance(k_fb, dict):
+                    for kk, kv in k_fb.items():
+                        if kv is not None and prices_and_trends[sym].get(kk) is None:
+                            prices_and_trends[sym][kk] = kv
 
         m_info = load_symbol_microstructure(cache_dir, sym, _rj)
         if m_info:
@@ -2882,10 +2935,20 @@ def harvest_bot_runtime_states(
     out: Dict[str, Any] = {}
     retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
     if os.path.exists(retry_q_path):
+        try:
+            import order_retry as _oq
+        except Exception:
+            _oq = None
         active_retries: List[Dict[str, Any]] = []
         for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
             lifecycle = str(rec.get("lifecycle") or "").lower()
             exp_ts = safe_float(rec.get("expires_at_ts"), 0.0)
+            if _oq is not None and (rec.get("created_ts") is not None or rec.get("ttl_started_ts") is not None):
+                try:
+                    if _oq.is_expired(rec, now_ts):
+                        continue
+                except Exception:
+                    pass
             if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
                 active_retries.append({
                     "venue": str(rec.get("provider_name") or "").lower(),

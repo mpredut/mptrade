@@ -691,6 +691,8 @@ def _resolve_intent_execution_details(
 
     if matched_open is not None:
         exec_status = "PARTIALLY_FILLED" if filled_qty > 0 else "OPEN_RESTING"
+        if exec_status == "PARTIALLY_FILLED" and venue_st in _UNFILLED_ORDER_STATUSES:
+            venue_st = "PARTIALLY_FILLED"
     elif raw_intent_st == "EXECUTED":
         if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
             exec_status = venue_st
@@ -700,6 +702,8 @@ def _resolve_intent_execution_details(
             exec_status = "PARTIALLY_FILLED"
         else:
             exec_status = "FILLED"
+            if venue_st in _UNFILLED_ORDER_STATUSES:
+                venue_st = "FILLED"
     elif raw_intent_st == "OBSERVED_SHADOW":
         exec_status = "SHADOW_SIMULATED"
     else:
