@@ -253,9 +253,10 @@ class AutonomousAIReconciler:
             min_conf=min_conf,
         )
 
+        call_timeout = float(getattr(spec, "default_timeout_sec", 0.0) or (120.0 if spec.can_self_heal else 90.0))
         resp = self.gemini_auditor.query_json(
             prompt,
-            timeout_sec=90.0,
+            timeout_sec=call_timeout,
             thread_title=f"{spec.title} — {self.mode.upper()}",
             topic_key=topic_key,
         )

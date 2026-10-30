@@ -23,6 +23,7 @@ from orchestratorOS.agy.topics import (
     format_topic_turn_header,
     prepare_topic_session,
     record_topic_turn,
+    topic_spec,
 )
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,14 +59,16 @@ class GeminiClient:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         cli_path: Optional[str] = None,
         custom_runner: Optional[Callable[[str, str, float], str]] = None,
         project_id: Optional[str] = None,
         fallback_models: Optional[tuple[str, ...] | list[str]] = None,
     ) -> None:
-        self.model = model.strip() if isinstance(model, str) and model.strip() else DEFAULT_MODEL
+        cleaned_model = model.strip() if isinstance(model, str) and model.strip() else ""
+        self._explicit_model = bool(cleaned_model)
+        self.model = cleaned_model or DEFAULT_MODEL
         if fallback_models is not None:
             self.fallback_models = tuple(
                 m.strip() for m in fallback_models if isinstance(m, str) and m.strip()
@@ -172,7 +175,14 @@ class GeminiClient:
         if not isinstance(prompt, str) or not prompt.strip():
             return None
         now = time.time()
-        selected_model = (model.strip() if isinstance(model, str) and model.strip() else None) or self.model
+        explicit_call_model = model.strip() if isinstance(model, str) and model.strip() else None
+        topic_preferred_model: Optional[str] = None
+        if not explicit_call_model and not getattr(self, "_explicit_model", False) and topic_key:
+            try:
+                topic_preferred_model = topic_spec(topic_key).preferred_model
+            except Exception:
+                topic_preferred_model = None
+        selected_model = explicit_call_model or topic_preferred_model or self.model
         timeout_sec = safe_pos_float(timeout_sec, 15.0)
         cache_ttl_sec = safe_pos_float(cache_ttl_sec, 0.0)
 

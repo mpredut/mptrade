@@ -113,7 +113,7 @@ def evaluate_high_stake_order_guard(
         ctx_usable = valid_context or isinstance(regime_context, dict)
         if dur_sec is None and ctx_usable:
             dur_sec = obj_attr(regime_context, "trend_duration_seconds") or obj_attr(regime_context, "resolved_duration_sec")
-        timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 5.0)
+        timeout_sec = _pos_float(margins.get("llm_timeout_sec"), 120.0)
         fallback = str(margins.get("llm_fallback") or "allow").strip().lower()
         llm_guard = HighStakeGuard(min_notional_eur=min_notional, timeout_sec=timeout_sec, fallback_action=fallback)
         try:

@@ -56,6 +56,8 @@ class TopicSpec:
     can_trade: bool = False       # may submit trade intents to the AutonomousIntentGateway
     can_self_heal: bool = False   # may apply verified code-remediation patches
     asset_scope: str = "all"      # "crypto" | "equities" | "all"
+    preferred_model: Optional[str] = None  # per-topic primary LLM model tier override
+    default_timeout_sec: float = 120.0     # default per-topic execution timeout in seconds
 
     @property
     def bracket_tag(self) -> str:
@@ -70,24 +72,50 @@ class TopicSpec:
         return m.group(1).strip() if m else self.title
 
 
+HIGH_STAKE_MODEL = os.environ.get("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high").strip() or "gemini-4-argon-high"
+EXECUTOR_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "gemini-4-argon-medium").strip() or "gemini-4-argon-medium"
+
 TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
-        "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)", can_self_heal=True
+        "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
+        can_self_heal=True,
+        preferred_model=HIGH_STAKE_MODEL,
+        default_timeout_sec=120.0,
     ),
     "auto_cryptotrade_executor": TopicSpec(
         "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 10m)",
         can_trade=True,
         asset_scope="crypto",
+        preferred_model=EXECUTOR_MODEL,
+        default_timeout_sec=90.0,
     ),
     "auto_sharetrade_executor": TopicSpec(
         "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 10m)",
         can_trade=True,
         asset_scope="equities",
+        preferred_model=EXECUTOR_MODEL,
+        default_timeout_sec=90.0,
     ),
-    "macro_geopolitical": TopicSpec("🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake"),
-    "macro_sentiment": TopicSpec("🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)"),
-    "guard_high_stake": TopicSpec("🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)"),
-    "guard_post_stop": TopicSpec("🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce"),
+    "macro_geopolitical": TopicSpec(
+        "🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
+        preferred_model=HIGH_STAKE_MODEL,
+        default_timeout_sec=120.0,
+    ),
+    "macro_sentiment": TopicSpec(
+        "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
+        preferred_model=HIGH_STAKE_MODEL,
+        default_timeout_sec=120.0,
+    ),
+    "guard_high_stake": TopicSpec(
+        "🛡 [auto_guard_large_order] Pre-Trade Veto for Large Orders (>=700 EUR)",
+        preferred_model=HIGH_STAKE_MODEL,
+        default_timeout_sec=120.0,
+    ),
+    "guard_post_stop": TopicSpec(
+        "🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
+        preferred_model=HIGH_STAKE_MODEL,
+        default_timeout_sec=120.0,
+    ),
 }
 
 TOPIC_ALIASES: Dict[str, str] = {

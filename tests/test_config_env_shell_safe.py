@@ -1018,9 +1018,9 @@ def test_geopolitical_sentiment_advisor_and_high_stake_hardening(tmp_path):
     assert "Trend Duration" not in tel
     hsg = HighStakeGuard(gemini_client=_DummyGemini(), min_notional_eur=float("nan"), timeout_sec=True)
     assert math.isfinite(hsg.min_notional_eur) and hsg.min_notional_eur > 0
-    assert hsg.timeout_sec == 25.0
+    assert hsg.timeout_sec == 120.0
     psg = PostStopReentryGuard(gemini_client=_DummyGemini(), timeout_sec=float("nan"), cache_ttl_sec=float("inf"))
-    assert psg.timeout_sec == 25.0 and psg.cache_ttl_sec == 0.0
+    assert psg.timeout_sec == 120.0 and psg.cache_ttl_sec == 0.0
 
 
 def test_smart_sl_exhaustion_and_resources_watchdog_hardening(monkeypatch):

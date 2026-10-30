@@ -5767,6 +5767,8 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
     captured_prompts = {}
 
     class _DummyClient:
+        _custom_runner = True
+
         def __init__(self, key, resp):
             self.key = key
             self.resp = resp
@@ -5782,6 +5784,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
             {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Verified 6h double bottom"},
         ),
         min_notional_eur=100.0,
+        cache_ttl_sec=0.0,
     )
     hs_guard.check("TAOUSDC", "BUY", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
     assert "HIGHER_LOW_DOUBLE_BOTTOM" in captured_prompts["hs_buy"]
@@ -5794,6 +5797,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
             {"decision": "REJECTED", "suggested_scale": 0.0, "reason": "Do not sell into 6h double bottom"},
         ),
         min_notional_eur=100.0,
+        cache_ttl_sec=0.0,
     )
     hs_sell_guard.check("TAOUSDC", "SELL", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
     assert "CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE)" in captured_prompts["hs_sell"]
@@ -5805,11 +5809,12 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
             {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "Confirmed 6h higher low"},
         ),
         notify_enabled=False,
+        cache_ttl_sec=0.0,
     )
     ps_guard.check(
         "TAOUSDC",
         current_price=231.8,
-        last_sell_price=235.0,
+        last_sell_price=230.0,
         trough=226.1,
         bounce_pct=0.025,
         qty=2.0,
@@ -5881,6 +5886,71 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         now_ts=t0 / 1000.0,
     )
     assert "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES" in captured_prompts["geo"]
+
+
+def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from orchestratorOS.agy.topics import topic_spec
+
+    # 1. High-stake / rare topics use gemini-4-argon-high and 120.0s timeout
+    for high_topic in (
+        "auto_technical_repair",
+        "macro_geopolitical",
+        "macro_sentiment",
+        "guard_high_stake",
+        "guard_post_stop",
+    ):
+        spec = topic_spec(high_topic)
+        assert spec.preferred_model == "gemini-4-argon-high"
+        assert spec.default_timeout_sec == 120.0
+
+    # 2. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
+    for exec_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
+        spec = topic_spec(exec_topic)
+        assert spec.preferred_model == "gemini-4-argon-medium"
+        assert spec.default_timeout_sec == 90.0
+
+    # 3. GeminiClient fallback chain deduplicates primary model cleanly
+    observed = {}
+
+    def _runner(prompt, model, timeout):
+        observed["model"] = model
+        observed["timeout"] = timeout
+        return '{"ok": true}'
+
+    client = GeminiClient(custom_runner=_runner, project_id="autonommptrade")
+    high_chain = client.get_model_candidates("gemini-4-argon-high")
+    assert high_chain[:6] == [
+        "gemini-4-argon-high",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-low",
+        "gemini-3.8-flash-medium",
+        "gpt-oss-120b-medium",
+        "claude-sonnet-5-5-medium",
+    ]
+    assert "claude-sonnet-5-5-low" in high_chain
+
+    med_chain = client.get_model_candidates("gemini-4-argon-medium")
+    assert med_chain[:5] == [
+        "gemini-4-argon-medium",
+        "gemini-4-argon-low",
+        "gemini-3.8-flash-medium",
+        "gpt-oss-120b-medium",
+        "claude-sonnet-5-5-medium",
+    ]
+
+    client.query_json("test guard", topic_key="guard_high_stake", timeout_sec=120.0)
+    assert observed["model"] == "gemini-4-argon-high"
+    assert observed["timeout"] == 120.0
+
+    client.query_json("test exec", topic_key="auto_cryptotrade_executor", timeout_sec=90.0)
+    assert observed["model"] == "gemini-4-argon-medium"
+    assert observed["timeout"] == 90.0
+
+    assert HighStakeGuard(gemini_client=client).timeout_sec == 120.0
+    assert PostStopReentryGuard(gemini_client=client, notify_enabled=False).timeout_sec == 120.0
 
 
 

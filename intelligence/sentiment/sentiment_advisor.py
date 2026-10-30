@@ -191,7 +191,7 @@ class SentimentAdvisor:
         fg_label = f"F&G={int(round(obj_float(fear_greed, 'value', 50.0)))}" if fear_greed else "Pulse"
         resp = self.gemini_client.query_json(
             prompt,
-            timeout_sec=25.0,
+            timeout_sec=120.0,
             thread_title=f"{topic_spec('macro_sentiment').title} — {fg_label}",
             topic_key="macro_sentiment",
         )

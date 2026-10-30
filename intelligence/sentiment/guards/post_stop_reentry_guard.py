@@ -45,7 +45,7 @@ from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guard")
 
-DEFAULT_TIMEOUT_SEC = 25.0
+DEFAULT_TIMEOUT_SEC = 120.0
 DEFAULT_FALLBACK = "allow"
 DEFAULT_POST_STOP_CACHE_TTL_SEC = 600.0
 _POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}

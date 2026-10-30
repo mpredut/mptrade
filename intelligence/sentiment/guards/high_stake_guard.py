@@ -3943,7 +3943,7 @@ class HighStakeGuard:
         gemini_client: Optional[GeminiClient] = None,
         min_notional_eur: float = DEFAULT_MIN_NOTIONAL_USD,
         min_notional_usd: Optional[float] = None,
-        timeout_sec: float = 25.0,
+        timeout_sec: float = 120.0,
         fallback_action: str = "allow",  # "allow" | "downscale" | "veto"
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
@@ -3953,7 +3953,7 @@ class HighStakeGuard:
         resolved_min = safe_pos_float(raw_min, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = resolved_min
         self.min_notional_eur = resolved_min
-        self.timeout_sec = safe_pos_float(timeout_sec, 25.0)
+        self.timeout_sec = safe_pos_float(timeout_sec, 120.0)
         self.fallback_action = str(fallback_action or "allow").strip().lower()
         self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
             cache_ttl_sec, self._explicit_client, self.gemini_client, DEFAULT_HIGH_STAKE_CACHE_TTL_SEC

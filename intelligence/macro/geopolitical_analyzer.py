@@ -253,7 +253,7 @@ class GeopoliticalThreatAnalyzer:
         lead_headline = str(obj_attr(high_sev[0], "title", None) or "")[:60] if high_sev else "Macro Geopolitical Assessment"
         resp = self.gemini_client.query_json(
             prompt,
-            timeout_sec=25.0,
+            timeout_sec=120.0,
             thread_title=f"{topic_spec('macro_geopolitical').title} — {lead_headline}",
             topic_key="macro_geopolitical",
         )
