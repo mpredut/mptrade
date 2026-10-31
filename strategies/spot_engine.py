@@ -38,6 +38,11 @@ from intelligence.internal.state.volatility import (
 )
 
 from . import spot_rules as sr
+from .base_spot_mixin import (
+    BaseSpotMixin,
+    load_common_mhdpa_env,
+    sanitize_common_spot_state,
+)
 from .state_store import (
     JsonStateStore,
     build_dataclass_from_dict,
@@ -246,33 +251,21 @@ class StratParams:
             raise ValueError("STRAT_TAKEPROFIT_PCT must be > 0 when take-profit is enabled")
         if self.stop_loss_pct < 0:
             raise ValueError("STRAT_STOP_LOSS_PCT must be >= 0")
-        self.sl_disaster_buffer_ratio = finite("STRAT_SL_DISASTER_BUFFER_RATIO", self.sl_disaster_buffer_ratio)
-        self.sl_disaster_vol_multiplier = finite("STRAT_SL_DISASTER_VOL_MULTIPLIER", self.sl_disaster_vol_multiplier)
-        self.sl_disaster_buffer_min_pct = finite("STRAT_SL_DISASTER_BUFFER_MIN_PCT", self.sl_disaster_buffer_min_pct)
-        self.sl_disaster_buffer_max_pct = finite("STRAT_SL_DISASTER_BUFFER_MAX_PCT", self.sl_disaster_buffer_max_pct)
-        self.sl_trend_defer_max_sec = finite("STRAT_SL_TREND_DEFER_MAX_SEC", self.sl_trend_defer_max_sec)
-        self.sl_bounce_min_recovery_pct = finite("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", self.sl_bounce_min_recovery_pct)
-        self.sl_bounce_pullback_pct = finite("STRAT_SL_BOUNCE_PULLBACK_PCT", self.sl_bounce_pullback_pct)
-        self.sl_bounce_ratchet_k = finite("STRAT_SL_BOUNCE_RATCHET_K", self.sl_bounce_ratchet_k)
-        self.sl_bounce_min_pullback_pct = finite("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", self.sl_bounce_min_pullback_pct)
-        if self.sl_disaster_buffer_ratio < 0:
-            raise ValueError("STRAT_SL_DISASTER_BUFFER_RATIO must be >= 0")
-        if self.sl_disaster_vol_multiplier < 0:
-            raise ValueError("STRAT_SL_DISASTER_VOL_MULTIPLIER must be >= 0")
-        if self.sl_disaster_buffer_min_pct < 0:
-            raise ValueError("STRAT_SL_DISASTER_BUFFER_MIN_PCT must be >= 0")
-        if self.sl_disaster_buffer_max_pct <= 0:
-            raise ValueError("STRAT_SL_DISASTER_BUFFER_MAX_PCT must be > 0")
-        if self.sl_trend_defer_max_sec < 0:
-            raise ValueError("STRAT_SL_TREND_DEFER_MAX_SEC must be >= 0")
-        if self.sl_bounce_min_recovery_pct < 0:
-            raise ValueError("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT must be >= 0")
-        if self.sl_bounce_pullback_pct < 0:
-            raise ValueError("STRAT_SL_BOUNCE_PULLBACK_PCT must be >= 0")
-        if self.sl_bounce_ratchet_k < 0:
-            raise ValueError("STRAT_SL_BOUNCE_RATCHET_K must be >= 0")
-        if self.sl_bounce_min_pullback_pct < 0:
-            raise ValueError("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT must be >= 0")
+        for attr, env_key, strictly_pos in (
+            ("sl_disaster_buffer_ratio", "STRAT_SL_DISASTER_BUFFER_RATIO", False),
+            ("sl_disaster_vol_multiplier", "STRAT_SL_DISASTER_VOL_MULTIPLIER", False),
+            ("sl_disaster_buffer_min_pct", "STRAT_SL_DISASTER_BUFFER_MIN_PCT", False),
+            ("sl_disaster_buffer_max_pct", "STRAT_SL_DISASTER_BUFFER_MAX_PCT", True),
+            ("sl_trend_defer_max_sec", "STRAT_SL_TREND_DEFER_MAX_SEC", False),
+            ("sl_bounce_min_recovery_pct", "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", False),
+            ("sl_bounce_pullback_pct", "STRAT_SL_BOUNCE_PULLBACK_PCT", False),
+            ("sl_bounce_ratchet_k", "STRAT_SL_BOUNCE_RATCHET_K", False),
+            ("sl_bounce_min_pullback_pct", "STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", False),
+        ):
+            val = finite(env_key, getattr(self, attr))
+            setattr(self, attr, val)
+            if (val <= 0) if strictly_pos else (val < 0):
+                raise ValueError(f"{env_key} must be {'> 0' if strictly_pos else '>= 0'}")
         self.trend_interval = integer("STRAT_TREND_INTERVAL", self.trend_interval)
         if self.trend_interval <= 0:
             raise ValueError("STRAT_TREND_INTERVAL must be > 0")
@@ -395,56 +388,7 @@ class StratParams:
             dca_vol_scale_k    = required_float_env("STRAT_DCA_VOL_SCALE_K", env),
             dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF", env),
             dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL", env),
-            reentry_hybrid_enabled = required_bool_env("STRAT_REENTRY_HYBRID_ENABLED", env),
-            reentry_peak_relative = required_bool_env("STRAT_REENTRY_PEAK_RELATIVE", env),
-            reentry_pullback_pct = required_float_env("STRAT_REENTRY_PULLBACK_PCT", env),
-            reentry_pullback_adaptive = required_bool_env("STRAT_REENTRY_PULLBACK_ADAPTIVE", env),
-            reentry_pullback_k = required_float_env("STRAT_REENTRY_PULLBACK_K", env),
-            reentry_pullback_min = required_float_env("STRAT_REENTRY_PULLBACK_MIN", env),
-            reentry_pullback_max = required_float_env("STRAT_REENTRY_PULLBACK_MAX", env),
-            reentry_ttl_hours = required_float_env("STRAT_REENTRY_TTL_HOURS", env),
-            reentry_bear_bounce_pct = required_float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT", env),
-            tp_dynamic_flat = required_bool_env("STRAT_TP_DYNAMIC_FLAT", env),
-            tp_min_pct = required_float_env("STRAT_TP_MIN_PCT", env),
-            tp_max_pct = required_float_env("STRAT_TP_MAX_PCT", env),
-            trend_trail_dynamic = required_bool_env("STRAT_TREND_TRAIL_DYNAMIC", env),
-            trend_trail_base_pct = required_float_env("STRAT_TREND_TRAIL_BASE_PCT", env),
-            trend_trail_min_pct = required_float_env("STRAT_TREND_TRAIL_MIN_PCT", env),
-            trend_trail_ratchet_k = required_float_env("STRAT_TREND_TRAIL_RATCHET_K", env),
-            trend_trail_gain_threshold = required_float_env("STRAT_TREND_TRAIL_GAIN_THRESH", env),
-            fast_profit_guard = required_bool_env("STRAT_FAST_PROFIT_GUARD", env),
-            fast_profit_mult = required_float_env("STRAT_FAST_PROFIT_MULT", env),
-            fast_profit_window_min = required_float_env("STRAT_FAST_PROFIT_WINDOW_MIN", env),
-            fast_profit_drop_pct = required_float_env("STRAT_FAST_PROFIT_DROP_PCT", env),
-            surge_guard = required_bool_env("STRAT_SURGE_GUARD", env),
-            surge_gain_pct = required_float_env("STRAT_SURGE_GAIN_PCT", env),
-            surge_window_hours = required_float_env("STRAT_SURGE_WINDOW_HOURS", env),
-            surge_move_pct = required_float_env("STRAT_SURGE_MOVE_PCT", env),
-            surge_exit_pullback_pct = required_float_env("STRAT_SURGE_EXIT_PULLBACK_PCT", env),
-            surge_dynamic = required_bool_env("STRAT_SURGE_DYNAMIC", env),
-            surge_min_gain_pct = required_float_env("STRAT_SURGE_MIN_GAIN_PCT", env),
-            surge_max_gain_pct = required_float_env("STRAT_SURGE_MAX_GAIN_PCT", env),
-            surge_vol_multiplier = required_float_env("STRAT_SURGE_VOL_MULTIPLIER", env),
-            slow_grind_guard = required_bool_env("STRAT_SLOW_GRIND_GUARD", env),
-            slow_grind_days = required_float_env("STRAT_SLOW_GRIND_DAYS", env),
-            slow_grind_min_gain_pct = required_float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT", env),
-            slow_grind_flash_window_min = required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
-            slow_grind_flash_drop_pct = required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
-            slow_grind_hourly_drop_pct = required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
-            sl_mhdsl_enabled   = required_bool_env("STRAT_SL_MHDSL_ENABLED", env),
-            sl_disaster_buffer_ratio = required_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", env),
-            sl_disaster_vol_multiplier = required_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", env),
-            sl_disaster_buffer_min_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", env),
-            sl_disaster_buffer_max_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", env),
-            sl_trend_defer_max_sec = required_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", env),
-            sl_bounce_min_recovery_pct = required_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", env),
-            sl_bounce_pullback_pct = required_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", env),
-            sl_bounce_ratchet_enabled = required_bool_env("STRAT_SL_BOUNCE_RATCHET_ENABLED", env),
-            sl_bounce_ratchet_k = required_float_env("STRAT_SL_BOUNCE_RATCHET_K", env),
-            sl_bounce_min_pullback_pct = required_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", env),
-            sl_structural_break_enabled = required_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", env),
-            tp_mdhtp_enabled   = required_bool_env("STRAT_TP_MDHTP_ENABLED", env),
-            tp_stagnation_max_sec = required_float_env("STRAT_TP_STAGNATION_MAX_SEC", env),
+            **load_common_mhdpa_env(env, include_spot_sl=True),
         )
 
 
@@ -516,7 +460,13 @@ def _new_state() -> dict:
     }
 
 
-class Strategy:
+class Strategy(BaseSpotMixin):
+    _exit_manager_mode = "spot"
+    _cost_state_key = "cost"
+    _spent_state_key = "spent"
+    _qty_eps = 1e-12
+    _vol_default_source = "default"
+
     def __init__(self, client: "StrategyExecutor", pair: str, params: StratParams,
                  dry_run: bool = True, desktop: bool = False,
                  initial_state: dict | None = None,
@@ -586,159 +536,62 @@ class Strategy:
             retry_on_lookup_error=False,
         )
 
-    def _now(self) -> float:
-        """Return the current timestamp honoring simulated time in replay mode."""
-        if self.replay_mode:
-            if self._simulated_ts is not None:
-                return self._simulated_ts
-            if self._shadow_prices:
-                return self._shadow_prices[-1][0]
-            return 0.0
-        return time.time()
-
-    def set_simulated_time(self, ts: float | None) -> None:
-        """Explicitly set simulated timestamp for replay and backtesting drivers."""
-        self._simulated_ts = _clean_nonneg_float(ts)
-
     def _emit(self, **event) -> None:
         """Send an event through the venue sink or legacy compatibility wrapper."""
-        # Replay shares live strategy logic but must not create external effects.
-        # ``dry_run`` alone is insufficient because paper-live still needs real alerts.
         if self.replay_mode:
             return
         (self._notifier or notify)(**event)
 
     # -- Persistence -----------------------------------------------------------
-    def _store(self) -> JsonStateStore:
-        return JsonStateStore(
-            self.state_file, _new_state, label=self.venue_label,
-            logger=log, fail_closed=not self.dry_run,
-        )
-
-    def _record_state_file_mtime(self) -> None:
-        if self.replay_mode or not isinstance(self.state_file, str):
-            return
-        try:
-            if os.path.exists(self.state_file):
-                self._state_file_mtime = float(os.path.getmtime(self.state_file))
-        except OSError:
-            pass
-
-    def _reload_if_externally_modified(self) -> None:
-        if self.replay_mode or self._state_write_failed or not isinstance(self.state_file, str):
-            return
-        try:
-            if os.path.exists(self.state_file):
-                disk_mtime = float(os.path.getmtime(self.state_file))
-                if disk_mtime > self._state_file_mtime + 1e-3:
-                    self.s = self._load()
-        except OSError:
-            pass
-
-    def _load(self) -> dict:
-        loaded = self._sanitize_spot_state(self._store().load())
-        self._record_state_file_mtime()
-        return loaded
-
     @staticmethod
     def _sanitize_spot_state(state: dict | None) -> dict:
-        if not isinstance(state, dict):
-            state = _new_state()
-        for k, v in _new_state().items():
-            state.setdefault(k, v)
-        state["cycle"] = safe_pos_int(state.get("cycle"), default=1) or 1
-        for nkey in ("qty", "cost", "spent", "cycle_fees", "fees_total"):
-            state[nkey] = safe_nonneg_float(state.get(nkey), default=0.0) or 0.0
-        for fkey in ("realized_gross", "realized_net"):
-            state[fkey] = safe_float(state.get(fkey), default=0.0) or 0.0
-        for ikey in ("dca_buys", "trend_confirm_count"):
-            i = safe_int(state.get(ikey), default=0)
-            state[ikey] = i if (i is not None and i >= 0) else 0
-        for pkey in (
-            "entry_price",
-            "last_buy_price",
-            "last_sell_price",
-            "sl_low",
-            "post_sell_peak",
-            "post_sell_trough",
-            "last_sell_ts",
-            "trail_peak",
-            "trail_stop",
-            "trend_peak",
-            "surge_peak",
-            "slow_grind_peak",
-            "entry_ts",
-        ):
-            if pkey in state and state.get(pkey) is not None:
-                state[pkey] = _clean_pos_float(state.get(pkey))
-        for bkey in (
-            "trend_mode",
-            "ledger_reconcile_required",
-            "surge_active",
-            "slow_grind_active",
-            "adopted",
-        ):
-            if bkey in state:
-                state[bkey] = _parse_bool_flag(state.get(bkey), False)
-        if isinstance(state.get("orders"), list):
-            clean_orders = []
-            for o in state["orders"]:
-                if not isinstance(o, dict):
-                    continue
-                if "txid" in o and o.get("txid") is not None:
-                    o["txid"] = _clean_order_id(o.get("txid"))
-                if "side" in o and not isinstance(o.get("side"), bool):
-                    s_norm = normalize_side(o.get("side"))
-                    if s_norm in ("BUY", "SELL"):
-                        o["side"] = s_norm.lower()
-                if "intent_id" in o:
-                    o["intent_id"] = _clean_order_id(o.get("intent_id"))
-                if "vol" in o:
-                    o["vol"] = safe_pos_float(o.get("vol"), 0.0)
-                if "price" in o:
-                    o["price"] = safe_pos_float(o.get("price"), 0.0)
-                if "amount" in o:
-                    o["amount"] = safe_nonneg_float(o.get("amount"), 0.0)
-                if "ts" in o:
-                    o["ts"] = safe_nonneg_float(o.get("ts"), 0.0)
-                if "market" in o:
-                    o["market"] = _parse_bool_flag(o.get("market"), False)
-                if "cancel_requested" in o:
-                    o["cancel_requested"] = _parse_bool_flag(o.get("cancel_requested"), False)
-                clean_orders.append(o)
-            state["orders"] = clean_orders
-        else:
-            state["orders"] = []
-        for dkey in (
-            "placement_backoffs",
-            "sl_bounce_state",
-            "sl_episode_state",
-            "reentry_state",
-            "tp_ride_state",
-        ):
-            if not isinstance(state.get(dkey), dict):
-                state[dkey] = {}
-        pi = state.get("pending_intent")
-        if isinstance(pi, dict):
-            if "order_id" in pi and pi.get("order_id") is not None:
-                pi["order_id"] = _clean_order_id(pi.get("order_id"))
-            if "intent_id" in pi and pi.get("intent_id") is not None:
-                pi["intent_id"] = _clean_order_id(pi.get("intent_id"))
-            if "market" in pi:
-                pi["market"] = _parse_bool_flag(pi.get("market"), False)
-            meta = pi.get("metadata")
-            if isinstance(meta, dict) and "market" in meta:
-                meta["market"] = _parse_bool_flag(meta.get("market"), False)
+        state = sanitize_common_spot_state(
+            state,
+            _new_state,
+            nonneg_float_keys=("qty", "cost", "spent", "cycle_fees", "fees_total"),
+            signed_float_keys=("realized_gross", "realized_net"),
+            nonneg_int_keys=("dca_buys", "trend_confirm_count"),
+            pos_float_keys=(
+                "entry_price",
+                "last_buy_price",
+                "last_sell_price",
+                "sl_low",
+                "post_sell_peak",
+                "post_sell_trough",
+                "last_sell_ts",
+                "trail_peak",
+                "trail_stop",
+                "trend_peak",
+                "surge_peak",
+                "slow_grind_peak",
+                "entry_ts",
+            ),
+            bool_keys=(
+                "trend_mode",
+                "ledger_reconcile_required",
+                "surge_active",
+                "slow_grind_active",
+                "adopted",
+            ),
+            dict_keys=(
+                "placement_backoffs",
+                "sl_bounce_state",
+                "sl_episode_state",
+                "reentry_state",
+                "tp_ride_state",
+            ),
+            order_id_key="txid",
+            lowercase_order_side=True,
+            order_pos_float_keys=("vol", "price"),
+            order_nonneg_float_keys=("amount", "ts"),
+            order_bool_keys=("market", "cancel_requested"),
+        )
         pe = state.get("pending_exit")
         if isinstance(pe, dict) and "soft_floor" in pe:
             pe["soft_floor"] = _parse_bool_flag(pe.get("soft_floor"), False)
         return state
 
-    def _save(self) -> None:
-        self._state_write_failed = True
-        if self._store().save(self.s):
-            self._state_write_failed = False
-            self._record_state_file_mtime()
+    _sanitize_state_dict = _sanitize_spot_state
 
     def _persist_pending_intent(self, pending: dict | None) -> None:
         self.s["pending_intent"] = None if pending is None else dict(pending)
@@ -824,11 +677,6 @@ class Strategy:
             log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
 
     # -- Helpers ---------------------------------------------------------------
-    def _avg(self) -> float | None:
-        qty = _clean_pos_float(self.s.get("qty"))
-        cost = _clean_pos_float(self.s.get("cost"))
-        return cost / qty if (qty is not None and cost is not None and qty > 1e-12) else None
-
     def _qty_for(self, amount: float, price: float) -> float:
         amt_f = safe_pos_float(amount, default=None)
         px_f = safe_pos_float(price, default=None)
@@ -851,16 +699,6 @@ class Strategy:
         # Epsilon prevents floating-point division from leaving two ticks after floor.
         ticks = math.floor((qty_f + step * 1e-9) / step) - 1
         return round(max(ticks, 0) * step, self.vol_dec)
-
-    def _has_open(self, side: str) -> bool:
-        return self._find_open(side) is not None
-
-    def _find_open(self, side: str) -> dict | None:
-        return find_open_order(self.s, side)
-
-    def _remove(self, o: dict) -> None:
-        if o in self.s["orders"]:
-            self.s["orders"].remove(o)
 
     @staticmethod
     def _insufficient_funds_error(error) -> bool:
@@ -1097,12 +935,6 @@ class Strategy:
         self._save()
         log(f"  [STRAT] cancel requested {o['side']} {o['txid']} — waiting for a terminal status")
         return True
-
-    def _cancel_open(self, side: str) -> bool:
-        o = self._find_open(side)
-        if not o:
-            return True
-        return self._cancel_order(o)
 
     def _cancel_orders(self, side: str | None = None, *, exclude_market: bool = False) -> bool:
         """Request cancellation of selected orders; return False if any request fails."""
@@ -1373,18 +1205,6 @@ class Strategy:
             if final:
                 self._finalize_cycle_if_flat(o, price)
 
-    def _seed_post_exit_anchors(self, price: float, exit_kind: str | None, exit_ts: float) -> None:
-        """Initialize post-sale price and timestamp anchors after a cycle closes."""
-        self.s["last_sell_price"] = price   # reentry rule must not buy back higher
-        self.s["last_exit_kind"] = exit_kind  # TP/STOP enables stop-aware reentry
-        self.s["sl_low"] = price            # Initial low for post-stop bounce reentry.
-        self.s["post_sell_peak"] = price    # Initial peak for post-sale pullback tracking.
-        self.s["post_sell_trough"] = price  # Initial trough for post-sale bear bounce tracking.
-        self.s["last_sell_ts"] = exit_ts
-        if self.exit_manager is not None:
-            self.exit_manager.clear_state(self.pair)
-            self.exit_manager.bind_state(self.s)
-
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
         """Close a cycle once, only after terminal exit status."""
         # Dust left by _dust_safe_qty must not keep a cycle open. Apply the threshold
@@ -1449,69 +1269,6 @@ class Strategy:
         """Return True if a downtrend is identified via regime or venue client."""
         return self._is_trend_direction(regime, "bear", ("down", "bear", "downtrend"))
 
-    def _vol_1h_ratio(self) -> tuple[float, str]:
-        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
-        try:
-            vol = safe_pos_float(self._trail_vol_1h(), default=None)
-            if vol is not None:
-                return vol_pct_to_ratio(vol), "trail_ohlc"
-        except Exception:
-            pass
-        try:
-            vol = safe_pos_float(self._shadow_vol_1h(), default=None)
-            if vol is not None:
-                return vol_pct_to_ratio(vol), "shadow_ticks"
-        except Exception:
-            pass
-        if not self.replay_mode:
-            cached = resolve_cached_volatility_1h(self.pair)
-            if cached is not None:
-                return cached, "cache"
-        return 0.0, "default"
-
-    def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
-        """Callable adapter for PositionExitManager vol_resolver."""
-        return self._vol_1h_ratio()
-
-    def _init_exit_manager(self) -> PositionExitManager:
-        return build_strategy_exit_manager(
-            self.p,
-            self.s,
-            self._resolve_volatility_tuple,
-            allow_external_cache=not self.replay_mode,
-            mode="spot",
-        )
-
-    def _create_position_snapshot(
-        self,
-        price: float,
-        avg: float,
-        held: float,
-        regime: MarketRegimeDecision | None = None,
-        include_vol: bool = True,
-        include_shadow: bool = True,
-    ) -> PositionSnapshot:
-        """Construct a standardized PositionSnapshot using the strategy's current context."""
-        tick_time = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
-        if include_vol:
-            vol_1h, vol_source = self._vol_1h_ratio()
-        else:
-            vol_1h, vol_source = 0.0, "default"
-        trend_up = self._is_trend_up(regime)
-        return PositionSnapshot(
-            symbol=self.pair,
-            current_price=price,
-            avg_buy_price=avg,
-            net_qty=held,
-            sellable_qty=held,
-            current_time_s=tick_time,
-            trend_up=trend_up,
-            vol_1h=vol_1h,
-            vol_source=vol_source,
-            provider=self.venue_label,
-            shadow_prices=list(self._shadow_prices) if include_shadow else [],
-        )
-
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if (self.s.get("pending_exit") or {}).get("kind") == "STOP":
@@ -1537,15 +1294,7 @@ class Strategy:
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
             return False
-        in_sl = loss_pct > 0.0 and (
-            loss_pct >= self.p.stop_loss_pct
-            or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
-        )
-        mgr = self.exit_manager
-        in_bounce_watch = bool(mgr is not None and self.pair in mgr.sl_bounce_state)
-        if not in_sl and not in_bounce_watch:
-            if mgr is not None and mgr.sl_episode_state:
-                mgr.reset_sl_episode(self.pair)  # Leaving SL territory ends the episode floor lock
+        if not self._in_mhdsl_territory(loss_pct):
             return False
 
         if self.exit_manager is None:
@@ -1570,8 +1319,7 @@ class Strategy:
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
         elif decision.action == ExitAction.HOLD:
-            if decision.metadata.get("priority") in (1, 2) or self.pair in self.exit_manager.sl_bounce_state:
-                log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
+            self._handle_mhdsl_hold_decision(decision)
             return False
 
         return False
@@ -1675,146 +1423,7 @@ class Strategy:
             return base
         return base * max(0.3, min(3.0, scale))
 
-    def _dca_vol_1h(self) -> float | None:
-        """Return DCA volatility from OHLC at the same cadence in live and replay."""
-        if self.replay_mode:
-            closes = [price for _, price in self._shadow_prices]
-        else:
-            closes = self.client.ohlc_closes(self.pair, self.p.dca_vol_interval)
-        return self._hourly_vol_from_closes(closes, self.p.dca_vol_interval)
-
-    _SHADOW_VOL_CACHE: dict = {}
-    _TRAIL_VOL_CACHE: dict = {}
     _REPLAY_REGIME_CACHE: dict = {}
-    _HOURLY_VOL_CACHE: dict = {}
-    _REPLAY_CACHE_MAX = 262144
-
-    @staticmethod
-    def _scaled_log_return_vol_pct(returns: list[float], steps_per_hour: float) -> float | None:
-        """Return sample standard deviation of log returns scaled to 1 hour (in %), or None if < 19 samples."""
-        n_r = len(returns)
-        if n_r < 19 or steps_per_hour <= 0:
-            return None
-        mean_r = sum(returns) / n_r
-        var_r = sum((r - mean_r) ** 2 for r in returns) / (n_r - 1)
-        return math.sqrt(var_r) * math.sqrt(steps_per_hour) * 100.0
-
-    def _resolve_reentry_vol_1h_pct(self) -> float | None:
-        """Resolve 1-hour volatility (%) from shadow ticks with non-replay cache fallback."""
-        vol = self._shadow_vol_1h()
-        if vol is None and not self.replay_mode:
-            vol = resolve_cached_volatility_1h_pct(self.pair)
-        return vol
-
-    def _shadow_vol_1h(self) -> float | None:
-        """Return one-hour volatility from local tick history, or None during warm-up."""
-        sp = self._shadow_prices
-        n_sp = len(sp)
-        if n_sp < 20:
-            return None
-        if self.replay_mode:
-            cache_key = (
-                n_sp,
-                round(sp[-1][0] - sp[0][0], 3),
-                sp[0][1],
-                sp[1][1],
-                sp[n_sp >> 1][1],
-                sp[-2][1],
-                sp[-1][1],
-            )
-            if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
-                return self._shadow_vol_cache_val
-            if cache_key in Strategy._SHADOW_VOL_CACHE:
-                val = Strategy._SHADOW_VOL_CACHE[cache_key]
-                self._shadow_vol_cache_key = cache_key
-                self._shadow_vol_cache_val = val
-                return val
-        mean_dt = (sp[-1][0] - sp[0][0]) / (n_sp - 1)
-        if mean_dt <= 0:
-            return None
-        pts = list(sp)
-        rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, n_sp)
-                if pts[i - 1][1] > 0 and pts[i][1] > 0]
-        val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
-        if val is None:
-            return None
-        if self.replay_mode:
-            self._shadow_vol_cache_key = cache_key
-            self._shadow_vol_cache_val = val
-            if len(Strategy._SHADOW_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
-                Strategy._SHADOW_VOL_CACHE.clear()
-            Strategy._SHADOW_VOL_CACHE[cache_key] = val
-        return val
-
-    def _shadow_reentry_line(self, price: float, lsp: float, prag_fix: float) -> None:
-        try:
-            k_re = self.p.shadow_k_reentry
-            vol = self._resolve_reentry_vol_1h_pct()
-            if vol is None:
-                log(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
-                return
-            adapt_pct, _ = adaptive_thresholds(vol, k_reentry=k_re)
-            if adapt_pct is None:
-                adapt_pct = k_re * vol
-            prag_adapt = lsp * (1 - adapt_pct / 100)
-            verdict = "WOULD HAVE ENTERED" if price <= prag_adapt else "would not have entered either"
-            log(f"  [SHADOW] fixed threshold {prag_fix:.2f} vs adaptive {prag_adapt:.2f} "
-                f"(vol_1h {vol:.2f}% x k={k_re}) → {verdict}")
-        except Exception as e:  # noqa: BLE001 — observational
-            log(f"  [SHADOW] calculation error ({e}) — ignored")
-
-    def _effective_reentry_drop_pct(self) -> tuple[float, str]:
-        """Return the effective adaptive or fixed reentry threshold.
-
-        Use ``K_REENTRY * one-hour volatility`` when enabled and available. Otherwise
-        fail safely to the fixed percentage so missing signals never stop trading.
-        """
-        if not self.p.reentry_adaptive:
-            return self.p.reentry_drop_pct, "fix"
-        k_re = self.p.shadow_k_reentry
-        try:
-            vol = self._resolve_reentry_vol_1h_pct()
-        except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            log(f"  [REENTRY-ADAPTIVE] calculation error ({e}) — fallback to fixed")
-            return self.p.reentry_drop_pct, "fix (fallback, error)"
-        if vol is None:
-            return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
-        adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
-        eff_drop = adapt_drop if adapt_drop is not None else (k_re * vol)
-        return eff_drop, f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
-
-    def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
-        """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
-        if not self.p.reentry_pullback_adaptive:
-            return self.p.reentry_pullback_pct, "fixed"
-        try:
-            vol = self._resolve_reentry_vol_1h_pct()
-        except Exception as e:
-            log(f"  [REENTRY-PULLBACK-ADAPTIVE] calculation error ({e}) — fallback to fixed")
-            vol = None
-        return compute_adaptive_reentry_pullback_pct(
-            self.p,
-            vol,
-            fallback_reason=f"fixed (fallback, warm-up {len(self._shadow_prices)}/20)",
-            vol_label="vol_1h",
-        )
-
-    def _effective_trail_pct(self) -> float:
-        """Return the clamped volatility-adaptive or fixed trailing pullback.
-
-        Warm-up and errors fall back to the fixed value. Volatile trends receive more
-        room while choppy markets receive tighter trailing without buying higher.
-        """
-        if not self.p.tp_trail_adaptive:
-            return self.p.tp_trail_pct
-        try:
-            vol = self._trail_vol_1h()
-        except Exception as e:  # noqa: BLE001 — observational failure must not stop trading.
-            log(f"  [STRAT] trailing adaptiv: OHLC indisponibil ({e}) — fallback pe fix")
-            vol = None
-        if vol is None:
-            return self.p.tp_trail_pct
-        return max(self.p.tp_trail_min, min(self.p.tp_trail_max, self.p.tp_trail_k * vol))
 
     def _effective_surge_gain_pct(self) -> float:
         """Return the dynamic volatility-scaled or fixed parabolic surge trigger."""
@@ -1860,78 +1469,6 @@ class Strategy:
         if past_price <= 0:
             return None
         return (price - past_price) / past_price * 100.0
-
-    def _trail_vol_1h(self) -> float | None:
-        """Return one-hour-normalized volatility at one OHLC cadence in live and replay.
-
-        Different live-tick and replay-bar cadences produced different signals even after
-        square-root-of-time scaling. Live mode reads closed
-        provider bars; replay is separately validated against the same interval.
-        """
-        if self.replay_mode:
-            sp = self._shadow_prices
-            n_sp = len(sp)
-            if n_sp < 20:
-                return None
-            cache_key = (
-                n_sp,
-                sp[0][1],
-                sp[1][1],
-                sp[n_sp >> 1][1],
-                sp[-2][1],
-                sp[-1][1],
-                self.p.tp_trail_vol_interval,
-            )
-            if getattr(self, "_trail_vol_cache_key", None) == cache_key:
-                return self._trail_vol_cache_val
-            if cache_key in Strategy._TRAIL_VOL_CACHE:
-                val = Strategy._TRAIL_VOL_CACHE[cache_key]
-                self._trail_vol_cache_key = cache_key
-                self._trail_vol_cache_val = val
-                return val
-            closes = [price for _, price in sp]
-            val = self._hourly_vol_from_closes(
-                closes, self.p.tp_trail_vol_interval,
-            )
-            self._trail_vol_cache_key = cache_key
-            self._trail_vol_cache_val = val
-            if len(Strategy._TRAIL_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
-                Strategy._TRAIL_VOL_CACHE.clear()
-            Strategy._TRAIL_VOL_CACHE[cache_key] = val
-            return val
-        closes = self.client.ohlc_closes(self.pair, self.p.tp_trail_vol_interval)
-        return self._hourly_vol_from_closes(
-            closes, self.p.tp_trail_vol_interval,
-        )
-
-    @staticmethod
-    def _hourly_vol_from_closes(
-        closes: list[float], interval_minutes: float,
-    ) -> float | None:
-        """Return log-return deviation normalized to one hour for a fixed cadence."""
-        itv_f = safe_pos_float(interval_minutes, default=None)
-        if not closes or itv_f is None:
-            return None
-        clean_closes = [
-            cf for c in closes[-90:]
-            if (cf := safe_pos_float(c, default=None)) is not None
-        ]
-        closes_slice = tuple(clean_closes)
-        if len(closes_slice) < 20:
-            return None
-        cache_key = (closes_slice, itv_f)
-        if cache_key in Strategy._HOURLY_VOL_CACHE:
-            return Strategy._HOURLY_VOL_CACHE[cache_key]
-        returns = [
-            math.log(current / previous)
-            for previous, current in zip(closes_slice, closes_slice[1:])
-            if previous > 0 and current > 0
-        ]
-        val = Strategy._scaled_log_return_vol_pct(returns, 60.0 / itv_f)
-        if len(Strategy._HOURLY_VOL_CACHE) >= Strategy._REPLAY_CACHE_MAX:
-            Strategy._HOURLY_VOL_CACHE.clear()
-        Strategy._HOURLY_VOL_CACHE[cache_key] = val
-        return val
 
     # -- Common market regime and trend overlay --------------------------------
     def _trend_closes(self) -> list:
@@ -2020,81 +1557,6 @@ class Strategy:
             return False
         move = decision.fitted_move_pct
         return min_move_pct <= 0 or (move is not None and abs(move) >= min_move_pct)
-
-    def _evaluate_reentry_gate(
-        self, price: float, regime: MarketRegimeDecision | None, tick_time: float
-    ) -> tuple[bool, str]:
-        """Evaluate re-entry gate conditions symmetrically across trend overlay and DCA entries."""
-        lsp = update_post_sell_anchors(self.s, price, track_stop_sl_low=True)
-        if not lsp:
-            return True, "no_last_sell"
-        last_kind = self.s.get("last_exit_kind")
-
-        # Symmetrical Re-entry Evaluation via PositionExitManager
-        if self.exit_manager is None:
-            self.exit_manager = self._init_exit_manager()
-        mgr = self.exit_manager
-        mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-        mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
-        mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
-        mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
-        mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
-        mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
-        mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
-        needs_reentry_regime = bool(
-            self.p.trend_overlay
-            or self.p.reentry_hybrid_enabled
-            or (last_kind == "STOP" and self.p.sl_mhdsl_enabled)
-        )
-        if regime is None and needs_reentry_regime:
-            try:
-                regime, _ = self._regime_context()
-            except Exception:
-                regime = None
-        trend_up = (
-            self._is_trend_up(regime)
-            if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0)
-            else False
-        )
-        trend_down = self._is_trend_down(regime) if needs_reentry_regime else False
-        is_bull_reentry = bool(
-            last_kind != "STOP"
-            and self.p.reentry_hybrid_enabled
-            and (trend_up or self.p.reentry_peak_relative)
-        )
-        if is_bull_reentry or not self.replay_mode:
-            pullback_pct, _ = self._effective_reentry_pullback_pct()
-        else:
-            pullback_pct = self.p.reentry_pullback_pct
-        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
-        if (not is_bull_reentry and last_kind != "STOP") or not self.replay_mode:
-            drop_pct, _ = self._effective_reentry_drop_pct()
-        else:
-            drop_pct = self.p.reentry_drop_pct
-        if self.replay_mode:
-            vol_1h, vol_source = 0.0, "default"
-        else:
-            vol_1h, vol_source = self._vol_1h_ratio()
-        reentry_snap = ReentrySnapshot(
-            symbol=self.pair,
-            current_price=price,
-            last_sell_price=lsp,
-            last_exit_kind=last_kind,
-            post_sell_peak=self.s.get("post_sell_peak"),
-            post_sell_trough=self.s.get("post_sell_trough"),
-            current_time_s=tick_time,
-            last_sell_time_s=self.s.get("last_sell_ts"),
-            trend_up=trend_up,
-            trend_down=trend_down,
-            vol_1h=vol_1h,
-            vol_source=vol_source,
-        )
-        reentry_dec = mgr.evaluate_reentry(reentry_snap, custom_drop_pct=vol_pct_to_ratio(drop_pct))
-        return reentry_dec.should_enter, reentry_dec.reason
-
-    def _restore_reentry_state(self) -> None:
-        if self.exit_manager is not None:
-            self.exit_manager.restore_reentry_state(self.pair)
 
     def _check_advanced_profit_guards(
         self, price: float, avg: float, held: float,
@@ -2318,23 +1780,131 @@ class Strategy:
             return True
         return False
 
-    def step(
+    def _reconcile_venue_ledger(
+        self, price: float, clean_ts: float | None, had_persisted_reconcile: bool
+    ) -> bool:
+        """Synchronize strategy holdings with the venue balance when flagged; return True to stop step."""
+        held = self.s["qty"]
+        try:
+            precision = self.client.pair_precision(self.pair)
+            base = precision.base_asset if precision else ""
+            ledger_val = self.client.free_balance(base)
+            if ledger_val is None:
+                log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
+                return True
+            ledger_qty = _clean_nonneg_float(ledger_val)
+            if ledger_qty is None:
+                log("  ! [STRAT] ledger reconciliation unavailable (invalid balance); decisions blocked")
+                return True
+        except (ProviderError, TypeError, ValueError, OverflowError) as exc:
+            log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
+            return True
+        tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
+        if self.observe_only and ledger_qty + tolerance < held:
+            try:
+                raw_cli = getattr(self.client, "_inner", self.client)
+                if hasattr(raw_cli, "open_orders"):
+                    open_rows = raw_cli.open_orders(self.pair)
+                    if isinstance(open_rows, list):
+                        open_sell_qty = sum(
+                            _clean_pos_float(r.get("remaining_qty") or r.get("origQty") or r.get("qty")) or 0.0
+                            for r in open_rows
+                            if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
+                        )
+                        if open_sell_qty > 0.0:
+                            ledger_qty = min(held, ledger_qty + open_sell_qty)
+            except Exception:
+                pass
+        if ledger_qty <= tolerance:
+            if held > 1e-12:
+                log(
+                    f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
+                )
+                defaults = _new_state()
+                for k in (
+                    "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
+                    "last_buy_price", "entry_ts", "trail_peak", "trail_stop", "trend_mode",
+                    "trend_peak", "trend_confirm_count", "pending_exit", "surge_active",
+                    "surge_peak", "slow_grind_active", "slow_grind_peak", "sl_bounce_state",
+                    "sl_episode_state", "tp_ride_state", "reentry_state",
+                ):
+                    self.s[k] = defaults[k]
+                exit_ts = clean_ts if clean_ts is not None else self._now()
+                self._seed_post_exit_anchors(price, "TP", exit_ts)
+                self.s["ledger_reconcile_required"] = False
+                self._save()
+            else:
+                self.s["ledger_reconcile_required"] = False
+                if had_persisted_reconcile:
+                    self._save()
+            return True
+        if ledger_qty + tolerance < held:
+            log(
+                f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
+                f"available {base}={ledger_qty:.{self.vol_dec}f}; synchronizing state"
+            )
+            ratio = ledger_qty / held if held > 0 else 1.0
+            self.s["qty"] = ledger_qty
+            self.s["cost"] = float(self.s.get("cost", 0.0)) * ratio
+            self.s["spent"] = float(self.s.get("spent", 0.0)) * ratio
+            self.s["ledger_reconcile_required"] = False
+            self._save()
+            return True
+        if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
+            log(
+                f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
+                f"{held:.{self.vol_dec}f} -> {ledger_qty:.{self.vol_dec}f}); synchronizing state"
+            )
+            fill_px = price
+            fill_ts = clean_ts if clean_ts is not None else self._now()
+            try:
+                raw_cli = getattr(self.client, "_inner", self.client)
+                if hasattr(raw_cli, "get_orders"):
+                    buy_rows = raw_cli.get_orders(self.pair, "BUY", 3600.0)
+                    if isinstance(buy_rows, list) and buy_rows and isinstance(buy_rows[-1], dict):
+                        cand_px = _clean_pos_float(buy_rows[-1].get("price"))
+                        if cand_px is not None:
+                            fill_px = cand_px
+                        cand_ts_ms = _clean_pos_float(buy_rows[-1].get("timestamp"))
+                        if cand_ts_ms is not None:
+                            fill_ts = cand_ts_ms / 1000.0 if cand_ts_ms > 1e11 else cand_ts_ms
+            except Exception:
+                pass
+            added_cost = (ledger_qty - held) * fill_px
+            self.s["qty"] = ledger_qty
+            self.s["cost"] = float(self.s.get("cost", 0.0)) + added_cost
+            self.s["spent"] = float(self.s.get("spent", 0.0)) + added_cost
+            if held <= tolerance or self.s.get("entry_price") is None:
+                self.s["entry_price"] = fill_px
+                self.s["entry_ts"] = fill_ts
+            else:
+                self.s["dca_buys"] = int(self.s.get("dca_buys") or 0) + 1
+            self.s["last_buy_price"] = fill_px
+            self.s["ledger_reconcile_required"] = False
+            self._save()
+            return True
+        self.s["ledger_reconcile_required"] = False
+        if had_persisted_reconcile:
+            self._save()
+        return False
+
+    def _step_sync_market(
         self,
         price: float,
         timestamp: float | None = None,
         high: float | None = None,
-        low: float | None = None,
-    ) -> None:
+    ) -> tuple[float, float, float, float, float | None] | None:
+        """Stage 1: Validate market price, sync venue ledger, record shadow ticks, and check adoption."""
         clean_price = _clean_pos_float(price)
         if clean_price is None:
             log("  ! [STRAT] invalid price — deferring step")
-            return
+            return None
         price = clean_price
         if high is not None:
             high = _clean_pos_float(high)
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
-            return
+            return None
         clean_ts = _clean_nonneg_float(timestamp)
         had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
         if self.observe_only:
@@ -2343,113 +1913,14 @@ class Strategy:
             if not self.dry_run and not self.s.get("orders"):
                 self.s["ledger_reconcile_required"] = True
             else:
-                return
+                return None
         held = self.s["qty"]
         if (not self.dry_run and self.s.get("ledger_reconcile_required")
                 and (held > 1e-12 or self.observe_only) and not self.s.get("orders")):
-            try:
-                precision = self.client.pair_precision(self.pair)
-                base = precision.base_asset if precision else ""
-                ledger_val = self.client.free_balance(base)
-                if ledger_val is None:
-                    log("  ! [STRAT] ledger reconciliation unavailable (balance query returned None); decisions blocked")
-                    return
-                ledger_qty = _clean_nonneg_float(ledger_val)
-                if ledger_qty is None:
-                    log("  ! [STRAT] ledger reconciliation unavailable (invalid balance); decisions blocked")
-                    return
-            except (ProviderError, TypeError, ValueError, OverflowError) as exc:
-                log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
-                return
-            tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
-            if self.observe_only and ledger_qty + tolerance < held:
-                try:
-                    raw_cli = getattr(self.client, "_inner", self.client)
-                    if hasattr(raw_cli, "open_orders"):
-                        open_rows = raw_cli.open_orders(self.pair)
-                        if isinstance(open_rows, list):
-                            open_sell_qty = sum(
-                                _clean_pos_float(r.get("remaining_qty") or r.get("origQty") or r.get("qty")) or 0.0
-                                for r in open_rows
-                                if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
-                            )
-                            if open_sell_qty > 0.0:
-                                ledger_qty = min(held, ledger_qty + open_sell_qty)
-                except Exception:
-                    pass
-            if ledger_qty <= tolerance:
-                if held > 1e-12:
-                    log(
-                        f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
-                    )
-                    defaults = _new_state()
-                    for k in (
-                        "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
-                        "last_buy_price", "entry_ts", "trail_peak", "trail_stop", "trend_mode",
-                        "trend_peak", "trend_confirm_count", "pending_exit", "surge_active",
-                        "surge_peak", "slow_grind_active", "slow_grind_peak", "sl_bounce_state",
-                        "sl_episode_state", "tp_ride_state", "reentry_state",
-                    ):
-                        self.s[k] = defaults[k]
-                    exit_ts = clean_ts if clean_ts is not None else self._now()
-                    self._seed_post_exit_anchors(price, "TP", exit_ts)
-                    self.s["ledger_reconcile_required"] = False
-                    self._save()
-                else:
-                    self.s["ledger_reconcile_required"] = False
-                    if had_persisted_reconcile:
-                        self._save()
-                return
-            if ledger_qty + tolerance < held:
-                log(
-                    f"  ! [STRAT] LEDGER RECONCILE: state qty={held:.{self.vol_dec}f} -> "
-                    f"available {base}={ledger_qty:.{self.vol_dec}f}; synchronizing state"
-                )
-                ratio = ledger_qty / held if held > 0 else 1.0
-                self.s["qty"] = ledger_qty
-                self.s["cost"] = float(self.s.get("cost", 0.0)) * ratio
-                self.s["spent"] = float(self.s.get("spent", 0.0)) * ratio
-                self.s["ledger_reconcile_required"] = False
-                self._save()
-                return
-            if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
-                log(
-                    f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
-                    f"{held:.{self.vol_dec}f} -> {ledger_qty:.{self.vol_dec}f}); synchronizing state"
-                )
-                fill_px = price
-                fill_ts = clean_ts if clean_ts is not None else self._now()
-                try:
-                    raw_cli = getattr(self.client, "_inner", self.client)
-                    if hasattr(raw_cli, "get_orders"):
-                        buy_rows = raw_cli.get_orders(self.pair, "BUY", 3600.0)
-                        if isinstance(buy_rows, list) and buy_rows and isinstance(buy_rows[-1], dict):
-                            cand_px = _clean_pos_float(buy_rows[-1].get("price"))
-                            if cand_px is not None:
-                                fill_px = cand_px
-                            cand_ts_ms = _clean_pos_float(buy_rows[-1].get("timestamp"))
-                            if cand_ts_ms is not None:
-                                fill_ts = cand_ts_ms / 1000.0 if cand_ts_ms > 1e11 else cand_ts_ms
-                except Exception:
-                    pass
-                added_cost = (ledger_qty - held) * fill_px
-                self.s["qty"] = ledger_qty
-                self.s["cost"] = float(self.s.get("cost", 0.0)) + added_cost
-                self.s["spent"] = float(self.s.get("spent", 0.0)) + added_cost
-                if held <= tolerance or self.s.get("entry_price") is None:
-                    self.s["entry_price"] = fill_px
-                    self.s["entry_ts"] = fill_ts
-                else:
-                    self.s["dca_buys"] = int(self.s.get("dca_buys") or 0) + 1
-                self.s["last_buy_price"] = fill_px
-                self.s["ledger_reconcile_required"] = False
-                self._save()
-                return
-            self.s["ledger_reconcile_required"] = False
-            if had_persisted_reconcile:
-                self._save()
+            if self._reconcile_venue_ledger(price, clean_ts, had_persisted_reconcile):
+                return None
         if self.observe_only:
-            return
+            return None
         entry_px = sr.entry_price(price, self.p.entry_discount_pct)   # = price*(1 - disc%)
         # Live uses wall time while replay injects bar time. Without this distinction, a
         # backtest processing hundreds of bars per second produces meaningless hourly
@@ -2467,20 +1938,25 @@ class Strategy:
         if self.p.adopt_cost > 0 and not self.s.get("adopted") and held <= 1e-12:
             self._maybe_adopt()
             if not self.s.get("adopted"):
-                return
+                return None
             held = self.s["qty"]
+        return price, entry_px, held, tick_time, high
 
+    def _step_evaluate_exits(
+        self, price: float, held: float, *, tick_time: float
+    ) -> tuple[bool, MarketRegimeDecision | None, list]:
+        """Stage 2: Evaluate hard stop-loss, pending market exits, regime context, and trend overlay."""
         # STOP-LOSS is a safety invariant and takes priority over all regime logic,
         # including overlay hold and trailing behavior.
         if held > 1e-12 and self._check_stop_loss(price):
-            return
+            return True, None, []
         # Reconcile a MARKET exit from an earlier tick before any new TP/DCA decision,
         # even if price has recovered meanwhile.
         if self._has_pending_market_exit():
-            return
+            return True, None, []
         if self.s.get("pending_exit"):
             self._continue_market_exit(price)
-            return
+            return True, None, []
 
         regime = None
         regime_closes = []
@@ -2518,33 +1994,36 @@ class Strategy:
         self._reentry_blocked_tick = None
         if (self.p.trend_overlay
                 and self._overlay_step(price, regime, regime_closes, tick_time=tick_time)):
-            return
+            return True, regime, regime_closes
+        return False, regime, regime_closes
 
-        if held <= 1e-12:
-            if self._has_open("buy"):
-                return
-            blocked_tick = getattr(self, "_reentry_blocked_tick", None)
-            if blocked_tick is not None and blocked_tick[:2] == (tick_time, price):
-                allowed, reason = False, blocked_tick[2]
-            else:
-                allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
-            if not allowed:
-                log(f"  [STRAT] re-entry blocked: {reason}")
-                return
-            lsp = self.s.get("last_sell_price") or self.s.get("last_sell")
-            if lsp:
-                log(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
-            entry_amt = self._effective_entry_amount()
-            budget = self._effective_max_budget()
-            if self.s["spent"] + entry_amt > budget:
-                self._restore_reentry_state()
-                log(f"  [STRAT] cap {budget:.0f} {self.ccy} reached — not entering")
-                return
-            if not self._place("buy", self._qty_for(entry_amt, entry_px),
-                               entry_px, kind="ENTRY", amount=entry_amt):
-                self._restore_reentry_state()
-            return
+    def _step_evaluate_reentry(
+        self, price: float, entry_px: float, regime: MarketRegimeDecision | None, tick_time: float
+    ) -> bool:
+        """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
+        if self._has_open("buy"):
+            return False
+        return self._execute_flat_reentry(
+            price,
+            entry_px,
+            self._effective_entry_amount(),
+            self._effective_max_budget(),
+            regime=regime,
+            tick_time=tick_time,
+        )
 
+    def _step_dispatch_orders(
+        self,
+        price: float,
+        entry_px: float,
+        held: float,
+        *,
+        high: float | None = None,
+        regime: MarketRegimeDecision | None = None,
+        regime_closes: list | None = None,
+        tick_time: float | None = None,
+    ) -> None:
+        """Stage 4: Evaluate take-profit (MDHTP, trailing, or classic/tranche) and DCA order dispatch."""
         avg = self._avg()
         if held > 1e-12 and self.s.get("entry_ts") is None:
             self.s["entry_ts"] = tick_time
@@ -2584,14 +2063,7 @@ class Strategy:
                     eff_trail = self._effective_trail_pct()
                 else:
                     eff_trail = self.p.tp_trail_pct
-                self.exit_manager.config.tp_pullback_pct = eff_trail / 100.0
-                self.exit_manager.config.tp_trend_ride_enabled = self.p.tp_trend_hold
-                self.exit_manager.config.tp_profit_floor_min_pct = (self.p.tp_trail_profit_floor_pct or 0.0) / 100.0
-                self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
-                self.exit_manager.config.fast_profit_guard_enabled = self.p.fast_profit_guard
-                self.exit_manager.config.fast_profit_mult = self.p.fast_profit_mult
-                self.exit_manager.config.fast_profit_window_sec = self.p.fast_profit_window_min * 60.0
-                self.exit_manager.config.fast_profit_drop_pct = self.p.fast_profit_drop_pct
+                self._sync_mdhtp_config(eff_trail)
 
                 inc_vol = not self.replay_mode
                 inc_shd = bool(self.p.fast_profit_guard) or not self.replay_mode
@@ -2787,6 +2259,38 @@ class Strategy:
                     f"DCA {spend:.0f}{partial}"
                 )
                 self._place("buy", qty, entry_px, kind="DCA", amount=spend)
+
+    def step(
+        self,
+        price: float,
+        timestamp: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+    ) -> None:
+        sync_ctx = self._step_sync_market(price, timestamp=timestamp, high=high)
+        if sync_ctx is None:
+            return
+        price, entry_px, held, tick_time, high = sync_ctx
+
+        exited, regime, regime_closes = self._step_evaluate_exits(
+            price, held, tick_time=tick_time
+        )
+        if exited:
+            return
+
+        if held <= 1e-12:
+            self._step_evaluate_reentry(price, entry_px, regime, tick_time)
+            return
+
+        self._step_dispatch_orders(
+            price,
+            entry_px,
+            held,
+            high=high,
+            regime=regime,
+            regime_closes=regime_closes,
+            tick_time=tick_time,
+        )
 
     # -- main loop -------------------------------------------------------------
     def run(self) -> None:

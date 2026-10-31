@@ -42,6 +42,11 @@ from providers.base import (
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
+from strategies.base_spot_mixin import (
+    BaseSpotMixin,
+    load_common_mhdpa_env,
+    sanitize_common_spot_state,
+)
 from strategies.state_store import (
     JsonStateStore,
     build_dataclass_from_dict,
@@ -325,23 +330,7 @@ class StratParams:
             dca_trend_gate_pct = required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
             trail_pct          = required_float_env("STRAT_TRAIL_PCT", e),
             trail_min_profit_pct = required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
-            reentry_hybrid_enabled = required_bool_env("STRAT_REENTRY_HYBRID_ENABLED", e),
-            reentry_peak_relative = required_bool_env("STRAT_REENTRY_PEAK_RELATIVE", e),
-            reentry_pullback_pct = required_float_env("STRAT_REENTRY_PULLBACK_PCT", e),
-            reentry_pullback_adaptive = required_bool_env("STRAT_REENTRY_PULLBACK_ADAPTIVE", e),
-            reentry_pullback_k = required_float_env("STRAT_REENTRY_PULLBACK_K", e),
-            reentry_pullback_min = required_float_env("STRAT_REENTRY_PULLBACK_MIN", e),
-            reentry_pullback_max = required_float_env("STRAT_REENTRY_PULLBACK_MAX", e),
-            reentry_ttl_hours = required_float_env("STRAT_REENTRY_TTL_HOURS", e),
-            sl_mhdsl_enabled = required_bool_env("STRAT_SL_MHDSL_ENABLED", e),
-            sl_disaster_buffer_ratio = required_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", e),
-            sl_disaster_buffer_max_pct = required_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", e),
-            sl_trend_defer_max_sec = required_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", e),
-            sl_bounce_min_recovery_pct = required_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", e),
-            sl_bounce_pullback_pct = required_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", e),
-            sl_structural_break_enabled = required_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", e),
-            tp_mdhtp_enabled = required_bool_env("STRAT_TP_MDHTP_ENABLED", e),
-            tp_stagnation_max_sec = required_float_env("STRAT_TP_STAGNATION_MAX_SEC", e),
+            **load_common_mhdpa_env(e, include_spot_sl=False),
         )
 
 
@@ -382,29 +371,27 @@ def _new_state() -> dict:
 
 def _sanitize_t212_state(st: dict) -> dict:
     """Ensure persisted or injected state has valid types for all structural and numeric fields in-place."""
-    defaults = _new_state()
     if not isinstance(st, dict):
-        return defaults
-    for k, v in defaults.items():
-        st.setdefault(k, v)
-    for k in ("qty", "cost_usd", "spent_cash", "fees_usd", "pos_peak"):
-        st[k] = _clean_nonneg_float(st.get(k), 0.0)
-    for k in ("realized_pnl_usd", "realized_net_usd"):
-        st[k] = safe_float(st.get(k), 0.0)
-    for k, min_i in (("cycle", 1), ("dca_buys", 0), ("loss_band", 0)):
-        if_val = safe_float(st.get(k), None)
-        st[k] = max(min_i, int(if_val)) if if_val is not None else min_i
-    for k in ("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"):
-        if k in st or k in defaults:
-            st[k] = _parse_bool_flag(st.get(k), False)
-    for k in ("entry_price", "last_buy_price", "last_sell_price", "last_sell_ts", "post_sell_peak", "post_sell_trough"):
-        st[k] = _clean_pos_float(st.get(k))
-    for k in ("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"):
-        if not isinstance(st.get(k), dict):
-            st[k] = {}
-    for k in ("pending_submit", "tp_pending_exit", "sl_pending_exit"):
-        if not isinstance(st.get(k), dict):
-            st[k] = None
+        return _new_state()
+    st = sanitize_common_spot_state(
+        st,
+        _new_state,
+        nonneg_float_keys=("qty", "cost_usd", "spent_cash", "fees_usd", "pos_peak"),
+        signed_float_keys=("realized_pnl_usd", "realized_net_usd"),
+        nonneg_int_keys=("dca_buys", "loss_band"),
+        pos_float_keys=(
+            "entry_price",
+            "last_buy_price",
+            "last_sell_price",
+            "last_sell_ts",
+            "post_sell_peak",
+            "post_sell_trough",
+        ),
+        bool_keys=("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"),
+        dict_keys=("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"),
+        nullable_dict_keys=("pending_submit", "tp_pending_exit", "sl_pending_exit"),
+        sanitize_orders=False,
+    )
     if isinstance(st.get("pending_submit"), dict):
         ps = st["pending_submit"]
         ps_side = str(ps.get("side") or "").strip().upper()
@@ -504,7 +491,14 @@ def _sell_pnl(avg: float, price: float, qty: float, fee_pct: float = FX_FEE_PCT)
     return gross, fee, gross - fee
 
 
-class Strategy:
+class Strategy(BaseSpotMixin):
+    _exit_manager_mode = "t212"
+    _cost_state_key = "cost_usd"
+    _spent_state_key = "spent_cash"
+    _qty_eps = 1e-9
+    _vol_default_source = "none"
+    _sanitize_state_dict = staticmethod(_sanitize_t212_state)
+
     def __init__(self, client: T212Client, ticker: str, params: StratParams,
                  dry_run: bool = True, desktop: bool = False,
                  initial_state: dict | None = None,
@@ -548,22 +542,6 @@ class Strategy:
         )
         self._paper_seq = 0
 
-    def _init_exit_manager(self) -> PositionExitManager:
-        return build_strategy_exit_manager(
-            self.p,
-            self.s,
-            self._resolve_volatility_tuple,
-            allow_external_cache=not self.replay_mode,
-            mode="t212",
-        )
-
-    def _resolve_volatility_tuple(self, symbol: str) -> tuple[float, str]:
-        """Callable adapter for PositionExitManager vol_resolver."""
-        return self._vol_1h_ratio()
-
-    def _now(self) -> float:
-        return float(self._clock())
-
     # -- valuta ----------------------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:
         """How many USD in one unit of the given currency — generic for any Yahoo currency."""
@@ -582,29 +560,7 @@ class Strategy:
             f"Check STRAT_CURRENCY!")
         return 1.0
 
-    # -- persistenta -----------------------------------------------------------
-    def _store(self) -> JsonStateStore:
-        return JsonStateStore(
-            self.state_file, _new_state, label="T212",
-            logger=log, fail_closed=not self.dry_run,
-        )
-
-    def _load(self) -> dict:
-        return _sanitize_t212_state(self._store().load())
-
-    def _save(self) -> None:
-        self._state_write_failed = True
-        if self._store().save(self.s):
-            self._state_write_failed = False
-
     # -- helperi ---------------------------------------------------------------
-    def _avg_cost(self) -> float | None:
-        qty = _clean_pos_float(self.s.get("qty"))
-        cost = _clean_pos_float(self.s.get("cost_usd"))
-        if qty is None or qty <= 1e-9 or cost is None:
-            return None
-        return safe_pos_float(cost / qty, default=None)
-
     def _qty_for_amount(self, amount: float, price: float) -> float:
         amt_f = _clean_pos_float(amount)
         px_f = _clean_pos_float(price)
@@ -613,22 +569,6 @@ class Strategy:
             return 0.0
         usd = safe_pos_float(amt_f * fx_f, default=None)
         return round(usd / px_f, 2) if usd is not None else 0.0
-
-    def _has_open(self, side: str) -> bool:
-        if isinstance(side, bool):
-            return False
-        side_u = str(side or "").strip().upper()
-        if not side_u:
-            return False
-        raw_pending = self.s.get("pending_submit")
-        pending = raw_pending if isinstance(raw_pending, dict) else {}
-        return (
-            str(pending.get("side") or "").strip().upper() == side_u
-            or self._find_open(side_u) is not None
-        )
-
-    def _find_open(self, side: str) -> dict | None:
-        return find_open_order(self.s, side)
 
     @staticmethod
     def _definitive_submit_rejection(exc: Exception) -> bool:
@@ -842,14 +782,9 @@ class Strategy:
         self.s["realized_net_usd"] = net_tot
         self.s["fees_usd"] = fees
         self.s["cycle"] = nxt
-        self.s["last_sell_price"] = exit_price   # Reentry rule: do not buy back higher.
-        self.s["post_sell_peak"] = exit_price
-        self.s["post_sell_trough"] = exit_price
-        self.s["last_exit_kind"] = "STOP" if was_sl else "TP"
-        self.s["last_sell_ts"] = self._now()
-        if self.exit_manager is not None:
-            self.exit_manager.clear_state(self.ticker)
-            self.exit_manager.bind_state(self.s)
+        self._seed_post_exit_anchors(
+            exit_price, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
+        )
         if was_sl and self.p.sl_rebuy_enabled:
             self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
             log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
@@ -1004,12 +939,6 @@ class Strategy:
         order_type = "MARKET" if market else f"@ {limit:.2f}"
         log(f"  [STRAT] SELL {kind}{tag} placed id={outcome.order_id} {qty:.2f} {order_type}")
         return True
-
-    def _cancel_open(self, side: str) -> bool:
-        o = self._find_open(side)
-        if not o:
-            return True
-        return self._cancel_specific(o)
 
     def _cancel_specific(self, o: dict) -> bool:
         if self.dry_run or str(o["id"]).startswith("PAPER"):
@@ -1185,10 +1114,6 @@ class Strategy:
         return fresh_limit > order_lim * 1.003
 
     # -- Reconciliation --------------------------------------------------------
-    def _remove_order(self, o: dict) -> None:
-        if o in self.s["orders"]:
-            self.s["orders"].remove(o)
-
     def reconcile(self, price: float) -> bool:
         px = _clean_pos_float(price)
         if px is None:
@@ -1569,61 +1494,6 @@ class Strategy:
                        source="T212", price=price, desktop=self.desktop)
         return True
 
-    def _resolve_shadow_vol_1h_pct(self) -> float | None:
-        if hasattr(self, "_shadow_vol_1h"):
-            try:
-                return safe_pos_float(self._shadow_vol_1h(), default=None)
-            except Exception:
-                return None
-        return None
-
-    def _vol_1h_ratio(self) -> tuple[float, str]:
-        """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
-        vol = self._resolve_shadow_vol_1h_pct()
-        if vol is not None:
-            return vol_pct_to_ratio(vol), "shadow"
-        if not self.replay_mode:
-            cached = resolve_cached_volatility_1h(self.ticker)
-            if cached is not None:
-                return cached, "cache"
-        return 0.0, "none"
-
-    def _create_position_snapshot(
-        self,
-        price: float,
-        avg: float,
-        held: float,
-        include_vol: bool = True,
-        include_trend: bool = True,
-    ) -> PositionSnapshot:
-        """Create a standardized PositionSnapshot using T212 state and time source."""
-        trend_up = False
-        if include_trend and self._trend_slope_provider:
-            try:
-                slope = safe_nonneg_float(self._trend_slope_provider(self.yahoo_sym), default=None)
-                if slope is not None:
-                    trend_up = True
-            except Exception:
-                pass
-
-        if include_vol:
-            vol_1h, vol_source = self._vol_1h_ratio()
-        else:
-            vol_1h, vol_source = 0.0, "default"
-        sell_qty = self._sellable_qty(held, price)
-        return PositionSnapshot(
-            symbol=self.ticker,
-            current_price=price,
-            avg_buy_price=avg,
-            net_qty=held,
-            sellable_qty=sell_qty,
-            current_time_s=self._now(),
-            trend_up=trend_up,
-            vol_1h=vol_1h,
-            vol_source=vol_source,
-            provider="t212",
-        )
-
     def _check_stop_loss(self, price: float) -> bool:
         """Close the entire position when unrealized loss exceeds the threshold."""
         if self.p.stop_loss_pct <= 0:
@@ -1637,16 +1507,7 @@ class Strategy:
 
         # Multi-Horizon Dynamic Stop Loss (MHDSL) via centralized PositionExitManager
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
-            in_sl = loss_pct > 0.0 and (
-                loss_pct >= self.p.stop_loss_pct
-                or are_close(loss_pct, self.p.stop_loss_pct, self.p.reentry_tolerance_pct)
-            )
-            in_bounce_watch = bool(self.ticker in self.exit_manager.sl_bounce_state)
-            if not in_sl:
-                self.s["sl_pending_exit"] = None
-            if not in_sl and not in_bounce_watch:
-                if self.exit_manager.sl_episode_state:
-                    self.exit_manager.reset_sl_episode(self.ticker)  # Leaving SL territory ends the episode floor lock
+            if not self._in_mhdsl_territory(loss_pct):
                 self.s["sl_alerted"] = False
                 self.s["sl_pending"] = False
                 self.s.pop("sl_fail_until", None)
@@ -1656,7 +1517,7 @@ class Strategy:
             snapshot = self._create_position_snapshot(price, avg, held)
             sell_qty = snapshot.sellable_qty
 
-            raw_pending_sl = self.s.get("sl_pending_exit") if in_sl else None
+            raw_pending_sl = self.s.get("sl_pending_exit")
             pending_sl = raw_pending_sl if isinstance(raw_pending_sl, dict) else None
             if pending_sl:
                 should_exit_sl = True
@@ -1686,10 +1547,7 @@ class Strategy:
                     self.s["sl_pending_exit"] = None
                 return True
             elif decision is not None and decision.action == ExitAction.HOLD:
-                if decision.metadata.get("priority") in (1, 2) or (
-                    self.exit_manager and self.ticker in self.exit_manager.sl_bounce_state
-                ):
-                    log(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
+                self._handle_mhdsl_hold_decision(decision)
                 return False
             return False
 
@@ -1763,96 +1621,11 @@ class Strategy:
                      f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
                source="T212", price=price, desktop=self.desktop)
 
-    def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
-        """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
-        if not self.p.reentry_pullback_adaptive:
-            return self.p.reentry_pullback_pct, "fixed"
-        vol = self._resolve_shadow_vol_1h_pct()
-        if vol is None and not self.replay_mode:
-            vol = resolve_cached_volatility_1h_pct(self.ticker)
-        return compute_adaptive_reentry_pullback_pct(
-            self.p, vol, fallback_reason="fixed (fallback)", vol_label="vol",
-        )
-
-    def _evaluate_reentry_gate(self, price: float) -> tuple[bool, str]:
-        """Evaluate re-entry gate conditions symmetrically with PositionExitManager or legacy fallback."""
-        lsp = update_post_sell_anchors(self.s, price, include_last_sell_alias=False)
-        if not lsp:
-            return True, "no_last_sell"
-
-        last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
-        if self.p.reentry_ttl_hours > 0 and last_sell_ts:
-            if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
-                self.s.pop("sl_rebuy", None)
-
-        # Rebuy on a bounce after a catastrophic stop loss, as on Binance/Kraken.
-        # While armed, it takes priority over reentry below the previous sale.
-        if self.s.get("sl_rebuy"):
-            self._handle_sl_rebuy(price)
-            return False, "handling_sl_rebuy"
-
-        if self.exit_manager is None:
-            self.exit_manager = self._init_exit_manager()
-
-        mgr = self.exit_manager
-        mgr.config.reentry_drop_pct = vol_pct_to_ratio(self.p.reentry_drop_pct)
-        mgr.config.reentry_sl_bounce_pct = (
-            vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
-            if self.p.sl_rebuy_enabled
-            else (0.015 if self.p.sl_mhdsl_enabled else 0.0)
-        )
-        mgr.config.reentry_ttl_hours = self.p.reentry_ttl_hours
-        mgr.config.reentry_tolerance_pct = self.p.reentry_tolerance_pct
-        mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
-        mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
-        mgr.config.reentry_bear_gate_enabled = False
-        mgr.config.reentry_bear_bounce_pct = 0.0
-
-        trend_up = bool(self.p.reentry_peak_relative)
-        trend_down = False
-        if not trend_up and self._trend_slope_provider:
-            try:
-                slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
-                if slope_f is not None:
-                    if slope_f >= 0.0:
-                        trend_up = True
-                    elif slope_f < (-self.p.dca_trend_gate_pct if self.p.dca_trend_gate_pct > 0 else -0.1):
-                        trend_down = True
-            except Exception:
-                pass
-
-        last_exit_kind = "STOP" if self.s.get("last_exit_kind") == "STOP" else "TP"
-        if (last_exit_kind != "STOP" and self.p.reentry_hybrid_enabled and (trend_up or self.p.reentry_peak_relative)) or not self.replay_mode:
-            pullback_pct, pb_src = self._effective_reentry_pullback_pct()
-        else:
-            pullback_pct = self.p.reentry_pullback_pct
-        mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
-        if self.replay_mode:
-            vol_1h, vol_source = 0.0, "default"
-        else:
-            vol_1h, vol_source = self._vol_1h_ratio()
-
-        reentry_snap = ReentrySnapshot(
-            symbol=self.ticker,
-            current_price=price,
-            last_sell_price=lsp,
-            last_exit_kind=last_exit_kind,
-            post_sell_peak=self.s.get("post_sell_peak"),
-            post_sell_trough=self.s.get("post_sell_trough"),
-            current_time_s=self._now(),
-            last_sell_time_s=self.s.get("last_sell_ts"),
-            trend_up=trend_up,
-            trend_down=trend_down,
-            vol_1h=vol_1h,
-            vol_source=vol_source,
-        )
-        reentry_dec = mgr.evaluate_reentry(reentry_snap)
-        return reentry_dec.should_enter, reentry_dec.reason
-
-    def step(self, price: float) -> None:
+    def _step_sync_market(self, price: float) -> tuple[float, float, float, bool] | None:
+        """Stage 1: Validate market price, normalize held quantity, check loss alerts, and observe_only."""
         px = _clean_pos_float(price)
         if px is None:
-            return
+            return None
         price = px
         held = _clean_nonneg_float(self.s.get("qty"), 0.0)
         self.s["qty"] = held
@@ -1860,45 +1633,40 @@ class Strategy:
         if self.observe_only:
             if not self.dry_run and self.s.get("orders"):
                 self._cancel_all_orders()
-            return
+            return None
         disc = 1 - self.p.entry_discount_pct / 100
-
         in_backoff = self._now() < _clean_nonneg_float(self.s.get("buy_backoff_until"), 0.0)
+        return price, held, disc, in_backoff
 
-        is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
-        if is_flat:
-            self.s["tp_pending_exit"] = None
-            self.s["sl_pending_exit"] = None
-            if in_backoff:   # After insufficient funds, avoid buys while the account is empty.
-                return
-            if self._has_open("BUY"):
-                return
-            # Kraken-style reentry rule: do not buy back above the previous sale price.
-            allowed, reason = self._evaluate_reentry_gate(price)
-            if not allowed:
-                log(f"  [STRAT] re-entry blocked: {reason}")
-                return
-            lsp = self.s.get("last_sell_price")
-            if lsp:
-                log(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
-            if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
-                if self.exit_manager is not None:
-                    self.exit_manager.restore_reentry_state(self.ticker)
-                log(f"  [STRAT] budget cap {self.p.max_budget:.0f} {self.ccy} reached — not entering")
-                return
-            if not self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY"):
-                if self.exit_manager is not None:
-                    self.exit_manager.restore_reentry_state(self.ticker)
-            return
-
+    def _step_evaluate_exits(self, price: float) -> bool:
+        """Stage 2: Evaluate trailing crash breaker and stop-loss exits."""
         # Check the tighter trailing crash breaker before the catastrophic stop loss.
         if self._check_trailing(price):
-            return
-
+            return True
         # Stop loss cuts the loss before DCA or take-profit handling.
         if self._check_stop_loss(price):
-            return
+            return True
+        return False
 
+    def _step_evaluate_reentry(self, price: float, disc: float, *, in_backoff: bool) -> bool:
+        """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
+        self.s["tp_pending_exit"] = None
+        self.s["sl_pending_exit"] = None
+        if in_backoff or self._has_open("BUY"):   # After insufficient funds, avoid buys while the account is empty.
+            return False
+        # Kraken-style reentry rule: do not buy back above the previous sale price.
+        return self._execute_flat_reentry(
+            price,
+            price * disc,
+            self.p.entry_amount,
+            self.p.max_budget,
+            cap_label="budget cap",
+        )
+
+    def _step_dispatch_orders(
+        self, price: float, held: float, disc: float, *, in_backoff: bool
+    ) -> None:
+        """Stage 4: Evaluate take-profit (MDHTP, ladder, or single TP) and DCA order dispatch."""
         avg = self._avg_cost()
 
         if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
@@ -1921,14 +1689,10 @@ class Strategy:
                         if self.s["orders"]:
                             self._cancel_open("SELL")
                     else:
-                        self.exit_manager.config.tp_trend_ride_enabled = True
-                        self.exit_manager.config.tp_profit_floor_min_pct = (
-                            (self.p.trail_min_profit_pct or 0.0) / 100.0
+                        self._sync_mdhtp_config(
+                            self.p.trail_pct if self.p.trail_pct > 0 else 1.5,
+                            trend_ride_enabled=True,
                         )
-                        self.exit_manager.config.tp_pullback_pct = (
-                            (self.p.trail_pct / 100.0) if self.p.trail_pct > 0 else 0.015
-                        )
-                        self.exit_manager.config.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
 
                         snapshot = self._create_position_snapshot(
                             price, avg, held,
@@ -2067,6 +1831,22 @@ class Strategy:
             log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}"
                 f"×(1-{self.p.dca_drop_pct}%) — DCA")
             self._place_buy(self.p.dca_amount, price * disc, kind="DCA")
+
+    def step(self, price: float) -> None:
+        sync_ctx = self._step_sync_market(price)
+        if sync_ctx is None:
+            return
+        price, held, disc, in_backoff = sync_ctx
+
+        is_flat = held <= 1e-9 or (self._is_dust(held, price) and not self._has_open("SELL"))
+        if is_flat:
+            self._step_evaluate_reentry(price, disc, in_backoff=in_backoff)
+            return
+
+        if self._step_evaluate_exits(price):
+            return
+
+        self._step_dispatch_orders(price, held, disc, in_backoff=in_backoff)
 
     # -- main loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
