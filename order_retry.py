@@ -1,44 +1,25 @@
 # order_retry.py
 """Provider-agnostic order lifecycle and persistent submission outbox.
 
-This is the canonical home of reusable ``OrderLifecycle`` mechanics. Stateful
-strategies may keep their financial campaign state, but use
-``TrackedOrderLifecycle`` here for persist-before-submit, response-loss recovery,
-status reconciliation, partial/terminal observation, and bounded cancellation.
-
 ``Instrument.place`` persists a valid intent before its provider submit and also
-enqueues attempts rejected by an earlier guard;
-``order_retry_worker.py`` is intended to be the single consumer. Records are stored
-as JSONL under ``cachedb`` and queue mutations are serialized with a cross-process
-file lock.
+enqueues attempts rejected by an earlier guard; ``order_retry_worker.py`` is the
+single consumer. Records are stored as JSONL under ``cachedb`` and queue mutations
+are serialized with a cross-process file lock.
 
-Each record preserves the symbol, side, quantity, placement options, requested and
-reference prices, timestamps, and attempt count. A retry recalculates its placement
-from the current market price and proceeds only when ``price_gate_ok`` accepts that
-price. Optional legacy deduplication can retain one pending record per symbol and
-side, but it is disabled operationally so independent strategy intents are preserved.
-
-Claims are durable leases: a worker crash leaves the record unavailable only until the
-lease expires. A trend deferral consumes neither attempt count nor TTL. The outbox owns
-delivery through terminal venue truth: acceptance is persisted and monitored, never
-called a fill. Rejected/expired orders can retry only their unfilled remainder, while
-an intentional/ambiguous cancellation is never blindly resubmitted. Queue retry still
-cannot reconstruct every originating strategy signal, so it relies on placement guards
-and the stored price constraint. Configuration lives in ``config.env``.
+Strategy-owned lifecycle state machine (``TrackedOrderLifecycle``) is implemented in
+``order_lifecycle.py`` and re-exported here for backward compatibility.
 """
 import hashlib
-import os
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Optional
 
 from botcore import (
-    _parse_bool_flag,
     exact_int,
     exact_nonneg_int,
-    exact_pos_int,
     load_dotenv as _load_dotenv,
     required_bool_env,
     required_float_env,
@@ -51,17 +32,26 @@ from botcore import (
 )
 from cachepaths import canonical_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from lock import FileLock
+from order_lifecycle import (
+    OrderSubmissionRefused,
+    PersistPending,
+    StrategyExecutorLifecycleApi,
+    SubmitIntent,
+    TrackedOrderLifecycle,
+    TrackedOrderResult,
+    _clean_retry_order_id,
+    _is_definitive_submit_refusal,
+    _lifecycle_finite,
+    _status_from_terminal_payload,
+    _terminal_payload,
+    propagate_submission_refusal,
+)
 from providers.base import (
     extract_order_id,
-    extract_order_price,
-    extract_order_qty,
     extract_orig_qty,
     normalize_side,
 )
-from providers.strategy_executor import (
-    OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
-    capture_submission, reconciliation_capabilities_of,
-)
+from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -71,12 +61,8 @@ RETRY_ENABLED = required_bool_env("RETRY_ENABLED")
 RETRY_INTERVAL_SEC = required_float_env("RETRY_INTERVAL_SEC")
 RETRY_TTL_SEC = required_float_env("RETRY_TTL_SEC")
 RETRY_MAX_ATTEMPTS = required_int_env("RETRY_MAX_ATTEMPTS")
-# Retry only at an equal or more favorable current price than the original request.
 RETRY_PRICE_TOL = required_float_env("RETRY_PRICE_TOL")
-# Optional legacy compaction. Disabled operationally so independent strategies or
-# distinct same-side intents cannot overwrite each other in the shared outbox.
 RETRY_DEDUP = required_bool_env("RETRY_DEDUP")
-# Hard queue-size bound; zero disables the bound.
 RETRY_MAX_QUEUE = required_int_env("RETRY_MAX_QUEUE")
 RETRY_CLAIM_LEASE_SEC = required_float_env("RETRY_CLAIM_LEASE_SEC")
 RETRY_NOT_FOUND_MAX_AGE_SEC = required_float_env("RETRY_NOT_FOUND_MAX_AGE_SEC")
@@ -85,23 +71,16 @@ MAX_GLOBAL_ORDER_TTL_SEC = required_float_env("MAX_GLOBAL_ORDER_TTL_SEC")
 
 def _validate_retry_config():
     """Reject unsafe retry policy before queue processing can start."""
-    invalid = []
-    if RETRY_INTERVAL_SEC <= 0:
-        invalid.append("RETRY_INTERVAL_SEC must be finite and > 0")
-    if RETRY_TTL_SEC <= 0:
-        invalid.append("RETRY_TTL_SEC must be finite and > 0")
-    if RETRY_CLAIM_LEASE_SEC <= 0:
-        invalid.append("RETRY_CLAIM_LEASE_SEC must be finite and > 0")
-    if RETRY_NOT_FOUND_MAX_AGE_SEC <= 0:
-        invalid.append(
-            "RETRY_NOT_FOUND_MAX_AGE_SEC must be finite and > 0")
-    if not 0 <= RETRY_PRICE_TOL < 1:
-        invalid.append(
-            "RETRY_PRICE_TOL must be finite, >= 0, and < 1")
-    if RETRY_MAX_ATTEMPTS < 0:
-        invalid.append("RETRY_MAX_ATTEMPTS must be >= 0")
-    if RETRY_MAX_QUEUE < 0:
-        invalid.append("RETRY_MAX_QUEUE must be >= 0")
+    checks = (
+        (RETRY_INTERVAL_SEC <= 0, "RETRY_INTERVAL_SEC must be finite and > 0"),
+        (RETRY_TTL_SEC <= 0, "RETRY_TTL_SEC must be finite and > 0"),
+        (RETRY_CLAIM_LEASE_SEC <= 0, "RETRY_CLAIM_LEASE_SEC must be finite and > 0"),
+        (RETRY_NOT_FOUND_MAX_AGE_SEC <= 0, "RETRY_NOT_FOUND_MAX_AGE_SEC must be finite and > 0"),
+        (not 0 <= RETRY_PRICE_TOL < 1, "RETRY_PRICE_TOL must be finite, >= 0, and < 1"),
+        (RETRY_MAX_ATTEMPTS < 0, "RETRY_MAX_ATTEMPTS must be >= 0"),
+        (RETRY_MAX_QUEUE < 0, "RETRY_MAX_QUEUE must be >= 0"),
+    )
+    invalid = [msg for cond, msg in checks if cond]
     if invalid:
         raise ValueError("Invalid order-retry configuration: " + "; ".join(invalid))
 
@@ -130,10 +109,7 @@ TERMINAL_FILTER_REFUSAL_PREFIXES = (
 def is_terminal_filter_refusal(reason) -> bool:
     """Return whether unchanged order data can never pass its venue filters."""
     value = str(reason or "")
-    return (
-        value in TERMINAL_FILTER_REFUSAL_REASONS
-        or value.startswith(TERMINAL_FILTER_REFUSAL_PREFIXES)
-    )
+    return value in TERMINAL_FILTER_REFUSAL_REASONS or value.startswith(TERMINAL_FILTER_REFUSAL_PREFIXES)
 
 
 POSSIBLY_SUBMITTED_REASONS = frozenset({
@@ -146,14 +122,12 @@ POSSIBLY_SUBMITTED_REASONS = frozenset({
 
 def submission_requires_reconciliation(rec) -> bool:
     """Return whether a persisted intent might already have reached its venue."""
-    submission_state = str(
-        rec.get("submission_state") or "").strip().lower()
+    submission_state = str(rec.get("submission_state") or "").strip().lower()
     if submission_state == "refused":
         return False
     if submission_state in {"producer_claimed", "unknown"}:
         return True
-    reason = str(rec.get("last_failure_reason") or "").strip().lower()
-    return reason in POSSIBLY_SUBMITTED_REASONS
+    return str(rec.get("last_failure_reason") or "").strip().lower() in POSSIBLY_SUBMITTED_REASONS
 
 
 def is_possibly_submitted(rec):
@@ -173,18 +147,10 @@ LOCK_FILE = os.path.join(_ROOT, "cachedb", "order_retry_queue.lock")
 
 
 def _process_start_identity(pid):
-    """Return a Linux boot/process-start identity that survives PID reuse.
-
-    Field 22 in /proc/<pid>/stat is the process start time in clock ticks.
-    Pairing it with the kernel boot ID makes the value unique across both PID
-    reuse and host restarts. A zombie cannot complete a producer claim and is
-    therefore treated as dead.
-    """
-    if isinstance(pid, bool):
+    """Return a Linux boot/process-start identity that survives PID reuse."""
+    if isinstance(pid, bool) or int(pid) <= 0:
         raise ValueError("process PID must be a positive integer")
     pid = int(pid)
-    if pid <= 0:
-        raise ValueError("process PID must be a positive integer")
     with open(f"/proc/{pid}/stat", "r", encoding="ascii") as stat_file:
         raw_stat = stat_file.read().strip()
     closing_paren = raw_stat.rfind(")")
@@ -198,9 +164,7 @@ def _process_start_identity(pid):
     start_ticks = int(fields[19])
     if start_ticks <= 0:
         raise ValueError("process start time must be positive")
-    with open(
-            "/proc/sys/kernel/random/boot_id", "r",
-            encoding="ascii") as boot_file:
+    with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as boot_file:
         boot_id = boot_file.read().strip()
     if not boot_id:
         raise ValueError("kernel boot ID is unavailable")
@@ -208,15 +172,9 @@ def _process_start_identity(pid):
 
 
 def producer_claim_owner_state(record):
-    """Return alive, dead, mismatched, or unknown for a producer claim.
-
-    Only dead and mismatched authorize worker recovery. Unknown is deliberately
-    distinct from dead so missing legacy metadata, permissions, or an unreadable
-    process table cannot turn uncertainty into a duplicate submit.
-    """
+    """Return alive, dead, mismatched, or unknown for a producer claim."""
     pid_i = safe_pos_int(record.get("producer_pid"), default=None)
-    start_identity = str(
-        record.get("producer_process_start_id") or "").strip()
+    start_identity = str(record.get("producer_process_start_id") or "").strip()
     if pid_i is None or not start_identity:
         return "unknown"
     try:
@@ -232,15 +190,12 @@ class RetryQueueCorruptionError(RuntimeError):
     """Raised when the durable retry queue cannot be parsed completely."""
 
     def __init__(self, path, line_number, raw_line, detail):
-        digest = hashlib.sha256(
-            raw_line.encode("utf-8", errors="replace")
-        ).hexdigest()[:20]
+        digest = hashlib.sha256(raw_line.encode("utf-8", errors="replace")).hexdigest()[:20]
         self.path = os.path.abspath(path)
         self.line_number = int(line_number)
         self.fingerprint = f"{self.path}:{self.line_number}:{digest}"
         super().__init__(
-            "Malformed order-retry queue JSONL at "
-            f"{self.path}:{self.line_number}: {detail}. "
+            f"Malformed order-retry queue JSONL at {self.path}:{self.line_number}: {detail}. "
             "The queue was left untouched."
         )
 
@@ -263,22 +218,14 @@ def _read_nolock(*, validate=False):
             try:
                 item = json.loads(line)
             except (TypeError, ValueError) as exc:
-                raise RetryQueueCorruptionError(
-                    QUEUE_FILE, line_number, raw_line, str(exc)
-                ) from exc
+                raise RetryQueueCorruptionError(QUEUE_FILE, line_number, raw_line, str(exc)) from exc
             if not isinstance(item, dict):
                 raise RetryQueueCorruptionError(
-                    QUEUE_FILE,
-                    line_number,
-                    raw_line,
-                    f"expected a JSON object, got {type(item).__name__}",
+                    QUEUE_FILE, line_number, raw_line, f"expected a JSON object, got {type(item).__name__}"
                 )
             if validate and not valid_record(item):
                 raise RetryQueueCorruptionError(
-                    QUEUE_FILE,
-                    line_number,
-                    raw_line,
-                    "record failed semantic validation",
+                    QUEUE_FILE, line_number, raw_line, "record failed semantic validation"
                 )
             items.append(item)
     return items
@@ -289,8 +236,7 @@ def _client_order_id(record_id, revision, prefix="OR"):
     rev_str = str(max(0, int(revision)))
     max_pfx_len = max(1, 36 - 1 - 8 - 1 - len(rev_str))
     pfx = str(prefix or "OR").strip().rstrip("_")[:max_pfx_len].rstrip("_") or "OR"
-    # Max allowed Binance clientOrderId length is 36.
-    overhead = len(pfx) + 1 + len(rev_str) + 1  # pfx + "_" + rev_str + "_"
+    overhead = len(pfx) + 1 + len(rev_str) + 1
     hash_len = max(8, min(24, 36 - overhead))
     return f"{pfx}_{record_id[:hash_len]}_{rev_str}"[:36]
 
@@ -298,10 +244,6 @@ def _client_order_id(record_id, revision, prefix="OR"):
 # Standardized canonical aliases in providers.base: extract_order_id and extract_orig_qty.
 order_id_from_response = extract_order_id
 order_qty_from_response = extract_orig_qty
-
-
-def _clean_retry_order_id(val) -> Optional[str]:
-    return extract_order_id(val, default=None)
 
 
 def _clean_now_sec(now=None) -> float:
@@ -323,14 +265,13 @@ def valid_record(rec):
         return False
     lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
     lifecycle_ok = lifecycle in {"awaiting_cancel", "submit_pending", "accepted"}
-    raw_oid = rec.get("order_id")
-    if lifecycle == "accepted" and _clean_retry_order_id(raw_oid) is None:
-        lifecycle_ok = False
-    raw_rep_oid = rec.get("replaces_order_id")
-    if lifecycle == "awaiting_cancel" and _clean_retry_order_id(raw_rep_oid) is None:
+    if lifecycle == "accepted" and _clean_retry_order_id(rec.get("order_id")) is None:
         lifecycle_ok = False
     if lifecycle == "awaiting_cancel":
-        if safe_pos_float(rec.get("replaces_original_qty"), default=None) is None:
+        if (
+            _clean_retry_order_id(rec.get("replaces_order_id")) is None
+            or safe_pos_float(rec.get("replaces_original_qty"), default=None) is None
+        ):
             lifecycle_ok = False
     side_raw = rec.get("side")
     side_u = normalize_side(side_raw) if not isinstance(side_raw, bool) else ""
@@ -354,23 +295,16 @@ _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
 
 
 def _same_deferred_stream(left, right):
-    """Return whether two pending pre-submit deferrals represent one current intent.
-
-    Missing provider names in legacy records act as routed wildcards for the same
-    symbol. Signal kind remains part of the identity so independent strategies never
-    overwrite each other. Quantities are deliberately not summed: the latest strategy
-    decision replaces stale desired exposure instead of accumulating phantom orders.
-    """
+    """Return whether two pending pre-submit deferrals represent one current intent."""
     if any(
-            str(item.get("lifecycle") or "submit_pending").lower()
-            != "submit_pending"
-            or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
-            for item in (left, right)):
+        str(item.get("lifecycle") or "submit_pending").lower() != "submit_pending"
+        or item.get("last_failure_reason") not in _CONSOLIDATED_DEFERRAL_REASONS
+        for item in (left, right)
+    ):
         return False
     left_provider = normalize_venue_name(left.get("provider_name"))
     right_provider = normalize_venue_name(right.get("provider_name"))
-    provider_matches = (
-        not left_provider or not right_provider or left_provider == right_provider)
+    provider_matches = not left_provider or not right_provider or left_provider == right_provider
     left_sym = canonical_symbol_key(left.get("symbol")) or str(left.get("symbol") or "").strip().upper()
     right_sym = canonical_symbol_key(right.get("symbol")) or str(right.get("symbol") or "").strip().upper()
     left_kind = str(left.get("kind") or "").strip() or None
@@ -379,47 +313,36 @@ def _same_deferred_stream(left, right):
         provider_matches
         and left_sym
         and left_sym == right_sym
-        and str(left.get("side") or "").strip().upper()
-        == str(right.get("side") or "").strip().upper()
+        and str(left.get("side") or "").strip().upper() == str(right.get("side") or "").strip().upper()
         and left_kind == right_kind
     )
 
 
 def _record_has_claim(rec):
     """Return whether a durable record contains any lease ownership state."""
-    return any(
-        key in rec for key in ("claim_token", "claim_revision", "claim_until")
-    )
+    return any(key in rec for key in ("claim_token", "claim_revision", "claim_until"))
+
+
+_PRIOR_VENUE_EVIDENCE_KEYS = (
+    "order_id", "accepted_ts", "submit_status", "venue_status",
+    "status_error", "order_history", "replaces_order_id", "replaces_original_qty",
+)
 
 
 def _has_prior_venue_evidence(rec):
     """Return whether a record may represent an order or terminal remainder."""
     if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending":
         return True
-    if any(
-        rec.get(key) not in (None, "", [], {})
-        for key in (
-            "order_id",
-            "accepted_ts",
-            "submit_status",
-            "venue_status",
-            "status_error",
-            "order_history",
-            "replaces_order_id",
-            "replaces_original_qty",
-        )
-    ):
+    if any(rec.get(key) not in (None, "", [], {}) for key in _PRIOR_VENUE_EVIDENCE_KEYS):
         return True
-    reason = str(rec.get("last_failure_reason") or "").strip().lower()
-    if reason.startswith("terminal_"):
+    if str(rec.get("last_failure_reason") or "").strip().lower().startswith("terminal_"):
         return True
     for key in ("delivered_qty", "filled_qty", "filled_cost", "filled_fee"):
         value = rec.get(key)
-        if value in (None, ""):
-            continue
-        num = safe_float(value, default=None)
-        if num is None or num != 0:
-            return True
+        if value not in (None, ""):
+            num = safe_float(value, default=None)
+            if num is None or num != 0:
+                return True
     requested = safe_float(rec.get("requested_qty_total"), default=None)
     remaining = safe_float(rec.get("qty"), default=None)
     if requested is None or remaining is None:
@@ -428,14 +351,8 @@ def _has_prior_venue_evidence(rec):
 
 
 _TRADEALL_KIND_PREFIXES = (
-    "kalman_primary_",
-    "small_window_",
-    "accel_surge_",
-    "accel_plunge_",
-    "trend_confirmed_",
-    "consistent_or_old_",
-    "slope<=",
-    "slope>=",
+    "kalman_primary_", "small_window_", "accel_surge_", "accel_plunge_",
+    "trend_confirmed_", "consistent_or_old_", "slope<=", "slope>=",
 )
 
 
@@ -459,27 +376,12 @@ def _set_safe_to_discard(rec, eligible):
 
 
 def _safe_to_evict_for_capacity(rec):
-    """Return whether capacity pressure may safely discard this record.
-
-    Eviction is deliberately allowlisted. Only known pre-submit deferrals, or a
-    persisted explicit pre-submit refusal state, are disposable. Unknown states
-    may represent an ambiguous submission and therefore remain protected.
-    """
-    if (
-        str(rec.get("lifecycle") or "submit_pending").lower()
-        != "submit_pending"
-        or _record_has_claim(rec)
-    ):
+    """Return whether capacity pressure may safely discard this record."""
+    if str(rec.get("lifecycle") or "submit_pending").lower() != "submit_pending" or _record_has_claim(rec):
         return False
     if any(
         rec.get(key) not in (None, "")
-        for key in (
-            "order_id",
-            "accepted_ts",
-            "submit_status",
-            "venue_status",
-            "status_error",
-        )
+        for key in ("order_id", "accepted_ts", "submit_status", "venue_status", "status_error")
     ):
         return False
     return bool(
@@ -489,30 +391,49 @@ def _safe_to_evict_for_capacity(rec):
     )
 
 
-def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_price=None,
-            now=None, created_ts=None, attempts=0, last_attempt_ts=0.0,
-            failure_reason=None, *, provider_name=None, intent_id=None, kind=None,
-            lifecycle="submit_pending", replaces_order_id=None,
-            replaces_original_qty=None, _producer_lease_sec=None, ttl_sec=None):
-    """Persist a submission or a pre-cancel replacement under the queue lock.
+def _resolve_outbox_prefix(placement: dict, kind) -> str:
+    prefix = placement.get("prefix") or (
+        f"{placement.get('owner')}_OR" if placement.get("owner") else None
+    )
+    if not prefix and kind:
+        kind_s = str(kind).strip()
+        if "monitor_order_replace" in kind_s:
+            parent_owner = placement.get("parent_owner")
+            prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
+        elif kind_s in {"STOP", "TP"}:
+            prefix = "MT_OR"
+        elif _is_tradeall_kind(kind_s):
+            prefix = "TA_OR"
+    return prefix or "OR"
 
-    Pending submissions may use the configured symbol/side deduplication policy.
-    ``awaiting_cancel`` records instead deduplicate by provider, symbol, side, and
-    replaced order ID, returning the existing record without mutating it or its
-    lease. Returns the new or retained record ID, or ``None`` when retries are
-    disabled or capacity is exhausted by protected records.
-    """
+
+def _shift_ttl_after_deferral(rec: dict, previous_reason, next_reason, prev_attempts: int, prev_last_ts, now: float) -> None:
+    if is_non_failure_deferral(previous_reason) and not is_non_failure_deferral(next_reason):
+        if prev_attempts == 0:
+            rec["ttl_started_ts"] = now
+        else:
+            ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
+            if prev_last_ts is not None and ttl_ts is not None and now > prev_last_ts >= ttl_ts:
+                rec["ttl_started_ts"] = ttl_ts + (now - prev_last_ts)
+
+
+def enqueue(
+    symbol, side, qty, place_kwargs=None, requested_price=None, ref_price=None,
+    now=None, created_ts=None, attempts=0, last_attempt_ts=0.0,
+    failure_reason=None, *, provider_name=None, intent_id=None, kind=None,
+    lifecycle="submit_pending", replaces_order_id=None,
+    replaces_original_qty=None, _producer_lease_sec=None, ttl_sec=None,
+):
+    """Persist a submission or a pre-cancel replacement under the queue lock."""
     if not RETRY_ENABLED:
         return None
     lifecycle = str(lifecycle or "").lower()
     if lifecycle not in {"submit_pending", "awaiting_cancel"}:
         return None
     clean_rep_oid = _clean_retry_order_id(replaces_order_id) if lifecycle == "awaiting_cancel" else None
-    if lifecycle == "awaiting_cancel" and clean_rep_oid is None:
-        return None
     if lifecycle == "awaiting_cancel":
         replaces_original_qty = safe_pos_float(replaces_original_qty, default=None)
-        if replaces_original_qty is None:
+        if clean_rep_oid is None or replaces_original_qty is None:
             return None
     if _producer_lease_sec is not None:
         _producer_lease_sec = safe_pos_float(_producer_lease_sec, default=None)
@@ -521,28 +442,20 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         producer_pid = os.getpid()
         try:
             producer_process_start_id = _process_start_identity(producer_pid)
-        except (
-                OSError, ProcessLookupError, TypeError, ValueError,
-                OverflowError):
-            # A lease without exact process identity makes a live producer
-            # indistinguishable from a crashed one. Refuse before provider I/O.
+        except (OSError, ProcessLookupError, TypeError, ValueError, OverflowError):
             return None
     else:
         producer_pid = None
         producer_process_start_id = None
     if (
-        isinstance(symbol, bool)
-        or not isinstance(symbol, str)
-        or isinstance(side, bool)
-        or isinstance(qty, bool)
-        or isinstance(now, bool)
-        or isinstance(created_ts, bool)
-        or isinstance(attempts, bool)
-        or isinstance(last_attempt_ts, bool)
-        or isinstance(intent_id, bool)
-        or isinstance(provider_name, bool)
-        or isinstance(kind, bool)
-        or isinstance(failure_reason, bool)
+        not isinstance(symbol, str)
+        or any(
+            isinstance(x, bool)
+            for x in (
+                symbol, side, qty, now, created_ts, attempts,
+                last_attempt_ts, intent_id, provider_name, kind, failure_reason,
+            )
+        )
     ):
         return None
     symbol = symbol.strip()
@@ -551,36 +464,16 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
     qty_f = safe_pos_float(qty, default=None)
     if not symbol or side_u not in {"BUY", "SELL"} or qty_f is None or now_f is None:
         return None
-    qty = qty_f
-    now = now_f
+    qty, now = qty_f, now_f
     cts = safe_pos_float(now if created_ts is None else created_ts, default=None)
     attempts_i = _rev_int(attempts, default=-1)
     last_attempt_f = safe_float(last_attempt_ts, default=None)
     if cts is None or attempts_i < 0 or last_attempt_f is None:
         return None
-    attempts = attempts_i
-    last_attempt_ts = last_attempt_f
+    attempts, last_attempt_ts = attempts_i, last_attempt_f
     record_id = uuid.uuid4().hex
     placement = _sanitize_place_kwargs(place_kwargs)
-    prefix = placement.get("prefix") or (
-        f"{placement.get('owner')}_OR" if placement.get("owner") else None
-    )
-    if not prefix and kind:
-        kind_s = str(kind).strip()
-        if "monitor_order_replace" in kind_s:
-            parent_owner = placement.get("parent_owner")
-            if parent_owner == "manual":
-                prefix = "MO_MN_OR"
-            elif parent_owner == "tradeall":
-                prefix = "MO_TA_OR"
-            else:
-                prefix = "MO_OR"
-        elif kind_s in {"STOP", "TP"}:
-            prefix = "MT_OR"
-        elif _is_tradeall_kind(kind_s):
-            prefix = "TA_OR"
-    if not prefix:
-        prefix = "OR"
+    prefix = _resolve_outbox_prefix(placement, kind)
     placement.setdefault("client_order_id", _client_order_id(record_id, 0, prefix=prefix))
     raw_ttl = ttl_sec if ttl_sec is not None else (placement.get("ttl_sec") if placement else None)
     custom_ttl = safe_pos_float(raw_ttl, default=None)
@@ -592,10 +485,10 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         "id": record_id,
         "prefix": prefix,
         "intent_id": str(intent_id or f"outbox-{record_id}"),
-        "provider_name": (None if provider_name is None else str(provider_name)),
+        "provider_name": None if provider_name is None else str(provider_name),
         "symbol": symbol,
         "side": side_u,
-        "kind": (None if kind is None else str(kind)),
+        "kind": None if kind is None else str(kind),
         "qty": qty,
         "requested_qty_total": qty,
         "delivered_qty": 0.0,
@@ -605,8 +498,7 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         "created_ts": cts,
         "attempts": attempts,
         "last_attempt_ts": last_attempt_ts,
-        "last_failure_reason": (str(failure_reason)
-                                if failure_reason is not None else None),
+        "last_failure_reason": str(failure_reason) if failure_reason is not None else None,
         "ttl_started_ts": cts,
         "revision": 0,
         "lifecycle": lifecycle,
@@ -618,18 +510,14 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         rec["replaces_order_id"] = clean_rep_oid
         rec["replaces_original_qty"] = replaces_original_qty
     _set_safe_to_discard(
-        rec, lifecycle == "submit_pending"
+        rec,
+        lifecycle == "submit_pending"
         and (
             is_non_failure_deferral(rec.get("last_failure_reason"))
-            or (
-                _producer_lease_sec is None
-                and rec.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS
-            )
-        ))
+            or (_producer_lease_sec is None and rec.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS)
+        ),
+    )
     if _producer_lease_sec is not None:
-        # The producer owns this exact revision before it becomes visible. A
-        # worker can recover it only after the bounded lease expires following a
-        # producer crash; it can never race the in-flight provider call.
         rec["claim_token"] = uuid.uuid4().hex
         rec["claim_until"] = now + _producer_lease_sec
         rec["claim_revision"] = int(rec["revision"])
@@ -641,20 +529,15 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
         existing = _read_nolock()
         if lifecycle == "awaiting_cancel":
             provider_key = normalize_venue_name(provider_name)
-            replaced_key = clean_rep_oid
             for item in existing:
                 if (
-                    str(item.get("lifecycle") or "").lower()
-                    == "awaiting_cancel"
-                    and normalize_venue_name(item.get("provider_name"))
-                    == provider_key
+                    str(item.get("lifecycle") or "").lower() == "awaiting_cancel"
+                    and normalize_venue_name(item.get("provider_name")) == provider_key
                     and item.get("symbol") == symbol
                     and str(item.get("side") or "").upper() == side_u
                     and (_clean_retry_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
-                    == replaced_key
+                    == clean_rep_oid
                 ):
-                    # Recovery re-observations are idempotent, including while
-                    # another process owns the existing record's lease.
                     return item.get("id")
         if (
             lifecycle == "submit_pending"
@@ -669,22 +552,20 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             ]
             if superseded:
                 superseded_ids = {id(item) for item in superseded}
-                existing = [
-                    item for item in existing if id(item) not in superseded_ids
-                ]
+                existing = [item for item in existing if id(item) not in superseded_ids]
                 print(
                     f"[order_retry] consolidated {len(superseded)} older "
-                    f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent")
-        if (RETRY_DEDUP and lifecycle == "submit_pending"
-                and _producer_lease_sec is None):
+                    f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent"
+                )
+        if RETRY_DEDUP and lifecycle == "submit_pending" and _producer_lease_sec is None:
             for e in existing:
                 if not _safe_to_evict_for_capacity(e):
                     continue
-                if (e.get("symbol") == symbol
-                        and (e.get("side") or "").upper() == side_u
-                        and str(e.get("lifecycle") or "submit_pending").lower()
-                        == "submit_pending"):
-                    # Refresh one symbol/side target while preserving age and attempts.
+                if (
+                    e.get("symbol") == symbol
+                    and (e.get("side") or "").upper() == side_u
+                    and str(e.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                ):
                     e["requested_price"] = requested_price
                     e["ref_price"] = ref_price
                     e["qty"] = qty
@@ -693,24 +574,22 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                     refreshed_kwargs = _sanitize_place_kwargs(place_kwargs)
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
                     refreshed_kwargs.setdefault(
-                        "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx))
+                        "client_order_id", _client_order_id(e.get("id", record_id), revision, prefix=pfx)
+                    )
                     e["prefix"] = pfx
                     e["place_kwargs"] = refreshed_kwargs
                     e["created_ts"] = min(safe_pos_float(e.get("created_ts"), default=cts) or cts, cts)
                     e["attempts"] = max(safe_nonneg_int(e.get("attempts"), default=0) or 0, int(attempts))
-                    e["last_attempt_ts"] = max(safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0,
-                                               float(last_attempt_ts))
+                    e["last_attempt_ts"] = max(
+                        safe_nonneg_float(e.get("last_attempt_ts"), default=0.0) or 0.0, float(last_attempt_ts)
+                    )
                     previous_reason = e.get("last_failure_reason")
-                    next_reason = (str(failure_reason)
-                                   if failure_reason is not None else None)
-                    if (is_non_failure_deferral(previous_reason)
-                            and not is_non_failure_deferral(next_reason)):
+                    next_reason = str(failure_reason) if failure_reason is not None else None
+                    if is_non_failure_deferral(previous_reason) and not is_non_failure_deferral(next_reason):
                         e["ttl_started_ts"] = now
                     e["last_failure_reason"] = next_reason
-                    e["provider_name"] = (None if provider_name is None
-                                            else str(provider_name))
-                    e["intent_id"] = str(intent_id or e.get("intent_id")
-                                         or f"outbox-{e.get('id', record_id)}")
+                    e["provider_name"] = None if provider_name is None else str(provider_name)
+                    e["intent_id"] = str(intent_id or e.get("intent_id") or f"outbox-{e.get('id', record_id)}")
                     e["kind"] = None if kind is None else str(kind)
                     e["lifecycle"] = "submit_pending"
                     if custom_ttl is not None:
@@ -720,20 +599,15 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
                         e.pop("ttl_sec", None)
                         e.pop("expires_at_ts", None)
                     e.pop("order_id", None)
-                    _set_safe_to_discard(
-                        e, is_non_failure_deferral(
-                            e.get("last_failure_reason")))
+                    _set_safe_to_discard(e, is_non_failure_deferral(e.get("last_failure_reason")))
                     e["revision"] = revision
                     _write_nolock(existing)
                     return e.get("id")
         if RETRY_MAX_QUEUE > 0 and len(existing) >= RETRY_MAX_QUEUE:
-            # Evict only records proven never to have reached a venue. Claims and
-            # ambiguous, accepted, cancellation, and reconciliation states are
-            # protected even if that means refusing the new enqueue.
             pending = [
                 (index, item) for index, item in enumerate(existing)
-                if str(item.get("lifecycle") or "submit_pending").lower()
-                == "submit_pending" and _safe_to_evict_for_capacity(item)
+                if str(item.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                and _safe_to_evict_for_capacity(item)
             ]
             deferred = [
                 pair for pair in pending
@@ -743,43 +617,38 @@ def enqueue(symbol, side, qty, place_kwargs=None, requested_price=None, ref_pric
             if not candidates:
                 print(
                     f"[order_retry] queue full ({len(existing)}/{RETRY_MAX_QUEUE}); "
-                    f"cannot enqueue {side_u} {symbol} because every record is protected")
+                    f"cannot enqueue {side_u} {symbol} because every record is protected"
+                )
                 return None
-
-            def _created(pair):
-                return safe_nonneg_float(pair[1].get("created_ts"), default=0.0)
-
             remove_count = len(existing) - RETRY_MAX_QUEUE + 1
-            victims = sorted(candidates, key=_created)[:remove_count]
+            victims = sorted(
+                candidates, key=lambda pair: safe_nonneg_float(pair[1].get("created_ts"), default=0.0)
+            )[:remove_count]
             if len(victims) < remove_count:
                 print(
                     f"[order_retry] queue over capacity ({len(existing)}/{RETRY_MAX_QUEUE}); "
-                    f"cannot enqueue {side_u} {symbol} without evicting protected records")
+                    f"cannot enqueue {side_u} {symbol} without evicting protected records"
+                )
                 return None
             victim_ids = {id(item) for _, item in victims}
             existing = [item for item in existing if id(item) not in victim_ids]
             evicted = victims[0][1]
             print(
-                f"[order_retry] queue full ({len(existing) + len(victims)}/"
-                f"{RETRY_MAX_QUEUE}); replaced {len(victims)} oldest pending record(s), "
-                f"starting with {evicted.get('side')} {evicted.get('symbol')} "
-                f"id={evicted.get('id')}, with {side_u} {symbol}")
+                f"[order_retry] queue full ({len(existing) + len(victims)}/{RETRY_MAX_QUEUE}); "
+                f"replaced {len(victims)} oldest pending record(s), starting with "
+                f"{evicted.get('side')} {evicted.get('symbol')} id={evicted.get('id')}, with {side_u} {symbol}"
+            )
         _write_nolock(existing + [rec])
     return dict(rec) if _producer_lease_sec is not None else rec["id"]
 
 
 def enqueue_claimed(
-        symbol, side, qty, place_kwargs=None, requested_price=None,
-        ref_price=None, now=None, created_ts=None, attempts=0,
-        last_attempt_ts=0.0, failure_reason=None, *, provider_name=None,
-        intent_id=None, kind=None, lease_sec=None, ttl_sec=None):
-    """Atomically persist and lease one unique producer-owned submission.
-
-    The default lease covers the first complete retry interval plus the normal
-    crash-recovery lease. This prevents the worker from starting the same intent
-    while the producer is still inside bounded permit, cancellation, or provider
-    I/O. The returned snapshot must be finalized with ``complete_claim``.
-    """
+    symbol, side, qty, place_kwargs=None, requested_price=None,
+    ref_price=None, now=None, created_ts=None, attempts=0,
+    last_attempt_ts=0.0, failure_reason=None, *, provider_name=None,
+    intent_id=None, kind=None, lease_sec=None, ttl_sec=None,
+):
+    """Atomically persist and lease one unique producer-owned submission."""
     default_lease = RETRY_INTERVAL_SEC + RETRY_CLAIM_LEASE_SEC
     lease = safe_pos_float(default_lease if lease_sec is None else lease_sec, default=None)
     if lease is None or lease <= RETRY_INTERVAL_SEC:
@@ -790,7 +659,8 @@ def enqueue_claimed(
         last_attempt_ts=last_attempt_ts, failure_reason=failure_reason,
         provider_name=provider_name, intent_id=intent_id, kind=kind,
         lifecycle="submit_pending", _producer_lease_sec=lease,
-        ttl_sec=ttl_sec)
+        ttl_sec=ttl_sec,
+    )
 
 
 def _rev_int(val, default=-1):
@@ -828,79 +698,57 @@ def _apply_claim_qty_and_scale(record: dict, qty=None, applied_scale=None) -> No
 
 
 def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
-    """Durably update the requested quantity of an exact claimed intent before submit.
-
-    Token, revision, and client order ID must match. Ensures that late quantity
-    scaling (e.g. market-intelligence risk reductions) is persisted on disk
-    so crash recovery or partial fills calculate remainder against the actual
-    submitted amount rather than the initial unscaled intent.
-    """
+    """Durably update the requested quantity of an exact claimed intent before submit."""
     if not isinstance(claim_snapshot, dict):
         return None
     q_val = safe_pos_float(qty, default=None)
-    if q_val is None:
-        return None
     snapshot_client_id = _record_client_order_id(claim_snapshot)
-    if not snapshot_client_id:
+    if q_val is None or not snapshot_client_id:
         return None
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
-        refreshed = None
         for record in existing:
-            if not _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
-                continue
-            _apply_claim_qty_and_scale(record, q_val, applied_scale)
-            refreshed = dict(record)
-            _write_nolock(existing)
-            break
-    return refreshed
+            if _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
+                _apply_claim_qty_and_scale(record, q_val, applied_scale)
+                refreshed = dict(record)
+                _write_nolock(existing)
+                return refreshed
+    return None
 
 
 def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, applied_scale=None):
-    """Durably mark one exact claimed revision possibly submitted.
-
-    Token, revision, and deterministic client order ID must still match under
-    the queue lock. The current PID/start identity becomes the dispatch owner,
-    submission state becomes producer_claimed, and the lease is renewed before
-    any external provider call. None means the caller must not submit.
-    """
+    """Durably mark one exact claimed revision possibly submitted."""
     if not isinstance(claim_snapshot, dict):
         return None
     now_f = safe_pos_float(time.time() if now is None else now, default=None)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
-    if now_f is None or lease_f is None:
+    snapshot_client_id = _record_client_order_id(claim_snapshot)
+    if now_f is None or lease_f is None or not snapshot_client_id:
         return None
-    now, lease_sec = now_f, lease_f
     current_pid = os.getpid()
     try:
         current_start_identity = _process_start_identity(current_pid)
-    except (
-            OSError, ProcessLookupError, TypeError, ValueError,
-            OverflowError):
-        return None
-    snapshot_client_id = _record_client_order_id(claim_snapshot)
-    if not snapshot_client_id:
+    except (OSError, ProcessLookupError, TypeError, ValueError, OverflowError):
         return None
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
-        refreshed = None
         for record in existing:
-            if not _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
-                continue
-            _set_safe_to_discard(record, False)
-            record["producer_pid"] = current_pid
-            record["producer_process_start_id"] = current_start_identity
-            record["submission_state"] = "producer_claimed"
-            record["claim_until"] = max(
-                safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
-                now + lease_sec)
-            _apply_claim_qty_and_scale(record, qty, applied_scale)
-            refreshed = dict(record)
-            _write_nolock(existing)
-            break
-        return refreshed
+            if _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
+                _set_safe_to_discard(record, False)
+                record["producer_pid"] = current_pid
+                record["producer_process_start_id"] = current_start_identity
+                record["submission_state"] = "producer_claimed"
+                record["claim_until"] = max(
+                    safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
+                    now_f + lease_f,
+                )
+                _apply_claim_qty_and_scale(record, qty, applied_scale)
+                refreshed = dict(record)
+                _write_nolock(existing)
+                return refreshed
+    return None
 
 
 def load_all(now=None):
@@ -944,9 +792,7 @@ def infer_record_owner(rec: dict) -> str:
         return "unspecified"
     raw_place_kw = rec.get("place_kwargs")
     placement = dict(raw_place_kw) if isinstance(raw_place_kw, dict) else {}
-    parent_owner = (
-        _clean_str(rec.get("parent_owner")) or _clean_str(placement.get("parent_owner"))
-    ).lower()
+    parent_owner = (_clean_str(rec.get("parent_owner")) or _clean_str(placement.get("parent_owner"))).lower()
     if parent_owner and parent_owner not in {"unknown", "unspecified", "order_retry"}:
         return parent_owner
     owner = "unspecified"
@@ -993,15 +839,12 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
         return []
     out = []
     for r in _safe_load_all():
-        if str(r.get("lifecycle") or "").lower() != "accepted":
-            continue
-        if str(r.get("symbol") or "").strip().upper() != target_sym:
-            continue
-        oid_str = _clean_retry_order_id(r.get("order_id"))
-        if not oid_str:
-            continue
-        if infer_record_owner(r) == target_owner:
-            if oid_str not in out:
+        if (
+            str(r.get("lifecycle") or "").lower() == "accepted"
+            and str(r.get("symbol") or "").strip().upper() == target_sym
+        ):
+            oid_str = _clean_retry_order_id(r.get("order_id"))
+            if oid_str and infer_record_owner(r) == target_owner and oid_str not in out:
                 out.append(oid_str)
     return out
 
@@ -1014,38 +857,30 @@ def load_validated(now=None):
 
 
 def consolidate_deferred_streams():
-    """Atomically keep only the newest pending record per deferred signal stream.
-
-    Return the removed records for operational accounting. Accepted venue orders and
-    every non-trend failure remain byte-for-byte represented in the rewritten queue.
-    """
+    """Atomically keep only the newest pending record per deferred signal stream."""
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
-
-        def _created(item):
-            return safe_nonneg_float(item.get("created_ts"), default=0.0)
-
         kept_deferred = []
         keep_ids = set()
         removed = []
         for index, item in sorted(
-                enumerate(existing), key=lambda pair: _created(pair[1]), reverse=True):
+            enumerate(existing),
+            key=lambda pair: safe_nonneg_float(pair[1].get("created_ts"), default=0.0),
+            reverse=True,
+        ):
             is_deferred = (
                 _safe_to_evict_for_capacity(item)
                 and item.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS
             )
-            if is_deferred and any(
-                    _same_deferred_stream(item, newer) for newer in kept_deferred):
+            if is_deferred and any(_same_deferred_stream(item, newer) for newer in kept_deferred):
                 removed.append(item)
                 continue
             keep_ids.add(index)
             if is_deferred:
                 kept_deferred.append(item)
         if removed:
-            _write_nolock([
-                item for index, item in enumerate(existing) if index in keep_ids
-            ])
+            _write_nolock([item for index, item in enumerate(existing) if index in keep_ids])
         return removed
 
 
@@ -1061,13 +896,8 @@ def get(record_id):
     return None
 
 
-def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None,
-                 submission_state=None):
-    """Annotate an already persisted pre-submit record without changing its ID.
-
-    ``client_order_id`` protects a newer concurrent revision from being overwritten
-    by the result of an older submit call.
-    """
+def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None, submission_state=None):
+    """Annotate an already persisted pre-submit record without changing its ID."""
     if not record_id or isinstance(record_id, bool):
         return False
     if submission_state not in {None, "refused", "unknown"}:
@@ -1080,26 +910,19 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None,
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
-            current_cid = _record_client_order_id(rec)
-            if client_order_id is not None and current_cid != client_order_id:
+            if client_order_id is not None and _record_client_order_id(rec) != client_order_id:
                 continue
             previous = rec.get("last_failure_reason")
             reason = str(failure_reason) if failure_reason is not None else None
             prev_attempts = max(0, _rev_int(rec.get("attempts"), 0))
-            if (is_non_failure_deferral(previous)
-                    and not is_non_failure_deferral(reason)):
-                if prev_attempts == 0:
-                    rec["ttl_started_ts"] = now
-                else:
-                    prev_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
-                    ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
-                    if prev_ts is not None and ttl_ts is not None and now > prev_ts >= ttl_ts:
-                        rec["ttl_started_ts"] = ttl_ts + (now - prev_ts)
+            _shift_ttl_after_deferral(
+                rec, previous, reason, prev_attempts,
+                safe_pos_float(rec.get("last_attempt_ts"), default=None), now,
+            )
             rec["last_failure_reason"] = reason
             if submission_state is not None:
                 rec["submission_state"] = submission_state
-                _set_safe_to_discard(
-                    rec, submission_state == "refused")
+                _set_safe_to_discard(rec, submission_state == "refused")
             elif not is_non_failure_deferral(reason):
                 _set_safe_to_discard(rec, False)
             changed = True
@@ -1159,8 +982,7 @@ def _apply_accepted(rec, order, now, provider_name=None):
     return True
 
 
-def mark_accepted(record_id, order, *, now=None, client_order_id=None,
-                  provider_name=None):
+def mark_accepted(record_id, order, *, now=None, client_order_id=None, provider_name=None):
     """Move one exact pre-submit revision to durable accepted tracking."""
     if not record_id or isinstance(record_id, bool):
         return False
@@ -1172,11 +994,9 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None,
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
-            current_cid = _record_client_order_id(rec)
-            if client_order_id is not None and current_cid != client_order_id:
+            if client_order_id is not None and _record_client_order_id(rec) != client_order_id:
                 continue
-            changed = _apply_accepted(
-                rec, order, now, provider_name=provider_name)
+            changed = _apply_accepted(rec, order, now, provider_name=provider_name)
             break
         if changed:
             _write_nolock(existing)
@@ -1184,12 +1004,7 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None,
 
 
 def resolve_record(record_id, *, client_order_id=None):
-    """Legacy helper: remove one exact *unsubmitted* persisted revision.
-
-    Once a venue ID has been accepted, only terminal reconciliation may remove the
-    tracker. This prevents an old caller from turning acceptance into an implicit
-    fill acknowledgement.
-    """
+    """Legacy helper: remove one exact *unsubmitted* persisted revision."""
     if not record_id or isinstance(record_id, bool):
         return False
     removed = False
@@ -1200,11 +1015,10 @@ def resolve_record(record_id, *, client_order_id=None):
         for rec in existing:
             matches = (
                 rec.get("id") == record_id
-                and str(rec.get("lifecycle") or "submit_pending").lower()
-                == "submit_pending"
+                and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
             )
             if matches and client_order_id is not None:
-                matches = (_record_client_order_id(rec) == client_order_id)
+                matches = _record_client_order_id(rec) == client_order_id
             if matches:
                 removed = True
             else:
@@ -1226,25 +1040,21 @@ def claim(ids, now=None, lease_sec=None):
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
     if lease_f is None:
         raise ValueError("claim lease must be finite and positive")
-    lease_sec = lease_f
     claimed = []
     token = uuid.uuid4().hex
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
         for rec in existing:
-            if rec.get("id") not in ids:
-                continue
-            if safe_float(rec.get("claim_until"), default=0.0) > now:
+            if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
             revision = max(0, _rev_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
             pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-            placement.setdefault(
-                "client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
+            placement.setdefault("client_order_id", _client_order_id(rec.get("id", ""), revision, prefix=pfx))
             rec["place_kwargs"] = placement
             rec["revision"] = revision
             rec["claim_token"] = token
-            rec["claim_until"] = now + lease_sec
+            rec["claim_until"] = now + lease_f
             rec["claim_revision"] = revision
             claimed.append(dict(rec))
         if claimed:
@@ -1252,16 +1062,17 @@ def claim(ids, now=None, lease_sec=None):
     return claimed
 
 
-def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
-                   order=None, status=None, provider_name=None,
-                   submission_state=None):
-    """Finalize one exact leased revision without losing accepted-order tracking.
+_TERMINAL_RESET_KEYS = (
+    "order_id", "accepted_ts", "last_status_ts", "last_status",
+    "venue_status", "submit_status", "filled_qty", "filled_cost", "filled_fee",
+)
 
-    ``accepted`` persists the venue ID instead of deleting the record. ``observed``
-    keeps an open/partial order. ``retry_terminal`` creates a new client-ID revision
-    for only the unfilled remainder. ``success`` removes a filled or intentionally
-    canceled terminal order.
-    """
+
+def complete_claim(
+    claimed, outcome, now=None, *, failure_reason=None,
+    order=None, status=None, provider_name=None, submission_state=None,
+):
+    """Finalize one exact leased revision without losing accepted-order tracking."""
     if not isinstance(claimed, dict):
         return False
     allowed = {
@@ -1270,10 +1081,8 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
     }
     if outcome not in allowed:
         raise ValueError(f"invalid claim outcome: {outcome}")
-    if (outcome == "deferred"
-            and not is_non_failure_deferral(failure_reason)):
-        raise ValueError(
-            f"invalid non-failure deferral reason: {failure_reason!r}")
+    if outcome == "deferred" and not is_non_failure_deferral(failure_reason):
+        raise ValueError(f"invalid non-failure deferral reason: {failure_reason!r}")
     if submission_state not in {None, "refused", "unknown"}:
         raise ValueError(f"invalid submission state: {submission_state!r}")
     now = _clean_now_sec(now)
@@ -1283,51 +1092,38 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
         existing = _read_nolock()
         remaining = []
         for rec in existing:
-            matches = (rec.get("id") == claimed.get("id") and
-                       rec.get("claim_token") == claimed.get("claim_token"))
-            if not matches:
+            if rec.get("id") != claimed.get("id") or rec.get("claim_token") != claimed.get("claim_token"):
                 remaining.append(rec)
                 continue
             claimed_client_id = _record_client_order_id(claimed)
-            current_client_id = _record_client_order_id(rec)
             same_revision = (
-                _rev_int(rec.get("revision"), 0)
-                == _rev_int(claimed.get("claim_revision"), -1)
+                _rev_int(rec.get("revision"), 0) == _rev_int(claimed.get("claim_revision"), -1)
                 and claimed_client_id is not None
-                and current_client_id == claimed_client_id
+                and _record_client_order_id(rec) == claimed_client_id
             )
             if not same_revision:
-                # Never release or overwrite ownership of a different durable
-                # revision, even if malformed legacy state reused a claim token.
                 remaining.append(rec)
                 continue
             changed = True
-            if outcome == "success" and same_revision:
+            if outcome == "success":
                 continue
-            if outcome == "accepted" and same_revision:
+            if outcome == "accepted":
                 _set_safe_to_discard(rec, False)
-                venue_qty = extract_orig_qty(order)
+                venue_qty = extract_orig_qty(order) or safe_pos_float(claimed.get("qty"), default=None)
                 if venue_qty is not None:
                     rec["qty"] = venue_qty
                     rec["requested_qty_total"] = venue_qty
-                else:
-                    cq = safe_pos_float(claimed.get("qty"), default=None)
-                    if cq is not None:
-                        rec["qty"] = cq
-                        rec["requested_qty_total"] = cq
-                if not _apply_accepted(
-                        rec, order, now, provider_name=provider_name):
+                if not _apply_accepted(rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"
                     rec["attempts"] = max(
                         max(0, _rev_int(rec.get("attempts"), 0)),
                         max(0, _rev_int(claimed.get("attempts"), 0)),
                     ) + 1
                     rec["last_attempt_ts"] = now
-            elif outcome == "observed" and same_revision:
+            elif outcome == "observed":
                 rec["last_status_ts"] = now
                 rec["last_status"] = str(getattr(status, "status", "") or "")
-                rec["venue_status"] = str(
-                    getattr(status, "venue_status", "") or "")
+                rec["venue_status"] = str(getattr(status, "venue_status", "") or "")
                 status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
                 if status_orig is not None:
                     rec["qty"] = status_orig
@@ -1336,11 +1132,10 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 rec["filled_cost"] = safe_nonneg_float(getattr(status, "cost", None), default=0.0)
                 rec["filled_fee"] = safe_nonneg_float(getattr(status, "fee", None), default=0.0)
                 rec.pop("status_error", None)
-            elif outcome == "status_error" and same_revision:
+            elif outcome == "status_error":
                 rec["last_status_ts"] = now
-                rec["status_error"] = (str(failure_reason)
-                                       if failure_reason is not None else "unknown")
-            elif outcome == "retry_terminal" and same_revision:
+                rec["status_error"] = str(failure_reason) if failure_reason is not None else "unknown"
+            elif outcome == "retry_terminal":
                 filled_qty = safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0)
                 current_qty = safe_nonneg_float(rec.get("qty"), default=0.0)
                 status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
@@ -1350,8 +1145,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                     rec["requested_qty_total"] = current_qty
                 remaining_qty = max(0.0, current_qty - filled_qty)
                 _append_order_history(rec, observed_at=now, status=status)
-                rec["delivered_qty"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + min(
-                    current_qty, filled_qty)
+                rec["delivered_qty"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + min(current_qty, filled_qty)
                 if remaining_qty <= max(1e-12, current_qty * 1e-9):
                     continue
                 revision = max(0, _rev_int(rec.get("revision"), 0)) + 1
@@ -1364,21 +1158,17 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                     rec["expires_at_ts"] = now + resolve_record_ttl(rec)
                 _set_safe_to_discard(rec, False)
                 rec["last_failure_reason"] = (
-                    "terminal_" + str(getattr(status, "venue_status", "")
-                                      or getattr(status, "status", "unknown")).lower())
+                    "terminal_" + str(getattr(status, "venue_status", "") or getattr(status, "status", "unknown")).lower()
+                )
                 rec["lifecycle"] = "submit_pending"
                 rec["submission_state"] = "refused"
-                for key in (
-                        "order_id", "accepted_ts", "last_status_ts", "last_status",
-                        "venue_status", "submit_status", "filled_qty", "filled_cost",
-                        "filled_fee"):
+                for key in _TERMINAL_RESET_KEYS:
                     rec.pop(key, None)
                 placement = dict(rec.get("place_kwargs") or {})
                 pfx = rec.get("prefix") or placement.get("prefix") or "OR"
-                placement["client_order_id"] = _client_order_id(
-                    rec.get("id", ""), revision, prefix=pfx)
+                placement["client_order_id"] = _client_order_id(rec.get("id", ""), revision, prefix=pfx)
                 rec["place_kwargs"] = placement
-            elif outcome == "failure" and same_revision:
+            elif outcome == "failure":
                 prev_attempts = max(
                     max(0, _rev_int(rec.get("attempts"), 0)),
                     max(0, _rev_int(claimed.get("attempts"), 0)),
@@ -1386,26 +1176,17 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
                 prev_last_ts = safe_pos_float(rec.get("last_attempt_ts"), default=None)
                 rec["attempts"] = prev_attempts + 1
                 rec["last_attempt_ts"] = now
-                next_reason = (str(failure_reason)
-                               if failure_reason is not None else None)
-                if (is_non_failure_deferral(rec.get("last_failure_reason"))
-                        and not is_non_failure_deferral(next_reason)):
-                    # TTL begins fresh only after an initial non-failure deferral ends;
-                    # if attempts > 0, only shift ttl_started_ts by the deferral pause.
-                    if prev_attempts == 0:
-                        rec["ttl_started_ts"] = now
-                    else:
-                        ttl_ts = safe_pos_float(rec.get("ttl_started_ts"), default=None)
-                        if prev_last_ts is not None and ttl_ts is not None and now > prev_last_ts >= ttl_ts:
-                            rec["ttl_started_ts"] = ttl_ts + (now - prev_last_ts)
+                next_reason = str(failure_reason) if failure_reason is not None else None
+                _shift_ttl_after_deferral(
+                    rec, rec.get("last_failure_reason"), next_reason, prev_attempts, prev_last_ts, now
+                )
                 rec["last_failure_reason"] = next_reason
-            elif outcome == "deferred" and same_revision:
+            elif outcome == "deferred":
                 rec["last_attempt_ts"] = now
                 rec["last_failure_reason"] = str(failure_reason)
-            if same_revision and submission_state is not None:
+            if submission_state is not None:
                 rec["submission_state"] = submission_state
-                _set_safe_to_discard(
-                    rec, submission_state == "refused")
+                _set_safe_to_discard(rec, submission_state == "refused")
             elif outcome == "retry_terminal":
                 _set_safe_to_discard(rec, False)
             for key in ("claim_token", "claim_until", "claim_revision"):
@@ -1417,12 +1198,7 @@ def complete_claim(claimed, outcome, now=None, *, failure_reason=None,
 
 
 def activate_claimed_replacement(claimed, qty, now=None):
-    """Atomically make a confirmed-cancel replacement eligible for submission.
-
-    The existing lease is retained. A crash after this transition cannot submit
-    concurrently; the generic worker may claim the intent only after the lease
-    expires, when the replaced venue order is already confirmed canceled.
-    """
+    """Atomically make a confirmed-cancel replacement eligible for submission."""
     if not isinstance(claimed, dict):
         return None
     now = safe_pos_float(time.time() if now is None else now, default=None)
@@ -1436,13 +1212,11 @@ def activate_claimed_replacement(claimed, qty, now=None):
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
         for index, rec in enumerate(existing):
-            matches = (
+            if not (
                 rec.get("id") == claimed.get("id")
                 and rec.get("claim_token") == claimed.get("claim_token")
-                and _rev_int(rec.get("revision"), 0)
-                == _rev_int(claimed.get("claim_revision"), -1)
-            )
-            if not matches:
+                and _rev_int(rec.get("revision"), 0) == _rev_int(claimed.get("claim_revision"), -1)
+            ):
                 continue
             if str(rec.get("lifecycle") or "").lower() != "awaiting_cancel":
                 break
@@ -1493,11 +1267,10 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         existing = _read_nolock()
         remaining = []
         for rec in existing:
-            rec_oid = _clean_retry_order_id(rec.get("order_id"))
             if (
                 str(rec.get("lifecycle") or "").lower() == "accepted"
                 and str(rec.get("symbol") or "").strip().upper() == target_sym
-                and rec_oid == target_oid
+                and _clean_retry_order_id(rec.get("order_id")) == target_oid
             ):
                 removed = True
             else:
@@ -1516,30 +1289,18 @@ class OutboxStatusTransition:
     remaining_qty: float = 0.0
 
     def __post_init__(self):
-        if self.action not in {
-                "observed", "filled", "retry_terminal", "terminal"}:
+        if self.action not in {"observed", "filled", "retry_terminal", "terminal"}:
             raise ValueError(f"invalid outbox status action: {self.action!r}")
 
 
 def _outbox_retryable_terminal(status: OrderStatus) -> bool:
-    """Preserve the current mechanical outbox terminal rule.
-
-    This is deliberately not the future financial-policy API. Rejected/expired
-    orders retain the existing remainder-retry behavior; other cancellations remain
-    terminal. Strategy-specific policy will be added separately.
-    """
+    """Preserve the current mechanical outbox terminal rule."""
     native = str(status.venue_status or "").upper()
     return native in {"REJECTED", "EXPIRED"} or status.status == "expired"
 
 
-def advance_claimed_status(claimed: dict, status: OrderStatus,
-                           now=None) -> OutboxStatusTransition:
-    """Persist one accepted order-status transition without venue I/O.
-
-    ``Instrument.place`` never calls this function. The external worker obtains one
-    status snapshot, then delegates the state mutation here. Therefore terminal
-    monitoring remains outside the submit call and every invocation is bounded.
-    """
+def advance_claimed_status(claimed: dict, status: OrderStatus, now=None) -> OutboxStatusTransition:
+    """Persist one accepted order-status transition without venue I/O."""
     if not isinstance(status, OrderStatus):
         raise TypeError("status must be OrderStatus")
     if str(claimed.get("lifecycle") or "").lower() != "accepted":
@@ -1547,7 +1308,8 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
 
     if not status.terminal:
         fingerprint = (
-            str(status.status), safe_nonneg_float(status.filled_qty, default=0.0),
+            str(status.status),
+            safe_nonneg_float(status.filled_qty, default=0.0),
             str(status.venue_status),
         )
         previous = (
@@ -1556,36 +1318,24 @@ def advance_claimed_status(claimed: dict, status: OrderStatus,
             str(claimed.get("venue_status") or ""),
         )
         complete_claim(claimed, "observed", now, status=status)
-        return OutboxStatusTransition(
-            "observed", status_changed=fingerprint != previous)
+        return OutboxStatusTransition("observed", status_changed=fingerprint != previous)
 
     if status.status == "closed":
         complete_claim(claimed, "success", now, status=status)
         return OutboxStatusTransition("filled", status_changed=True)
 
-    current_qty = safe_nonneg_float(claimed.get("qty"), default=0.0)
-    status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
-    if status_orig is not None:
-        current_qty = status_orig
+    current_qty = safe_pos_float(getattr(status, "orig_qty", None), default=None) or safe_nonneg_float(claimed.get("qty"), default=0.0)
     remaining_qty = max(0.0, current_qty - status.filled_qty)
     if _outbox_retryable_terminal(status):
         complete_claim(claimed, "retry_terminal", now, status=status)
-        return OutboxStatusTransition(
-            "retry_terminal", status_changed=True,
-            remaining_qty=remaining_qty)
+        return OutboxStatusTransition("retry_terminal", status_changed=True, remaining_qty=remaining_qty)
 
     changed = complete_claim(claimed, "success", now, status=status)
-    return OutboxStatusTransition(
-        "terminal", status_changed=bool(changed), remaining_qty=remaining_qty)
+    return OutboxStatusTransition("terminal", status_changed=bool(changed), remaining_qty=remaining_qty)
 
 
 def discard_expired(snapshots, now=None):
-    """Remove only records that remain the exact expired durable revision.
-
-    Rechecking identity and expiry under the queue lock prevents cleanup from
-    deleting an intent that another producer refreshed or another worker claimed
-    after the initial snapshot.
-    """
+    """Remove only records that remain the exact expired durable revision."""
     if not snapshots:
         return []
     now = safe_float(time.time() if now is None else now, default=None)
@@ -1596,28 +1346,18 @@ def discard_expired(snapshots, now=None):
         if not isinstance(snapshot, dict):
             continue
         rev = _rev_int(snapshot.get("revision"), -1)
-        if rev < 0:
-            continue
-        key = (
-            snapshot.get("id"),
-            rev,
-            _record_client_order_id(snapshot),
-        )
-        if key[0] and key[2]:
-            exact.add(key)
+        if rev >= 0:
+            key = (snapshot.get("id"), rev, _record_client_order_id(snapshot))
+            if key[0] and key[2]:
+                exact.add(key)
     if not exact:
         return []
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock(validate=True)
-        removed = []
-        retained = []
+        removed, retained = [], []
         for record in existing:
-            key = (
-                record.get("id"),
-                _rev_int(record.get("revision"), 0),
-                _record_client_order_id(record),
-            )
+            key = (record.get("id"), _rev_int(record.get("revision"), 0), _record_client_order_id(record))
             if key in exact and is_expired(record, now):
                 removed.append(record)
             else:
@@ -1644,11 +1384,7 @@ def discard(ids):
 
 
 def resolve(symbol, side):
-    """Legacy helper: remove only unaccepted pending records by symbol and side.
-
-    Accepted trackers are venue truth and can only be removed by exact terminal
-    reconciliation. New code should use ``mark_accepted``/``complete_claim``.
-    """
+    """Legacy helper: remove only unaccepted pending records by symbol and side."""
     if isinstance(symbol, bool) or isinstance(side, bool):
         return 0
     target_sym = str(symbol or "").strip().upper()
@@ -1658,10 +1394,11 @@ def resolve(symbol, side):
         existing = _read_nolock()
         remaining = [
             rec for rec in existing
-            if not (str(rec.get("symbol") or "").strip().upper() == target_sym
-                    and str(rec.get("side") or "").strip().upper() == side_u
-                    and str(rec.get("lifecycle") or "submit_pending").lower()
-                    == "submit_pending")
+            if not (
+                str(rec.get("symbol") or "").strip().upper() == target_sym
+                and str(rec.get("side") or "").strip().upper() == side_u
+                and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+            )
         ]
         removed = len(existing) - len(remaining)
         if removed:
@@ -1694,8 +1431,7 @@ def resolve_record_ttl(rec):
         custom_ttl = safe_pos_float(rec.get("ttl_sec"), default=None)
         if custom_ttl is not None:
             return min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-        kind_s = _clean_str(rec.get("kind"))
-        if kind_s.startswith(_FAST_IMPULSE_KIND_PREFIXES):
+        if _clean_str(rec.get("kind")).startswith(_FAST_IMPULSE_KIND_PREFIXES):
             raw_kw = rec.get("place_kwargs")
             kw_hours = safe_pos_float(raw_kw.get("hours") if isinstance(raw_kw, dict) else None, default=None)
             fast_ttl = kw_hours * 3600.0 if kw_hours is not None else 1800.0
@@ -1704,31 +1440,19 @@ def resolve_record_ttl(rec):
 
 
 def is_expired(rec, now=None):
-    """Return true after active retry TTL or hard attempt limit.
-
-    A non-failure deferral has made no venue attempt and therefore never consumes TTL
-    or the attempt budget unless an explicit ``expires_at_ts`` / ``ttl_sec`` deadline
-    was set by the producer. Once another refusal reason appears, ``ttl_started_ts``
-    is reset and normal expiry resumes.
-    """
-    # An accepted order is real venue state, not a stale submit attempt. Never
-    # discard its tracker merely because the submission TTL elapsed. Likewise,
-    # ambiguous submission state requires positive venue truth or manual action.
-    if str(rec.get("lifecycle") or "submit_pending").lower() in {
-            "accepted", "awaiting_cancel"} or is_possibly_submitted(rec):
+    """Return true after active retry TTL or hard attempt limit."""
+    if (
+        str(rec.get("lifecycle") or "submit_pending").lower() in {"accepted", "awaiting_cancel"}
+        or is_possibly_submitted(rec)
+    ):
         return False
     now_f = safe_pos_float(time.time() if now is None else now, default=None)
     claim_until = safe_nonneg_float(rec.get("claim_until"), default=0.0) or 0.0
     created = safe_pos_float(rec.get("created_ts"), default=None)
     ttl_started = safe_pos_float(rec.get("ttl_started_ts"), default=created)
     raw_attempts = rec.get("attempts")
-    if raw_attempts is None:
-        attempts = 0
-    else:
-        attempts = exact_nonneg_int(raw_attempts, default=None)
-        if attempts is None:
-            return True
-    if now_f is None or created is None or ttl_started is None:
+    attempts = 0 if raw_attempts is None else exact_nonneg_int(raw_attempts, default=None)
+    if attempts is None or now_f is None or created is None or ttl_started is None:
         return True
     if claim_until > now_f:
         return False
@@ -1742,8 +1466,7 @@ def is_expired(rec, now=None):
         return True
     if is_non_failure_deferral(rec.get("last_failure_reason")):
         return False
-    return ((now_f - ttl_started) > effective_ttl or
-            (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS))
+    return (now_f - ttl_started) > effective_ttl or (RETRY_MAX_ATTEMPTS > 0 and attempts >= RETRY_MAX_ATTEMPTS)
 
 
 def is_due(rec, now=None):
@@ -1784,514 +1507,7 @@ def is_retry_price_favorable(side, current_price, requested_price, tol=None) -> 
 
 
 def price_gate_ok(rec, current_price, tol=None):
-    """Return whether the current price is favorable relative to the stored request.
-
-    SELL requires ``current >= requested*(1-tol)`` and BUY requires
-    ``current <= requested*(1+tol)``. Missing or invalid prices fail closed.
-    """
+    """Return whether the current price is favorable relative to the stored request."""
     if not isinstance(rec, dict):
         return False
-    return is_retry_price_favorable(
-        rec.get("side"), current_price, rec.get("requested_price"), tol=tol
-    )
-
-
-# ---------------------------------------------------------------------------
-# Strategy-owned lifecycle facade
-# ---------------------------------------------------------------------------
-
-PersistPending = Callable[[Optional[dict]], None]
-SubmitIntent = Callable[[], object]
-
-
-@dataclass(frozen=True)
-class TrackedOrderResult:
-    """One lifecycle observation without equating submit acceptance with a fill."""
-
-    outcome: str  # active, terminal, absent, retryable, refused
-    intent: dict
-    status: Optional[OrderStatus] = None
-
-    def __post_init__(self):
-        if self.outcome not in {
-                "active", "terminal", "absent", "retryable", "refused"}:
-            raise ValueError(f"invalid tracked-order outcome: {self.outcome!r}")
-        if self.outcome == "terminal" and self.status is None:
-            raise ValueError("terminal tracked-order result requires status")
-
-    @property
-    def order_known(self) -> bool:
-        return _clean_retry_order_id(self.intent.get("order_id")) is not None
-
-
-class StrategyExecutorLifecycleApi:
-    """Adapt one strict executor to the lifecycle lookup contract.
-
-    Stateful strategies already own a credential-scoped executor and should not
-    create a second global provider merely to reconcile an ambiguous submission.
-    This adapter keeps lookup, status, and cancel calls on that same executor.
-    """
-
-    def __init__(self, executor):
-        self.executor = executor
-
-    def reconciliation_capabilities(self):
-        return reconciliation_capabilities_of(self.executor)
-
-    def _require(self, capability: str, operation: str) -> None:
-        if not getattr(self.reconciliation_capabilities(), capability):
-            raise RuntimeError(
-                f"{self.executor.__class__.__name__}: {operation} is unsupported")
-
-    def order_by_client_id(self, symbol: str, client_order_id: str, *,
-                           provider_name=None):
-        self._require("lookup_by_client_order_id", "order_by_client_id")
-        method = getattr(self.executor, "order_by_client_id", None)
-        if not callable(method):
-            raise RuntimeError(
-                f"{provider_name or type(self.executor).__name__}: "
-                "order_by_client_id is unsupported")
-        clean_cid = _clean_retry_order_id(client_order_id)
-        if not clean_cid:
-            raise ProviderError("invalid client_order_id")
-        return method(symbol, clean_cid)
-
-    def order_status(self, symbol: str, order_id: str, *, provider_name=None):
-        self._require("status_by_order_id", "order_status")
-        clean_oid = _clean_retry_order_id(order_id)
-        if not clean_oid:
-            raise ProviderError("invalid order_id")
-        return self.executor.order_status(symbol, clean_oid)
-
-    def cancel_order(self, symbol: str, order_id: str, *, provider_name=None):
-        self._require("cancel_by_order_id", "cancel_order")
-        clean_oid = _clean_retry_order_id(order_id)
-        if not clean_oid:
-            raise ProviderError("invalid order_id")
-        return self.executor.cancel_order(symbol, clean_oid)
-
-
-def _lifecycle_finite(raw, *, positive=False):
-    return safe_pos_float(raw, default=None) if positive else safe_float(raw, default=None)
-
-
-def _terminal_payload(status: OrderStatus, observed_at: float) -> dict:
-    return {
-        "status": status.status,
-        "venue_status": status.venue_status,
-        "filled_qty": status.filled_qty,
-        "cost": status.cost,
-        "fee": status.fee,
-        "observed_at": observed_at,
-    }
-
-
-def _status_from_terminal_payload(payload) -> Optional[OrderStatus]:
-    if not isinstance(payload, dict):
-        return None
-    try:
-        status = OrderStatus(
-            str(payload["status"]),
-            payload["filled_qty"],
-            payload["cost"],
-            payload["fee"],
-            venue_status=payload.get("venue_status", ""),
-        )
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return None
-    return status if status.terminal else None
-
-
-def _is_definitive_submit_refusal(error: object) -> bool:
-    text = str(error or "").lower()
-    return any(
-        token in text
-        for token in (
-            "insufficient funds",
-            "insufficient margin",
-            "order minimum not met",
-            "volume minimum not met",
-            "cost minimum not met",
-            "invalid price",
-            "invalid arguments",
-            "positions limit exceeded",
-            "tick size check failed",
-        )
-    )
-
-
-def propagate_submission_refusal(response, outcome_context):
-    """Bridge Instrument's result channel into the strict lifecycle contract.
-
-    A known pre-submit refusal becomes ``SubmissionRefused``. An ambiguous result
-    remains unchanged so ``capture_submission`` keeps it recoverable.
-    """
-    if response is None and isinstance(outcome_context, dict):
-        state = str(outcome_context.get("state") or "").strip().lower()
-        if state == "refused":
-            reason = str(
-                outcome_context.get("reason") or "pre_submit_refused").strip()
-            raise SubmissionRefused(reason)
-    return response
-
-
-# Backwards-compatible import name for existing providers and external scripts.
-OrderSubmissionRefused = SubmissionRefused
-
-
-class TrackedOrderLifecycle:
-    """State machine for one persisted order owned by a strategy.
-
-    The caller supplies a persistence callback because campaign state belongs to
-    the strategy. The callback must durably replace the pending intent; raising
-    before submit prevents the external side effect. Terminal venue truth stays
-    persisted in ``terminal_status`` until the strategy atomically applies the fill
-    and removes pending from its own state.
-
-    The class does not run as a daemon. The owning strategy calls ``submit`` once
-    and ``reconcile`` from later bounded ticks. The fleet-wide daemon is still
-    ``order_retry_worker.py`` and operates only on the shared outbox records.
-    """
-
-    def __init__(self, market_api, *, provider_name: str, venue: Optional[str] = None,
-                 missing_confirmations: int = 2,
-                 retry_on_lookup_error: bool = False,
-                 max_age_seconds: Optional[float] = None,
-                 audit=None, clock: Callable[[], float] = time.time):
-        if isinstance(provider_name, bool) or not isinstance(provider_name, str) or not provider_name.strip():
-            raise ValueError("provider_name is required")
-        if venue is not None and (isinstance(venue, bool) or not isinstance(venue, str) or not venue.strip()):
-            raise ValueError("venue must be a non-empty string")
-        mc_int = exact_pos_int(missing_confirmations, default=None)
-        if mc_int is None:
-            raise ValueError("missing_confirmations must be positive")
-        if max_age_seconds is not None:
-            parsed_age = _lifecycle_finite(max_age_seconds, positive=True)
-            if parsed_age is None:
-                raise ValueError("max_age_seconds must be finite and positive")
-            max_age_seconds = parsed_age
-        self.market_api = market_api
-        self.provider_name = provider_name.strip()
-        self.venue = venue.strip() if venue is not None else self.provider_name
-        self.missing_confirmations = mc_int
-        self.retry_on_lookup_error = _parse_bool_flag(retry_on_lookup_error, False)
-        self.max_age_seconds = max_age_seconds
-        self.audit = audit
-        self.clock = clock
-
-    def _now(self) -> float:
-        now = _lifecycle_finite(self.clock(), positive=True)
-        if now is None:
-            raise ValueError("tracked-order clock returned invalid time")
-        return now
-
-    def _audit(self, event: str, intent: dict, **fields) -> None:
-        if self.audit is None:
-            return
-        base = {
-            "intent_id": intent.get("intent_id"),
-            "venue": self.venue,
-            "symbol": intent.get("symbol"),
-            "side": intent.get("side"),
-            "kind": intent.get("kind"),
-            "client_order_id": intent.get("client_order_id"),
-            "order_id": intent.get("order_id"),
-        }
-        base.update(fields)
-        self.audit.record(event, **base)
-
-    @staticmethod
-    def _validate_identity(intent: dict) -> None:
-        if not isinstance(intent, dict):
-            raise ValueError("tracked intent must be a dict")
-        for key in ("intent_id", "client_order_id", "symbol"):
-            if _clean_retry_order_id(intent.get(key)) is None:
-                raise ValueError(f"tracked intent missing {key}")
-        side_val = intent.get("side")
-        if isinstance(side_val, bool) or not str(side_val or "").strip():
-            raise ValueError("tracked intent missing side")
-        if str(intent["side"]).strip().upper() not in {"BUY", "SELL"}:
-            raise ValueError("tracked intent side must be BUY or SELL")
-        if _lifecycle_finite(intent.get("requested_qty"), positive=True) is None:
-            raise ValueError("tracked intent requested_qty must be positive")
-        price = intent.get("requested_price")
-        if price is not None and _lifecycle_finite(price, positive=True) is None:
-            raise ValueError("tracked intent requested_price must be positive")
-
-    def new_intent(self, *, intent_id: str, client_order_id: str, symbol: str,
-                   side: str, requested_qty: float,
-                   requested_price: Optional[float] = None,
-                   kind: Optional[str] = None, attempt: int = 1,
-                   metadata: Optional[Dict] = None) -> dict:
-        if isinstance(intent_id, bool) or isinstance(client_order_id, bool) or isinstance(symbol, bool) or isinstance(side, bool) or isinstance(kind, bool):
-            raise ValueError("tracked intent identity fields must not be boolean")
-        if isinstance(requested_qty, bool):
-            raise ValueError("tracked intent requested_qty must be positive")
-        if isinstance(requested_price, bool):
-            raise ValueError("tracked intent requested_price must be positive")
-        att_int = exact_pos_int(attempt, default=None)
-        if att_int is None:
-            raise ValueError("tracked intent attempt must be positive")
-        clean_iid = _clean_retry_order_id(intent_id)
-        clean_cid = _clean_retry_order_id(client_order_id)
-        clean_sym = _clean_retry_order_id(symbol)
-        if not clean_iid:
-            raise ValueError("tracked intent missing intent_id")
-        if not clean_cid:
-            raise ValueError("tracked intent missing client_order_id")
-        if not clean_sym:
-            raise ValueError("tracked intent missing symbol")
-        side_norm = normalize_side(side)
-        now = self._now()
-        intent = {
-            "intent_id": clean_iid,
-            "client_order_id": clean_cid,
-            "symbol": clean_sym,
-            "side": side_norm,
-            "kind": None if kind is None else str(kind),
-            "requested_qty": float(requested_qty),
-            "requested_price": (None if requested_price is None
-                                else float(requested_price)),
-            "attempt": att_int,
-            "created_at": now,
-            "lookup_misses": 0,
-        }
-        reserved = set(intent) | {
-            "order_id", "submit_status", "submitted_qty", "submitted_price",
-            "last_status", "filled_qty", "terminal_status",
-            "cancel_attempted_at",
-        }
-        for key, value in dict(metadata or {}).items():
-            if key in reserved:
-                raise ValueError(f"tracked intent metadata uses reserved key: {key}")
-            intent[str(key)] = value
-        self._validate_identity(intent)
-        if intent["attempt"] <= 0:
-            raise ValueError("tracked intent attempt must be positive")
-        return intent
-
-    @staticmethod
-    def _order_fields(response) -> dict:
-        if isinstance(response, SubmissionOutcome):
-            fields = {"submission_outcome": response.state}
-            clean_oid = _clean_retry_order_id(response.order_id)
-            if clean_oid is not None:
-                fields["order_id"] = clean_oid
-            if response.reason:
-                fields["submission_reason"] = response.reason
-            response = response.native
-            if response is None:
-                return fields
-            native_fields = TrackedOrderLifecycle._order_fields(response)
-            fields.update(native_fields)
-            return fields
-        if isinstance(response, dict):
-            order_id = _clean_retry_order_id(extract_order_id(response))
-            fields = {}
-            if order_id is not None:
-                fields["order_id"] = str(order_id)
-            status = response.get("status")
-            if status is not None:
-                fields["submit_status"] = str(status)
-            orig_qty = extract_orig_qty(response)
-            submitted_qty = (
-                orig_qty if orig_qty is not None else extract_order_qty(response, default=None)
-            )
-            if submitted_qty is not None:
-                fields["submitted_qty"] = submitted_qty
-            submitted_price = extract_order_price(response, default=None)
-            if submitted_price is not None:
-                fields["submitted_price"] = submitted_price
-            return fields
-        order_id = _clean_retry_order_id(extract_order_id(response))
-        if order_id is not None:
-            return {"order_id": str(order_id)}
-        return {}
-
-    def submit(self, intent: dict, *, persist: PersistPending,
-               submit: SubmitIntent) -> TrackedOrderResult:
-        """Persist and submit exactly once; reconcile status from a later tick."""
-        pending = dict(intent)
-        self._validate_identity(pending)
-        persist(dict(pending))
-        self._audit(
-            "submit_requested", pending,
-            qty=pending["requested_qty"], price=pending.get("requested_price"),
-        )
-        outcome = capture_submission(submit)
-        pending["submission_outcome"] = outcome.state
-        if outcome.state == "refused":
-            pending["refusal_reason"] = outcome.reason
-            pending["submit_status"] = "refused_before_submit"
-            persist(dict(pending))
-            self._audit(
-                "submit_refused", pending, reason=outcome.reason,
-            )
-            return TrackedOrderResult("refused", pending)
-        if outcome.state == "unknown":
-            pending["submit_error"] = outcome.reason
-            persist(dict(pending))
-            self._audit(
-                "submit_ambiguous", pending,
-                error=outcome.reason,
-            )
-            return TrackedOrderResult("active", pending)
-
-        fields = self._order_fields(outcome)
-        pending.update(fields)
-        persist(dict(pending))
-        if _clean_retry_order_id(pending.get("order_id")):
-            self._audit(
-                "submit_accepted", pending,
-                qty=pending["requested_qty"],
-                submitted_qty=pending.get("submitted_qty"),
-                status=pending.get("submit_status"),
-            )
-        else:
-            self._audit("submit_ambiguous", pending, error="response_without_order_id")
-        return TrackedOrderResult("active", pending)
-
-    def _persist_terminal(self, pending: dict, status: OrderStatus,
-                          persist: PersistPending) -> TrackedOrderResult:
-        pending = dict(pending)
-        pending["last_status"] = status.status
-        pending["filled_qty"] = status.filled_qty
-        pending["terminal_status"] = _terminal_payload(status, self._now())
-        persist(dict(pending))
-        self._audit(
-            "order_terminal", pending, status=status.status,
-            venue_status=status.venue_status,
-            filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-        )
-        return TrackedOrderResult("terminal", pending, status)
-
-    def reconcile(self, intent: dict, *, persist: PersistPending) -> TrackedOrderResult:
-        """Reconcile one pending intent against venue truth; never submit here."""
-        pending = dict(intent)
-        self._validate_identity(pending)
-
-        cached_terminal = _status_from_terminal_payload(
-            pending.get("terminal_status"))
-        if cached_terminal is not None:
-            return TrackedOrderResult("terminal", pending, cached_terminal)
-
-        symbol = pending["symbol"]
-        client_order_id = pending["client_order_id"]
-        raw_order_id = pending.get("order_id")
-        order_id = _clean_retry_order_id(raw_order_id)
-        if not order_id:
-            if (
-                str(pending.get("submission_outcome") or "").strip().lower() == "refused"
-                or _is_definitive_submit_refusal(pending.get("submit_error") or pending.get("refusal_reason"))
-            ):
-                persist(None)
-                return TrackedOrderResult("refused", pending)
-            try:
-                native = self.market_api.order_by_client_id(
-                    symbol, client_order_id, provider_name=self.provider_name)
-            except Exception as exc:
-                pending["lookup_error"] = f"{exc.__class__.__name__}: {exc}"
-                persist(dict(pending))
-                self._audit(
-                    "lookup_error", pending,
-                    error_type=exc.__class__.__name__, error=str(exc),
-                )
-                if self.retry_on_lookup_error:
-                    persist(None)
-                    self._audit("lookup_retryable", pending)
-                    return TrackedOrderResult("retryable", pending)
-                return TrackedOrderResult("active", pending)
-            fields = self._order_fields(native)
-            if not fields.get("order_id"):
-                prev_misses = safe_nonneg_int(pending.get("lookup_misses"), default=0) or 0
-                misses = prev_misses + 1
-                pending["lookup_misses"] = misses
-                persist(dict(pending))
-                self._audit(
-                    "order_missing", pending, missing_confirmation=misses,
-                    missing_confirmations_required=self.missing_confirmations,
-                )
-                if misses < self.missing_confirmations:
-                    return TrackedOrderResult("active", pending)
-                persist(None)
-                return TrackedOrderResult("absent", pending)
-            pending.update(fields)
-            pending["lookup_misses"] = 0
-            pending.pop("lookup_error", None)
-            persist(dict(pending))
-            order_id = pending["order_id"]
-            self._audit("order_recovered", pending)
-
-        try:
-            status = self.market_api.order_status(
-                symbol, str(order_id), provider_name=self.provider_name)
-        except Exception as exc:
-            pending["status_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit(
-                "status_error", pending,
-                error_type=exc.__class__.__name__, error=str(exc),
-            )
-            return TrackedOrderResult("active", pending)
-
-        pending.pop("status_error", None)
-        if status.terminal:
-            return self._persist_terminal(pending, status, persist)
-
-        pending["last_status"] = status.status
-        pending["filled_qty"] = status.filled_qty
-        persist(dict(pending))
-        self._audit(
-            "order_status", pending, status=status.status,
-            venue_status=status.venue_status,
-            filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-        )
-
-        created_at = _lifecycle_finite(pending.get("created_at"), positive=True)
-        age_seconds = (max(0.0, self._now() - created_at)
-                       if created_at is not None else None)
-        cancel_attempted = _lifecycle_finite(
-            pending.get("cancel_attempted_at"), positive=True)
-        if (self.max_age_seconds is None or age_seconds is None
-                or age_seconds < self.max_age_seconds or cancel_attempted is not None):
-            return TrackedOrderResult("active", pending, status)
-
-        pending["cancel_attempted_at"] = self._now()
-        persist(dict(pending))
-        self._audit("cancel_requested", pending, age_seconds=age_seconds)
-        try:
-            self.market_api.cancel_order(
-                symbol, str(order_id), provider_name=self.provider_name)
-        except Exception as exc:
-            pending["cancel_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit(
-                "cancel_ambiguous", pending,
-                error_type=exc.__class__.__name__, error=str(exc),
-            )
-            return TrackedOrderResult("active", pending, status)
-
-        pending.pop("cancel_error", None)
-        persist(dict(pending))
-        self._audit("cancel_accepted", pending)
-        try:
-            post_cancel = self.market_api.order_status(
-                symbol, str(order_id), provider_name=self.provider_name)
-        except Exception as exc:
-            pending["status_error"] = f"{exc.__class__.__name__}: {exc}"
-            persist(dict(pending))
-            self._audit(
-                "post_cancel_status_error", pending,
-                error_type=exc.__class__.__name__, error=str(exc),
-            )
-            return TrackedOrderResult("active", pending, status)
-        if post_cancel.terminal:
-            return self._persist_terminal(pending, post_cancel, persist)
-        pending["last_status"] = post_cancel.status
-        pending["filled_qty"] = post_cancel.filled_qty
-        persist(dict(pending))
-        self._audit(
-            "cancel_pending", pending, status=post_cancel.status,
-            filled_qty=post_cancel.filled_qty,
-        )
-        return TrackedOrderResult("active", pending, post_cancel)
+    return is_retry_price_favorable(rec.get("side"), current_price, rec.get("requested_price"), tol=tol)
