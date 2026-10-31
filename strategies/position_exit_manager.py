@@ -6,22 +6,13 @@ Provides a provider-agnostic, mathematical mirror state machine for position exi
   - Stop-Loss (MHDSL): Priority 1 Hard Disaster Floor (parallel sigma_1h volatility scaling),
     Priority 2 Bounce Protection (trend deferral, micro-trailing bounce rollover, dynamic
     ratchet, and dual-variant structural support breakdown sensor), Priority 3 Smart Stop-Loss.
-
-Mathematical symmetry:
-  - Zone Trigger: Gain >= gain_threshold (TP) vs Loss >= lost_threshold (SL)
-  - Circuit Breaker: Guaranteed profit floor (TP) vs Hard disaster floor (SL)
-  - Trend Deferral: Ride trend up (TP) vs Watch bounce on trend up (SL)
-  - Micro-Trailing: Peak pullback (TP) vs Bounce rollover (SL)
-  - Dynamic Ratchet: Tightens trail as profit grows (TP) vs tightens allowed pullback
-    as bounce recovery expands (SL)
-  - Timeout: Stagnation timeout (TP) vs Bounce timeout (SL)
 """
 
 from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as _dc_fields
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -83,35 +74,30 @@ class PriceGeometrySnapshot:
 
     def bounce_ratio(self, trough_price: float) -> float:
         """Calculate recovery bounce ratio above trough: (current - trough) / trough."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        tp = self._finite_pos_float(trough_price)
+        cp, tp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(trough_price)
         if cp is None or tp is None:
             return 0.0
-        diff = cp - tp
-        return diff / tp if diff > 0.0 else 0.0
+        return (cp - tp) / tp if cp > tp else 0.0
 
     def pullback_ratio(self, peak_price: float) -> float:
         """Normalized pullback ratio from peak: (peak - current) / peak."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        pp = self._finite_pos_float(peak_price)
+        cp, pp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(peak_price)
         if cp is None or pp is None:
             return 0.0
-        diff = pp - cp
-        return diff / pp if diff > 0.0 else 0.0
+        return (pp - cp) / pp if pp > cp else 0.0
 
     def discount_drop_ratio(self, reference_price: float) -> float:
         """Calculate price discount ratio below reference sale: (reference - current) / reference."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        rp = self._finite_pos_float(reference_price)
-        if cp is None or rp is None:
-            return 0.0
-        return (rp - cp) / rp
+        cp, rp = self._finite_pos_float(getattr(self, "current_price", None)), self._finite_pos_float(reference_price)
+        return (rp - cp) / rp if (cp is not None and rp is not None) else 0.0
 
     def has_bounced(self, trough_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has bounced above trough honoring fuzzy tolerance."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        tp = self._finite_pos_float(trough_price)
-        th = self._finite_pos_float(threshold)
+        cp, tp, th = (
+            self._finite_pos_float(getattr(self, "current_price", None)),
+            self._finite_pos_float(trough_price),
+            self._finite_pos_float(threshold),
+        )
         if cp is None or tp is None or th is None:
             return False
         if self.bounce_ratio(tp) >= th:
@@ -121,9 +107,11 @@ class PriceGeometrySnapshot:
 
     def has_pulled_back(self, peak_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has pulled back from peak honoring fuzzy tolerance."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        pp = self._finite_pos_float(peak_price)
-        th = self._finite_pos_float(threshold)
+        cp, pp, th = (
+            self._finite_pos_float(getattr(self, "current_price", None)),
+            self._finite_pos_float(peak_price),
+            self._finite_pos_float(threshold),
+        )
         if cp is None or pp is None or th is None:
             return False
         if self.pullback_ratio(pp) >= th:
@@ -133,9 +121,11 @@ class PriceGeometrySnapshot:
 
     def has_dropped(self, reference_price: float, threshold: float, tol_pct: float = 0.0) -> bool:
         """Determine if price has dropped below reference sale honoring fuzzy tolerance."""
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        rp = self._finite_pos_float(reference_price)
-        th = safe_float(threshold, default=None)
+        cp, rp, th = (
+            self._finite_pos_float(getattr(self, "current_price", None)),
+            self._finite_pos_float(reference_price),
+            safe_float(threshold, default=None),
+        )
         if cp is None or rp is None or th is None:
             return False
         target = rp * (1.0 - th)
@@ -179,39 +169,28 @@ class PositionSnapshot(PriceGeometrySnapshot):
     @property
     def price_change_ratio(self) -> float:
         """Normalized price change relative to cost: (current - buy) / buy."""
-        bp = self._finite_pos_float(getattr(self, "avg_buy_price", None))
-        cp = self._finite_pos_float(getattr(self, "current_price", None))
-        if bp is None or cp is None:
-            return 0.0
-        return (cp - bp) / bp
+        bp, cp = self._finite_pos_float(getattr(self, "avg_buy_price", None)), self._finite_pos_float(getattr(self, "current_price", None))
+        return (cp - bp) / bp if (bp is not None and cp is not None) else 0.0
 
     @property
     def gain_ratio(self) -> float:
-        """Positive price gain ratio, or 0.0 if position is in loss."""
         return max(0.0, self.price_change_ratio)
 
     @property
     def loss_ratio(self) -> float:
-        """Positive price loss ratio, or 0.0 if position is in profit."""
         return max(0.0, -self.price_change_ratio)
 
     @property
     def gain_pct(self) -> float:
-        """Percentage gain: e.g. 7.5 for +7.5%."""
         return self.gain_ratio * 100.0
 
     @property
     def loss_pct(self) -> float:
-        """Percentage loss: e.g. 3.2 for -3.2%."""
         return self.loss_ratio * 100.0
 
     @property
     def is_valid_price(self) -> bool:
-        """Verify whether price geometry is valid and strictly positive."""
-        return (
-            self._finite_pos_float(self.avg_buy_price) is not None
-            and self._finite_pos_float(self.current_price) is not None
-        )
+        return self._finite_pos_float(self.avg_buy_price) is not None and self._finite_pos_float(self.current_price) is not None
 
     def _ratio_reaches_threshold(self, ratio: float, threshold: float, tol_pct: float = 0.0) -> bool:
         th = self._finite_pos_float(threshold)
@@ -223,11 +202,9 @@ class PositionSnapshot(PriceGeometrySnapshot):
         return (ratio > 0.0 or tol >= 200.0) and tol > 0 and are_close(ratio, th, tol)
 
     def in_sl_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if position is in stop-loss territory honoring fuzzy tolerance."""
         return self._ratio_reaches_threshold(self.loss_ratio, threshold, tol_pct)
 
     def in_tp_territory(self, threshold: float, tol_pct: float = 0.0) -> bool:
-        """Determine if position is in take-profit territory honoring fuzzy tolerance."""
         return self._ratio_reaches_threshold(self.gain_ratio, threshold, tol_pct)
 
 
@@ -262,7 +239,7 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     last_sell_time_s: Optional[float] = None
     trend_up: bool = False
     trend_down: bool = False
-    vol_1h: float = 0.0  # Hourly realized volatility as decimal ratio (e.g. 0.02 for 2.0%)
+    vol_1h: float = 0.0
     vol_source: str = "default"
 
     def __post_init__(self) -> None:
@@ -276,19 +253,16 @@ class ReentrySnapshot(PriceGeometrySnapshot):
             if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
                 self.last_exit_kind = None
             else:
-                lek = str(self.last_exit_kind).strip().upper()
-                self.last_exit_kind = lek if lek else None
+                self.last_exit_kind = str(self.last_exit_kind).strip().upper() or None
         self.trend_up = _parse_bool_flag(self.trend_up, False)
         self.trend_down = _parse_bool_flag(self.trend_down, False)
 
     @property
     def sale_drop_ratio(self) -> float:
-        """Calculate price discount ratio below last_sell_price."""
         return self.discount_drop_ratio(self.last_sell_price) if self._finite_pos_float(self.last_sell_price) is not None else 0.0
 
     @property
     def sale_drop_pct(self) -> float:
-        """Calculate price discount percentage below last_sell_price."""
         return self.sale_drop_ratio * 100.0
 
 
@@ -301,7 +275,7 @@ class PositionExitConfig:
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
     sl_disaster_buffer_min_pct: float = 0.008
-    sl_disaster_buffer_max_pct: float = 0.15  # Upper bound clamp on disaster buffer (15% decimal)
+    sl_disaster_buffer_max_pct: float = 0.15
     sl_trend_defer_max_sec: float = 220.0
     sl_bounce_min_recovery_pct: float = 0.004
     sl_bounce_pullback_pct: float = 0.003
@@ -350,83 +324,27 @@ class PositionExitConfig:
 
     # --- Re-Entry Mirror (MHDRE) Parameters ---
     reentry_enabled: bool = True
-    reentry_sl_bounce_pct: float = 0.015       # 1.5% bounce from trough after STOP
-    reentry_drop_pct: float = 0.020            # 2.0% drop below last sell after TP
-    reentry_pullback_pct: float = 0.015        # 1.5% pullback from peak in bull trend
-    reentry_bear_bounce_pct: float = 0.010     # 1.0% bounce from trough in bear trend
-    reentry_ttl_hours: float = 0.0             # 0 = disabled (hours)
-    reentry_tolerance_pct: float = 0.05        # 0.05% tolerance
-    reentry_ratchet_enabled: bool = True       # Ratchet prevents re-entry on rollover
-    reentry_bear_gate_enabled: bool = True     # Block/require stronger bounce in bear trend
-    reentry_hybrid_enabled: bool = False       # Enable hybrid pullback in confirmed bull trends
-    reentry_peak_relative: bool = False        # Enable peak-relative pullback across all regimes
-    reentry_post_stop_cooldown_sec: float = 0.0  # Minimum stabilization cooldown (seconds) after STOP before re-entry
-    allow_external_cache: bool = True          # False in replay/backtests to enforce strict simulation determinism
+    reentry_sl_bounce_pct: float = 0.015
+    reentry_drop_pct: float = 0.020
+    reentry_pullback_pct: float = 0.015
+    reentry_bear_bounce_pct: float = 0.010
+    reentry_ttl_hours: float = 0.0
+    reentry_tolerance_pct: float = 0.05
+    reentry_ratchet_enabled: bool = True
+    reentry_bear_gate_enabled: bool = True
+    reentry_hybrid_enabled: bool = False
+    reentry_peak_relative: bool = False
+    reentry_post_stop_cooldown_sec: float = 0.0
+    allow_external_cache: bool = True
 
     def __post_init__(self) -> None:
-        _bool_defaults = {
-            "sl_bounce_ratchet_enabled": True,
-            "sl_structural_break_enabled": True,
-            "smart_sl_enabled": True,
-            "tp_trend_ride_enabled": True,
-            "tp_ratchet_enabled": True,
-            "hard_tp_enabled": False,
-            "fast_profit_guard_enabled": False,
-            "surge_guard_enabled": False,
-            "slow_grind_guard_enabled": False,
-            "reentry_enabled": True,
-            "reentry_ratchet_enabled": True,
-            "reentry_bear_gate_enabled": True,
-            "reentry_hybrid_enabled": False,
-            "reentry_peak_relative": False,
-            "allow_external_cache": True,
-        }
-        for b_attr, b_def in _bool_defaults.items():
-            setattr(self, b_attr, _parse_bool_flag(getattr(self, b_attr, b_def), b_def))
-        _float_defaults = {
-            "lost_threshold": 0.05,
-            "sl_disaster_buffer_ratio": 0.30,
-            "sl_disaster_vol_multiplier": 0.85,
-            "sl_disaster_buffer_min_pct": 0.008,
-            "sl_disaster_buffer_max_pct": 0.15,
-            "sl_trend_defer_max_sec": 220.0,
-            "sl_bounce_min_recovery_pct": 0.004,
-            "sl_bounce_pullback_pct": 0.003,
-            "sl_bounce_ratchet_k": 0.50,
-            "sl_bounce_min_pullback_pct": 0.0015,
-            "gain_threshold": 0.07,
-            "tp_profit_floor_ratio": 0.50,
-            "tp_profit_floor_min_pct": 0.008,
-            "tp_pullback_pct": 0.006,
-            "tp_stagnation_max_sec": 1080.0,
-            "tp_ratchet_base_trail": 0.006,
-            "tp_ratchet_min_trail": 0.0025,
-            "tp_ratchet_k": 0.10,
-            "hard_tp_pct": 0.20,
-            "hard_tp_frac": 0.50,
-            "hard_tp_cooldown_sec": 3600.0,
-            "are_close_tolerance_pct": 1.0,
-            "fast_profit_mult": 2.0,
-            "fast_profit_window_sec": 60.0,
-            "fast_profit_drop_pct": 0.40,
-            "surge_gain_pct": 18.0,
-            "surge_exit_pullback_pct": 3.5,
-            "surge_move_pct": 25.0,
-            "slow_grind_min_days": 7.0,
-            "slow_grind_min_gain_pct": 15.0,
-            "slow_grind_flash_window_sec": 900.0,
-            "slow_grind_flash_drop_pct": 1.5,
-            "slow_grind_structural_drop_pct": 2.5,
-            "reentry_sl_bounce_pct": 0.015,
-            "reentry_drop_pct": 0.020,
-            "reentry_pullback_pct": 0.015,
-            "reentry_bear_bounce_pct": 0.010,
-            "reentry_ttl_hours": 0.0,
-            "reentry_tolerance_pct": 0.05,
-            "reentry_post_stop_cooldown_sec": 0.0,
-        }
-        for f_attr, f_def in _float_defaults.items():
-            setattr(self, f_attr, safe_nonneg_float(getattr(self, f_attr, f_def), default=f_def))
+        for f in _dc_fields(self):
+            val = getattr(self, f.name, f.default)
+            if isinstance(f.default, bool):
+                setattr(self, f.name, _parse_bool_flag(val, f.default))
+            else:
+                setattr(self, f.name, safe_nonneg_float(val, default=f.default))
+
 
 def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
     try:
@@ -451,8 +369,7 @@ def _resolve_nonneg_threshold(custom_val: Any, default_val: float) -> float:
 
 
 def _same_buy_price(stored_buy_price: Any, buy_price: float) -> bool:
-    ebp = safe_pos_float(stored_buy_price, default=None)
-    cbp = safe_pos_float(buy_price, default=None)
+    ebp, cbp = safe_pos_float(stored_buy_price, default=None), safe_pos_float(buy_price, default=None)
     return ebp is not None and cbp is not None and math.isclose(ebp, cbp, rel_tol=1e-9, abs_tol=1e-12)
 
 
@@ -464,10 +381,9 @@ def _sanitize_position_state(
     existing = state_map.get(symbol)
     if existing is None:
         return None
-    if not isinstance(existing, dict):
-        state_map.pop(symbol, None)
-        return None
-    if existing.get("buy_price") is not None and not _same_buy_price(existing.get("buy_price"), buy_price):
+    if not isinstance(existing, dict) or (
+        existing.get("buy_price") is not None and not _same_buy_price(existing.get("buy_price"), buy_price)
+    ):
         state_map.pop(symbol, None)
         return None
     return existing
@@ -493,10 +409,7 @@ class PositionExitManager:
         self.config = config or PositionExitConfig()
         self.vol_resolver = vol_resolver
         self.smart_sl_evaluator = smart_sl_evaluator
-
-        # In-memory lifecycle states keyed by symbol
         self.sl_bounce_state: Dict[str, Dict[str, Any]] = {}
-        # SSOT for the whole Stop-Loss episode (shared by every deferral layer)
         self.sl_episode_state: Dict[str, Dict[str, Any]] = {}
         self.tp_ride_state: Dict[str, Dict[str, Any]] = {}
         self.reentry_state: Dict[str, Dict[str, Any]] = {}
@@ -558,16 +471,14 @@ class PositionExitManager:
     def reset_sl_episode(self, symbol: str) -> None:
         """End the current Stop-Loss episode (position left SL territory, closed or was replaced)."""
         sym_clean = _clean_symbol_str(symbol)
-        if not sym_clean:
-            return
-        self.sl_episode_state.pop(sym_clean, None)
+        if sym_clean:
+            self.sl_episode_state.pop(sym_clean, None)
 
     def _clear_sl_tracking(self, symbol: str) -> None:
         sym_clean = _clean_symbol_str(symbol)
-        if not sym_clean:
-            return
-        self.sl_bounce_state.pop(sym_clean, None)
-        self.sl_episode_state.pop(sym_clean, None)
+        if sym_clean:
+            self.sl_bounce_state.pop(sym_clean, None)
+            self.sl_episode_state.pop(sym_clean, None)
 
     def _lock_episode_disaster_floor(
         self,
@@ -576,28 +487,17 @@ class PositionExitManager:
         buy_price: float,
         now: float,
     ) -> Tuple[float, bool]:
-        """Monotonic ratchet: the disaster floor armed for an SL episode can only tighten.
-
-        Applies to the whole episode regardless of which module defers the exit
-        (trend bounce protection or Smart-SL), so a regime switch or a volatility
-        spike can never loosen an already armed emergency limit. A change of the
-        average entry price (new position / DCA) starts a fresh episode.
-
-        Returns:
-            (effective_floor, locked) where locked=True when the armed floor overrode the candidate.
-        """
+        """Monotonic ratchet: the disaster floor armed for an SL episode can only tighten."""
         sym_clean = _clean_symbol_str(symbol)
         episode = _sanitize_position_state(self.sl_episode_state, sym_clean, buy_price)
-        same_buy = bool(episode is not None and episode.get("buy_price") is not None)
-        if episode is None or not same_buy:
+        if episode is None or episode.get("buy_price") is None:
             self.sl_episode_state[sym_clean] = {
                 "started_at": now,
                 "buy_price": buy_price,
                 "disaster_floor": candidate_floor,
             }
             return candidate_floor, False
-        armed = episode.get("disaster_floor")
-        armed_f = safe_pos_float(armed, default=None)
+        armed_f = safe_pos_float(episode.get("disaster_floor"), default=None)
         if armed_f is not None and armed_f < candidate_floor:
             return armed_f, True
         episode["disaster_floor"] = candidate_floor
@@ -606,9 +506,8 @@ class PositionExitManager:
     def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
         """Record successful execution of a Hard-TP order to arm cooldown."""
         sym_clean = _clean_symbol_str(symbol)
-        if not sym_clean:
-            return
-        self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
+        if sym_clean:
+            self.hard_tp_last[sym_clean] = _resolve_now_s(timestamp)
 
     def _resolve_effective_vol_1h(
         self,
@@ -634,13 +533,9 @@ class PositionExitManager:
             elif getattr(self.config, "allow_external_cache", True):
                 cached = safe_pos_float(resolve_cached_volatility_1h(symbol), default=0.0)
                 if cached > 0.0:
-                    eff_vol = cached
-                    eff_src = "cache"
+                    eff_vol, eff_src = cached, "cache"
         return eff_vol, eff_src
 
-    # -------------------------------------------------------------------------
-    # Stop-Loss: Volatility-Scaled Disaster Buffer (Priority 1)
-    # -------------------------------------------------------------------------
     def compute_disaster_buffer(
         self,
         symbol: str,
@@ -648,12 +543,7 @@ class PositionExitManager:
         vol_1h: float = 0.0,
         vol_source: str = "default",
     ) -> Tuple[float, Dict[str, Any]]:
-        """Compute volatility-scaled disaster buffer running Variant A and Variant B in parallel.
-
-        Variant A (Ratio Floor): buffer_a = lost_threshold * sl_disaster_buffer_ratio
-        Variant B (Dynamic Volatility): buffer_b = vol_1h * sl_disaster_vol_multiplier
-        Effective: max(buffer_a, buffer_b, sl_disaster_buffer_min_pct)
-        """
+        """Compute volatility-scaled disaster buffer running Variant A and Variant B in parallel."""
         lost_threshold = _resolve_positive_threshold(lost_threshold, self.config.lost_threshold)
         buf_a = lost_threshold * self.config.sl_disaster_buffer_ratio
         eff_vol, eff_src = self._resolve_effective_vol_1h(symbol, vol_1h, vol_source)
@@ -662,20 +552,14 @@ class PositionExitManager:
         min_floor = self.config.sl_disaster_buffer_min_pct
         buf_raw = max(buf_a, buf_b, min_floor)
         max_cap = self.config.sl_disaster_buffer_max_pct
-        capped = False
-        if max_cap > 0 and buf_raw > max_cap:
-            buf_effective = max_cap
-            capped = True
-        else:
-            buf_effective = buf_raw
-
+        capped = max_cap > 0 and buf_raw > max_cap
+        buf_effective = max_cap if capped else buf_raw
         source = (
             "capped_max"
             if capped
             else ("variant_b_vol1h" if (buf_b > buf_a and buf_b >= min_floor) else "variant_a_proportional")
         )
-
-        metadata = {
+        return buf_effective, {
             "variant_a_buffer": buf_a,
             "variant_b_buffer": buf_b,
             "variant_a_pct": round(vol_ratio_to_pct(buf_a), 3),
@@ -691,11 +575,7 @@ class PositionExitManager:
             "vol_source": eff_src,
             "divergence_pct": vol_ratio_to_pct(buf_b - buf_a),
         }
-        return buf_effective, metadata
 
-    # -------------------------------------------------------------------------
-    # Stop-Loss: Evaluation Engine (MHDSL)
-    # -------------------------------------------------------------------------
     def evaluate_stop_loss(
         self,
         snapshot: PositionSnapshot,
@@ -711,44 +591,27 @@ class PositionExitManager:
         snapshot: PositionSnapshot,
         custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
-        """Evaluate Stop-Loss with strict hierarchical priorities.
-
-        Priority 1: Hard Disaster Floor Circuit Breaker
-        Priority 2: Bounce Protection (Trend Deferral, Dynamic Ratchet, Structural Breakdown)
-        Priority 3: Smart Stop-Loss Controller / Direct Exit
-        """
+        """Evaluate Stop-Loss with strict hierarchical priorities (Disaster Floor -> Bounce -> Smart SL)."""
         symbol = _clean_symbol_str(snapshot.symbol)
-        current_price = snapshot.current_price
-        buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
         lost_threshold = _resolve_positive_threshold(custom_threshold, self.config.lost_threshold)
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price = float(snapshot.current_price)
-        buy_price = float(snapshot.avg_buy_price)
-
+        current_price, buy_price = float(snapshot.current_price), float(snapshot.avg_buy_price)
         price_decrease = snapshot.loss_ratio
 
-        # Stop-loss boundary check
         _sanitize_position_state(self.sl_bounce_state, symbol, buy_price)
-
-        in_sl_territory = snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct)
-
-        if not in_sl_territory:
-            # Full recovery above stop-loss territory ends the SL episode
+        if not snapshot.in_sl_territory(lost_threshold, self.config.are_close_tolerance_pct):
             self._clear_sl_tracking(symbol)
             return ExitDecision(ExitAction.HOLD, False, "not_in_sl_territory")
 
-        # Compute dynamic disaster floor
         disaster_buffer, disaster_meta = self.compute_disaster_buffer(
             symbol=symbol,
             lost_threshold=lost_threshold,
             vol_1h=snapshot.vol_1h,
             vol_source=snapshot.vol_source,
         )
-        # Preserve already activated protection for the whole SL episode: once armed,
-        # the disaster floor cannot loosen, whichever layer (bounce / Smart-SL) defers.
         disaster_floor, floor_locked = self._lock_episode_disaster_floor(
             symbol, lost_threshold + disaster_buffer, buy_price, now
         )
@@ -766,9 +629,7 @@ class PositionExitManager:
             episode_started_at = st_val
         sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
 
-        # ---------------------------------------------------------------------
         # PRIORITY 1: Hard Disaster Floor Circuit Breaker
-        # ---------------------------------------------------------------------
         if price_decrease >= disaster_floor:
             self.sl_bounce_state.pop(symbol, None)
             reason = (
@@ -776,9 +637,9 @@ class PositionExitManager:
                 f"floor {disaster_floor*100:.2f}%, buffer={disaster_buffer*100:.2f}% [{disaster_meta['source']}])"
             )
             return ExitDecision(
-                action=ExitAction.SELL,
-                should_exit=True,
-                reason=reason,
+                ExitAction.SELL,
+                True,
+                reason,
                 forced=True,
                 metadata={
                     "priority": 1,
@@ -788,9 +649,7 @@ class PositionExitManager:
                 },
             )
 
-        # ---------------------------------------------------------------------
         # PRIORITY 2: Bounce Protection (Trend Up)
-        # ---------------------------------------------------------------------
         if snapshot.trend_up:
             bounce_state = self.sl_bounce_state.get(symbol)
             if bounce_state is None:
@@ -798,9 +657,9 @@ class PositionExitManager:
                 if elapsed_ep >= self.config.sl_trend_defer_max_sec:
                     reason = f"mhdsl_bounce_timeout ({elapsed_ep:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
                     return ExitDecision(
-                        action=ExitAction.SELL,
-                        should_exit=True,
-                        reason=reason,
+                        ExitAction.SELL,
+                        True,
+                        reason,
                         forced=True,
                         metadata={"priority": 2, "sub_reason": "timeout", "elapsed": elapsed_ep, "sl_timer_expired": True},
                     )
@@ -817,128 +676,103 @@ class PositionExitManager:
                     f"disaster_floor={disaster_floor*100:.2f}%, max_defer={self.config.sl_trend_defer_max_sec:.0f}s)"
                 )
                 return ExitDecision(
-                    action=ExitAction.HOLD,
-                    should_exit=False,
-                    reason=reason,
-                    forced=False,
+                    ExitAction.HOLD,
+                    False,
+                    reason,
                     metadata={"priority": 2, "state": "initiated", "disaster_floor": disaster_floor},
                 )
+
+            b_val = safe_nonneg_float(bounce_state.get("started_at"), default=None)
+            if b_val is None or b_val > now:
+                b_started_at = now
+                bounce_state["started_at"] = now
             else:
-                b_val = safe_nonneg_float(bounce_state.get("started_at"), default=None)
-                if b_val is None or b_val > now:
-                    b_started_at = now
-                    bounce_state["started_at"] = now
-                else:
-                    b_started_at = b_val
-                elapsed = now - b_started_at
-                if elapsed >= self.config.sl_trend_defer_max_sec or sl_episode_expired:
-                    eff_elapsed = max(elapsed, now - episode_started_at)
-                    reason = f"mhdsl_bounce_timeout ({eff_elapsed:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
-                    self.sl_bounce_state.pop(symbol, None)
-                    return ExitDecision(
-                        action=ExitAction.SELL,
-                        should_exit=True,
-                        reason=reason,
-                        forced=True,
-                        metadata={"priority": 2, "sub_reason": "timeout", "elapsed": eff_elapsed, "sl_timer_expired": True},
-                    )
+                b_started_at = b_val
+            elapsed = now - b_started_at
+            if elapsed >= self.config.sl_trend_defer_max_sec or sl_episode_expired:
+                eff_elapsed = max(elapsed, now - episode_started_at)
+                reason = f"mhdsl_bounce_timeout ({eff_elapsed:.0f}s >= {self.config.sl_trend_defer_max_sec:.0f}s without full recovery)"
+                self.sl_bounce_state.pop(symbol, None)
+                return ExitDecision(
+                    ExitAction.SELL,
+                    True,
+                    reason,
+                    forced=True,
+                    metadata={"priority": 2, "sub_reason": "timeout", "elapsed": eff_elapsed, "sl_timer_expired": True},
+                )
 
-                lowest_px = safe_pos_float(bounce_state.get("lowest_price"), default=current_price)
-                bounce_state["lowest_price"] = lowest_px
-                peak_px = safe_pos_float(bounce_state.get("peak_bounce_price"), default=current_price)
-                bounce_state["peak_bounce_price"] = peak_px
+            lowest_px = safe_pos_float(bounce_state.get("lowest_price"), default=current_price)
+            bounce_state["lowest_price"] = lowest_px
+            peak_px = safe_pos_float(bounce_state.get("peak_bounce_price"), default=current_price)
+            bounce_state["peak_bounce_price"] = peak_px
+            bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
+            bounce_attempted = bounce_recovery >= self.config.sl_bounce_min_recovery_pct
+
+            if current_price < lowest_px and bounce_attempted and self.config.sl_structural_break_enabled:
+                sl_forced_reason = (
+                    f"mhdsl_structural_break (failed bounce from {peak_px:.4f} "
+                    f"[+{bounce_recovery*100:.2f}%] broke below support {lowest_px:.4f} to {current_price:.4f})"
+                )
+                self.sl_bounce_state.pop(symbol, None)
+                return ExitDecision(
+                    ExitAction.SELL,
+                    True,
+                    sl_forced_reason,
+                    forced=True,
+                    metadata={"priority": 2, "sub_reason": "structural_break", "lowest_px": lowest_px, "sl_timer_expired": False},
+                )
+            if current_price <= lowest_px:
+                bounce_state["lowest_price"] = bounce_state["peak_bounce_price"] = current_price
+                lowest_px = peak_px = current_price
+                bounce_recovery = 0.0
+            elif current_price > peak_px:
+                bounce_state["peak_bounce_price"] = peak_px = current_price
                 bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
-                bounce_attempted = bounce_recovery >= self.config.sl_bounce_min_recovery_pct
 
-                sl_forced_reason: Optional[str] = None
+            min_loss_val = safe_float(bounce_state.get("min_loss"), default=price_decrease)
+            if price_decrease < min_loss_val:
+                bounce_state["min_loss"] = price_decrease
 
-                # Dual-variant support for structural support break
-                if current_price < lowest_px and bounce_attempted and self.config.sl_structural_break_enabled:
-                    sl_forced_reason = (
-                        f"mhdsl_structural_break (failed bounce from {peak_px:.4f} "
-                        f"[+{bounce_recovery*100:.2f}%] broke below support {lowest_px:.4f} to {current_price:.4f})"
-                    )
-                    self.sl_bounce_state.pop(symbol, None)
-                elif current_price <= lowest_px:
-                    # Baseline variant: reset trough and peak
-                    bounce_state["lowest_price"] = current_price
-                    bounce_state["peak_bounce_price"] = current_price
-                    lowest_px = current_price
-                    peak_px = current_price
-                    bounce_recovery = 0.0
-                elif current_price > peak_px:
-                    bounce_state["peak_bounce_price"] = current_price
-                    peak_px = current_price
-                    bounce_recovery = (peak_px - lowest_px) / lowest_px if lowest_px > 0 else 0.0
+            pullback_from_peak = snapshot.pullback_ratio(peak_px)
+            eff_pullback_pct = self.config.sl_bounce_pullback_pct
+            if self.config.sl_bounce_ratchet_enabled and bounce_recovery > self.config.sl_bounce_min_recovery_pct:
+                excess_rec = bounce_recovery - self.config.sl_bounce_min_recovery_pct
+                tightened = self.config.sl_bounce_pullback_pct - (excess_rec * self.config.sl_bounce_ratchet_k)
+                eff_pullback_pct = max(self.config.sl_bounce_min_pullback_pct, tightened)
 
-                if sl_forced_reason:
-                    return ExitDecision(
-                        action=ExitAction.SELL,
-                        should_exit=True,
-                        reason=sl_forced_reason,
-                        forced=True,
-                        metadata={
-                            "priority": 2,
-                            "sub_reason": "structural_break",
-                            "lowest_px": lowest_px,
-                            "sl_timer_expired": False,
-                        },
-                    )
+            if bounce_attempted and pullback_from_peak >= eff_pullback_pct:
+                reason = (
+                    f"mhdsl_bounce_rollover (peaked at {peak_px:.4f} [+{bounce_recovery*100:.2f}%], "
+                    f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
+                )
+                self.sl_bounce_state.pop(symbol, None)
+                return ExitDecision(
+                    ExitAction.SELL,
+                    True,
+                    reason,
+                    forced=True,
+                    metadata={
+                        "priority": 2,
+                        "sub_reason": "rollover",
+                        "pullback": pullback_from_peak,
+                        "eff_pullback": eff_pullback_pct,
+                        "sl_timer_expired": False,
+                    },
+                )
+            reason = (
+                f"mhdsl_bounce_deferred ({elapsed:.0f}s/{self.config.sl_trend_defer_max_sec:.0f}s, "
+                f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)"
+            )
+            return ExitDecision(
+                ExitAction.HOLD,
+                False,
+                reason,
+                metadata={"priority": 2, "state": "riding_bounce", "elapsed": elapsed, "peak_px": peak_px, "disaster_floor": disaster_floor},
+            )
 
-                min_loss_val = safe_float(bounce_state.get("min_loss"), default=price_decrease)
-                if price_decrease < min_loss_val:
-                    bounce_state["min_loss"] = price_decrease
-
-                pullback_from_peak = snapshot.pullback_ratio(peak_px)
-
-                eff_pullback_pct = self.config.sl_bounce_pullback_pct
-                if self.config.sl_bounce_ratchet_enabled and bounce_recovery > self.config.sl_bounce_min_recovery_pct:
-                    excess_rec = bounce_recovery - self.config.sl_bounce_min_recovery_pct
-                    tightened = self.config.sl_bounce_pullback_pct - (excess_rec * self.config.sl_bounce_ratchet_k)
-                    eff_pullback_pct = max(self.config.sl_bounce_min_pullback_pct, tightened)
-
-                # Dynamic micro-trailing bounce rollover
-                if bounce_attempted and pullback_from_peak >= eff_pullback_pct:
-                    reason = (
-                        f"mhdsl_bounce_rollover (peaked at {peak_px:.4f} [+{bounce_recovery*100:.2f}%], "
-                        f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
-                    )
-                    self.sl_bounce_state.pop(symbol, None)
-                    return ExitDecision(
-                        action=ExitAction.SELL,
-                        should_exit=True,
-                        reason=reason,
-                        forced=True,
-                        metadata={
-                            "priority": 2,
-                            "sub_reason": "rollover",
-                            "pullback": pullback_from_peak,
-                            "eff_pullback": eff_pullback_pct,
-                            "sl_timer_expired": False,
-                        },
-                    )
-                else:
-                    reason = (
-                        f"mhdsl_bounce_deferred ({elapsed:.0f}s/{self.config.sl_trend_defer_max_sec:.0f}s, "
-                        f"loss={price_decrease*100:.2f}%, peak_px={peak_px:.4f}, floor={disaster_floor*100:.2f}%)"
-                    )
-                    return ExitDecision(
-                        action=ExitAction.HOLD,
-                        should_exit=False,
-                        reason=reason,
-                        forced=False,
-                        metadata={
-                            "priority": 2, "state": "riding_bounce", "elapsed": elapsed,
-                            "peak_px": peak_px, "disaster_floor": disaster_floor,
-                        },
-                    )
-
-        # Trend is NOT UP: clear any bounce deferral (the SL episode floor lock persists)
         self.sl_bounce_state.pop(symbol, None)
 
-        # ---------------------------------------------------------------------
         # PRIORITY 3: Smart Stop-Loss Controller / Trend Check
-        # ---------------------------------------------------------------------
         if (
             self.config.smart_sl_enabled
             and not sl_episode_expired
@@ -962,44 +796,26 @@ class PositionExitManager:
                         provider=snapshot.provider,
                         current_price=current_price,
                         buy_price=buy_price,
-                        disaster_buffer_pct=disaster_buffer * 100.0,  # episode-locked effective buffer
+                        disaster_buffer_pct=disaster_buffer * 100.0,
                     )
+                    meta = {"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor}
                     if not should_exec:
-                        return ExitDecision(
-                            action=ExitAction.HOLD,
-                            should_exit=False,
-                            reason=f"smart_stop_loss_deferred: {sl_reason}",
-                            forced=False,
-                            metadata={"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor},
-                        )
-                    else:
-                        if "grace_period_expired" in str(sl_reason) or "active_crash_cascade" in str(sl_reason):
-                            episode_state["smart_sl_done"] = True
-                        return ExitDecision(
-                            action=ExitAction.SELL,
-                            should_exit=True,
-                            reason=sl_reason,
-                            forced=False,
-                            metadata={"priority": 3, "smart_sl_meta": sl_meta, "disaster_floor": disaster_floor},
-                        )
+                        return ExitDecision(ExitAction.HOLD, False, f"smart_stop_loss_deferred: {sl_reason}", metadata=meta)
+                    if "grace_period_expired" in str(sl_reason) or "active_crash_cascade" in str(sl_reason):
+                        episode_state["smart_sl_done"] = True
+                    return ExitDecision(ExitAction.SELL, True, sl_reason, metadata=meta)
                 except Exception:
                     pass
 
-        # Baseline SL exit when trend is not up and smart controller is inactive
         reason = f"stop_loss_threshold_breached (loss {price_decrease*100:.2f}% >= {lost_threshold*100:.2f}%)"
         return ExitDecision(
-            action=ExitAction.SELL,
-            should_exit=True,
-            reason=reason,
-            forced=False,
+            ExitAction.SELL,
+            True,
+            reason,
             metadata={"priority": 3, "loss": price_decrease, "sl_timer_expired": sl_episode_expired},
         )
 
-    def _check_hard_tp_spike(
-        self,
-        snapshot: PositionSnapshot,
-        now: float,
-    ) -> Optional[ExitDecision]:
+    def _check_hard_tp_spike(self, snapshot: PositionSnapshot, now: float) -> Optional[ExitDecision]:
         if not (
             self.config.hard_tp_enabled
             and 0 < self.config.hard_tp_frac <= 1.0
@@ -1018,9 +834,9 @@ class PositionExitManager:
                 f"selling {self.config.hard_tp_frac*100:.0f}%)"
             )
             return ExitDecision(
-                action=ExitAction.PARTIAL_SELL,
-                should_exit=True,
-                reason=reason,
+                ExitAction.PARTIAL_SELL,
+                True,
+                reason,
                 forced=True,
                 sell_fraction=self.config.hard_tp_frac,
                 metadata={"priority": 0, "gain": snapshot.gain_ratio},
@@ -1044,29 +860,18 @@ class PositionExitManager:
         peak_gain: float,
         vol_1h: Optional[float] = None,
     ) -> Tuple[float, Dict[str, Any]]:
-        """Compute dynamic peak pullback threshold tightened on out-of-pattern spikes.
-
-        Variant A (Proportional to TP target): anomaly_a = gain_threshold * 1.5
-        Variant B (Realized 1h volatility anomaly): anomaly_b = gain_threshold + vol_1h * 2.5
-        Anomaly threshold = max(anomaly_a, anomaly_b).
-        When peak_gain exceeds the anomaly threshold, allowed pullback tightens from
-        tp_pullback_pct down toward tp_ratchet_min_trail without selling against the trend.
-        """
+        """Compute dynamic peak pullback threshold tightened on out-of-pattern spikes."""
         gain_threshold = _resolve_positive_threshold(gain_threshold, self.config.gain_threshold)
         peak_gain = _resolve_nonneg_threshold(peak_gain, 0.0)
         eff_vol, _ = self._resolve_effective_vol_1h(symbol, vol_1h)
 
-        anomaly_a = gain_threshold * 1.5
-        anomaly_b = (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0
-        anomaly_threshold = max(anomaly_a, anomaly_b)
-
+        anomaly_threshold = max(gain_threshold * 1.5, (gain_threshold + eff_vol * 2.5) if eff_vol > 0 else 0.0)
         base_pullback = self.config.tp_pullback_pct
         min_pullback = min(base_pullback, self.config.tp_ratchet_min_trail)
         if peak_gain <= anomaly_threshold or self.config.tp_ratchet_k <= 0:
             eff_pullback = base_pullback
         else:
-            excess_gain = peak_gain - anomaly_threshold
-            eff_pullback = max(min_pullback, base_pullback - excess_gain * self.config.tp_ratchet_k)
+            eff_pullback = max(min_pullback, base_pullback - (peak_gain - anomaly_threshold) * self.config.tp_ratchet_k)
 
         return eff_pullback, {
             "anomaly_threshold": anomaly_threshold,
@@ -1080,40 +885,22 @@ class PositionExitManager:
         snapshot: PositionSnapshot,
         custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
-        """Evaluate Take-Profit with trend-riding mirror symmetry.
-
-        Priority 0: Hard Take-Profit spike exit
-        Priority 1: Trend Riding Initiation
-        Priority 2: Guaranteed Profit Floor
-        Priority 3: Dynamic Micro-Trailing Peak Pullback
-        Priority 4: Stagnation Timeout (18 minutes)
-        Priority 5: Trend Reversal Exit
-        """
+        """Evaluate Take-Profit with trend-riding mirror symmetry."""
         symbol = _clean_symbol_str(snapshot.symbol)
-        current_price = snapshot.current_price
-        buy_price = snapshot.avg_buy_price
         now = _resolve_now_s(snapshot.current_time_s)
         gain_threshold = _resolve_positive_threshold(custom_threshold, self.config.gain_threshold)
 
         if not snapshot.is_valid_price:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
-        current_price = float(snapshot.current_price)
-        buy_price = float(snapshot.avg_buy_price)
-
+        current_price, buy_price = float(snapshot.current_price), float(snapshot.avg_buy_price)
         price_increase = snapshot.gain_ratio
 
-        # ---------------------------------------------------------------------
         # PRIORITY 0: Hard TP Spike Exit
-        # ---------------------------------------------------------------------
         tp_spike = self._check_hard_tp_spike(snapshot, now)
         if tp_spike is not None:
             return tp_spike
 
-        # ---------------------------------------------------------------------
-        # Take-Profit Boundary Check
-        # ---------------------------------------------------------------------
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
-
         _sanitize_position_state(self.tp_ride_state, symbol, buy_price)
 
         # Gap down below cost while riding profit is an emergency breach of the profit floor
@@ -1127,19 +914,15 @@ class PositionExitManager:
                     f"under floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
                 )
                 return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
+                    ExitAction.SELL,
+                    True,
+                    reason,
                     forced=True,
                     metadata={"priority": 2, "profit_floor": profit_floor, "peak_px": peak_px, "gap_down_below_cost": True},
                 )
             return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
-        in_tp_territory = (
-            snapshot.in_tp_territory(gain_threshold, self.config.are_close_tolerance_pct)
-            or (symbol in self.tp_ride_state)
-        )
 
-        if not in_tp_territory:
+        if not (snapshot.in_tp_territory(gain_threshold, self.config.are_close_tolerance_pct) or (symbol in self.tp_ride_state)):
             self.tp_ride_state.pop(symbol, None)
             return ExitDecision(ExitAction.HOLD, False, "not_in_tp_territory")
 
@@ -1162,169 +945,145 @@ class PositionExitManager:
                     f"floor={profit_floor*100:.2f}%, max_stagnation={self.config.tp_stagnation_max_sec:.0f}s)"
                 )
                 return ExitDecision(
-                    action=ExitAction.HOLD,
-                    should_exit=False,
-                    reason=reason,
-                    forced=False,
+                    ExitAction.HOLD,
+                    False,
+                    reason,
                     metadata={"priority": 1, "state": "initiated", "profit_floor": profit_floor},
                 )
-            else:
-                reason = "gain_threshold_exceeded_and_trend_not_up"
-                return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=False,
-                    metadata={"priority": 1, "gain": price_increase},
+            return ExitDecision(
+                ExitAction.SELL,
+                True,
+                "gain_threshold_exceeded_and_trend_not_up",
+                metadata={"priority": 1, "gain": price_increase},
+            )
+
+        cur_peak_px = safe_pos_float(ride_state.get("peak_price"), default=current_price)
+        ride_state["peak_price"] = cur_peak_px
+        ride_state["peak_gain"] = safe_nonneg_float(ride_state.get("peak_gain"), default=price_increase)
+        if current_price > cur_peak_px:
+            ride_state["peak_price"] = current_price
+            ride_state["peak_gain"] = price_increase
+            ride_state["last_peak_time"] = now
+
+        peak_px = ride_state["peak_price"]
+        pullback_from_peak = snapshot.pullback_ratio(peak_px)
+        last_peak_t = safe_nonneg_float(ride_state.get("last_peak_time"), default=None)
+        if last_peak_t is None or last_peak_t > now:
+            last_peak_t = now
+        ride_state["last_peak_time"] = last_peak_t
+        stagnation_elapsed = now - last_peak_t
+
+        if self.config.fast_profit_guard_enabled:
+            try:
+                fp_triggered, fp_gain, fp_drop = check_fast_profit_reversal(
+                    current_price=current_price,
+                    avg_cost=buy_price,
+                    base_tp_pct=gain_threshold * 100.0,
+                    mult=self.config.fast_profit_mult,
+                    shadow_prices=snapshot.shadow_prices,
+                    window_sec=self.config.fast_profit_window_sec,
+                    drop_pct=self.config.fast_profit_drop_pct,
+                    current_time=now,
                 )
-        else:
-            # Update peak trajectory
-            cur_peak_px = safe_pos_float(ride_state.get("peak_price"), default=current_price)
-            ride_state["peak_price"] = cur_peak_px
-            cur_peak_gain = safe_nonneg_float(ride_state.get("peak_gain"), default=price_increase)
-            ride_state["peak_gain"] = cur_peak_gain
-            if current_price > cur_peak_px:
-                ride_state["peak_price"] = current_price
-                ride_state["peak_gain"] = price_increase
-                ride_state["last_peak_time"] = now
-
-            peak_px = ride_state["peak_price"]
-            pullback_from_peak = snapshot.pullback_ratio(peak_px)
-            last_peak_t = safe_nonneg_float(ride_state.get("last_peak_time"), default=None)
-            if last_peak_t is None or last_peak_t > now:
-                last_peak_t = now
-            ride_state["last_peak_time"] = last_peak_t
-            stagnation_elapsed = now - last_peak_t
-
-            # Optional Advanced Guard: Fast profit reversal
-            if self.config.fast_profit_guard_enabled:
-                try:
-                    fp_triggered, fp_gain, fp_drop = check_fast_profit_reversal(
-                        current_price=current_price,
-                        avg_cost=buy_price,
-                        base_tp_pct=gain_threshold * 100.0,
-                        mult=self.config.fast_profit_mult,
-                        shadow_prices=snapshot.shadow_prices,
-                        window_sec=self.config.fast_profit_window_sec,
-                        drop_pct=self.config.fast_profit_drop_pct,
-                        current_time=now,
+                if fp_triggered:
+                    self.tp_ride_state.pop(symbol, None)
+                    return ExitDecision(
+                        ExitAction.SELL,
+                        True,
+                        f"fast_profit_reversal (gain={fp_gain:.2f}%, micro_drop={fp_drop:.2f}%)",
+                        forced=True,
+                        metadata={"priority": 1.5, "fp_gain": fp_gain, "fp_drop": fp_drop},
                     )
-                    if fp_triggered:
-                        self.tp_ride_state.pop(symbol, None)
-                        return ExitDecision(
-                            action=ExitAction.SELL,
-                            should_exit=True,
-                            reason=f"fast_profit_reversal (gain={fp_gain:.2f}%, micro_drop={fp_drop:.2f}%)",
-                            forced=True,
-                            metadata={"priority": 1.5, "fp_gain": fp_gain, "fp_drop": fp_drop},
-                        )
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-            # Priority 2: Guaranteed profit floor breached
-            if price_increase < profit_floor:
-                self.tp_ride_state.pop(symbol, None)
-                reason = (
-                    f"mdhtp_profit_floor_breached (gain {price_increase*100:.2f}% < "
-                    f"floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
-                )
-                return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=True,
-                    metadata={"priority": 2, "profit_floor": profit_floor, "peak_px": peak_px},
-                )
-
-            # Pullback threshold with dynamic anomaly-scaled ratchet (relative to gain_threshold & vol_1h)
-            eff_pullback_pct = self.config.tp_pullback_pct
-            if self.config.tp_ratchet_enabled:
-                eff_pullback_pct, _ = self.compute_tp_anomaly_pullback(
-                    symbol=symbol,
-                    gain_threshold=gain_threshold,
-                    peak_gain=ride_state["peak_gain"],
-                    vol_1h=snapshot.vol_1h,
-                )
-
-            # Priority 3: Dynamic micro-trailing peak pullback
-            if pullback_from_peak >= eff_pullback_pct:
-                self.tp_ride_state.pop(symbol, None)
-                reason = (
-                    f"mdhtp_peak_pullback (peaked at {peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
-                    f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
-                )
-                return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=True,
-                    metadata={"priority": 3, "pullback": pullback_from_peak, "eff_pullback": eff_pullback_pct},
-                )
-
-            # Priority 4: Stagnation timeout (18 minutes)
-            if stagnation_elapsed >= self.config.tp_stagnation_max_sec:
-                self.tp_ride_state.pop(symbol, None)
-                reason = (
-                    f"mdhtp_stagnation_timeout (no new peak for {stagnation_elapsed:.0f}s >= "
-                    f"{self.config.tp_stagnation_max_sec:.0f}s, current_gain={price_increase*100:.2f}%)"
-                )
-                return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=True,
-                    metadata={"priority": 4, "stagnation": stagnation_elapsed},
-                )
-
-            # Priority 5: Trend reversal (trend turned down)
-            if not snapshot.trend_up:
-                self.tp_ride_state.pop(symbol, None)
-                reason = (
-                    f"mdhtp_trend_reversal (trend turned down after peak {peak_px:.4f} "
-                    f"[+ {ride_state['peak_gain']*100:.2f}%], current={current_price:.4f})"
-                )
-                return ExitDecision(
-                    action=ExitAction.SELL,
-                    should_exit=True,
-                    reason=reason,
-                    forced=True,
-                    metadata={"priority": 5, "peak_px": peak_px},
-                )
-
-            # Position is healthy and actively riding trend
+        # Priority 2: Guaranteed profit floor breached
+        if price_increase < profit_floor:
+            self.tp_ride_state.pop(symbol, None)
             reason = (
-                f"mdhtp_trend_riding (peak={peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
-                f"pullback={pullback_from_peak*100:.2f}%, stagnation={stagnation_elapsed:.0f}s)"
+                f"mdhtp_profit_floor_breached (gain {price_increase*100:.2f}% < "
+                f"floor {profit_floor*100:.2f}%, peak={peak_px:.4f})"
             )
             return ExitDecision(
-                action=ExitAction.HOLD,
-                should_exit=False,
-                reason=reason,
-                forced=False,
-                metadata={"priority": 5, "state": "riding", "peak_px": peak_px, "pullback": pullback_from_peak},
+                ExitAction.SELL,
+                True,
+                reason,
+                forced=True,
+                metadata={"priority": 2, "profit_floor": profit_floor, "peak_px": peak_px},
             )
 
-    # -------------------------------------------------------------------------
-    # Re-Entry Mirror Evaluator (MHDRE)
-    # -------------------------------------------------------------------------
+        eff_pullback_pct = self.config.tp_pullback_pct
+        if self.config.tp_ratchet_enabled:
+            eff_pullback_pct, _ = self.compute_tp_anomaly_pullback(
+                symbol=symbol,
+                gain_threshold=gain_threshold,
+                peak_gain=ride_state["peak_gain"],
+                vol_1h=snapshot.vol_1h,
+            )
+
+        # Priority 3: Dynamic micro-trailing peak pullback
+        if pullback_from_peak >= eff_pullback_pct:
+            self.tp_ride_state.pop(symbol, None)
+            reason = (
+                f"mdhtp_peak_pullback (peaked at {peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
+                f"pulled back {pullback_from_peak*100:.2f}% >= {eff_pullback_pct*100:.2f}%)"
+            )
+            return ExitDecision(
+                ExitAction.SELL,
+                True,
+                reason,
+                forced=True,
+                metadata={"priority": 3, "pullback": pullback_from_peak, "eff_pullback": eff_pullback_pct},
+            )
+
+        # Priority 4: Stagnation timeout (18 minutes)
+        if stagnation_elapsed >= self.config.tp_stagnation_max_sec:
+            self.tp_ride_state.pop(symbol, None)
+            reason = (
+                f"mdhtp_stagnation_timeout (no new peak for {stagnation_elapsed:.0f}s >= "
+                f"{self.config.tp_stagnation_max_sec:.0f}s, current_gain={price_increase*100:.2f}%)"
+            )
+            return ExitDecision(
+                ExitAction.SELL,
+                True,
+                reason,
+                forced=True,
+                metadata={"priority": 4, "stagnation": stagnation_elapsed},
+            )
+
+        # Priority 5: Trend reversal (trend turned down)
+        if not snapshot.trend_up:
+            self.tp_ride_state.pop(symbol, None)
+            reason = (
+                f"mdhtp_trend_reversal (trend turned down after peak {peak_px:.4f} "
+                f"[+ {ride_state['peak_gain']*100:.2f}%], current={current_price:.4f})"
+            )
+            return ExitDecision(
+                ExitAction.SELL,
+                True,
+                reason,
+                forced=True,
+                metadata={"priority": 5, "peak_px": peak_px},
+            )
+
+        reason = (
+            f"mdhtp_trend_riding (peak={peak_px:.4f} [+ {ride_state['peak_gain']*100:.2f}%], "
+            f"pullback={pullback_from_peak*100:.2f}%, stagnation={stagnation_elapsed:.0f}s)"
+        )
+        return ExitDecision(
+            ExitAction.HOLD,
+            False,
+            reason,
+            metadata={"priority": 5, "state": "riding", "peak_px": peak_px, "pullback": pullback_from_peak},
+        )
+
     def evaluate_reentry(
         self,
         snapshot: ReentrySnapshot,
         custom_drop_pct: Optional[float] = None,
     ) -> ReentryDecision:
-        """Evaluate market re-entry following position closure (Mirror of Exit).
-
-        Symmetry:
-          - Post-STOP: Mirror of SL Bounce Watch. Tracks trough (low), requires confirmed
-            recovery bounce above trough, prevents re-entry if bounce rolls over (ratchet),
-            and requires stronger support in confirmed bear downtrends.
-          - Post-TP / Sale: Mirror of TP Trailing. In bull trends, tracks peak and awaits
-            pullback (avoids buying top). In chop/range, enforces discount drop below sale.
-          - Safety: Decays restrictions once TTL expires.
-        """
+        """Evaluate market re-entry following position closure (Mirror of Exit)."""
         symbol = _clean_symbol_str(snapshot.symbol)
-        current_price = snapshot.current_price
-        last_sell = snapshot.last_sell_price
         last_kind = (
             snapshot.last_exit_kind.strip().upper()
             if isinstance(snapshot.last_exit_kind, str) and snapshot.last_exit_kind.strip()
@@ -1335,21 +1094,18 @@ class PositionExitManager:
         if not snapshot.is_valid_price:
             return ReentryDecision(ReentryAction.WAIT, False, "invalid_current_price")
 
-        # Case 0: No prior sale reference to constrain re-entry
-        last_sell_f = snapshot._finite_pos_float(last_sell)
+        last_sell_f = snapshot._finite_pos_float(snapshot.last_sell_price)
         if last_sell_f is None:
             self.reentry_state.pop(symbol, None)
             return ReentryDecision(ReentryAction.ENTER, True, "no_last_sale_barrier")
         last_sell = last_sell_f
-        current_price = float(current_price)
-
+        current_price = float(snapshot.current_price)
         sell_time_s = safe_pos_float(snapshot.last_sell_time_s, default=None)
 
         # Case 1: TTL barrier expiration
         if self.config.reentry_ttl_hours > 0 and sell_time_s is not None:
             elapsed_sec = now - sell_time_s
-            ttl_sec = self.config.reentry_ttl_hours * 3600.0
-            if elapsed_sec >= ttl_sec:
+            if elapsed_sec >= self.config.reentry_ttl_hours * 3600.0:
                 self._pop_reentry_state(symbol)
                 return ReentryDecision(
                     ReentryAction.ENTER,
@@ -1373,22 +1129,16 @@ class PositionExitManager:
 
         default_trough = safe_pos_float(snapshot.post_sell_trough, default=min(last_sell, current_price))
         default_peak = safe_pos_float(snapshot.post_sell_peak, default=max(last_sell, current_price))
-
-        state = self.reentry_state.setdefault(symbol, {
+        init_state = {
             "trough": default_trough,
             "peak": default_peak,
             "peak_bounce": current_price,
             "started_at": now,
             "sell_time": sell_time_s,
-        })
+        }
+        state = self.reentry_state.setdefault(symbol, dict(init_state))
         if not isinstance(state, dict):
-            state = {
-                "trough": default_trough,
-                "peak": default_peak,
-                "peak_bounce": current_price,
-                "started_at": now,
-                "sell_time": sell_time_s,
-            }
+            state = dict(init_state)
             self.reentry_state[symbol] = state
         if sell_time_s is not None and safe_pos_float(state.get("sell_time"), default=None) is None:
             state["sell_time"] = sell_time_s
@@ -1397,15 +1147,12 @@ class PositionExitManager:
         cur_peak = safe_pos_float(state.get("peak"), default=default_peak)
         cur_peak_bounce = safe_pos_float(state.get("peak_bounce"), default=current_price)
         eff_trough = min(cur_trough, default_trough, current_price)
-        if eff_trough < cur_trough or current_price < cur_trough:
-            state["trough"] = eff_trough
-            state["peak_bounce"] = current_price
-        else:
-            state["trough"] = eff_trough
-            state["peak_bounce"] = max(cur_peak_bounce, current_price)
+        state["trough"] = eff_trough
+        state["peak_bounce"] = (
+            current_price if (eff_trough < cur_trough or current_price < cur_trough) else max(cur_peak_bounce, current_price)
+        )
         state["peak"] = max(cur_peak, default_peak, current_price)
-        trough = state["trough"]
-        peak = state["peak"]
+        trough, peak = state["trough"], state["peak"]
 
         # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
         if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
@@ -1426,7 +1173,6 @@ class PositionExitManager:
             bounce_ratio = snapshot.bounce_ratio(trough)
             bounce_required = self.config.reentry_sl_bounce_pct
 
-            # Bear Gate: If trend is actively down, demand extra recovery confirmation
             if snapshot.trend_down and self.config.reentry_bear_gate_enabled:
                 if self.config.reentry_bear_bounce_pct > 0:
                     bounce_required = max(bounce_required, self.config.reentry_bear_bounce_pct)
@@ -1447,7 +1193,6 @@ class PositionExitManager:
                     metadata={"trough": trough, "bounce_ratio": bounce_ratio, "target_price": target_px},
                 )
 
-            # Ratchet Rollover Check: Track peak since bounce
             peak_bounce = state["peak_bounce"]
             if self.config.reentry_ratchet_enabled and peak_bounce > current_price:
                 pullback_from_bounce = (peak_bounce - current_price) / peak_bounce
@@ -1469,11 +1214,7 @@ class PositionExitManager:
             )
 
         # Case 3: Post-TP / Normal Sale Re-entry (Pullback in Bull vs Discount Drop in Range)
-        is_bull_reentry = (
-            self.config.reentry_hybrid_enabled
-            and (snapshot.trend_up or self.config.reentry_peak_relative)
-        )
-        if is_bull_reentry:
+        if self.config.reentry_hybrid_enabled and (snapshot.trend_up or self.config.reentry_peak_relative):
             pullback_required = self.config.reentry_pullback_pct
             pullback_ratio = snapshot.pullback_ratio(peak)
             if not snapshot.has_pulled_back(peak, pullback_required, self.config.reentry_tolerance_pct):
@@ -1491,50 +1232,44 @@ class PositionExitManager:
                 f"bull_reentry_pullback_confirmed (price={current_price:.4f} <= peak={peak:.4f} - {pullback_required*100:.2f}%)",
                 metadata={"peak": peak, "pullback_ratio": pullback_ratio},
             )
-        else:
-            drop_required = _resolve_nonneg_threshold(custom_drop_pct, self.config.reentry_drop_pct)
-            if drop_required > 0:
-                if not snapshot.has_dropped(last_sell, drop_required, self.config.reentry_tolerance_pct):
-                    discount_target = last_sell * (1.0 - drop_required)
-                    return ReentryDecision(
-                        ReentryAction.WAIT,
-                        False,
-                        f"range_reentry_drop_waiting (price={current_price:.4f} > {discount_target:.4f}, drop required={drop_required*100:.2f}%)",
-                        metadata={"last_sell": last_sell, "discount_target": discount_target},
-                    )
 
-            if not snapshot.trend_up:
-                if snapshot.trend_down and self.config.reentry_bear_gate_enabled and self.config.reentry_bear_bounce_pct <= 0:
-                    return ReentryDecision(
-                        ReentryAction.WAIT,
-                        False,
-                        f"reentry_blocked_by_bear_trend (price={current_price:.4f})",
-                        metadata={"trend_down": True},
-                    )
-
-                if self.config.reentry_bear_bounce_pct > 0:
-                    bear_bounce_ratio = snapshot.bounce_ratio(trough)
-                    if not snapshot.has_bounced(trough, self.config.reentry_bear_bounce_pct, self.config.reentry_tolerance_pct):
-                        target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
-                        return ReentryDecision(
-                            ReentryAction.WAIT,
-                            False,
-                            f"bear_reentry_trough_bounce_waiting (price={current_price:.4f} < {target_bear:.4f}, trough={trough:.4f})",
-                            metadata={"trough": trough, "bear_bounce_ratio": bear_bounce_ratio},
-                        )
-
-
-            self._pop_reentry_state(symbol)
+        drop_required = _resolve_nonneg_threshold(custom_drop_pct, self.config.reentry_drop_pct)
+        if drop_required > 0 and not snapshot.has_dropped(last_sell, drop_required, self.config.reentry_tolerance_pct):
+            discount_target = last_sell * (1.0 - drop_required)
             return ReentryDecision(
-                ReentryAction.ENTER,
-                True,
-                f"range_reentry_confirmed (price={current_price:.4f} <= last_sell={last_sell:.4f} - {drop_required*100:.2f}%)",
-                metadata={"last_sell": last_sell, "trough": trough},
+                ReentryAction.WAIT,
+                False,
+                f"range_reentry_drop_waiting (price={current_price:.4f} > {discount_target:.4f}, drop required={drop_required*100:.2f}%)",
+                metadata={"last_sell": last_sell, "discount_target": discount_target},
             )
 
-    # -------------------------------------------------------------------------
-    # Unified Evaluator
-    # -------------------------------------------------------------------------
+        if not snapshot.trend_up:
+            if snapshot.trend_down and self.config.reentry_bear_gate_enabled and self.config.reentry_bear_bounce_pct <= 0:
+                return ReentryDecision(
+                    ReentryAction.WAIT,
+                    False,
+                    f"reentry_blocked_by_bear_trend (price={current_price:.4f})",
+                    metadata={"trend_down": True},
+                )
+            if self.config.reentry_bear_bounce_pct > 0:
+                bear_bounce_ratio = snapshot.bounce_ratio(trough)
+                if not snapshot.has_bounced(trough, self.config.reentry_bear_bounce_pct, self.config.reentry_tolerance_pct):
+                    target_bear = trough * (1.0 + self.config.reentry_bear_bounce_pct)
+                    return ReentryDecision(
+                        ReentryAction.WAIT,
+                        False,
+                        f"bear_reentry_trough_bounce_waiting (price={current_price:.4f} < {target_bear:.4f}, trough={trough:.4f})",
+                        metadata={"trough": trough, "bear_bounce_ratio": bear_bounce_ratio},
+                    )
+
+        self._pop_reentry_state(symbol)
+        return ReentryDecision(
+            ReentryAction.ENTER,
+            True,
+            f"range_reentry_confirmed (price={current_price:.4f} <= last_sell={last_sell:.4f} - {drop_required*100:.2f}%)",
+            metadata={"last_sell": last_sell, "trough": trough},
+        )
+
     def evaluate(
         self,
         snapshot: PositionSnapshot,
@@ -1546,14 +1281,11 @@ class PositionExitManager:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
         symbol = _clean_symbol_str(snapshot.symbol)
 
-        # Check Hard TP (Spike Exit) first without mutating tp_ride_state if on cooldown
         tp_spike = self._check_hard_tp_spike(snapshot, _resolve_now_s(snapshot.current_time_s))
         if tp_spike is not None:
             _clear_smart_sl(symbol, snapshot.provider)
             return tp_spike
 
-        # Check Stop-Loss (unless an active MDHTP profit ride is in progress, in which
-        # case evaluate_take_profit must fire mdhtp_profit_floor_breached immediately)
         eff_sl = _resolve_positive_threshold(sl_threshold, self.config.lost_threshold)
         in_sl = (symbol not in self.tp_ride_state) and (
             snapshot.in_sl_territory(eff_sl, self.config.are_close_tolerance_pct)
@@ -1561,33 +1293,22 @@ class PositionExitManager:
         )
         if in_sl:
             sl_decision = self.evaluate_stop_loss(snapshot, custom_threshold=eff_sl)
-            if sl_decision.should_exit:
-                self.tp_ride_state.pop(symbol, None)
-                return sl_decision
-            elif sl_decision.action == ExitAction.HOLD and (
-                "mhdsl_bounce" in sl_decision.reason or "smart_stop_loss" in sl_decision.reason
+            if sl_decision.should_exit or (
+                sl_decision.action == ExitAction.HOLD
+                and ("mhdsl_bounce" in sl_decision.reason or "smart_stop_loss" in sl_decision.reason)
             ):
                 self.tp_ride_state.pop(symbol, None)
                 return sl_decision
         else:
             self._clear_sl_tracking(symbol)
 
-        # Check Take-Profit
         eff_tp = _resolve_positive_threshold(tp_threshold, self.config.gain_threshold)
-        in_tp = (
-            snapshot.in_tp_territory(eff_tp, self.config.are_close_tolerance_pct)
-            or (symbol in self.tp_ride_state)
-        )
-        if in_tp:
+        if snapshot.in_tp_territory(eff_tp, self.config.are_close_tolerance_pct) or (symbol in self.tp_ride_state):
             tp_decision = self.evaluate_take_profit(snapshot, custom_threshold=eff_tp)
-            if tp_decision.should_exit:
-                self._clear_sl_tracking(symbol)
-                return tp_decision
-            elif tp_decision.action == ExitAction.HOLD and "mdhtp" in tp_decision.reason:
+            if tp_decision.should_exit or (tp_decision.action == ExitAction.HOLD and "mdhtp" in tp_decision.reason):
                 self._clear_sl_tracking(symbol)
                 return tp_decision
 
-        # Neutral corridor: clean up any remaining stale state
         self._clear_sl_tracking(symbol)
         self.tp_ride_state.pop(symbol, None)
         return ExitDecision(ExitAction.HOLD, False, "neutral_corridor")

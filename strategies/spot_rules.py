@@ -3,12 +3,6 @@
 Shared by the event-driven LIVE engine in strategies/spot_engine.py and the OHLC
 backtest in kraken/backtest.py. With no state, client, or I/O, this module is the
 SINGLE source of truth for price thresholds and prevents live/backtest divergence.
-
-Motivation: the stop-aware reentry added on August 4 originally required editing
-both strategy.py step() and backtest.py simulate() with duplicate `sl_bounce_pct`
-logic, creating drift risk. These formulas are IDENTICAL to live behavior. Callers
-retain their own event/OHLC loops and quantity/spend/count accounting, but all use
-the same price thresholds.
 """
 from __future__ import annotations
 
@@ -18,6 +12,7 @@ from botcore import (
     diff_percent as _botcore_diff_percent,
     safe_float,
 )
+
 
 def _finite_float(val: object, default: float | None = None) -> float | None:
     return safe_float(val, default=default)
@@ -29,18 +24,13 @@ are_close = _botcore_are_close
 
 
 def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]]:
-    if (
-        shadow_prices is None
-        or isinstance(shadow_prices, (bool, str, bytes, dict))
-        or not hasattr(shadow_prices, "__iter__")
-    ):
+    if shadow_prices is None or isinstance(shadow_prices, (bool, str, bytes, dict)) or not hasattr(shadow_prices, "__iter__"):
         return []
     out: list[tuple[float, float]] = []
     for item in shadow_prices:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        tf = _finite_float(item[0])
-        pf = _finite_float(item[1])
+        tf, pf = _finite_float(item[0]), _finite_float(item[1])
         if tf is not None and pf is not None and pf > 0:
             out.append((tf, pf))
     return out
@@ -48,38 +38,27 @@ def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]
 
 def entry_price(close: float, disc_pct: float) -> float:
     """Return the entry/DCA price at `disc_pct`%% below close."""
-    close_f = _finite_float(close, 0.0)
-    disc_f = _finite_float(disc_pct, 0.0)
-    if close_f <= 0:
-        return 0.0
-    return max(0.0, close_f * (1.0 - disc_f / 100.0))
+    close_f, disc_f = _finite_float(close, 0.0), _finite_float(disc_pct, 0.0)
+    return max(0.0, close_f * (1.0 - disc_f / 100.0)) if close_f > 0 else 0.0
 
 
 def tp_price(avg: float, tp_pct: float) -> float:
     """Return the take-profit price at `tp_pct`%% above average cost."""
-    avg_f = _finite_float(avg, 0.0)
-    tp_f = _finite_float(tp_pct, 0.0)
-    if avg_f <= 0:
-        return 0.0
-    return max(0.0, avg_f * (1.0 + tp_f / 100.0))
+    avg_f, tp_f = _finite_float(avg, 0.0), _finite_float(tp_pct, 0.0)
+    return max(0.0, avg_f * (1.0 + tp_f / 100.0)) if avg_f > 0 else 0.0
 
 
 def hit_stop(avg: float, price: float, sl_pct: float) -> bool:
-    """Return whether unrealized long loss reaches stop loss.
-    A non-positive sl_pct or missing average disables the stop."""
-    avg_f = _finite_float(avg)
-    px_f = _finite_float(price)
-    sl_f = _finite_float(sl_pct)
+    """Return whether unrealized long loss reaches stop loss."""
+    avg_f, px_f, sl_f = _finite_float(avg), _finite_float(price), _finite_float(sl_pct)
     if avg_f is None or avg_f <= 0 or px_f is None or px_f <= 0 or sl_f is None or sl_f <= 0:
         return False
     return (avg_f - px_f) / avg_f * 100 >= sl_f
 
 
 def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct: float) -> bool:
-    """After STOP-LOSS, block until price rebounds `bounce_pct`%% above the post-sale low.
-    True means reentry remains blocked."""
-    low_f = _finite_float(sl_low)
-    bounce_f = _finite_float(bounce_pct)
+    """After STOP-LOSS, block until price rebounds `bounce_pct`%% above the post-sale low."""
+    low_f, bounce_f = _finite_float(sl_low), _finite_float(bounce_pct)
     if low_f is None or low_f <= 0 or bounce_f is None or bounce_f <= 0:
         return False
     px_f = _finite_float(price)
@@ -90,11 +69,8 @@ def reentry_stop_blocked(price: float, sl_low: float, bounce_pct: float, tol_pct
 
 
 def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pct: float) -> bool:
-    """After take profit, block until price falls `drop_pct`%% below the sale price.
-    True means reentry remains blocked. A non-positive drop or missing sale disables
-    the barrier."""
-    drop_f = _finite_float(drop_pct)
-    sell_f = _finite_float(last_sell)
+    """After take profit, block until price falls `drop_pct`%% below the sale price."""
+    drop_f, sell_f = _finite_float(drop_pct), _finite_float(last_sell)
     if drop_f is None or drop_f <= 0 or sell_f is None or sell_f <= 0:
         return False
     px_f = _finite_float(price)
@@ -105,12 +81,8 @@ def reentry_drop_blocked(price: float, last_sell: float, drop_pct: float, tol_pc
 
 
 def dca_price_hit(price: float, last_buy: float, drop_pct: float, tol_pct: float) -> bool:
-    """Return whether price is `drop_pct`%% below the latest buy, including tolerance.
-    This checks PRICE only; the caller retains DCA-count, budget, and open-order caps.
-    A zero tolerance requires price to be at or below the threshold."""
-    px_f = _finite_float(price)
-    lb_f = _finite_float(last_buy)
-    drop_f = _finite_float(drop_pct)
+    """Return whether price is `drop_pct`%% below the latest buy, including tolerance."""
+    px_f, lb_f, drop_f = _finite_float(price), _finite_float(last_buy), _finite_float(drop_pct)
     if px_f is None or px_f <= 0 or lb_f is None or lb_f <= 0 or drop_f is None:
         return False
     prag = lb_f * (1 - drop_f / 100)
@@ -122,17 +94,10 @@ def progressive_dca_drop_pct(
     growth_pct: float,
     completed_dca_buys: int,
 ) -> float:
-    """Return the next DCA distance, increased gradually after every completed DCA.
-
-    ``growth_pct=0`` preserves existing live behavior exactly. Clamp growth to
-    non-negative values so a bad configuration cannot compress levels and accelerate
-    exposure during a decline.
-    """
+    """Return the next DCA distance, increased gradually after every completed DCA."""
     base_f = _finite_float(base_drop_pct, 0.0)
-    growth_f = _finite_float(growth_pct, 0.0)
-    comp_f = _finite_float(completed_dca_buys, 0.0)
-    growth = max(0.0, growth_f)
-    completed = max(0, int(comp_f))
+    growth = max(0.0, _finite_float(growth_pct, 0.0))
+    completed = max(0, int(_finite_float(completed_dca_buys, 0.0)))
     return max(0.0, base_f) + growth * completed
 
 
@@ -149,30 +114,13 @@ def reentry_hybrid_blocked(
     post_sell_trough: float | None = None,
     bounce_pct: float = 0.0,
 ) -> tuple[bool, str]:
-    """Hybrid re-entry decision separating trend confirmation from execution trigger.
-
-    State A/B/C logic:
-      - If no valid last_sell: unblocked.
-      - If TTL barrier expired (elapsed_sec >= ttl_sec > 0): unblocked.
-      - If is_bull (State B - TREND_CONFIRMED):
-          Bypasses last_sell price barrier; requires a pullback_pct drop
-          relative to post_sell_peak (peak = max(last_sell, post_sell_peak, price)).
-      - If not is_bull (State C - NO_CONFIRMED_TREND):
-          Enforces standard drop_pct below last_sell. If bounce_pct > 0, also
-          requires price to rebound >= bounce_pct above post_sell_trough to prevent
-          catching falling knives during free-fall downtrends.
-
-    Returns:
-      (blocked: bool, reason: str)
-    """
+    """Hybrid re-entry decision separating trend confirmation from execution trigger."""
     sell_f = _finite_float(last_sell)
     if sell_f is None or sell_f <= 0:
         return False, "no_last_sell"
 
-    ttl_f = _finite_float(ttl_sec)
-    elapsed_f = _finite_float(elapsed_sec)
-    if (ttl_f is not None and ttl_f > 0
-            and elapsed_f is not None and elapsed_f >= ttl_f):
+    ttl_f, elapsed_f = _finite_float(ttl_sec), _finite_float(elapsed_sec)
+    if ttl_f is not None and ttl_f > 0 and elapsed_f is not None and elapsed_f >= ttl_f:
         return False, "ttl_expired"
 
     px_f = _finite_float(price)
@@ -213,26 +161,13 @@ def dynamic_surge_gain_pct(
     vol_multiplier: float = 10.0,
     fallback_gain_pct: float = 25.0,
 ) -> float:
-    """Calculate asset-adaptive parabolic surge trigger based on trailing volatility.
-
-    Centered around the proven 25.0% baseline:
-    - Normal volatility (~2.5% vol_1h) scales directly to ~25.0%.
-    - Calmer assets (vol_1h <= 2.2%) stay securely clamped to min_gain_pct (24.0%),
-      preventing normal +15% bull trend moves from being choked prematurely.
-    - Highly volatile assets scale up to max_gain_pct (32.0%), allowing explosive
-      candle bursts room to develop before arming the tight exhaustion exit.
-    """
-    vol_f = _finite_float(hourly_volatility_pct)
-    fb_f = _finite_float(fallback_gain_pct, 25.0)
+    """Calculate asset-adaptive parabolic surge trigger based on trailing volatility."""
+    vol_f, fb_f = _finite_float(hourly_volatility_pct), _finite_float(fallback_gain_pct, 25.0)
     if vol_f is None or vol_f <= 0:
         return fb_f
-    mult_f = _finite_float(vol_multiplier, 10.0)
-    min_raw = _finite_float(min_gain_pct, 24.0)
-    max_raw = _finite_float(max_gain_pct, 32.0)
-    raw = vol_f * mult_f
-    min_g = min(min_raw, max_raw)
-    max_g = max(min_raw, max_raw)
-    return max(min_g, min(max_g, raw))
+    raw = vol_f * _finite_float(vol_multiplier, 10.0)
+    min_raw, max_raw = _finite_float(min_gain_pct, 24.0), _finite_float(max_gain_pct, 32.0)
+    return max(min(min_raw, max_raw), min(max(min_raw, max_raw), raw))
 
 
 def dynamic_flat_tp_pct(
@@ -242,24 +177,15 @@ def dynamic_flat_tp_pct(
     tp_max_pct: float = 7.0,
     base_tp_pct: float = 5.0,
 ) -> float:
-    """Calculate regime-aware take-profit % for flat/sideways markets.
-
-    c_flat = clamp(strength / strength_threshold, 0.0, 1.0).
-    When strength is low (calm chop), returns near tp_min_pct.
-    When strength approaches strength_threshold (breakout cusp), returns near tp_max_pct.
-    Falls back safely to base_tp_pct if strength is None, negative, or non-finite.
-    """
-    str_f = _finite_float(strength)
-    base_f = _finite_float(base_tp_pct, 5.0)
+    """Calculate regime-aware take-profit % for flat/sideways markets."""
+    str_f, base_f = _finite_float(strength), _finite_float(base_tp_pct, 5.0)
     if str_f is None or str_f < 0:
         return base_f
     thresh_f = _finite_float(strength_threshold)
     thresh = thresh_f if (thresh_f is not None and thresh_f > 0) else 2.0
     c_flat = min(1.0, max(0.0, str_f / thresh))
-    min_raw = _finite_float(tp_min_pct, 3.0)
-    max_raw = _finite_float(tp_max_pct, 7.0)
-    min_tp = min(min_raw, max_raw)
-    max_tp = max(min_raw, max_raw)
+    min_raw, max_raw = _finite_float(tp_min_pct, 3.0), _finite_float(tp_max_pct, 7.0)
+    min_tp, max_tp = min(min_raw, max_raw), max(min_raw, max_raw)
     return min_tp + c_flat * (max_tp - min_tp)
 
 
@@ -271,16 +197,7 @@ def dynamic_trend_trail_pct(
     gain_threshold_pct: float = 6.0,
     surge_guard_active: bool = False,
 ) -> float:
-    """Calculate ratcheted trailing stop distance based on peak unrealized gain.
-
-    Ratchets tighter as accumulated peak profit expands beyond gain_threshold_pct:
-    trail = base_trail_pct - ratchet_k * max(0.0, peak_gain_pct - gain_threshold_pct)
-    clamped to [min_trail_pct, base_trail_pct].
-
-    Harmonization: When surge_guard_active is True, clamps the floor to max(min_trail_pct, 5.0)
-    to preserve a healthy breathing cushion (preventing 3-4% pullbacks from prematurely
-    liquidating the position before it can reach the 25% parabolic surge trigger).
-    """
+    """Calculate ratcheted trailing stop distance based on peak unrealized gain."""
     base = max(0.0, _finite_float(base_trail_pct, 8.0))
     min_t = _finite_float(min_trail_pct, 3.0)
     eff_min = max(min_t, 5.0) if _bool_flag(surge_guard_active) else min_t
@@ -290,9 +207,7 @@ def dynamic_trend_trail_pct(
     gain = _finite_float(peak_gain_pct)
     if gain is None or gain <= thresh or k == 0.0:
         return base
-    ratcheted = base - k * (gain - thresh)
-    return max(floor, min(base, ratcheted))
-
+    return max(floor, min(base, base - k * (gain - thresh)))
 
 
 def check_fast_profit_reversal(
@@ -305,41 +220,20 @@ def check_fast_profit_reversal(
     drop_pct: float,
     current_time: float | None = None,
 ) -> tuple[bool, float, float]:
-    """Return (triggered, current_gain_pct, micro_drop_pct) for fast 2X profit reversal guard.
-
-    Triggered when:
-    1. current_gain_pct >= mult * base_tp_pct (e.g. >= 10.0%)
-    2. micro_drop_pct >= drop_pct from the highest price in the last window_sec.
-    """
-    avg_f = _finite_float(avg_cost)
-    px_f = _finite_float(current_price)
-    tp_f = _finite_float(base_tp_pct)
-    mult_f = _finite_float(mult)
-    drop_f = _finite_float(drop_pct)
-    if (
-        avg_f is None
-        or px_f is None
-        or tp_f is None
-        or mult_f is None
-        or drop_f is None
-        or avg_f <= 0
-        or px_f <= 0
-        or tp_f <= 0
-        or mult_f <= 0
-        or drop_f <= 0
-    ):
+    """Return (triggered, current_gain_pct, micro_drop_pct) for fast 2X profit reversal guard."""
+    avg_f, px_f = _finite_float(avg_cost), _finite_float(current_price)
+    tp_f, mult_f, drop_f = _finite_float(base_tp_pct), _finite_float(mult), _finite_float(drop_pct)
+    if any(v is None or v <= 0 for v in (avg_f, px_f, tp_f, mult_f, drop_f)):
         return False, 0.0, 0.0
     current_gain_pct = (px_f - avg_f) / avg_f * 100.0
-    required_gain = tp_f * mult_f
-    if not (current_gain_pct >= required_gain):
+    if not (current_gain_pct >= tp_f * mult_f):
         return False, current_gain_pct, 0.0
     valid_shadows = _iter_valid_shadow_prices(shadow_prices)
     if not valid_shadows:
         return False, current_gain_pct, 0.0
     now_f = _finite_float(current_time)
     now = now_f if now_f is not None else valid_shadows[-1][0]
-    win_s = _finite_float(window_sec, 0.0)
-    cutoff = now - max(0.0, win_s)
+    cutoff = now - max(0.0, _finite_float(window_sec, 0.0))
     recent = [p for t, p in valid_shadows if cutoff <= t <= now]
     if not recent:
         past_or_now = [p for t, p in valid_shadows if t <= now]
@@ -348,8 +242,7 @@ def check_fast_profit_reversal(
     if local_peak <= 0:
         return False, current_gain_pct, 0.0
     micro_drop_pct = (local_peak - px_f) / local_peak * 100.0
-    triggered = bool(micro_drop_pct >= drop_f)
-    return triggered, current_gain_pct, micro_drop_pct
+    return bool(micro_drop_pct >= drop_f), current_gain_pct, micro_drop_pct
 
 
 def parabolic_surge_profit_floor_pct(
@@ -375,62 +268,27 @@ def check_parabolic_surge_exhaustion(
     surge_active: bool = False,
     min_profit_pct: float = 1.0,
 ) -> tuple[bool, str]:
-    """Return (triggered, reason) for 2-3 day parabolic surge exhaustion.
-
-    Surge is active/armed if:
-    - surge_active is True (latched state), OR
-    - current gain from avg_cost >= surge_gain_pct (e.g. 18.0%), OR
-    - peak gain from avg_cost >= surge_gain_pct (e.g. 18.0%).
-    Note: window_move_pct cannot arm surge alone unless position itself captured the move.
-    In all cases, Parabolic Surge Guard is a TAKE-PROFIT exit: it must never exit below
-    the minimum surge profit floor (min_floor = max(min_profit_pct, surge_gain_pct - exit_pullback_pct * 1.5)).
-    If surge is active and price >= floor, triggers exit when price pulls back >= exit_pullback_pct from surge_peak.
-    """
-    avg_f = _finite_float(avg_cost)
-    px_f = _finite_float(current_price)
-    peak_f = _finite_float(surge_peak)
-    sg_f = _finite_float(surge_gain_pct)
-    ep_f = _finite_float(exit_pullback_pct)
-    mp_f = _finite_float(min_profit_pct)
-    if (
-        avg_f is None
-        or px_f is None
-        or peak_f is None
-        or sg_f is None
-        or ep_f is None
-        or mp_f is None
-        or avg_f <= 0
-        or px_f <= 0
-        or peak_f <= 0
-        or sg_f <= 0
-        or ep_f <= 0
-    ):
+    """Return (triggered, reason) for 2-3 day parabolic surge exhaustion."""
+    avg_f, px_f, peak_f = _finite_float(avg_cost), _finite_float(current_price), _finite_float(surge_peak)
+    sg_f, ep_f, mp_f = _finite_float(surge_gain_pct), _finite_float(exit_pullback_pct), _finite_float(min_profit_pct)
+    if mp_f is None or any(v is None or v <= 0 for v in (avg_f, px_f, peak_f, sg_f, ep_f)):
         return False, ""
     current_gain_pct = (px_f - avg_f) / avg_f * 100.0
     peak_gain_pct = (peak_f - avg_f) / avg_f * 100.0
 
     # Invariant: A parabolic surge exhaustion exit is a TAKE-PROFIT guard.
-    # It must never execute below the minimum surge profit floor!
     min_floor = safe_float(parabolic_surge_profit_floor_pct(sg_f, ep_f, mp_f), default=None)
     if min_floor is None or current_gain_pct < min_floor:
         return False, ""
 
     pos_surge = sg_f > 0 and (current_gain_pct >= sg_f or peak_gain_pct >= sg_f)
-    wm_f = _finite_float(window_move_pct)
-    sm_f = _finite_float(surge_move_pct)
-    win_surge = (
-        wm_f is not None
-        and sm_f is not None
-        and sm_f > 0
-        and wm_f >= sm_f
-        and current_gain_pct >= sg_f * 0.8
-    )
+    wm_f, sm_f = _finite_float(window_move_pct), _finite_float(surge_move_pct)
+    win_surge = wm_f is not None and sm_f is not None and sm_f > 0 and wm_f >= sm_f and current_gain_pct >= sg_f * 0.8
     if not (_bool_flag(surge_active) or pos_surge or win_surge):
         return False, ""
     pullback = (peak_f - px_f) / peak_f * 100.0
     if pullback >= ep_f:
-        reason = f"surge_pullback_{pullback:.2f}%_ge_{ep_f:.2f}%"
-        return True, reason
+        return True, f"surge_pullback_{pullback:.2f}%_ge_{ep_f:.2f}%"
     return False, ""
 
 
@@ -448,48 +306,22 @@ def check_slow_grind_exhaustion(
     structural_drop_pct: float,
     sma_value: float | None = None,
 ) -> tuple[bool, str]:
-    """Return (triggered, reason) for 1-3 week slow-grind accumulation exit.
-
-    Qualifies when position is held >= min_days (e.g. 7d) with accumulated gain >= min_gain_pct (e.g. 15%).
-    Exits if:
-    - Flash sensor: price drops >= flash_drop_pct within flash_window_sec (e.g. 1.5% in 15m), OR
-    - Structural sensor: price drops >= structural_drop_pct from recent_peak (e.g. 2.5%), OR
-    - SMA break: sma_value is provided and current_price < sma_value.
-    """
-    avg_f = _finite_float(avg_cost)
-    px_f = _finite_float(current_price)
-    ent_f = _finite_float(entry_ts)
-    cur_t_f = _finite_float(current_ts)
-    md_f = _finite_float(min_days)
-    mg_f = _finite_float(min_gain_pct)
+    """Return (triggered, reason) for 1-3 week slow-grind accumulation exit."""
+    avg_f, px_f = _finite_float(avg_cost), _finite_float(current_price)
+    ent_f, cur_t_f = _finite_float(entry_ts), _finite_float(current_ts)
+    md_f, mg_f = _finite_float(min_days), _finite_float(min_gain_pct)
     if (
-        avg_f is None
-        or px_f is None
-        or ent_f is None
-        or cur_t_f is None
-        or md_f is None
-        or mg_f is None
-        or avg_f <= 0
-        or px_f <= 0
-        or ent_f < 0
-        or cur_t_f < 0
-        or md_f <= 0
-        or mg_f <= 0
+        any(v is None or v <= 0 for v in (avg_f, px_f, md_f, mg_f))
+        or ent_f is None or cur_t_f is None or ent_f < 0 or cur_t_f < 0
     ):
         return False, ""
-    elapsed_days = (cur_t_f - ent_f) / 86400.0
-    if not (elapsed_days >= md_f):
+    if not ((cur_t_f - ent_f) / 86400.0 >= md_f):
         return False, ""
-    current_gain_pct = (px_f - avg_f) / avg_f * 100.0
-    if not (current_gain_pct >= mg_f):
+    if not ((px_f - avg_f) / avg_f * 100.0 >= mg_f):
         return False, ""
-    # Check flash drop
     win_s = _finite_float(flash_window_sec, 0.0)
     cutoff = cur_t_f - max(0.0, win_s)
-    recent = [
-        pf for tf, pf in _iter_valid_shadow_prices(shadow_prices)
-        if cutoff <= tf <= cur_t_f
-    ]
+    recent = [pf for tf, pf in _iter_valid_shadow_prices(shadow_prices) if cutoff <= tf <= cur_t_f]
     fd_f = _finite_float(flash_drop_pct)
     if fd_f is not None and fd_f > 0 and win_s > 0 and recent:
         local_flash_peak = max(max(recent), px_f)
@@ -497,17 +329,12 @@ def check_slow_grind_exhaustion(
             flash_drop = (local_flash_peak - px_f) / local_flash_peak * 100.0
             if flash_drop >= fd_f:
                 return True, f"slow_grind_flash_drop_{flash_drop:.2f}%_ge_{fd_f:.2f}%"
-    # Check structural drop
-    sd_f = _finite_float(structural_drop_pct)
-    rp_f = _finite_float(recent_peak)
+    sd_f, rp_f = _finite_float(structural_drop_pct), _finite_float(recent_peak)
     if sd_f is not None and sd_f > 0 and rp_f is not None and rp_f > 0:
         struct_drop = (rp_f - px_f) / rp_f * 100.0
         if struct_drop >= sd_f:
             return True, f"slow_grind_structural_drop_{struct_drop:.2f}%_ge_{sd_f:.2f}%"
-    # Check SMA break
     sma_f = _finite_float(sma_value)
     if sma_f is not None and sma_f > 0 and px_f < sma_f:
         return True, f"slow_grind_sma_break_{px_f:.4f}_lt_{sma_f:.4f}"
     return False, ""
-
-

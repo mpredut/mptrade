@@ -60,8 +60,8 @@ def state_path_for(pair: str, state_dir: str | None = None) -> str:
 
 @dataclass
 class StratParams:
-    currency: str          # Quote currency used only for presentation.
-    entry_amount: float    # Entry size in quote currency.
+    currency: str
+    entry_amount: float
     entry_discount_pct: float
     dca_amount: float
     dca_drop_pct: float
@@ -80,13 +80,11 @@ class StratParams:
     shadow_k_reentry: float = 2.0
     reentry_sl_bounce_pct: float = 1.5
     tp_tranches: list = None
-    # --- TP trend-aware ---
     tp_trend_hold: bool = False
     tp_regime_gate: bool = False
     tp_trend_min_pct: float = 0.5
     tp_trail_pct: float = 2.0
     tp_trail_profit_floor_pct: float = 0.0
-    # --- Trend Overlay ---
     trend_overlay: bool = False
     trend_sma_n: int = 30
     trend_interval: int = 240
@@ -94,7 +92,6 @@ class StratParams:
     trend_topup: float = 2000.0
     trend_trail_pct: float = 5.0
     trend_exit_break: bool = False
-    # --- Volatility Adaptive ---
     tp_trail_adaptive: bool = False
     tp_trail_k: float = 2.0
     tp_trail_min: float = 1.5
@@ -103,16 +100,13 @@ class StratParams:
     dca_trend_brake: bool = False
     dca_brake_min_pct: float = 1.5
     dca_spacing_growth_pct: float = 0.0
-    # --- Volatility-Scaled DCA Sizing ---
     dca_vol_scale_k: float = 0.0
     dca_vol_ref: float = 2.0
     dca_vol_interval: int = 240
-    # --- Percentage Sizing ---
     total_budget: float = 0.0
     alloc_pct: float = 0.0
     entry_pct: float = 0.0
     dca_pct: float = 0.0
-    # --- Hybrid Re-Entry ---
     reentry_hybrid_enabled: bool = False
     reentry_peak_relative: bool = False
     reentry_pullback_pct: float = 1.5
@@ -122,7 +116,6 @@ class StratParams:
     reentry_pullback_max: float = 4.0
     reentry_ttl_hours: float = 0.0
     reentry_bear_bounce_pct: float = 0.0
-    # --- Multi-Horizon Dynamic Profit Architecture (MHDPA) ---
     tp_dynamic_flat: bool = False
     tp_min_pct: float = 3.0
     tp_max_pct: float = 7.0
@@ -150,7 +143,6 @@ class StratParams:
     slow_grind_flash_window_min: float = 15.0
     slow_grind_flash_drop_pct: float = 1.5
     slow_grind_hourly_drop_pct: float = 2.5
-    # --- Multi-Horizon Dynamic Stop-Loss (MHDSL) ---
     sl_mhdsl_enabled: bool = True
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
@@ -163,7 +155,6 @@ class StratParams:
     sl_bounce_ratchet_k: float = 0.50
     sl_bounce_min_pullback_pct: float = 0.15
     sl_structural_break_enabled: bool = True
-    # --- Multi-Horizon Dynamic Take-Profit (MDHTP) ---
     tp_mdhtp_enabled: bool = False
     tp_stagnation_max_sec: float = 1080.0
 
@@ -185,17 +176,10 @@ class StratParams:
         self.dca_drop_pct = finite("STRAT_DCA_DROP_PCT", self.dca_drop_pct)
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
-        _bool_defaults = {
-            "enable_takeprofit": True, "reentry_adaptive": False, "tp_trend_hold": False,
-            "tp_regime_gate": False, "trend_overlay": False, "trend_exit_break": False,
-            "tp_trail_adaptive": False, "dca_trend_brake": False, "reentry_hybrid_enabled": False,
-            "reentry_peak_relative": False, "reentry_pullback_adaptive": False, "tp_dynamic_flat": False,
-            "trend_trail_dynamic": False, "fast_profit_guard": False, "surge_guard": False,
-            "surge_dynamic": False, "slow_grind_guard": False, "sl_mhdsl_enabled": True,
-            "sl_bounce_ratchet_enabled": True, "sl_structural_break_enabled": True, "tp_mdhtp_enabled": False,
-        }
-        for b_attr, b_def in _bool_defaults.items():
-            setattr(self, b_attr, _parse_bool_flag(getattr(self, b_attr, b_def), b_def))
+        for f in _dc_fields(self):
+            if f.name == "enable_takeprofit" or isinstance(f.default, bool):
+                b_def = True if f.name == "enable_takeprofit" else f.default
+                setattr(self, f.name, _parse_bool_flag(getattr(self, f.name, b_def), b_def))
         if isinstance(self.tp_tranches, str):
             self.tp_tranches = _parse_tranches(self.tp_tranches)
         elif self.tp_tranches is None:
@@ -281,54 +265,55 @@ class StratParams:
         mode = required_env("STRATEGY_MODE", env).lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+        b, f, i = required_bool_env, required_float_env, required_int_env
         return cls(
             currency=required_env("STRAT_CURRENCY", env).upper(),
-            entry_amount=required_float_env("STRAT_ENTRY", env),
-            entry_discount_pct=required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
-            dca_amount=required_float_env("STRAT_DCA", env),
-            dca_drop_pct=required_float_env("STRAT_DCA_DROP_PCT", env),
-            check_minutes=required_float_env("STRAT_CHECK_MINUTES", env),
-            takeprofit_pct=required_float_env("STRAT_TAKEPROFIT_PCT", env),
-            max_budget=required_float_env("STRAT_MAX_BUDGET", env),
-            max_dca_buys=required_int_env("STRAT_MAX_DCA_BUYS", env),
-            total_budget=required_float_env("STRAT_TOTAL_BUDGET", env),
-            alloc_pct=required_float_env("STRAT_ALLOC_PCT", env),
-            entry_pct=required_float_env("STRAT_ENTRY_PCT", env),
-            dca_pct=required_float_env("STRAT_DCA_PCT", env),
+            entry_amount=f("STRAT_ENTRY", env),
+            entry_discount_pct=f("STRAT_ENTRY_DISCOUNT_PCT", env),
+            dca_amount=f("STRAT_DCA", env),
+            dca_drop_pct=f("STRAT_DCA_DROP_PCT", env),
+            check_minutes=f("STRAT_CHECK_MINUTES", env),
+            takeprofit_pct=f("STRAT_TAKEPROFIT_PCT", env),
+            max_budget=f("STRAT_MAX_BUDGET", env),
+            max_dca_buys=i("STRAT_MAX_DCA_BUYS", env),
+            total_budget=f("STRAT_TOTAL_BUDGET", env),
+            alloc_pct=f("STRAT_ALLOC_PCT", env),
+            entry_pct=f("STRAT_ENTRY_PCT", env),
+            dca_pct=f("STRAT_DCA_PCT", env),
             enable_takeprofit=(mode != "dca_only"),
-            order_ttl_min=required_float_env("STRAT_ORDER_TTL_MIN", env),
-            stop_loss_pct=required_float_env("STRAT_STOP_LOSS_PCT", env),
-            adopt_cost=required_float_env("STRAT_ADOPT_COST", env),
-            adopt_qty=required_float_env("STRAT_ADOPT_QTY", env),
-            reentry_drop_pct=required_float_env("STRAT_REENTRY_DROP_PCT", env),
-            reentry_tolerance_pct=required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
-            reentry_adaptive=required_bool_env("STRAT_REENTRY_ADAPTIVE", env),
-            shadow_k_reentry=required_float_env("SHADOW_K_REENTRY", env),
-            reentry_sl_bounce_pct=required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT", env),
+            order_ttl_min=f("STRAT_ORDER_TTL_MIN", env),
+            stop_loss_pct=f("STRAT_STOP_LOSS_PCT", env),
+            adopt_cost=f("STRAT_ADOPT_COST", env),
+            adopt_qty=f("STRAT_ADOPT_QTY", env),
+            reentry_drop_pct=f("STRAT_REENTRY_DROP_PCT", env),
+            reentry_tolerance_pct=f("STRAT_REENTRY_TOLERANCE_PCT", env),
+            reentry_adaptive=b("STRAT_REENTRY_ADAPTIVE", env),
+            shadow_k_reentry=f("SHADOW_K_REENTRY", env),
+            reentry_sl_bounce_pct=f("STRAT_REENTRY_SL_BOUNCE_PCT", env),
             tp_tranches=_parse_tranches(defined_env("STRAT_TP_TRANCHES", env)),
-            tp_trend_hold=required_bool_env("STRAT_TP_TREND_HOLD", env),
+            tp_trend_hold=b("STRAT_TP_TREND_HOLD", env),
             tp_regime_gate=False,
-            tp_trend_min_pct=required_float_env("STRAT_TP_TREND_MIN_PCT", env),
-            tp_trail_pct=required_float_env("STRAT_TP_TRAIL_PCT", env),
-            tp_trail_profit_floor_pct=max(0.0, required_float_env("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT", env)),
-            trend_overlay=required_bool_env("STRAT_TREND_OVERLAY", env),
-            trend_sma_n=required_int_env("STRAT_TREND_SMA_N", env),
-            trend_interval=required_int_env("STRAT_TREND_INTERVAL", env),
-            regime_min_samples=required_int_env("STRAT_REGIME_MIN_SAMPLES", env),
-            trend_topup=required_float_env("STRAT_TREND_TOPUP", env),
-            trend_trail_pct=required_float_env("STRAT_TREND_TRAIL_PCT", env),
-            trend_exit_break=required_bool_env("STRAT_TREND_EXIT_BREAK", env),
-            tp_trail_adaptive=required_bool_env("STRAT_TP_TRAIL_ADAPTIVE", env),
-            tp_trail_k=required_float_env("STRAT_TP_TRAIL_K", env),
-            tp_trail_min=required_float_env("STRAT_TP_TRAIL_MIN", env),
-            tp_trail_max=required_float_env("STRAT_TP_TRAIL_MAX", env),
-            tp_trail_vol_interval=required_int_env("STRAT_TP_TRAIL_VOL_INTERVAL", env),
-            dca_trend_brake=required_bool_env("STRAT_DCA_TREND_BRAKE", env),
-            dca_brake_min_pct=required_float_env("STRAT_DCA_BRAKE_MIN_PCT", env),
-            dca_spacing_growth_pct=max(0.0, required_float_env("STRAT_DCA_SPACING_GROWTH_PCT", env)),
-            dca_vol_scale_k=required_float_env("STRAT_DCA_VOL_SCALE_K", env),
-            dca_vol_ref=required_float_env("STRAT_DCA_VOL_REF", env),
-            dca_vol_interval=required_int_env("STRAT_DCA_VOL_INTERVAL", env),
+            tp_trend_min_pct=f("STRAT_TP_TREND_MIN_PCT", env),
+            tp_trail_pct=f("STRAT_TP_TRAIL_PCT", env),
+            tp_trail_profit_floor_pct=max(0.0, f("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT", env)),
+            trend_overlay=b("STRAT_TREND_OVERLAY", env),
+            trend_sma_n=i("STRAT_TREND_SMA_N", env),
+            trend_interval=i("STRAT_TREND_INTERVAL", env),
+            regime_min_samples=i("STRAT_REGIME_MIN_SAMPLES", env),
+            trend_topup=f("STRAT_TREND_TOPUP", env),
+            trend_trail_pct=f("STRAT_TREND_TRAIL_PCT", env),
+            trend_exit_break=b("STRAT_TREND_EXIT_BREAK", env),
+            tp_trail_adaptive=b("STRAT_TP_TRAIL_ADAPTIVE", env),
+            tp_trail_k=f("STRAT_TP_TRAIL_K", env),
+            tp_trail_min=f("STRAT_TP_TRAIL_MIN", env),
+            tp_trail_max=f("STRAT_TP_TRAIL_MAX", env),
+            tp_trail_vol_interval=i("STRAT_TP_TRAIL_VOL_INTERVAL", env),
+            dca_trend_brake=b("STRAT_DCA_TREND_BRAKE", env),
+            dca_brake_min_pct=f("STRAT_DCA_BRAKE_MIN_PCT", env),
+            dca_spacing_growth_pct=max(0.0, f("STRAT_DCA_SPACING_GROWTH_PCT", env)),
+            dca_vol_scale_k=f("STRAT_DCA_VOL_SCALE_K", env),
+            dca_vol_ref=f("STRAT_DCA_VOL_REF", env),
+            dca_vol_interval=i("STRAT_DCA_VOL_INTERVAL", env),
             **load_common_mhdpa_env(env, include_spot_sl=True),
         )
 
@@ -530,10 +515,7 @@ class Strategy(BaseSpotMixin):
                     str(pending.get("side") or "buy"), str(pending.get("kind") or "ENTRY"), submit_error
                 )
             self._persist_pending_intent(None)
-            log(
-                f"  ! [STRAT] released stale insufficient-funds pending intent "
-                f"({pending.get('side')} {pending.get('kind')})"
-            )
+            log(f"  ! [STRAT] released stale insufficient-funds pending intent ({pending.get('side')} {pending.get('kind')})")
             return
         try:
             result = self._order_lifecycle.reconcile(pending, persist=self._persist_pending_intent)
@@ -548,8 +530,7 @@ class Strategy(BaseSpotMixin):
 
     # -- Helpers ---------------------------------------------------------------
     def _qty_for(self, amount: float, price: float) -> float:
-        amt_f = safe_pos_float(amount, default=None)
-        px_f = safe_pos_float(price, default=None)
+        amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
         return round(amt_f / px_f, self.vol_dec) if (amt_f is not None and px_f is not None) else 0.0
 
     def _dust_safe_qty(self, qty: float) -> float:
@@ -576,11 +557,8 @@ class Strategy(BaseSpotMixin):
         record = records.get(self._placement_backoff_key(side, kind)) if isinstance(records, dict) else None
         if not isinstance(record, dict):
             return 0.0
-        until_f = safe_float(record.get("until"), default=None)
-        now_f = safe_float(self._now(), default=None)
-        if until_f is None or now_f is None:
-            return 0.0
-        return min(_PLACEMENT_BACKOFF_CAP_SEC, max(0.0, until_f - now_f))
+        until_f, now_f = safe_float(record.get("until"), default=None), safe_float(self._now(), default=None)
+        return min(_PLACEMENT_BACKOFF_CAP_SEC, max(0.0, until_f - now_f)) if (until_f is not None and now_f is not None) else 0.0
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)
@@ -590,8 +568,7 @@ class Strategy(BaseSpotMixin):
             self.s["placement_backoffs"] = records
         previous = records.get(key) if isinstance(records.get(key), dict) else {}
         attempts = safe_nonneg_int(previous.get("attempts"), default=0) + 1
-        base = max(60.0, float(self.p.check_minutes) * 60.0)
-        delay = min(_PLACEMENT_BACKOFF_CAP_SEC, base * (2 ** min(attempts - 1, 10)))
+        delay = min(_PLACEMENT_BACKOFF_CAP_SEC, max(60.0, float(self.p.check_minutes) * 60.0) * (2 ** min(attempts - 1, 10)))
         records[key] = {"attempts": attempts, "until": self._now() + delay, "reason": str(error)}
         self._save()
         log(f"  ! [STRAT] {side} {kind} insufficient funds — operational cooldown {delay:.0f}s (refusal {attempts})")
@@ -610,13 +587,11 @@ class Strategy(BaseSpotMixin):
         s_norm = normalize_side(side)
         if s_norm in ("BUY", "SELL"):
             side = s_norm.lower()
-        vol_f = safe_pos_float(vol, default=None)
-        price_f = safe_pos_float(price, default=None)
+        vol_f, price_f = safe_pos_float(vol, default=None), safe_pos_float(price, default=None)
         if vol_f is None or price_f is None:
             log(f"  ! [STRAT] invalid order parameters vol={vol!r} price={price!r} — skipping")
             return False
-        vol = round(vol_f, self.vol_dec)
-        price = round(price_f, self.price_dec)
+        vol, price = round(vol_f, self.vol_dec), round(price_f, self.price_dec)
         if price <= 0:
             log(f"  ! [STRAT] price {price} <= 0 — skipping")
             return False
@@ -626,8 +601,7 @@ class Strategy(BaseSpotMixin):
         if not market and str(side).lower() == "sell" and str(kind).upper() != "STOP":
             _avg = self._avg()
             if _avg is not None and price < _avg:
-                log(f"  ! [STRAT] [GUARD] {kind} sell rejected: price {price} < avg "
-                    f"{_avg:.6f} (profit-floor; STOP/MARKET excepted)")
+                log(f"  ! [STRAT] [GUARD] {kind} sell rejected: price {price} < avg {_avg:.6f} (profit-floor; STOP/MARKET excepted)")
                 return False
         if not market:
             remaining = self._placement_backoff_remaining(side, kind)
@@ -635,10 +609,10 @@ class Strategy(BaseSpotMixin):
                 log(f"  ! [STRAT] {side} {kind} in cooldown after insufficient funds ({remaining:.0f}s remaining)")
                 return False
         if self.dry_run:
-            self._paper_seq += 1
+            txid = self._next_paper_order_id()
             log(f"  [STRAT] [PAPER] {side.upper()} {kind}{' MKT' if market else ''} {vol} @ {price} {self.ccy}")
             self.s["orders"].append({
-                "txid": f"PAPER-{self._paper_seq}", "side": side, "vol": vol, "price": price,
+                "txid": txid, "side": side, "vol": vol, "price": price,
                 "amount": amount, "kind": kind, "market": market, "ts": self._now(),
             })
             return True
@@ -683,20 +657,14 @@ class Strategy(BaseSpotMixin):
                     if self._insufficient_funds_error(refusal):
                         self.s["ledger_reconcile_required"] = True
                         self._record_placement_backoff(side, kind, refusal)
-                    log(
-                        f"  ! [STRAT] {side} {kind} rejected definitively; "
-                        "the intent was released for safe reevaluation"
-                    )
+                    log(f"  ! [STRAT] {side} {kind} rejected definitively; the intent was released for safe reevaluation")
                     return False
                 if self._insufficient_funds_error(submit_error):
                     self.s["ledger_reconcile_required"] = True
                     if not market:
                         self._record_placement_backoff(side, kind, submit_error)
                     self._persist_pending_intent(None)
-                    log(
-                        f"  ! [STRAT] {side} {kind} rejected due to insufficient funds; "
-                        "the intent was released for safe reevaluation"
-                    )
+                    log(f"  ! [STRAT] {side} {kind} rejected due to insufficient funds; the intent was released for safe reevaluation")
                     return False
                 log(f"  ! [STRAT] {side} {kind} ambiguous submit; the intent stays persisted for reconciliation")
                 return False
@@ -791,8 +759,7 @@ class Strategy(BaseSpotMixin):
                 self._finalize_cycle_if_flat(pending, pending["fill_price"])
             return False
         kind = str(pending.get("kind") or "TP")
-        factor = 0.995 if kind == "STOP" else 0.999
-        reference = round(price * factor, self.price_dec)
+        reference = round(price * (0.995 if kind == "STOP" else 0.999), self.price_dec)
         if "min_profit_pct" in pending and kind != "STOP":
             min_profit_pct = safe_nonneg_float(pending["min_profit_pct"], default=None)
             avg = safe_pos_float(self._avg(), default=None)
@@ -883,8 +850,7 @@ class Strategy(BaseSpotMixin):
                 ord_vol = safe_pos_float(o.get("vol"), default=0.0) or 0.0
                 eps = max(1e-12, ord_vol * 1e-12)
                 if total_vol + eps < applied_vol or total_cost + eps < applied_cost:
-                    log(f"  ! [STRAT] status {o['txid']} regressed cumulatively "
-                        f"(vol {total_vol}<{applied_vol}) — not reapplying")
+                    log(f"  ! [STRAT] status {o['txid']} regressed cumulatively (vol {total_vol}<{applied_vol}) — not reapplying")
                     continue
 
                 delta_vol = max(0.0, total_vol - applied_vol)
@@ -973,12 +939,7 @@ class Strategy(BaseSpotMixin):
             self.s["pending_exit"] = pending
             self._save()
             return
-        keep = (
-            self.s["realized_gross"], self.s["realized_net"],
-            self.s["fees_total"], self.s.get("cycle", 1) + 1,
-        )
-        self.s = _new_state()
-        self.s["realized_gross"], self.s["realized_net"], self.s["fees_total"], self.s["cycle"] = keep
+        self._reset_cycle_state(("realized_gross", "realized_net", "fees_total"))
         exit_ts = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
         self._seed_post_exit_anchors(price, o.get("kind"), exit_ts)
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
@@ -1047,10 +1008,7 @@ class Strategy(BaseSpotMixin):
         if decision.action == ExitAction.SELL and decision.should_exit:
             if self._has_pending_market_exit():
                 return True
-            log(
-                f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% "
-                f"({decision.reason}) — SELLING EVERYTHING"
-            )
+            log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({decision.reason}) — SELLING EVERYTHING")
             if not self._request_market_exit(price, "STOP"):
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
@@ -1162,8 +1120,7 @@ class Strategy(BaseSpotMixin):
         )
 
     def _surge_window_bars(self) -> int:
-        interval_hours = max(1.0, float(self.p.trend_interval)) / 60.0
-        return max(1, round(self.p.surge_window_hours / interval_hours))
+        return max(1, round(self.p.surge_window_hours / (max(1.0, float(self.p.trend_interval)) / 60.0)))
 
     def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
         """Calculate the configured-window move, or None when unavailable."""
@@ -1784,10 +1741,7 @@ class Strategy(BaseSpotMixin):
                     )
                 return True
             self._cancel_orders("sell", exclude_market=True)
-            log(
-                f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, "
-                f"trail-stop {trail_stop:.{self.price_dec}f})"
-            )
+            log(f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, trail-stop {trail_stop:.{self.price_dec}f})")
             return False
 
         self.s["trail_peak"] = None
@@ -1842,9 +1796,7 @@ class Strategy(BaseSpotMixin):
             self.s["dca_buys"] < self.p.max_dca_buys
             and not in_sl_bounce
             and self.s["last_buy_price"]
-            and sr.dca_price_hit(
-                price, self.s["last_buy_price"], effective_dca_drop, self.p.reentry_tolerance_pct
-            )
+            and sr.dca_price_hit(price, self.s["last_buy_price"], effective_dca_drop, self.p.reentry_tolerance_pct)
             and self.s["spent"] < self._effective_max_budget()
             and not (
                 self.p.dca_trend_brake
@@ -1869,10 +1821,7 @@ class Strategy(BaseSpotMixin):
         qty = self._qty_for(spend, entry_px)
         if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
             entry_px = round(entry_px, self.price_dec)
-            qty = (
-                math.floor(spend / entry_px * 10 ** self.vol_dec) / 10 ** self.vol_dec
-                if entry_px > 0 else 0.0
-            )
+            qty = math.floor(spend / entry_px * 10 ** self.vol_dec) / 10 ** self.vol_dec if entry_px > 0 else 0.0
         if qty <= 0 or qty < self.ordermin:
             log(f"  [STRAT] dip {price}: DCA skipped — available {spend:.2f} {self.ccy} too small for a fill")
             return
@@ -1944,10 +1893,7 @@ class Strategy(BaseSpotMixin):
         if self.p.dca_spacing_growth_pct > 0:
             log(f"      DCA growth : +{self.p.dca_spacing_growth_pct}pp after each executed DCA")
         if self.p.dca_vol_scale_k:
-            log(
-                f"      DCA vol    : k={self.p.dca_vol_scale_k}, "
-                f"reference={self.p.dca_vol_ref}%, OHLC={self.p.dca_vol_interval}m"
-            )
+            log(f"      DCA vol    : k={self.p.dca_vol_scale_k}, reference={self.p.dca_vol_ref}%, OHLC={self.p.dca_vol_interval}m")
         log(f"      take-profit: +{self.p.takeprofit_pct}%" if self.p.enable_takeprofit else "      take-profit: off")
         log(f"      PLAFON     : {self._effective_max_budget():.0f} {self.ccy} / ciclu")
         if self.fee_note:

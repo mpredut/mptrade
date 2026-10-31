@@ -31,6 +31,7 @@ from offline.backtests.datasets import align_previous_values
 from offline.backtests.execution import (
     ExecutionModel,
     choose_intrabar_scenario,
+    select_eligible_intrabar_orders,
     split_order_fill,
     validate_ohlc_bars,
 )
@@ -50,11 +51,11 @@ def _fx_rates(value: float | Sequence[float], count: int) -> list[float]:
         if scalar is None:
             raise ValueError(f"invalid scalar fx_to_usd: {value!r}")
         return [scalar] * count
-    rates = []
     try:
         iterator = iter(value)
     except TypeError as exc:
         raise ValueError(f"invalid fx_to_usd sequence: {value!r}") from exc
+    rates = []
     for rate in iterator:
         rate_f = safe_pos_float(rate, default=None)
         if rate_f is None:
@@ -76,28 +77,20 @@ def run_replay(
     timestamps: Sequence[int] = (),
     execution: ExecutionModel | None = None,
 ) -> dict:
-    """Run the live T212 strategy over ``(open, high, low, close)`` bars.
-
-    ``fx_to_usd`` may be scalar or one historical value per bar. The live DCA gate
-    reads five-minute Yahoo bars and rejects other cadences.
-    """
+    """Run the live T212 strategy over ``(open, high, low, close)`` bars."""
     if not isinstance(ohlc, (list, tuple)) or not ohlc:
         raise ValueError("ohlc cannot be empty")
     if bar_minutes is not None:
-        bm_f = safe_pos_float(bar_minutes, default=None)
-        if bm_f is None:
+        bar_minutes = safe_pos_float(bar_minutes, default=None)
+        if bar_minutes is None:
             raise ValueError("bar_minutes must be a finite positive number")
-        bar_minutes = bm_f
     if periods_per_year is not None:
-        ppy_f = safe_pos_float(periods_per_year, default=None)
-        if ppy_f is None:
+        periods_per_year = safe_pos_float(periods_per_year, default=None)
+        if periods_per_year is None:
             raise ValueError("periods_per_year must be a finite positive number")
-        periods_per_year = ppy_f
     validate_ohlc_bars(ohlc, exact_len_4=True, check_envelope=True)
     if params.dca_trend_gate_pct > 0 and bar_minutes != 5:
-        raise ValueError(
-            "dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal"
-        )
+        raise ValueError("dca_trend_gate_pct requires 5-minute bars, the same cadence as the live Yahoo signal")
     if timestamps:
         if len(timestamps) != len(ohlc):
             raise ValueError("timestamps must have the same length as ohlc")
@@ -140,15 +133,12 @@ def _run_once(
     clock = _SimClock(0.0)
     trend_closes: deque[float] = deque(maxlen=12)
     for row in warmup_ohlc or ():
-        if not isinstance(row, (list, tuple)) or len(row) < 4:
-            continue
-        cf = safe_pos_float(row[3], default=None)
-        if cf is not None:
-            trend_closes.append(cf)
-    original_log = _strat.log
-    original_notify = _strat.notify
-    _strat.log = lambda *_args, **_kwargs: None
-    _strat.notify = lambda *_args, **_kwargs: None
+        if isinstance(row, (list, tuple)) and len(row) >= 4:
+            cf = safe_pos_float(row[3], default=None)
+            if cf is not None:
+                trend_closes.append(cf)
+    original_log, original_notify = _strat.log, _strat.notify
+    _strat.log = _strat.notify = lambda *_args, **_kwargs: None
     try:
         engine = _strat.Strategy(
             client,
@@ -161,14 +151,11 @@ def _run_once(
             trend_slope_provider=lambda _symbol: _ols_slope_pct(list(trend_closes)),
         )
         engine._save = lambda: None
-        # The curve uses account currency. Asset P&L is produced in USD and converted
-        # at the available rate when realized or marked to market.
         initial_capital = float(params.max_budget)
         equity_curve = [initial_capital]
         exposure = []
         trade_pnls = []
-        turnover_account = 0.0
-        realized_net_account = 0.0
+        turnover_account = realized_net_account = 0.0
         fills = wins = ambiguous_bars = 0
         cycle0 = engine.s.get("cycle", 1)
         side_order = execution.side_order()
@@ -184,18 +171,11 @@ def _run_once(
 
             orders = engine.s["orders"]
             if orders:
-                eligible_orders = [
-                    o for o in orders
-                    if o.get("market") or execution.limit_touched(
-                        o["side"], high=high, low=low, limit=o["limit"],
-                    )
-                ]
+                eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
+                    orders, execution, high=high, low=low, limit_key="limit",
+                )
                 if eligible_orders:
-                    if len(eligible_orders) > 1 and {"buy", "sell"}.issubset(
-                        {o["side"].lower() for o in eligible_orders}
-                    ):
-                        ambiguous_bars += 1
-
+                    ambiguous_bars += int(is_ambiguous)
                     for side in side_order:
                         for order in eligible_orders:
                             if order not in engine.s["orders"] or order["side"].lower() != side:
@@ -210,10 +190,7 @@ def _run_once(
                             )
                             if complete:
                                 engine._remove_order(order)
-                            price = (
-                                execution.market_price(side, open_)
-                                if market else float(order["limit"])
-                            )
+                            price = execution.market_price(side, open_) if market else float(order["limit"])
                             if side == "sell":
                                 quantity = min(quantity, engine.s["qty"])
                                 if quantity <= 1e-12:
@@ -221,9 +198,7 @@ def _run_once(
                                     continue
                                 fill_order["qty"] = quantity
                                 avg = engine._avg_cost() or price
-                                _gross, _fee, net = _strat._sell_pnl(
-                                    avg, price, quantity, params.fx_fee_pct,
-                                )
+                                _gross, _fee, net = _strat._sell_pnl(avg, price, quantity, params.fx_fee_pct)
                                 if complete and fill_order.get("level") is not None:
                                     engine._record_tp_sold_level(fill_order["level"])
                                 realized_net_account += net / rate
@@ -233,8 +208,6 @@ def _run_once(
                             fills += 1
                             turnover_account += quantity * price / rate
 
-                # Live _reconcile_real() cancels a stale resting BUY and step() places it
-                # again at the current price; replay never reconciles, so apply the same rule.
                 if engine.s["orders"]:
                     for order in list(engine.s["orders"]):
                         if engine._buy_is_stale(order, float(close)):
@@ -247,15 +220,10 @@ def _run_once(
             avg = engine._avg_cost()
             unrealized_usd = (float(close) - avg) * qty if avg and qty > 1e-9 else 0.0
             open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-            equity_curve.append(
-                initial_capital
-                + realized_net_account
-                + (unrealized_usd - open_buy_fee_usd) / rate
-            )
+            equity_curve.append(initial_capital + realized_net_account + (unrealized_usd - open_buy_fee_usd) / rate)
             exposure.append(qty > 1e-9)
     finally:
-        _strat.log = original_log
-        _strat.notify = original_notify
+        _strat.log, _strat.notify = original_log, original_notify
 
     if periods_per_year is None and bar_minutes:
         periods_per_year = 365.0 * 24 * 60 / bar_minutes
@@ -272,7 +240,7 @@ def _run_once(
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
     rounded = round_metric
-    result = {
+    return {
         "realized": rounded(engine.s["realized_pnl_usd"]),
         "net": rounded(engine.s["realized_net_usd"]),
         "fees": rounded(engine.s["fees_usd"] + open_buy_fee_usd),
@@ -287,9 +255,8 @@ def _run_once(
         "fills": fills,
         "ambiguous_bars": ambiguous_bars,
         "initial_capital": rounded(initial_capital),
+        **{key: rounded(value) for key, value in performance.items()},
     }
-    result.update({key: rounded(value) for key, value in performance.items()})
-    return result
 
 
 def make_t212_replay_adapter(
@@ -307,9 +274,7 @@ def make_t212_replay_adapter(
         rate = fx_to_usd if fx_to_usd is not None else 1.0
         if fx_records is not None and ts:
             rate = align_previous_values(
-                ts,
-                fx_records,
-                transform=(lambda value: 1.0 / value) if fx_invert else None,
+                ts, fx_records, transform=(lambda value: 1.0 / value) if fx_invert else None,
             )
         return run_replay(
             ohlc,
@@ -322,4 +287,3 @@ def make_t212_replay_adapter(
             execution=execution,
         )
     return _adapter
-

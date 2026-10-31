@@ -256,32 +256,33 @@ class StratParams:
                 raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}")
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
+        b, f = required_bool_env, required_float_env
         return cls(
             currency=required_env("STRAT_CURRENCY", e).strip().upper(),
             entry_amount=_entry,
-            entry_discount_pct=required_float_env("STRAT_ENTRY_DISCOUNT_PCT", e),
+            entry_discount_pct=f("STRAT_ENTRY_DISCOUNT_PCT", e),
             dca_amount=_dca,
-            dca_drop_pct=required_float_env("STRAT_DCA_DROP_PCT", e),
-            check_minutes=required_float_env("STRAT_CHECK_MINUTES", e),
-            takeprofit_pct=required_float_env("STRAT_TAKEPROFIT_PCT", e),
+            dca_drop_pct=f("STRAT_DCA_DROP_PCT", e),
+            check_minutes=f("STRAT_CHECK_MINUTES", e),
+            takeprofit_pct=f("STRAT_TAKEPROFIT_PCT", e),
             max_budget=_budget,
             max_dca_buys=_max_dca,
             validity="GOOD_TILL_CANCEL",
             enable_takeprofit=(mode != "dca_only"),
-            order_ttl_min=required_float_env("STRAT_ORDER_TTL_MIN", e),
-            stop_loss_pct=required_float_env("STRAT_STOP_LOSS_PCT", e),
+            order_ttl_min=f("STRAT_ORDER_TTL_MIN", e),
+            stop_loss_pct=f("STRAT_STOP_LOSS_PCT", e),
             yahoo_sym=required_env("YAHOO_SYMBOL", e),
-            reentry_drop_pct=required_float_env("STRAT_REENTRY_DROP_PCT", e),
-            reentry_tolerance_pct=required_float_env("STRAT_REENTRY_TOLERANCE_PCT", e),
+            reentry_drop_pct=f("STRAT_REENTRY_DROP_PCT", e),
+            reentry_tolerance_pct=f("STRAT_REENTRY_TOLERANCE_PCT", e),
             tp_ladder=_ladder,
-            fx_fee_pct=required_float_env("STRAT_FX_FEE_PCT", e),
-            loss_alert_step=required_float_env("STRAT_LOSS_ALERT_STEP", e),
-            ladder_min_free=required_float_env("STRAT_LADDER_MIN_FREE", e),
-            sl_rebuy_enabled=required_bool_env("STRAT_SL_REBUY_ENABLED", e),
-            sl_rebuy_bounce_pct=required_float_env("STRAT_SL_REBUY_BOUNCE_PCT", e),
-            dca_trend_gate_pct=required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
-            trail_pct=required_float_env("STRAT_TRAIL_PCT", e),
-            trail_min_profit_pct=required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
+            fx_fee_pct=f("STRAT_FX_FEE_PCT", e),
+            loss_alert_step=f("STRAT_LOSS_ALERT_STEP", e),
+            ladder_min_free=f("STRAT_LADDER_MIN_FREE", e),
+            sl_rebuy_enabled=b("STRAT_SL_REBUY_ENABLED", e),
+            sl_rebuy_bounce_pct=f("STRAT_SL_REBUY_BOUNCE_PCT", e),
+            dca_trend_gate_pct=f("STRAT_DCA_TREND_GATE_PCT", e),
+            trail_pct=f("STRAT_TRAIL_PCT", e),
+            trail_min_profit_pct=f("STRAT_TRAIL_MIN_PROFIT_PCT", e),
             **load_common_mhdpa_env(e, include_spot_sl=False),
         )
 
@@ -651,14 +652,10 @@ class Strategy(BaseSpotMixin):
         was_sl = bool(
             self.s.get("sl_pending") or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
         )
-        pnl, net_tot, fees = self.s["realized_pnl_usd"], self.s["realized_net_usd"], self.s["fees_usd"]
-        nxt = self.s.get("cycle", 1) + 1
-        self.s = _new_state()
-        self.s["orders"] = saved_orders
-        if keep_pending_submit:
-            self.s["pending_submit"] = saved_pending_submit
-        self.s["realized_pnl_usd"], self.s["realized_net_usd"], self.s["fees_usd"], self.s["cycle"] = (
-            pnl, net_tot, fees, nxt,
+        nxt = self._reset_cycle_state(
+            ("realized_pnl_usd", "realized_net_usd", "fees_usd"),
+            orders=saved_orders,
+            **({"pending_submit": saved_pending_submit} if keep_pending_submit else {}),
         )
         self._seed_post_exit_anchors(
             exit_price, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
@@ -722,10 +719,9 @@ class Strategy(BaseSpotMixin):
             log("  ! [STRAT] qty 0 — sar")
             return False
         if self.dry_run:
-            self._paper_seq += 1
             log(f"  [STRAT] [PAPER] plasez BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
             self.s["orders"].append({
-                "id": f"PAPER-{self._paper_seq}", "side": "BUY", "qty": qty,
+                "id": self._next_paper_order_id(), "side": "BUY", "qty": qty,
                 "limit": round(limit, 2), "amount": amount, "kind": kind, "ts": self._now(),
             })
             return True
@@ -763,11 +759,10 @@ class Strategy(BaseSpotMixin):
         level = _clean_pos_float(level)
         tag = f"+{level:g}%" if level is not None else ""
         if self.dry_run:
-            self._paper_seq += 1
             order_type = "MKT" if market else f"@ {limit:.2f}"
             log(f"  [STRAT] [PAPER] plasez SELL {kind}{tag} {qty:.2f} {order_type} USD")
             self.s["orders"].append({
-                "id": f"PAPER-{self._paper_seq}", "side": "SELL", "qty": qty,
+                "id": self._next_paper_order_id(), "side": "SELL", "qty": qty,
                 "limit": round(limit, 2), "kind": kind, "level": level, "market": market, "ts": self._now(),
             })
             return True

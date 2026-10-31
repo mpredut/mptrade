@@ -16,6 +16,7 @@ from offline.backtests.execution import (
     ExecutionModel,
     FeeModel,
     choose_intrabar_scenario,
+    select_eligible_intrabar_orders,
     split_order_fill,
     validate_ohlc_bars,
 )
@@ -24,6 +25,7 @@ from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
 
 _REPLAY_PRECISION = PairPrecision(5, 8, 0.0, "REPLAY")
+_LAST_REPLAY_DIAG: dict = {}
 
 
 def _silent(*_args, **_kwargs):
@@ -43,39 +45,33 @@ class _ReplayClient:
         return _REPLAY_PRECISION
 
     def free_balance(self, asset: str) -> float:
-        if self._free_balance_fn is not None:
-            return self._free_balance_fn(asset)
-        return self._default_balance
+        return self._free_balance_fn(asset) if self._free_balance_fn is not None else self._default_balance
 
 
 def _validate_replay(ohlc, params, bar_minutes: float | None) -> None:
     validate_ohlc_bars(ohlc, check_envelope=False)
     if bar_minutes is not None and safe_pos_float(bar_minutes, default=None) is None:
         raise ValueError("bar_minutes must be finite and positive")
-    surge_window_enabled = (
-        params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
-    )
-    if (params.trend_overlay or params.dca_trend_brake
-            or params.reentry_hybrid_enabled or surge_window_enabled
-            or getattr(params, "tp_dynamic_flat", False)) and (
-            bar_minutes is None or float(bar_minutes) != float(params.trend_interval)):
+    surge_window_enabled = params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
+    if (
+        params.trend_overlay
+        or params.dca_trend_brake
+        or params.reentry_hybrid_enabled
+        or surge_window_enabled
+        or getattr(params, "tp_dynamic_flat", False)
+    ) and (bar_minutes is None or float(bar_minutes) != float(params.trend_interval)):
         raise ValueError(
-            "regime-aware policies require bar_minutes to equal trend_interval "
-            f"({params.trend_interval} minutes); resampling is not implemented"
+            f"regime-aware policies require bar_minutes to equal trend_interval ({params.trend_interval} minutes); resampling is not implemented"
         )
     if (params.tp_trail_adaptive or (params.surge_guard and params.surge_dynamic)) and (
-            bar_minutes is None
-            or float(bar_minutes) != float(params.tp_trail_vol_interval)):
+        bar_minutes is None or float(bar_minutes) != float(params.tp_trail_vol_interval)
+    ):
         raise ValueError(
-            "adaptive trailing or surge requires bar_minutes to equal "
-            f"tp_trail_vol_interval ({params.tp_trail_vol_interval} minute)"
+            f"adaptive trailing or surge requires bar_minutes to equal tp_trail_vol_interval ({params.tp_trail_vol_interval} minute)"
         )
-    if params.dca_vol_scale_k and (
-            bar_minutes is None
-            or float(bar_minutes) != float(params.dca_vol_interval)):
+    if params.dca_vol_scale_k and (bar_minutes is None or float(bar_minutes) != float(params.dca_vol_interval)):
         raise ValueError(
-            "dca_vol_scale_k requires bar_minutes to equal "
-            f"dca_vol_interval ({params.dca_vol_interval} minute)"
+            f"dca_vol_scale_k requires bar_minutes to equal dca_vol_interval ({params.dca_vol_interval} minute)"
         )
     if params.reentry_adaptive and bar_minutes is None:
         raise ValueError("reentry_adaptive requires bar_minutes for the time-based volatility")
@@ -95,22 +91,16 @@ def run_replay(
     reentry_series=None,
     intrabar_high: bool = False,
 ) -> dict:
-    """Replay decisions, optionally enforcing a finite cash account and fee reserves.
-
-    Omitted cash retains legacy funding assumptions for baseline compatibility.
-    Explicit cash rejects unaffordable requests, reserves open BUYs, and settles
-    fill notional/fees; it does not inject capital after losses or cycle resets.
-    """
+    """Replay decisions, optionally enforcing a finite cash account and fee reserves."""
     _validate_replay(ohlc, params, bar_minutes)
     if bar_minutes is not None:
         bar_minutes = safe_pos_float(bar_minutes, default=None)
     include_decision_trace = _strat._parse_bool_flag(include_decision_trace, False)
     intrabar_high = _strat._parse_bool_flag(intrabar_high, False)
     if initial_cash is not None:
-        ic_f = safe_pos_float(initial_cash, default=None)
-        if ic_f is None:
+        initial_cash = safe_pos_float(initial_cash, default=None)
+        if initial_cash is None:
             raise ValueError("initial_cash must be finite and positive")
-        initial_cash = ic_f
     model = execution or ExecutionModel()
     fees = fee_model or FeeModel(fee_pct, fee_pct)
     return choose_intrabar_scenario(
@@ -145,37 +135,24 @@ def _run_once(
     reentry_series=None,
     intrabar_high: bool = False,
 ) -> dict:
-    # Replay declares its synthetic execution precision explicitly; live engines
-    # must obtain this metadata from the venue.
-    # Legacy replay explicitly assumes funding up to the configured cycle cap.
-    # A mock or unavailable live balance must never imply unlimited buying power.
     if dca_drop_series is not None or reentry_series is not None:
         params = dataclasses.replace(params) if dataclasses.is_dataclass(params) else copy.copy(params)
     client = _ReplayClient(float(params.effective_max_budget()))
-    original_notify = _strat.notify
-    original_log = _strat.log
-    _strat.notify = _silent
-    _strat.log = _silent
+    original_notify, original_log = _strat.notify, _strat.log
+    _strat.notify = _strat.log = _silent
     try:
         strategy = _strat.Strategy(
-            client,
-            "REPLAY",
-            params,
-            dry_run=True,
-            initial_state=_strat._new_state(),
-            replay_mode=True,
+            client, "REPLAY", params, dry_run=True, initial_state=_strat._new_state(), replay_mode=True,
         )
         warmup_step = bar_minutes * 60 if bar_minutes else 1.0
-        for index, w_row in enumerate(
-                warmup_ohlc, start=-len(warmup_ohlc)):
+        for index, w_row in enumerate(warmup_ohlc, start=-len(warmup_ohlc)):
             if not isinstance(w_row, (list, tuple)) or len(w_row) < 4:
                 continue
             close_f = safe_pos_float(w_row[3], default=None)
-            if close_f is None:
-                continue
-            strategy._shadow_prices.append((index * warmup_step, close_f))
-            if strategy._surge_replay_closes is not None:
-                strategy._surge_replay_closes.append(close_f)
+            if close_f is not None:
+                strategy._shadow_prices.append((index * warmup_step, close_f))
+                if strategy._surge_replay_closes is not None:
+                    strategy._surge_replay_closes.append(close_f)
         strategy.set_simulated_time(0.0)
         strategy._save = _silent
         decision_trace = []
@@ -186,9 +163,11 @@ def _run_once(
         cash_refusals = 0
 
         def free_quote(_asset):
-            reserved = sum(o["vol"] * o["price"] *
-                           (1 + fee_model.rate_pct(market=bool(o.get("market"))) / 100)
-                           for o in strategy.s["orders"] if o["side"] == "buy")
+            reserved = sum(
+                o["vol"] * o["price"] * (1 + fee_model.rate_pct(market=bool(o.get("market"))) / 100)
+                for o in strategy.s["orders"]
+                if o["side"] == "buy"
+            )
             return max(0.0, cash - reserved)
 
         if cash is not None:
@@ -203,9 +182,7 @@ def _run_once(
                 if required > free_quote(params.currency) + 1e-9:
                     cash_refusals += 1
                     return False
-            accepted = original_place(
-                side, vol, price, kind, amount=amount, market=market,
-            )
+            accepted = original_place(side, vol, price, kind, amount=amount, market=market)
             if accepted and include_decision_trace:
                 decision_trace.append({
                     "bar": current_bar,
@@ -228,8 +205,7 @@ def _run_once(
         equity_curve = [initial_capital]
         exposure = []
 
-        default_dca_drop = params.dca_drop_pct
-        default_reentry_drop = params.reentry_drop_pct
+        default_dca_drop, default_reentry_drop = params.dca_drop_pct, params.reentry_drop_pct
         check_ttl = bar_minutes is None or bar_minutes >= params.order_ttl_min
         bar_step_sec = bar_minutes * 60 if bar_minutes else 1
         side_order = execution.side_order()
@@ -254,18 +230,11 @@ def _run_once(
 
             orders = strategy.s["orders"]
             if orders:
-                eligible_orders = [
-                    o for o in orders
-                    if o.get("market") or execution.limit_touched(
-                        o["side"], high=high, low=low, limit=o["price"],
-                    )
-                ]
+                eligible_orders, is_ambiguous = select_eligible_intrabar_orders(
+                    orders, execution, high=high, low=low, limit_key="price",
+                )
                 if eligible_orders:
-                    if len(eligible_orders) > 1 and {"buy", "sell"}.issubset(
-                        {o["side"].lower() for o in eligible_orders}
-                    ):
-                        ambiguous_bars += 1
-
+                    ambiguous_bars += int(is_ambiguous)
                     for side in side_order:
                         for order in eligible_orders:
                             if order not in strategy.s["orders"] or order["side"] != side:
@@ -280,10 +249,7 @@ def _run_once(
                             )
                             if complete:
                                 strategy._remove(order)
-                            price = (
-                                execution.market_price(side, open_)
-                                if market else float(order["price"])
-                            )
+                            price = execution.market_price(side, open_) if market else float(order["price"])
                             if side == "sell":
                                 volume = min(volume, strategy.s["qty"])
                                 if volume <= 1e-12:
@@ -297,28 +263,19 @@ def _run_once(
                                 min_cash = min(min_cash, cash)
                                 if cash < -1e-8:
                                     raise ValueError("cash account overdrawn by simulated execution")
-                            strategy._apply_fill(
-                                fill_order, volume, price, fee=fee, final=complete,
-                            )
+                            strategy._apply_fill(fill_order, volume, price, fee=fee, final=complete)
                             fill_count += 1
                             turnover_notional += volume * price
                             if side == "sell":
                                 _record_sell_outcome(gross_before)
 
-                # Live reconcile() cancels an unfilled limit BUY once it is older than
-                # order_ttl_min and the price has risen more than 0.3% above it; step() then
-                # re-places it at the current level. Replay never calls reconcile(), so without
-                # this an ENTRY left below a rally would wait forever for a pullback.
                 if check_ttl and strategy.s["orders"]:
                     for order in list(strategy.s["orders"]):
-                        if (order["side"] == "buy" and not order.get("market")
-                                and close > order["price"] * 1.003):
+                        if order["side"] == "buy" and not order.get("market") and close > order["price"] * 1.003:
                             strategy._remove(order)
             strategy.step(close, timestamp=replay_time, high=high if intrabar_high else None)
             qty = strategy.s["qty"]
-            unrealized = (
-                (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
-            )
+            unrealized = (close - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
             equity_curve.append(initial_capital + strategy.s["realized_net"] + unrealized)
             exposure.append(qty > 1e-12)
 
@@ -332,22 +289,17 @@ def _run_once(
                     cash += volume * price - fee
                     min_cash = min(min_cash, cash)
                 strategy._remove(order)
-                strategy._apply_fill(
-                    order, volume, price, fee=fee, final=True,
-                )
+                strategy._apply_fill(order, volume, price, fee=fee, final=True)
                 fill_count += 1
                 turnover_notional += volume * price
                 _record_sell_outcome(gross_before)
                 if equity_curve:
                     equity_curve[-1] = initial_capital + strategy.s["realized_net"]
     finally:
-        _strat.notify = original_notify
-        _strat.log = original_log
+        _strat.notify, _strat.log = original_notify, original_log
 
     qty = strategy.s["qty"]
-    final_upnl = (
-        (float(ohlc[-1][3]) - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
-    )
+    final_upnl = (float(ohlc[-1][3]) - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
     periods_per_year = 365.0 * 24 * 60 / bar_minutes if bar_minutes else None
     performance = calculate_performance_metrics(
         equity_curve,
@@ -372,22 +324,23 @@ def _run_once(
         "ambiguous_bars": ambiguous_bars,
         "initial_capital": rounded(initial_capital),
         "account_currency": params.currency,
+        **{key: rounded(value) for key, value in performance.items()},
     }
-    result.update({key: rounded(value) for key, value in performance.items()})
     if include_decision_trace:
         result["decision_trace"] = decision_trace
     if cash is not None:
-        result["funding"] = {"initial_cash": initial_cash, "final_cash": rounded(cash),
-                             "minimum_cash": rounded(min_cash), "refused_buys": cash_refusals}
+        result["funding"] = {
+            "initial_cash": initial_cash,
+            "final_cash": rounded(cash),
+            "minimum_cash": rounded(min_cash),
+            "refused_buys": cash_refusals,
+        }
     global _LAST_REPLAY_DIAG
     _LAST_REPLAY_DIAG = {
         "max_active_surge_vol": strategy._max_active_surge_vol,
         "surge_win_check_ts": tuple(strategy._surge_win_check_ts),
     }
     return result
-
-
-_LAST_REPLAY_DIAG: dict = {}
 
 
 def make_spot_replay_adapter(
@@ -440,24 +393,19 @@ def align_spot_interval_params(params, bar_minutes: float | int | None):
     ):
         return params
 
+    target_fields = (
+        ("trend_interval", itv),
+        ("tp_trail_vol_interval", itv),
+        ("dca_vol_interval", itv),
+        ("regime_min_samples", clamped_min_samples),
+    )
     if dataclasses.is_dataclass(params):
         field_names = {f.name for f in dataclasses.fields(params) if f.init}
-        updates = {
-            k: v
-            for k, v in (
-                ("trend_interval", itv),
-                ("tp_trail_vol_interval", itv),
-                ("dca_vol_interval", itv),
-                ("regime_min_samples", clamped_min_samples),
-            )
-            if k in field_names
-        }
+        updates = {k: v for k, v in target_fields if k in field_names}
         return dataclasses.replace(params, **updates) if updates else params
     cloned = copy.copy(params)
-    cloned.trend_interval = itv
-    cloned.tp_trail_vol_interval = itv
-    cloned.dca_vol_interval = itv
-    cloned.regime_min_samples = clamped_min_samples
+    for k, v in target_fields:
+        setattr(cloned, k, v)
     return cloned
 
 
@@ -482,13 +430,11 @@ def prewarm_trend_series(
         raw_params = _strat.StratParams.from_env() if params is None else params
     except Exception:
         raw_params = None
-    if raw_params is None:
-        return
-    p = align_spot_interval_params(raw_params, bm_f)
-    run_replay(
-        ohlc[warmup_i:],
-        p,
-        fee_pct=0.26,
-        bar_minutes=bm_f,
-        warmup_ohlc=ohlc[:warmup_i],
-    )
+    if raw_params is not None:
+        run_replay(
+            ohlc[warmup_i:],
+            align_spot_interval_params(raw_params, bm_f),
+            fee_pct=0.26,
+            bar_minutes=bm_f,
+            warmup_ohlc=ohlc[:warmup_i],
+        )

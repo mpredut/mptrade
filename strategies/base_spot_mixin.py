@@ -32,60 +32,61 @@ from .state_store import (
 
 def load_common_mhdpa_env(env: dict | None, *, include_spot_sl: bool = True) -> dict[str, Any]:
     """Load shared Hybrid Re-entry, MHDSL, and MDHTP configuration keys from ``env``."""
+    b, f = required_bool_env, required_float_env
     cfg: dict[str, Any] = {
-        "reentry_hybrid_enabled": required_bool_env("STRAT_REENTRY_HYBRID_ENABLED", env),
-        "reentry_peak_relative": required_bool_env("STRAT_REENTRY_PEAK_RELATIVE", env),
-        "reentry_pullback_pct": required_float_env("STRAT_REENTRY_PULLBACK_PCT", env),
-        "reentry_pullback_adaptive": required_bool_env("STRAT_REENTRY_PULLBACK_ADAPTIVE", env),
-        "reentry_pullback_k": required_float_env("STRAT_REENTRY_PULLBACK_K", env),
-        "reentry_pullback_min": required_float_env("STRAT_REENTRY_PULLBACK_MIN", env),
-        "reentry_pullback_max": required_float_env("STRAT_REENTRY_PULLBACK_MAX", env),
-        "reentry_ttl_hours": required_float_env("STRAT_REENTRY_TTL_HOURS", env),
-        "sl_mhdsl_enabled": required_bool_env("STRAT_SL_MHDSL_ENABLED", env),
-        "sl_disaster_buffer_ratio": required_float_env("STRAT_SL_DISASTER_BUFFER_RATIO", env),
-        "sl_disaster_buffer_max_pct": required_float_env("STRAT_SL_DISASTER_BUFFER_MAX_PCT", env),
-        "sl_trend_defer_max_sec": required_float_env("STRAT_SL_TREND_DEFER_MAX_SEC", env),
-        "sl_bounce_min_recovery_pct": required_float_env("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", env),
-        "sl_bounce_pullback_pct": required_float_env("STRAT_SL_BOUNCE_PULLBACK_PCT", env),
-        "sl_structural_break_enabled": required_bool_env("STRAT_SL_STRUCTURAL_BREAK_ENABLED", env),
-        "tp_mdhtp_enabled": required_bool_env("STRAT_TP_MDHTP_ENABLED", env),
-        "tp_stagnation_max_sec": required_float_env("STRAT_TP_STAGNATION_MAX_SEC", env),
+        "reentry_hybrid_enabled": b("STRAT_REENTRY_HYBRID_ENABLED", env),
+        "reentry_peak_relative": b("STRAT_REENTRY_PEAK_RELATIVE", env),
+        "reentry_pullback_pct": f("STRAT_REENTRY_PULLBACK_PCT", env),
+        "reentry_pullback_adaptive": b("STRAT_REENTRY_PULLBACK_ADAPTIVE", env),
+        "reentry_pullback_k": f("STRAT_REENTRY_PULLBACK_K", env),
+        "reentry_pullback_min": f("STRAT_REENTRY_PULLBACK_MIN", env),
+        "reentry_pullback_max": f("STRAT_REENTRY_PULLBACK_MAX", env),
+        "reentry_ttl_hours": f("STRAT_REENTRY_TTL_HOURS", env),
+        "sl_mhdsl_enabled": b("STRAT_SL_MHDSL_ENABLED", env),
+        "sl_disaster_buffer_ratio": f("STRAT_SL_DISASTER_BUFFER_RATIO", env),
+        "sl_disaster_buffer_max_pct": f("STRAT_SL_DISASTER_BUFFER_MAX_PCT", env),
+        "sl_trend_defer_max_sec": f("STRAT_SL_TREND_DEFER_MAX_SEC", env),
+        "sl_bounce_min_recovery_pct": f("STRAT_SL_BOUNCE_MIN_RECOVERY_PCT", env),
+        "sl_bounce_pullback_pct": f("STRAT_SL_BOUNCE_PULLBACK_PCT", env),
+        "sl_structural_break_enabled": b("STRAT_SL_STRUCTURAL_BREAK_ENABLED", env),
+        "tp_mdhtp_enabled": b("STRAT_TP_MDHTP_ENABLED", env),
+        "tp_stagnation_max_sec": f("STRAT_TP_STAGNATION_MAX_SEC", env),
     }
     if include_spot_sl:
         cfg.update(
-            reentry_bear_bounce_pct=required_float_env("STRAT_REENTRY_BEAR_BOUNCE_PCT", env),
-            tp_dynamic_flat=required_bool_env("STRAT_TP_DYNAMIC_FLAT", env),
-            tp_min_pct=required_float_env("STRAT_TP_MIN_PCT", env),
-            tp_max_pct=required_float_env("STRAT_TP_MAX_PCT", env),
-            trend_trail_dynamic=required_bool_env("STRAT_TREND_TRAIL_DYNAMIC", env),
-            trend_trail_base_pct=required_float_env("STRAT_TREND_TRAIL_BASE_PCT", env),
-            trend_trail_min_pct=required_float_env("STRAT_TREND_TRAIL_MIN_PCT", env),
-            trend_trail_ratchet_k=required_float_env("STRAT_TREND_TRAIL_RATCHET_K", env),
-            trend_trail_gain_threshold=required_float_env("STRAT_TREND_TRAIL_GAIN_THRESH", env),
-            fast_profit_guard=required_bool_env("STRAT_FAST_PROFIT_GUARD", env),
-            fast_profit_mult=required_float_env("STRAT_FAST_PROFIT_MULT", env),
-            fast_profit_window_min=required_float_env("STRAT_FAST_PROFIT_WINDOW_MIN", env),
-            fast_profit_drop_pct=required_float_env("STRAT_FAST_PROFIT_DROP_PCT", env),
-            surge_guard=required_bool_env("STRAT_SURGE_GUARD", env),
-            surge_gain_pct=required_float_env("STRAT_SURGE_GAIN_PCT", env),
-            surge_window_hours=required_float_env("STRAT_SURGE_WINDOW_HOURS", env),
-            surge_move_pct=required_float_env("STRAT_SURGE_MOVE_PCT", env),
-            surge_exit_pullback_pct=required_float_env("STRAT_SURGE_EXIT_PULLBACK_PCT", env),
-            surge_dynamic=required_bool_env("STRAT_SURGE_DYNAMIC", env),
-            surge_min_gain_pct=required_float_env("STRAT_SURGE_MIN_GAIN_PCT", env),
-            surge_max_gain_pct=required_float_env("STRAT_SURGE_MAX_GAIN_PCT", env),
-            surge_vol_multiplier=required_float_env("STRAT_SURGE_VOL_MULTIPLIER", env),
-            slow_grind_guard=required_bool_env("STRAT_SLOW_GRIND_GUARD", env),
-            slow_grind_days=required_float_env("STRAT_SLOW_GRIND_DAYS", env),
-            slow_grind_min_gain_pct=required_float_env("STRAT_SLOW_GRIND_MIN_GAIN_PCT", env),
-            slow_grind_flash_window_min=required_float_env("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
-            slow_grind_flash_drop_pct=required_float_env("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
-            slow_grind_hourly_drop_pct=required_float_env("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
-            sl_disaster_vol_multiplier=required_float_env("STRAT_SL_DISASTER_VOL_MULTIPLIER", env),
-            sl_disaster_buffer_min_pct=required_float_env("STRAT_SL_DISASTER_BUFFER_MIN_PCT", env),
-            sl_bounce_ratchet_enabled=required_bool_env("STRAT_SL_BOUNCE_RATCHET_ENABLED", env),
-            sl_bounce_ratchet_k=required_float_env("STRAT_SL_BOUNCE_RATCHET_K", env),
-            sl_bounce_min_pullback_pct=required_float_env("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", env),
+            reentry_bear_bounce_pct=f("STRAT_REENTRY_BEAR_BOUNCE_PCT", env),
+            tp_dynamic_flat=b("STRAT_TP_DYNAMIC_FLAT", env),
+            tp_min_pct=f("STRAT_TP_MIN_PCT", env),
+            tp_max_pct=f("STRAT_TP_MAX_PCT", env),
+            trend_trail_dynamic=b("STRAT_TREND_TRAIL_DYNAMIC", env),
+            trend_trail_base_pct=f("STRAT_TREND_TRAIL_BASE_PCT", env),
+            trend_trail_min_pct=f("STRAT_TREND_TRAIL_MIN_PCT", env),
+            trend_trail_ratchet_k=f("STRAT_TREND_TRAIL_RATCHET_K", env),
+            trend_trail_gain_threshold=f("STRAT_TREND_TRAIL_GAIN_THRESH", env),
+            fast_profit_guard=b("STRAT_FAST_PROFIT_GUARD", env),
+            fast_profit_mult=f("STRAT_FAST_PROFIT_MULT", env),
+            fast_profit_window_min=f("STRAT_FAST_PROFIT_WINDOW_MIN", env),
+            fast_profit_drop_pct=f("STRAT_FAST_PROFIT_DROP_PCT", env),
+            surge_guard=b("STRAT_SURGE_GUARD", env),
+            surge_gain_pct=f("STRAT_SURGE_GAIN_PCT", env),
+            surge_window_hours=f("STRAT_SURGE_WINDOW_HOURS", env),
+            surge_move_pct=f("STRAT_SURGE_MOVE_PCT", env),
+            surge_exit_pullback_pct=f("STRAT_SURGE_EXIT_PULLBACK_PCT", env),
+            surge_dynamic=b("STRAT_SURGE_DYNAMIC", env),
+            surge_min_gain_pct=f("STRAT_SURGE_MIN_GAIN_PCT", env),
+            surge_max_gain_pct=f("STRAT_SURGE_MAX_GAIN_PCT", env),
+            surge_vol_multiplier=f("STRAT_SURGE_VOL_MULTIPLIER", env),
+            slow_grind_guard=b("STRAT_SLOW_GRIND_GUARD", env),
+            slow_grind_days=f("STRAT_SLOW_GRIND_DAYS", env),
+            slow_grind_min_gain_pct=f("STRAT_SLOW_GRIND_MIN_GAIN_PCT", env),
+            slow_grind_flash_window_min=f("STRAT_SLOW_GRIND_FLASH_WINDOW_MIN", env),
+            slow_grind_flash_drop_pct=f("STRAT_SLOW_GRIND_FLASH_DROP_PCT", env),
+            slow_grind_hourly_drop_pct=f("STRAT_SLOW_GRIND_HOURLY_DROP_PCT", env),
+            sl_disaster_vol_multiplier=f("STRAT_SL_DISASTER_VOL_MULTIPLIER", env),
+            sl_disaster_buffer_min_pct=f("STRAT_SL_DISASTER_BUFFER_MIN_PCT", env),
+            sl_bounce_ratchet_enabled=b("STRAT_SL_BOUNCE_RATCHET_ENABLED", env),
+            sl_bounce_ratchet_k=f("STRAT_SL_BOUNCE_RATCHET_K", env),
+            sl_bounce_min_pullback_pct=f("STRAT_SL_BOUNCE_MIN_PULLBACK_PCT", env),
         )
     return cfg
 
@@ -230,6 +231,18 @@ class BaseSpotMixin:
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
         self._simulated_ts = _clean_nonneg_float(ts)
+
+    def _next_paper_order_id(self) -> str:
+        self._paper_seq += 1
+        return f"PAPER-{self._paper_seq}"
+
+    def _reset_cycle_state(self, preserved_keys: tuple[str, ...], **extra_fields: Any) -> int:
+        """Reset ``self.s`` via module ``_new_state()``, incrementing ``cycle`` and preserving cumulative keys."""
+        preserved = {k: self.s[k] for k in preserved_keys}
+        next_cycle = self.s.get("cycle", 1) + 1
+        self.s = self._mod_global("_new_state")()
+        self.s.update(preserved, cycle=next_cycle, **extra_fields)
+        return next_cycle
 
     # -- Persistence -----------------------------------------------------------
     def _store(self) -> JsonStateStore:
@@ -393,9 +406,7 @@ class BaseSpotMixin:
         cache_key = (closes_slice, itv_f)
         if cache_key in BaseSpotMixin._HOURLY_VOL_CACHE:
             return BaseSpotMixin._HOURLY_VOL_CACHE[cache_key]
-        returns = [
-            math.log(cur / prev) for prev, cur in zip(closes_slice, closes_slice[1:]) if prev > 0 and cur > 0
-        ]
+        returns = [math.log(cur / prev) for prev, cur in zip(closes_slice, closes_slice[1:]) if prev > 0 and cur > 0]
         val = BaseSpotMixin._scaled_log_return_vol_pct(returns, 60.0 / itv_f)
         return BaseSpotMixin._cache_store(BaseSpotMixin._HOURLY_VOL_CACHE, cache_key, val)
 
@@ -563,11 +574,8 @@ class BaseSpotMixin:
     # -- Exit Manager, Snapshot & Re-entry Gate --------------------------------
     def _init_exit_manager(self) -> PositionExitManager:
         return build_strategy_exit_manager(
-            self.p,
-            self.s,
-            self._resolve_volatility_tuple,
-            allow_external_cache=not self.replay_mode,
-            mode=self._exit_manager_mode,
+            self.p, self.s, self._resolve_volatility_tuple,
+            allow_external_cache=not self.replay_mode, mode=self._exit_manager_mode,
         )
 
     def _create_position_snapshot(
@@ -658,9 +666,7 @@ class BaseSpotMixin:
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across spot and equity engines."""
         is_spot = self._exit_manager_mode == "spot"
-        lsp = update_post_sell_anchors(
-            self.s, price, include_last_sell_alias=is_spot, track_stop_sl_low=is_spot
-        )
+        lsp = update_post_sell_anchors(self.s, price, include_last_sell_alias=is_spot, track_stop_sl_low=is_spot)
         if not lsp:
             return True, "no_last_sell"
 
@@ -696,11 +702,7 @@ class BaseSpotMixin:
                     regime, _ = self._regime_context()
                 except Exception:
                     regime = None
-            trend_up = (
-                self._is_trend_up(regime)
-                if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0)
-                else False
-            )
+            trend_up = self._is_trend_up(regime) if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0) else False
             trend_down = self._is_trend_down(regime) if needs_reentry_regime else False
         else:
             last_kind = "STOP" if self.s.get("last_exit_kind") == "STOP" else "TP"
