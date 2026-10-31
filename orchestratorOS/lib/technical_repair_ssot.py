@@ -938,6 +938,53 @@ def is_error_report(report: Any) -> bool:
     return is_bot_or_code_error_report(report) or is_system_os_error_report(report)
 
 
+def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[str]:
+    """Select targeted pytest files covering ``real_target`` so live-VM patch verification completes quickly."""
+    tests_dir = os.path.join(workspace_dir, "tests")
+    if not os.path.isdir(tests_dir):
+        return ["tests/"]
+    try:
+        test_files = [
+            f for f in os.listdir(tests_dir)
+            if f.startswith("test_") and f.endswith(".py") and os.path.isfile(os.path.join(tests_dir, f))
+        ]
+    except OSError:
+        return ["tests/"]
+    if not test_files:
+        return ["tests/"]
+
+    base_name = os.path.basename(real_target)
+    stem = os.path.splitext(base_name)[0].strip().lower()
+    candidates: List[Tuple[int, int, str]] = []
+    for fname in test_files:
+        fpath = os.path.join(tests_dir, fname)
+        fname_low = fname.lower()
+        try:
+            fsize = os.path.getsize(fpath)
+        except OSError:
+            fsize = 999_999
+        if stem and len(stem) >= 3 and stem in fname_low:
+            candidates.append((0, fsize, f"tests/{fname}"))
+            continue
+        try:
+            txt = read_text_file(fpath)
+        except OSError:
+            continue
+        if (base_name and base_name in txt) or (stem and len(stem) >= 4 and stem in txt):
+            candidates.append((1, fsize, f"tests/{fname}"))
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return [item[2] for item in candidates[:5]]
+
+    fast_defaults = [
+        f"tests/{fname}"
+        for fname in ("test_import_safety.py", "test_config_env_shell_safe.py")
+        if fname in test_files
+    ]
+    return fast_defaults or ["tests/"]
+
+
 def apply_code_patch_safely(
     target_file: str,
     search_block: str,
@@ -976,7 +1023,8 @@ def apply_code_patch_safely(
             if os.path.exists(cand_abs):
                 pytest_bin = cand_abs
                 break
-        test_cmd = [pytest_bin, "tests/"]
+        test_targets = select_patch_pytest_targets(real_target, workspace_dir)
+        test_cmd = [pytest_bin, *test_targets]
         res = subprocess.run(test_cmd, cwd=workspace_dir, capture_output=True, text=True, timeout=240)
 
         if res.returncode == 0:

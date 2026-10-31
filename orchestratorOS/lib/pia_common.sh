@@ -40,6 +40,9 @@ pia_with_secret_file() {  # $1=secret_content $2..=command (secret file path app
   tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
   chmod 0600 "$tmp"
   printf "%s\n" "$content" > "$tmp"
+  if [ "$(id -u)" -eq 0 ] && [ -n "${TRADING_USER:-}" ]; then
+    chown "$TRADING_USER" "$tmp" 2>/dev/null || true
+  fi
   "$@" "$tmp" >/dev/null 2>&1 || rc=$?
   rm -f "$tmp"
   return $rc

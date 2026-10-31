@@ -1531,5 +1531,14 @@ def test_backup_sync_common_modular_primitives(tmp_path):
     assert not (dst_dir / ".ssh_backup").exists()
     assert not (dst_dir / "logs").exists()
 
+    from orchestratorOS.lib.technical_repair_ssot import select_patch_pytest_targets
+    targets = select_patch_pytest_targets(
+        os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh"),
+        ROOT,
+    )
+    assert "tests/test_config_env_shell_safe.py" in targets
+    assert len(targets) <= 5
+
+
 
 
