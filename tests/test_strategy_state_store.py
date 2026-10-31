@@ -83,6 +83,39 @@ class JsonStateStoreTest(unittest.TestCase):
             "/tmp/kraken/.state_TAOUSD.json",
         )
 
+    def test_base_spot_mixin_and_step_sub_stages_present_on_both_engines(self):
+        import importlib.util
+        import sys
+        from strategies.base_spot_mixin import BaseSpotMixin
+        from strategies.spot_engine import Strategy as SpotStrategy
+
+        spec = importlib.util.spec_from_file_location(
+            "t212_strategy_mod",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "strategy.py"),
+        )
+        t212_mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = t212_mod
+        spec.loader.exec_module(t212_mod)
+        T212Strategy = t212_mod.Strategy
+
+        self.assertTrue(issubclass(SpotStrategy, BaseSpotMixin))
+        self.assertTrue(issubclass(T212Strategy, BaseSpotMixin))
+        for cls in (SpotStrategy, T212Strategy):
+            for method_name in (
+                "_step_sync_market",
+                "_step_evaluate_exits",
+                "_step_evaluate_reentry",
+                "_step_dispatch_orders",
+                "_evaluate_mdhtp_tp",
+                "_dispatch_take_profit",
+                "_dispatch_dca_buy",
+                "_apply_buy_fill_accounting",
+                "_release_sell_cost_basis",
+                "_mark_order_cancel_requested",
+                "_recover_state_write_or_skip",
+            ):
+                self.assertTrue(callable(getattr(cls, method_name, None)), f"Missing {method_name} on {cls}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

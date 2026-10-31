@@ -34,42 +34,24 @@ from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
 from providers.base import (
-    extract_order_id,
-    extract_order_price,
-    extract_order_side,
-    extract_orig_qty,
+    extract_order_id, extract_order_price, extract_order_side, extract_orig_qty,
 )
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
-from strategies.base_spot_mixin import (
-    BaseSpotMixin,
-    load_common_mhdpa_env,
-    sanitize_common_spot_state,
-)
+from strategies.base_spot_mixin import BaseSpotMixin, load_common_mhdpa_env, sanitize_common_spot_state
 from strategies.state_store import (
-    JsonStateStore,
-    build_dataclass_from_dict,
-    build_strategy_exit_manager,
-    clean_nonneg_float as _clean_nonneg_float,
-    clean_pos_float as _clean_pos_float,
-    compute_adaptive_reentry_pullback_pct,
-    find_open_order,
-    state_path_for as _shared_state_path_for,
-    update_post_sell_anchors,
+    JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
+    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
+    compute_adaptive_reentry_pullback_pct, find_open_order,
+    state_path_for as _shared_state_path_for, update_post_sell_anchors,
 )
 from strategies.position_exit_manager import (
-    PositionExitManager,
-    PositionExitConfig,
-    PositionSnapshot,
-    ExitAction,
-    ReentrySnapshot,
+    PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction, ReentrySnapshot,
 )
 from order_rollback import restore_cancelled_orders
 from intelligence.internal.state.volatility import (
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-    vol_pct_to_ratio,
+    resolve_cached_volatility_1h, resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
 
 FX_FEE_PCT = 0.15  # T212 currency-conversion fee per direction.
@@ -86,20 +68,9 @@ def state_path_for(ticker: str) -> str:
 
 
 def generate_tp_ladder(
-    min_pct: float,
-    max_pct: float,
-    steps: int = 10,
-    curve: str = "linear",
+    min_pct: float, max_pct: float, steps: int = 10, curve: str = "linear"
 ) -> list[tuple[float, float]]:
-    """Generate a scale-out take-profit ladder from min_pct to max_pct across `steps` rungs.
-
-    Supported curves:
-    - 'linear' / 'uniform': equal fractions across all rungs.
-    - 'bell' / 'gaussian' / 'pyramid': small start, bulk in the middle, small at the end.
-    - 'front_heavy': larger fractions on lower rungs for faster de-risking.
-    - 'back_heavy': larger fractions on higher rungs for maximum upside capture.
-    - 'geometric': geometrically increasing percentage steps.
-    """
+    """Generate a scale-out take-profit ladder from min_pct to max_pct across `steps` rungs."""
     if isinstance(min_pct, bool) or isinstance(max_pct, bool) or isinstance(steps, bool):
         raise ValueError("generate_tp_ladder parameters cannot be bool")
     min_f = safe_float(min_pct, default=None)
@@ -122,8 +93,7 @@ def generate_tp_ladder(
         raise ValueError(f"unsupported generate_tp_ladder curve: {curve!r}")
 
     if curve_lower == "geometric":
-        r_start = 1.0 + min_f / 100.0
-        r_end = 1.0 + max_f / 100.0
+        r_start, r_end = 1.0 + min_f / 100.0, 1.0 + max_f / 100.0
         if r_start <= 0.0 or r_end <= 0.0:
             raise ValueError("geometric generate_tp_ladder requires min_pct > -100 and max_pct > -100")
         ratio = (r_end / r_start) ** (1.0 / (steps - 1)) if steps > 1 else 1.0
@@ -148,15 +118,9 @@ def generate_tp_ladder(
 
 
 def adapt_ladder_rungs(
-    remaining: list[tuple[float, float]],
-    held: float,
-    min_tranche_qty: float = 0.01,
+    remaining: list[tuple[float, float]], held: float, min_tranche_qty: float = 0.01
 ) -> list[tuple[float, float]]:
-    """Dynamically clamp remaining rungs so each order has viable trading quantity.
-
-    If held quantity is too small to distribute across all rungs (e.g. 0.05 shares for 10 rungs),
-    subsamples rungs evenly across the remaining min-to-max span so every order is valid.
-    """
+    """Dynamically clamp remaining rungs so each order has viable trading quantity."""
     held_f = _clean_pos_float(held)
     if not remaining or held_f is None or held_f <= 1e-9:
         return []
@@ -170,71 +134,62 @@ def adapt_ladder_rungs(
         int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1)))
         for i in range(max_viable_rungs)
     ]
-    selected_indices = sorted(set(indices))
-    return [remaining[idx] for idx in selected_indices]
+    return [remaining[idx] for idx in sorted(set(indices))]
 
 
 @dataclass
 class StratParams:
-    currency: str            # Currency used by the monetary settings below.
-    entry_amount: float      # Initial purchase size in that currency.
+    currency: str
+    entry_amount: float
     entry_discount_pct: float
-    dca_amount: float        # Size of one dip purchase in configured currency.
+    dca_amount: float
     dca_drop_pct: float
     check_minutes: float
     takeprofit_pct: float
-    max_budget: float        # Per-cycle total cap in configured currency.
+    max_budget: float
     max_dca_buys: int
     validity: str
     enable_takeprofit: bool
     order_ttl_min: float
-    stop_loss_pct: float     # Sell all at this loss percentage; zero disables it.
-    yahoo_sym: str = ""             # Configured Yahoo symbol or one derived from ticker.
-    reentry_drop_pct: float = 0.0   # After TP, reenter only below the sale price by X percent.
-    reentry_tolerance_pct: float = 0.0  # Near-threshold tolerance for reentry and DCA.
-    tp_ladder: list = field(default_factory=list)   # Scale-out level/fraction pairs.
-    fx_fee_pct: float = FX_FEE_PCT   # T212 FX fee per direction.
-    loss_alert_step: float = 1.0     # Alert for each further unrealized-loss band.
-    ladder_min_free: float = 6.0     # Minimum dollar amount left unreserved by TP ladder.
-    sl_rebuy_enabled: bool = False   # Rebuy on a bounce from the post-stop low.
-    sl_rebuy_bounce_pct: float = 1.2 # Bounce confirming the fall has stopped.
-    dca_trend_gate_pct: float = 0.0  # Skip DCA below this confirmed downtrend slope; zero disables.
-    trail_pct: float = 0.0           # Sell all after this drop from position peak; zero disables.
-    trail_min_profit_pct: float = 5.0  # Keep trailing inactive until price gains this much over average.
-    # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
-    reentry_hybrid_enabled: bool = False  # Decouple macro trend permission from micro pullback trigger.
-    reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
-    reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
-    reentry_pullback_adaptive: bool = False  # Scale pullback by volatility: clamp(K * vol, min, max)
-    reentry_pullback_k: float = 1.0       # Multiplier for volatility-adaptive pullback
-    reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
-    reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
-    reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
-    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL) & RE-ENTRY MIRROR ---
+    stop_loss_pct: float
+    yahoo_sym: str = ""
+    reentry_drop_pct: float = 0.0
+    reentry_tolerance_pct: float = 0.0
+    tp_ladder: list = field(default_factory=list)
+    fx_fee_pct: float = FX_FEE_PCT
+    loss_alert_step: float = 1.0
+    ladder_min_free: float = 6.0
+    sl_rebuy_enabled: bool = False
+    sl_rebuy_bounce_pct: float = 1.2
+    dca_trend_gate_pct: float = 0.0
+    trail_pct: float = 0.0
+    trail_min_profit_pct: float = 5.0
+    # --- Hybrid Re-Entry ---
+    reentry_hybrid_enabled: bool = False
+    reentry_peak_relative: bool = False
+    reentry_pullback_pct: float = 1.5
+    reentry_pullback_adaptive: bool = False
+    reentry_pullback_k: float = 1.0
+    reentry_pullback_min: float = 0.8
+    reentry_pullback_max: float = 4.0
+    reentry_ttl_hours: float = 0.0
+    # --- Multi-Horizon Dynamic Stop-Loss (MHDSL) ---
     sl_mhdsl_enabled: bool = False
     sl_disaster_buffer_ratio: float = 0.30
-    sl_disaster_buffer_max_pct: float = 15.0  # Max ceiling cap for disaster buffer (15% default)
+    sl_disaster_buffer_max_pct: float = 15.0
     sl_trend_defer_max_sec: float = 220.0
     sl_bounce_min_recovery_pct: float = 0.40
     sl_bounce_pullback_pct: float = 0.30
     sl_structural_break_enabled: bool = True
-    # --- MULTI-HORIZON DYNAMIC TAKE-PROFIT (MDHTP) ---
+    # --- Multi-Horizon Dynamic Take-Profit (MDHTP) ---
     tp_mdhtp_enabled: bool = False
     tp_stagnation_max_sec: float = 1080.0
 
     _DEFAULT_DICT_FIELDS = {
-        "currency": "USD",
-        "entry_amount": 50.0,
-        "entry_discount_pct": 0.2,
-        "dca_amount": 30.0,
-        "dca_drop_pct": 2.0,
-        "check_minutes": 5.0,
-        "takeprofit_pct": 5.0,
-        "max_budget": 500.0,
-        "max_dca_buys": 10,
-        "validity": "DAY",
-        "enable_takeprofit": True,
-        "order_ttl_min": 10.0,
+        "currency": "USD", "entry_amount": 50.0, "entry_discount_pct": 0.2,
+        "dca_amount": 30.0, "dca_drop_pct": 2.0, "check_minutes": 5.0,
+        "takeprofit_pct": 5.0, "max_budget": 500.0, "max_dca_buys": 10,
+        "validity": "DAY", "enable_takeprofit": True, "order_ttl_min": 10.0,
         "stop_loss_pct": 10.0,
     }
 
@@ -250,7 +205,6 @@ class StratParams:
         mode = required_env("STRATEGY_MODE", e).strip().lower()
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-        # Parse scale-out ladder percentages and fractions (explicit list or dynamic range).
         _ladder = []
         raw_ladder = (e.get("STRAT_TP_LADDER") or "").strip()
         ladder_curve = (e.get("STRAT_TP_LADDER_CURVE") or "linear").strip().lower()
@@ -283,21 +237,19 @@ class StratParams:
                 if sum(f for _, f in _ladder) > 1.0 + 1e-6:
                     raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
         elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
-            p_min = required_float_env("STRAT_TP_LADDER_MIN", e)
-            p_max = required_float_env("STRAT_TP_LADDER_MAX", e)
-            p_steps = required_int_env("STRAT_TP_LADDER_STEPS", e)
-            _ladder = generate_tp_ladder(p_min, p_max, p_steps, curve=ladder_curve)
+            _ladder = generate_tp_ladder(
+                required_float_env("STRAT_TP_LADDER_MIN", e),
+                required_float_env("STRAT_TP_LADDER_MAX", e),
+                required_int_env("STRAT_TP_LADDER_STEPS", e),
+                curve=ladder_curve,
+            )
         _budget = required_float_env("STRAT_MAX_BUDGET", e)
-        # Percentage sizing is the single supported policy; no legacy hidden amounts.
-        _entry_pct = required_float_env("STRAT_ENTRY_PCT", e)
-        _entry = _budget * _entry_pct / 100.0
-        _dca_pct = required_float_env("STRAT_DCA_PCT", e)
-        _dca = _budget * _dca_pct / 100.0
-        # Auto DCA count derives from budget; otherwise use an explicit value or ten.
+        _entry = _budget * required_float_env("STRAT_ENTRY_PCT", e) / 100.0
+        _dca = _budget * required_float_env("STRAT_DCA_PCT", e) / 100.0
         _mdb = (e.get("STRAT_MAX_DCA_BUYS") or "").strip().lower()
         if _mdb in ("auto", "buget", "budget"):
             _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
-            _entry = _budget - _max_dca * _dca   # Entry absorbs remainder to cover the full budget.
+            _entry = _budget - _max_dca * _dca
         elif _mdb:
             _max_dca = exact_nonneg_int(_mdb, default=None)
             if _max_dca is None:
@@ -305,67 +257,46 @@ class StratParams:
         else:
             raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         return cls(
-            currency           = required_env("STRAT_CURRENCY", e).strip().upper(),
-            entry_amount       = _entry,
-            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", e),
-            dca_amount         = _dca,
-            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT", e),
-            check_minutes      = required_float_env("STRAT_CHECK_MINUTES", e),
-            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT", e),
-            max_budget         = _budget,
-            max_dca_buys       = _max_dca,
-            validity           = "GOOD_TILL_CANCEL",
-            enable_takeprofit  = (mode != "dca_only"),
-            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN", e),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT", e),
-            yahoo_sym          = required_env("YAHOO_SYMBOL", e),
-            reentry_drop_pct   = required_float_env("STRAT_REENTRY_DROP_PCT", e),
-            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", e),
-            tp_ladder          = _ladder,
-            fx_fee_pct         = required_float_env("STRAT_FX_FEE_PCT", e),
-            loss_alert_step    = required_float_env("STRAT_LOSS_ALERT_STEP", e),
-            ladder_min_free    = required_float_env("STRAT_LADDER_MIN_FREE", e),
-            sl_rebuy_enabled   = required_bool_env("STRAT_SL_REBUY_ENABLED", e),
-            sl_rebuy_bounce_pct= required_float_env("STRAT_SL_REBUY_BOUNCE_PCT", e),
-            dca_trend_gate_pct = required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
-            trail_pct          = required_float_env("STRAT_TRAIL_PCT", e),
-            trail_min_profit_pct = required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
+            currency=required_env("STRAT_CURRENCY", e).strip().upper(),
+            entry_amount=_entry,
+            entry_discount_pct=required_float_env("STRAT_ENTRY_DISCOUNT_PCT", e),
+            dca_amount=_dca,
+            dca_drop_pct=required_float_env("STRAT_DCA_DROP_PCT", e),
+            check_minutes=required_float_env("STRAT_CHECK_MINUTES", e),
+            takeprofit_pct=required_float_env("STRAT_TAKEPROFIT_PCT", e),
+            max_budget=_budget,
+            max_dca_buys=_max_dca,
+            validity="GOOD_TILL_CANCEL",
+            enable_takeprofit=(mode != "dca_only"),
+            order_ttl_min=required_float_env("STRAT_ORDER_TTL_MIN", e),
+            stop_loss_pct=required_float_env("STRAT_STOP_LOSS_PCT", e),
+            yahoo_sym=required_env("YAHOO_SYMBOL", e),
+            reentry_drop_pct=required_float_env("STRAT_REENTRY_DROP_PCT", e),
+            reentry_tolerance_pct=required_float_env("STRAT_REENTRY_TOLERANCE_PCT", e),
+            tp_ladder=_ladder,
+            fx_fee_pct=required_float_env("STRAT_FX_FEE_PCT", e),
+            loss_alert_step=required_float_env("STRAT_LOSS_ALERT_STEP", e),
+            ladder_min_free=required_float_env("STRAT_LADDER_MIN_FREE", e),
+            sl_rebuy_enabled=required_bool_env("STRAT_SL_REBUY_ENABLED", e),
+            sl_rebuy_bounce_pct=required_float_env("STRAT_SL_REBUY_BOUNCE_PCT", e),
+            dca_trend_gate_pct=required_float_env("STRAT_DCA_TREND_GATE_PCT", e),
+            trail_pct=required_float_env("STRAT_TRAIL_PCT", e),
+            trail_min_profit_pct=required_float_env("STRAT_TRAIL_MIN_PROFIT_PCT", e),
             **load_common_mhdpa_env(e, include_spot_sl=False),
         )
 
 
 def _new_state() -> dict:
     return {
-        "cycle": 1,
-        "qty": 0.0,
-        "cost_usd": 0.0,        # USD cost basis of held quantity.
-        "spent_cash": 0.0,      # Current-cycle deployed cash for cap enforcement.
-        "dca_buys": 0,
-        "entry_price": None,
-        "last_buy_price": None,
-        "last_sell_price": None,
-        "last_sell_ts": None,
-        "post_sell_peak": None,
-        "post_sell_trough": None,
-        "last_exit_kind": None,
-        "sl_bounce_state": {},
-        "sl_episode_state": {},
-        "tp_ride_state": {},
-        "reentry_state": {},
-        "realized_pnl_usd": 0.0,   # Cumulative gross profit.
-        "realized_net_usd": 0.0,   # Cumulative net profit after FX fees.
-        "fees_usd": 0.0,           # Total paid FX fees.
-        "loss_band": 0,         # Deepest alerted loss band for anti-spam.
-        "tp_sold_levels": [],   # Ladder levels sold in the current cycle.
-        "orders": [],           # {id, side, qty, limit, amount, kind, ts, level}
-        # Submit intent persisted before the non-idempotent T212 POST.  T212 has no
-        # client-order-id, so recovery correlates active orders plus portfolio delta.
-        "pending_submit": None,
-        "pos_peak": 0.0,        # Highest price while holding, for trailing crash breaker.
-        "tr_alerted": False,    # Current-episode trailing notification anti-spam.
-        "tr_armed": False,      # Arm only after the configured gain over average.
-        "tp_pending_exit": None, # Persistent MDHTP exit intent awaiting execution.
-        "sl_pending_exit": None, # Persistent MHDSL exit intent awaiting order cancellation/execution.
+        "cycle": 1, "qty": 0.0, "cost_usd": 0.0, "spent_cash": 0.0, "dca_buys": 0,
+        "entry_price": None, "last_buy_price": None,
+        "last_sell_price": None, "last_sell_ts": None,
+        "post_sell_peak": None, "post_sell_trough": None, "last_exit_kind": None,
+        "sl_bounce_state": {}, "sl_episode_state": {}, "tp_ride_state": {}, "reentry_state": {},
+        "realized_pnl_usd": 0.0, "realized_net_usd": 0.0, "fees_usd": 0.0,
+        "loss_band": 0, "tp_sold_levels": [], "orders": [], "pending_submit": None,
+        "pos_peak": 0.0, "tr_alerted": False, "tr_armed": False,
+        "tp_pending_exit": None, "sl_pending_exit": None,
     }
 
 
@@ -380,12 +311,8 @@ def _sanitize_t212_state(st: dict) -> dict:
         signed_float_keys=("realized_pnl_usd", "realized_net_usd"),
         nonneg_int_keys=("dca_buys", "loss_band"),
         pos_float_keys=(
-            "entry_price",
-            "last_buy_price",
-            "last_sell_price",
-            "last_sell_ts",
-            "post_sell_peak",
-            "post_sell_trough",
+            "entry_price", "last_buy_price", "last_sell_price",
+            "last_sell_ts", "post_sell_peak", "post_sell_trough",
         ),
         bool_keys=("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"),
         dict_keys=("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"),
@@ -398,21 +325,15 @@ def _sanitize_t212_state(st: dict) -> dict:
         ps_qty = _clean_pos_float(ps.get("qty"))
         ps_limit = _clean_pos_float(ps.get("limit"))
         ps_intent = T212Client._clean_order_id(ps.get("intent_id"))
-        if (
-            ps_side not in ("BUY", "SELL")
-            or ps_qty is None
-            or ps_limit is None
-            or ps_intent is None
-        ):
+        if ps_side not in ("BUY", "SELL") or ps_qty is None or ps_limit is None or ps_intent is None:
             st["pending_submit"] = None
         else:
             ps_copy = dict(ps)
-            ps_copy["side"] = ps_side
-            ps_copy["qty"] = ps_qty
-            ps_copy["limit"] = ps_limit
-            ps_copy["intent_id"] = ps_intent
-            ps_copy["market"] = _parse_bool_flag(ps.get("market"), False)
-            ps_copy["level"] = _clean_pos_float(ps.get("level"))
+            ps_copy.update(
+                side=ps_side, qty=ps_qty, limit=ps_limit, intent_id=ps_intent,
+                market=_parse_bool_flag(ps.get("market"), False),
+                level=_clean_pos_float(ps.get("level")),
+            )
             if "portfolio_fill_observed" in ps_copy:
                 ps_copy["portfolio_fill_observed"] = _parse_bool_flag(ps_copy.get("portfolio_fill_observed"), False)
             st["pending_submit"] = ps_copy
@@ -423,10 +344,8 @@ def _sanitize_t212_state(st: dict) -> dict:
             if not isinstance(o, dict):
                 continue
             clean_oid = T212Client._clean_order_id(o.get("id"))
-            if clean_oid is None:
-                continue
             o_side = str(o.get("side") or "").strip().upper()
-            if o_side not in ("BUY", "SELL"):
+            if clean_oid is None or o_side not in ("BUY", "SELL"):
                 continue
             o_qty = _clean_pos_float(o.get("qty"))
             o_market = _parse_bool_flag(o.get("market"), False)
@@ -434,22 +353,19 @@ def _sanitize_t212_state(st: dict) -> dict:
             if o_qty is None or o_limit is None or o_limit < 0.0:
                 continue
             o_copy = dict(o)
-            o_copy["id"] = clean_oid
-            o_copy["side"] = o_side
-            o_copy["qty"] = o_qty
-            o_copy["limit"] = o_limit
-            o_copy["market"] = o_market
-            o_copy["level"] = _clean_pos_float(o.get("level"))
+            o_copy.update(
+                id=clean_oid, side=o_side, qty=o_qty, limit=o_limit,
+                market=o_market, level=_clean_pos_float(o.get("level")),
+            )
             if "amount" in o_copy and o_copy.get("amount") is not None:
                 o_copy["amount"] = _clean_pos_float(o_copy.get("amount"))
             if "ts" in o_copy and o_copy.get("ts") is not None:
                 o_copy["ts"] = _clean_nonneg_float(o_copy.get("ts"), 0.0)
             if "intent_id" in o_copy:
                 o_copy["intent_id"] = T212Client._clean_order_id(o_copy.get("intent_id"))
-            if "cancel_requested" in o_copy:
-                o_copy["cancel_requested"] = _parse_bool_flag(o_copy.get("cancel_requested"), False)
-            if "dca_counted" in o_copy:
-                o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
+            for bk in ("cancel_requested", "dca_counted"):
+                if bk in o_copy:
+                    o_copy[bk] = _parse_bool_flag(o_copy.get(bk), False)
             clean_orders.append(o_copy)
         st["orders"] = clean_orders
     else:
@@ -520,19 +436,12 @@ class Strategy(BaseSpotMixin):
         self._clock = clock or time.time
         self._trend_slope_provider = trend_slope_provider or trend_slope_pct
         self.execution_audit = execution_audit or ExecutionAudit()
-        # Financial strategy remains separate while submission/status/cancellation use
-        # the same strict audited contract as spot_dca.
         self.executor = AuditedStrategyExecutor(
-            T212Provider(
-                client=client, live_enabled=not dry_run,
-                order_validity=params.validity,
-            ),
+            T212Provider(client=client, live_enabled=not dry_run, order_validity=params.validity),
             audit=self.execution_audit, venue="T212",
         )
         self.fx_to_usd = (
-            self._fx_to_usd(params.currency)
-            if fx_to_usd is None
-            else (_clean_pos_float(fx_to_usd) or 1.0)
+            self._fx_to_usd(params.currency) if fx_to_usd is None else (_clean_pos_float(fx_to_usd) or 1.0)
         )
         self.state_file = state_path_for(ticker)
         self._state_write_failed = False
@@ -542,29 +451,24 @@ class Strategy(BaseSpotMixin):
         )
         self._paper_seq = 0
 
-    # -- valuta ----------------------------------------------------------------
+    # -- Currency & Helpers ----------------------------------------------------
     def _fx_to_usd(self, currency: str) -> float:
         """How many USD in one unit of the given currency — generic for any Yahoo currency."""
         ccy = str(currency or "USD").strip().upper()
         if ccy == "USD":
             return 1.0
         if ccy == "EUR":
-            return safe_pos_float(get_eur_usd(), default=1.08)          # USD per EUR
+            return safe_pos_float(get_eur_usd(), default=1.08)
         if ccy == "RON":
-            ron_rate = safe_pos_float(get_usd_ron(), default=4.65)
-            return 1.0 / ron_rate                                   # USD per RON = 1 / (RON per USD)
-        rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))       # generic: GBP, CHF, PLN...
+            return 1.0 / safe_pos_float(get_usd_ron(), default=4.65)
+        rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))
         if rate:
             return rate
-        log(f"  ! curs {ccy}/USD indisponibil — tratez sumele ca USD (1:1). "
-            f"Check STRAT_CURRENCY!")
+        log(f"  ! curs {ccy}/USD indisponibil — tratez sumele ca USD (1:1). Check STRAT_CURRENCY!")
         return 1.0
 
-    # -- helperi ---------------------------------------------------------------
     def _qty_for_amount(self, amount: float, price: float) -> float:
-        amt_f = _clean_pos_float(amount)
-        px_f = _clean_pos_float(price)
-        fx_f = _clean_pos_float(self.fx_to_usd)
+        amt_f, px_f, fx_f = _clean_pos_float(amount), _clean_pos_float(price), _clean_pos_float(self.fx_to_usd)
         if amt_f is None or px_f is None or fx_f is None:
             return 0.0
         usd = safe_pos_float(amt_f * fx_f, default=None)
@@ -580,17 +484,13 @@ class Strategy(BaseSpotMixin):
         status = int(match.group(1))
         if 400 <= status < 500 and status not in {408, 425, 429}:
             return True
-        # A structured response that explicitly says the request was rejected is
-        # terminal even when the gateway reports 5xx.  A bare 5xx/timeout remains
-        # ambiguous because the non-idempotent POST may have reached the venue.
         return "rejected" in message.lower()
 
     def _new_pending_submit(self, *, side: str, qty: float, limit: float,
                             amount: float | None, kind: str,
                             level: float | None, market: bool) -> dict:
-        intent_id = new_intent_id("T212", self.ticker, kind)
         return {
-            "intent_id": intent_id,
+            "intent_id": new_intent_id("T212", self.ticker, kind),
             "side": str(side).upper(),
             "qty": float(qty),
             "limit": round(float(limit), 2),
@@ -681,13 +581,7 @@ class Strategy(BaseSpotMixin):
 
     def _recover_pending_submit(self, real_qty: float,
                                 active_orders: list[dict] | None) -> str:
-        """Recover one response-lost T212 submit without blocking the loop.
-
-        Outcomes are ``none``, ``adopted``, ``filled``, ``waiting`` or
-        ``retryable``.  A portfolio delta is independent evidence of execution;
-        otherwise two fresh active-order snapshots with no unique match release the
-        intent for strategy revalidation and a later at-least-once submit.
-        """
+        """Recover one response-lost T212 submit without blocking the loop."""
         pending = self.s.get("pending_submit")
         if not isinstance(pending, dict) or not pending:
             return "none"
@@ -708,8 +602,7 @@ class Strategy(BaseSpotMixin):
 
         before = safe_float(pending.get("before_qty"), 0.0)
         side = str(pending.get("side") or "").upper()
-        real_qty_f = safe_float(real_qty, before)
-        delta = real_qty_f - before
+        delta = safe_float(real_qty, before) - before
         if (side == "BUY" and delta > 1e-6) or (side == "SELL" and delta < -1e-6):
             pending["portfolio_fill_observed"] = True
             self._persist_pending_submit(pending)
@@ -729,11 +622,10 @@ class Strategy(BaseSpotMixin):
 
     def _record_tp_sold_level(self, level: object) -> None:
         lvl_f = _clean_pos_float(level)
-        if lvl_f is None:
-            return
-        sold = self.s.setdefault("tp_sold_levels", [])
-        if lvl_f not in sold:
-            sold.append(lvl_f)
+        if lvl_f is not None:
+            sold = self.s.setdefault("tp_sold_levels", [])
+            if lvl_f not in sold:
+                sold.append(lvl_f)
 
     def _all_tp_ladder_levels_sold(self) -> bool:
         if not self.p.tp_ladder:
@@ -742,11 +634,7 @@ class Strategy(BaseSpotMixin):
         return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
 
     def _sync_real_position_cost(
-        self,
-        real_qty: float,
-        avg_price: float,
-        *,
-        sync_spent_only_when_held: bool = False,
+        self, real_qty: float, avg_price: float, *, sync_spent_only_when_held: bool = False
     ) -> None:
         self.s["qty"] = real_qty
         self.s["cost_usd"] = real_qty * avg_price
@@ -755,33 +643,23 @@ class Strategy(BaseSpotMixin):
             self.s["spent_cash"] = round(real_qty * avg_price / fx_rate, 2)
 
     def _close_cycle(
-        self,
-        exit_price: float,
-        *,
-        keep_pending_submit: bool = False,
-        exit_kind: str | None = None,
+        self, exit_price: float, *, keep_pending_submit: bool = False, exit_kind: str | None = None
     ) -> None:
         self._cancel_all_orders()
         saved_orders = list(self.s.get("orders") or [])
         saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
         was_sl = bool(
-            self.s.get("sl_pending")
-            or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
+            self.s.get("sl_pending") or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
         )
-        pnl, net_tot, fees = (
-            self.s["realized_pnl_usd"],
-            self.s["realized_net_usd"],
-            self.s["fees_usd"],
-        )
+        pnl, net_tot, fees = self.s["realized_pnl_usd"], self.s["realized_net_usd"], self.s["fees_usd"]
         nxt = self.s.get("cycle", 1) + 1
         self.s = _new_state()
         self.s["orders"] = saved_orders
         if keep_pending_submit:
             self.s["pending_submit"] = saved_pending_submit
-        self.s["realized_pnl_usd"] = pnl
-        self.s["realized_net_usd"] = net_tot
-        self.s["fees_usd"] = fees
-        self.s["cycle"] = nxt
+        self.s["realized_pnl_usd"], self.s["realized_net_usd"], self.s["fees_usd"], self.s["cycle"] = (
+            pnl, net_tot, fees, nxt,
+        )
         self._seed_post_exit_anchors(
             exit_price, "STOP" if was_sl else "TP", self._now(), include_sl_low=False
         )
@@ -791,43 +669,37 @@ class Strategy(BaseSpotMixin):
                 f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
         log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
 
-    # -- aplicare fill ---------------------------------------------------------
+    # -- Fill Application ------------------------------------------------------
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
         tag = "[PAPER] " if self.dry_run else ""
         if order["side"] == "BUY":
-            self.s["qty"] += qty
-            self.s["cost_usd"] += qty * price
-            self.s["last_buy_price"] = price
-            if self.s["entry_price"] is None:
-                self.s["entry_price"] = price
-            self.s["spent_cash"] += _clean_nonneg_float(order.get("amount"), 0.0)
-            if order.get("kind") == "DCA":
-                self.s["dca_buys"] += 1
+            self._apply_buy_fill_accounting(order, qty, price)
             avg = self._avg_cost()
             log(f"  [STRAT] {tag}BUY FILLED {qty} @ {price:.2f} USD ({order.get('kind')})  "
                 f"qty_total={self.s['qty']:.2f} avg={avg:.2f}")
-            notify(title=f"{tag}{self.yahoo_sym} BUY {qty}@{price:.2f}",
-                   body=(f"{order.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | "
-                         f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
-                   source="T212", price=price, desktop=self.desktop)
-            self._cancel_open("SELL")     # avg s-a schimbat -> reasezam TP
-        else:  # SELL
+            notify(
+                title=f"{tag}{self.yahoo_sym} BUY {qty}@{price:.2f}",
+                body=(f"{order.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | "
+                      f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                source="T212", price=price, desktop=self.desktop,
+            )
+            self._cancel_open("SELL")
+        else:
             qty = min(qty, self.s["qty"])
             avg = self._avg_cost() or price
             gross, fee, net = _sell_pnl(avg, price, qty, self.p.fx_fee_pct)
             self.s["realized_pnl_usd"] += gross
             self.s["realized_net_usd"] += net
             self.s["fees_usd"] += fee
-            self.s["qty"] -= qty
-            # Cost basis belongs to remaining quantity; reduce it after partial scale-out
-            # to avoid inflating the residual position's average.
-            self.s["cost_usd"] = max(0.0, self.s["cost_usd"] - avg * qty)
+            self._release_sell_cost_basis(qty, avg)
             log(f"  [STRAT] {tag}SELL FILLED {qty} @ {price:.2f} USD  "
                 f"brut={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
-            notify(title=f"{tag}{self.yahoo_sym} SELL {qty}@{price:.2f} N{net:+.2f}$",
-                   body=(f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
-                         f"Ntot{self.s['realized_net_usd']:+.2f}$ | ciclu{self.s['cycle']} inchis"),
-                   source="T212", price=price, desktop=self.desktop)
+            notify(
+                title=f"{tag}{self.yahoo_sym} SELL {qty}@{price:.2f} N{net:+.2f}$",
+                body=(f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
+                      f"Ntot{self.s['realized_net_usd']:+.2f}$ | ciclu{self.s['cycle']} inchis"),
+                source="T212", price=price, desktop=self.desktop,
+            )
             all_tp_sold = self._all_tp_ladder_levels_sold()
             is_flat = self.s["qty"] <= 1e-9
             is_dust_exit = (
@@ -837,15 +709,14 @@ class Strategy(BaseSpotMixin):
             if is_flat or is_dust_exit:
                 self._close_cycle(price, exit_kind=order.get("kind"))
 
-    # -- plasare / anulare -----------------------------------------------------
+    # -- Placement & Cancellation ----------------------------------------------
     def _place_buy(self, amount: float, limit: float, kind: str) -> bool:
         lim_f = _clean_pos_float(limit)
         amt_f = _clean_pos_float(amount)
         if lim_f is None or amt_f is None or round(lim_f, 2) <= 0:
             log("  ! [STRAT] invalid BUY amount/limit — sar")
             return False
-        limit = lim_f
-        amount = amt_f
+        limit, amount = lim_f, amt_f
         qty = self._qty_for_amount(amount, limit)
         if qty <= 0:
             log("  ! [STRAT] qty 0 — sar")
@@ -853,16 +724,16 @@ class Strategy(BaseSpotMixin):
         if self.dry_run:
             self._paper_seq += 1
             log(f"  [STRAT] [PAPER] plasez BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
-            self.s["orders"].append({"id": f"PAPER-{self._paper_seq}", "side": "BUY", "qty": qty,
-                                     "limit": round(limit, 2), "amount": amount, "kind": kind,
-                                     "ts": self._now()})
+            self.s["orders"].append({
+                "id": f"PAPER-{self._paper_seq}", "side": "BUY", "qty": qty,
+                "limit": round(limit, 2), "amount": amount, "kind": kind, "ts": self._now(),
+            })
             return True
         if self.s.get("pending_submit"):
             log(f"  [STRAT] BUY {kind} deferred — a T212 submit is already pending")
             return False
         pending = self._new_pending_submit(
-            side="BUY", qty=qty, limit=limit, amount=amount, kind=kind,
-            level=None, market=False,
+            side="BUY", qty=qty, limit=limit, amount=amount, kind=kind, level=None, market=False
         )
         outcome = self._submit_pending_order(pending)
         if outcome.state != "accepted":
@@ -885,8 +756,7 @@ class Strategy(BaseSpotMixin):
         if qty_f is None or lim_f is None or round(lim_f, 2) <= 0:
             log("  ! [STRAT] invalid SELL qty/limit — sending no order")
             return False
-        limit = lim_f
-        qty = round(qty_f, 2)
+        limit, qty = lim_f, round(qty_f, 2)
         if qty <= 0:
             log("  ! [STRAT] SELL qty 0 after rounding — keeping the dust, sending no order")
             return False
@@ -896,17 +766,16 @@ class Strategy(BaseSpotMixin):
             self._paper_seq += 1
             order_type = "MKT" if market else f"@ {limit:.2f}"
             log(f"  [STRAT] [PAPER] plasez SELL {kind}{tag} {qty:.2f} {order_type} USD")
-            self.s["orders"].append({"id": f"PAPER-{self._paper_seq}", "side": "SELL",
-                                     "qty": qty, "limit": round(limit, 2),
-                                     "kind": kind, "level": level, "market": market,
-                                     "ts": self._now()})
+            self.s["orders"].append({
+                "id": f"PAPER-{self._paper_seq}", "side": "SELL", "qty": qty,
+                "limit": round(limit, 2), "kind": kind, "level": level, "market": market, "ts": self._now(),
+            })
             return True
         if self.s.get("pending_submit"):
             log(f"  [STRAT] SELL {kind}{tag} deferred — a T212 submit is already pending")
             return False
         pending = self._new_pending_submit(
-            side="SELL", qty=qty, limit=limit, amount=None, kind=kind,
-            level=level, market=market,
+            side="SELL", qty=qty, limit=limit, amount=None, kind=kind, level=level, market=market
         )
         outcome = self._submit_pending_order(pending)
         if outcome.state != "accepted":
@@ -918,8 +787,6 @@ class Strategy(BaseSpotMixin):
                 log(f"  ! [STRAT] SELL {kind}{tag} outcome unknown: {message}; keeping pending")
             if "selling-equity-not-owned" not in message:
                 return not definitive
-            # Reset only when the venue confirms owned is effectively zero. A positive
-            # owned amount with lower free balance must not erase a real position.
             _m = re.search(r'owned["\']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)', message)
             if _m is None:
                 log("  ! [STRAT] selling-not-owned without the owned quantity — NOT resetting the position")
@@ -931,7 +798,7 @@ class Strategy(BaseSpotMixin):
                 log("  ! [STRAT] T212 confirms owned=0 — resetting the state (position closed/sold)")
                 exit_px = _clean_pos_float(self.s.get("last_sell_price")) or limit
                 self._close_cycle(exit_px, exit_kind=kind)
-                self.s["locked_zero_until"] = self._now() + 300  # ignora adoptie stala 5 min
+                self.s["locked_zero_until"] = self._now() + 300
                 self._save()
             else:
                 log(f"  ! [STRAT] selling-not-owned but owned={_owned} (free<order) — NOT resetting the position")
@@ -955,11 +822,7 @@ class Strategy(BaseSpotMixin):
         except ProviderError as exc:
             log(f"  ! [STRAT] cancel failed for {o['id']}: {exc} — the order stays tracked")
             return False
-        o["cancel_requested"] = True
-        o["cancel_ts"] = self._now()
-        self._save()
-        log(f"  [STRAT] cancel requested {o.get('side', '?')} {o['id']} — waiting for a terminal status")
-        return True
+        return self._mark_order_cancel_requested(o, "id")
 
     def _cancel_all_orders(self) -> bool:
         success = True
@@ -973,21 +836,15 @@ class Strategy(BaseSpotMixin):
         def _restore_one(p: dict) -> bool:
             if p["side"] == "SELL":
                 return bool(self._place_sell(p["qty"], p["limit"], level=p.get("level"), kind=p.get("kind", "TP")))
-            elif p["side"] == "BUY":
+            if p["side"] == "BUY":
                 raw_ord = p.get("raw") if isinstance(p.get("raw"), dict) else p
-                raw_amount = raw_ord.get("amount")
                 usd_notional = p["qty"] * p["limit"]
                 fallback_amt = (usd_notional / self.fx_to_usd) if self.fx_to_usd > 0 else usd_notional
-                amount = safe_pos_float(raw_amount, default=fallback_amt)
+                amount = safe_pos_float(raw_ord.get("amount"), default=fallback_amt)
                 return bool(self._place_buy(amount, p["limit"], kind=p.get("kind", "ENTRY")))
             return False
 
-        restore_cancelled_orders(
-            cancelled_orders,
-            restore_fn=_restore_one,
-            log_fn=log,
-            reason=reason,
-        )
+        restore_cancelled_orders(cancelled_orders, restore_fn=_restore_one, log_fn=log, reason=reason)
 
     def _is_dust(self, qty: float, ref_price: float | None = None) -> bool:
         """Return True if qty is negligible dust (below minimum broker holding / trading value)."""
@@ -998,61 +855,38 @@ class Strategy(BaseSpotMixin):
         p = ref_price or self._avg_cost() or 0.0
         if p <= 0:
             return False
-        # If ladder_min_free is configured (>0), residual dust value is around ladder_min_free.
-        # Allow up to 1.5x ladder_min_free (or at least $5 broker minimum position value).
-        # Also ensure dust threshold never exceeds half of the configured entry amount.
         min_dust = max(5.0, self.p.ladder_min_free * 1.5)
         max_allowed = (self.p.entry_amount * 0.5) if self.p.entry_amount > 0 else min_dust
-        threshold = min(min_dust, max_allowed)
-        return (qty * p) <= threshold
+        return (qty * p) <= min(min_dust, max_allowed)
 
     def _sellable_qty(self, held: float, ref_price: float | None = None) -> float:
-        """Return the maximum safely sellable quantity avoiding T212 min-opened-position.
-
-        When held has fractional dust beyond 2 decimal places, selling round(held, 2)
-        would leave sub-penny/sub-$5 dust that T212 rejects with min-opened-position.
-        In that case, retain ladder_min_free buffer so the remaining position is >= min.
-        For clean quantities without dust, sell the exact rounded quantity.
-        """
+        """Return the maximum safely sellable quantity avoiding T212 min-opened-position."""
         p = ref_price or self._avg_cost() or 0.0
         if self._is_dust(held, p):
             return 0.0
         q_round = round(held, 2)
         dust = held - q_round
         if abs(dust) > 1e-6 and self.p.ladder_min_free > 0 and p > 0:
-            dust_val = abs(dust) * p
-            if dust_val < self.p.ladder_min_free:
+            if abs(dust) * p < self.p.ladder_min_free:
                 buf = self.p.ladder_min_free / p
                 if held > buf:
                     return round(held - buf, 2)
         return q_round
 
     def _manage_tp_ladder(self, held: float, avg: float) -> None:
-        """Maintain one SELL per unsold ladder level at its target over average.
-
-        Size remaining levels proportionally from current holdings and replace them when
-        average cost changes after DCA. Never recreate levels already sold.
-        """
-        # Cancel any legacy non-level SELL before creating a ladder.
+        """Maintain one SELL per unsold ladder level at its target over average."""
         for o in [x for x in self.s["orders"] if x["side"] == "SELL" and x.get("level") is None]:
-            if not self._cancel_specific(o):
-                return  # Do not overlap a ladder with a potentially active SELL.
-            if o in self.s["orders"]:
-                return  # Live: the request is accepted, but we wait for the terminal status.
+            if not self._cancel_specific(o) or o in self.s["orders"]:
+                return
         sold = set(self.s.get("tp_sold_levels", []))
         remaining = [(lvl, frac) for (lvl, frac) in self.p.tp_ladder if lvl not in sold]
         if not remaining or held <= 1e-9:
             return
-
-        # Adapt remaining ladder rungs dynamically to current held volume
         remaining = adapt_ladder_rungs(remaining, held, min_tranche_qty=0.01)
-
         total = sum(f for _, f in remaining)
         if total <= 0:
             return
-        # Highest tranche receives the remainder minus an unreserved buffer, preventing
-        # rounding oversell while satisfying T212's minimum-open-position rule.
-        desired = {}   # nivel -> (qty, limit)
+        desired = {}
         buf = (self.p.ladder_min_free / avg) if (self.p.ladder_min_free > 0 and avg > 0) else 0.0
         remaining_sorted = sorted(remaining, key=lambda x: x[0])
         acc = 0.0
@@ -1063,26 +897,20 @@ class Strategy(BaseSpotMixin):
             lim_px = round(avg * (1 + lvl / 100.0), 2)
             if q > 0 and lim_px > 0:
                 desired[lvl] = (q, lim_px)
-        open_sells = {o.get("level"): o for o in self.s["orders"]
-                      if o["side"] == "SELL" and o.get("level") is not None}
+        open_sells = {o.get("level"): o for o in self.s["orders"] if o["side"] == "SELL" and o.get("level") is not None}
         cancelled_by_level = {}
-        # Cancel unwanted orders or orders whose price/quantity changed after DCA.
         for lvl, o in list(open_sells.items()):
             d = desired.get(lvl)
             if d is None or d[1] <= 0 or abs(o["limit"] - d[1]) / d[1] > 0.001 or abs(o["qty"] - d[0]) > 1e-6:
                 cancelled_by_level[lvl] = dict(o)
                 if self._cancel_specific(o) and o not in self.s["orders"]:
                     open_sells.pop(lvl, None)
-        # Place missing levels. Back off for 30 minutes after persistent tranche failure
-        # instead of retrying on every tick. Defer and break if a submit is already in flight.
         now = self._now()
         if not isinstance(self.s.get("tp_fail_until"), dict):
             self.s["tp_fail_until"] = {}
         fails = self.s["tp_fail_until"]
         for lvl, (q, lim) in desired.items():
-            if lvl in open_sells:
-                continue
-            if now < _clean_nonneg_float(fails.get(str(lvl)), 0.0):
+            if lvl in open_sells or now < _clean_nonneg_float(fails.get(str(lvl)), 0.0):
                 continue
             if self.s.get("pending_submit"):
                 break
@@ -1095,23 +923,14 @@ class Strategy(BaseSpotMixin):
                 break
 
     def _buy_is_stale(self, order: dict, price: float) -> bool:
-        """Return whether a resting limit BUY should be cancelled and placed again.
-
-        It must have waited ``order_ttl_min`` and a fresh order at the current price
-        (every BUY is placed at price minus ``entry_discount_pct``) must sit more than
-        0.3% above it. Comparing the raw price instead re-placed an identical order on
-        every TTL whenever the discount exceeded 0.3% (RGNT: 5%, NVDA: 0.4%).
-        """
+        """Return whether a resting limit BUY should be cancelled and placed again."""
         if str(order.get("side") or "").strip().upper() != "BUY" or order.get("market"):
             return False
         order_ts = _clean_nonneg_float(order.get("ts"), 0.0)
         order_lim = _clean_pos_float(order.get("limit"))
-        if order_lim is None:
+        if order_lim is None or (self._now() - order_ts) / 60 <= self.p.order_ttl_min:
             return False
-        if (self._now() - order_ts) / 60 <= self.p.order_ttl_min:
-            return False
-        fresh_limit = price * (1 - self.p.entry_discount_pct / 100)
-        return fresh_limit > order_lim * 1.003
+        return price * (1 - self.p.entry_discount_pct / 100) > order_lim * 1.003
 
     # -- Reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> bool:
@@ -1123,9 +942,7 @@ class Strategy(BaseSpotMixin):
             return True
         return self._reconcile_real(px)
 
-    # -- Paper reconciliation --------------------------------------------------
     def _reconcile_paper(self, price: float) -> None:
-        # Assume BUY fills at limit; SELL fills when price reaches its limit.
         for side in ("BUY", "SELL"):
             for o in [x for x in self.s["orders"] if x["side"] == side]:
                 if o not in self.s["orders"]:
@@ -1139,22 +956,16 @@ class Strategy(BaseSpotMixin):
                         self._record_tp_sold_level(o["level"])
                     self._apply_fill(o, o["qty"], price if o.get("market") else o["limit"])
 
-    # -- Live reconciliation: T212 portfolio is the source of truth -------------
-    # Filled orders disappear from the order endpoint while their position appears in portfolio.
     def _portfolio_position(self) -> tuple[float, float] | None:
         pf = self.client.get_portfolio()
         if pf is None:
             return None
         for p in pf:
-            if not isinstance(p, dict):
-                continue
-            if _t212_tickers_match(p.get("ticker", ""), self.ticker):
+            if isinstance(p, dict) and _t212_tickers_match(p.get("ticker", ""), self.ticker):
                 q_f = safe_nonneg_float(p.get("quantity"), default=0.0 if p.get("quantity") is None else None)
                 avg_f = safe_nonneg_float(p.get("averagePrice"), default=0.0 if p.get("averagePrice") is None else None)
-                if q_f is None or avg_f is None:
-                    return None
-                return q_f, avg_f
-        return 0.0, 0.0   # No holding.
+                return None if (q_f is None or avg_f is None) else (q_f, avg_f)
+        return 0.0, 0.0
 
     def _active_order_ids(self, orders: list[dict] | None = None) -> set | None:
         if orders is None:
@@ -1163,11 +974,10 @@ class Strategy(BaseSpotMixin):
             return None
         active_ids: set[str] = set()
         for o in orders:
-            if not isinstance(o, dict) or not _t212_tickers_match(self._active_order_identity(o)[0], self.ticker):
-                continue
-            oid = extract_order_id(o)
-            if oid is not None:
-                active_ids.add(oid)
+            if isinstance(o, dict) and _t212_tickers_match(self._active_order_identity(o)[0], self.ticker):
+                oid = extract_order_id(o)
+                if oid is not None:
+                    active_ids.add(oid)
         return active_ids
 
     def _tracked_order_status(self, order: dict, cache: dict[str, object]):
@@ -1193,11 +1003,7 @@ class Strategy(BaseSpotMixin):
 
     def _exact_execution_price(self, side: str, position_delta: float,
                                cache: dict[str, object]) -> float | None:
-        """Return the weighted price from tracked orders' cumulative deltas.
-
-        The portfolio remains the source of truth for quantity. Order prices are
-        used only when the sum of the deltas matches the position change.
-        """
+        """Return the weighted price from tracked orders' cumulative deltas."""
         rows = []
         total_qty = total_cost = 0.0
         for order in [o for o in self.s["orders"] if o.get("side") == side]:
@@ -1212,17 +1018,13 @@ class Strategy(BaseSpotMixin):
             af = safe_float(order.get("applied_fill_fee"), default=0.0)
             if cq is None or cc is None or cf is None or aq is None or ac is None or af is None:
                 continue
-            cumulative_qty, cumulative_cost, cumulative_fee = cq, cc, cf
-            applied_qty, applied_cost, applied_fee = aq, ac, af
-            if cumulative_qty + 1e-9 < applied_qty or cumulative_cost + 1e-9 < applied_cost:
+            if cq + 1e-9 < aq or cc + 1e-9 < ac:
                 log(f"  ! [STRAT] fill T212 {order.get('id')} a regresat cumulativ — ignor")
                 continue
-            delta_qty = max(0.0, cumulative_qty - applied_qty)
-            delta_cost = max(0.0, cumulative_cost - applied_cost)
-            delta_fee = cumulative_fee - applied_fee
+            delta_qty = max(0.0, cq - aq)
+            delta_cost = max(0.0, cc - ac)
             if delta_qty > 1e-9:
-                rows.append((order, cumulative_qty, cumulative_cost, cumulative_fee,
-                             delta_qty, delta_cost, delta_fee, status.status))
+                rows.append((order, cq, cc, cf))
                 total_qty += delta_qty
                 total_cost += delta_cost
 
@@ -1233,55 +1035,42 @@ class Strategy(BaseSpotMixin):
                     f"({position_delta:.4f}) — folosesc fallback-ul de portofoliu")
             return None
 
-        for (order, cumulative_qty, cumulative_cost, cumulative_fee,
-             _delta_qty, _delta_cost, _delta_fee, _venue_status) in rows:
-            order["applied_fill_qty"] = cumulative_qty
-            order["applied_fill_cost"] = cumulative_cost
-            order["applied_fill_fee"] = cumulative_fee
+        for order, cq, cc, cf in rows:
+            order["applied_fill_qty"] = cq
+            order["applied_fill_cost"] = cc
+            order["applied_fill_fee"] = cf
         return total_cost / total_qty
 
     def _reconcile_real(self, price: float) -> bool:
         real = self._portfolio_position()
         if real is None:
-            # Debounce: log initially and every ten minutes, not on every tick.
             now = self._now()
-            last = getattr(self, "_pf_unavail_logged", 0)
-            if now - last > 600:
+            if now - getattr(self, "_pf_unavail_logged", 0) > 600:
                 log("  [STRAT] portofoliu indisponibil — sar reconcilierea (suprima repetatele 10 min)")
                 self._pf_unavail_logged = now
             return False
         real_qty, real_avg = real
         active_orders = self.client.list_active_orders()
         pending_outcome = self._recover_pending_submit(real_qty, active_orders)
-        pending_for_fill = (
-            dict(self.s.get("pending_submit") or {})
-            if pending_outcome == "filled" else None
-        )
+        pending_for_fill = dict(self.s.get("pending_submit") or {}) if pending_outcome == "filled" else None
         active = self._active_order_ids(active_orders)
         if active is None:
-            active = {str(o["id"]) for o in self.s["orders"]}  # Cannot list, so retain tracked orders.
+            active = {str(o["id"]) for o in self.s["orders"]}
 
         prev_qty = self.s["qty"]
         prev_avg = self._avg_cost() or real_avg
         status_cache: dict[str, object] = {}
 
-        # --- Executed BUY: the position increased (or adopt an existing position). ---
         if real_qty > prev_qty + 1e-6 and self._now() < _clean_nonneg_float(self.s.get("locked_zero_until"), 0.0):
             log("  [STRAT] adoptie ignorata — portfolio stale (not-owned recent, lock activ)")
             return False
         if real_qty > prev_qty + 1e-6:
             fq = real_qty - prev_qty
             exact_price = self._exact_execution_price("BUY", fq, status_cache)
-            source_order = next(
-                (o for o in self.s["orders"] if o.get("side") == "BUY"), None,
-            )
+            source_order = next((o for o in self.s["orders"] if o.get("side") == "BUY"), None)
             if source_order is None and pending_for_fill and pending_for_fill.get("side") == "BUY":
                 source_order = pending_for_fill
-            raw_marginal = (
-                (real_avg * real_qty - prev_avg * prev_qty) / fq
-                if (fq > 0 and real_avg > 0)
-                else 0.0
-            )
+            raw_marginal = (real_avg * real_qty - prev_avg * prev_qty) / fq if (fq > 0 and real_avg > 0) else 0.0
             fp = (
                 exact_price
                 or (_clean_pos_float(raw_marginal) if raw_marginal > 0 else None)
@@ -1289,47 +1078,39 @@ class Strategy(BaseSpotMixin):
                 or _clean_pos_float(real_avg)
                 or price
             )
-            eff_real_avg = (
-                real_avg
-                if real_avg > 0
-                else (prev_avg if (prev_avg and prev_avg > 0) else fp)
-            )
+            eff_real_avg = real_avg if real_avg > 0 else (prev_avg if (prev_avg and prev_avg > 0) else fp)
             is_adoption = source_order is None and prev_qty < 1e-9
             if is_adoption and self._is_dust(real_qty, eff_real_avg):
                 now = self._now()
                 if now - getattr(self, "_dust_logged", 0) > 600:
-                    log(f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*eff_real_avg:.2f} USD) ignored — staying flat for new cycle")
+                    log(
+                        f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*eff_real_avg:.2f} USD) "
+                        "ignored — staying flat for new cycle"
+                    )
                     self._dust_logged = now
                 return True
-            is_dca = bool(
-                source_order is not None
-                and source_order.get("kind") == "DCA"
-                and not source_order.get("dca_counted")
-            )
-            if is_dca:
-                # Count a partially filled DCA order once, not once per poll.
+            if source_order is not None and source_order.get("kind") == "DCA" and not source_order.get("dca_counted"):
                 source_order["dca_counted"] = True
+                self.s["dca_buys"] += 1
             self.s["last_buy_price"] = fp
             if self.s["entry_price"] is None:
                 self.s["entry_price"] = fp
-            if is_dca:
-                self.s["dca_buys"] += 1
             self._sync_real_position_cost(real_qty, eff_real_avg)
             kind_label = (
                 "ADOPTAT" if is_adoption
                 else str((source_order or {}).get("kind") or ("DCA" if prev_qty > 1e-9 else "ENTRY"))
             )
-            log(f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD "
-                f"({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}")
-            notify(title=f"{self.yahoo_sym} {'ADOPTAT' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
-                   body=(f"{kind_label} | q{real_qty:.4f} a{eff_real_avg:.2f} p~{fp:.2f} | "
-                         f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
-                   source="T212", price=fp, desktop=self.desktop)
+            log(f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD ({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}")
+            notify(
+                title=f"{self.yahoo_sym} {'ADOPTAT' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
+                body=(f"{kind_label} | q{real_qty:.4f} a{eff_real_avg:.2f} p~{fp:.2f} | "
+                      f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                source="T212", price=fp, desktop=self.desktop,
+            )
             if source_order is pending_for_fill:
                 self._persist_pending_submit(None)
-            self._cancel_open("SELL")   # The average changed; rebuild TP on the next step.
+            self._cancel_open("SELL")
 
-        # --- Executed SELL: the position decreased. ---
         elif real_qty < prev_qty - 1e-6:
             sold = prev_qty - real_qty
             exact_price = self._exact_execution_price("SELL", sold, status_cache)
@@ -1343,76 +1124,62 @@ class Strategy(BaseSpotMixin):
             approx = "" if exact_price is not None else "~"
             log(f"  [STRAT] SELL EXECUTED {sold:.4f} @ {approx}{sell_price:.2f} USD  "
                 f"brut={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
-            notify(title=f"{self.yahoo_sym} SELL {sold:.4f}@{approx}{sell_price:.2f} N{net:+.2f}$",
-                   body=f"a{prev_avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | Ntot{self.s['realized_net_usd']:+.2f}$",
-                   source="T212", price=sell_price, desktop=self.desktop)
+            notify(
+                title=f"{self.yahoo_sym} SELL {sold:.4f}@{approx}{sell_price:.2f} N{net:+.2f}$",
+                body=f"a{prev_avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | Ntot{self.s['realized_net_usd']:+.2f}$",
+                source="T212", price=sell_price, desktop=self.desktop,
+            )
             if pending_for_fill and pending_for_fill.get("side") == "SELL":
                 self._persist_pending_submit(None)
 
         else:
-            # Unchanged position: synchronize state with the actual position.
             self._sync_real_position_cost(real_qty, real_avg, sync_spent_only_when_held=True)
 
-        # --- Remove inactive orders and enforce the TTL for stale BUY orders. ---
         for o in list(self.s["orders"]):
             if str(o["id"]).startswith("PAPER"):
                 continue
             if str(o["id"]) not in active:
                 status = self._tracked_order_status(o, status_cache)
                 if status is not None and not isinstance(status, str) and status.status in {"closed", "canceled", "expired"}:
-                    if (o["side"] == "SELL" and o.get("level") is not None
-                            and safe_nonneg_float(status.filled_qty, default=0.0) > 1e-9):
+                    if (
+                        o["side"] == "SELL" and o.get("level") is not None
+                        and safe_nonneg_float(status.filled_qty, default=0.0) > 1e-9
+                    ):
                         self._record_tp_sold_level(o["level"])
                     self._remove_order(o)
                 elif status == "not_found":
                     misses = max(0, int(_clean_nonneg_float(o.get("lookup_misses"), 0.0))) + 1
                     o["lookup_misses"] = misses
-                    max_misses = 2 if o.get("cancel_requested") else 3
-                    if misses >= max_misses:
+                    if misses >= (2 if o.get("cancel_requested") else 3):
                         log(f"  [STRAT] order {o.get('side', '?')} {o['id']} confirmed absent ({misses} misses) — removing from tracking")
-                        if (o.get("side") == "SELL" and o.get("level") is not None
-                                and safe_nonneg_float(o.get("applied_fill_qty"), default=0.0) > 1e-9):
+                        if (
+                            o.get("side") == "SELL" and o.get("level") is not None
+                            and safe_nonneg_float(o.get("applied_fill_qty"), default=0.0) > 1e-9
+                        ):
                             self._record_tp_sold_level(o["level"])
                         self._remove_order(o)
-                elif status is None:
-                    # Transient status lookup failure (e.g. rate limit, network);
-                    # retain order tracking without incrementing misses.
-                    continue
                 continue
-            else:
-                o.pop("lookup_misses", None)
-                if self._buy_is_stale(o, price):
-                    log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
-                    self._cancel_specific(o)
+            o.pop("lookup_misses", None)
+            if self._buy_is_stale(o, price):
+                log(f"  [STRAT] BUY {o['id']} unfilled, the price rose — cancelling and re-placing")
+                self._cancel_specific(o)
 
-        # --- Closed cycle (the full position or all exit tranches were sold): start a new cycle. ---
         is_flat = real_qty <= 1e-9
         all_tp_sold = self._all_tp_ladder_levels_sold()
-        has_open_sells = self._has_open("SELL")
         is_dust = self._is_dust(real_qty, real_avg or price)
         cycle_closed = (is_flat and prev_qty > 1e-9) or (
-            prev_qty > 1e-9 and is_dust and not has_open_sells and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
+            prev_qty > 1e-9 and is_dust and not self._has_open("SELL")
+            and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
         )
         if cycle_closed:
-            exit_price = self.s.get("last_sell_price") or price
-            self._close_cycle(exit_price, keep_pending_submit=True)
+            self._close_cycle(self.s.get("last_sell_price") or price, keep_pending_submit=True)
         return True
 
-    # -- decision step ---------------------------------------------------------
+    # -- Protective Exits & Decision Step --------------------------------------
     def _execute_protective_exit(
-        self,
-        kind: str,
-        price: float,
-        label: str,
-        fail_key: str,
-        sell_qty: float | None = None,
+        self, kind: str, price: float, label: str, fail_key: str, sell_qty: float | None = None
     ) -> bool:
-        """Cancel existing non-protective orders and submit a protective market sell.
-
-        Returns True if the protective exit order was successfully placed or is
-        already resting active. Returns False if submission was deferred or failed
-        (caller should not alert yet).
-        """
+        """Cancel existing non-protective orders and submit a protective market sell."""
         existing = next((o for o in self.s["orders"] if o.get("kind") == kind), None)
         if existing is None or (not existing.get("market") and price < existing["limit"]):
             cancelled_orders = [dict(o) for o in self.s["orders"] if o.get("kind") != kind]
@@ -1427,10 +1194,7 @@ class Strategy(BaseSpotMixin):
                 log(f"  [STRAT] {label} deferred: waiting for pending submit to reconcile")
                 return False
             target_qty = sell_qty if sell_qty is not None else self._sellable_qty(self.s["qty"], price)
-            placed = self._place_sell(
-                target_qty, round(price, 2), kind=kind, market=True,
-            )
-            if not placed:
+            if not self._place_sell(target_qty, round(price, 2), kind=kind, market=True):
                 if not self.s.get("pending_submit"):
                     self.s[fail_key] = self._now() + 1800
                     log(f"  ! [STRAT] {label} sell failed or refused — backoff 30 min (retaining TP ladder)")
@@ -1442,16 +1206,11 @@ class Strategy(BaseSpotMixin):
         return True
 
     def _check_trailing(self, price: float) -> bool:
-        """Sell the entire position after a ``trail_pct`` drop from its peak.
-
-        This crash breaker complements the fixed average-cost stop loss by exiting
-        a sustained decline earlier. It reuses ``sl_rebuy`` to reenter on a bounce.
-        Return ``True`` when triggered so processing of the current tick stops.
-        """
+        """Sell the entire position after a ``trail_pct`` drop from its peak."""
         if self.p.trail_pct <= 0 or self.s["qty"] <= 1e-9:
-            self.s["pos_peak"] = 0.0            # Flat or disabled trailing: reset the peak.
+            self.s["pos_peak"] = 0.0
             self.s["tr_alerted"] = False
-            self.s["tr_armed"] = False          # A new cycle starts with a new warm-up.
+            self.s["tr_armed"] = False
             return False
         if any(o.get("kind") in {"TR", "SL"} for o in self.s["orders"]):
             return True
@@ -1463,35 +1222,33 @@ class Strategy(BaseSpotMixin):
         if not peak or peak <= 0:
             self.s["pos_peak"] = peak = max(avg or price, price)
         if price > peak:
-            self.s["pos_peak"] = peak = price   # Track the high while holding the position.
+            self.s["pos_peak"] = peak = price
             self.s.pop("tr_fail_until", None)
             self.s["tr_alerted"] = False
 
-        # WARM-UP: keep trailing inactive until price rises trail_min_profit_pct above average.
-        # This protects gains without selling on ordinary dips during accumulation;
-        # DCA manages dips, and STRAT_STOP_LOSS_PCT / MHDSL handles catastrophic loss.
-        # When trail_min_profit_pct == 0, trailing arms immediately on entry.
         if not self.s.get("tr_armed"):
             minp = self.p.trail_min_profit_pct
             if minp > 0 and (not avg or price < avg * (1 + minp / 100.0)):
-                return False                    # Warming up: do not sell; let DCA and MHDSL operate.
+                return False
             self.s["tr_armed"] = True
-            self.s["pos_peak"] = peak = price   # Reset peak anchor to activation price
-            log(f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — protecting from now on (-{self.p.trail_pct}% from the peak)")
+            self.s["pos_peak"] = peak = price
+            log(
+                f"  [STRAT] trailing ARMED: price {price:.2f} >= avg{(avg or 0):.2f}+{minp}% — "
+                f"protecting from now on (-{self.p.trail_pct}% from the peak)"
+            )
 
         drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
-        if drop_pct < self.p.trail_pct:
+        if drop_pct < self.p.trail_pct or self._now() < _clean_nonneg_float(self.s.get("tr_fail_until"), 0.0):
             return False
-        if self._now() < _clean_nonneg_float(self.s.get("tr_fail_until"), 0.0):
-            return False
-        # The peak drawdown reached the threshold: sell all once, replacing only a stale limit.
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
             if not self.s.get("tr_alerted"):
                 self.s["tr_alerted"] = True
                 log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% de la peak {peak:.2f} >= {self.p.trail_pct}% — VAND TOT")
-                notify(title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
-                       body=f"de la peak{peak:.2f} ≥{self.p.trail_pct}% — vand tot",
-                       source="T212", price=price, desktop=self.desktop)
+                notify(
+                    title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
+                    body=f"de la peak{peak:.2f} ≥{self.p.trail_pct}% — vand tot",
+                    source="T212", price=price, desktop=self.desktop,
+                )
         return True
 
     def _check_stop_loss(self, price: float) -> bool:
@@ -1503,9 +1260,8 @@ class Strategy(BaseSpotMixin):
         avg = self._avg_cost()
         if not avg:
             return False
-        loss_pct = (avg - price) / avg * 100   # A long loses when price is below average cost.
+        loss_pct = (avg - price) / avg * 100
 
-        # Multi-Horizon Dynamic Stop Loss (MHDSL) via centralized PositionExitManager
         if self.exit_manager is not None and self.p.sl_mhdsl_enabled:
             if not self._in_mhdsl_territory(loss_pct):
                 self.s["sl_alerted"] = False
@@ -1513,20 +1269,14 @@ class Strategy(BaseSpotMixin):
                 self.s.pop("sl_fail_until", None)
                 return False
 
-            held = self.s.get("qty", 0.0)
-            snapshot = self._create_position_snapshot(price, avg, held)
+            snapshot = self._create_position_snapshot(price, avg, self.s.get("qty", 0.0))
             sell_qty = snapshot.sellable_qty
-
             raw_pending_sl = self.s.get("sl_pending_exit")
             pending_sl = raw_pending_sl if isinstance(raw_pending_sl, dict) else None
             if pending_sl:
-                should_exit_sl = True
-                exit_reason = str(pending_sl.get("reason") or "mhdsl_pending_exit")
-                decision = None
+                should_exit_sl, exit_reason, decision = True, str(pending_sl.get("reason") or "mhdsl_pending_exit"), None
             else:
-                decision = self.exit_manager.evaluate_stop_loss(
-                    snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
-                )
+                decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
                 should_exit_sl = bool(decision.action == ExitAction.SELL and decision.should_exit)
                 exit_reason = decision.reason if should_exit_sl else ""
 
@@ -1540,87 +1290,82 @@ class Strategy(BaseSpotMixin):
                     if not self.s.get("sl_alerted"):
                         self.s["sl_alerted"] = True
                         log(f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% ({exit_reason}) — SELLING EVERYTHING (cutting the loss)")
-                        notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                               body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({exit_reason}) — selling everything",
-                               source="T212", price=price, desktop=self.desktop)
+                        notify(
+                            title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+                            body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% ({exit_reason}) — selling everything",
+                            source="T212", price=price, desktop=self.desktop,
+                        )
                 elif self.s.get("sl_fail_until"):
                     self.s["sl_pending_exit"] = None
                 return True
-            elif decision is not None and decision.action == ExitAction.HOLD:
+            if decision is not None and decision.action == ExitAction.HOLD:
                 self._handle_mhdsl_hold_decision(decision)
-                return False
             return False
 
         if loss_pct < self.p.stop_loss_pct:
-            self.s["sl_alerted"] = False        # Recovery above threshold permits a new alert.
-            self.s["sl_pending"] = False        # End this stop-loss episode after recovery.
+            self.s["sl_alerted"] = False
+            self.s["sl_pending"] = False
             self.s.pop("sl_fail_until", None)
             return False
         if self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0):
             return False
-        # Anti-spam: place the stop once and replace it only if price moved below its limit.
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
-            if not self.s.get("sl_alerted"):           # Notify only once per episode.
+            if not self.s.get("sl_alerted"):
                 self.s["sl_alerted"] = True
                 log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
-                notify(title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
-                       body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — selling everything",
-                       source="T212", price=price, desktop=self.desktop)
+                notify(
+                    title=f"🛑 SL {self.yahoo_sym} -{loss_pct:.1f}%",
+                    body=f"loss {loss_pct:.1f}% >=threshold{self.p.stop_loss_pct}% — selling everything",
+                    source="T212", price=price, desktop=self.desktop,
+                )
         return True
 
     def _check_loss_alert(self, price: float) -> None:
-        """Send an informational alert for each new unrealized-loss band.
-
-        This does not sell. One notification per ``loss_alert_step`` band avoids
-        spam, and recovery is silent.
-        """
+        """Send an informational alert for each new unrealized-loss band."""
         step = self.p.loss_alert_step
         avg = self._avg_cost()
         if step <= 0 or not avg:
             return
         loss_pct = (avg - price) / avg * 100
         band = int(loss_pct // step) if loss_pct > 0 else 0
-        # High-water mark: notify only when loss reaches a new maximum band.
-        # Do not lower it on recovery, so revisiting an alerted level does not notify again.
-        # Cycle closure resets it through _new_state (loss_band=0).
         if band > self.s.get("loss_band", 0):
             log(f"  📉 [STRAT] {self.yahoo_sym} loss -{loss_pct:.1f}% (threshold {band*step:.0f}%)")
-            notify(title=f"📉 {self.yahoo_sym} -{loss_pct:.1f}%",
-                   body=f"loss -{loss_pct:.1f}% (over {band*step:.0f}%) | q{self.s['qty']:.2f} a{avg:.2f} p{price:.2f}",
-                   source="T212", price=price, desktop=self.desktop)
+            notify(
+                title=f"📉 {self.yahoo_sym} -{loss_pct:.1f}%",
+                body=f"loss -{loss_pct:.1f}% (over {band*step:.0f}%) | q{self.s['qty']:.2f} a{avg:.2f} p{price:.2f}",
+                source="T212", price=price, desktop=self.desktop,
+            )
             self.s["loss_band"] = band
 
     def _handle_sl_rebuy(self, price: float) -> None:
-        """Rebuy after a catastrophic stop loss once price bounces from its low.
-
-        Track the post-sale low and reenter when price recovers by
-        ``sl_rebuy_bounce_pct``. This mirrors Binance/Kraken trailing reentry and
-        targets recovery rather than a falling price.
-        """
+        """Rebuy after a catastrophic stop loss once price bounces from its low."""
         rb = self.s.get("sl_rebuy")
         if not isinstance(rb, dict) or not rb:
             return
         prev_low = _clean_pos_float(rb.get("low"))
-        rb["low"] = min(prev_low, price) if prev_low is not None else price  # Track the post-stop low.
+        rb["low"] = min(prev_low, price) if prev_low is not None else price
         target = rb["low"] * (1 + self.p.sl_rebuy_bounce_pct / 100.0)
         if price < target and not are_close(price, target, self.p.reentry_tolerance_pct):
-            return                                            # Wait until the bounce is confirmed.
+            return
         if self.s["spent_cash"] + self.p.entry_amount > self.p.max_budget:
             log(f"  [STRAT] re-buy SL cancelled — budget cap {self.p.max_budget:.0f} {self.ccy} reached")
             return
         disc = 1 - self.p.entry_discount_pct / 100
         if not self._place_buy(self.p.entry_amount, price * disc, kind="ENTRY"):
             return
-        self.s.pop("sl_rebuy", None)                          # Consume the one-tranche reentry arm.
+        self.s.pop("sl_rebuy", None)
         self.s["last_exit_kind"] = "TP"
         if self.exit_manager is not None:
             self.exit_manager.reentry_state.pop(self.ticker, None)
         log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
-        notify(title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
-               body=(f"recul +{self.p.sl_rebuy_bounce_pct}% de la min {rb['low']:.2f} — "
-                     f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
-               source="T212", price=price, desktop=self.desktop)
+        notify(
+            title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
+            body=(f"recul +{self.p.sl_rebuy_bounce_pct}% de la min {rb['low']:.2f} — "
+                  f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
+            source="T212", price=price, desktop=self.desktop,
+        )
 
+    # -- Step Pipeline Sub-Stages ----------------------------------------------
     def _step_sync_market(self, price: float) -> tuple[float, float, float, bool] | None:
         """Stage 1: Validate market price, normalize held quantity, check loss alerts, and observe_only."""
         px = _clean_pos_float(price)
@@ -1629,7 +1374,7 @@ class Strategy(BaseSpotMixin):
         price = px
         held = _clean_nonneg_float(self.s.get("qty"), 0.0)
         self.s["qty"] = held
-        self._check_loss_alert(price)   # Alert on deeper loss while holding; never sells.
+        self._check_loss_alert(price)
         if self.observe_only:
             if not self.dry_run and self.s.get("orders"):
                 self._cancel_all_orders()
@@ -1640,197 +1385,186 @@ class Strategy(BaseSpotMixin):
 
     def _step_evaluate_exits(self, price: float) -> bool:
         """Stage 2: Evaluate trailing crash breaker and stop-loss exits."""
-        # Check the tighter trailing crash breaker before the catastrophic stop loss.
-        if self._check_trailing(price):
-            return True
-        # Stop loss cuts the loss before DCA or take-profit handling.
-        if self._check_stop_loss(price):
-            return True
-        return False
+        return self._check_trailing(price) or self._check_stop_loss(price)
 
     def _step_evaluate_reentry(self, price: float, disc: float, *, in_backoff: bool) -> bool:
         """Stage 3: Evaluate flat-position re-entry gate and place initial ENTRY buy order."""
         self.s["tp_pending_exit"] = None
         self.s["sl_pending_exit"] = None
-        if in_backoff or self._has_open("BUY"):   # After insufficient funds, avoid buys while the account is empty.
+        if in_backoff or self._has_open("BUY"):
             return False
-        # Kraken-style reentry rule: do not buy back above the previous sale price.
         return self._execute_flat_reentry(
-            price,
-            price * disc,
-            self.p.entry_amount,
-            self.p.max_budget,
-            cap_label="budget cap",
+            price, price * disc, self.p.entry_amount, self.p.max_budget, cap_label="budget cap"
         )
 
-    def _step_dispatch_orders(
-        self, price: float, held: float, disc: float, *, in_backoff: bool
-    ) -> None:
-        """Stage 4: Evaluate take-profit (MDHTP, ladder, or single TP) and DCA order dispatch."""
-        avg = self._avg_cost()
+    def _evaluate_mdhtp_tp(self, price: float, avg: float, held: float) -> bool:
+        """Evaluate Multi-Horizon Dynamic Take-Profit (MDHTP); return True if tick TP handling is complete."""
+        tick_time = self._now()
+        raw_pending_exit = self.s.get("tp_pending_exit")
+        pending_exit = raw_pending_exit if isinstance(raw_pending_exit, dict) else None
+        decision = None
 
-        if self.p.enable_takeprofit and avg and not self.s.get("sl_pending"):
-            if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
-                tick_time = self._now()
-                raw_pending_exit = self.s.get("tp_pending_exit")
-                pending_exit = raw_pending_exit if isinstance(raw_pending_exit, dict) else None
-                decision = None
-
-                if pending_exit is None:
-                    tp_thresh = self.p.takeprofit_pct / 100.0
-                    in_tp_zone = (
-                        not self.replay_mode
-                        or self.ticker in self.exit_manager.tp_ride_state
-                        or self.exit_manager.config.hard_tp_enabled
-                        or (price > avg and (price - avg) / avg >= tp_thresh * 0.98)
-                    )
-                    if not in_tp_zone and price > 0 and avg > 0:
-                        self.s["trail_peak"] = None
-                        if self.s["orders"]:
-                            self._cancel_open("SELL")
-                    else:
-                        self._sync_mdhtp_config(
-                            self.p.trail_pct if self.p.trail_pct > 0 else 1.5,
-                            trend_ride_enabled=True,
-                        )
-
-                        snapshot = self._create_position_snapshot(
-                            price, avg, held,
-                            include_vol=not self.replay_mode,
-                            include_trend=in_tp_zone,
-                        )
-
-                        decision = self.exit_manager.evaluate_take_profit(
-                            snapshot, custom_threshold=tp_thresh
-                        )
-
-                        if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
-                            pending_exit = {
-                                "action": decision.action.value,
-                                "sell_fraction": (
-                                    decision.sell_fraction
-                                    if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
-                                    else 1.0
-                                ),
-                                "reason": decision.reason,
-                                "time": tick_time,
-                            }
-                            self.s["tp_pending_exit"] = pending_exit
-                            log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
-
-                if pending_exit:
-                    def _is_market_exit(o: dict) -> bool:
-                        return bool(o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL"))
-
-                    existing_exit = next(
-                        (o for o in self.s.get("orders", []) if _is_market_exit(o)),
-                        None
-                    )
-                    if existing_exit:
-                        non_exit_orders = [o for o in list(self.s["orders"]) if not _is_market_exit(o)]
-                        for o in non_exit_orders:
-                            self._cancel_specific(o)
-
-                        if self.s["qty"] <= 1e-6:
-                            log("  [STRAT] MDHTP exit: position closed — clearing exit intent")
-                            self.s["tp_pending_exit"] = None
-                        else:
-                            log(f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} in progress — awaiting fill reconciliation")
-                        return
-
-                    if not self._cancel_all_orders():
-                        log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
-                        return
-                    pending_orders = [o for o in self.s["orders"] if not _is_market_exit(o)]
-                    if pending_orders:
-                        log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
-                        return
-                    if self.s.get("pending_submit"):
-                        log("  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile")
-                        return
-
-                    fresh_held = self.s["qty"]
-                    raw_sf = _clean_pos_float(pending_exit.get("sell_fraction"))
-                    sell_fraction = min(1.0, raw_sf) if raw_sf is not None else 1.0
-                    target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
-                    sell_qty = self._sellable_qty(target_qty, price)
-                    if sell_qty <= 0 or self._is_dust(sell_qty, price):
-                        log("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
-                        self.s["tp_pending_exit"] = None
-                        return
-
-                    exit_px = round(price * 0.999, 2)
-                    if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
-                        if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
-                            self.exit_manager.record_hard_tp(self.ticker, tick_time)
-                        log(f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)")
-                        self.s["tp_pending_exit"] = None
-                        return
-                    else:
-                        log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
-                        return
-                elif decision is not None and decision.reason == "not_in_tp_territory":
-                    self.s["trail_peak"] = None
+        if pending_exit is None:
+            tp_thresh = self.p.takeprofit_pct / 100.0
+            in_tp_zone = (
+                not self.replay_mode
+                or self.ticker in self.exit_manager.tp_ride_state
+                or self.exit_manager.config.hard_tp_enabled
+                or (price > avg and (price - avg) / avg >= tp_thresh * 0.98)
+            )
+            if not in_tp_zone and price > 0 and avg > 0:
+                self.s["trail_peak"] = None
+                if self.s["orders"]:
                     self._cancel_open("SELL")
-                elif decision is not None and decision.action == ExitAction.HOLD:
-                    if self.ticker in self.exit_manager.tp_ride_state:
-                        ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
-                        peak_px = _clean_pos_float(ride_state.get("peak_price")) or price
-                        self.s["trail_peak"] = peak_px
-                        self._cancel_open("SELL")
-                        log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
-                        return
-                    else:
-                        self.s["trail_peak"] = None
-                        self._cancel_open("SELL")
-            elif self.p.tp_ladder:
-                self._manage_tp_ladder(held, avg)        # Scale out in ladder steps.
             else:
-                target = avg * (1 + self.p.takeprofit_pct / 100)
-                if target > 0:
-                    sell_qty = self._sellable_qty(held, target)
-                    sell = self._find_open("SELL")
-                    if sell is None:
-                        self._place_sell(sell_qty, target)
-                    elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
-                        old_sell = dict(sell)
-                        if self._cancel_open("SELL") and sell not in self.s["orders"]:
-                            if not self._place_sell(sell_qty, target):
-                                if not self.s.get("pending_submit"):
-                                    self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
+                self._sync_mdhtp_config(
+                    self.p.trail_pct if self.p.trail_pct > 0 else 1.5, trend_ride_enabled=True
+                )
+                snapshot = self._create_position_snapshot(
+                    price, avg, held, include_vol=not self.replay_mode, include_trend=in_tp_zone
+                )
+                decision = self.exit_manager.evaluate_take_profit(snapshot, custom_threshold=tp_thresh)
+                if decision.action in (ExitAction.SELL, ExitAction.PARTIAL_SELL) and decision.should_exit:
+                    pending_exit = {
+                        "action": decision.action.value,
+                        "sell_fraction": (
+                            decision.sell_fraction
+                            if decision.action == ExitAction.PARTIAL_SELL and decision.sell_fraction
+                            else 1.0
+                        ),
+                        "reason": decision.reason,
+                        "time": tick_time,
+                    }
+                    self.s["tp_pending_exit"] = pending_exit
+                    log(f"  [STRAT] MDHTP EXIT TRIGGERED ({decision.reason}) — initiating cancellation & exit sequence")
 
-        prag_dca = (self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100)
-                    if self.s["last_buy_price"] else None)
+        if pending_exit:
+            def _is_market_exit(o: dict) -> bool:
+                return bool(
+                    o.get("market") and str(o.get("side", "")).upper() == "SELL" and o.get("kind") in ("TP", "SL")
+                )
+
+            existing_exit = next((o for o in self.s.get("orders", []) if _is_market_exit(o)), None)
+            if existing_exit:
+                for o in [o for o in list(self.s["orders"]) if not _is_market_exit(o)]:
+                    self._cancel_specific(o)
+                if self.s["qty"] <= 1e-6:
+                    log("  [STRAT] MDHTP exit: position closed — clearing exit intent")
+                    self.s["tp_pending_exit"] = None
+                else:
+                    log(
+                        f"  [STRAT] MDHTP exit: existing market exit order {existing_exit.get('id')} "
+                        "in progress — awaiting fill reconciliation"
+                    )
+                return True
+
+            if not self._cancel_all_orders():
+                log("  ! [STRAT] MDHTP exit deferred: at least one order could not be cancelled")
+                return True
+            pending_orders = [o for o in self.s["orders"] if not _is_market_exit(o)]
+            if pending_orders:
+                log(f"  [STRAT] MDHTP exit deferred: waiting for {len(pending_orders)} existing order(s) to reconcile cancellation")
+                return True
+            if self.s.get("pending_submit"):
+                log("  [STRAT] MDHTP exit deferred: waiting for pending submit to reconcile")
+                return True
+
+            fresh_held = self.s["qty"]
+            raw_sf = _clean_pos_float(pending_exit.get("sell_fraction"))
+            sell_fraction = min(1.0, raw_sf) if raw_sf is not None else 1.0
+            target_qty = fresh_held * sell_fraction if sell_fraction < 1.0 else fresh_held
+            sell_qty = self._sellable_qty(target_qty, price)
+            if sell_qty <= 0 or self._is_dust(sell_qty, price):
+                log("  [STRAT] MDHTP exit: no sellable quantity remaining — clearing exit intent")
+                self.s["tp_pending_exit"] = None
+                return True
+
+            exit_px = round(price * 0.999, 2)
+            if self._place_sell(sell_qty, exit_px, kind="TP", market=True):
+                if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
+                    self.exit_manager.record_hard_tp(self.ticker, tick_time)
+                log(f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)")
+                self.s["tp_pending_exit"] = None
+            else:
+                log(f"  ! [STRAT] MDHTP EXIT order refused/failed ({pending_exit.get('reason')}) — intent retained for retry")
+            return True
+
+        if decision is not None and decision.reason == "not_in_tp_territory":
+            self.s["trail_peak"] = None
+            self._cancel_open("SELL")
+        elif decision is not None and decision.action == ExitAction.HOLD:
+            if self.ticker in self.exit_manager.tp_ride_state:
+                ride_state = self.exit_manager.tp_ride_state.get(self.ticker, {})
+                peak_px = _clean_pos_float(ride_state.get("peak_price")) or price
+                self.s["trail_peak"] = peak_px
+                self._cancel_open("SELL")
+                log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.2f})")
+                return True
+            self.s["trail_peak"] = None
+            self._cancel_open("SELL")
+        return False
+
+    def _dispatch_take_profit(self, price: float, avg: float | None, held: float) -> bool:
+        """Manage take-profit (MDHTP, ladder, or single TP). Return True to skip DCA."""
+        if not (self.p.enable_takeprofit and avg and not self.s.get("sl_pending")):
+            return False
+        if self.p.tp_mdhtp_enabled and self.exit_manager is not None:
+            return self._evaluate_mdhtp_tp(price, avg, held)
+        if self.p.tp_ladder:
+            self._manage_tp_ladder(held, avg)
+            return False
+        target = avg * (1 + self.p.takeprofit_pct / 100)
+        if target > 0:
+            sell_qty = self._sellable_qty(held, target)
+            sell = self._find_open("SELL")
+            if sell is None:
+                self._place_sell(sell_qty, target)
+            elif abs(sell["limit"] - target) / target > 0.001 or abs(sell["qty"] - sell_qty) > 1e-6:
+                old_sell = dict(sell)
+                if self._cancel_open("SELL") and sell not in self.s["orders"]:
+                    if not self._place_sell(sell_qty, target) and not self.s.get("pending_submit"):
+                        self._restore_cancelled_orders([old_sell], reason="single TP replace failed")
+        return False
+
+    def _dispatch_dca_buy(self, price: float, disc: float, *, in_backoff: bool) -> None:
+        """Evaluate DCA dip conditions, trend gate, and place BUY order."""
+        prag_dca = self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100) if self.s["last_buy_price"] else None
         in_sl_state = bool(
             self.s.get("sl_pending")
             or (self._now() < _clean_nonneg_float(self.s.get("sl_fail_until"), 0.0))
             or (self.ticker in self.exit_manager.sl_bounce_state if self.exit_manager else False)
         )
-        if (not in_backoff
-                and not in_sl_state
-                and self.s["dca_buys"] < self.p.max_dca_buys
-                and prag_dca
-                # Treat a price close to the threshold as reached, using reentry tolerance.
-                and (price <= prag_dca or are_close(price, prag_dca, self.p.reentry_tolerance_pct))
-                and self.s["spent_cash"] + self.p.dca_amount <= self.p.max_budget
-                and not self._has_open("BUY")):
-            # Binance/Kraken-style trend gate: skip DCA during a confirmed downtrend
-            # so capital is not added to a falling asset. Zero disables the gate.
-            # During a sustained dip, the DCA condition is true on every tick (~18s),
-            # so a five-minute cache prevents repeated Yahoo calls and log spam. The
-            # slope already uses five-minute bars.
-            if self.p.dca_trend_gate_pct > 0:
-                if self._now() < getattr(self, "_dca_gate_until", 0):
-                    return   # Recently trend-blocked; retry after the cache window.
-                slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
-                if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:
-                    self._dca_gate_until = self._now() + 300
-                    log(f"  [STRAT] DCA BLOCKED de trend: slope {slope_f:+.3f}%/bar "
-                        f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-verific in 5 min")
-                    return
-            log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}"
-                f"×(1-{self.p.dca_drop_pct}%) — DCA")
-            self._place_buy(self.p.dca_amount, price * disc, kind="DCA")
+        if not (
+            not in_backoff
+            and not in_sl_state
+            and self.s["dca_buys"] < self.p.max_dca_buys
+            and prag_dca
+            and (price <= prag_dca or are_close(price, prag_dca, self.p.reentry_tolerance_pct))
+            and self.s["spent_cash"] + self.p.dca_amount <= self.p.max_budget
+            and not self._has_open("BUY")
+        ):
+            return
+        if self.p.dca_trend_gate_pct > 0:
+            if self._now() < getattr(self, "_dca_gate_until", 0):
+                return
+            slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
+            if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:
+                self._dca_gate_until = self._now() + 300
+                log(
+                    f"  [STRAT] DCA BLOCKED de trend: slope {slope_f:+.3f}%/bar "
+                    f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-verific in 5 min"
+                )
+                return
+        log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}×(1-{self.p.dca_drop_pct}%) — DCA")
+        self._place_buy(self.p.dca_amount, price * disc, kind="DCA")
+
+    def _step_dispatch_orders(
+        self, price: float, held: float, disc: float, *, in_backoff: bool
+    ) -> None:
+        """Stage 4: Evaluate take-profit (MDHTP, ladder, or single TP) and DCA order dispatch."""
+        if self._dispatch_take_profit(price, self._avg_cost(), held):
+            return
+        self._dispatch_dca_buy(price, disc, in_backoff=in_backoff)
 
     def step(self, price: float) -> None:
         sync_ctx = self._step_sync_market(price)
@@ -1848,7 +1582,7 @@ class Strategy(BaseSpotMixin):
 
         self._step_dispatch_orders(price, held, disc, in_backoff=in_backoff)
 
-    # -- main loop -------------------------------------------------------------
+    # -- Main Loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
         exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI ADEVARATI")
@@ -1856,8 +1590,7 @@ class Strategy(BaseSpotMixin):
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")
         log(f"      mod        : {mode}   {exec_banner}")
         log(f"      intrare    : {self.p.entry_amount:.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
-        log(f"      DCA        : {self.p.dca_amount:.0f} {self.ccy} at every -{self.p.dca_drop_pct}% "
-            f"(max {self.p.max_dca_buys})")
+        log(f"      DCA        : {self.p.dca_amount:.0f} {self.ccy} at every -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
         if self.p.enable_takeprofit:
             log(f"      take-profit: +{self.p.takeprofit_pct}% above the average price")
         else:
@@ -1881,13 +1614,9 @@ class Strategy(BaseSpotMixin):
                     _delay(self.p.check_minutes * 60)
                     continue
                 try:
-                    # After a disk error, make no new decisions until the current
-                    # snapshot can be persisted again.
-                    if self._state_write_failed:
-                        self._save()
-                        if self._state_write_failed:
-                            _delay(self.p.check_minutes * 60)
-                            continue
+                    if not self._recover_state_write_or_skip():
+                        _delay(self.p.check_minutes * 60)
+                        continue
                     if self.reconcile(price) is False:
                         _delay(self.p.check_minutes * 60)
                         continue
@@ -1902,14 +1631,18 @@ class Strategy(BaseSpotMixin):
                 net = self.s.get("realized_net_usd", 0.0)
                 fees = self.s.get("fees_usd", 0.0)
                 if avg:
-                    log(f"  [STRAT] price={price:.2f}  qty={self.s['qty']:.2f}  avg={avg:.2f}  "
+                    log(
+                        f"  [STRAT] price={price:.2f}  qty={self.s['qty']:.2f}  avg={avg:.2f}  "
                         f"deployed={self.s['spent_cash']:.0f}{self.ccy}  "
                         f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
-                        f"ord={len(self.s['orders'])}")
+                        f"ord={len(self.s['orders'])}"
+                    )
                 else:
-                    log(f"  [STRAT] price={price:.2f}  qty=0  "
+                    log(
+                        f"  [STRAT] price={price:.2f}  qty=0  "
                         f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
-                        f"(waiting for an entry)")
+                        f"(waiting for an entry)"
+                    )
                 _delay(self.p.check_minutes * 60)
         except KeyboardInterrupt:
             log("  [STRAT] stopped manually.")

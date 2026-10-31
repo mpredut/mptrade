@@ -25,41 +25,23 @@ from market_regime import MarketRegimeDecision, MarketRegimeService
 from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
-from order_retry import (
-    StrategyExecutorLifecycleApi,
-    TrackedOrderLifecycle,
-)
+from order_retry import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
 
 from intelligence.internal.state.volatility import (
-    adaptive_thresholds,
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-    vol_pct_to_ratio,
+    adaptive_thresholds, resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
 
 from . import spot_rules as sr
-from .base_spot_mixin import (
-    BaseSpotMixin,
-    load_common_mhdpa_env,
-    sanitize_common_spot_state,
-)
+from .base_spot_mixin import BaseSpotMixin, load_common_mhdpa_env, sanitize_common_spot_state
 from .state_store import (
-    JsonStateStore,
-    build_dataclass_from_dict,
-    build_strategy_exit_manager,
-    clean_nonneg_float as _clean_nonneg_float,
-    clean_pos_float as _clean_pos_float,
-    compute_adaptive_reentry_pullback_pct,
-    find_open_order,
-    state_path_for as _shared_state_path_for,
-    update_post_sell_anchors,
+    JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
+    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
+    compute_adaptive_reentry_pullback_pct, find_open_order,
+    state_path_for as _shared_state_path_for, update_post_sell_anchors,
 )
 from .position_exit_manager import (
-    ExitAction,
-    PositionExitConfig,
-    PositionExitManager,
-    PositionSnapshot,
-    ReentrySnapshot,
+    ExitAction, PositionExitConfig, PositionExitManager, PositionSnapshot, ReentrySnapshot,
 )
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,7 +49,6 @@ _LEGACY_STATE_DIR = os.path.join(_ROOT, "kraken")
 _DEFAULT_FEE_NOTE = "fee Kraken ~0.26% taker / ~0.16% maker per leg"
 _PLACEMENT_BACKOFF_CAP_SEC = 3600.0
 _REGIME_BAR_SETTLE_MAX_SEC = 900.0
-
 
 notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")
 
@@ -90,65 +71,58 @@ class StratParams:
     max_dca_buys: int
     enable_takeprofit: bool
     order_ttl_min: float
-    stop_loss_pct: float = 0.0     # Sell everything at this loss percentage; zero disables it (spot DCA default).
-    adopt_cost: float = 0.0        # Positive value adopts an existing position at this average cost.
-    adopt_qty: float = 0.0         # Adopted quantity; zero reads the base-asset balance automatically.
-    reentry_drop_pct: float = 2.0  # After TP, reenter only this far below the sale price; zero is immediate.
-    reentry_tolerance_pct: float = 0.05  # Treat prices within tolerance of the threshold as reached.
-    reentry_adaptive: bool = False # Deprecated legacy flag (dominated by hybrid re-entry).
-    shadow_k_reentry: float = 2.0  # Volatility multiplier for adaptive re-entry and shadow logging.
-    reentry_sl_bounce_pct: float = 1.5  # After stop-loss, reenter on a bounce from the post-sale low.
-    tp_tranches: list = None       # Gradual ``(percentage, share)`` sales; empty means one full TP.
-    # --- TP trend-aware (EXPERIMENTAL, default OFF) -------------------------------
-    tp_trend_hold: bool = False       # Use trailing instead of a fixed TP after the target is reached.
-    tp_regime_gate: bool = False      # Deprecated legacy binary gate: superseded by continuous MHDPA rules.
-    tp_trend_min_pct: float = 0.5     # Minimum fitted bullish move required by the TP policy.
-    tp_trail_pct: float = 2.0         # Above TP, exit after this pullback from the peak.
-    tp_trail_profit_floor_pct: float = 0.0  # 0 preserves live compatibility; >0 allows MARKET trailing only
-                                      # when the order reference is >= average*(1+floor%);
-                                      # the MARKET hard stop retains priority.
-    # --- TREND OVERLAY (combine strategies by regime; EXPERIMENTAL, default OFF) ---
-    trend_overlay: bool = False       # Use top-up and trailing in confirmed uptrends; classic in ranges.
-    trend_sma_n: int = 30             # SMA lookback for the optional overlay exit break.
-    trend_interval: int = 240         # Common regime cadence in live and replay; 240 means 4h.
-    regime_min_samples: int = 20      # Shared warm-up floor before any regime policy can act.
-    trend_topup: float = 2000.0       # amount bought on trend entry; larger values capture more trend
-    trend_trail_pct: float = 5.0      # Trend-position exit pullback from peak.
-    trend_exit_break: bool = False    # False: trailing only; True: trailing or price below SMA.
-    # --- VOLATILITY ADAPTIVE (overlay redesign: modulation, not amplification; default OFF) ---
-    tp_trail_adaptive: bool = False   # A: TP trailing becomes k×vol_1h: wide in volatile trends
-                                      # to ride longer, tight in chop. Warm-up safely falls back
-                                      # to fixed tp_trail_pct, like adaptive reentry.
-    tp_trail_k: float = 2.0           # vol_1h multiplier for adaptive trailing
-    tp_trail_min: float = 1.5         # lower clamp (%) avoids exits on negligible noise
-    tp_trail_max: float = 8.0         # upper clamp (%) prevents giving all profit back
-    tp_trail_vol_interval: int = 240  # Minutes per volatility bar; fixed in live and replay.
-    dca_trend_brake: bool = False     # Skip DCA in confirmed downtrends to reduce risk.
-    dca_brake_min_pct: float = 1.5    # Minimum fitted bearish move required by the DCA policy.
-    dca_spacing_growth_pct: float = 0.0  # Increase the threshold after every filled DCA;
-                                         # Zero preserves byte-identical live behavior.
-    # --- #2: VOLATILITY-SCALED DCA SIZING (default OFF) ---
-    dca_vol_scale_k: float = 0.0      # 0=OFF. eff_dca = dca × (vol_ref/vol_1h)^k, clamp [0.3,3].
-                                      # k>0 means smaller DCA in high volatility (defensive);
-                                      # k<0 means larger DCA (aggressive harvesting). Safe warm-up fallback.
-    dca_vol_ref: float = 2.0          # reference vol_1h percentage for scaling
-    dca_vol_interval: int = 240       # Identical OHLC cadence in live and replay.
-    # --- PERCENTAGE SIZING (optional; all four zero values preserve fixed sizing) ---
-    total_budget: float = 0.0   # venue's TOTAL budget, e.g. the whole Kraken account
-    alloc_pct: float = 0.0      # percentage allocated to THIS coin; venue allocations total 100
-    entry_pct: float = 0.0      # Entry is this percentage of the asset allocation.
-    dca_pct: float = 0.0        # DCA is this percentage of the asset allocation.
-    # --- HYBRID RE-ENTRY (EXPERIMENTAL, default OFF) -----------------------------
-    reentry_hybrid_enabled: bool = False  # Live profiles must explicitly enable or disable hybrid re-entry.
-    reentry_peak_relative: bool = False   # Force peak-relative pullback without trend filter (Test 1).
-    reentry_pullback_pct: float = 1.5     # Pullback from post-sale peak required in confirmed bull trend.
-    reentry_pullback_adaptive: bool = False  # Scale pullback by volatility: clamp(K_PULLBACK * vol_1h, min, max)
-    reentry_pullback_k: float = 1.0       # Multiplier for volatility-adaptive pullback
-    reentry_pullback_min: float = 0.8     # Minimum pullback clamp (%)
-    reentry_pullback_max: float = 4.0     # Maximum pullback clamp (%)
-    reentry_ttl_hours: float = 0.0        # 0 = off. After this many hours, stale sale barrier expires.
-    reentry_bear_bounce_pct: float = 0.0  # In chop/bear, require this % bounce from local post-sell trough.
-    # --- MULTI-HORIZON DYNAMIC PROFIT ARCHITECTURE (MHDPA, default OFF) ---
+    stop_loss_pct: float = 0.0
+    adopt_cost: float = 0.0
+    adopt_qty: float = 0.0
+    reentry_drop_pct: float = 2.0
+    reentry_tolerance_pct: float = 0.05
+    reentry_adaptive: bool = False
+    shadow_k_reentry: float = 2.0
+    reentry_sl_bounce_pct: float = 1.5
+    tp_tranches: list = None
+    # --- TP trend-aware ---
+    tp_trend_hold: bool = False
+    tp_regime_gate: bool = False
+    tp_trend_min_pct: float = 0.5
+    tp_trail_pct: float = 2.0
+    tp_trail_profit_floor_pct: float = 0.0
+    # --- Trend Overlay ---
+    trend_overlay: bool = False
+    trend_sma_n: int = 30
+    trend_interval: int = 240
+    regime_min_samples: int = 20
+    trend_topup: float = 2000.0
+    trend_trail_pct: float = 5.0
+    trend_exit_break: bool = False
+    # --- Volatility Adaptive ---
+    tp_trail_adaptive: bool = False
+    tp_trail_k: float = 2.0
+    tp_trail_min: float = 1.5
+    tp_trail_max: float = 8.0
+    tp_trail_vol_interval: int = 240
+    dca_trend_brake: bool = False
+    dca_brake_min_pct: float = 1.5
+    dca_spacing_growth_pct: float = 0.0
+    # --- Volatility-Scaled DCA Sizing ---
+    dca_vol_scale_k: float = 0.0
+    dca_vol_ref: float = 2.0
+    dca_vol_interval: int = 240
+    # --- Percentage Sizing ---
+    total_budget: float = 0.0
+    alloc_pct: float = 0.0
+    entry_pct: float = 0.0
+    dca_pct: float = 0.0
+    # --- Hybrid Re-Entry ---
+    reentry_hybrid_enabled: bool = False
+    reentry_peak_relative: bool = False
+    reentry_pullback_pct: float = 1.5
+    reentry_pullback_adaptive: bool = False
+    reentry_pullback_k: float = 1.0
+    reentry_pullback_min: float = 0.8
+    reentry_pullback_max: float = 4.0
+    reentry_ttl_hours: float = 0.0
+    reentry_bear_bounce_pct: float = 0.0
+    # --- Multi-Horizon Dynamic Profit Architecture (MHDPA) ---
     tp_dynamic_flat: bool = False
     tp_min_pct: float = 3.0
     tp_max_pct: float = 7.0
@@ -176,7 +150,7 @@ class StratParams:
     slow_grind_flash_window_min: float = 15.0
     slow_grind_flash_drop_pct: float = 1.5
     slow_grind_hourly_drop_pct: float = 2.5
-    # --- MULTI-HORIZON DYNAMIC STOP-LOSS (MHDSL, default ON) ---
+    # --- Multi-Horizon Dynamic Stop-Loss (MHDSL) ---
     sl_mhdsl_enabled: bool = True
     sl_disaster_buffer_ratio: float = 0.30
     sl_disaster_vol_multiplier: float = 0.85
@@ -189,7 +163,7 @@ class StratParams:
     sl_bounce_ratchet_k: float = 0.50
     sl_bounce_min_pullback_pct: float = 0.15
     sl_structural_break_enabled: bool = True
-    # --- MULTI-HORIZON DYNAMIC TAKE-PROFIT (MDHTP) ---
+    # --- Multi-Horizon Dynamic Take-Profit (MDHTP) ---
     tp_mdhtp_enabled: bool = False
     tp_stagnation_max_sec: float = 1080.0
 
@@ -212,27 +186,13 @@ class StratParams:
         self.takeprofit_pct = finite("STRAT_TAKEPROFIT_PCT", self.takeprofit_pct)
         self.stop_loss_pct = finite("STRAT_STOP_LOSS_PCT", self.stop_loss_pct)
         _bool_defaults = {
-            "enable_takeprofit": True,
-            "reentry_adaptive": False,
-            "tp_trend_hold": False,
-            "tp_regime_gate": False,
-            "trend_overlay": False,
-            "trend_exit_break": False,
-            "tp_trail_adaptive": False,
-            "dca_trend_brake": False,
-            "reentry_hybrid_enabled": False,
-            "reentry_peak_relative": False,
-            "reentry_pullback_adaptive": False,
-            "tp_dynamic_flat": False,
-            "trend_trail_dynamic": False,
-            "fast_profit_guard": False,
-            "surge_guard": False,
-            "surge_dynamic": False,
-            "slow_grind_guard": False,
-            "sl_mhdsl_enabled": True,
-            "sl_bounce_ratchet_enabled": True,
-            "sl_structural_break_enabled": True,
-            "tp_mdhtp_enabled": False,
+            "enable_takeprofit": True, "reentry_adaptive": False, "tp_trend_hold": False,
+            "tp_regime_gate": False, "trend_overlay": False, "trend_exit_break": False,
+            "tp_trail_adaptive": False, "dca_trend_brake": False, "reentry_hybrid_enabled": False,
+            "reentry_peak_relative": False, "reentry_pullback_adaptive": False, "tp_dynamic_flat": False,
+            "trend_trail_dynamic": False, "fast_profit_guard": False, "surge_guard": False,
+            "surge_dynamic": False, "slow_grind_guard": False, "sl_mhdsl_enabled": True,
+            "sl_bounce_ratchet_enabled": True, "sl_structural_break_enabled": True, "tp_mdhtp_enabled": False,
         }
         for b_attr, b_def in _bool_defaults.items():
             setattr(self, b_attr, _parse_bool_flag(getattr(self, b_attr, b_def), b_def))
@@ -270,21 +230,14 @@ class StratParams:
         if self.trend_interval <= 0:
             raise ValueError("STRAT_TREND_INTERVAL must be > 0")
         self.regime_min_samples = integer("STRAT_REGIME_MIN_SAMPLES", self.regime_min_samples)
-        regime_capacity = MarketRegimeService.horizon_sample_capacity(
-            "long", self.trend_interval,
-        )
+        regime_capacity = MarketRegimeService.horizon_sample_capacity("long", self.trend_interval)
         if not 3 <= self.regime_min_samples <= regime_capacity:
             raise ValueError(f"STRAT_REGIME_MIN_SAMPLES must be in [3, {regime_capacity}]")
 
-        percentage_names = (
-            "STRAT_TOTAL_BUDGET", "STRAT_ALLOC_PCT",
-            "STRAT_ENTRY_PCT", "STRAT_DCA_PCT",
-        )
+        percentage_names = ("STRAT_TOTAL_BUDGET", "STRAT_ALLOC_PCT", "STRAT_ENTRY_PCT", "STRAT_DCA_PCT")
         values = tuple(
             finite(name, value)
-            for name, value in zip(percentage_names, (
-                self.total_budget, self.alloc_pct, self.entry_pct, self.dca_pct,
-            ))
+            for name, value in zip(percentage_names, (self.total_budget, self.alloc_pct, self.entry_pct, self.dca_pct))
         )
         self.total_budget, self.alloc_pct, self.entry_pct, self.dca_pct = values
         if not any(value != 0 for value in values):
@@ -310,19 +263,11 @@ class StratParams:
     def effective_max_budget(self) -> float:
         return self.allocated_budget()
 
-
     _DEFAULT_DICT_FIELDS = {
-        "currency": "USDC",
-        "entry_amount": 50.0,
-        "entry_discount_pct": 0.2,
-        "dca_amount": 30.0,
-        "dca_drop_pct": 2.0,
-        "check_minutes": 60.0,
-        "takeprofit_pct": 5.0,
-        "max_budget": 500.0,
-        "max_dca_buys": 10,
-        "enable_takeprofit": True,
-        "order_ttl_min": 120.0,
+        "currency": "USDC", "entry_amount": 50.0, "entry_discount_pct": 0.2,
+        "dca_amount": 30.0, "dca_drop_pct": 2.0, "check_minutes": 60.0,
+        "takeprofit_pct": 5.0, "max_budget": 500.0, "max_dca_buys": 10,
+        "enable_takeprofit": True, "order_ttl_min": 120.0,
     }
 
     @classmethod
@@ -337,57 +282,53 @@ class StratParams:
         if mode not in {"avg_tp", "dca_only"}:
             raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
         return cls(
-            currency           = required_env("STRAT_CURRENCY", env).upper(),
-            entry_amount       = required_float_env("STRAT_ENTRY", env),
-            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
-            dca_amount         = required_float_env("STRAT_DCA", env),
-            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT", env),
-            check_minutes      = required_float_env("STRAT_CHECK_MINUTES", env),
-            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT", env),
-            max_budget         = required_float_env("STRAT_MAX_BUDGET", env),
-            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS", env),
-            total_budget       = required_float_env("STRAT_TOTAL_BUDGET", env),
-            alloc_pct          = required_float_env("STRAT_ALLOC_PCT", env),
-            entry_pct          = required_float_env("STRAT_ENTRY_PCT", env),
-            dca_pct            = required_float_env("STRAT_DCA_PCT", env),
-            enable_takeprofit  = (mode != "dca_only"),
-            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN", env),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT", env),
-            adopt_cost         = required_float_env("STRAT_ADOPT_COST", env),
-            adopt_qty          = required_float_env("STRAT_ADOPT_QTY", env),
-            reentry_drop_pct   = required_float_env("STRAT_REENTRY_DROP_PCT", env),
-            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
-            reentry_adaptive   = required_bool_env("STRAT_REENTRY_ADAPTIVE", env),
-            shadow_k_reentry   = required_float_env("SHADOW_K_REENTRY", env),
-            reentry_sl_bounce_pct = required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT", env),
-            tp_tranches        = _parse_tranches(defined_env("STRAT_TP_TRANCHES", env)),
-            tp_trend_hold      = required_bool_env("STRAT_TP_TREND_HOLD", env),
-            tp_regime_gate     = False,  # Retired legacy binary gate: superseded by continuous MHDPA rules.
-            tp_trend_min_pct   = required_float_env("STRAT_TP_TREND_MIN_PCT", env),
-            tp_trail_pct       = required_float_env("STRAT_TP_TRAIL_PCT", env),
-            tp_trail_profit_floor_pct = max(
-                0.0, required_float_env("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT", env),
-            ),
-            trend_overlay      = required_bool_env("STRAT_TREND_OVERLAY", env),
-            trend_sma_n        = required_int_env("STRAT_TREND_SMA_N", env),
-            trend_interval     = required_int_env("STRAT_TREND_INTERVAL", env),
-            regime_min_samples = required_int_env("STRAT_REGIME_MIN_SAMPLES", env),
-            trend_topup        = required_float_env("STRAT_TREND_TOPUP", env),
-            trend_trail_pct    = required_float_env("STRAT_TREND_TRAIL_PCT", env),
-            trend_exit_break   = required_bool_env("STRAT_TREND_EXIT_BREAK", env),
-            tp_trail_adaptive  = required_bool_env("STRAT_TP_TRAIL_ADAPTIVE", env),
-            tp_trail_k         = required_float_env("STRAT_TP_TRAIL_K", env),
-            tp_trail_min       = required_float_env("STRAT_TP_TRAIL_MIN", env),
-            tp_trail_max       = required_float_env("STRAT_TP_TRAIL_MAX", env),
-            tp_trail_vol_interval = required_int_env("STRAT_TP_TRAIL_VOL_INTERVAL", env),
-            dca_trend_brake    = required_bool_env("STRAT_DCA_TREND_BRAKE", env),
-            dca_brake_min_pct  = required_float_env("STRAT_DCA_BRAKE_MIN_PCT", env),
-            dca_spacing_growth_pct = max(
-                0.0, required_float_env("STRAT_DCA_SPACING_GROWTH_PCT", env),
-            ),
-            dca_vol_scale_k    = required_float_env("STRAT_DCA_VOL_SCALE_K", env),
-            dca_vol_ref        = required_float_env("STRAT_DCA_VOL_REF", env),
-            dca_vol_interval   = required_int_env("STRAT_DCA_VOL_INTERVAL", env),
+            currency=required_env("STRAT_CURRENCY", env).upper(),
+            entry_amount=required_float_env("STRAT_ENTRY", env),
+            entry_discount_pct=required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
+            dca_amount=required_float_env("STRAT_DCA", env),
+            dca_drop_pct=required_float_env("STRAT_DCA_DROP_PCT", env),
+            check_minutes=required_float_env("STRAT_CHECK_MINUTES", env),
+            takeprofit_pct=required_float_env("STRAT_TAKEPROFIT_PCT", env),
+            max_budget=required_float_env("STRAT_MAX_BUDGET", env),
+            max_dca_buys=required_int_env("STRAT_MAX_DCA_BUYS", env),
+            total_budget=required_float_env("STRAT_TOTAL_BUDGET", env),
+            alloc_pct=required_float_env("STRAT_ALLOC_PCT", env),
+            entry_pct=required_float_env("STRAT_ENTRY_PCT", env),
+            dca_pct=required_float_env("STRAT_DCA_PCT", env),
+            enable_takeprofit=(mode != "dca_only"),
+            order_ttl_min=required_float_env("STRAT_ORDER_TTL_MIN", env),
+            stop_loss_pct=required_float_env("STRAT_STOP_LOSS_PCT", env),
+            adopt_cost=required_float_env("STRAT_ADOPT_COST", env),
+            adopt_qty=required_float_env("STRAT_ADOPT_QTY", env),
+            reentry_drop_pct=required_float_env("STRAT_REENTRY_DROP_PCT", env),
+            reentry_tolerance_pct=required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
+            reentry_adaptive=required_bool_env("STRAT_REENTRY_ADAPTIVE", env),
+            shadow_k_reentry=required_float_env("SHADOW_K_REENTRY", env),
+            reentry_sl_bounce_pct=required_float_env("STRAT_REENTRY_SL_BOUNCE_PCT", env),
+            tp_tranches=_parse_tranches(defined_env("STRAT_TP_TRANCHES", env)),
+            tp_trend_hold=required_bool_env("STRAT_TP_TREND_HOLD", env),
+            tp_regime_gate=False,
+            tp_trend_min_pct=required_float_env("STRAT_TP_TREND_MIN_PCT", env),
+            tp_trail_pct=required_float_env("STRAT_TP_TRAIL_PCT", env),
+            tp_trail_profit_floor_pct=max(0.0, required_float_env("STRAT_TP_TRAIL_PROFIT_FLOOR_PCT", env)),
+            trend_overlay=required_bool_env("STRAT_TREND_OVERLAY", env),
+            trend_sma_n=required_int_env("STRAT_TREND_SMA_N", env),
+            trend_interval=required_int_env("STRAT_TREND_INTERVAL", env),
+            regime_min_samples=required_int_env("STRAT_REGIME_MIN_SAMPLES", env),
+            trend_topup=required_float_env("STRAT_TREND_TOPUP", env),
+            trend_trail_pct=required_float_env("STRAT_TREND_TRAIL_PCT", env),
+            trend_exit_break=required_bool_env("STRAT_TREND_EXIT_BREAK", env),
+            tp_trail_adaptive=required_bool_env("STRAT_TP_TRAIL_ADAPTIVE", env),
+            tp_trail_k=required_float_env("STRAT_TP_TRAIL_K", env),
+            tp_trail_min=required_float_env("STRAT_TP_TRAIL_MIN", env),
+            tp_trail_max=required_float_env("STRAT_TP_TRAIL_MAX", env),
+            tp_trail_vol_interval=required_int_env("STRAT_TP_TRAIL_VOL_INTERVAL", env),
+            dca_trend_brake=required_bool_env("STRAT_DCA_TREND_BRAKE", env),
+            dca_brake_min_pct=required_float_env("STRAT_DCA_BRAKE_MIN_PCT", env),
+            dca_spacing_growth_pct=max(0.0, required_float_env("STRAT_DCA_SPACING_GROWTH_PCT", env)),
+            dca_vol_scale_k=required_float_env("STRAT_DCA_VOL_SCALE_K", env),
+            dca_vol_ref=required_float_env("STRAT_DCA_VOL_REF", env),
+            dca_vol_interval=required_int_env("STRAT_DCA_VOL_INTERVAL", env),
             **load_common_mhdpa_env(env, include_spot_sl=True),
         )
 
@@ -417,46 +358,18 @@ def _parse_tranches(spec: str) -> list:
 
 def _new_state() -> dict:
     return {
-        "cycle": 1,
-        "qty": 0.0,
-        "cost": 0.0,            # Cost basis in quote currency.
-        "spent": 0.0,           # Deployed in the current cycle, subject to its cap.
-        "dca_buys": 0,
-        "entry_price": None,
-        "last_buy_price": None,
-        "cycle_fees": 0.0,      # Actual fees accumulated in the current cycle.
-        "realized_gross": 0.0,
-        "realized_net": 0.0,
-        "fees_total": 0.0,
-        "last_sell_price": None,  # Latest sale price for reentry rules.
-        "last_exit_kind": None,   # TP/STOP/etc. for stop-aware reentry.
-        "sl_low": None,           # Post-stop low used for bounce reentry.
-        "post_sell_peak": None,   # Peak tracked after sale for hybrid/peak pullback reentry.
-        "post_sell_trough": None, # Trough tracked after sale for smart bear bounce reentry.
-        "last_sell_ts": None,     # Timestamp of last exit for TTL barrier decay.
-        "trail_peak": None,       # Peak tracked after price exceeds TP.
-        "trail_stop": None,       # Trailing floor ratchets upward even as volatility changes.
-        "trend_mode": False,      # overlay: currently in a hold+trailing trend position
-        "trend_peak": None,       # peak tracked in trend mode
-        "trend_confirm_count": 0, # consecutive uptrend bars confirming the signal
-        "orders": [],           # {txid, side, vol, price, amount, kind, ts}
-        "pending_intent": None, # durable pre-submit boundary before venue acceptance
-        "pending_exit": None,   # Triggered exit retained through cancellation and restart.
-        # Per side/kind operational cooldown after a deterministic funds refusal.
-        # This survives restarts but never blocks urgent MARKET protection.
-        "placement_backoffs": {},
-        # Set only after a definitive insufficient-balance rejection. The next
-        # decision must compare strategy holdings with the venue ledger.
-        "ledger_reconcile_required": False,
-        "surge_active": False,
-        "surge_peak": None,
-        "slow_grind_active": False,
-        "slow_grind_peak": None,
-        "entry_ts": None,
-        "sl_bounce_state": {},
-        "sl_episode_state": {},
-        "reentry_state": {},
-        "tp_ride_state": {},
+        "cycle": 1, "qty": 0.0, "cost": 0.0, "spent": 0.0, "dca_buys": 0,
+        "entry_price": None, "last_buy_price": None,
+        "cycle_fees": 0.0, "realized_gross": 0.0, "realized_net": 0.0, "fees_total": 0.0,
+        "last_sell_price": None, "last_exit_kind": None, "sl_low": None,
+        "post_sell_peak": None, "post_sell_trough": None, "last_sell_ts": None,
+        "trail_peak": None, "trail_stop": None,
+        "trend_mode": False, "trend_peak": None, "trend_confirm_count": 0,
+        "orders": [], "pending_intent": None, "pending_exit": None,
+        "placement_backoffs": {}, "ledger_reconcile_required": False,
+        "surge_active": False, "surge_peak": None,
+        "slow_grind_active": False, "slow_grind_peak": None, "entry_ts": None,
+        "sl_bounce_state": {}, "sl_episode_state": {}, "reentry_state": {}, "tp_ride_state": {},
     }
 
 
@@ -482,8 +395,6 @@ class Strategy(BaseSpotMixin):
         self.ccy = params.currency
         self.dry_run = _parse_bool_flag(dry_run, True)
         self.observe_only = _parse_bool_flag(observe_only, False)
-        # ``dry_run`` includes paper-live, not only backtests. Replay must be identified
-        # separately so the trend signal uses injected bars.
         self.replay_mode = _parse_bool_flag(replay_mode, False)
         self.desktop = _parse_bool_flag(desktop, False)
         self._notifier = notifier
@@ -492,11 +403,7 @@ class Strategy(BaseSpotMixin):
         self.fee_note = fee_note
         self._regime_service = regime_service or MarketRegimeService()
         self._regime_bar_context = None
-        # Keep the legacy one-argument call so existing replays can replace
-        # state_path_for and guarantee zero I/O.
-        self.state_file = (
-            state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
-        )
+        self.state_file = state_path_for(pair) if state_dir is None else state_path_for(pair, state_dir)
         self._state_write_failed = False
         self._state_file_mtime: float = 0.0
         raw_state = initial_state if isinstance(initial_state, dict) else self._load()
@@ -505,23 +412,18 @@ class Strategy(BaseSpotMixin):
             self._init_exit_manager() if (self.p.sl_mhdsl_enabled or self.p.tp_mdhtp_enabled) else None
         )
         self._paper_seq = 0
-        # Observational adaptive-volatility shadow history stays in memory for sigma.
-        # It is rebuilt after restart and never enters persistent state.
         self._shadow_prices = deque(maxlen=90)
         self._surge_replay_closes = (
             deque(maxlen=self._surge_window_bars() + 1)
-            if self.replay_mode and params.surge_guard and params.surge_window_hours > 0
-            and params.surge_move_pct > 0 else None
+            if self.replay_mode and params.surge_guard and params.surge_window_hours > 0 and params.surge_move_pct > 0
+            else None
         )
         self._max_active_surge_vol = 0.0
         self._surge_win_check_ts: list[float] = []
-        # Pair precision normalized by the provider.
         try:
             precision = client.pair_precision(pair)
         except ProviderError as exc:
-            raise RuntimeError(
-                f"Cannot start {pair}: venue precision is unavailable"
-            ) from exc
+            raise RuntimeError(f"Cannot start {pair}: venue precision is unavailable") from exc
         if precision is None:
             raise RuntimeError(f"Cannot start {pair}: venue returned no pair metadata")
         self.price_dec = precision.price_decimals
@@ -538,9 +440,8 @@ class Strategy(BaseSpotMixin):
 
     def _emit(self, **event) -> None:
         """Send an event through the venue sink or legacy compatibility wrapper."""
-        if self.replay_mode:
-            return
-        (self._notifier or notify)(**event)
+        if not self.replay_mode:
+            (self._notifier or notify)(**event)
 
     # -- Persistence -----------------------------------------------------------
     @staticmethod
@@ -552,34 +453,12 @@ class Strategy(BaseSpotMixin):
             signed_float_keys=("realized_gross", "realized_net"),
             nonneg_int_keys=("dca_buys", "trend_confirm_count"),
             pos_float_keys=(
-                "entry_price",
-                "last_buy_price",
-                "last_sell_price",
-                "sl_low",
-                "post_sell_peak",
-                "post_sell_trough",
-                "last_sell_ts",
-                "trail_peak",
-                "trail_stop",
-                "trend_peak",
-                "surge_peak",
-                "slow_grind_peak",
-                "entry_ts",
+                "entry_price", "last_buy_price", "last_sell_price", "sl_low",
+                "post_sell_peak", "post_sell_trough", "last_sell_ts", "trail_peak",
+                "trail_stop", "trend_peak", "surge_peak", "slow_grind_peak", "entry_ts",
             ),
-            bool_keys=(
-                "trend_mode",
-                "ledger_reconcile_required",
-                "surge_active",
-                "slow_grind_active",
-                "adopted",
-            ),
-            dict_keys=(
-                "placement_backoffs",
-                "sl_bounce_state",
-                "sl_episode_state",
-                "reentry_state",
-                "tp_ride_state",
-            ),
+            bool_keys=("trend_mode", "ledger_reconcile_required", "surge_active", "slow_grind_active", "adopted"),
+            dict_keys=("placement_backoffs", "sl_bounce_state", "sl_episode_state", "reentry_state", "tp_ride_state"),
             order_id_key="txid",
             lowercase_order_side=True,
             order_pos_float_keys=("vol", "price"),
@@ -615,22 +494,19 @@ class Strategy(BaseSpotMixin):
         amount = safe_nonneg_float(pending.get("amount"), None) or safe_nonneg_float(meta_amount, 0.0)
         if 0.0 < eff_vol < req_qty and amount > 0.0:
             amount = amount * (eff_vol / req_qty)
-        price = safe_pos_float(pending.get("requested_price"), 0.0)
-        ts = safe_pos_float(pending.get("created_at"), self._now())
         market_val = pending.get("market")
         if market_val is None and isinstance(meta, dict):
             market_val = meta.get("market")
-        txid = _clean_order_id(pending.get("order_id")) or ""
         return {
-            "txid": txid,
+            "txid": _clean_order_id(pending.get("order_id")) or "",
             "side": str(pending["side"]).lower(),
             "vol": eff_vol,
-            "price": price,
+            "price": safe_pos_float(pending.get("requested_price"), 0.0),
             "amount": amount,
             "kind": pending.get("kind"),
             "market": _parse_bool_flag(market_val, False),
             "intent_id": _clean_order_id(pending.get("intent_id")),
-            "ts": ts,
+            "ts": safe_pos_float(pending.get("created_at"), self._now()),
         }
 
     def _adopt_pending_order(self, pending: dict) -> None:
@@ -651,9 +527,7 @@ class Strategy(BaseSpotMixin):
             self.s["ledger_reconcile_required"] = True
             if not _parse_bool_flag(pending.get("market"), False):
                 self._record_placement_backoff(
-                    str(pending.get("side") or "buy"),
-                    str(pending.get("kind") or "ENTRY"),
-                    submit_error,
+                    str(pending.get("side") or "buy"), str(pending.get("kind") or "ENTRY"), submit_error
                 )
             self._persist_pending_intent(None)
             log(
@@ -662,17 +536,13 @@ class Strategy(BaseSpotMixin):
             )
             return
         try:
-            result = self._order_lifecycle.reconcile(
-                pending, persist=self._persist_pending_intent)
+            result = self._order_lifecycle.reconcile(pending, persist=self._persist_pending_intent)
         except (ProviderError, RuntimeError, ValueError) as exc:
             log(f"  ! [STRAT] unreconciled pending intent ({exc}) — not resending")
             return
         if result.order_known:
             self._adopt_pending_order(result.intent)
-            log(
-                f"  [STRAT] recovered intent {result.intent['side']} "
-                f"txid={result.intent['order_id']}"
-            )
+            log(f"  [STRAT] recovered intent {result.intent['side']} txid={result.intent['order_id']}")
         elif result.outcome in {"absent", "retryable"}:
             log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
 
@@ -680,52 +550,37 @@ class Strategy(BaseSpotMixin):
     def _qty_for(self, amount: float, price: float) -> float:
         amt_f = safe_pos_float(amount, default=None)
         px_f = safe_pos_float(price, default=None)
-        if amt_f is None or px_f is None:
-            return 0.0
-        return round(amt_f / px_f, self.vol_dec)
+        return round(amt_f / px_f, self.vol_dec) if (amt_f is not None and px_f is not None) else 0.0
 
     def _dust_safe_qty(self, qty: float) -> float:
-        """Leave one volume tick to tolerate a venue's rounded balance.
-
-        Selling the full internally tracked quantity can exceed a rounded ledger and
-        cause permanent insufficient-funds retries. Preserve historical high-precision
-        behavior without magnifying dust on low-precision venues.
-        """
+        """Leave one volume tick to tolerate a venue's rounded balance."""
         qty_f = safe_pos_float(qty, default=None)
         if qty_f is None:
             return 0.0
         dust_decimals = self.vol_dec if self.vol_dec <= 2 else self.vol_dec - 1
         step = 10.0 ** -max(dust_decimals, 1)
-        # Epsilon prevents floating-point division from leaving two ticks after floor.
         ticks = math.floor((qty_f + step * 1e-9) / step) - 1
         return round(max(ticks, 0) * step, self.vol_dec)
 
     @staticmethod
     def _insufficient_funds_error(error) -> bool:
         text = str(error or "").lower()
-        return any(marker in text for marker in (
-            "insufficient funds", "insufficient balance",
-            "insufficient spot balance",
-        ))
+        return any(m in text for m in ("insufficient funds", "insufficient balance", "insufficient spot balance"))
 
     @staticmethod
     def _placement_backoff_key(side: str, kind: str) -> str:
         return f"{str(side).lower()}:{str(kind or 'UNKNOWN').upper()}"
 
     def _placement_backoff_remaining(self, side: str, kind: str) -> float:
-        key = self._placement_backoff_key(side, kind)
         records = self.s.get("placement_backoffs")
-        if not isinstance(records, dict):
-            return 0.0
-        record = records.get(key)
+        record = records.get(self._placement_backoff_key(side, kind)) if isinstance(records, dict) else None
         if not isinstance(record, dict):
             return 0.0
         until_f = safe_float(record.get("until"), default=None)
         now_f = safe_float(self._now(), default=None)
         if until_f is None or now_f is None:
             return 0.0
-        rem = max(0.0, until_f - now_f)
-        return min(_PLACEMENT_BACKOFF_CAP_SEC, rem)
+        return min(_PLACEMENT_BACKOFF_CAP_SEC, max(0.0, until_f - now_f))
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)
@@ -733,22 +588,13 @@ class Strategy(BaseSpotMixin):
         if not isinstance(records, dict):
             records = {}
             self.s["placement_backoffs"] = records
-        previous = records.get(key)
-        if not isinstance(previous, dict):
-            previous = {}
+        previous = records.get(key) if isinstance(records.get(key), dict) else {}
         attempts = safe_nonneg_int(previous.get("attempts"), default=0) + 1
         base = max(60.0, float(self.p.check_minutes) * 60.0)
         delay = min(_PLACEMENT_BACKOFF_CAP_SEC, base * (2 ** min(attempts - 1, 10)))
-        records[key] = {
-            "attempts": attempts,
-            "until": self._now() + delay,
-            "reason": str(error),
-        }
+        records[key] = {"attempts": attempts, "until": self._now() + delay, "reason": str(error)}
         self._save()
-        log(
-            f"  ! [STRAT] {side} {kind} insufficient funds — "
-            f"operational cooldown {delay:.0f}s (refusal {attempts})"
-        )
+        log(f"  ! [STRAT] {side} {kind} insufficient funds — operational cooldown {delay:.0f}s (refusal {attempts})")
 
     def _clear_placement_backoff(self, side: str, kind: str) -> None:
         records = self.s.get("placement_backoffs")
@@ -757,15 +603,13 @@ class Strategy(BaseSpotMixin):
             return
         records.pop(self._placement_backoff_key(side, kind), None)
 
-    # -- Placement -------------------------------------------------------------
+    # -- Placement & Cancellation ----------------------------------------------
     def _place(self, side: str, vol: float, price: float, kind: str, amount: float = 0.0,
                market: bool = False) -> bool:
         market = _parse_bool_flag(market, False)
         s_norm = normalize_side(side)
         if s_norm in ("BUY", "SELL"):
             side = s_norm.lower()
-        # A market trailing/stop exit executes immediately instead of risking a missed
-        # sharp drop with a limit order. Backtests fill it at the next bar's open.
         vol_f = safe_pos_float(vol, default=None)
         price_f = safe_pos_float(price, default=None)
         if vol_f is None or price_f is None:
@@ -779,90 +623,58 @@ class Strategy(BaseSpotMixin):
         if vol <= 0 or (self.ordermin and vol < self.ordermin):
             log(f"  ! [STRAT] volume {vol} < minimum order {self.ordermin} — skipping")
             return False
-        # Refuse a new non-STOP limit SELL below known average cost after rounding.
-        # This gross-price check is not a net-profit or fill guarantee: fees are not
-        # added, equality is allowed, and unknown average cost does not block here.
-        # MARKET and STOP intents bypass this guard, but still pass the remaining
-        # lifecycle, cancellation, balance, and venue checks. The optional soft
-        # trailing floor is a separate strategy policy applied before this method.
         if not market and str(side).lower() == "sell" and str(kind).upper() != "STOP":
             _avg = self._avg()
             if _avg is not None and price < _avg:
                 log(f"  ! [STRAT] [GUARD] {kind} sell rejected: price {price} < avg "
                     f"{_avg:.6f} (profit-floor; STOP/MARKET excepted)")
                 return False
-        # A previous deterministic funds rejection cannot become executable merely
-        # by hammering the venue every tick. MARKET exits deliberately bypass this:
-        # missing a protective exit is a larger risk than a repeated refusal.
         if not market:
             remaining = self._placement_backoff_remaining(side, kind)
             if remaining > 0:
-                log(
-                    f"  ! [STRAT] {side} {kind} in cooldown after insufficient funds "
-                    f"({remaining:.0f}s remaining)"
-                )
+                log(f"  ! [STRAT] {side} {kind} in cooldown after insufficient funds ({remaining:.0f}s remaining)")
                 return False
         if self.dry_run:
             self._paper_seq += 1
             log(f"  [STRAT] [PAPER] {side.upper()} {kind}{' MKT' if market else ''} {vol} @ {price} {self.ccy}")
-            self.s["orders"].append({"txid": f"PAPER-{self._paper_seq}", "side": side,
-                                     "vol": vol, "price": price, "amount": amount,
-                                     "kind": kind, "market": market, "ts": self._now()})
+            self.s["orders"].append({
+                "txid": f"PAPER-{self._paper_seq}", "side": side, "vol": vol, "price": price,
+                "amount": amount, "kind": kind, "market": market, "ts": self._now(),
+            })
             return True
         if self.s.get("pending_intent"):
             log("  ! [STRAT] an unreconciled pre-submit intent exists — not duplicating")
             return False
         try:
-            # Venues that might accept an underfunded BUY and cancel its remainder can
-            # reject the intent during preflight before audit/submission.
             preflight = getattr(type(self.client), "preflight_order", None)
             if callable(preflight):
-                preflight(
-                    self.client, self.pair, side, vol, None if market else price,
-                    market=market, kind=kind,
-                )
+                preflight(self.client, self.pair, side, vol, None if market else price, market=market, kind=kind)
             intent_id = self._intent_identity(side, kind, vol, price)
             client_order_id = intent_client_order_id(self.venue_label, intent_id)
             if not client_order_id:
-                raise ProviderError(
-                    f"{self.venue_label}: client_order_id unavailable for the lifecycle")
+                raise ProviderError(f"{self.venue_label}: client_order_id unavailable for the lifecycle")
             intent = self._order_lifecycle.new_intent(
-                intent_id=intent_id,
-                client_order_id=client_order_id,
-                symbol=self.pair,
-                side=side,
-                requested_qty=vol,
-                requested_price=price,
-                kind=kind,
+                intent_id=intent_id, client_order_id=client_order_id, symbol=self.pair,
+                side=side, requested_qty=vol, requested_price=price, kind=kind,
                 metadata={"amount": amount, "market": market},
             )
             submit_outcome = getattr(type(self.client), "submit_outcome_with_intent", None)
             submit_with_intent = getattr(type(self.client), "submit_order_with_intent", None)
+
             def submit():
-                if callable(submit_outcome):
-                    return submit_outcome(
-                        self.client, intent_id, self.pair, side, vol,
-                        None if market else price,
-                        market=market, kind=kind,
-                        reference_price=price if market else None,
-                        client_order_id=client_order_id,
-                    )
-                if callable(submit_with_intent):
-                    return submit_with_intent(
-                        self.client, intent_id, self.pair, side, vol,
-                        None if market else price,
-                        market=market, kind=kind,
-                        reference_price=price if market else None,
-                        client_order_id=client_order_id,
-                    )
+                for fn in (submit_outcome, submit_with_intent):
+                    if callable(fn):
+                        return fn(
+                            self.client, intent_id, self.pair, side, vol,
+                            None if market else price, market=market, kind=kind,
+                            reference_price=price if market else None, client_order_id=client_order_id,
+                        )
                 return self.client.submit_order(
                     self.pair, side, vol, None if market else price,
-                    market=market, kind=kind,
-                    client_order_id=client_order_id,
+                    market=market, kind=kind, client_order_id=client_order_id,
                 )
 
-            tracked = self._order_lifecycle.submit(
-                intent, persist=self._persist_pending_intent, submit=submit)
+            tracked = self._order_lifecycle.submit(intent, persist=self._persist_pending_intent, submit=submit)
             if not tracked.order_known:
                 submit_error = tracked.intent.get("submit_error")
                 if tracked.outcome == "refused":
@@ -879,18 +691,14 @@ class Strategy(BaseSpotMixin):
                 if self._insufficient_funds_error(submit_error):
                     self.s["ledger_reconcile_required"] = True
                     if not market:
-                        self._record_placement_backoff(
-                            side, kind, submit_error)
+                        self._record_placement_backoff(side, kind, submit_error)
                     self._persist_pending_intent(None)
                     log(
                         f"  ! [STRAT] {side} {kind} rejected due to insufficient funds; "
                         "the intent was released for safe reevaluation"
                     )
                     return False
-                log(
-                    f"  ! [STRAT] {side} {kind} ambiguous submit; "
-                    "the intent stays persisted for reconciliation"
-                )
+                log(f"  ! [STRAT] {side} {kind} ambiguous submit; the intent stays persisted for reconciliation")
                 return False
             txid = str(tracked.intent["order_id"])
             log(f"  [STRAT] {side.upper()} {kind} placed txid={txid} {vol} @ {price}")
@@ -906,11 +714,7 @@ class Strategy(BaseSpotMixin):
             return False
 
     def _cancel_order(self, o: dict) -> bool:
-        """Request cancellation without forgetting the order before terminal confirmation.
-
-        An accepted request does not prove that no concurrent fill occurred. Retain the
-        order until the provider reports terminal state so reconciliation applies that fill.
-        """
+        """Request cancellation without forgetting the order before terminal confirmation."""
         if self.dry_run or str(o["txid"]).startswith("PAPER"):
             self._remove(o)
             log(f"  [STRAT] cancelled {o['side']} {o['txid']}")
@@ -921,20 +725,14 @@ class Strategy(BaseSpotMixin):
             cancel_with_intent = getattr(type(self.client), "cancel_order_with_intent", None)
             if callable(cancel_with_intent):
                 cancel_with_intent(
-                    self.client, o.get("intent_id") or f"legacy-{self.pair}-{o['txid']}",
-                    self.pair, o["txid"],
+                    self.client, o.get("intent_id") or f"legacy-{self.pair}-{o['txid']}", self.pair, o["txid"]
                 )
             else:
                 self.client.cancel_order(self.pair, o["txid"])
         except ProviderError as e:
             log(f"  ! [STRAT] cancel failed for {o['txid']}: {e} — the order stays tracked")
             return False
-        o["cancel_requested"] = True
-        o["cancel_ts"] = self._now()
-        # Persist cancellation intent across restart and track through terminal status.
-        self._save()
-        log(f"  [STRAT] cancel requested {o['side']} {o['txid']} — waiting for a terminal status")
-        return True
+        return self._mark_order_cancel_requested(o, "txid")
 
     def _cancel_orders(self, side: str | None = None, *, exclude_market: bool = False) -> bool:
         """Request cancellation of selected orders; return False if any request fails."""
@@ -943,34 +741,35 @@ class Strategy(BaseSpotMixin):
             return True
         selected = [
             o for o in list(orders)
-            if (side is None or o["side"] == side)
-            and not (exclude_market and o.get("market"))
+            if (side is None or o["side"] == side) and not (exclude_market and o.get("market"))
         ]
         ok = True
         for o in selected:
             ok = self._cancel_order(o) and ok
         return ok
 
+    def _cancel_if_stale_buy(self, o: dict, price: float) -> None:
+        age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
+        if (
+            o.get("side") == "buy"
+            and not o.get("cancel_requested")
+            and age > self.p.order_ttl_min
+            and price > o["price"] * 1.003
+        ):
+            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
+            self._cancel_order(o)
+
     def _has_pending_market_exit(self) -> bool:
-        for o in self.s["orders"]:
-            if o["side"] == "sell" and o.get("market"):
-                return True
-        return False
+        return any(o["side"] == "sell" and o.get("market") for o in self.s["orders"])
 
     def _request_market_exit(self, price: float, kind: str, *, soft_floor: bool = False,
                              min_profit_pct: float | None = None) -> bool:
-        """Persist exit ownership before cancellation, then sell reconciled holdings.
-
-        A cancel acknowledgement is not terminal venue truth. Do not submit a
-        competing SELL or leave a DCA capable of filling after exit. The next
-        reconcile/step resumes this request, even after restart or a rebound.
-        """
+        """Persist exit ownership before cancellation, then sell reconciled holdings."""
         pending = self.s.get("pending_exit")
         soft_floor = _parse_bool_flag(soft_floor, False)
         if not isinstance(pending, dict) or (kind == "STOP" and pending.get("kind") != "STOP"):
             self.s["pending_exit"] = {"kind": kind, "soft_floor": soft_floor}
             if min_profit_pct is not None and kind != "STOP":
-                # Freeze the signal's floor across retries, config changes, and restart.
                 self.s["pending_exit"]["min_profit_pct"] = min_profit_pct
         return self._continue_market_exit(price)
 
@@ -981,7 +780,6 @@ class Strategy(BaseSpotMixin):
             return False
         if self.s.get("pending_intent") or self._has_pending_market_exit():
             return False
-        # This boundary also covers resumption after an earlier failed save.
         self._save()
         if self._state_write_failed:
             return False
@@ -996,7 +794,6 @@ class Strategy(BaseSpotMixin):
         factor = 0.995 if kind == "STOP" else 0.999
         reference = round(price * factor, self.price_dec)
         if "min_profit_pct" in pending and kind != "STOP":
-            # Recompute against reconciled cost basis, including late BUY fills.
             min_profit_pct = safe_nonneg_float(pending["min_profit_pct"], default=None)
             avg = safe_pos_float(self._avg(), default=None)
             if min_profit_pct is None or avg is None:
@@ -1012,29 +809,24 @@ class Strategy(BaseSpotMixin):
             if floor is not None and reference < floor:
                 log("  [STRAT] soft exit pending: current reference is below the configured floor")
                 return False
-        placed = self._place(
-            "sell", self._dust_safe_qty(self.s["qty"]),
-            reference, kind=kind, market=True)
+        placed = self._place("sell", self._dust_safe_qty(self.s["qty"]), reference, kind=kind, market=True)
         if placed and kind == "STOP":
             self._emit(
                 title=f"🛑 SL {self.pair}",
                 body="Protective MARKET exit accepted; waiting for confirmed execution.",
-                source=self.notification_source, price=price, desktop=self.desktop)
+                source=self.notification_source, price=price, desktop=self.desktop,
+            )
         return placed
 
     # -- Reconciliation --------------------------------------------------------
     def reconcile(self, price: float) -> None:
         self._reconcile_pending_submit()
         if not self.s.get("pending_exit"):
-            # Preserve ownership of an accepted exit restored from pre-marker
-            # state (or recovered by client ID) before applying a racing BUY.
-            exit_order = next((o for o in self.s["orders"]
-                               if o["side"] == "sell" and o.get("market")), None)
+            exit_order = next((o for o in self.s["orders"] if o["side"] == "sell" and o.get("market")), None)
             if exit_order:
                 self.s["pending_exit"] = {
                     "kind": exit_order.get("kind") or "TP",
-                    "soft_floor": (self.s.get("trail_peak") is not None
-                                   and not self.s.get("trend_mode")),
+                    "soft_floor": (self.s.get("trail_peak") is not None and not self.s.get("trend_mode")),
                 }
                 self._save()
         for side in ("buy", "sell"):
@@ -1043,31 +835,21 @@ class Strategy(BaseSpotMixin):
                     continue
                 if self.dry_run:
                     if o.get("market"):
-                        # In paper-live, a MARKET order fills at the currently observed
-                        # price, including a drop below the stop/trailing reference.
                         fill_price = price
-                    elif ((side == "buy" and price <= o["price"])
-                          or (side == "sell" and price >= o["price"])):
+                    elif (side == "buy" and price <= o["price"]) or (side == "sell" and price >= o["price"]):
                         fill_price = o["price"]
                     else:
-                        age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
-                        if (side == "buy" and not o.get("cancel_requested")
-                                and age > self.p.order_ttl_min and price > o["price"] * 1.003):
-                            log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
-                            self._cancel_order(o)
+                        self._cancel_if_stale_buy(o, price)
                         continue
                     if o in self.s["orders"]:
                         self._remove(o)
                         self._apply_fill(o, o["vol"], fill_price, fee=0.0)
                     continue
-                # Providers report cumulative quantity, cost, and fee even while an order
-                # remains open. Apply only the delta since the saved reconciliation marker.
                 try:
                     status_with_intent = getattr(type(self.client), "order_status_with_intent", None)
                     if callable(status_with_intent):
                         status = status_with_intent(
-                            self.client, o.get("intent_id") or f"legacy-{self.pair}-{o['txid']}",
-                            self.pair, o["txid"],
+                            self.client, o.get("intent_id") or f"legacy-{self.pair}-{o['txid']}", self.pair, o["txid"]
                         )
                     else:
                         status = self.client.order_status(self.pair, o["txid"])
@@ -1107,9 +889,7 @@ class Strategy(BaseSpotMixin):
 
                 delta_vol = max(0.0, total_vol - applied_vol)
                 delta_cost = max(0.0, total_cost - applied_cost)
-                # Fees are signed because some venues report negative maker rebates.
                 delta_fee = total_fee - applied_fee
-                # Persist markers before accounting because a final SELL may replace state.
                 o["applied_vol"] = total_vol
                 o["applied_cost"] = total_cost
                 o["applied_fee"] = total_fee
@@ -1117,22 +897,15 @@ class Strategy(BaseSpotMixin):
                 if delta_vol > eps:
                     fill_order = dict(o)
                     if o["side"] == "buy":
-                        # ``amount`` is the order's nominal cap; partial fills consume it proportionally.
                         ord_amt = safe_nonneg_float(o.get("amount"), default=0.0) or 0.0
-                        fill_order["amount"] = (
-                            ord_amt * delta_vol / ord_vol
-                            if ord_vol > 0 else delta_cost
-                        )
+                        fill_order["amount"] = ord_amt * delta_vol / ord_vol if ord_vol > 0 else delta_cost
                         if applied_vol > eps and fill_order.get("kind") in {"DCA", "TREND_ENTRY"}:
                             fill_order["kind"] = f"{fill_order['kind']}_PARTIAL"
                     fill_price = delta_cost / delta_vol if delta_cost > 0 else reported_price
                     if terminal:
                         self._remove(o)
-                    self._apply_fill(
-                        fill_order, delta_vol, fill_price, fee=delta_fee, final=False,
-                    )
+                    self._apply_fill(fill_order, delta_vol, fill_price, fee=delta_fee, final=False)
                 elif abs(delta_fee) > eps:
-                    # Charge a late final fee without simulating a zero-volume fill.
                     self.s["cycle_fees"] += delta_fee
                     self.s["fees_total"] += delta_fee
                     self.s["realized_net"] -= delta_fee
@@ -1144,71 +917,50 @@ class Strategy(BaseSpotMixin):
                         self._finalize_cycle_if_flat(o, reported_price)
                     log(f"  [STRAT] {o['txid']} {st} (executed {total_vol}/{o['vol']})")
                 else:
-                    age = (self._now() - (_clean_nonneg_float(o.get("ts")) or 0.0)) / 60
-                    if (side == "buy" and not o.get("cancel_requested")
-                            and age > self.p.order_ttl_min and price > o["price"] * 1.003):
-                        log(f"  [STRAT] buy {o['txid']} unfilled, the price rose — cancelling and re-placing")
-                        self._cancel_order(o)
+                    self._cancel_if_stale_buy(o, price)
 
     def _apply_fill(self, o: dict, vol: float, price: float, fee: float,
                     *, final: bool = True) -> None:
         tag = "[PAPER] " if self.dry_run else ""
         self.s["cycle_fees"] += fee
         self.s["fees_total"] += fee
-        # Charge every fee once even while the position remains open. This prevents net
-        # mark-to-market P&L from overstating positions with a filled BUY.
         self.s["realized_net"] -= fee
         if o["side"] == "buy":
-            self.s["qty"] += vol
-            self.s["cost"] += vol * price
-            self.s["last_buy_price"] = price
-            if self.s["entry_price"] is None:
-                self.s["entry_price"] = price
+            self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
             if self.s.get("entry_ts") is None:
                 self.s["entry_ts"] = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
-            raw_amt = o.get("amount")
-            amt_val = _clean_nonneg_float(raw_amt)
-            self.s["spent"] += amt_val if (amt_val is not None and raw_amt is not None) else (vol * price)
-            if o.get("kind") == "DCA":
-                self.s["dca_buys"] += 1
             if o.get("kind") == "TREND_ENTRY":
-                # A submitted order is not a trend position. Enable the mode only after
-                # the venue or replay confirms the fill.
                 self.s["trend_mode"] = True
                 self.s["trend_peak"] = price
             avg = self._avg()
             log(f"  [STRAT] {tag}BUY FILLED {vol} @ {price} {self.ccy} ({o.get('kind')})  "
                 f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f} fee={fee}")
-            self._emit(title=f"{tag}{self.pair} BUY {vol:.2f}@{price:.2f}",
-                       body=(f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | "
-                             f"desf{self.s['spent']:.0f}{self.ccy}"),
-                       source=self.notification_source, price=price, desktop=self.desktop)
-            # Reprice LIMIT take-profits after a BUY, but never revoke an already
-            # submitted protective MARKET exit when a late BUY fill is reconciled.
+            self._emit(
+                title=f"{tag}{self.pair} BUY {vol:.2f}@{price:.2f}",
+                body=f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | desf{self.s['spent']:.0f}{self.ccy}",
+                source=self.notification_source, price=price, desktop=self.desktop,
+            )
             self._cancel_orders("sell", exclude_market=True)
-        else:  # sell
+        else:
             avg = self._avg() or price
             gross = (price - avg) * vol
             net = gross - fee
             self.s["realized_gross"] += gross
             self.s["realized_net"] += gross
-            self.s["qty"] -= vol
-            # A partial SELL releases cost basis proportionally. Otherwise the full cost
-            # remains assigned to the reduced quantity and distorts the average.
-            self.s["cost"] = max(0.0, self.s["cost"] - avg * vol)
+            self._release_sell_cost_basis(vol, avg)
             log(f"  [STRAT] {tag}SELL FILLED {vol} @ {price} {self.ccy}  "
                 f"brut={gross:+.4f} fee_ciclu={self.s['cycle_fees']:.4f} net={net:+.4f}")
-            self._emit(title=f"{tag}{self.pair} SELL {vol:.2f}@{price:.2f} N{net:+.2f}{self.ccy}",
-                       body=(f"a{avg:.2f} · br{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
-                             f"Ntot{self.s['realized_net']:+.2f}{self.ccy}"),
-                       source=self.notification_source, price=price, desktop=self.desktop)
+            self._emit(
+                title=f"{tag}{self.pair} SELL {vol:.2f}@{price:.2f} N{net:+.2f}{self.ccy}",
+                body=(f"a{avg:.2f} · br{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
+                      f"Ntot{self.s['realized_net']:+.2f}{self.ccy}"),
+                source=self.notification_source, price=price, desktop=self.desktop,
+            )
             if final:
                 self._finalize_cycle_if_flat(o, price)
 
     def _finalize_cycle_if_flat(self, o: dict, price: float) -> None:
         """Close a cycle once, only after terminal exit status."""
-        # Dust left by _dust_safe_qty must not keep a cycle open. Apply the threshold
-        # only at terminal state because an open partial fill may validly retain dust.
         dust = 2 * 10.0 ** -(max(self.vol_dec - 1, 1))
         if abs(self.s["qty"]) < dust:
             self.s["qty"] = 0.0
@@ -1216,30 +968,24 @@ class Strategy(BaseSpotMixin):
         if self.s["qty"] > 1e-12:
             return
         if self.s["orders"] or self.s.get("pending_intent"):
-            # A terminal SELL can race an earlier DCA/TP. Closing the cycle here
-            # would erase that order and lose a later fill. Freeze new entries,
-            # resolve the remaining orders, then either exit their net remainder
-            # or finish this cycle once. Keep the actual sale reference for reentry.
             pending = self.s.get("pending_exit") or {"kind": o.get("kind") or "TP"}
             pending["fill_price"] = price
             self.s["pending_exit"] = pending
             self._save()
             return
-        keep = (self.s["realized_gross"], self.s["realized_net"],
-                self.s["fees_total"], self.s.get("cycle", 1) + 1)
+        keep = (
+            self.s["realized_gross"], self.s["realized_net"],
+            self.s["fees_total"], self.s.get("cycle", 1) + 1,
+        )
         self.s = _new_state()
-        (self.s["realized_gross"], self.s["realized_net"],
-         self.s["fees_total"], self.s["cycle"]) = keep
+        self.s["realized_gross"], self.s["realized_net"], self.s["fees_total"], self.s["cycle"] = keep
         exit_ts = self._shadow_prices[-1][0] if self._shadow_prices else self._now()
         self._seed_post_exit_anchors(price, o.get("kind"), exit_ts)
         log(f"  [STRAT] === cycle closed; restarting (cycle {self.s['cycle']}) ===")
 
     # -- Decision logic --------------------------------------------------------
     def _is_trend_direction(
-        self,
-        regime: MarketRegimeDecision | None,
-        expected_regime: str,
-        client_tokens: tuple[str, ...],
+        self, regime: MarketRegimeDecision | None, expected_regime: str, client_tokens: tuple[str, ...]
     ) -> bool:
         if regime is not None and self._regime_matches(regime, expected_regime, min_samples=self.p.regime_min_samples):
             return True
@@ -1261,9 +1007,7 @@ class Strategy(BaseSpotMixin):
 
     def _is_trend_up(self, regime: MarketRegimeDecision | None = None) -> bool:
         """Return True if an uptrend is identified via regime, trend_mode, or venue client."""
-        if self.s.get("trend_mode"):
-            return True
-        return self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
+        return bool(self.s.get("trend_mode")) or self._is_trend_direction(regime, "bull", ("up", "bull", "uptrend"))
 
     def _is_trend_down(self, regime: MarketRegimeDecision | None = None) -> bool:
         """Return True if a downtrend is identified via regime or venue client."""
@@ -1272,25 +1016,22 @@ class Strategy(BaseSpotMixin):
     def _check_stop_loss(self, price: float) -> bool:
         """Close everything when unrealized loss crosses the anti-runaway threshold."""
         if (self.s.get("pending_exit") or {}).get("kind") == "STOP":
-            if self._has_pending_market_exit():
-                return True
-            self._continue_market_exit(price)
+            if not self._has_pending_market_exit():
+                self._continue_market_exit(price)
             return True
         if self.p.stop_loss_pct <= 0:
             return False
         avg = self._avg()
         if not avg:
             return False
-        loss_pct = (avg - price) / avg * 100   # A long position loses below average cost.
+        loss_pct = (avg - price) / avg * 100
 
         if not self.p.sl_mhdsl_enabled:
             if sr.hit_stop(avg, price, self.p.stop_loss_pct):
-                # Reconcile an already submitted MARKET exit instead of canceling or duplicating it.
                 if self._has_pending_market_exit():
                     return True
                 log(f"  🛑 [STRAT] STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% — SELLING EVERYTHING (cutting the loss)")
-                placed = self._request_market_exit(price, "STOP")
-                if not placed:
+                if not self._request_market_exit(price, "STOP"):
                     log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
                 return True
             return False
@@ -1299,14 +1040,10 @@ class Strategy(BaseSpotMixin):
 
         if self.exit_manager is None:
             self.exit_manager = self._init_exit_manager()
-
         snapshot = self._create_position_snapshot(
             price, avg, self.s.get("qty", 0.0), include_shadow=not self.replay_mode
         )
-        decision = self.exit_manager.evaluate_stop_loss(
-            snapshot, custom_threshold=self.p.stop_loss_pct / 100.0,
-        )
-
+        decision = self.exit_manager.evaluate_stop_loss(snapshot, custom_threshold=self.p.stop_loss_pct / 100.0)
         if decision.action == ExitAction.SELL and decision.should_exit:
             if self._has_pending_market_exit():
                 return True
@@ -1314,47 +1051,33 @@ class Strategy(BaseSpotMixin):
                 f"  🛑 [STRAT] MHDSL STOP-LOSS: loss {loss_pct:.2f}% >= {self.p.stop_loss_pct}% "
                 f"({decision.reason}) — SELLING EVERYTHING"
             )
-            placed = self._request_market_exit(price, "STOP")
-            if not placed:
+            if not self._request_market_exit(price, "STOP"):
                 log("  [STRAT] STOP triggered; exit remains pending reconciliation or submission")
             return True
-        elif decision.action == ExitAction.HOLD:
+        if decision.action == ExitAction.HOLD:
             self._handle_mhdsl_hold_decision(decision)
-            return False
-
         return False
 
     def _trail_profit_floor_price(self, avg: float) -> float | None:
-        """Return the minimum soft-exit price, rounded up to venue precision.
-
-        The threshold is intentionally gross and simple. Configuration must include
-        enough fee buffer; central and stress benchmarks then measure net profit using
-        scenario fees and fills. ``0`` exactly preserves the existing MARKET trailing.
-        """
+        """Return the minimum soft-exit price, rounded up to venue precision."""
         pct = float(self.p.tp_trail_profit_floor_pct or 0.0)
         if pct <= 0 or avg <= 0:
             return None
-        raw = sr.tp_price(avg, pct)
         scale = 10 ** self.price_dec
-        return math.ceil(raw * scale - 1e-12) / scale
+        return math.ceil(sr.tp_price(avg, pct) * scale - 1e-12) / scale
 
     def _maybe_adopt(self) -> None:
-        """Adopt an existing account position instead of buying an entry.
-
-        Run once on fresh state only so an active cycle cannot be corrupted.
-        """
+        """Adopt an existing account position instead of buying an entry."""
         if self.p.adopt_cost <= 0 or self.s.get("adopted"):
             return
-        if (self.s["qty"] > 1e-12 or self.s["orders"]
-                or self.s["cycle"] != 1 or self.s["spent"] > 0):
+        if self.s["qty"] > 1e-12 or self.s["orders"] or self.s["cycle"] != 1 or self.s["spent"] > 0:
             log("  [STRAT] adopt: the state is not fresh — NOT adopting (cycle in progress)")
             return
         qty = _clean_nonneg_float(self.p.adopt_qty) or 0.0
-        if qty <= 0:  # Read quantity from the pair's base-asset balance.
+        if qty <= 0:
             try:
                 precision = self.client.pair_precision(self.pair)
-                base = precision.base_asset if precision else ""
-                raw_bal = self.client.free_balance(base)
+                raw_bal = self.client.free_balance(precision.base_asset if precision else "")
             except ProviderError as e:
                 log(f"  ! [STRAT] adopt: cannot read the balance ({e})")
                 return
@@ -1380,17 +1103,17 @@ class Strategy(BaseSpotMixin):
         self.s["adopted"] = True
         self._save()
         log(f"  📥 [STRAT] POZITIE ADOPTATA: {qty} @ {self.p.adopt_cost} {self.ccy} — gestionez TP/DCA/SL")
-        self._emit(title=f"📥 {self.pair} ADOPTAT {qty:.2f}@{self.p.adopt_cost}",
-                   body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
-                   source=f"{self.notification_source}-bot", price=self.p.adopt_cost,
-                   desktop=self.desktop)
+        self._emit(
+            title=f"📥 {self.pair} ADOPTAT {qty:.2f}@{self.p.adopt_cost}",
+            body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
+            source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
+        )
 
     # -- Percentage sizing; all-zero settings retain fixed sizing --------------
     def _pct_sizing_on(self) -> bool:
         return self.p.pct_sizing_on()
 
     def _alloc_budget(self) -> float:
-        """Return this asset's allocation from the total budget."""
         return self.p.allocated_budget()
 
     def _effective_entry_amount(self) -> float:
@@ -1402,14 +1125,11 @@ class Strategy(BaseSpotMixin):
     def _base_dca_amount(self) -> float:
         return self.p.effective_dca_amount_base()
 
-    # -- Adaptive-volatility shadow observation; does not decide ----------------
     def _effective_dca_amount(self) -> float:
         """Scale base DCA size by volatility when enabled, falling back during warm-up."""
         base = self._base_dca_amount()
-        scale_k = float(self.p.dca_vol_scale_k)
-        vol_ref = float(self.p.dca_vol_ref)
-        k_val = safe_float(scale_k, default=0.0)
-        ref_val = safe_pos_float(vol_ref, default=None)
+        k_val = safe_float(float(self.p.dca_vol_scale_k), default=0.0)
+        ref_val = safe_pos_float(float(self.p.dca_vol_ref), default=None)
         if not k_val or ref_val is None:
             return base
         try:
@@ -1446,37 +1166,21 @@ class Strategy(BaseSpotMixin):
         return max(1, round(self.p.surge_window_hours / interval_hours))
 
     def _surge_window_move_pct(self, price: float, closes: list | None = None) -> float | None:
-        """Calculate the configured-window move, or None when unavailable.
-
-        A missing or disabled window must not use the classifier's different
-        horizon as a substitute. Position-gain arming remains independent.
-        """
+        """Calculate the configured-window move, or None when unavailable."""
         if not self.p.surge_window_hours or self.p.surge_window_hours <= 0:
             return None
         if closes is None:
-            closes = (
-                self._surge_replay_closes
-                if self._surge_replay_closes is not None else self._trend_closes()
-            )
+            closes = self._surge_replay_closes if self._surge_replay_closes is not None else self._trend_closes()
         if not closes:
             return None
-        n_bars = self._surge_window_bars()
-        offset = 1 if self.replay_mode else 0
-        idx = -n_bars - offset
-        if abs(idx) > len(closes):
-            return None
-        past_price = closes[idx]
-        if past_price <= 0:
+        idx = -self._surge_window_bars() - (1 if self.replay_mode else 0)
+        if abs(idx) > len(closes) or (past_price := closes[idx]) <= 0:
             return None
         return (price - past_price) / past_price * 100.0
 
     # -- Common market regime and trend overlay --------------------------------
     def _trend_closes(self) -> list:
-        """Return long-trend closes at the same cadence in live and replay.
-
-        Replay uses injected bar closes; live and paper-live use provider OHLC at
-        ``trend_interval``. The optional exit SMA therefore keeps the same cadence.
-        """
+        """Return long-trend closes at the same cadence in live and replay."""
         if self.replay_mode:
             return [p for _, p in self._shadow_prices]
         try:
@@ -1491,8 +1195,7 @@ class Strategy(BaseSpotMixin):
             now = self._now()
             interval_sec = max(60, self.p.trend_interval * 60)
             slot = int(now // interval_sec)
-            settle_sec = min(_REGIME_BAR_SETTLE_MAX_SEC, interval_sec / 4)
-            refresh_epoch = slot * interval_sec + settle_sec
+            refresh_epoch = slot * interval_sec + min(_REGIME_BAR_SETTLE_MAX_SEC, interval_sec / 4)
             cached = self._regime_bar_context
             if cached and cached[0] == slot:
                 _, stable, decision, closes = cached
@@ -1507,14 +1210,8 @@ class Strategy(BaseSpotMixin):
             sp = self._shadow_prices
             n_sp = len(sp)
             replay_key = (
-                n_sp,
-                sp[0][1],
-                sp[1][1],
-                sp[n_sp >> 1][1],
-                sp[-2][1],
-                sp[-1][1],
-                self.p.trend_interval,
-                self._regime_service.evaluator.strength_threshold,
+                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1],
+                self.p.trend_interval, self._regime_service.evaluator.strength_threshold,
             )
             if getattr(self, "_replay_regime_key", None) == replay_key:
                 return self._replay_regime_val
@@ -1525,26 +1222,17 @@ class Strategy(BaseSpotMixin):
                 return cached_ctx
             closes = self._trend_closes()
             decision = self._regime_service.evaluate_closes_for_horizon(
-                closes,
-                horizon="long",
-                interval_min=self.p.trend_interval,
+                closes, horizon="long", interval_min=self.p.trend_interval
             )
             res = (decision, closes)
             self._replay_regime_key = replay_key
             self._replay_regime_val = res
-            if len(Strategy._REPLAY_REGIME_CACHE) >= Strategy._REPLAY_CACHE_MAX:
-                Strategy._REPLAY_REGIME_CACHE.clear()
-            Strategy._REPLAY_REGIME_CACHE[replay_key] = res
-            return res
+            return self._cache_store(Strategy._REPLAY_REGIME_CACHE, replay_key, res)
         closes = self._trend_closes()
         decision = self._regime_service.evaluate_closes_for_horizon(
-            closes,
-            horizon="long",
-            interval_min=self.p.trend_interval,
+            closes, horizon="long", interval_min=self.p.trend_interval
         )
         if not self.replay_mode and decision.fresh:
-            # Refresh a boundary read once after upstream candle caches settle;
-            # the stable result is then reused until the next completed-bar slot.
             self._regime_bar_context = (slot, now >= refresh_epoch, decision, closes)
         return decision, closes
 
@@ -1552,8 +1240,10 @@ class Strategy(BaseSpotMixin):
     def _regime_matches(decision: MarketRegimeDecision | None, expected: str, *,
                         min_move_pct: float = 0.0, min_samples: int = 3) -> bool:
         """Apply policy thresholds without changing the shared classification."""
-        if (decision is None or not decision.fresh or decision.regime != expected
-                or (decision.n_samples or 0) < min_samples):
+        if (
+            decision is None or not decision.fresh or decision.regime != expected
+            or (decision.n_samples or 0) < min_samples
+        ):
             return False
         move = decision.fitted_move_pct
         return min_move_pct <= 0 or (move is not None and abs(move) >= min_move_pct)
@@ -1564,30 +1254,26 @@ class Strategy(BaseSpotMixin):
     ) -> bool:
         if not avg or held <= 1e-12:
             return False
-
         current_gain = (price - avg) / avg * 100.0
 
         # 1. Micro-gradient 2X Fast Profit Guard (Horizon 3)
         if (
-            self.p.fast_profit_guard
-            and self.p.takeprofit_pct > 0
-            and self.p.fast_profit_mult > 0
+            self.p.fast_profit_guard and self.p.takeprofit_pct > 0 and self.p.fast_profit_mult > 0
             and current_gain >= self.p.takeprofit_pct * self.p.fast_profit_mult
         ):
             triggered, gain, drop = sr.check_fast_profit_reversal(
-                current_price=price,
-                avg_cost=avg,
-                base_tp_pct=self.p.takeprofit_pct,
-                mult=self.p.fast_profit_mult,
-                shadow_prices=self._shadow_prices,
-                window_sec=self.p.fast_profit_window_min * 60.0,
-                drop_pct=self.p.fast_profit_drop_pct,
+                current_price=price, avg_cost=avg, base_tp_pct=self.p.takeprofit_pct,
+                mult=self.p.fast_profit_mult, shadow_prices=self._shadow_prices,
+                window_sec=self.p.fast_profit_window_min * 60.0, drop_pct=self.p.fast_profit_drop_pct,
                 current_time=tick_time,
             )
             if triggered:
                 exit_px = round(price * 0.999, self.price_dec)
                 if self._request_market_exit(price, "TP"):
-                    log(f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in {self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}")
+                    log(
+                        f"  [STRAT] FAST PROFIT GUARD EXIT (+{gain:.2f}% gain, -{drop:.2f}% drop in "
+                        f"{self.p.fast_profit_window_min:.0f}m) -> reference {exit_px}"
+                    )
                     return True
 
         # 2. Parabolic Surge Guard (2-3 Day Exhaustion, Horizon 4)
@@ -1610,9 +1296,7 @@ class Strategy(BaseSpotMixin):
                 if v is not None and v > self._max_active_surge_vol:
                     self._max_active_surge_vol = v
             if (
-                self.p.surge_dynamic
-                and not in_min_surge_zone
-                and min_g > 0
+                self.p.surge_dynamic and not in_min_surge_zone and min_g > 0
                 and type(self)._effective_surge_gain_pct is Strategy._effective_surge_gain_pct
                 and "_effective_surge_gain_pct" not in self.__dict__
                 and type(self)._trail_vol_1h is Strategy._trail_vol_1h
@@ -1620,26 +1304,20 @@ class Strategy(BaseSpotMixin):
             ):
                 eff_surge_gain = min_g
             else:
-                eff_surge_gain = (
-                    self._effective_surge_gain_pct()
-                    if self.p.surge_dynamic else self.p.surge_gain_pct
-                )
+                eff_surge_gain = self._effective_surge_gain_pct() if self.p.surge_dynamic else self.p.surge_gain_pct
             if (
                 is_armed
                 or (eff_surge_gain > 0 and peak_gain >= eff_surge_gain)
                 or (self.p.surge_move_pct > 0 and current_gain >= eff_surge_gain * 0.8)
             ):
-                window_move = self._surge_window_move_pct(
-                    price, None if self.replay_mode else closes)
+                window_move = self._surge_window_move_pct(price, None if self.replay_mode else closes)
                 pos_surged = eff_surge_gain > 0 and (current_gain >= eff_surge_gain or peak_gain >= eff_surge_gain)
                 if self.replay_mode and not pos_surged and self.p.surge_move_pct > 0 and current_gain >= eff_surge_gain * 0.8:
                     self._surge_win_check_ts.append(tick_time if tick_time is not None else self._now())
                 if not is_armed:
                     win_surged = (
-                        window_move is not None
-                        and self.p.surge_move_pct > 0
-                        and window_move >= self.p.surge_move_pct
-                        and current_gain >= eff_surge_gain * 0.8
+                        window_move is not None and self.p.surge_move_pct > 0
+                        and window_move >= self.p.surge_move_pct and current_gain >= eff_surge_gain * 0.8
                     )
                     if pos_surged or win_surged:
                         is_armed = True
@@ -1650,21 +1328,14 @@ class Strategy(BaseSpotMixin):
                     is_armed = False
 
                 triggered, reason = sr.check_parabolic_surge_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    surge_peak=surge_peak,
-                    surge_gain_pct=eff_surge_gain,
-                    exit_pullback_pct=self.p.surge_exit_pullback_pct,
-                    window_move_pct=window_move,
-                    surge_move_pct=self.p.surge_move_pct,
-                    surge_active=is_armed,
+                    current_price=price, avg_cost=avg, surge_peak=surge_peak,
+                    surge_gain_pct=eff_surge_gain, exit_pullback_pct=self.p.surge_exit_pullback_pct,
+                    window_move_pct=window_move, surge_move_pct=self.p.surge_move_pct, surge_active=is_armed,
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)
-                    if self._request_market_exit(
-                        price, "TP", min_profit_pct=sr.parabolic_surge_profit_floor_pct(
-                            eff_surge_gain, self.p.surge_exit_pullback_pct),
-                    ):
+                    floor_pct = sr.parabolic_surge_profit_floor_pct(eff_surge_gain, self.p.surge_exit_pullback_pct)
+                    if self._request_market_exit(price, "TP", min_profit_pct=floor_pct):
                         log(f"  [STRAT] SURGE EXHAUSTION EXIT ({reason}) peak {surge_peak:.{self.price_dec}f} -> reference {exit_px}")
                         return True
 
@@ -1677,18 +1348,13 @@ class Strategy(BaseSpotMixin):
                 n = self.p.trend_sma_n
                 sma = sum(closes[-n:]) / n if closes and len(closes) >= n else None
                 triggered, reason = sr.check_slow_grind_exhaustion(
-                    current_price=price,
-                    avg_cost=avg,
-                    entry_ts=entry_ts,
+                    current_price=price, avg_cost=avg, entry_ts=entry_ts,
                     current_ts=tick_time if tick_time is not None else self._now(),
-                    min_days=self.p.slow_grind_days,
-                    min_gain_pct=self.p.slow_grind_min_gain_pct,
-                    recent_peak=slow_peak,
-                    shadow_prices=self._shadow_prices,
+                    min_days=self.p.slow_grind_days, min_gain_pct=self.p.slow_grind_min_gain_pct,
+                    recent_peak=slow_peak, shadow_prices=self._shadow_prices,
                     flash_window_sec=self.p.slow_grind_flash_window_min * 60.0,
                     flash_drop_pct=self.p.slow_grind_flash_drop_pct,
-                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct,
-                    sma_value=sma,
+                    structural_drop_pct=self.p.slow_grind_hourly_drop_pct, sma_value=sma,
                 )
                 if triggered:
                     exit_px = round(price * 0.999, self.price_dec)
@@ -1700,24 +1366,16 @@ class Strategy(BaseSpotMixin):
 
     def _overlay_step(self, price: float, regime: MarketRegimeDecision,
                       closes: list, tick_time: float | None = None) -> bool:
-        """Apply the regime overlay and return whether it handled the tick.
-
-        Confirmed uptrend uses top-up, hold, and trailing or SMA-break exit. A range
-        returns False so classic DCA/TP logic runs.
-        """
+        """Apply the regime overlay and return whether it handled the tick."""
         if self.s.get("trend_mode"):
             avg = self._avg()
-
             if self._check_advanced_profit_guards(price, avg, self.s["qty"], closes, tick_time):
                 return True
-
-            # 4. Dynamic Profit Ratchet Trailing (Horizon 2)
             peak = max(safe_pos_float(self.s.get("trend_peak"), price), price)
             self.s["trend_peak"] = peak
             if self.p.trend_trail_dynamic and avg:
-                peak_gain = (peak - avg) / avg * 100.0
                 eff_trail = sr.dynamic_trend_trail_pct(
-                    peak_gain_pct=peak_gain,
+                    peak_gain_pct=(peak - avg) / avg * 100.0,
                     base_trail_pct=self.p.trend_trail_base_pct,
                     min_trail_pct=self.p.trend_trail_min_pct,
                     ratchet_k=self.p.trend_trail_ratchet_k,
@@ -1738,40 +1396,35 @@ class Strategy(BaseSpotMixin):
                     log(f"  [STRAT] TREND EXIT ({'break' if broke else 'trailing'} "
                         f"{eff_trail:.2f}%) peak {peak:.{self.price_dec}f} -> reference {exit_px}")
             else:
-                self._cancel_orders("sell", exclude_market=True)  # Ride the trend; do not sell.
+                self._cancel_orders("sell", exclude_market=True)
             return True
-        up = self._regime_matches(
-            regime,
-            "bull",
-            min_samples=self.p.regime_min_samples,
+        up = self._regime_matches(regime, "bull", min_samples=self.p.regime_min_samples)
+        pending_trend_entry = next(
+            (o for o in self.s["orders"] if o["side"] == "buy" and o.get("kind") == "TREND_ENTRY"), None
         )
-        pending_trend_entry = None
-        for o in self.s["orders"]:
-            if o["side"] == "buy" and o.get("kind") == "TREND_ENTRY":
-                pending_trend_entry = o
-                break
         if pending_trend_entry:
             if up:
-                return True                         # Wait for the top-up fill.
-            self._cancel_open("buy")                # Signal disappeared before fill.
+                return True
+            self._cancel_open("buy")
             log("  [STRAT] TREND ENTER cancelled: the signal vanished before the fill")
-            return False                            # Return to the range strategy.
+            return False
         if up and self.s["spent"] + self.p.trend_topup <= self._effective_max_budget():
-            # Brand new entry while flat must obey re-entry restrictions!
             if self.s["qty"] <= 1e-12:
                 allowed, reason = self._evaluate_reentry_gate(price, regime, tick_time)
                 if not allowed:
                     self._reentry_blocked_tick = (tick_time, price, reason)
                     log(f"  [STRAT] trend overlay entry blocked by re-entry: {reason}")
                     return False
-            self._cancel_orders("buy")              # Cancel pending range orders.
+            self._cancel_orders("buy")
             self._cancel_orders("sell")
-            if self.s["orders"]:                    # Live mode waits for terminal confirmations.
+            if self.s["orders"]:
                 if self.s["qty"] <= 1e-12:
                     self._restore_reentry_state()
                 return True
-            if not self._place("buy", self._qty_for(self.p.trend_topup, price), price,
-                               kind="TREND_ENTRY", amount=self.p.trend_topup):
+            if not self._place(
+                "buy", self._qty_for(self.p.trend_topup, price), price,
+                kind="TREND_ENTRY", amount=self.p.trend_topup,
+            ):
                 if self.s["qty"] <= 1e-12:
                     self._restore_reentry_state()
                 return True
@@ -1817,9 +1470,7 @@ class Strategy(BaseSpotMixin):
                 pass
         if ledger_qty <= tolerance:
             if held > 1e-12:
-                log(
-                    f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle"
-                )
+                log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
                 defaults = _new_state()
                 for k in (
                     "qty", "cost", "spent", "cycle_fees", "dca_buys", "entry_price",
@@ -1829,8 +1480,7 @@ class Strategy(BaseSpotMixin):
                     "sl_episode_state", "tp_ride_state", "reentry_state",
                 ):
                     self.s[k] = defaults[k]
-                exit_ts = clean_ts if clean_ts is not None else self._now()
-                self._seed_post_exit_anchors(price, "TP", exit_ts)
+                self._seed_post_exit_anchors(price, "TP", clean_ts if clean_ts is not None else self._now())
                 self.s["ledger_reconcile_required"] = False
                 self._save()
             else:
@@ -1888,11 +1538,9 @@ class Strategy(BaseSpotMixin):
             self._save()
         return False
 
+    # -- Step Pipeline Sub-Stages ----------------------------------------------
     def _step_sync_market(
-        self,
-        price: float,
-        timestamp: float | None = None,
-        high: float | None = None,
+        self, price: float, timestamp: float | None = None, high: float | None = None
     ) -> tuple[float, float, float, float, float | None] | None:
         """Stage 1: Validate market price, sync venue ledger, record shadow ticks, and check adoption."""
         clean_price = _clean_pos_float(price)
@@ -1915,16 +1563,15 @@ class Strategy(BaseSpotMixin):
             else:
                 return None
         held = self.s["qty"]
-        if (not self.dry_run and self.s.get("ledger_reconcile_required")
-                and (held > 1e-12 or self.observe_only) and not self.s.get("orders")):
+        if (
+            not self.dry_run and self.s.get("ledger_reconcile_required")
+            and (held > 1e-12 or self.observe_only) and not self.s.get("orders")
+        ):
             if self._reconcile_venue_ledger(price, clean_ts, had_persisted_reconcile):
                 return None
         if self.observe_only:
             return None
-        entry_px = sr.entry_price(price, self.p.entry_discount_pct)   # = price*(1 - disc%)
-        # Live uses wall time while replay injects bar time. Without this distinction, a
-        # backtest processing hundreds of bars per second produces meaningless hourly
-        # volatility and changes the adaptive threshold.
+        entry_px = sr.entry_price(price, self.p.entry_discount_pct)
         if clean_ts is not None:
             self.set_simulated_time(clean_ts)
             tick_time = clean_ts
@@ -1934,7 +1581,6 @@ class Strategy(BaseSpotMixin):
         if self._surge_replay_closes is not None:
             self._surge_replay_closes.append(price)
 
-        # While adoption is pending, do not buy a new entry; the allocation is in transit.
         if self.p.adopt_cost > 0 and not self.s.get("adopted") and held <= 1e-12:
             self._maybe_adopt()
             if not self.s.get("adopted"):
@@ -1946,12 +1592,8 @@ class Strategy(BaseSpotMixin):
         self, price: float, held: float, *, tick_time: float
     ) -> tuple[bool, MarketRegimeDecision | None, list]:
         """Stage 2: Evaluate hard stop-loss, pending market exits, regime context, and trend overlay."""
-        # STOP-LOSS is a safety invariant and takes priority over all regime logic,
-        # including overlay hold and trailing behavior.
         if held > 1e-12 and self._check_stop_loss(price):
             return True, None, []
-        # Reconcile a MARKET exit from an earlier tick before any new TP/DCA decision,
-        # even if price has recovered meanwhile.
         if self._has_pending_market_exit():
             return True, None, []
         if self.s.get("pending_exit"):
@@ -1962,10 +1604,8 @@ class Strategy(BaseSpotMixin):
         regime_closes = []
         needs_regime = self.p.trend_overlay or self.p.reentry_hybrid_enabled or (
             held > 1e-12 and (
-                self.p.dca_trend_brake
-                or self.p.tp_dynamic_flat
-                or self.p.surge_guard
-                or self.p.slow_grind_guard
+                self.p.dca_trend_brake or self.p.tp_dynamic_flat
+                or self.p.surge_guard or self.p.slow_grind_guard
             )
         )
         if needs_regime and not (
@@ -1976,24 +1616,16 @@ class Strategy(BaseSpotMixin):
             and "evaluate_closes_for_horizon" not in self._regime_service.__dict__
             and (
                 (
-                    self.p.trend_overlay
-                    and bool(self.s.get("trend_mode"))
-                    and not self.p.trend_exit_break
-                    and not self.p.slow_grind_guard
+                    self.p.trend_overlay and bool(self.s.get("trend_mode"))
+                    and not self.p.trend_exit_break and not self.p.slow_grind_guard
                 )
-                or (
-                    not self.p.trend_overlay
-                    and held <= 1e-12
-                    and self._has_open("buy")
-                )
+                or (not self.p.trend_overlay and held <= 1e-12 and self._has_open("buy"))
             )
         ):
             regime, regime_closes = self._regime_context()
 
-        # Combine range DCA/TP with trend hold/trailing behavior.
         self._reentry_blocked_tick = None
-        if (self.p.trend_overlay
-                and self._overlay_step(price, regime, regime_closes, tick_time=tick_time)):
+        if self.p.trend_overlay and self._overlay_step(price, regime, regime_closes, tick_time=tick_time):
             return True, regime, regime_closes
         return False, regime, regime_closes
 
@@ -2004,13 +1636,252 @@ class Strategy(BaseSpotMixin):
         if self._has_open("buy"):
             return False
         return self._execute_flat_reentry(
-            price,
-            entry_px,
-            self._effective_entry_amount(),
-            self._effective_max_budget(),
-            regime=regime,
-            tick_time=tick_time,
+            price, entry_px, self._effective_entry_amount(), self._effective_max_budget(),
+            regime=regime, tick_time=tick_time,
         )
+
+    def _evaluate_mdhtp_tp(
+        self,
+        price: float,
+        avg: float,
+        held: float,
+        eff_tp: float,
+        *,
+        high: float | None = None,
+        regime: MarketRegimeDecision | None = None,
+        regime_closes: list | None = None,
+        tick_time: float | None = None,
+    ) -> bool:
+        """Evaluate Multi-Horizon Dynamic Take-Profit (MDHTP); return True if tick TP handling is complete."""
+        if self.exit_manager is None:
+            self.exit_manager = self._init_exit_manager()
+        if (
+            not self.replay_mode
+            or self.pair in self.exit_manager.tp_ride_state
+            or (self.p.tp_trend_hold and self._is_trend_up(regime) and high is not None and high > price)
+        ):
+            eff_trail = self._effective_trail_pct()
+        else:
+            eff_trail = self.p.tp_trail_pct
+        self._sync_mdhtp_config(eff_trail)
+
+        inc_vol = not self.replay_mode
+        inc_shd = bool(self.p.fast_profit_guard) or not self.replay_mode
+        snapshot = self._create_position_snapshot(
+            price, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
+        )
+        prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
+        if high is not None and high > price:
+            high_snap = self._create_position_snapshot(
+                high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
+            )
+            existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
+            if isinstance(existing_ride, dict) and existing_ride.get("buy_price") is not None:
+                ride_bp = _clean_pos_float(existing_ride.get("buy_price"))
+                if ride_bp is None or not math.isclose(ride_bp, avg, rel_tol=1e-9, abs_tol=1e-12):
+                    self.exit_manager.tp_ride_state.pop(self.pair, None)
+                    existing_ride = None
+            if isinstance(existing_ride, dict):
+                cur_peak = _clean_pos_float(existing_ride.get("peak_price")) or 0.0
+                if high > cur_peak:
+                    existing_ride["peak_price"] = high
+                    existing_ride["peak_gain"] = high_snap.gain_ratio
+                    existing_ride["last_peak_time"] = high_snap.current_time_s
+            elif snapshot.trend_up and self.exit_manager.config.tp_trend_ride_enabled:
+                self.exit_manager.evaluate_take_profit(high_snap, custom_threshold=eff_tp / 100.0)
+            prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
+
+        decision = self.exit_manager.evaluate_take_profit(snapshot, custom_threshold=eff_tp / 100.0)
+        if decision.action == ExitAction.SELL and decision.should_exit:
+            exit_px = round(price * 0.999, self.price_dec)
+            use_soft = str(decision.reason or "").startswith("mdhtp_peak_pullback")
+            profit_floor = self._trail_profit_floor_price(avg) if use_soft else None
+            if use_soft and profit_floor is not None and exit_px < profit_floor:
+                if prev_ride_state:
+                    self.exit_manager.tp_ride_state[self.pair] = prev_ride_state
+                log(
+                    f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
+                    f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET"
+                )
+                return True
+            if self._request_market_exit(price, "TP", soft_floor=use_soft):
+                log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
+            return True
+        if decision.reason == "not_in_tp_territory":
+            self.s["trail_peak"] = None
+            self.s["trail_stop"] = None
+            self._cancel_orders("sell", exclude_market=True)
+            return True
+        if decision.action == ExitAction.HOLD:
+            ride_state = self.exit_manager.tp_ride_state.get(self.pair)
+            peak_px = (
+                safe_pos_float(ride_state.get("peak_price"), None) if isinstance(ride_state, dict) else None
+            ) or price
+            self.s["trail_peak"] = peak_px
+            if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
+                return True
+            self._cancel_orders("sell", exclude_market=True)
+            log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.{self.price_dec}f})")
+            return True
+        return False
+
+    def _dispatch_take_profit(
+        self,
+        price: float,
+        avg: float | None,
+        held: float,
+        *,
+        high: float | None = None,
+        regime: MarketRegimeDecision | None = None,
+        regime_closes: list | None = None,
+        tick_time: float | None = None,
+    ) -> bool:
+        """Manage take-profit (MDHTP, trailing stop, or classic/tranche limit sells). Return True to skip DCA."""
+        if not (self.p.enable_takeprofit and avg):
+            return False
+        eff_tp = self.p.takeprofit_pct
+        if self.p.tp_dynamic_flat and regime and regime.fresh and regime.regime == "sideways":
+            thresh = getattr(getattr(self, "_regime_service", None), "evaluator", None)
+            eff_tp = sr.dynamic_flat_tp_pct(
+                strength=regime.strength,
+                strength_threshold=getattr(thresh, "strength_threshold", 2.0),
+                tp_min_pct=self.p.tp_min_pct,
+                tp_max_pct=self.p.tp_max_pct,
+                base_tp_pct=self.p.takeprofit_pct,
+            )
+
+        trail_armed = _clean_pos_float(self.s.get("trail_peak")) is not None
+        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
+        tp_ref_price = high if high is not None else price
+        if trend_hold_active and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp)):
+            if self.p.tp_mdhtp_enabled and self._evaluate_mdhtp_tp(
+                price, avg, held, eff_tp, high=high, regime=regime,
+                regime_closes=regime_closes, tick_time=tick_time,
+            ):
+                return True
+            peak = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
+            self.s["trail_peak"] = peak
+            if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
+                return True
+            eff_trail = self._effective_trail_pct()
+            candidate_stop = peak * (1 - eff_trail / 100)
+            previous_stop = safe_pos_float(self.s.get("trail_stop"), default=None)
+            trail_stop = max(candidate_stop, previous_stop or candidate_stop)
+            self.s["trail_stop"] = trail_stop
+            exit_px = round(price * 0.999, self.price_dec)
+            profit_floor = self._trail_profit_floor_price(avg)
+            if price <= trail_stop and profit_floor is not None and exit_px < profit_floor:
+                log(
+                    f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
+                    f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET"
+                )
+                return True
+            if price <= trail_stop:
+                if self._request_market_exit(price, "TP", soft_floor=True):
+                    log(
+                        f"  [STRAT] trailing: pullback {eff_trail:.2f}% from peak "
+                        f"{peak:.{self.price_dec}f} -> exit reference {exit_px}"
+                    )
+                return True
+            self._cancel_orders("sell", exclude_market=True)
+            log(
+                f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, "
+                f"trail-stop {trail_stop:.{self.price_dec}f})"
+            )
+            return False
+
+        self.s["trail_peak"] = None
+        self.s["trail_stop"] = None
+        if trend_hold_active:
+            self._cancel_orders("sell", exclude_market=True)
+            return False
+
+        tranches = self.p.tp_tranches or [(eff_tp, 100.0)]
+        desired, rem = [], held
+        for i, (pct, share) in enumerate(tranches):
+            q = (
+                self._dust_safe_qty(rem)
+                if i == len(tranches) - 1
+                else min(rem, round(held * share / 100, self.vol_dec))
+            )
+            rem = round(rem - q, self.vol_dec)
+            if q > 0:
+                desired.append((round(sr.tp_price(avg, pct), self.price_dec), q))
+        if self.ordermin and any(q < self.ordermin for _, q in desired):
+            safe_held = self._dust_safe_qty(held)
+            desired = (
+                [(round(sr.tp_price(avg, tranches[0][0]), self.price_dec), safe_held)]
+                if safe_held >= self.ordermin else []
+            )
+        sells = [o for o in self.s["orders"] if o["side"] == "sell"]
+        ok = (
+            len(sells) == len(desired)
+            and all(not o.get("cancel_requested") for o in sells)
+            and all(
+                abs(o["price"] - p) / p <= 0.001 and abs(o["vol"] - q) <= 1e-9
+                for o, (p, q) in zip(sorted(sells, key=lambda x: x["price"]), sorted(desired))
+            )
+        )
+        if not ok:
+            self._cancel_orders("sell")
+            if not any(o["side"] == "sell" for o in self.s["orders"]):
+                for p_, q_ in desired:
+                    self._place("sell", q_, p_, kind="TP")
+        return False
+
+    def _dispatch_dca_buy(
+        self, price: float, entry_px: float, regime: MarketRegimeDecision | None
+    ) -> None:
+        """Evaluate progressive/volatility-scaled DCA dip conditions and place BUY order."""
+        effective_dca_drop = sr.progressive_dca_drop_pct(
+            self.p.dca_drop_pct, self.p.dca_spacing_growth_pct, self.s["dca_buys"]
+        )
+        effective_dca_amount = self._effective_dca_amount()
+        in_sl_bounce = bool(self.exit_manager is not None and self.pair in self.exit_manager.sl_bounce_state)
+        if not (
+            self.s["dca_buys"] < self.p.max_dca_buys
+            and not in_sl_bounce
+            and self.s["last_buy_price"]
+            and sr.dca_price_hit(
+                price, self.s["last_buy_price"], effective_dca_drop, self.p.reentry_tolerance_pct
+            )
+            and self.s["spent"] < self._effective_max_budget()
+            and not (
+                self.p.dca_trend_brake
+                and self._regime_matches(
+                    regime, "bear", min_move_pct=self.p.dca_brake_min_pct, min_samples=self.p.regime_min_samples
+                )
+            )
+            and not self._has_open("buy")
+        ):
+            return
+        try:
+            free_quote = self.client.free_balance(self.ccy)
+        except Exception as exc:
+            log(f"  [STRAT] DCA deferred: quote balance unavailable ({exc})")
+            return
+        clean_quote = _clean_nonneg_float(free_quote)
+        if clean_quote is None:
+            log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
+            return
+        available = min(clean_quote, self._effective_max_budget() - self.s["spent"])
+        spend = min(effective_dca_amount, available)
+        qty = self._qty_for(spend, entry_px)
+        if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
+            entry_px = round(entry_px, self.price_dec)
+            qty = (
+                math.floor(spend / entry_px * 10 ** self.vol_dec) / 10 ** self.vol_dec
+                if entry_px > 0 else 0.0
+            )
+        if qty <= 0 or qty < self.ordermin:
+            log(f"  [STRAT] dip {price}: DCA skipped — available {spend:.2f} {self.ccy} too small for a fill")
+            return
+        partial = " (resized to available funds/budget)" if spend < effective_dca_amount else ""
+        log(
+            f"  [STRAT] dip {price} <= {self.s['last_buy_price']}"
+            f"×(1-{effective_dca_drop}%) (tol {self.p.reentry_tolerance_pct}%) — DCA {spend:.0f}{partial}"
+        )
+        self._place("buy", qty, entry_px, kind="DCA", amount=spend)
 
     def _step_dispatch_orders(
         self,
@@ -2027,238 +1898,11 @@ class Strategy(BaseSpotMixin):
         avg = self._avg()
         if held > 1e-12 and self.s.get("entry_ts") is None:
             self.s["entry_ts"] = tick_time
-
-        eff_tp = self.p.takeprofit_pct
-        if self.p.tp_dynamic_flat and regime and regime.fresh and regime.regime == "sideways":
-            thresh = 2.0
-            if hasattr(self, "_regime_service") and hasattr(self._regime_service, "evaluator"):
-                thresh = getattr(self._regime_service.evaluator, "strength_threshold", 2.0)
-            eff_tp = sr.dynamic_flat_tp_pct(
-                strength=regime.strength,
-                strength_threshold=thresh,
-                tp_min_pct=self.p.tp_min_pct,
-                tp_max_pct=self.p.tp_max_pct,
-                base_tp_pct=self.p.takeprofit_pct,
-            )
-
-        trail_armed = _clean_pos_float(self.s.get("trail_peak")) is not None
-        trend_hold_active = self.p.tp_trend_hold and not bool(self.p.tp_tranches)
-        tp_ref_price = high if high is not None else price
-        if (self.p.enable_takeprofit and avg and trend_hold_active
-                and (trail_armed or tp_ref_price >= sr.tp_price(avg, eff_tp))):
-            # MDHTP (Multi-Horizon Dynamic Take-Profit) via PositionExitManager
-            if self.p.tp_mdhtp_enabled:
-                if self.exit_manager is None:
-                    self.exit_manager = self._init_exit_manager()
-                if (
-                    not self.replay_mode
-                    or self.pair in self.exit_manager.tp_ride_state
-                    or (
-                        self.p.tp_trend_hold
-                        and self._is_trend_up(regime)
-                        and high is not None
-                        and high > price
-                    )
-                ):
-                    eff_trail = self._effective_trail_pct()
-                else:
-                    eff_trail = self.p.tp_trail_pct
-                self._sync_mdhtp_config(eff_trail)
-
-                inc_vol = not self.replay_mode
-                inc_shd = bool(self.p.fast_profit_guard) or not self.replay_mode
-                snapshot = self._create_position_snapshot(
-                    price, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
-                )
-                prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
-                if high is not None and high > price:
-                    high_snap = self._create_position_snapshot(
-                        high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
-                    )
-                    existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
-                    if isinstance(existing_ride, dict) and existing_ride.get("buy_price") is not None:
-                        ride_bp = _clean_pos_float(existing_ride.get("buy_price"))
-                        if ride_bp is None or not math.isclose(ride_bp, avg, rel_tol=1e-9, abs_tol=1e-12):
-                            self.exit_manager.tp_ride_state.pop(self.pair, None)
-                            existing_ride = None
-                    if isinstance(existing_ride, dict):
-                        cur_peak = _clean_pos_float(existing_ride.get("peak_price")) or 0.0
-                        if high > cur_peak:
-                            existing_ride["peak_price"] = high
-                            existing_ride["peak_gain"] = high_snap.gain_ratio
-                            existing_ride["last_peak_time"] = high_snap.current_time_s
-                    elif snapshot.trend_up and self.exit_manager.config.tp_trend_ride_enabled:
-                        self.exit_manager.evaluate_take_profit(
-                            high_snap, custom_threshold=eff_tp / 100.0
-                        )
-                    prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
-                decision = self.exit_manager.evaluate_take_profit(
-                    snapshot, custom_threshold=eff_tp / 100.0
-                )
-                if decision.action == ExitAction.SELL and decision.should_exit:
-                    exit_px = round(price * 0.999, self.price_dec)
-                    use_soft = str(decision.reason or "").startswith("mdhtp_peak_pullback")
-                    profit_floor = self._trail_profit_floor_price(avg) if use_soft else None
-                    if use_soft and profit_floor is not None and exit_px < profit_floor:
-                        if prev_ride_state:
-                            self.exit_manager.tp_ride_state[self.pair] = prev_ride_state
-                        log(f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
-                            f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET")
-                        return
-                    if self._request_market_exit(price, "TP", soft_floor=use_soft):
-                        log(f"  [STRAT] MDHTP EXIT ({decision.reason}) -> reference {exit_px}")
-                    return
-                elif decision.reason == "not_in_tp_territory":
-                    self.s["trail_peak"] = None
-                    self.s["trail_stop"] = None
-                    self._cancel_orders("sell", exclude_market=True)
-                    return
-                elif decision.action == ExitAction.HOLD:
-                    ride_state = self.exit_manager.tp_ride_state.get(self.pair)
-                    peak_px = (safe_pos_float(ride_state.get("peak_price"), None) if isinstance(ride_state, dict) else None) or price
-                    self.s["trail_peak"] = peak_px
-                    if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
-                        return
-                    self._cancel_orders("sell", exclude_market=True)
-                    log(f"  [STRAT] above the TP, RIDING IT ({decision.reason}) (peak {peak_px:.{self.price_dec}f})")
-                    return
-
-            # Arm trailing at the first TP crossing and keep it armed through exit, even
-            # if price later falls below TP, so the target pullback does not reset the peak.
-            peak = max(safe_pos_float(self.s.get("trail_peak"), tp_ref_price), tp_ref_price)
-            self.s["trail_peak"] = peak
-
-            if self._check_advanced_profit_guards(price, avg, held, regime_closes, tick_time):
-                return
-
-            eff_trail = self._effective_trail_pct()   # Adaptive when enabled, otherwise fixed.
-            candidate_stop = peak * (1 - eff_trail / 100)
-            # A trailing stop ratchets one way: volatility may widen distance for future
-            # peaks but cannot surrender profit already protected by the current stop.
-            previous_stop = safe_pos_float(self.s.get("trail_stop"), default=None)
-            trail_stop = max(candidate_stop, previous_stop or candidate_stop)
-            self.s["trail_stop"] = trail_stop
-            # Use the same conservative reference as the MARKET order. Apply the floor
-            # to that reference rather than the raw observed price so the 0.1% buffer
-            # cannot turn an exit exactly at the floor into an implicit loss.
-            exit_px = round(price * 0.999, self.price_dec)
-            profit_floor = self._trail_profit_floor_price(avg)
-            if price <= trail_stop and profit_floor is not None and exit_px < profit_floor:
-                log(f"  [STRAT] soft trailing blocked: reference {exit_px:.{self.price_dec}f} below the "
-                    f"profitable floor {profit_floor:.{self.price_dec}f}; hard stop stays MARKET")
-                # Re-evaluate on the next tick. Leave no persistent order and do not open
-                # a contradictory DCA on the tick that triggered trailing.
-                return
-            if price <= trail_stop:
-                if self._request_market_exit(price, "TP", soft_floor=True):
-                    log(f"  [STRAT] trailing: pullback {eff_trail:.2f}% from peak "
-                        f"{peak:.{self.price_dec}f} -> exit reference {exit_px}")
-                # Do not open a contradictory DCA on the exit tick.
-                return
-            else:
-                self._cancel_orders("sell", exclude_market=True)
-                log(f"  [STRAT] above the TP, RIDING IT (peak {peak:.{self.price_dec}f}, "
-                    f"trail-stop {trail_stop:.{self.price_dec}f})")
-        elif self.p.enable_takeprofit and avg and trend_hold_active:
-            # Below TP with ride enabled, do not place a fixed TP. Wait to cross TP and
-            # arm trailing; stop-loss remains the safety exit.
-            self.s["trail_peak"] = None
-            self.s["trail_stop"] = None
-            self._cancel_orders("sell", exclude_market=True)
-        elif self.p.enable_takeprofit and avg:
-            self.s["trail_peak"] = None   # below TP/classic mode: reset peak
-            self.s["trail_stop"] = None
-            # Optional tranche TP (STRAT_TP_TRANCHES="3:50,6:50") sells gradually.
-            # No configured tranches means the classic one-order full TP default.
-            tranches = self.p.tp_tranches or [(eff_tp, 100.0)]
-            desired, rem = [], held
-            for i, (pct, share) in enumerate(tranches):
-                # The final tranche sells the remainder, risking "Insufficient funds".
-                # Venue balance may be one decimal smaller than internally tracked holdings;
-                # leave the same dust buffer used during adoption.
-                q = self._dust_safe_qty(rem) if i == len(tranches) - 1 \
-                    else min(rem, round(held * share / 100, self.vol_dec))
-                rem = round(rem - q, self.vol_dec)
-                if q > 0:
-                    desired.append((round(sr.tp_price(avg, pct), self.price_dec), q))
-            if self.ordermin and any(q < self.ordermin for _, q in desired):
-                safe_held = self._dust_safe_qty(held)
-                desired = (
-                    [(round(sr.tp_price(avg, tranches[0][0]), self.price_dec), safe_held)]
-                    if safe_held >= self.ordermin
-                    else []
-                )
-            sells = [o for o in self.s["orders"] if o["side"] == "sell"]
-            ok = (len(sells) == len(desired) and
-                  all(not o.get("cancel_requested") for o in sells) and
-                  all(abs(o["price"] - p) / p <= 0.001 and abs(o["vol"] - q) <= 1e-9
-                      for o, (p, q) in zip(sorted(sells, key=lambda x: x["price"]),
-                                           sorted(desired))))
-            if not ok:
-                self._cancel_orders("sell")
-                if not any(o["side"] == "sell" for o in self.s["orders"]):
-                    for p_, q_ in desired:
-                        self._place("sell", q_, p_, kind="TP")
-
-        effective_dca_drop = sr.progressive_dca_drop_pct(
-            self.p.dca_drop_pct,
-            self.p.dca_spacing_growth_pct,
-            self.s["dca_buys"],
-        )
-        effective_dca_amount = self._effective_dca_amount()
-        in_sl_bounce = (
-            self.pair in self.exit_manager.sl_bounce_state
-            if self.exit_manager is not None
-            else False
-        )
-        if (self.s["dca_buys"] < self.p.max_dca_buys
-                and not in_sl_bounce
-                and self.s["last_buy_price"]
-                # DCA threshold + "close to the threshold" = reached (rule shared with the backtest)
-                and sr.dca_price_hit(
-                    price, self.s["last_buy_price"], effective_dca_drop,
-                    self.p.reentry_tolerance_pct,
-                )
-                and self.s["spent"] < self._effective_max_budget()
-                and not (
-                    self.p.dca_trend_brake
-                    and self._regime_matches(
-                        regime, "bear", min_move_pct=self.p.dca_brake_min_pct,
-                        min_samples=self.p.regime_min_samples,
-                    )
-                )
-                and not self._has_open("buy")):
-            # Resize the request, not an already accepted order. Unknown funding
-            # cannot justify a new BUY. Venue preflight still owns fee/minimum rules.
-            try:
-                free_quote = self.client.free_balance(self.ccy)
-            except Exception as exc:
-                log(f"  [STRAT] DCA deferred: quote balance unavailable ({exc})")
-                return
-            clean_quote = _clean_nonneg_float(free_quote)
-            if clean_quote is None:
-                log("  [STRAT] DCA deferred: quote balance is not a finite non-negative number")
-                return
-            available = min(clean_quote, self._effective_max_budget() - self.s["spent"])
-            spend = min(effective_dca_amount, available)
-            qty = self._qty_for(spend, entry_px)
-            if spend < effective_dca_amount or qty * round(entry_px, self.price_dec) > available:
-                # Round down when funds or the remaining cycle budget are binding.
-                entry_px = round(entry_px, self.price_dec)
-                qty = (math.floor(spend / entry_px * 10 ** self.vol_dec) / 10 ** self.vol_dec
-                       if entry_px > 0 else 0.0)
-            if qty <= 0 or qty < self.ordermin:
-                log(f"  [STRAT] dip {price}: DCA skipped — available {spend:.2f} "
-                    f"{self.ccy} too small for a fill")
-            else:
-                partial = " (resized to available funds/budget)" if spend < effective_dca_amount else ""
-                log(
-                    f"  [STRAT] dip {price} <= {self.s['last_buy_price']}"
-                    f"×(1-{effective_dca_drop}%) "
-                    f"(tol {self.p.reentry_tolerance_pct}%) — "
-                    f"DCA {spend:.0f}{partial}"
-                )
-                self._place("buy", qty, entry_px, kind="DCA", amount=spend)
+        if self._dispatch_take_profit(
+            price, avg, held, high=high, regime=regime, regime_closes=regime_closes, tick_time=tick_time
+        ):
+            return
+        self._dispatch_dca_buy(price, entry_px, regime)
 
     def step(
         self,
@@ -2272,9 +1916,7 @@ class Strategy(BaseSpotMixin):
             return
         price, entry_px, held, tick_time, high = sync_ctx
 
-        exited, regime, regime_closes = self._step_evaluate_exits(
-            price, held, tick_time=tick_time
-        )
+        exited, regime, regime_closes = self._step_evaluate_exits(price, held, tick_time=tick_time)
         if exited:
             return
 
@@ -2283,16 +1925,11 @@ class Strategy(BaseSpotMixin):
             return
 
         self._step_dispatch_orders(
-            price,
-            entry_px,
-            held,
-            high=high,
-            regime=regime,
-            regime_closes=regime_closes,
-            tick_time=tick_time,
+            price, entry_px, held, high=high, regime=regime,
+            regime_closes=regime_closes, tick_time=tick_time,
         )
 
-    # -- main loop -------------------------------------------------------------
+    # -- Main Loop -------------------------------------------------------------
     def run(self) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
         exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI")
@@ -2305,15 +1942,11 @@ class Strategy(BaseSpotMixin):
             log(f"      SIZING %   : felie {self.p.alloc_pct}% × total {self.p.total_budget:.0f} "
                 f"= {self._alloc_budget():.0f} {self.ccy} (entry {self.p.entry_pct}%, DCA {self.p.dca_pct}%)")
         if self.p.dca_spacing_growth_pct > 0:
-            log(
-                "      DCA growth : +"
-                f"{self.p.dca_spacing_growth_pct}pp after each executed DCA"
-            )
+            log(f"      DCA growth : +{self.p.dca_spacing_growth_pct}pp after each executed DCA")
         if self.p.dca_vol_scale_k:
             log(
                 f"      DCA vol    : k={self.p.dca_vol_scale_k}, "
-                f"reference={self.p.dca_vol_ref}%, "
-                f"OHLC={self.p.dca_vol_interval}m"
+                f"reference={self.p.dca_vol_ref}%, OHLC={self.p.dca_vol_interval}m"
             )
         log(f"      take-profit: +{self.p.takeprofit_pct}%" if self.p.enable_takeprofit else "      take-profit: off")
         log(f"      PLAFON     : {self._effective_max_budget():.0f} {self.ccy} / ciclu")
@@ -2330,13 +1963,9 @@ class Strategy(BaseSpotMixin):
                     time.sleep(sleep_sec)
                     continue
                 try:
-                    # After a disk error, make no new decisions until current memory state
-                    # can be persisted again.
-                    if self._state_write_failed:
-                        self._save()
-                        if self._state_write_failed:
-                            time.sleep(sleep_sec)
-                            continue
+                    if not self._recover_state_write_or_skip():
+                        time.sleep(sleep_sec)
+                        continue
                     self._reload_if_externally_modified()
                     self.reconcile(price)
                     self.step(price)
@@ -2347,9 +1976,11 @@ class Strategy(BaseSpotMixin):
                     continue
                 avg = self._avg()
                 pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
-                log(f"  [STRAT] price={price}  {pos}  "
+                log(
+                    f"  [STRAT] price={price}  {pos}  "
                     f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
-                    f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}")
+                    f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}"
+                )
                 time.sleep(sleep_sec)
         except KeyboardInterrupt:
             log("  [STRAT] stopped manually.")

@@ -1,6 +1,6 @@
 """Shared spot strategy mixin for reentry gate, position snapshot, volatility tuple, and exit manager wiring.
 
-Unifies the common state persistence, open-order lookup, 1-hour volatility resolution,
+Unifies state persistence, open-order lookup, fill accounting, 1-hour volatility resolution,
 adaptive pullback/drop calculation, PositionSnapshot construction, MHDSL stop-loss
 coordination, MDHTP take-profit configuration, and ReentrySnapshot evaluation across
 ``strategies/spot_engine.py`` and ``212trading/strategy.py``.
@@ -14,38 +14,19 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag,
-    are_close,
-    log,
-    required_bool_env,
-    required_float_env,
-    safe_float,
-    safe_int,
-    safe_nonneg_float,
-    safe_pos_float,
-    safe_pos_int,
+    _parse_bool_flag, are_close, log, required_bool_env, required_float_env,
+    safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
 from intelligence.internal.state.volatility import (
-    adaptive_thresholds,
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-    vol_pct_to_ratio,
+    adaptive_thresholds, resolve_cached_volatility_1h,
+    resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
 from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
-from .position_exit_manager import (
-    ExitAction,
-    PositionExitManager,
-    PositionSnapshot,
-    ReentrySnapshot,
-)
+from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
-    JsonStateStore,
-    build_strategy_exit_manager,
-    clean_nonneg_float as _clean_nonneg_float,
-    clean_pos_float as _clean_pos_float,
-    compute_adaptive_reentry_pullback_pct,
-    find_open_order,
-    update_post_sell_anchors,
+    JsonStateStore, build_strategy_exit_manager,
+    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
+    compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
 
 
@@ -189,10 +170,9 @@ def sanitize_common_spot_state(
             state["orders"] = []
     pi = state.get("pending_intent")
     if isinstance(pi, dict):
-        if "order_id" in pi and pi.get("order_id") is not None:
-            pi["order_id"] = _clean_order_id(pi.get("order_id"))
-        if "intent_id" in pi and pi.get("intent_id") is not None:
-            pi["intent_id"] = _clean_order_id(pi.get("intent_id"))
+        for id_k in ("order_id", "intent_id"):
+            if id_k in pi and pi.get(id_k) is not None:
+                pi[id_k] = _clean_order_id(pi.get(id_k))
         if "market" in pi:
             pi["market"] = _parse_bool_flag(pi.get("market"), False)
         meta = pi.get("metadata")
@@ -215,13 +195,17 @@ class BaseSpotMixin:
     _HOURLY_VOL_CACHE: dict = {}
     _REPLAY_CACHE_MAX: int = 262144
 
+    @staticmethod
+    def _cache_store(cache: dict, key: tuple, val: Any) -> Any:
+        if len(cache) >= BaseSpotMixin._REPLAY_CACHE_MAX:
+            cache.clear()
+        cache[key] = val
+        return val
+
     def _mod_global(self, name: str, default: Any = None) -> Any:
         """Resolve a module-level symbol from the concrete Strategy's defining module."""
-        init_fn = getattr(type(self), "__init__", None)
-        globs = getattr(init_fn, "__globals__", None)
-        if isinstance(globs, dict) and name in globs:
-            return globs[name]
-        return default
+        globs = getattr(getattr(type(self), "__init__", None), "__globals__", None)
+        return globs[name] if isinstance(globs, dict) and name in globs else default
 
     def _log_msg(self, msg: str) -> None:
         self._mod_global("log", log)(msg)
@@ -240,11 +224,8 @@ class BaseSpotMixin:
             if sim_ts is not None:
                 return sim_ts
             sp = getattr(self, "_shadow_prices", None)
-            if sp:
-                return sp[-1][0]
-            return 0.0
-        time_mod = self._mod_global("time", time)
-        return float(time_mod.time())
+            return sp[-1][0] if sp else 0.0
+        return float(self._mod_global("time", time).time())
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
@@ -253,14 +234,11 @@ class BaseSpotMixin:
     # -- Persistence -----------------------------------------------------------
     def _store(self) -> JsonStateStore:
         store_cls = self._mod_global("JsonStateStore", JsonStateStore)
-        new_state_fn = self._mod_global("_new_state")
-        log_fn = self._mod_global("log", log)
-        label = getattr(self, "venue_label", "T212")
         return store_cls(
             self.state_file,
-            new_state_fn,
-            label=label,
-            logger=log_fn,
+            self._mod_global("_new_state"),
+            label=getattr(self, "venue_label", "T212"),
+            logger=self._mod_global("log", log),
             fail_closed=not self.dry_run,
         )
 
@@ -282,8 +260,7 @@ class BaseSpotMixin:
             return
         try:
             if os.path.exists(self.state_file):
-                disk_mtime = float(os.path.getmtime(self.state_file))
-                if disk_mtime > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
+                if float(os.path.getmtime(self.state_file)) > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
                     self.s = self._load()
         except OSError:
             pass
@@ -299,7 +276,14 @@ class BaseSpotMixin:
             self._state_write_failed = False
             self._record_state_file_mtime()
 
-    # -- Position & Order Helpers ----------------------------------------------
+    def _recover_state_write_or_skip(self) -> bool:
+        """Retry saving after an earlier disk write failure; return False if still failing."""
+        if not getattr(self, "_state_write_failed", False):
+            return True
+        self._save()
+        return not self._state_write_failed
+
+    # -- Position, Fill Accounting & Order Helpers -----------------------------
     def _avg(self) -> float | None:
         qty = _clean_pos_float(self.s.get("qty"))
         cost = _clean_pos_float(self.s.get(self._cost_state_key))
@@ -308,6 +292,30 @@ class BaseSpotMixin:
         return safe_pos_float(cost / qty, default=None) if self._exit_manager_mode == "t212" else cost / qty
 
     _avg_cost = _avg
+
+    def _apply_buy_fill_accounting(
+        self, order: dict, qty: float, price: float, *, fallback_to_notional: bool = False
+    ) -> None:
+        """Update position quantity, cost basis, entry/last buy prices, spent cap, and DCA count."""
+        self.s["qty"] += qty
+        self.s[self._cost_state_key] += qty * price
+        self.s["last_buy_price"] = price
+        if self.s["entry_price"] is None:
+            self.s["entry_price"] = price
+        raw_amt = order.get("amount")
+        amt_val = _clean_nonneg_float(raw_amt)
+        self.s[self._spent_state_key] += (
+            amt_val
+            if (amt_val is not None and raw_amt is not None)
+            else ((qty * price) if fallback_to_notional else 0.0)
+        )
+        if order.get("kind") == "DCA":
+            self.s["dca_buys"] += 1
+
+    def _release_sell_cost_basis(self, qty: float, avg: float) -> None:
+        """Reduce position quantity and release cost basis proportionally on full or partial SELL."""
+        self.s["qty"] -= qty
+        self.s[self._cost_state_key] = max(0.0, self.s[self._cost_state_key] - avg * qty)
 
     def _find_open(self, side: str) -> dict | None:
         return find_open_order(self.s, side)
@@ -321,10 +329,7 @@ class BaseSpotMixin:
                 return False
             raw_pending = self.s.get("pending_submit")
             pending = raw_pending if isinstance(raw_pending, dict) else {}
-            return (
-                str(pending.get("side") or "").strip().upper() == side_u
-                or self._find_open(side_u) is not None
-            )
+            return str(pending.get("side") or "").strip().upper() == side_u or self._find_open(side_u) is not None
         return self._find_open(side) is not None
 
     def _remove(self, o: dict) -> None:
@@ -333,21 +338,21 @@ class BaseSpotMixin:
 
     _remove_order = _remove
 
+    def _mark_order_cancel_requested(self, o: dict, id_key: str) -> bool:
+        o["cancel_requested"] = True
+        o["cancel_ts"] = self._now()
+        self._save()
+        self._log_msg(f"  [STRAT] cancel requested {o.get('side', '?')} {o[id_key]} — waiting for a terminal status")
+        return True
+
     def _cancel_open(self, side: str) -> bool:
         o = self._find_open(side)
         if not o:
             return True
-        if self._exit_manager_mode == "t212":
-            return self._cancel_specific(o)
-        return self._cancel_order(o)
+        return self._cancel_specific(o) if self._exit_manager_mode == "t212" else self._cancel_order(o)
 
     def _seed_post_exit_anchors(
-        self,
-        price: float,
-        exit_kind: str | None,
-        exit_ts: float,
-        *,
-        include_sl_low: bool = True,
+        self, price: float, exit_kind: str | None, exit_ts: float, *, include_sl_low: bool = True
     ) -> None:
         """Initialize post-sale price and timestamp anchors after a cycle closes."""
         self.s["last_sell_price"] = price
@@ -377,121 +382,80 @@ class BaseSpotMixin:
         return math.sqrt(var_r) * math.sqrt(steps_per_hour) * 100.0
 
     @staticmethod
-    def _hourly_vol_from_closes(
-        closes: list[float], interval_minutes: float,
-    ) -> float | None:
+    def _hourly_vol_from_closes(closes: list[float], interval_minutes: float) -> float | None:
         """Return log-return deviation normalized to one hour for a fixed cadence."""
         itv_f = safe_pos_float(interval_minutes, default=None)
         if not closes or itv_f is None:
             return None
-        clean_closes = [
-            cf for c in closes[-90:]
-            if (cf := safe_pos_float(c, default=None)) is not None
-        ]
-        closes_slice = tuple(clean_closes)
+        closes_slice = tuple(cf for c in closes[-90:] if (cf := safe_pos_float(c, default=None)) is not None)
         if len(closes_slice) < 20:
             return None
         cache_key = (closes_slice, itv_f)
         if cache_key in BaseSpotMixin._HOURLY_VOL_CACHE:
             return BaseSpotMixin._HOURLY_VOL_CACHE[cache_key]
         returns = [
-            math.log(current / previous)
-            for previous, current in zip(closes_slice, closes_slice[1:])
-            if previous > 0 and current > 0
+            math.log(cur / prev) for prev, cur in zip(closes_slice, closes_slice[1:]) if prev > 0 and cur > 0
         ]
         val = BaseSpotMixin._scaled_log_return_vol_pct(returns, 60.0 / itv_f)
-        if len(BaseSpotMixin._HOURLY_VOL_CACHE) >= BaseSpotMixin._REPLAY_CACHE_MAX:
-            BaseSpotMixin._HOURLY_VOL_CACHE.clear()
-        BaseSpotMixin._HOURLY_VOL_CACHE[cache_key] = val
-        return val
+        return BaseSpotMixin._cache_store(BaseSpotMixin._HOURLY_VOL_CACHE, cache_key, val)
 
     def _shadow_vol_1h(self) -> float | None:
         """Return one-hour volatility from local tick history, or None during warm-up."""
         sp = getattr(self, "_shadow_prices", None)
-        if not sp:
-            return None
-        n_sp = len(sp)
-        if n_sp < 20:
+        if not sp or (n_sp := len(sp)) < 20:
             return None
         if self.replay_mode:
             cache_key = (
-                n_sp,
-                round(sp[-1][0] - sp[0][0], 3),
-                sp[0][1],
-                sp[1][1],
-                sp[n_sp >> 1][1],
-                sp[-2][1],
-                sp[-1][1],
+                n_sp, round(sp[-1][0] - sp[0][0], 3),
+                sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1],
             )
             if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
                 return self._shadow_vol_cache_val
             if cache_key in BaseSpotMixin._SHADOW_VOL_CACHE:
-                val = BaseSpotMixin._SHADOW_VOL_CACHE[cache_key]
                 self._shadow_vol_cache_key = cache_key
-                self._shadow_vol_cache_val = val
+                self._shadow_vol_cache_val = val = BaseSpotMixin._SHADOW_VOL_CACHE[cache_key]
                 return val
         mean_dt = (sp[-1][0] - sp[0][0]) / (n_sp - 1)
         if mean_dt <= 0:
             return None
         pts = list(sp)
-        rets = [
-            math.log(pts[i][1] / pts[i - 1][1])
-            for i in range(1, n_sp)
-            if pts[i - 1][1] > 0 and pts[i][1] > 0
-        ]
+        rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, n_sp) if pts[i - 1][1] > 0 and pts[i][1] > 0]
         val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
-        if val is None:
-            return None
-        if self.replay_mode:
+        if val is not None and self.replay_mode:
             self._shadow_vol_cache_key = cache_key
             self._shadow_vol_cache_val = val
-            if len(BaseSpotMixin._SHADOW_VOL_CACHE) >= BaseSpotMixin._REPLAY_CACHE_MAX:
-                BaseSpotMixin._SHADOW_VOL_CACHE.clear()
-            BaseSpotMixin._SHADOW_VOL_CACHE[cache_key] = val
+            self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
         return val
 
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay."""
         if self.replay_mode:
             sp = getattr(self, "_shadow_prices", None)
-            if not sp:
-                return None
-            n_sp = len(sp)
-            if n_sp < 20:
+            if not sp or (n_sp := len(sp)) < 20:
                 return None
             cache_key = (
-                n_sp,
-                sp[0][1],
-                sp[1][1],
-                sp[n_sp >> 1][1],
-                sp[-2][1],
-                sp[-1][1],
-                self.p.tp_trail_vol_interval,
+                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1], self.p.tp_trail_vol_interval,
             )
             if getattr(self, "_trail_vol_cache_key", None) == cache_key:
                 return self._trail_vol_cache_val
             if cache_key in BaseSpotMixin._TRAIL_VOL_CACHE:
-                val = BaseSpotMixin._TRAIL_VOL_CACHE[cache_key]
                 self._trail_vol_cache_key = cache_key
-                self._trail_vol_cache_val = val
+                self._trail_vol_cache_val = val = BaseSpotMixin._TRAIL_VOL_CACHE[cache_key]
                 return val
-            closes = [price for _, price in sp]
-            val = self._hourly_vol_from_closes(closes, self.p.tp_trail_vol_interval)
+            val = self._hourly_vol_from_closes([price for _, price in sp], self.p.tp_trail_vol_interval)
             self._trail_vol_cache_key = cache_key
             self._trail_vol_cache_val = val
-            if len(BaseSpotMixin._TRAIL_VOL_CACHE) >= BaseSpotMixin._REPLAY_CACHE_MAX:
-                BaseSpotMixin._TRAIL_VOL_CACHE.clear()
-            BaseSpotMixin._TRAIL_VOL_CACHE[cache_key] = val
-            return val
+            return self._cache_store(BaseSpotMixin._TRAIL_VOL_CACHE, cache_key, val)
         closes = self.client.ohlc_closes(self._symbol_id, self.p.tp_trail_vol_interval)
         return self._hourly_vol_from_closes(closes, self.p.tp_trail_vol_interval)
 
     def _dca_vol_1h(self) -> float | None:
         """Return DCA volatility from OHLC at the same cadence in live and replay."""
-        if self.replay_mode:
-            closes = [price for _, price in getattr(self, "_shadow_prices", ())]
-        else:
-            closes = self.client.ohlc_closes(self._symbol_id, self.p.dca_vol_interval)
+        closes = (
+            [price for _, price in getattr(self, "_shadow_prices", ())]
+            if self.replay_mode
+            else self.client.ohlc_closes(self._symbol_id, self.p.dca_vol_interval)
+        )
         return self._hourly_vol_from_closes(closes, self.p.dca_vol_interval)
 
     def _resolve_shadow_vol_1h_pct(self) -> float | None:
@@ -504,42 +468,27 @@ class BaseSpotMixin:
 
     def _resolve_reentry_vol_1h_pct(self) -> float | None:
         """Resolve 1-hour volatility (%) from shadow ticks with non-replay cache fallback."""
-        vol = (
-            self._shadow_vol_1h()
-            if self._exit_manager_mode == "spot"
-            else self._resolve_shadow_vol_1h_pct()
-        )
+        vol = self._shadow_vol_1h() if self._exit_manager_mode == "spot" else self._resolve_shadow_vol_1h_pct()
         if vol is None and not self.replay_mode:
-            resolver = self._mod_global(
-                "resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct,
-            )
-            vol = resolver(self._symbol_id)
+            vol = self._mod_global("resolve_cached_volatility_1h_pct", resolve_cached_volatility_1h_pct)(self._symbol_id)
         return vol
 
     def _vol_1h_ratio(self) -> tuple[float, str]:
         """Return 1h volatility as a decimal ratio [e.g. 0.025 for 2.5%] and its source."""
         if self._exit_manager_mode == "spot":
-            try:
-                vol = safe_pos_float(self._trail_vol_1h(), default=None)
-                if vol is not None:
-                    return vol_pct_to_ratio(vol), "trail_ohlc"
-            except Exception:
-                pass
-            try:
-                vol = safe_pos_float(self._shadow_vol_1h(), default=None)
-                if vol is not None:
-                    return vol_pct_to_ratio(vol), "shadow_ticks"
-            except Exception:
-                pass
+            for fn, src in ((self._trail_vol_1h, "trail_ohlc"), (self._shadow_vol_1h, "shadow_ticks")):
+                try:
+                    vol = safe_pos_float(fn(), default=None)
+                    if vol is not None:
+                        return vol_pct_to_ratio(vol), src
+                except Exception:
+                    pass
         else:
             vol = self._resolve_shadow_vol_1h_pct()
             if vol is not None:
                 return vol_pct_to_ratio(vol), "shadow"
         if not self.replay_mode:
-            resolver = self._mod_global(
-                "resolve_cached_volatility_1h", resolve_cached_volatility_1h,
-            )
-            cached = resolver(self._symbol_id)
+            cached = self._mod_global("resolve_cached_volatility_1h", resolve_cached_volatility_1h)(self._symbol_id)
             if cached is not None:
                 return cached, "cache"
         return 0.0, self._vol_default_source
@@ -556,9 +505,7 @@ class BaseSpotMixin:
                 self._log_msg(f"  [SHADOW] adaptive threshold: warm-up ({len(self._shadow_prices)}/20 points)")
                 return
             adapt_pct, _ = adaptive_thresholds(vol, k_reentry=k_re)
-            if adapt_pct is None:
-                adapt_pct = k_re * vol
-            prag_adapt = lsp * (1 - adapt_pct / 100)
+            prag_adapt = lsp * (1 - (adapt_pct if adapt_pct is not None else k_re * vol) / 100)
             verdict = "WOULD HAVE ENTERED" if price <= prag_adapt else "would not have entered either"
             self._log_msg(
                 f"  [SHADOW] fixed threshold {prag_fix:.2f} vs adaptive {prag_adapt:.2f} "
@@ -580,8 +527,7 @@ class BaseSpotMixin:
         if vol is None:
             return self.p.reentry_drop_pct, f"fix (fallback, warm-up {len(self._shadow_prices)}/20)"
         adapt_drop, _ = adaptive_thresholds(vol, k_reentry=k_re)
-        eff_drop = adapt_drop if adapt_drop is not None else (k_re * vol)
-        return eff_drop, f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
+        return (adapt_drop if adapt_drop is not None else k_re * vol), f"adaptiv (vol_1h {vol:.2f}% x k={k_re})"
 
     def _effective_reentry_pullback_pct(self) -> tuple[float, str]:
         """Return the dynamic volatility-scaled or fixed pullback threshold from peak."""
@@ -638,28 +584,21 @@ class BaseSpotMixin:
         is_spot = self._exit_manager_mode == "spot"
         sp = getattr(self, "_shadow_prices", None)
         tick_time = sp[-1][0] if (is_spot and sp) else self._now()
-        if include_vol:
-            vol_1h, vol_source = self._vol_1h_ratio()
-        else:
-            vol_1h, vol_source = 0.0, "default"
+        vol_1h, vol_source = self._vol_1h_ratio() if include_vol else (0.0, "default")
         if is_spot:
             trend_up = self._is_trend_up(regime) if include_trend else False
-            sell_qty = held
-            provider = getattr(self, "venue_label", "Kraken")
+            sell_qty, provider = held, getattr(self, "venue_label", "Kraken")
             shadow = list(sp) if (include_shadow and sp is not None) else []
         else:
             trend_up = False
             slope_fn = getattr(self, "_trend_slope_provider", None)
             if include_trend and slope_fn:
                 try:
-                    slope = safe_nonneg_float(slope_fn(self.yahoo_sym), default=None)
-                    if slope is not None:
+                    if safe_nonneg_float(slope_fn(self.yahoo_sym), default=None) is not None:
                         trend_up = True
                 except Exception:
                     pass
-            sell_qty = self._sellable_qty(held, price)
-            provider = "t212"
-            shadow = []
+            sell_qty, provider, shadow = self._sellable_qty(held, price), "t212", []
         return PositionSnapshot(
             symbol=self._symbol_id,
             current_price=price,
@@ -674,9 +613,7 @@ class BaseSpotMixin:
             shadow_prices=shadow,
         )
 
-    def _in_mhdsl_territory(
-        self, loss_pct: float, *, reset_episode_on_exit: bool = True
-    ) -> bool:
+    def _in_mhdsl_territory(self, loss_pct: float, *, reset_episode_on_exit: bool = True) -> bool:
         """Return True if the position is in MHDSL stop-loss or bounce-watch territory."""
         in_sl = loss_pct > 0.0 and (
             loss_pct >= self.p.stop_loss_pct
@@ -684,10 +621,8 @@ class BaseSpotMixin:
         )
         if not in_sl and "sl_pending_exit" in self.s:
             self.s["sl_pending_exit"] = None
-        mgr = self.exit_manager
-        sym = self._symbol_id
-        in_bounce_watch = bool(mgr is not None and sym in mgr.sl_bounce_state)
-        if not in_sl and not in_bounce_watch:
+        mgr, sym = self.exit_manager, self._symbol_id
+        if not in_sl and not (mgr is not None and sym in mgr.sl_bounce_state):
             if reset_episode_on_exit and mgr is not None and mgr.sl_episode_state:
                 mgr.reset_sl_episode(sym)
             return False
@@ -700,28 +635,17 @@ class BaseSpotMixin:
         ):
             self._log_msg(f"  🛡️ [STRAT] MHDSL BOUNCE DEFERRAL: {decision.reason}")
 
-    def _sync_mdhtp_config(
-        self,
-        eff_trail_pct: float,
-        *,
-        trend_ride_enabled: bool | None = None,
-    ) -> None:
+    def _sync_mdhtp_config(self, eff_trail_pct: float, *, trend_ride_enabled: bool | None = None) -> None:
         """Synchronize MDHTP parameters onto ``self.exit_manager.config``."""
         if self.exit_manager is None:
             self.exit_manager = self._init_exit_manager()
         cfg = self.exit_manager.config
         cfg.tp_pullback_pct = eff_trail_pct / 100.0
         cfg.tp_trend_ride_enabled = (
-            bool(getattr(self.p, "tp_trend_hold", True))
-            if trend_ride_enabled is None
-            else trend_ride_enabled
+            bool(getattr(self.p, "tp_trend_hold", True)) if trend_ride_enabled is None else trend_ride_enabled
         )
-        floor_pct = (
-            getattr(self.p, "tp_trail_profit_floor_pct", None)
-            if self._exit_manager_mode == "spot"
-            else getattr(self.p, "trail_min_profit_pct", None)
-        )
-        cfg.tp_profit_floor_min_pct = (floor_pct or 0.0) / 100.0
+        floor_attr = "tp_trail_profit_floor_pct" if self._exit_manager_mode == "spot" else "trail_min_profit_pct"
+        cfg.tp_profit_floor_min_pct = (getattr(self.p, floor_attr, None) or 0.0) / 100.0
         cfg.tp_stagnation_max_sec = self.p.tp_stagnation_max_sec
         if self._exit_manager_mode == "spot":
             cfg.fast_profit_guard_enabled = self.p.fast_profit_guard
@@ -730,18 +654,12 @@ class BaseSpotMixin:
             cfg.fast_profit_drop_pct = self.p.fast_profit_drop_pct
 
     def _evaluate_reentry_gate(
-        self,
-        price: float,
-        regime: Any = None,
-        tick_time: float | None = None,
+        self, price: float, regime: Any = None, tick_time: float | None = None
     ) -> tuple[bool, str]:
         """Evaluate re-entry gate conditions symmetrically across spot and equity engines."""
         is_spot = self._exit_manager_mode == "spot"
         lsp = update_post_sell_anchors(
-            self.s,
-            price,
-            include_last_sell_alias=is_spot,
-            track_stop_sl_low=is_spot,
+            self.s, price, include_last_sell_alias=is_spot, track_stop_sl_low=is_spot
         )
         if not lsp:
             return True, "no_last_sell"
@@ -793,8 +711,7 @@ class BaseSpotMixin:
             )
             mgr.config.reentry_bear_gate_enabled = False
             mgr.config.reentry_bear_bounce_pct = 0.0
-            trend_up = bool(self.p.reentry_peak_relative)
-            trend_down = False
+            trend_up, trend_down = bool(self.p.reentry_peak_relative), False
             slope_fn = getattr(self, "_trend_slope_provider", None)
             if not trend_up and slope_fn:
                 try:
@@ -808,29 +725,25 @@ class BaseSpotMixin:
                     pass
 
         is_bull_reentry = bool(
-            last_kind != "STOP"
-            and self.p.reentry_hybrid_enabled
-            and (trend_up or self.p.reentry_peak_relative)
+            last_kind != "STOP" and self.p.reentry_hybrid_enabled and (trend_up or self.p.reentry_peak_relative)
         )
-        if is_bull_reentry or not self.replay_mode:
-            pullback_pct, _ = self._effective_reentry_pullback_pct()
-        else:
-            pullback_pct = self.p.reentry_pullback_pct
+        pullback_pct = (
+            self._effective_reentry_pullback_pct()[0]
+            if (is_bull_reentry or not self.replay_mode)
+            else self.p.reentry_pullback_pct
+        )
         mgr.config.reentry_pullback_pct = vol_pct_to_ratio(pullback_pct)
 
         custom_drop = None
         if is_spot:
-            if (not is_bull_reentry and last_kind != "STOP") or not self.replay_mode:
-                drop_pct, _ = self._effective_reentry_drop_pct()
-            else:
-                drop_pct = self.p.reentry_drop_pct
+            drop_pct = (
+                self._effective_reentry_drop_pct()[0]
+                if ((not is_bull_reentry and last_kind != "STOP") or not self.replay_mode)
+                else self.p.reentry_drop_pct
+            )
             custom_drop = vol_pct_to_ratio(drop_pct)
 
-        if self.replay_mode:
-            vol_1h, vol_source = 0.0, "default"
-        else:
-            vol_1h, vol_source = self._vol_1h_ratio()
-
+        vol_1h, vol_source = (0.0, "default") if self.replay_mode else self._vol_1h_ratio()
         reentry_snap = ReentrySnapshot(
             symbol=self._symbol_id,
             current_price=price,
@@ -877,8 +790,7 @@ class BaseSpotMixin:
         if not allowed:
             self._log_msg(f"  [STRAT] re-entry blocked: {reason}")
             return False
-        lsp = self.s.get("last_sell_price") or (self.s.get("last_sell") if is_spot else None)
-        if lsp:
+        if self.s.get("last_sell_price") or (self.s.get("last_sell") if is_spot else None):
             self._log_msg(f"  [STRAT] re-entry approved: {reason} — placing ENTRY")
         if self.s[self._spent_state_key] + entry_amt > budget:
             self._restore_reentry_state()
