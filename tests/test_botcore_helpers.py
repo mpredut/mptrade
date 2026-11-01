@@ -204,6 +204,25 @@ class NumericCoercionHelpersTest(unittest.TestCase):
         self.assertEqual(_rev_int(large_id), large_id)
         self.assertEqual(_exact_nonneg_int(large_id), large_id)
 
+    def test_clamp_parse_ratio_validate_env_and_heartbeat_helpers(self):
+        self.assertEqual(botcore.clamp_float(1.5, 0.0, 1.0, default=0.0), 1.0)
+        self.assertEqual(botcore.clamp_float(-0.2, 0.0, 1.0, default=0.0), 0.0)
+        self.assertEqual(botcore.clamp_float("0.42", 0.0, 1.0, default=0.0), 0.42)
+        self.assertEqual(botcore.clamp_float("bad", 0.0, 1.0, default=0.25), 0.25)
+
+        self.assertEqual(botcore.parse_ratio_or_pct("2.5"), 0.025)
+        self.assertEqual(botcore.parse_ratio_or_pct("0.015"), 0.015)
+
+        botcore.validate_required_env_keys(("A", "B"), env={"A": "1", "B": "2"}, label="TestMod")
+        with self.assertRaisesRegex(ValueError, "Missing or empty mandatory TestMod settings: B"):
+            botcore.validate_required_env_keys(("A", "B"), env={"A": "1", "B": "   "}, label="TestMod")
+
+        with tempfile.TemporaryDirectory() as directory:
+            hb_path = str(Path(directory) / "sub" / "hb.heartbeat")
+            ts = botcore.touch_heartbeat_file(hb_path, last_ts=0.0, force=True, now=123456.78)
+            self.assertEqual(ts, 123456.78)
+            self.assertTrue(Path(hb_path).exists())
+
 
 class BoundNotifierTest(unittest.TestCase):
     def test_explicit_symbol_then_environment_priority_then_fallback(self):

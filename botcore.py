@@ -770,4 +770,41 @@ def touch_heartbeat_file(
     return now_m
 
 
+def clamp_float(
+    val: object,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+    *,
+    default: float = 0.0,
+) -> float:
+    """Safely coerce ``val`` to a float and clamp it to ``[minimum, maximum]``."""
+    v = safe_float(val, default=default)
+    if v is None:
+        v = default
+    return max(minimum, min(maximum, v))
+
+
+def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
+    """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
+    val = float(raw)
+    return val / 100.0 if val > pct_cutoff else val
+
+
+def validate_required_env_keys(
+    keys: list[str] | tuple[str, ...],
+    *,
+    env: dict | None = None,
+    label: str = "configuration",
+) -> None:
+    """Abort startup with the complete list of missing or empty mandatory environment keys."""
+    src = os.environ if env is None else env
+    missing = [
+        name for name in keys
+        if src.get(name) is None or not str(src[name]).split("#", 1)[0].strip()
+    ]
+    if missing:
+        raise ValueError(f"Missing or empty mandatory {label} settings: " + ", ".join(missing))
+
+
+
 

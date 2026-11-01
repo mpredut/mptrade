@@ -12,6 +12,7 @@ from botcore import (
     _parse_bool_flag,
     load_dotenv as _load_dotenv,
     parse_dotenv,
+    parse_ratio_or_pct as _parse_mt_ratio,
     required_bool_env,
     required_float_env,
     safe_float,
@@ -20,13 +21,11 @@ from botcore import (
 )
 import cacheManager as cm
 import cachepaths
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument as _Instrument
 from instruments_config import load_for
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 import order_guard
-import order_retry
-from order_rollback import restore_cancelled_orders
 import pricewindow as pw
 from providers.base import (
     extract_client_order_id,
@@ -34,27 +33,36 @@ from providers.base import (
     extract_order_price,
     extract_order_qty,
     extract_order_side,
-    extract_remaining_qty,
     extract_timestamp_s,
-    resolve_order_actor,
 )
 from providers.market_api import api as mkt
-from providers.quantity import (
-    check_order_filter_refusal,
-    resolve_assets,
-    round_provider_qty,
-)
+from providers.quantity import check_order_filter_refusal
 from state_io import discard_generation_file, read_json_dict, save_json_state
 from strategies.mt_position_accounting import (
     _FifoTradeIdTracker,
     _api_cache_identity,
+    _as_instrument,
+    _build_sl_bounce_state,
+    _cancel_resting_tp_orders,
     _coerce_order_list,
     _compute_spot_owned_qty,
     _compute_spot_position,
+    _eval_reentry_buy_quantity_decision,
     _extract_trade_uid,
+    _has_live_quantity_policy,
+    _infer_mt_exit_kind,
+    _inst_provider,
+    _is_terminal_dust_refusal,
+    _is_untradable_dust,
     _make_order_signature,
     _order_timestamp_ms,
+    _resolve_inst_bypass_guards,
+    _restore_resting_tp_orders,
+    _state_matches_buy_price,
     _summarize_orders,
+    _update_mt_reentry_state,
+    _validate_scaled_buy_qty,
+    get_available_qty,
     get_relevant_trade,
 )
 from strategies.position_exit_manager import (
@@ -422,19 +430,6 @@ def _load_mt_state(now_curr: float | None = None):
 _SIMULATED_PROVIDERS = {"replay", "backtest", "sim", "mock", "paper_sim", "test"}
 
 
-def _inst_provider(inst: Any = None) -> Optional[str]:
-    """Resolve canonical provider label from an instrument instance or string."""
-    if inst is None or isinstance(inst, str):
-        return inst
-    lbl = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
-    if lbl:
-        return str(lbl)
-    raw = getattr(inst, "_provider", None)
-    if isinstance(raw, str):
-        return raw
-    return getattr(raw, "name", None) or getattr(raw, "provider_label", None)
-
-
 def _is_simulated_env_or_inst(inst: Any = None) -> bool:
     """Return True when running in replay/backtest/simulation or with persistence disabled."""
     if not _MT_PERSISTENCE_ENABLED:
@@ -472,23 +467,13 @@ def _resolve_exit(symbol: str, inst: Any = None, kind: Optional[str] = None, cle
 
 
 def _record_pending_exit(
-    symbol: str,
-    inst: Any,
-    kind: str,
-    current_time_s: float,
-    sellable_qty: float,
-    current_price: float,
-    outcome_ctx: dict,
-    default_intent_id: Optional[str] = None,
-    client_order_id: Optional[str] = None,
-    prev_tp_state: Optional[dict] = None,
-    prev_sl_state: Optional[dict] = None,
+    symbol: str, inst: Any, kind: str, current_time_s: float, sellable_qty: float, current_price: float,
+    outcome_ctx: dict, default_intent_id: Optional[str] = None, client_order_id: Optional[str] = None,
+    prev_tp_state: Optional[dict] = None, prev_sl_state: Optional[dict] = None,
 ):
     """Record an in-flight exit whose outcome is unknown/in-flight and update state."""
     pending_rec = {
-        "time": current_time_s,
-        "qty": sellable_qty,
-        "price": current_price,
+        "time": current_time_s, "qty": sellable_qty, "price": current_price,
         "reason": outcome_ctx.get("reason", "unknown"),
         "intent_id": outcome_ctx.get("intent_id") or default_intent_id,
         "client_order_id": outcome_ctx.get("client_order_id") or client_order_id,
@@ -522,11 +507,6 @@ def _parse_mt_bool(key: str, val: str) -> bool:
     if parsed is not None:
         return parsed
     raise ValueError(f"monitortrades.conf: invalid boolean {key}={val!r}; expected yes/no or true/false")
-
-
-def _parse_mt_ratio(raw: str, pct_cutoff: float = 0.05) -> float:
-    val = float(raw)
-    return val / 100.0 if val > pct_cutoff else val
 
 
 def _load_mt_conf(path=None):
@@ -659,25 +639,6 @@ def compute_disaster_buffer(symbol: str, lost_threshold: float) -> Tuple[float, 
     )
 
 
-def _as_instrument(x):
-    """Accept an Instrument or adapt a symbol string through the provider facade."""
-    if isinstance(x, _Instrument):
-        return x
-    sym_s = str(x)
-    return _Instrument(name=sym_s, symbol=sym_s, provider=mkt.provider_name_for(sym_s), base=u.base_asset(sym_s))
-
-
-def get_available_qty(symbol, api=None):
-    """Return free base quantity, preserving ``None`` when balance is unavailable."""
-    api = api or mkt
-    try:
-        value = _as_instrument(symbol).free() if api is mkt else api.free_balance(u.base_asset(symbol))
-        return safe_nonneg_float(value, default=None)
-    except Exception as e:
-        print(f"get_available_qty {symbol}: {e}")
-    return None
-
-
 def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
     """Place only positive quantities meeting the venue minimum; return whether submitted."""
     qty_f = safe_pos_float(qty, default=None)
@@ -693,32 +654,6 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
         print(f"[{inst.symbol}] {side} skip: qty {qty} < volum minim venue {min_qty}")
         return False
     return inst.place(side, price_f, qty_f, **kwargs) is not None
-
-
-def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
-    """Return True if an order refusal reason indicates un-sellable dust."""
-    if not reason:
-        return False
-    try:
-        return order_retry.is_terminal_filter_refusal(str(reason))
-    except Exception:
-        r = str(reason)
-        return r == "below_min_notional" or r.startswith(("filter_", "binance_filter_refused:"))
-
-
-def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:
-    """Return True if sellable_qty is zero or below venue minimum quantity/notional."""
-    if sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty):
-        return True
-    prov = getattr(inst, "_provider", None)
-    if prov is not None and current_price and current_price > 0:
-        refusal = check_order_filter_refusal(
-            prov, symbol, "SELL", current_price, sellable_qty,
-            market=True, enforce_business_minimum=False,
-        )
-        if _is_terminal_dust_refusal(refusal):
-            return True
-    return False
 
 
 def _restore_pending_exit_state(symbol: str, pending_stop: dict):
@@ -808,56 +743,9 @@ def _is_trend_gate_deferred(symbol: str, inst: Any = None, side: str = "SELL") -
         return False
 
 
-def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
-    """Cancel open resting TP SELL orders to unlock balance for Stop-Loss; return cancelled orders."""
-    cancelled = []
-    try:
-        open_orders_fn = getattr(inst, "open_orders", None)
-        cancel_fn = getattr(inst, "cancel_order", None)
-        for active_ord in (open_orders_fn() if callable(open_orders_fn) else []) or []:
-            if extract_order_side(active_ord) == "SELL":
-                oid = extract_order_id(active_ord, default="")
-                if oid:
-                    print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
-                    if callable(cancel_fn) and cancel_fn(oid) is not False:
-                        cancelled.append(active_ord)
-                        try:
-                            order_retry.resolve_accepted_order(symbol, oid)
-                        except Exception:
-                            pass
-    except Exception as cancel_exc:
-        print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
-    return cancelled
-
-
-def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], sellable_qty: float, sl_state: Optional[str]):
-    """Restore previously cancelled TP orders if Stop-Loss submission failed."""
-    if not cancelled_orders:
-        return
-    restore_cancelled_orders(
-        cancelled_orders,
-        restore_fn=lambda p: bool(
-            inst.place(
-                "SELL",
-                extract_order_price(p, default=0.0),
-                extract_remaining_qty(p, default=0.0),
-                kind="TP",
-                wait_for_trend=True,
-            )
-        ),
-        log_fn=lambda msg: print(f"[{symbol}] {msg}"),
-        reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
-    )
-
-
 def _evaluate_hard_take_profit(
-    inst,
-    snapshot: PositionSnapshot,
-    hard_tp_pct: float,
-    hard_tp_frac: float,
-    hard_tp_cd: float,
-    min_qty: float,
-    sbs: float,
+    inst, snapshot: PositionSnapshot, hard_tp_pct: float, hard_tp_frac: float,
+    hard_tp_cd: float, min_qty: float, sbs: float,
 ) -> bool:
     """Evaluate and execute Hard Take-Profit if eligible, returning True if sold."""
     symbol = snapshot.symbol
@@ -919,24 +807,9 @@ def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDe
         )
 
 
-def _state_matches_buy_price(state: Optional[dict], buy_price: Optional[float]) -> bool:
-    """Return False if state records a buy_price that differs from the current position's buy_price."""
-    if not state or buy_price is None or state.get("buy_price") is None:
-        return True
-    sb_f = safe_pos_float(state.get("buy_price"), default=None)
-    bp_f = safe_pos_float(buy_price, default=None)
-    return sb_f is not None and bp_f is not None and math.isclose(sb_f, bp_f, rel_tol=1e-6, abs_tol=1e-9)
-
-
 def _execute_take_profit(
-    inst,
-    snapshot: PositionSnapshot,
-    tp_decision: ExitDecision,
-    sbs: float,
-    min_qty: float,
-    prev_tp_state: dict,
-    gain_threshold: float,
-    pending_tp: Optional[dict] = None,
+    inst, snapshot: PositionSnapshot, tp_decision: ExitDecision, sbs: float, min_qty: float,
+    prev_tp_state: dict, gain_threshold: float, pending_tp: Optional[dict] = None,
 ) -> bool:
     """Execute Take-Profit exit order with state persistence and rollback."""
     symbol = snapshot.symbol
@@ -1022,17 +895,6 @@ def _log_sl_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDe
         )
 
 
-def _build_sl_bounce_state(snapshot: PositionSnapshot, bounce_started_f: Optional[float]) -> dict:
-    return {
-        "started_at": bounce_started_f if bounce_started_f is not None else snapshot.current_time_s,
-        "entry_loss": snapshot.loss_ratio,
-        "lowest_price": snapshot.current_price,
-        "peak_bounce_price": snapshot.current_price,
-        "min_loss": snapshot.loss_ratio,
-        "buy_price": snapshot.avg_buy_price,
-    }
-
-
 def _restore_or_init_sl_bounce(
     symbol: str, prev_sl_state: dict, bounce_started_f: Optional[float], snapshot: PositionSnapshot, init_if_empty: bool = False
 ) -> None:
@@ -1045,14 +907,8 @@ def _restore_or_init_sl_bounce(
 
 
 def _execute_stop_loss(
-    inst,
-    snapshot: PositionSnapshot,
-    sl_decision: ExitDecision,
-    sbs: float,
-    min_qty: float,
-    lost_threshold: float,
-    prev_sl_state: dict,
-    pending_stop: Optional[dict] = None,
+    inst, snapshot: PositionSnapshot, sl_decision: ExitDecision, sbs: float, min_qty: float,
+    lost_threshold: float, prev_sl_state: dict, pending_stop: Optional[dict] = None,
 ) -> bool:
     """Execute Stop-Loss exit order, cancelling resting orders and managing rollback."""
     symbol = snapshot.symbol
@@ -1171,72 +1027,12 @@ def _handle_position_recovery(inst, snapshot: PositionSnapshot, lost_threshold: 
         print("Nothing interesting")
 
 
-def _has_live_quantity_policy(provider: Any) -> bool:
-    return (
-        provider is not None
-        and not isinstance(provider, str)
-        and callable(getattr(provider, "quantity_decision", None))
-        and callable(getattr(provider, "free_balance", None))
-    )
-
-
-def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_bypass: Any = None) -> set[str]:
-    """Resolve normalized bypass guards combining venue margins, instrument params, and caller extras."""
-    if provider is None and inst is not None:
-        provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
-    inst_params = getattr(inst, "params", None) if inst is not None else None
-    inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
-    raw_venue = (
-        getattr(provider, "name", None)
-        or getattr(inst, "provider_name", None)
-        or getattr(inst, "provider_label", None)
-        or "binance"
-    )
-    return order_guard.resolve_effective_bypass_guards(raw_venue, bypass_guards=extra_bypass, inst_bypass=inst_bg)
-
-
-def _eval_reentry_buy_quantity_decision(
-    inst, provider, symbol: str, current_price: float, requested_qty: float, reentry_bg: set[str]
-):
-    bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
-    base_asset, quote_asset = resolve_assets(symbol, getattr(inst, "base", None), getattr(inst, "quote", None))
-    decision = provider.quantity_decision(
-        symbol, "BUY", current_price, requested_qty,
-        base=base_asset, quote=quote_asset,
-        cancelorders=True, hours=float(MT_BUY_SAFEBACK_HOURS),
-        apply_policy=not bypass_qlimit1, market=False,
-    )
-    return decision, quote_asset
-
-
 _REENTRY_BELOW_SELL_BYPASS_GUARDS = frozenset({"all"})
 
 
-def _validate_scaled_buy_qty(
-    provider, symbol: str, current_price: float, raw_qty: float, scale: float,
-    min_qty: float, prefix_msg: str, qty_label: str = "scaled qty",
-) -> Tuple[bool, float]:
-    scaled_qty = round_provider_qty(provider, symbol, raw_qty * scale)
-    if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
-        print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} below min_qty {min_qty} (scale={scale:.2f})")
-        return False, scaled_qty
-    scaled_refusal = check_order_filter_refusal(
-        provider, symbol, "BUY", current_price, scaled_qty,
-        market=False, enforce_business_minimum=True,
-    )
-    if scaled_refusal:
-        print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} (scale={scale:.2f}) refused by filter ({scaled_refusal})")
-        return False, scaled_qty
-    return True, scaled_qty
-
-
 def _can_pass_buy_quantity_policy(
-    inst,
-    symbol: str,
-    current_price: float,
-    requested_qty: float,
-    min_qty: float = 0.0,
-    sell_price: Optional[float] = None,
+    inst, symbol: str, current_price: float, requested_qty: float,
+    min_qty: float = 0.0, sell_price: Optional[float] = None,
 ) -> bool:
     """Verify whether provider balance, 24h weight policy, and intelligence scaling permit a valid BUY quantity."""
     provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
@@ -1247,7 +1043,7 @@ def _can_pass_buy_quantity_policy(
         extra_bg = _REENTRY_BELOW_SELL_BYPASS_GUARDS if below_sell else {"G_PROF", "GLLM1"}
         reentry_bg = _resolve_inst_bypass_guards(inst, provider=provider, extra_bypass=extra_bg)
         decision, quote_asset = _eval_reentry_buy_quantity_decision(
-            inst, provider, symbol, current_price, requested_qty, reentry_bg
+            inst, provider, symbol, current_price, requested_qty, reentry_bg, buy_safeback_hours=MT_BUY_SAFEBACK_HOURS
         )
         if decision is None:
             return True
@@ -1301,15 +1097,9 @@ _POST_STOP_AI_NOT_ENFORCED: set[str] = set()
 
 
 def _apply_post_stop_ai_guard(
-    symbol: str,
-    current_price: float,
-    sell_price: float,
-    sell_time: float,
-    reentry_snap: ReentrySnapshot,
-    buy_budget: Optional[float],
-    buy_qty_cfg: Optional[float],
-    qty: float,
-    inst: Any = None,
+    symbol: str, current_price: float, sell_price: float, sell_time: float,
+    reentry_snap: ReentrySnapshot, buy_budget: Optional[float], buy_qty_cfg: Optional[float],
+    qty: float, inst: Any = None,
 ) -> tuple[bool, Optional[float], Optional[float], float]:
     """Validate post-STOP re-entry via Pillar 3 AI guard, returning (allowed, budget, cfg, qty)."""
     _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
@@ -1334,7 +1124,8 @@ def _apply_post_stop_ai_guard(
         if _has_live_quantity_policy(provider):
             try:
                 q_dec, _ = _eval_reentry_buy_quantity_decision(
-                    inst, provider, symbol, current_price, _est_qty, {"G_PROF", "GLLM1"} | caller_bg
+                    inst, provider, symbol, current_price, _est_qty, {"G_PROF", "GLLM1"} | caller_bg,
+                    buy_safeback_hours=MT_BUY_SAFEBACK_HOURS,
                 )
                 if q_dec is not None:
                     policy_qty = safe_nonneg_float(getattr(q_dec, "final_qty", 0.0), 0.0)
@@ -1385,15 +1176,8 @@ def _apply_post_stop_ai_guard(
 
 
 def _execute_reentry_buy(
-    inst,
-    symbol: str,
-    current_price: float,
-    buy_qty: float,
-    min_qty: float,
-    sbs: float,
-    last_exit_kind: str,
-    prev_reentry_state: dict,
-    applied_scale: float = 1.0,
+    inst, symbol: str, current_price: float, buy_qty: float, min_qty: float, sbs: float,
+    last_exit_kind: str, prev_reentry_state: dict, applied_scale: float = 1.0,
     sell_price: Optional[float] = None,
 ) -> bool:
     """Submit guarded re-entry BUY order and clear tracking state upon submission."""
@@ -1475,35 +1259,16 @@ def _resolve_mt_inst_cfg(inst):
 
 
 def _evaluate_mt_open_position(
-    inst,
-    symbol: str,
-    current_price: float,
-    buy_price: float,
-    owned_qty: float,
-    sellable_qty: float,
-    current_time_s: int,
-    prov_label: Optional[str],
-    gain_threshold: float,
-    lost_threshold: float,
-    hard_tp_pct: float,
-    hard_tp_frac: float,
-    hard_tp_cd: float,
-    min_qty: float,
-    sbs: float,
-    verbose: bool,
+    inst, symbol: str, current_price: float, buy_price: float, owned_qty: float,
+    sellable_qty: float, current_time_s: int, prov_label: Optional[str],
+    gain_threshold: float, lost_threshold: float, hard_tp_pct: float, hard_tp_frac: float,
+    hard_tp_cd: float, min_qty: float, sbs: float, verbose: bool,
 ) -> Tuple[bool, Optional[PositionExitManager], Optional[float], Optional[bool]]:
     """Evaluate open BUY position for Hard-TP, TP trend-ride, or SL bounce/execution."""
     snapshot = PositionSnapshot(
-        symbol=symbol,
-        current_price=current_price,
-        avg_buy_price=buy_price,
-        net_qty=owned_qty,
-        sellable_qty=sellable_qty,
-        current_time_s=current_time_s,
-        trend_up=False,
-        vol_1h=0.0,
-        vol_source="default",
-        provider=prov_label,
+        symbol=symbol, current_price=current_price, avg_buy_price=buy_price,
+        net_qty=owned_qty, sellable_qty=sellable_qty, current_time_s=current_time_s,
+        trend_up=False, vol_1h=0.0, vol_source="default", provider=prov_label,
     )
     if verbose:
         print(f"(increase: {snapshot.gain_pct}%, decrease: {snapshot.loss_pct}%)")
@@ -1581,107 +1346,14 @@ def _evaluate_mt_open_position(
     return False, exit_mgr, vol_1h, current_trend_up
 
 
-def _infer_mt_exit_kind(
-    symbol: str,
-    trade_orders_sell: list,
-    position_closed_by_sell: bool,
-    buy_price: Optional[float],
-    sell_price: float,
-    buy_time: float,
-    sell_time: float,
-    position: dict,
-    tp_ref: str,
-    lost_threshold: float,
-) -> str:
-    latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
-    latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
-    is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
-    explicit_exit_kind = _LAST_EXIT_KIND.get(symbol) or (latest_sell_kind or None)
-    if (
-        not explicit_exit_kind
-        and position_closed_by_sell
-        and not is_ai_sell
-        and buy_price
-        and sell_time >= buy_time
-    ):
-        cycle_buy_px = float(
-            position.get("last_cycle_buy_price")
-            or position.get("active_average_buy_price")
-            or buy_price
-            or 0.0
-        )
-        ref_buy_px = (cycle_buy_px or float(buy_price)) if tp_ref == "average" else float(buy_price)
-        tol_factor = 1.0 - min(lost_threshold * 0.25, 0.002)
-        if sell_price < float(buy_price) * tol_factor and sell_price < ref_buy_px * tol_factor:
-            explicit_exit_kind = "STOP"
-            _LAST_EXIT_KIND[symbol] = "STOP"
-    return "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
-
-
-def _update_mt_reentry_state(symbol: str, sell_price: float, current_price: float, current_time_s: int, sell_time: float) -> dict:
-    sell_time_clean = safe_pos_float(sell_time, default=None)
-    prev_reentry_state = dict(_REENTRY_STATE.get(symbol, {}))
-    if prev_reentry_state and sell_time_clean is not None:
-        state_sell_time = safe_pos_float(prev_reentry_state.get("sell_time"), default=None)
-        state_started_at = safe_pos_float(prev_reentry_state.get("started_at"), default=None)
-        if (
-            (state_sell_time is not None and state_sell_time != sell_time_clean)
-            or (state_sell_time is None and state_started_at is not None and state_started_at < sell_time_clean)
-        ):
-            prev_reentry_state = {}
-            _REENTRY_STATE.pop(symbol, None)
-    if not prev_reentry_state:
-        prev_reentry_state = {
-            "trough": min(sell_price, current_price),
-            "peak": max(sell_price, current_price),
-            "peak_bounce": current_price,
-            "started_at": current_time_s,
-            "sell_time": sell_time_clean,
-        }
-    else:
-        if sell_time_clean is not None and safe_pos_float(prev_reentry_state.get("sell_time"), default=None) is None:
-            prev_reentry_state["sell_time"] = sell_time_clean
-        prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sell_price, current_price))
-        prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=current_price)
-        if current_price < prev_trough:
-            prev_reentry_state["trough"] = current_price
-            prev_reentry_state["peak_bounce"] = current_price
-        else:
-            prev_reentry_state["trough"] = min(prev_trough, current_price)
-            prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, current_price)
-        prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sell_price, current_price))
-        prev_reentry_state["peak"] = max(prev_peak, current_price)
-    _REENTRY_STATE[symbol] = dict(prev_reentry_state)
-    return prev_reentry_state
-
-
 def _evaluate_mt_reentry(
-    inst,
-    symbol: str,
-    current_price: float,
-    buy_price: Optional[float],
-    sell_price: Optional[float],
-    buy_time: float,
-    sell_time: float,
-    trade_orders_sell: list,
-    position_closed_by_sell: bool,
-    position: dict,
-    tp_ref: str,
-    gain_threshold: float,
-    lost_threshold: float,
-    buy_budget: Optional[float],
-    buy_qty_cfg: Optional[float],
-    max_budget: Optional[float],
-    min_qty: float,
-    sbs: float,
-    avail_qty: float,
-    owned_qty: float,
-    isolation: str,
-    current_time_s: int,
-    exit_mgr: Optional[PositionExitManager],
-    vol_1h: Optional[float],
-    current_trend_up: Optional[bool],
-    verbose: bool,
+    inst, symbol: str, current_price: float, buy_price: Optional[float], sell_price: Optional[float],
+    buy_time: float, sell_time: float, trade_orders_sell: list, position_closed_by_sell: bool,
+    position: dict, tp_ref: str, gain_threshold: float, lost_threshold: float,
+    buy_budget: Optional[float], buy_qty_cfg: Optional[float], max_budget: Optional[float],
+    min_qty: float, sbs: float, avail_qty: float, owned_qty: float, isolation: str,
+    current_time_s: int, exit_mgr: Optional[PositionExitManager], vol_1h: Optional[float],
+    current_trend_up: Optional[bool], verbose: bool,
 ) -> bool:
     """Evaluate SELL history and execute post-exit re-entry BUY when eligible."""
     sell_price_f = safe_pos_float(sell_price, 0.0)
@@ -1709,8 +1381,11 @@ def _evaluate_mt_reentry(
     last_exit_kind = _infer_mt_exit_kind(
         symbol, trade_orders_sell, position_closed_by_sell,
         buy_price, sell_price, buy_time, sell_time, position, tp_ref, lost_threshold,
+        _LAST_EXIT_KIND,
     )
-    prev_reentry_state = _update_mt_reentry_state(symbol, sell_price, current_price, current_time_s, sell_time)
+    prev_reentry_state = _update_mt_reentry_state(
+        symbol, sell_price, current_price, current_time_s, sell_time, _REENTRY_STATE
+    )
 
     reentry_snap = ReentrySnapshot(
         symbol=symbol,

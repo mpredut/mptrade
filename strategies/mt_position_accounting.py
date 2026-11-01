@@ -1,17 +1,38 @@
-"""Stateless spot position accounting, order summarization, and trade fill tracking helpers
-for ``monitortrades.py``."""
+"""Stateless spot position accounting, order summarization, trade fill tracking,
+dust/filter checks, resting TP order management, and re-entry state helpers for ``monitortrades.py``."""
 from __future__ import annotations
 
 import builtins
-from typing import Any
+import math
+from typing import Any, Optional, Tuple
 
-from botcore import safe_pos_int
+from botcore import (
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
+from guard_hierarchy import GUARD_REGISTRY
+from instrument import Instrument as _Instrument
+import order_guard
+import order_retry
+from order_rollback import restore_cancelled_orders
 from providers.base import (
     extract_order_id,
     extract_order_price,
     extract_order_qty,
+    extract_order_side,
+    extract_remaining_qty,
     extract_timestamp_ms,
+    resolve_order_actor,
 )
+from providers.market_api import api as mkt
+from providers.quantity import (
+    check_order_filter_refusal,
+    resolve_assets,
+    round_provider_qty,
+)
+from strategies.position_exit_manager import PositionSnapshot
 import utils as u
 
 
@@ -80,12 +101,10 @@ def get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now
 def _summarize_orders(orders):
     if not orders:
         return 0.0, 0.0, (0, 0.0, 0.0, 0, 0)
-    total_qty = 0.0
-    total_val = 0.0
+    total_qty = total_val = 0.0
     latest_ts = 0
     for o in orders:
-        q = extract_order_qty(o)
-        p = extract_order_price(o)
+        q, p = extract_order_qty(o), extract_order_price(o)
         ts = extract_timestamp_ms(o, default=0) or 0
         if q > 0.0 and p > 0.0:
             total_qty += q
@@ -116,8 +135,7 @@ def _compute_spot_position(buy_orders, sell_orders) -> tuple[float, float, float
     if not buy_orders:
         return 0.0, 0.0, 0.0
     if not sell_orders:
-        tot_q = 0.0
-        tot_v = 0.0
+        tot_q = tot_v = 0.0
         for o in buy_orders:
             q, p = extract_order_qty(o), extract_order_price(o)
             if q > 0.0 and p > 0.0:
@@ -168,3 +186,260 @@ def _coerce_order_list(orders) -> list:
     if isinstance(orders, list):
         return orders
     return [] if orders is None or isinstance(orders, bool) else list(orders)
+
+
+def _inst_provider(inst: Any = None) -> Optional[str]:
+    """Resolve canonical provider label from an instrument instance or string."""
+    if inst is None or isinstance(inst, str):
+        return inst
+    lbl = getattr(inst, "provider_label", None) or getattr(inst, "provider_name", None)
+    if lbl:
+        return str(lbl)
+    raw = getattr(inst, "_provider", None)
+    return raw if isinstance(raw, str) else (getattr(raw, "name", None) or getattr(raw, "provider_label", None))
+
+
+def _as_instrument(x):
+    """Accept an Instrument or adapt a symbol string through the provider facade."""
+    if isinstance(x, _Instrument):
+        return x
+    sym_s = str(x)
+    return _Instrument(name=sym_s, symbol=sym_s, provider=mkt.provider_name_for(sym_s), base=u.base_asset(sym_s))
+
+
+def get_available_qty(symbol, api=None):
+    """Return free base quantity, preserving ``None`` when balance is unavailable."""
+    api = api or mkt
+    try:
+        value = _as_instrument(symbol).free() if api is mkt else api.free_balance(u.base_asset(symbol))
+        return safe_nonneg_float(value, default=None)
+    except Exception as e:
+        print(f"get_available_qty {symbol}: {e}")
+    return None
+
+
+def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
+    """Return True if an order refusal reason indicates un-sellable dust."""
+    if not reason:
+        return False
+    try:
+        return order_retry.is_terminal_filter_refusal(str(reason))
+    except Exception:
+        r = str(reason)
+        return r == "below_min_notional" or r.startswith(("filter_", "binance_filter_refused:"))
+
+
+def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: float, min_qty: float) -> bool:
+    """Return True if sellable_qty is zero or below venue minimum quantity/notional."""
+    if sellable_qty <= 0 or (min_qty > 0 and sellable_qty < min_qty):
+        return True
+    prov = getattr(inst, "_provider", None)
+    if prov is not None and current_price and current_price > 0:
+        refusal = check_order_filter_refusal(
+            prov, symbol, "SELL", current_price, sellable_qty,
+            market=True, enforce_business_minimum=False,
+        )
+        if _is_terminal_dust_refusal(refusal):
+            return True
+    return False
+
+
+def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
+    """Cancel open resting TP SELL orders to unlock balance for Stop-Loss; return cancelled orders."""
+    cancelled = []
+    try:
+        open_orders_fn = getattr(inst, "open_orders", None)
+        cancel_fn = getattr(inst, "cancel_order", None)
+        for active_ord in (open_orders_fn() if callable(open_orders_fn) else []) or []:
+            if extract_order_side(active_ord) == "SELL":
+                oid = extract_order_id(active_ord, default="")
+                if oid:
+                    print(f"[{symbol}] Cancelling open resting TP sell order {oid} to unlock coins for Stop-Loss")
+                    if callable(cancel_fn) and cancel_fn(oid) is not False:
+                        cancelled.append(active_ord)
+                        try:
+                            order_retry.resolve_accepted_order(symbol, oid)
+                        except Exception:
+                            pass
+    except Exception as cancel_exc:
+        print(f"[{symbol}] Warning: error checking/cancelling open TP orders: {cancel_exc}")
+    return cancelled
+
+
+def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], sellable_qty: float, sl_state: Optional[str]):
+    """Restore previously cancelled TP orders if Stop-Loss submission failed."""
+    if not cancelled_orders:
+        return
+    restore_cancelled_orders(
+        cancelled_orders,
+        restore_fn=lambda p: bool(
+            inst.place(
+                "SELL",
+                extract_order_price(p, default=0.0),
+                extract_remaining_qty(p, default=0.0),
+                kind="TP",
+                wait_for_trend=True,
+            )
+        ),
+        log_fn=lambda msg: print(f"[{symbol}] {msg}"),
+        reason=f"Stop-Loss was not placed (sellable_qty={sellable_qty}, state={sl_state})",
+    )
+
+
+def _state_matches_buy_price(state: Optional[dict], buy_price: Optional[float]) -> bool:
+    """Return False if state records a buy_price that differs from the current position's buy_price."""
+    if not state or buy_price is None or state.get("buy_price") is None:
+        return True
+    sb_f = safe_pos_float(state.get("buy_price"), default=None)
+    bp_f = safe_pos_float(buy_price, default=None)
+    return sb_f is not None and bp_f is not None and math.isclose(sb_f, bp_f, rel_tol=1e-6, abs_tol=1e-9)
+
+
+def _build_sl_bounce_state(snapshot: PositionSnapshot, bounce_started_f: Optional[float]) -> dict:
+    return {
+        "started_at": bounce_started_f if bounce_started_f is not None else snapshot.current_time_s,
+        "entry_loss": snapshot.loss_ratio,
+        "lowest_price": snapshot.current_price,
+        "peak_bounce_price": snapshot.current_price,
+        "min_loss": snapshot.loss_ratio,
+        "buy_price": snapshot.avg_buy_price,
+    }
+
+
+def _has_live_quantity_policy(provider: Any) -> bool:
+    return (
+        provider is not None
+        and not isinstance(provider, str)
+        and callable(getattr(provider, "quantity_decision", None))
+        and callable(getattr(provider, "free_balance", None))
+    )
+
+
+def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_bypass: Any = None) -> set[str]:
+    """Resolve normalized bypass guards combining venue margins, instrument params, and caller extras."""
+    if provider is None and inst is not None:
+        provider = getattr(inst, "provider", None) or getattr(inst, "_provider", None)
+    inst_params = getattr(inst, "params", None) if inst is not None else None
+    inst_bg = inst_params.get("bypass_guards") if isinstance(inst_params, dict) else None
+    raw_venue = (
+        getattr(provider, "name", None)
+        or getattr(inst, "provider_name", None)
+        or getattr(inst, "provider_label", None)
+        or "binance"
+    )
+    return order_guard.resolve_effective_bypass_guards(raw_venue, bypass_guards=extra_bypass, inst_bypass=inst_bg)
+
+
+def _eval_reentry_buy_quantity_decision(
+    inst, provider, symbol: str, current_price: float, requested_qty: float,
+    reentry_bg: set[str], buy_safeback_hours: float = 1.0,
+):
+    bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
+    base_asset, quote_asset = resolve_assets(symbol, getattr(inst, "base", None), getattr(inst, "quote", None))
+    decision = provider.quantity_decision(
+        symbol, "BUY", current_price, requested_qty,
+        base=base_asset, quote=quote_asset,
+        cancelorders=True, hours=float(buy_safeback_hours),
+        apply_policy=not bypass_qlimit1, market=False,
+    )
+    return decision, quote_asset
+
+
+def _validate_scaled_buy_qty(
+    provider, symbol: str, current_price: float, raw_qty: float, scale: float,
+    min_qty: float, prefix_msg: str, qty_label: str = "scaled qty",
+) -> Tuple[bool, float]:
+    scaled_qty = round_provider_qty(provider, symbol, raw_qty * scale)
+    if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
+        print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} below min_qty {min_qty} (scale={scale:.2f})")
+        return False, scaled_qty
+    scaled_refusal = check_order_filter_refusal(
+        provider, symbol, "BUY", current_price, scaled_qty,
+        market=False, enforce_business_minimum=True,
+    )
+    if scaled_refusal:
+        print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} (scale={scale:.2f}) refused by filter ({scaled_refusal})")
+        return False, scaled_qty
+    return True, scaled_qty
+
+
+def _infer_mt_exit_kind(
+    symbol: str,
+    trade_orders_sell: list,
+    position_closed_by_sell: bool,
+    buy_price: Optional[float],
+    sell_price: float,
+    buy_time: float,
+    sell_time: float,
+    position: dict,
+    tp_ref: str,
+    lost_threshold: float,
+    last_exit_kind_map: dict,
+) -> str:
+    latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
+    latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
+    is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
+    explicit_exit_kind = last_exit_kind_map.get(symbol) or (latest_sell_kind or None)
+    if (
+        not explicit_exit_kind
+        and position_closed_by_sell
+        and not is_ai_sell
+        and buy_price
+        and sell_time >= buy_time
+    ):
+        cycle_buy_px = float(
+            position.get("last_cycle_buy_price")
+            or position.get("active_average_buy_price")
+            or buy_price
+            or 0.0
+        )
+        ref_buy_px = (cycle_buy_px or float(buy_price)) if tp_ref == "average" else float(buy_price)
+        tol_factor = 1.0 - min(lost_threshold * 0.25, 0.002)
+        if sell_price < float(buy_price) * tol_factor and sell_price < ref_buy_px * tol_factor:
+            explicit_exit_kind = "STOP"
+            last_exit_kind_map[symbol] = "STOP"
+    return "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
+
+
+def _update_mt_reentry_state(
+    symbol: str,
+    sell_price: float,
+    current_price: float,
+    current_time_s: int,
+    sell_time: float,
+    reentry_state_map: dict,
+) -> dict:
+    sell_time_clean = safe_pos_float(sell_time, default=None)
+    prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
+    if prev_reentry_state and sell_time_clean is not None:
+        state_sell_time = safe_pos_float(prev_reentry_state.get("sell_time"), default=None)
+        state_started_at = safe_pos_float(prev_reentry_state.get("started_at"), default=None)
+        if (
+            (state_sell_time is not None and state_sell_time != sell_time_clean)
+            or (state_sell_time is None and state_started_at is not None and state_started_at < sell_time_clean)
+        ):
+            prev_reentry_state = {}
+            reentry_state_map.pop(symbol, None)
+    if not prev_reentry_state:
+        prev_reentry_state = {
+            "trough": min(sell_price, current_price),
+            "peak": max(sell_price, current_price),
+            "peak_bounce": current_price,
+            "started_at": current_time_s,
+            "sell_time": sell_time_clean,
+        }
+    else:
+        if sell_time_clean is not None and safe_pos_float(prev_reentry_state.get("sell_time"), default=None) is None:
+            prev_reentry_state["sell_time"] = sell_time_clean
+        prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sell_price, current_price))
+        prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=current_price)
+        if current_price < prev_trough:
+            prev_reentry_state["trough"] = current_price
+            prev_reentry_state["peak_bounce"] = current_price
+        else:
+            prev_reentry_state["trough"] = min(prev_trough, current_price)
+            prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, current_price)
+        prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sell_price, current_price))
+        prev_reentry_state["peak"] = max(prev_peak, current_price)
+    reentry_state_map[symbol] = dict(prev_reentry_state)
+    return prev_reentry_state

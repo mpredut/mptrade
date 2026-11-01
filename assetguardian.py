@@ -31,6 +31,7 @@ from instrument_registry import casefold_get, symbols_for
 # environment variables below. load_dotenv does not overwrite real environment.
 from botcore import (
     _parse_bool_flag,
+    clamp_float,
     exact_nonneg_int,
     load_dotenv as _load_dotenv,
     required_env,
@@ -40,87 +41,55 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    validate_required_env_keys,
 )
 from cachepaths import cache_path
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "config.env"))
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
 
 REQUIRED_CONFIG_KEYS = (
-    "AG_CHECK_INTERVAL_SEC",
-    "AG_REFERENCE_MINUTES_BACK",
-    "AG_BUY_USE_CASH_RATIO",
-    "AG_SELL_REARM_GROWTH_PCT",
-    "AG_ORDER_MAX_AGE_SEC",
-    "AG_RECOVERY_RESET_PCT",
-    "AG_NEAR_TRIGGER_SEC",
-    "AG_ACTIVE_TRIGGER_SEC",
-    "AG_NEAR_TRIGGER_DISTANCE_PCT",
-    "AG_TREND_DEFER_MAX_SEC",
-    "AG_ORDER_MISSING_CONFIRMATIONS",
-    "AG_PORTFOLIO_GROWTH_PCT",
-    "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT",
-    "AG_PORTFOLIO_SELL_ALLOCATION",
-    "AG_PORTFOLIO_SELL_MAX_DISCOUNT",
-    "AG_RTRADE_BLOCK_CANCEL_SEC",
-    "AG_P3B_MAX_AGE_SEC",
-    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT",
-    "AG_P3B_SELL_TRIM_MAX_DISCOUNT",
-    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT",
-    "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY",
+    "AG_CHECK_INTERVAL_SEC", "AG_REFERENCE_MINUTES_BACK", "AG_BUY_USE_CASH_RATIO",
+    "AG_SELL_REARM_GROWTH_PCT", "AG_ORDER_MAX_AGE_SEC", "AG_RECOVERY_RESET_PCT",
+    "AG_NEAR_TRIGGER_SEC", "AG_ACTIVE_TRIGGER_SEC", "AG_NEAR_TRIGGER_DISTANCE_PCT",
+    "AG_TREND_DEFER_MAX_SEC", "AG_ORDER_MISSING_CONFIRMATIONS", "AG_PORTFOLIO_GROWTH_PCT",
+    "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT", "AG_PORTFOLIO_SELL_ALLOCATION",
+    "AG_PORTFOLIO_SELL_MAX_DISCOUNT", "AG_RTRADE_BLOCK_CANCEL_SEC", "AG_P3B_MAX_AGE_SEC",
+    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT", "AG_P3B_SELL_TRIM_MAX_DISCOUNT",
+    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT", "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY",
 )
 
 
 def _validate_required_config_presence():
     """Abort startup with the complete list of missing mandatory settings."""
-    missing = [
-        name for name in REQUIRED_CONFIG_KEYS
-        if os.environ.get(name) is None or not str(os.environ[name]).strip()
-    ]
-    if missing:
-        raise ValueError(
-            "Missing or empty mandatory AssetGuardian settings: "
-            + ", ".join(missing))
+    validate_required_env_keys(REQUIRED_CONFIG_KEYS, label="AssetGuardian")
 
 
 _required_config = required_env
 _required_float_config = required_float_env
 _required_int_config = required_int_env
 
-
 # Every financial/operational parameter is mandatory in config.env.
 # There are deliberately no hidden code defaults: a missing key stops startup.
 _validate_required_config_presence()
 CHECK_INTERVAL_SECONDS = _required_float_config("AG_CHECK_INTERVAL_SEC")
-ASSET_REFERENCE_MINUTES_BACK_DEFAULT = _required_float_config(
-    "AG_REFERENCE_MINUTES_BACK")
+ASSET_REFERENCE_MINUTES_BACK_DEFAULT = _required_float_config("AG_REFERENCE_MINUTES_BACK")
 BUY_USE_CASH_RATIO = _required_float_config("AG_BUY_USE_CASH_RATIO")
-SELL_REARM_GROWTH_PERCENT = _required_float_config(
-    "AG_SELL_REARM_GROWTH_PCT")
+SELL_REARM_GROWTH_PERCENT = _required_float_config("AG_SELL_REARM_GROWTH_PCT")
 ORDER_MAX_AGE_SECONDS = _required_float_config("AG_ORDER_MAX_AGE_SEC")
 RECOVERY_RESET_PERCENT = _required_float_config("AG_RECOVERY_RESET_PCT")
 NEAR_TRIGGER_SECONDS = _required_float_config("AG_NEAR_TRIGGER_SEC")
 ACTIVE_TRIGGER_SECONDS = _required_float_config("AG_ACTIVE_TRIGGER_SEC")
-NEAR_TRIGGER_DISTANCE_PCT = _required_float_config(
-    "AG_NEAR_TRIGGER_DISTANCE_PCT")
+NEAR_TRIGGER_DISTANCE_PCT = _required_float_config("AG_NEAR_TRIGGER_DISTANCE_PCT")
 TREND_DEFER_MAX_SECONDS = _required_float_config("AG_TREND_DEFER_MAX_SEC")
 PORTFOLIO_GROWTH_PERCENT = _required_float_config("AG_PORTFOLIO_GROWTH_PCT")
-PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = _required_float_config(
-    "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
-PORTFOLIO_SELL_ALLOCATION = _required_float_config(
-    "AG_PORTFOLIO_SELL_ALLOCATION")
-PORTFOLIO_SELL_MAX_DISCOUNT = _required_float_config(
-    "AG_PORTFOLIO_SELL_MAX_DISCOUNT")
-RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config(
-    "AG_RTRADE_BLOCK_CANCEL_SEC")
+PORTFOLIO_ASSET_MIN_GROWTH_PERCENT = _required_float_config("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT")
+PORTFOLIO_SELL_ALLOCATION = _required_float_config("AG_PORTFOLIO_SELL_ALLOCATION")
+PORTFOLIO_SELL_MAX_DISCOUNT = _required_float_config("AG_PORTFOLIO_SELL_MAX_DISCOUNT")
+RTRADE_BLOCK_CANCEL_SECONDS = _required_float_config("AG_RTRADE_BLOCK_CANCEL_SEC")
 P3B_MAX_AGE_SECONDS = _required_float_config("AG_P3B_MAX_AGE_SEC")
-P3B_SELL_DEFENSIVE_MAX_DISCOUNT = _required_float_config(
-    "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT")
-P3B_SELL_TRIM_MAX_DISCOUNT = _required_float_config(
-    "AG_P3B_SELL_TRIM_MAX_DISCOUNT")
-P3B_BUY_ACCUMULATE_MAX_DISCOUNT = _required_float_config(
-    "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT")
-P3B_BUY_DEFENSIVE_MAX_PENALTY = _required_float_config(
-    "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
+P3B_SELL_DEFENSIVE_MAX_DISCOUNT = _required_float_config("AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT")
+P3B_SELL_TRIM_MAX_DISCOUNT = _required_float_config("AG_P3B_SELL_TRIM_MAX_DISCOUNT")
+P3B_BUY_ACCUMULATE_MAX_DISCOUNT = _required_float_config("AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT")
+P3B_BUY_DEFENSIVE_MAX_PENALTY = _required_float_config("AG_P3B_BUY_DEFENSIVE_MAX_PENALTY")
 
 
 def _parse_tiers(raw):
@@ -133,13 +102,7 @@ def _parse_tiers(raw):
 
 
 def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
-    """Build monotonically increasing tier allocations starting at ``initial_allocation``.
-
-    - ``mode='convex'`` (pyramid BUY scaling): distributes the surplus ``1 - n * w0``
-      using triangular numbers ``i*(i+1)/2``.
-    - ``mode='linear'`` (progressive SELL scaling): distributes the surplus linearly
-      using ``i``.
-    """
+    """Build monotonically increasing tier allocations starting at ``initial_allocation``."""
     n = int(count)
     if n <= 0:
         raise ValueError("tier count must be >= 1")
@@ -147,9 +110,7 @@ def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
         return (1.0,)
     w0 = safe_pos_float(initial_allocation, default=None)
     if w0 is None or w0 * n > 1.0 + 1e-12:
-        raise ValueError(
-            f"initial_allocation={initial_allocation!r} must be in (0, 1/{n}]"
-        )
+        raise ValueError(f"initial_allocation={initial_allocation!r} must be in (0, 1/{n}]")
     surplus = max(0.0, 1.0 - w0 * n)
     if mode == "convex":
         deltas = [i * (i + 1) / 2.0 for i in range(n)]
@@ -161,36 +122,20 @@ def _progressive_tier_allocations(count, initial_allocation, *, mode="convex"):
     if delta_sum <= 0:
         weights = [round(1.0 / n, 6) for _ in range(n - 1)]
     else:
-        weights = [
-            round(w0 + surplus * (deltas[i] / delta_sum), 6)
-            for i in range(n - 1)
-        ]
-    last_weight = round(1.0 - sum(weights), 6)
-    weights.append(last_weight)
+        weights = [round(w0 + surplus * (deltas[i] / delta_sum), 6) for i in range(n - 1)]
+    weights.append(round(1.0 - sum(weights), 6))
     return tuple(weights)
 
 
-def _build_dynamic_buy_tiers(
-    thresholds=None,
-    initial_allocation=None,
-):
+def _build_dynamic_buy_tiers(thresholds=None, initial_allocation=None):
     """Derive BUY drawdown thresholds and pyramid allocations dynamically from config bounds."""
     if thresholds is None:
-        count = max(
-            2,
-            round(
-                (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
-                / max(1e-6, PORTFOLIO_SELL_ALLOCATION)
-            ),
-        )
+        count = max(2, round((1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
         discount_floor = math.ceil(
             (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT)
             / max(1e-6, 1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
         )
-        first_thr = max(
-            RECOVERY_RESET_PERCENT + 2.0 * NEAR_TRIGGER_DISTANCE_PCT,
-            float(discount_floor),
-        )
+        first_thr = max(RECOVERY_RESET_PERCENT + 2.0 * NEAR_TRIGGER_DISTANCE_PCT, float(discount_floor))
         computed = [round(first_thr, 4)]
         for idx in range(1, count):
             step = RECOVERY_RESET_PERCENT + (idx - 1) * (0.5 * NEAR_TRIGGER_DISTANCE_PCT)
@@ -200,31 +145,16 @@ def _build_dynamic_buy_tiers(
         ordered = tuple(sorted(float(t) for t in thresholds))
     if initial_allocation is None:
         initial_allocation = min(PORTFOLIO_SELL_ALLOCATION, 1.0 / len(ordered))
-    allocations = _progressive_tier_allocations(
-        len(ordered), initial_allocation, mode="convex"
-    )
-    return tuple(zip(ordered, allocations))
+    return tuple(zip(ordered, _progressive_tier_allocations(len(ordered), initial_allocation, mode="convex")))
 
 
-def _build_dynamic_sell_tiers(
-    thresholds=None,
-    initial_allocation=None,
-):
+def _build_dynamic_sell_tiers(thresholds=None, initial_allocation=None):
     """Derive SELL growth thresholds and progressive allocations dynamically from config bounds."""
     if thresholds is None:
         count = max(2, round(1.0 / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
-        core_count = max(
-            2,
-            round(
-                (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT)
-                / max(1e-6, PORTFOLIO_SELL_ALLOCATION)
-            ),
-        )
+        core_count = max(2, round((1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) / max(1e-6, PORTFOLIO_SELL_ALLOCATION)))
         first_thr = float(
-            math.ceil(
-                PORTFOLIO_ASSET_MIN_GROWTH_PERCENT
-                / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT)
-            )
+            math.ceil(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT / max(1e-6, 1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT))
         )
         breakout_step = first_thr + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
         computed = [round(first_thr, 4)]
@@ -237,26 +167,17 @@ def _build_dynamic_sell_tiers(
     if initial_allocation is None:
         mean_alloc = 1.0 / len(ordered)
         initial_allocation = round(
-            mean_alloc * (1.0 - ((len(ordered) - 1) / 2.0) * PORTFOLIO_SELL_MAX_DISCOUNT),
-            6,
+            mean_alloc * (1.0 - ((len(ordered) - 1) / 2.0) * PORTFOLIO_SELL_MAX_DISCOUNT), 6
         )
-    allocations = _progressive_tier_allocations(
-        len(ordered), initial_allocation, mode="linear"
-    )
-    return tuple(zip(ordered, allocations))
+    return tuple(zip(ordered, _progressive_tier_allocations(len(ordered), initial_allocation, mode="linear")))
 
 
 BUY_TIERS = _build_dynamic_buy_tiers()
 SELL_TIERS = _build_dynamic_sell_tiers()
-# Only the shallowest buy tier (the first, smallest drawdown) respects the historical
-# price anti-chasing guard, so it will not chase a shallow dip that is still near a
-# recent high (as happened on the 241 TAO buy). Deeper tiers keep bypassing it: a large
-# drawdown is a genuine entry regardless of the recent-sell reference window.
 GUARDED_BUY_THRESHOLD = min((t for t, _ in BUY_TIERS), default=None)
 TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
 LEGACY_BUY_SYMBOL = sym.btcsymbol
-ORDER_MISSING_CONFIRMATIONS = _required_int_config(
-    "AG_ORDER_MISSING_CONFIRMATIONS")
+ORDER_MISSING_CONFIRMATIONS = _required_int_config("AG_ORDER_MISSING_CONFIRMATIONS")
 
 
 class AssetGuardianState:
@@ -269,16 +190,13 @@ class AssetGuardianState:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.lock_path):
             return load_json_state(
-                self.path, default_factory=dict, fail_closed=self.fail_closed,
-                label="AssetGuardian",
+                self.path, default_factory=dict, fail_closed=self.fail_closed, label="AssetGuardian"
             )
 
     def save(self, value):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with FileLock(self.lock_path):
-            save_json_state(
-                self.path, value, sort_keys=True, separators=(",", ":"),
-            )
+            save_json_state(self.path, value, sort_keys=True, separators=(",", ":"))
 
 
 STATE = AssetGuardianState()
@@ -289,6 +207,21 @@ _last_evaluation = {
 _local_price_samples = {symbol: [] for symbol in TRACKED_SYMBOLS}
 
 
+def _validate_tier_table(tiers, name: str, *, exact_sum: bool = False):
+    if not tiers or any(
+        safe_pos_float(threshold, default=None) is None or safe_pos_float(allocation, default=None) is None
+        for threshold, allocation in tiers
+    ):
+        raise ValueError(f"{name} must contain positive threshold:allocation pairs")
+    if len({threshold for threshold, _ in tiers}) != len(tiers):
+        raise ValueError(f"{name} contains duplicate thresholds")
+    total_w = sum(allocation for _, allocation in tiers)
+    if exact_sum and abs(total_w - 1.0) > 1e-12:
+        raise ValueError(f"the {name} weights must sum to exactly 1")
+    if not exact_sum and total_w > 1.0 + 1e-12:
+        raise ValueError(f"the {name} weights sum exceeds 1")
+
+
 def _validate_config():
     if CHECK_INTERVAL_SECONDS <= 0:
         raise ValueError("AG_CHECK_INTERVAL_SEC must be > 0")
@@ -296,43 +229,25 @@ def _validate_config():
         raise ValueError("AG_REFERENCE_MINUTES_BACK must be > 0")
     if not 0 < BUY_USE_CASH_RATIO <= 1:
         raise ValueError("AG_BUY_USE_CASH_RATIO must be in (0, 1]")
-    if not BUY_TIERS or any(
-            safe_pos_float(threshold, default=None) is None
-            or safe_pos_float(allocation, default=None) is None
-            for threshold, allocation in BUY_TIERS):
-        raise ValueError("AG_BUY_TIERS must contain positive threshold:allocation pairs")
-    if len({threshold for threshold, _ in BUY_TIERS}) != len(BUY_TIERS):
-        raise ValueError("AG_BUY_TIERS contains duplicate thresholds")
-    if sum(allocation for _, allocation in BUY_TIERS) > 1.0 + 1e-12:
-        raise ValueError("the AG_BUY_TIERS weights sum exceeds 1")
-    if not SELL_TIERS or any(
-            safe_pos_float(threshold, default=None) is None
-            or safe_pos_float(allocation, default=None) is None
-            for threshold, allocation in SELL_TIERS):
-        raise ValueError("AG_SELL_TIERS must contain positive threshold:allocation pairs")
-    if len({threshold for threshold, _ in SELL_TIERS}) != len(SELL_TIERS):
-        raise ValueError("AG_SELL_TIERS contains duplicate thresholds")
-    if abs(sum(allocation for _, allocation in SELL_TIERS) - 1.0) > 1e-12:
-        raise ValueError("the AG_SELL_TIERS weights must sum to exactly 1")
-    if (SELL_REARM_GROWTH_PERCENT <= 0
-            or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]):
-        raise ValueError(
-            "AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
+    _validate_tier_table(BUY_TIERS, "AG_BUY_TIERS", exact_sum=False)
+    _validate_tier_table(SELL_TIERS, "AG_SELL_TIERS", exact_sum=True)
+    if SELL_REARM_GROWTH_PERCENT <= 0 or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]:
+        raise ValueError("AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
     if ORDER_MAX_AGE_SECONDS <= 0:
         raise ValueError("AG_ORDER_MAX_AGE_SEC must be finite and > 0")
     if ORDER_MISSING_CONFIRMATIONS <= 0:
         raise ValueError("AG_ORDER_MISSING_CONFIRMATIONS must be an integer and > 0")
-    # An empty explicit role selection disables evaluations without adding assets.
     for value, name in (
-            (RECOVERY_RESET_PERCENT, "AG_RECOVERY_RESET_PCT"),
-            (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
-            (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
-            (NEAR_TRIGGER_DISTANCE_PCT, "AG_NEAR_TRIGGER_DISTANCE_PCT"),
-            (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
-            (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
-            (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
-            (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
-            (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC")):
+        (RECOVERY_RESET_PERCENT, "AG_RECOVERY_RESET_PCT"),
+        (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
+        (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
+        (NEAR_TRIGGER_DISTANCE_PCT, "AG_NEAR_TRIGGER_DISTANCE_PCT"),
+        (TREND_DEFER_MAX_SECONDS, "AG_TREND_DEFER_MAX_SEC"),
+        (PORTFOLIO_GROWTH_PERCENT, "AG_PORTFOLIO_GROWTH_PCT"),
+        (PORTFOLIO_ASSET_MIN_GROWTH_PERCENT, "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT"),
+        (RTRADE_BLOCK_CANCEL_SECONDS, "AG_RTRADE_BLOCK_CANCEL_SEC"),
+        (P3B_MAX_AGE_SECONDS, "AG_P3B_MAX_AGE_SEC"),
+    ):
         if value <= 0:
             raise ValueError(f"{name} must be finite and > 0")
     if not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
@@ -340,26 +255,19 @@ def _validate_config():
     if not 0 < PORTFOLIO_SELL_MAX_DISCOUNT <= 0.50:
         raise ValueError("AG_PORTFOLIO_SELL_MAX_DISCOUNT must be in (0, 0.50]")
     if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
-        raise ValueError(
-            "AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
+        raise ValueError("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
     if not 0 < P3B_SELL_DEFENSIVE_MAX_DISCOUNT <= 0.50:
-        raise ValueError(
-            "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT must be in (0, 0.50]")
+        raise ValueError("AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT must be in (0, 0.50]")
     if not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT:
-        raise ValueError(
-            "AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
+        raise ValueError("AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
     if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
-        raise ValueError(
-            "Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
+        raise ValueError("Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
     if not 0 < P3B_BUY_ACCUMULATE_MAX_DISCOUNT <= 0.50:
-        raise ValueError(
-            "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT must be in (0, 0.50]")
+        raise ValueError("AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT must be in (0, 0.50]")
     if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
-        raise ValueError(
-            "Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
+        raise ValueError("Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
     if not 0 < P3B_BUY_DEFENSIVE_MAX_PENALTY <= 1.0:
-        raise ValueError(
-            "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY must be in (0, 1.0]")
+        raise ValueError("AG_P3B_BUY_DEFENSIVE_MAX_PENALTY must be in (0, 1.0]")
 
 
 _validate_config()
@@ -381,7 +289,7 @@ def _finite_float(raw, *, positive=False):
 
 
 def _clamp_confidence(raw) -> float:
-    return min(1.0, safe_nonneg_float(raw, default=0.0))
+    return clamp_float(raw, 0.0, 1.0, default=0.0)
 
 
 def _price_row(row):
@@ -429,35 +337,17 @@ def _volatility_mult_bounds():
 
 
 def _compute_symbol_volatility_multiplier(
-    normalized_rows,
-    *,
-    bucket_sec=None,
-    ref_step_pct=None,
-    min_mult=None,
-    max_mult=None,
+    normalized_rows, *, bucket_sec=None, ref_step_pct=None, min_mult=None, max_mult=None,
 ):
-    """Compute a bounded per-symbol 24h volatility multiplier around 1.0.
-
-    - Uses bucketed absolute returns over the rolling window (defaulting bucket
-      width to ``ORDER_MAX_AGE_SECONDS`` and reference step to Brownian scaling of
-      the recovery/near-trigger band across ``ASSET_REFERENCE_MINUTES_BACK_DEFAULT``).
-    - Returns ``1.0`` when price history is sparse (< 60 samples, < 2h span, or
-      < 8 buckets), keeping unit tests and cold-start evaluations deterministic.
-    """
+    """Compute a bounded per-symbol 24h volatility multiplier around 1.0."""
     if bucket_sec is None:
         bucket_sec = max(60.0, float(ORDER_MAX_AGE_SECONDS))
     if ref_step_pct is None:
-        buckets_per_window = max(
-            1.0, (float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT) * 60.0) / bucket_sec
-        )
-        ref_step_pct = (
-            RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT
-        ) / math.sqrt(buckets_per_window)
+        buckets_per_window = max(1.0, (float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT) * 60.0) / bucket_sec)
+        ref_step_pct = (RECOVERY_RESET_PERCENT + 0.5 * NEAR_TRIGGER_DISTANCE_PCT) / math.sqrt(buckets_per_window)
     default_min, default_max = _volatility_mult_bounds()
-    if min_mult is None:
-        min_mult = default_min
-    if max_mult is None:
-        max_mult = default_max
+    min_mult = default_min if min_mult is None else min_mult
+    max_mult = default_max if max_mult is None else max_mult
     if not isinstance(normalized_rows, (list, tuple)) or len(normalized_rows) < 60:
         return 1.0
     ordered = sorted(
@@ -472,9 +362,7 @@ def _compute_symbol_volatility_multiplier(
     )
     if len(ordered) < 60 or (ordered[-1][0] - ordered[0][0]) < 8.0 * bucket_sec:
         return 1.0
-    buckets = {}
-    for ts, px in ordered:
-        buckets[int(ts // bucket_sec)] = px
+    buckets = {int(ts // bucket_sec): px for ts, px in ordered}
     bucket_prices = [buckets[k] for k in sorted(buckets)]
     if len(bucket_prices) < 8:
         return 1.0
@@ -488,13 +376,12 @@ def _compute_symbol_volatility_multiplier(
     mean_abs_ret_pct = sum(abs_returns) / len(abs_returns)
     if mean_abs_ret_pct <= 0 or ref_step_pct <= 0:
         return 1.0
-    raw_mult = (mean_abs_ret_pct / ref_step_pct) ** 0.5
-    return round(max(min_mult, min(max_mult, raw_mult)), 4)
+    return round(clamp_float((mean_abs_ret_pct / ref_step_pct) ** 0.5, min_mult, max_mult, default=1.0), 4)
 
 
 def _clamp_volatility_mult(val) -> float:
     min_mult, max_mult = _volatility_mult_bounds()
-    return max(min_mult, min(max_mult, safe_pos_float(val, default=1.0)))
+    return clamp_float(safe_pos_float(val, default=1.0), min_mult, max_mult, default=1.0)
 
 
 def _symbol_volatility_mult(symbol):
@@ -732,6 +619,11 @@ def _trigger_threshold_for_buy_tier(
 _LAST_SUBMIT_OUTCOME: dict = {}
 
 
+def _refuse_submit(reason: str, ret_val=None):
+    _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason=reason)
+    return ret_val
+
+
 def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
     """Submit one explicit SELL tier and return the native order response."""
     _LAST_SUBMIT_OUTCOME.clear()
@@ -740,43 +632,37 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
         provider = mkt.provider_by_name("binance")
         if provider is None:
             print(f"[{symbol}] Binance provider unavailable; skip SELL fail-closed.")
-            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="provider_unavailable")
-            return None
+            return _refuse_submit("provider_unavailable", None)
         free_qty = _finite_float(provider.free_balance(base_asset), positive=True)
         requested_qty = _finite_float(qty, positive=True)
         price = _finite_float(current_price, positive=True)
     except Exception as e:
         print(f"ERROR preparing SELL for {symbol}: {e}")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="prepare_error")
-        return None
+        return _refuse_submit("prepare_error", None)
     if free_qty is None:
         print(f"[{symbol}] No valid free {base_asset} balance; skip SELL.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="no_free_balance")
-        return None
+        return _refuse_submit("no_free_balance", None)
     if requested_qty is None or price is None:
         print(f"[{symbol}] Invalid SELL price/quantity; skip SELL.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_price_or_qty")
-        return None
+        return _refuse_submit("invalid_price_or_qty", None)
     qty_to_sell = min(requested_qty, free_qty)
     if qty_to_sell <= 0:
         print(f"[{symbol}] SELL tier has no reconciled free quantity.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="zero_qty")
-        return None
+        return _refuse_submit("zero_qty", None)
     try:
         order = mkt.place(
             symbol, "SELL", price, qty_to_sell,
             force=False, smart=False, caller_owns_retry=True,
-            bypass_guards={"G_QLIMIT1"},
-            module="assetguardian",
-            wait_for_trend=True,
-            client_order_id=client_order_id,
+            bypass_guards={"G_QLIMIT1"}, module="assetguardian",
+            wait_for_trend=True, client_order_id=client_order_id,
             motivation=f"assetguardian_growth_exit_tier_{tier_threshold:g}",
-            _outcome_context=_LAST_SUBMIT_OUTCOME)
+            _outcome_context=_LAST_SUBMIT_OUTCOME,
+        )
         if order:
             print(
                 f" SELL tier submitted: {symbol} requested={requested_qty:.8f} "
-                f"free={free_qty:.8f} submitted_cap={qty_to_sell:.8f} "
-                f"clientOrderId={client_order_id}")
+                f"free={free_qty:.8f} submitted_cap={qty_to_sell:.8f} clientOrderId={client_order_id}"
+            )
             return order
         print(f" SELL tier not accepted: {symbol} qty={qty_to_sell}")
         return None
@@ -785,84 +671,62 @@ def sell_asset(symbol, qty, current_price, client_order_id, tier_threshold):
         return None
 
 
-def buy_with_all_cash(buy_symbol, cash_ratio=BUY_USE_CASH_RATIO,
-                      cash_amount=None, client_order_id=None,
-                      respect_guard=False):
+def buy_with_all_cash(
+    buy_symbol, cash_ratio=BUY_USE_CASH_RATIO, cash_amount=None, client_order_id=None, respect_guard=False
+):
     _LAST_SUBMIT_OUTCOME.clear()
     try:
         _, quote_asset = resolve_assets(buy_symbol)
         cash_ratio = _finite_float(cash_ratio, positive=True)
         if cash_ratio is None or cash_ratio > 1:
             print(f" Invalid cash ratio for buy: {cash_ratio}")
-            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_cash_ratio")
-            return False
+            return _refuse_submit("invalid_cash_ratio", False)
         provider = mkt.provider_by_name("binance")
         if provider is None:
             print(f"[{buy_symbol}] Binance provider unavailable; skip BUY fail-closed.")
-            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="provider_unavailable")
-            return False
-        free_cash = _finite_float(
-            provider.free_balance(quote_asset),
-            positive=True,
-        )
+            return _refuse_submit("provider_unavailable", False)
+        free_cash = _finite_float(provider.free_balance(quote_asset), positive=True)
         current_price = _finite_float(api.get_current_price(buy_symbol), positive=True)
     except Exception as e:
         print(f"ERROR preparing buy for {buy_symbol}: {e}")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="prepare_error")
-        return False
-    print(
-        f"[DEBUG] buy check symbol={buy_symbol}, quote={quote_asset}, "
-        f"free_cash={free_cash}, current_price={current_price}"
-    )
+        return _refuse_submit("prepare_error", False)
+    print(f"[DEBUG] buy check symbol={buy_symbol}, quote={quote_asset}, free_cash={free_cash}, current_price={current_price}")
 
     if free_cash is None:
         print(f" No valid available {quote_asset} balance; skip buy fail-closed.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="no_free_cash")
-        return False
+        return _refuse_submit("no_free_cash", False)
     if current_price is None:
         print(f" Invalid current price for {buy_symbol}.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_price")
-        return False
+        return _refuse_submit("invalid_price", False)
 
-    requested_cash = (free_cash * cash_ratio if cash_amount is None
-                      else _finite_float(cash_amount, positive=True))
+    requested_cash = free_cash * cash_ratio if cash_amount is None else _finite_float(cash_amount, positive=True)
     if requested_cash is None:
         print(" Invalid requested cash amount for buy.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="invalid_requested_cash")
-        return False
+        return _refuse_submit("invalid_requested_cash", False)
     cash_to_use = min(requested_cash, free_cash * BUY_USE_CASH_RATIO)
     qty = cash_to_use / current_price
     if qty <= 0:
         print(" Computed qty <= 0. Skip buy.")
-        _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason="zero_qty")
-        return False
+        return _refuse_submit("zero_qty", False)
 
     print(
         f" BUY trigger active -> symbol={buy_symbol}, using {cash_to_use:.6f} {quote_asset} "
         f"(safe cap {cash_ratio*100:.2f}% of free cash), qty={qty:.8f}"
     )
     try:
-        # AssetGuardian enforces its own staged campaign budget (0.20 -> 0.30 -> 0.50
-        # of initial_cash * AG_BUY_USE_CASH_RATIO), so it bypasses the 24h rolling
-        # weight limit (G_QLIMIT1) just like sell_asset does.
-        # respect_guard=True keeps the historical-price anti-chasing guard (G_PROF)
-        # and intelligence/LLM guards active on the shallowest tier; deeper tiers
-        # bypass G_PROF, G_QLIMIT1, and intelligence/LLM guards so crash drawdowns execute cleanly.
-        respect_guard_flag = _parse_bool_flag(respect_guard, default=False)
         bypass_guards = (
             {"G_QLIMIT1"}
-            if respect_guard_flag
+            if _parse_bool_flag(respect_guard, default=False)
             else {"G_PROF", "G_QLIMIT1", "G_QLIMIT2", "GI_OBOOK", "GI_WHALE", "GI_FUNDING", "GLLM1", "GLLM2", "GLLM3"}
         )
         order = mkt.place(
             buy_symbol, "BUY", current_price, qty,
             force=False, smart=False, caller_owns_retry=True,
-            bypass_guards=bypass_guards,
-            module="assetguardian",
-            wait_for_trend=True,
-            client_order_id=client_order_id,
+            bypass_guards=bypass_guards, module="assetguardian",
+            wait_for_trend=True, client_order_id=client_order_id,
             motivation="assetguardian_drawdown_buy",
-            _outcome_context=_LAST_SUBMIT_OUTCOME)
+            _outcome_context=_LAST_SUBMIT_OUTCOME,
+        )
         if order:
             print(f" BUY safe-order sent: {buy_symbol}, qty={qty:.8f}")
             return order
@@ -1592,51 +1456,31 @@ def _submit_campaign_tier(
 def _submit_sell_tier(symbol, current_price, tier, state):
     threshold, allocation, qty = tier
     return _submit_campaign_tier(
-        symbol,
-        "sell",
-        state,
-        threshold,
-        qty,
-        current_price,
-        _sell_client_order_id,
-        "ASSET_GUARDIAN_SELL_TIER",
-        {"threshold": threshold, "allocation": allocation},
-        "sell_not_accepted",
+        symbol, "sell", state, threshold, qty, current_price,
+        _sell_client_order_id, "ASSET_GUARDIAN_SELL_TIER",
+        {"threshold": threshold, "allocation": allocation}, "sell_not_accepted",
         lambda client_order_id: sell_asset(
             symbol, qty=qty, current_price=current_price,
-            client_order_id=client_order_id, tier_threshold=threshold),
+            client_order_id=client_order_id, tier_threshold=threshold,
+        ),
     )
 
 
 def _submit_buy_tier(symbol, current_price, cash_amount, tier, state):
     threshold, allocation = tier
-    # Only the first/shallowest dip tier respects the anti-chasing guard.
-    respect_guard = (GUARDED_BUY_THRESHOLD is not None
-                     and threshold == GUARDED_BUY_THRESHOLD)
+    respect_guard = GUARDED_BUY_THRESHOLD is not None and threshold == GUARDED_BUY_THRESHOLD
     cash_f = _finite_float(cash_amount, positive=True)
     px_f = _finite_float(current_price, positive=True)
     if cash_f is None or px_f is None:
         return False
     return _submit_campaign_tier(
-        symbol,
-        "buy",
-        state,
-        threshold,
-        cash_f / px_f,
-        current_price,
-        _buy_client_order_id,
-        "ASSET_GUARDIAN_BUY_TIER",
-        {
-            "threshold": threshold,
-            "allocation": allocation,
-            "requested_cash": cash_amount,
-        },
+        symbol, "buy", state, threshold, cash_f / px_f, current_price,
+        _buy_client_order_id, "ASSET_GUARDIAN_BUY_TIER",
+        {"threshold": threshold, "allocation": allocation, "requested_cash": cash_amount},
         "buy_not_accepted",
         lambda client_order_id: buy_with_all_cash(
-            buy_symbol=symbol,
-            cash_amount=cash_amount,
-            client_order_id=client_order_id,
-            respect_guard=respect_guard,
+            buy_symbol=symbol, cash_amount=cash_amount,
+            client_order_id=client_order_id, respect_guard=respect_guard,
         ),
     )
 
@@ -1646,11 +1490,9 @@ def _next_check_seconds():
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
     root = _load_state_root()
     if any(
-            any(isinstance(row.get(kind, {}).get("pending"), dict)
-                for kind in ("buy", "sell"))
-            for row in root["symbols"].values() if isinstance(row, dict)):
-        return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
-    if any(_rtrade_sell_block_since.values()):
+        any(isinstance(row.get(kind, {}).get("pending"), dict) for kind in ("buy", "sell"))
+        for row in root["symbols"].values() if isinstance(row, dict)
+    ) or any(_rtrade_sell_block_since.values()):
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
     sell_mult, buy_mult, _ = _p3b_threshold_multipliers()
     for symbol, evaluation in _last_evaluation.items():
@@ -1660,12 +1502,10 @@ def _next_check_seconds():
         buy_completed = _completed_tier_values(row.get("buy", {}))
         buy_next = next(
             (_trigger_threshold_for_buy_tier(threshold, buy_mult, volatility_mult=vol_mult)
-             for threshold, _ in BUY_TIERS
-             if threshold not in buy_completed),
+             for threshold, _ in BUY_TIERS if threshold not in buy_completed),
             None,
         )
-        if (drawdown is not None and buy_next is not None
-                and buy_next - max(0.0, -drawdown) <= NEAR_TRIGGER_DISTANCE_PCT):
+        if drawdown is not None and buy_next is not None and buy_next - max(0.0, -drawdown) <= NEAR_TRIGGER_DISTANCE_PCT:
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
         growth = evaluation.get("growth")
         pg = evaluation.get("portfolio_growth")
@@ -1673,34 +1513,68 @@ def _next_check_seconds():
         active_tiers = _effective_sell_tiers(pg, sell_mult=sell_mult)
         sell_next = next(
             (_trigger_threshold_for_sell_tier(threshold, sell_mult, pg, volatility_mult=vol_mult)
-             for threshold, _ in active_tiers
-             if threshold not in sell_completed),
+             for threshold, _ in active_tiers if threshold not in sell_completed),
             None,
         )
-        if (growth is not None and sell_next is not None
-                and sell_next - max(0.0, growth) <= NEAR_TRIGGER_DISTANCE_PCT):
+        if growth is not None and sell_next is not None and sell_next - max(0.0, growth) <= NEAR_TRIGGER_DISTANCE_PCT:
             return min(CHECK_INTERVAL_SECONDS, NEAR_TRIGGER_SECONDS)
     return CHECK_INTERVAL_SECONDS
+
+
+def _evaluate_buy_drawdown_branch(
+    symbol, current_price, drawdown_percent, maximum_row, buy_mult, vol_mult, p3b_assessment, evaluation
+):
+    first_buy_trigger = _trigger_threshold_for_buy_tier(BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult)
+    if drawdown_percent > -first_buy_trigger:
+        _clear_inactive_trend_defer(symbol, "buy", _symbol_campaign(symbol, "buy"))
+        return False
+    print(f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% <= -{first_buy_trigger:.4f}%). Checking staged BUY...")
+    provider = mkt.provider_by_name("binance")
+    _, quote_asset = resolve_assets(symbol)
+    free_cash = _finite_float(provider.free_balance(quote_asset), positive=True) if provider else None
+    if free_cash is None:
+        print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
+        return False
+    tier, campaign = _campaign_tier(symbol, abs(drawdown_percent), maximum_row, free_cash, p3b_assessment=p3b_assessment)
+    if tier is None:
+        print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
+        return False
+    threshold, allocation = tier
+    evaluation["pending_tier"] = True
+    if _finite_float(campaign.get("initial_cash"), positive=True) is None:
+        print(f"[{symbol}] Invalid campaign initial cash; reset fail-closed.")
+        _save_symbol_campaign(symbol, "buy", {})
+        return False
+    cash_amount, target_cash, prior_spent = _buy_remaining_cash(campaign, threshold, allocation)
+    if cash_amount is None:
+        print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
+        return False
+    if cash_amount <= max(1e-9, target_cash * 0.02):
+        _complete_campaign_tier(symbol, "buy", campaign, threshold)
+        print(f"[{symbol}] BUY tier -{threshold:.2f}% already funded by terminal partials ({prior_spent:.6f} quote); mark complete.")
+        return False
+    print(f"[{symbol}] BUY tier -{threshold:.2f}% allocation={allocation:.3f} cash_remaining={cash_amount:.6f}/{target_cash:.6f} USDC")
+    ready, campaign = _trend_defer_ready(symbol, "buy", "BUY", threshold, campaign)
+    if not ready:
+        return False
+    if _submit_buy_tier(symbol, current_price, cash_amount, tier, campaign):
+        evaluation["pending_tier"] = True
+        return True
+    return False
 
 
 def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     """Evaluate and possibly submit exactly one asset-specific SELL or BUY."""
     symbol = str(symbol or "").strip().upper()
     evaluation = _last_evaluation.setdefault(
-        symbol,
-        {"growth": None, "drawdown": None, "pending_tier": False, "volatility_mult": 1.0},
+        symbol, {"growth": None, "drawdown": None, "pending_tier": False, "volatility_mult": 1.0}
     )
     evaluation.update(growth=None, drawdown=None, pending_tier=False)
     if symbol not in TRACKED_SYMBOLS:
         print(f"[{symbol}] Invalid AssetGuardian symbol; skip evaluation.")
         return False
 
-    # Reconcile external truth before requiring fresh signal data. A stale/missing
-    # price must not prevent terminalizing an already submitted order, and a BUY
-    # recovery must never clear a pending intent before venue reconciliation.
-    for kind, reconcile in (
-            ("sell", _reconcile_pending_sell),
-            ("buy", _reconcile_pending_buy)):
+    for kind, reconcile in (("sell", _reconcile_pending_sell), ("buy", _reconcile_pending_buy)):
         campaign = _symbol_campaign(symbol, kind)
         if not campaign.get("pending"):
             continue
@@ -1709,17 +1583,13 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
             evaluation["pending_tier"] = True
             return False
         if pending_outcome == "terminal":
-            # One-cycle cooldown separates terminal/cancel accounting from a new
-            # signal and prevents cancel-partial from immediate resubmission.
             return False
 
     current_price = _finite_float(api.get_current_price(symbol), positive=True)
     if current_price is None:
         print(f"[{symbol}] Current price unavailable; skip evaluation.")
         return False
-    extrema = _get_symbol_window_extrema(
-        symbol, current_price, minutes_back=minutes_back)
-
+    extrema = _get_symbol_window_extrema(symbol, current_price, minutes_back=minutes_back)
     if not extrema:
         print(f"[{symbol}] No per-asset baseline for the last {minutes_back}m.")
         return False
@@ -1735,15 +1605,13 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     drawdown_percent = ((current_price - maximum_price) / maximum_price) * 100.0
     evaluation["drawdown"] = drawdown_percent
     if drawdown_percent > -RECOVERY_RESET_PERCENT and _symbol_campaign(symbol, "buy"):
-        print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; "
-              "rearm BUY campaign.")
+        print(f"[{symbol}] Drawdown recovered below {RECOVERY_RESET_PERCENT:.2f}%; rearm BUY campaign.")
         _save_symbol_campaign(symbol, "buy", {})
 
     provider = mkt.provider_by_name("binance")
     try:
         base_asset, _ = resolve_assets(symbol)
-        free_base_qty = (provider.free_balance(base_asset)
-                         if provider is not None else None)
+        free_base_qty = provider.free_balance(base_asset) if provider is not None else None
     except Exception as exc:
         print(f"[{symbol}] SELL balance unavailable; skip SELL fail-closed: {exc}")
         free_base_qty = None
@@ -1753,13 +1621,11 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     sell_mult, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
     sell_tier, sell_state, effective_growth = _sell_campaign_tier(
         symbol, current_price, minimum_row, free_base_qty, provider,
-        portfolio_growth_pct=portfolio_growth_pct,
-        p3b_assessment=p3b_assessment)
+        portfolio_growth_pct=portfolio_growth_pct, p3b_assessment=p3b_assessment,
+    )
     if sell_tier is None:
-        sell_state = _clear_inactive_trend_defer(
-            symbol, "sell", sell_state)
-    evaluation["growth"] = (
-        rolling_growth_percent if effective_growth is None else effective_growth)
+        sell_state = _clear_inactive_trend_defer(symbol, "sell", sell_state)
+    evaluation["growth"] = rolling_growth_percent if effective_growth is None else effective_growth
     frozen_trough = _finite_float(sell_state.get("trough_price"), positive=True)
     pg_str = f"{portfolio_growth_pct:.4f}%" if portfolio_growth_pct is not None else "n/a"
     p3b_conf = _clamp_confidence(p3b_assessment.get("confidence")) if isinstance(p3b_assessment, dict) else 0.0
@@ -1768,99 +1634,36 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
         f"(conf={p3b_conf:.2f},sell_x={sell_mult:.3f},buy_x={buy_mult:.3f})"
         if isinstance(p3b_assessment, dict) else "none(1.0x)"
     )
-    minutes_back_val = (
-        _finite_float(minutes_back, positive=True)
-        or float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
-    )
+    minutes_back_val = _finite_float(minutes_back, positive=True) or float(ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
     vol_mult = _symbol_volatility_mult(symbol)
     print(
         f"[{symbol}] price={current_price:.8f}, window_min/max="
         f"{minimum_price:.8f}/{maximum_price:.8f}, minutes_back={minutes_back_val:.1f}, "
         f"rolling_growth_from_min={rolling_growth_percent:.4f}%, "
-        f"sell_growth={evaluation['growth']:.4f}%, "
-        f"portfolio_growth={pg_str}, "
-        f"p3b={p3b_str}, "
-        f"vol_x={vol_mult:.3f}, "
-        f"frozen_sell_trough={frozen_trough}, "
-        f"drawdown_from_max={drawdown_percent:.4f}%"
+        f"sell_growth={evaluation['growth']:.4f}%, portfolio_growth={pg_str}, "
+        f"p3b={p3b_str}, vol_x={vol_mult:.3f}, "
+        f"frozen_sell_trough={frozen_trough}, drawdown_from_max={drawdown_percent:.4f}%"
     )
 
     if sell_tier is not None:
         threshold, allocation, qty = sell_tier
-        eff_sell_thr = _trigger_threshold_for_sell_tier(
-            threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult
-        )
+        eff_sell_thr = _trigger_threshold_for_sell_tier(threshold, sell_mult, portfolio_growth_pct, volatility_mult=vol_mult)
         print(
             f"[{symbol}] SELL tier +{threshold:.2f}% (trigger +{eff_sell_thr:.2f}%) "
             f"allocation={allocation:.3f} target_remaining={qty:.8f} base."
         )
         evaluation["pending_tier"] = True
-        ready, sell_state = _trend_defer_ready(
-            symbol, "sell", "SELL", threshold, sell_state)
+        ready, sell_state = _trend_defer_ready(symbol, "sell", "SELL", threshold, sell_state)
         if not ready:
             return False
-        accepted = _submit_sell_tier(
-            symbol, current_price=current_price, tier=sell_tier, state=sell_state)
-        if accepted:
-            evaluation["pending_tier"] = bool(
-                _symbol_campaign(symbol, "sell").get("pending"))
+        if _submit_sell_tier(symbol, current_price=current_price, tier=sell_tier, state=sell_state):
+            evaluation["pending_tier"] = bool(_symbol_campaign(symbol, "sell").get("pending"))
             return True
         return False
 
-    first_buy_trigger = _trigger_threshold_for_buy_tier(
-        BUY_TIERS[0][0], buy_mult, volatility_mult=vol_mult
+    return _evaluate_buy_drawdown_branch(
+        symbol, current_price, drawdown_percent, maximum_row, buy_mult, vol_mult, p3b_assessment, evaluation
     )
-    if drawdown_percent > -first_buy_trigger:
-        _clear_inactive_trend_defer(
-            symbol, "buy", _symbol_campaign(symbol, "buy"))
-    else:
-        print(
-            f"[{symbol}] Drawdown threshold reached ({drawdown_percent:.4f}% "
-            f"<= -{first_buy_trigger:.4f}%). Checking staged BUY..."
-        )
-        provider = mkt.provider_by_name("binance")
-        _, quote_asset = resolve_assets(symbol)
-        free_cash = (_finite_float(provider.free_balance(quote_asset), positive=True)
-                     if provider else None)
-        if free_cash is None:
-            print(f"[{symbol}] No valid {quote_asset} balance for staged BUY.")
-            return False
-        tier, campaign = _campaign_tier(
-            symbol, abs(drawdown_percent), maximum_row, free_cash,
-            p3b_assessment=p3b_assessment)
-        if tier is None:
-            print(f"[{symbol}] No uncompleted BUY tier at current drawdown.")
-            return False
-        threshold, allocation = tier
-        evaluation["pending_tier"] = True
-        initial_cash = _finite_float(campaign.get("initial_cash"), positive=True)
-        if initial_cash is None:
-            print(f"[{symbol}] Invalid campaign initial cash; reset fail-closed.")
-            _save_symbol_campaign(symbol, "buy", {})
-            return False
-        cash_amount, target_cash, prior_spent = _buy_remaining_cash(
-            campaign, threshold, allocation)
-        if cash_amount is None:
-            print(f"[{symbol}] Invalid BUY tier budget; preserve fail-closed.")
-            return False
-        if cash_amount <= max(1e-9, target_cash * 0.02):
-            _complete_campaign_tier(symbol, "buy", campaign, threshold)
-            print(
-                f"[{symbol}] BUY tier -{threshold:.2f}% already funded by "
-                f"terminal partials ({prior_spent:.6f} quote); mark complete.")
-            return False
-        print(f"[{symbol}] BUY tier -{threshold:.2f}% allocation={allocation:.3f} "
-              f"cash_remaining={cash_amount:.6f}/{target_cash:.6f} USDC")
-        ready, campaign = _trend_defer_ready(
-            symbol, "buy", "BUY", threshold, campaign)
-        if not ready:
-            return False
-        if _submit_buy_tier(
-                symbol, current_price, cash_amount, tier, campaign):
-            evaluation["pending_tier"] = True
-            return True
-
-    return False
 
 
 def evaluate_and_maybe_sell_or_buy(
