@@ -745,3 +745,29 @@ def load_local_module(
                 sys.modules[amb_name] = saved_mod
 
 
+def touch_heartbeat_file(
+    path: str | os.PathLike,
+    *,
+    last_ts: float = float("-inf"),
+    interval_sec: float = 30.0,
+    force: object = False,
+    now: float | None = None,
+) -> float:
+    """Touch a heartbeat file if ``force`` is truthy or ``interval_sec`` has elapsed; return updated ``last_ts``."""
+    force_flag = _parse_bool_flag(force, default=False)
+    now_val = safe_float(now, default=None)
+    now_m = _time.monotonic() if now_val is None else now_val
+    if not force_flag and now_m - last_ts < interval_sec:
+        return last_ts
+    try:
+        hb_path = str(path)
+        os.makedirs(os.path.dirname(hb_path), exist_ok=True)
+        with open(hb_path, "a", encoding="utf-8"):
+            pass
+        os.utime(hb_path, None)
+    except OSError:
+        return last_ts
+    return now_m
+
+
+

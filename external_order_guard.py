@@ -15,7 +15,7 @@ import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag
+from botcore import _parse_bool_flag, safe_float
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
@@ -235,3 +235,80 @@ def check_external_order_guards(
         return veto
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
+
+
+def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -> bool:
+    """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
+    try:
+        from order_guard import _load_margins, resolve_effective_bypass_guards
+        m = _load_margins()
+        for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
+            if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
+                return False
+        bypassed = resolve_effective_bypass_guards(venue, bypass_guards=bypass_guards, margins=m)
+        if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+def evaluate_whale_spread_flow(
+    symbol: str,
+    side: str,
+    *,
+    bypass_guards: Any = None,
+    enforced: Optional[bool] = None,
+) -> Tuple[bool, str]:
+    """Check if whale taker flow or OI divergence conflicts with initiating a spread round."""
+    side_u = (side or "").upper()
+    if side_u not in {"BUY", "SELL"}:
+        return False, "ok"
+    if not (is_gi_whale_enforced(bypass_guards) if enforced is None else enforced):
+        return False, "gi_whale_bypassed_or_off"
+    try:
+        collector = get_whale_collector()
+        if collector is None:
+            return False, "no_collector"
+        snap = collector.fetch(symbol, allow_network=False)
+        if snap is None:
+            return False, "no_snapshot"
+        ratio = safe_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0
+        oi_pct = safe_float(getattr(snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
+        div_regime = getattr(snap, "divergence_regime", None)
+        if side_u == "BUY":
+            if 0.0 < ratio < 0.80:
+                return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"
+            if div_regime == "aggressive_shorting":
+                return True, f"aggressive_shorting_divergence (OI={oi_pct:+.1f}%)"
+        else:
+            if ratio > 1.25:
+                return True, f"taker_buy_dominance (ratio={ratio:.2f} > 1.25)"
+            if div_regime in ("short_squeeze", "short_squeeze_primed"):
+                return True, f"short_squeeze_divergence (OI={oi_pct:+.1f}%)"
+    except Exception as exc:
+        return False, f"error:{exc}"
+    return False, "ok"
+
+
+def resolve_whale_spread_adjustment(
+    symbol: str,
+    base_adjustment: float,
+    *,
+    bypass_guards: Any = None,
+    enforced: Optional[bool] = None,
+) -> float:
+    """Widen grid quote adjustment when moderate taker flow pressure exists."""
+    if not (is_gi_whale_enforced(bypass_guards) if enforced is None else enforced):
+        return base_adjustment
+    try:
+        collector = get_whale_collector()
+        if collector is not None:
+            snap = collector.fetch(symbol, allow_network=False)
+            ratio = (safe_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0) if snap is not None else 0.0
+            if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
+                return base_adjustment * 1.5
+    except Exception:
+        pass
+    return base_adjustment
+

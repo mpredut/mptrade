@@ -1,40 +1,21 @@
+import math
 import os
 import sys
+import threading
 import time
-import math
 import uuid
 from collections import deque
-import threading
-from decimal import Decimal, ROUND_DOWN
 from concurrent.futures import ThreadPoolExecutor, wait
+from decimal import Decimal, ROUND_DOWN
 
 # Financial policy and operational invariants are documented in docs/RTRADE.md.
 # Effective configuration remains in config.env.
 
-
-# my imports
 import cacheManager as cm
-import order_guard
-import utils as u
 import external_order_guard as eog
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
-from instrument_registry import single_symbol_for
-from lock import trade_cooldown
+import utils as u
 from binance_api import bapi as api
-from binance_api import bapi_placeorder as po   # Retained for the dead-safe WeightLimitBlock path.
-from providers.base import extract_client_order_id, extract_order_id, extract_order_price
-from providers.market_api import api as mkt      # Single guarded Instrument.place proxy.
-from providers.execution_audit import AuditedStrategyExecutor
-from providers.quantity import balance_cap_quantity, decide_quantity
-from providers.strategy_executor import ProviderError, SubmissionRefused
-from market_regime import MarketRegimeDecision
-from order_retry import (
-    StrategyExecutorLifecycleApi,
-    TrackedOrderLifecycle,
-    propagate_submission_refusal,
-    resolve_accepted_order,
-)
-from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+from binance_api import bapi_placeorder as po
 from botcore import (
     _parse_bool_flag,
     exact_int,
@@ -48,9 +29,24 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    touch_heartbeat_file,
 )
-_finite_pos_float = safe_pos_float
 from cachepaths import cache_path, resolve_cachedb_filepath
+from instrument_registry import single_symbol_for
+from lock import trade_cooldown
+from market_regime import MarketRegimeDecision
+from order_retry import (
+    StrategyExecutorLifecycleApi,
+    TrackedOrderLifecycle,
+    propagate_submission_refusal,
+    resolve_accepted_order,
+)
+from providers.base import extract_client_order_id, extract_order_id, extract_order_price
+from providers.execution_audit import AuditedStrategyExecutor
+from providers.market_api import api as mkt
+from providers.quantity import balance_cap_quantity, decide_quantity
+from providers.strategy_executor import ProviderError, SubmissionRefused
+from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
 from strategies.rtrade_pair import (
     OrderSnapshot as PairOrderSnapshot,
     OrderTicket as PairOrderTicket,
@@ -58,6 +54,7 @@ from strategies.rtrade_pair import (
     PairPolicy,
 )
 
+_finite_pos_float = safe_pos_float
 
 _RTRADE_HEARTBEAT_PATH = cache_path("rtrade.heartbeat")
 _RTRADE_HEARTBEAT_INTERVAL_SEC = 30.0
@@ -66,87 +63,42 @@ _rtrade_heartbeat_lock = threading.Lock()
 _rtrade_heartbeat_last = float("-inf")
 
 
-
 def _touch_rtrade_heartbeat(*, force=False, now=None):
-    """Publish actual coordinator progress independently from buffered stdout.
-
-    The healthcheck must not infer liveness from ``rtrade.log``: normal trend and
-    placement backoffs can make that log quiet, while redirection can delay writes.
-    Touching from the bounded coordinator loop still detects a blocked API call or
-    dead loop, unlike a separate heartbeat thread that could outlive the work.
-    """
+    """Publish actual coordinator progress independently from buffered stdout."""
     global _rtrade_heartbeat_last
-    force_flag = _parse_bool_flag(force, default=False)
     now_val = safe_float(now, default=None)
-    now = time.monotonic() if now_val is None else now_val
+    now_m = time.monotonic() if now_val is None else now_val
     with _rtrade_heartbeat_lock:
-        if not force_flag and now - _rtrade_heartbeat_last < _RTRADE_HEARTBEAT_INTERVAL_SEC:
-            return
-        try:
-            hb_path = str(resolve_cachedb_filepath(_RTRADE_HEARTBEAT_PATH))
-            os.makedirs(os.path.dirname(hb_path), exist_ok=True)
-            with open(hb_path, "a", encoding="utf-8"):
-                pass
-            os.utime(hb_path, None)
-        except OSError:
-            # Trading must not stop because an observational heartbeat cannot be
-            # written. The healthcheck will surface the stale/missing file.
-            return
-        _rtrade_heartbeat_last = now
+        _rtrade_heartbeat_last = touch_heartbeat_file(
+            resolve_cachedb_filepath(_RTRADE_HEARTBEAT_PATH),
+            last_ts=_rtrade_heartbeat_last,
+            interval_sec=_RTRADE_HEARTBEAT_INTERVAL_SEC,
+            force=force,
+            now=now_m,
+        )
 
 
-# Load versioned, non-secret tuning parameters before reading the environment below.
-# ``botcore.load_dotenv`` does not overwrite variables already set in the real environment.
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "config.env"))
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
 
-# Seconds between cancel-and-recreate attempts.
 WAIT_FOR_ORDER = required_float_env("RTRADE_WAIT_FOR_ORDER_SEC")
 MIN_adjustment_percent = required_float_env("RTRADE_MIN_ADJUSTMENT_PCT")
-
-# Express each round's budget in quote currency. Calculate TAO quantity once from
-# the round's starting price.
 RTRADE_NOTIONAL_USDC = required_float_env("RTRADE_NOTIONAL_USDC")
-
-# Initial fractional spread estimate for filled prices before the first real fill.
 RTRADE_INITIAL_SPREAD_PCT = required_float_env("RTRADE_INITIAL_SPREAD_PCT")
-
-# Relaxation rate for adjustment_percent after the opposite side fills.
-# BUY and SELL are intentionally asymmetric.
 RTRADE_BUY_DECAY_PCT = required_float_env("RTRADE_BUY_DECAY_PCT")
 RTRADE_SELL_DECAY_PCT = required_float_env("RTRADE_SELL_DECAY_PCT")
-
-# Base hours window, divided by failure_count, for the desperate path after the
-# opposite side fills. BUY (0.3) and SELL (0.23) are intentionally asymmetric.
 RTRADE_BUY_DESPERATE_HOURS_BASE = required_float_env("RTRADE_BUY_DESPERATE_HOURS_BASE")
 RTRADE_SELL_DESPERATE_HOURS_BASE = required_float_env("RTRADE_SELL_DESPERATE_HOURS_BASE")
-
-# Shared BUY/SELL lookback for the desperate path (one hour plus 60 seconds).
 RTRADE_DESPERATE_SAFEBACK_SEC = required_float_env("RTRADE_DESPERATE_SAFEBACK_SEC")
-
-# Hours for the normal path before desperation. BUY waits longer than SELL.
 RTRADE_BUY_NORMAL_HOURS = required_float_env("RTRADE_BUY_NORMAL_HOURS")
 RTRADE_SELL_NORMAL_HOURS = required_float_env("RTRADE_SELL_NORMAL_HOURS")
-
-# Fractional price offset and hours window for the desperate follow-up immediately
-# after the opposite side fills. Shared by both directions.
 RTRADE_FOLLOWUP_OFFSET_PCT = required_float_env("RTRADE_FOLLOWUP_OFFSET_PCT")
 RTRADE_FOLLOWUP_HOURS = required_float_env("RTRADE_FOLLOWUP_HOURS")
 RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED = required_bool_env("RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED")
-
-# ``are_close`` tolerance for detecting a bad day when price crosses the reference,
-# plus the adjustment multiplier used then. Shared by both directions.
 RTRADE_BAD_DAY_TOLERANCE_PCT = required_float_env("RTRADE_BAD_DAY_TOLERANCE_PCT")
 RTRADE_BAD_DAY_MULTIPLIER = required_float_env("RTRADE_BAD_DAY_MULTIPLIER")
-
-# Epsilon preventing division by zero in profit/loss ratio calculations.
 RTRADE_ZERO_EPSILON = required_float_env("RTRADE_ZERO_EPSILON")
-
-# Maximum failures accepted before abandoning a BUY or SELL order.
 RTRADE_MAX_FAILURES = required_int_env("RTRADE_MAX_FAILURES")
-# Trend filter: this spread bot suffers adverse selection in a clear trend. It stays
-# idle when ``|gradient_recent| > K * epsilon`` over a short window, where epsilon is
-# the volatility-calibrated cacheManager noise floor. Controlled by a kill switch and threshold.
+
 RTRADE_TREND_FILTER_ENABLED = required_bool_env("RTRADE_TREND_FILTER_ENABLED")
 RTRADE_TREND_FILTER_K = required_float_env("RTRADE_TREND_FILTER_K")
 RTRADE_TREND_WINDOW_SEC = required_float_env("RTRADE_TREND_WINDOW_SEC")
@@ -154,8 +106,6 @@ RTRADE_TREND_OHLC_FALLBACK_ENABLED = required_bool_env("RTRADE_TREND_OHLC_FALLBA
 RTRADE_DYNAMIC_MARKET_EXIT_MODE = required_env("RTRADE_DYNAMIC_MARKET_EXIT_MODE").lower()
 RTRADE_EMERGENCY_HARD_STOP_PCT = required_float_env("RTRADE_EMERGENCY_HARD_STOP_PCT")
 
-# The new coordinator remains disabled until replay/walk-forward validation. When enabled,
-# one owner manages the pair and exposure; the legacy two-worker path remains behind the switch.
 RTRADE_PAIR_COORDINATOR_ENABLED = required_bool_env("RTRADE_PAIR_COORDINATOR_ENABLED")
 RTRADE_PAIR_POLL_SEC = required_float_env("RTRADE_PAIR_POLL_SEC")
 RTRADE_PAIR_MAX_ACTIVE_ROUNDS = required_int_env("RTRADE_PAIR_MAX_ACTIVE_ROUNDS")
@@ -167,10 +117,8 @@ RTRADE_PAIR_DIRECTIONS = tuple(
 )
 RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC = required_float_env("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC")
 RTRADE_PLACE_FAILURE_BACKOFF_SEC = required_float_env("RTRADE_PLACE_FAILURE_BACKOFF_SEC")
-RTRADE_INTENT_MISSING_CONFIRMATIONS = required_int_env(
-    "RTRADE_INTENT_MISSING_CONFIRMATIONS")
-RTRADE_INTENT_RECOVERY_HORIZON_SEC = required_float_env(
-    "RTRADE_INTENT_RECOVERY_HORIZON_SEC")
+RTRADE_INTENT_MISSING_CONFIRMATIONS = required_int_env("RTRADE_INTENT_MISSING_CONFIRMATIONS")
+RTRADE_INTENT_RECOVERY_HORIZON_SEC = required_float_env("RTRADE_INTENT_RECOVERY_HORIZON_SEC")
 RTRADE_FAST_FILL_RATIO = required_float_env("RTRADE_FAST_FILL_RATIO")
 RTRADE_MIN_EDGE_PCT = required_float_env("RTRADE_MIN_EDGE_PCT")
 RTRADE_SHOCK_HARD_STOP_PCT = required_float_env("RTRADE_SHOCK_HARD_STOP_PCT")
@@ -179,20 +127,18 @@ RTRADE_BYPASS_PROFIT_GUARD = required_bool_env("RTRADE_BYPASS_PROFIT_GUARD")
 
 
 def _validate_intent_recovery_config(
-        missing_confirmations=RTRADE_INTENT_MISSING_CONFIRMATIONS,
-        poll_sec=RTRADE_PAIR_POLL_SEC,
-        horizon_sec=RTRADE_INTENT_RECOVERY_HORIZON_SEC):
-    if (type(missing_confirmations) is not int
-            or missing_confirmations < 2):
-        raise ValueError(
-            "RTRADE_INTENT_MISSING_CONFIRMATIONS must be an integer >= 2")
+    missing_confirmations=RTRADE_INTENT_MISSING_CONFIRMATIONS,
+    poll_sec=RTRADE_PAIR_POLL_SEC,
+    horizon_sec=RTRADE_INTENT_RECOVERY_HORIZON_SEC,
+):
+    if type(missing_confirmations) is not int or missing_confirmations < 2:
+        raise ValueError("RTRADE_INTENT_MISSING_CONFIRMATIONS must be an integer >= 2")
     poll = safe_pos_float(poll_sec, default=None)
     horizon = safe_pos_float(horizon_sec, default=None)
     if poll is None:
         raise ValueError("RTRADE_PAIR_POLL_SEC must be finite and positive")
     if horizon is None or horizon < poll * missing_confirmations:
-        raise ValueError(
-            "RTRADE_INTENT_RECOVERY_HORIZON_SEC is too short")
+        raise ValueError("RTRADE_INTENT_RECOVERY_HORIZON_SEC is too short")
 
 
 _validate_intent_recovery_config()
@@ -207,8 +153,6 @@ class _LivePairVenue:
 
     def __init__(self, symbol, pair_store=None, *, recovery_clock=time.time):
         self.symbol = symbol
-        # Used only to release cooldown on cancellation. Rounds retain their own
-        # financial state, so a small LRU is sufficient here.
         self._known_tickets = deque(maxlen=max(32, RTRADE_PAIR_MAX_ACTIVE_ROUNDS * 8))
         self._last_place_failures = {}
         self._recovery_blocked_pairs = set()
@@ -219,19 +163,16 @@ class _LivePairVenue:
         self.executor = mkt.provider_by_name(provider_name)
         if self.executor is None:
             raise RuntimeError(f"provider executor unavailable for {symbol}")
-        self.audited_executor = AuditedStrategyExecutor(
-            self.executor, venue=provider_name)
+        self.audited_executor = AuditedStrategyExecutor(self.executor, venue=provider_name)
         self.pair_store = pair_store
         _validate_intent_recovery_config()
-        # A Binance client ID is deterministic for one pair leg. Require repeated
-        # observations on separate ticks, but never reuse an ambiguous submission ID.
         self.order_lifecycle = TrackedOrderLifecycle(
             StrategyExecutorLifecycleApi(self.executor),
-            provider_name=provider_name, venue=provider_name,
+            provider_name=provider_name,
+            venue=provider_name,
             missing_confirmations=RTRADE_INTENT_MISSING_CONFIRMATIONS,
             retry_on_lookup_error=False,
-            audit=(self.audited_executor.audit
-                   if self.pair_store is not None else None),
+            audit=self.audited_executor.audit if self.pair_store is not None else None,
         )
 
     def _set_pair_recovery_blocked(self, pair_id, blocked=True):
@@ -252,12 +193,16 @@ class _LivePairVenue:
                 f"-> total_blocked={len(self._recovery_blocked_pairs)} {list(self._recovery_blocked_pairs)}"
             )
 
+    def _mark_recovery_pending(self, pair_id, side: str) -> None:
+        if pair_id:
+            self._set_pair_recovery_blocked(pair_id)
+        self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
+
     def _pair_record(self, pair_id):
         if self.pair_store is None:
             return None
         return next(
-            (record for record in self.pair_store.active(self.symbol)
-             if record.get("pair_id") == pair_id),
+            (record for record in self.pair_store.active(self.symbol) if record.get("pair_id") == pair_id),
             None,
         )
 
@@ -268,8 +213,7 @@ class _LivePairVenue:
     def _pre_submit_refusal(intent):
         return (
             str(intent.get("submission_outcome") or "").lower() == "refused"
-            or str(intent.get("submit_status") or "").lower()
-            == "refused_before_submit"
+            or str(intent.get("submit_status") or "").lower() == "refused_before_submit"
         )
 
     def current_price(self):
@@ -277,7 +221,8 @@ class _LivePairVenue:
 
     def preflight_order(self, side, qty, price=None, *, market=False, kind=None):
         return self.audited_executor.preflight_order(
-            self.symbol, side, qty, price, market=_parse_bool_flag(market, default=False), kind=kind)
+            self.symbol, side, qty, price, market=_parse_bool_flag(market, default=False), kind=kind
+        )
 
     @staticmethod
     def _intent_id(pair_id, side, kind):
@@ -311,21 +256,19 @@ class _LivePairVenue:
     def _limit_revision(cls, kind):
         return cls._revision_from_kind(kind, "limit")
 
+    @classmethod
+    def _hard_stop_revision_from_kind(cls, kind):
+        return cls._revision_from_kind(kind, "hard_stop")
+
     def _persist_callback(self, pair_id, side, kind, requested_qty):
         if self.pair_store is None:
             return lambda _pending: None
-
-        def persist(pending):
-            self.pair_store.persist_intent(
-                pair_id, side, kind, pending,
-                symbol=self.symbol, start_side=side, qty=requested_qty)
-        return persist
+        return lambda pending: self.pair_store.persist_intent(
+            pair_id, side, kind, pending, symbol=self.symbol, start_side=side, qty=requested_qty
+        )
 
     def _remember_ticket(self, ticket):
-        if ticket is None:
-            return None
-        if not any(existing.order_id == ticket.order_id
-                   for existing in self._known_tickets):
+        if ticket is not None and not any(existing.order_id == ticket.order_id for existing in self._known_tickets):
             self._known_tickets.append(ticket)
         return ticket
 
@@ -334,66 +277,63 @@ class _LivePairVenue:
         if not order_id:
             return None
         ticket_price = _finite_pos_float(
-            pending.get("submitted_price")
-            or pending.get("requested_price"), 0.0)
-        if ticket_price <= 0:
-            # Old hard-stop intents stored no limit price. Use a live reference
-            # only to reconstruct the ticket; venue status remains authoritative
-            # for fill quantity, cost, and fees.
-            ticket_price = _finite_pos_float(self.current_price(), 0.0)
+            pending.get("submitted_price") or pending.get("requested_price"), 0.0
+        ) or _finite_pos_float(self.current_price(), 0.0)
+        kind = pending.get("kind")
+        rev = self._limit_revision(kind)
+        if rev is None:
+            rev = self._hard_stop_revision_from_kind(kind) or 0
         ticket = PairOrderTicket(
-            order_id=str(order_id), side=str(pending["side"]).upper(),
+            order_id=str(order_id),
+            side=str(pending["side"]).upper(),
             price=ticket_price,
-            qty=float(
-                pending.get("submitted_qty")
-                or pending.get("requested_qty")),
+            qty=float(pending.get("submitted_qty") or pending.get("requested_qty")),
             pair_id=pair_id,
-            revision=(
-                rev
-                if (rev := self._limit_revision(pending.get("kind"))) is not None
-                else self._hard_stop_revision_from_kind(pending.get("kind")) or 0
-            ),
+            revision=rev,
         )
         return self._remember_ticket(ticket)
 
-    def _submit_limit_intent(self, side, price, qty, pair_id, *, attempt=1,
-                             cache_permit=None, revision=0):
+    def _submit_limit_intent(self, side, price, qty, pair_id, *, attempt=1, cache_permit=None, revision=0):
         side = side.upper()
-        hours = (RTRADE_BUY_NORMAL_HOURS if side == "BUY"
-                 else RTRADE_SELL_NORMAL_HOURS)
+        hours = RTRADE_BUY_NORMAL_HOURS if side == "BUY" else RTRADE_SELL_NORMAL_HOURS
         store_kind = self._limit_kind(revision)
         client_id = rtrade_client_order_id(pair_id, side, store_kind)
         intent = self.order_lifecycle.new_intent(
             intent_id=self._intent_id(pair_id, side, store_kind),
-            client_order_id=client_id, symbol=self.symbol, side=side,
-            requested_qty=qty, requested_price=price, kind=store_kind,
+            client_order_id=client_id,
+            symbol=self.symbol,
+            side=side,
+            requested_qty=qty,
+            requested_price=price,
+            kind=store_kind,
             attempt=attempt,
             metadata={"pair_id": pair_id, "limit_revision": int(revision)},
         )
-        persist = self._persist_callback(
-            pair_id, side, store_kind, requested_qty=qty)
+        persist = self._persist_callback(pair_id, side, store_kind, requested_qty=qty)
         outcome_context = {}
 
         def submit_once():
             response = mkt.place(
-                self.symbol, side, price, qty,
-                force=False, cancelorders=False, hours=hours, smart=False,
+                self.symbol,
+                side,
+                price,
+                qty,
+                force=False,
+                cancelorders=False,
+                hours=hours,
+                smart=False,
                 cooldown_pair_id=pair_id,
                 bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
-                allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD and str(side).upper() == "SELL"),
-                # The coordinator owns retry/reconciliation. The global outbox
-                # must not later recreate a leg from an expired pair.
-                caller_owns_retry=True, motivation="rtrade_pair_quote",
+                allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD and side == "SELL"),
+                caller_owns_retry=True,
+                motivation="rtrade_pair_quote",
                 client_order_id=client_id,
                 _outcome_context=outcome_context,
                 cache_permit=cache_permit,
             )
             return propagate_submission_refusal(response, outcome_context)
 
-        result = self.order_lifecycle.submit(
-            intent, persist=persist,
-            submit=submit_once,
-        )
+        result = self.order_lifecycle.submit(intent, persist=persist, submit=submit_once)
         return self._ticket_from_pending(result.intent, pair_id), result.intent
 
     def _canonical_intent(self, record, stored):
@@ -403,41 +343,26 @@ class _LivePairVenue:
         kind = str(pending.get("kind") or "limit")
         requested_qty = pending.get("requested_qty", pending.get("qty"))
         requested_price = pending.get("requested_price", pending.get("price"))
-        att_int = safe_pos_int(pending.get("attempt"), default=1)
-        misses_int = safe_nonneg_int(pending.get("lookup_misses"), default=0)
         pending.update({
-            "intent_id": pending.get("intent_id")
-                         or self._intent_id(record["pair_id"], side, kind),
+            "intent_id": pending.get("intent_id") or self._intent_id(record["pair_id"], side, kind),
             "client_order_id": pending["client_order_id"],
             "symbol": pending.get("symbol") or record["symbol"],
             "side": side,
             "kind": kind,
             "requested_qty": float(requested_qty),
-            "requested_price": (None if requested_price is None
-                                else float(requested_price)),
-            "attempt": att_int,
-            "created_at": float(
-                pending.get("created_at") or record.get("created_ts")
-                or time.time()),
-            "lookup_misses": misses_int,
+            "requested_price": None if requested_price is None else float(requested_price),
+            "attempt": safe_pos_int(pending.get("attempt"), default=1),
+            "created_at": float(pending.get("created_at") or record.get("created_ts") or time.time()),
+            "lookup_misses": safe_nonneg_int(pending.get("lookup_misses"), default=0),
             "pair_id": pending.get("pair_id") or record["pair_id"],
         })
         return pending
 
     def recover_intent(self, record, stored):
-        """Recover one fsynced pair intent without guessing venue state.
-
-        Lookup/status ambiguity leaves the round active and blocks new rounds.
-        Missing-order confirmations happen on separate configured coordinator
-        ticks. Even confirmed absence never permits reuse of an ambiguous client
-        order ID because Binance may eventually expose an accepted terminal order.
-        """
+        """Recover one fsynced pair intent without guessing venue state."""
         pending = self._canonical_intent(record, stored)
-        side = pending["side"]
-        kind = pending["kind"]
-        pair_id = record["pair_id"]
-        persist_raw = self._persist_callback(
-            pair_id, side, kind, requested_qty=pending["requested_qty"])
+        side, kind, pair_id = pending["side"], pending["kind"], record["pair_id"]
+        persist_raw = self._persist_callback(pair_id, side, kind, requested_qty=pending["requested_qty"])
         now = safe_pos_float(self._recovery_clock(), default=None)
         if now is None:
             raise ValueError("rtrade recovery clock returned invalid time")
@@ -446,50 +371,45 @@ class _LivePairVenue:
             if recovery_started_at is not None:
                 r_started = safe_float(recovery_started_at, default=None)
                 if r_started is None:
-                    raise ValueError(
-                        f"{kind}:{side} has invalid recovery timing")
-                recovery_age = max(0.0, now - r_started)
-                if recovery_age >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
+                    raise ValueError(f"{kind}:{side} has invalid recovery timing")
+                if max(0.0, now - r_started) >= RTRADE_INTENT_RECOVERY_HORIZON_SEC:
                     pending["recovery_state"] = "horizon_exhausted"
                     pending["recovery_horizon_exhausted_at"] = now
                     persist_raw(pending)
-                    raise _IntentRecoveryPending(
-                        f"{kind}:{side} recovery horizon is exhausted")
-            if pending.get("recovery_state") in {
-                    "absence_confirmed_no_reuse", "horizon_exhausted"}:
+                    raise _IntentRecoveryPending(f"{kind}:{side} recovery horizon is exhausted")
+            if pending.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}:
                 persist_raw(pending)
-                raise _IntentRecoveryPending(
-                    f"{kind}:{side} requires manual reconciliation")
+                raise _IntentRecoveryPending(f"{kind}:{side} requires manual reconciliation")
             next_recovery_at = pending.get("next_recovery_at")
             if next_recovery_at is not None:
                 n_rec = safe_float(next_recovery_at, default=None)
                 if n_rec is None:
-                    raise ValueError(
-                        f"{kind}:{side} has invalid next recovery time")
+                    raise ValueError(f"{kind}:{side} has invalid next recovery time")
                 if now < n_rec:
-                    raise _IntentRecoveryPending(
-                        f"{kind}:{side} reconciliation is not due yet")
+                    raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
 
         retained = dict(pending)
 
         def persist(value):
             nonlocal retained
             if value is None:
-                retained["recovery_state"] = "absence_confirmed_no_reuse"
-                retained["absence_confirmed_at"] = now
-                retained["last_recovery_lookup_at"] = now
-                retained["next_recovery_at"] = now + RTRADE_PAIR_POLL_SEC
+                retained.update({
+                    "recovery_state": "absence_confirmed_no_reuse",
+                    "absence_confirmed_at": now,
+                    "last_recovery_lookup_at": now,
+                    "next_recovery_at": now + RTRADE_PAIR_POLL_SEC,
+                })
                 persist_raw(dict(retained))
                 return
             retained = dict(value)
             if retained.get("order_id"):
                 for field in (
-                        "lookup_error", "recovery_state", "recovery_started_at",
-                        "last_recovery_lookup_at", "next_recovery_at",
-                        "absence_confirmed_at", "recovery_horizon_exhausted_at"):
+                    "lookup_error", "recovery_state", "recovery_started_at",
+                    "last_recovery_lookup_at", "next_recovery_at",
+                    "absence_confirmed_at", "recovery_horizon_exhausted_at",
+                ):
                     retained.pop(field, None)
-            elif ("lookup_error" in retained
-                  or int(retained.get("lookup_misses") or 0) > 0):
+            elif "lookup_error" in retained or int(retained.get("lookup_misses") or 0) > 0:
                 retained.setdefault("recovery_started_at", now)
                 retained["last_recovery_lookup_at"] = now
                 retained["next_recovery_at"] = now + RTRADE_PAIR_POLL_SEC
@@ -497,17 +417,12 @@ class _LivePairVenue:
 
         persist_raw(pending)
         result = self.order_lifecycle.reconcile(pending, persist=persist)
-
         if result.outcome == "absent":
-            raise _IntentRecoveryPending(
-                f"{kind}:{side} absence is confirmed; client-ID reuse is blocked")
-
+            raise _IntentRecoveryPending(f"{kind}:{side} absence is confirmed; client-ID reuse is blocked")
         if not result.intent.get("order_id"):
-            raise _IntentRecoveryPending(
-                f"{kind}:{side} intent is ambiguous; lookup/status is unavailable")
+            raise _IntentRecoveryPending(f"{kind}:{side} intent is ambiguous; lookup/status is unavailable")
         if result.status is None:
-            raise _IntentRecoveryPending(
-                f"intent {kind}:{side} has an order_id but no available status")
+            raise _IntentRecoveryPending(f"intent {kind}:{side} has an order_id but no available status")
 
         ticket = self._ticket_from_pending(result.intent, pair_id)
         snapshot = PairOrderSnapshot(
@@ -520,17 +435,12 @@ class _LivePairVenue:
 
     def _reconcile_existing_intent(self, pair_id, side, kind):
         """Return state, ticket, and snapshot for one persisted submit slot."""
-        if self.pair_store is None:
-            return "none", None, None
-        record = self._pair_record(pair_id)
-        if record is None:
-            return "none", None, None
-        stored = record.get("intents", {}).get(f"{kind}:{side}")
+        record = self._pair_record(pair_id) if self.pair_store is not None else None
+        stored = record.get("intents", {}).get(f"{kind}:{side}") if record else None
         if stored is None:
             return "none", None, None
         if self._pre_submit_refusal(stored):
-            self.pair_store.persist_intent(
-                pair_id, side, kind, None, symbol=self.symbol)
+            self.pair_store.persist_intent(pair_id, side, kind, None, symbol=self.symbol)
             return "safe_refusal", None, None
         try:
             ticket, snapshot = self.recover_intent(record, stored)
@@ -545,17 +455,14 @@ class _LivePairVenue:
         record = self._pair_record(pair_id)
         if record is None:
             self._set_pair_recovery_blocked(pair_id)
-            raise _IntentRecoveryPending(
-                f"pair={pair_id}: persisted recovery record is unavailable")
+            raise _IntentRecoveryPending(f"pair={pair_id}: persisted recovery record is unavailable")
         recovered = []
         pending_recovery = False
         for stored in list(dict(record.get("intents") or {}).values()):
             pending = self._canonical_intent(record, stored)
-            side = pending["side"]
-            kind = pending["kind"]
+            side, kind = pending["side"], pending["kind"]
             if self._pre_submit_refusal(pending):
-                self.pair_store.persist_intent(
-                    pair_id, side, kind, None, symbol=self.symbol)
+                self.pair_store.persist_intent(pair_id, side, kind, None, symbol=self.symbol)
                 continue
             try:
                 item = self.recover_intent(record, pending)
@@ -568,68 +475,42 @@ class _LivePairVenue:
         self._set_pair_recovery_blocked(pair_id, pending_recovery)
         return recovered
 
-    @classmethod
-    def _hard_stop_revision_from_kind(cls, kind):
-        return cls._revision_from_kind(kind, "hard_stop")
-
     def merge_checkpoint_intents(self, record, state):
-        """Merge fsynced intents that raced ahead of a coordinator checkpoint.
-
-        Venue submission persists its intent before returning to the coordinator.
-        A crash can therefore leave an accepted replacement or hard stop in the
-        intent map while the older checkpoint still references the prior order.
-        Reconcile every unrepresented intent by its deterministic client ID/order
-        ID, then advance persisted revisions before the state machine runs again.
-        """
+        """Merge fsynced intents that raced ahead of a coordinator checkpoint."""
         merged = dict(state or {})
         tickets = [dict(ticket) for ticket in merged.get("tickets", [])]
-        snapshots = {
-            str(order_id): dict(snapshot)
-            for order_id, snapshot in dict(
-                merged.get("snapshots") or {}).items()
-        }
-        represented = {
-            str(ticket.get("order_id")) for ticket in tickets
-            if ticket.get("order_id") is not None
-        }
+        snapshots = {str(oid): dict(snap) for oid, snap in dict(merged.get("snapshots") or {}).items()}
+        represented = {str(t.get("order_id")) for t in tickets if t.get("order_id") is not None}
         limit_revisions = {"BUY": 0, "SELL": 0}
-        for side, value in dict(
-                merged.get("limit_revisions") or {}).items():
+        for side, value in dict(merged.get("limit_revisions") or {}).items():
             side_u = str(side).upper()
             if side_u in limit_revisions:
                 limit_revisions[side_u] = self._parse_bounded_revision(
-                    0 if value is None else value,
-                    int_err=f"invalid {side_u} limit revision: {value!r}",
+                    0 if value is None else value, int_err=f"invalid {side_u} limit revision: {value!r}"
                 )
         raw_hs_rev = merged.get("hard_stop_revision", 0)
         hard_stop_revision = self._parse_bounded_revision(
-            0 if raw_hs_rev is None else raw_hs_rev,
-            int_err=f"invalid hard-stop revision: {raw_hs_rev!r}",
+            0 if raw_hs_rev is None else raw_hs_rev, int_err=f"invalid hard-stop revision: {raw_hs_rev!r}"
         )
         recovery_pending = False
         pending_hard_stop = False
 
         for stored in dict(record.get("intents") or {}).values():
             pending = self._canonical_intent(record, stored)
-            side = pending["side"]
-            kind = pending["kind"]
+            side, kind = pending["side"], pending["kind"]
             limit_revision = self._limit_revision(kind)
             stop_revision = self._hard_stop_revision_from_kind(kind)
             if limit_revision is not None:
-                limit_revisions[side] = max(
-                    limit_revisions[side], limit_revision)
+                limit_revisions[side] = max(limit_revisions[side], limit_revision)
             if stop_revision is not None:
                 hard_stop_revision = max(hard_stop_revision, stop_revision)
             if self._pre_submit_refusal(pending):
-                self.pair_store.persist_intent(
-                    record["pair_id"], side, kind, None, symbol=self.symbol)
+                self.pair_store.persist_intent(record["pair_id"], side, kind, None, symbol=self.symbol)
                 continue
 
             order_id = pending.get("order_id")
             if order_id is not None and str(order_id) in represented:
-                represented_revision = (
-                    limit_revision if limit_revision is not None
-                    else stop_revision)
+                represented_revision = limit_revision if limit_revision is not None else stop_revision
                 if represented_revision is not None:
                     for ticket in tickets:
                         if str(ticket.get("order_id")) == str(order_id):
@@ -652,26 +533,23 @@ class _LivePairVenue:
             ticket, snapshot = recovered
             order_id = str(ticket.order_id)
             if order_id not in represented:
-                ticket.active = snapshot.status not in {
-                    "closed", "canceled", "expired"}
+                ticket.active = snapshot.status not in {"closed", "canceled", "expired"}
                 tickets.append(vars(ticket).copy())
                 represented.add(order_id)
             snapshots[order_id] = vars(snapshot).copy()
             if stop_revision is not None:
                 merged["stop_order_id"] = order_id
                 merged["phase"] = "stopping"
-                merged["hard_stop_reason"] = (
-                    merged.get("hard_stop_reason")
-                    or "inventory_hard_stop")
+                merged["hard_stop_reason"] = merged.get("hard_stop_reason") or "inventory_hard_stop"
 
-        merged["tickets"] = tickets
-        merged["snapshots"] = snapshots
-        merged["limit_revisions"] = limit_revisions
-        merged["hard_stop_revision"] = hard_stop_revision
+        merged.update({
+            "tickets": tickets,
+            "snapshots": snapshots,
+            "limit_revisions": limit_revisions,
+            "hard_stop_revision": hard_stop_revision,
+        })
         if recovery_pending:
-            merged["phase"] = (
-                "hard_stop_recovery" if pending_hard_stop
-                else "startup_recovery")
+            merged["phase"] = "hard_stop_recovery" if pending_hard_stop else "startup_recovery"
             merged["recovery_pending"] = True
             self._set_pair_recovery_blocked(record["pair_id"])
         else:
@@ -679,46 +557,28 @@ class _LivePairVenue:
             self._set_pair_recovery_blocked(record["pair_id"], False)
         return merged
 
-    def place_limit(self, side, price, qty, pair_id, *, cache_permit=None,
-                    revision=0):
+    def place_limit(self, side, price, qty, pair_id, *, cache_permit=None, revision=0):
         side = side.upper()
         store_kind = self._limit_kind(revision)
         self._last_place_failures.pop(side, None)
-        existing_state, existing_ticket, _snapshot = (
-            self._reconcile_existing_intent(pair_id, side, store_kind))
+        existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
         if existing_state == "recovered":
             return existing_ticket
         if existing_state == "pending":
-            self._last_place_failures[side] = (
-                f"{side.lower()}_recovery_pending")
+            self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
             return None
-        available_qty, required_asset = balance_cap_quantity(
-            self.executor.free_balance, self.symbol, side, price)
-        if required_asset:
-            # Do not compare against requested quantity: QuantityDecision and venue
-            # mechanics already cap it to available balance. Back off only when the
-            # required asset has no usable free balance.
-            if available_qty is not None and float(available_qty) <= 1e-12:
-                self._last_place_failures[side] = (
-                    f"{side.lower()}_insufficient_funds:{required_asset}")
-                print(
-                    f"[{self.symbol}] {side} insufficient funds: "
-                    f"available=0.00000000 {required_asset}")
-                return None
+        available_qty, required_asset = balance_cap_quantity(self.executor.free_balance, self.symbol, side, price)
+        if required_asset and available_qty is not None and float(available_qty) <= 1e-12:
+            self._last_place_failures[side] = f"{side.lower()}_insufficient_funds:{required_asset}"
+            print(f"[{self.symbol}] {side} insufficient funds: available=0.00000000 {required_asset}")
+            return None
         ticket, _pending = self._submit_limit_intent(
-            side, price, qty, pair_id, cache_permit=cache_permit,
-            revision=revision)
+            side, price, qty, pair_id, cache_permit=cache_permit, revision=revision
+        )
         if ticket is None and _pending.get("refusal_reason"):
-            # A guard refusal happened before any provider submit. It is safe to
-            # finish this round and let the strategy backoff create a fresh intent;
-            # venue response-loss recovery would be both false and duplicative.
             return None
         if ticket is None and self.pair_store is not None:
-            # A missing response is not retried synchronously. The persisted
-            # client ID is reconciled on later coordinator ticks.
-            self._set_pair_recovery_blocked(pair_id)
-            self._last_place_failures[side] = (
-                f"{side.lower()}_recovery_pending")
+            self._mark_recovery_pending(pair_id, side)
         elif ticket is not None:
             self._set_pair_recovery_blocked(pair_id, False)
         return ticket
@@ -727,163 +587,125 @@ class _LivePairVenue:
         return self._last_place_failures.get(side.upper())
 
     def market_exit_allowed(self, exposure_side, loss_fraction, reason):
-        """Decide whether a normal hard stop has trend confirmation for MARKET.
-
-        ``shadow`` only observes; ``live`` applies the decision. The emergency threshold
-        remains mandatory regardless of trend so a stale signal cannot leave unlimited risk.
-        """
+        """Decide whether a normal hard stop has trend confirmation for MARKET."""
         emergency = loss_fraction >= RTRADE_EMERGENCY_HARD_STOP_PCT
         decision = _market_regime_decision(self.symbol)
-        adverse = decision.adverse_to(exposure_side)
-        justified = adverse or emergency
+        justified = decision.adverse_to(exposure_side) or emergency
         print(
             f"[{self.symbol}] dynamic-market-exit mode={RTRADE_DYNAMIC_MARKET_EXIT_MODE} "
             f"exposure={exposure_side} regime={decision.regime} "
             f"strength={decision.strength} signal_reason={decision.reason} "
             f"loss={loss_fraction:.4%} emergency={emergency} "
-            f"would_market={justified} reason={reason}")
+            f"would_market={justified} reason={reason}"
+        )
         if RTRADE_DYNAMIC_MARKET_EXIT_MODE == "emergency_only":
-            # Discretionary / adverse-regime exits WAIT (the round holds) -- a possibly
-            # false drop must not stop us out. Only a real loss >= the emergency
-            # threshold still forces a market exit as the catastrophe backstop.
             return emergency
         if RTRADE_DYNAMIC_MARKET_EXIT_MODE in {"off", "shadow"}:
             return True
         return justified
 
-    def place_market_exit(self, side, qty, reason, pair_id=None, *,
-                          cache_permit=None, revision=0):
-        """Place a spot market exit reserved for reducing hard-stop exposure.
+    def _update_stored_intent(self, pair_id, side: str, store_kind: str, **updates) -> None:
+        record = self._pair_record(pair_id)
+        stored = None if record is None else record.get("intents", {}).get(f"{store_kind}:{side}")
+        if stored is not None:
+            pending = self._canonical_intent(record, stored)
+            pending.update(updates)
+            self.pair_store.persist_intent(pair_id, side, store_kind, pending, symbol=self.symbol)
 
-        Normal orders remain on ``mkt.place``/``place_safe_order``. This risk exit
-        bypasses profit, cooldown, and weight checks, but never bypasses balance,
-        fee-cap, precision, preflight, or client-order-ID auditing.
-        """
+    def place_market_exit(self, side, qty, reason, pair_id=None, *, cache_permit=None, revision=0):
+        """Place a spot market exit reserved for reducing hard-stop exposure."""
         side = side.upper()
         store_kind = self._kind_for_revision("hard_stop", revision, label="hard-stop")
         revision = int(store_kind.removeprefix("hard_stop_")) if store_kind != "hard_stop" else 0
         self._last_place_failures.pop(side, None)
         if pair_id:
-            existing_state, existing_ticket, _snapshot = (
-                self._reconcile_existing_intent(
-                    pair_id, side, store_kind))
+            existing_state, existing_ticket, _snapshot = self._reconcile_existing_intent(pair_id, side, store_kind)
             if existing_state == "recovered":
                 return existing_ticket
             if existing_state == "pending":
-                self._last_place_failures[side] = (
-                    f"{side.lower()}_recovery_pending")
+                self._last_place_failures[side] = f"{side.lower()}_recovery_pending"
                 return None
         price = _finite_pos_float(self.current_price(), 0.0)
         if price <= 0:
             print(f"[{self.symbol}] {side} hard-stop BLOCKED: price unavailable")
             return None
-        # This audited protective path follows venue filters only. The business
-        # notional floor belongs to ordinary Instrument orders, not risk reduction.
         decision = decide_quantity(
             self.executor, self.symbol, side, price, qty,
-            apply_policy=False, market=True,
-            enforce_business_minimum=False)
+            apply_policy=False, market=True, enforce_business_minimum=False,
+        )
         final_qty = float(decision.final_qty)
         if final_qty <= 0:
-            print(f"[{self.symbol}] {side} hard-stop BLOCKED: "
-                  f"{decision.refuse_reason} asset={decision.balance_asset}")
+            print(f"[{self.symbol}] {side} hard-stop BLOCKED: {decision.refuse_reason} asset={decision.balance_asset}")
             return None
         precision = self.audited_executor.pair_precision(self.symbol)
         if precision is not None:
             quantum = Decimal(1).scaleb(-int(precision.volume_decimals))
             final_qty = float(Decimal(str(final_qty)).quantize(quantum, rounding=ROUND_DOWN))
             if final_qty <= 0 or final_qty < float(precision.order_min or 0.0):
-                print(f"[{self.symbol}] {side} hard-stop BLOCKED: qty {final_qty} "
-                      f"below the minimum {precision.order_min}")
+                print(f"[{self.symbol}] {side} hard-stop BLOCKED: qty {final_qty} below the minimum {precision.order_min}")
                 return None
         kind = f"rtrade:{reason}:{pair_id or 'unknown-pair'}:revision:{revision}"
-        intent_id = (
-            f"rtrade-{pair_id or 'unknown'}-{reason}-{side.lower()}-r{revision}")
-        client_id = rtrade_client_order_id(
-            pair_id or "unknown", side, store_kind)
+        intent_id = f"rtrade-{pair_id or 'unknown'}-{reason}-{side.lower()}-r{revision}"
+        client_id = rtrade_client_order_id(pair_id or "unknown", side, store_kind)
         replacement_after_cancel = cache_permit is not None
         if cache_permit is None:
-            cache_permit = self.preflight_order(
-                side, final_qty, price=None, market=True, kind=kind)
+            cache_permit = self.preflight_order(side, final_qty, price=None, market=True, kind=kind)
         if self.pair_store is not None and pair_id:
-            self.pair_store.intent(
-                pair_id, side, price, final_qty, client_id, kind=store_kind,
-                symbol=self.symbol)
+            self.pair_store.intent(pair_id, side, price, final_qty, client_id, kind=store_kind, symbol=self.symbol)
         try:
             order_id = self.audited_executor.submit_order_with_intent(
                 intent_id, self.symbol, side, final_qty, price=None,
                 market=True, kind=kind, reference_price=price,
-                client_order_id=client_id,
-                cache_permit=cache_permit)
+                client_order_id=client_id, cache_permit=cache_permit,
+            )
         except SubmissionRefused as exc:
             if self.pair_store is not None and pair_id:
                 if not replacement_after_cancel:
-                    self.pair_store.persist_intent(
-                        pair_id, side, store_kind, None, symbol=self.symbol)
+                    self.pair_store.persist_intent(pair_id, side, store_kind, None, symbol=self.symbol)
                 else:
-                    record = self._pair_record(pair_id)
-                    stored = (
-                        None if record is None else
-                        record.get("intents", {}).get(f"{store_kind}:{side}"))
-                    if stored is not None:
-                        pending = self._canonical_intent(record, stored)
-                        pending["submission_outcome"] = "refused"
-                        pending["submit_status"] = "refused_before_submit"
-                        pending["refusal_reason"] = exc.reason
-                        self.pair_store.persist_intent(
-                            pair_id, side, store_kind, pending,
-                            symbol=self.symbol)
+                    self._update_stored_intent(
+                        pair_id, side, store_kind,
+                        submission_outcome="refused",
+                        submit_status="refused_before_submit",
+                        refusal_reason=exc.reason,
+                    )
             raise
         except ProviderError as exc:
             if self.pair_store is not None and pair_id:
-                record = self._pair_record(pair_id)
-                stored = (
-                    None if record is None
-                    else record.get("intents", {}).get(f"{store_kind}:{side}"))
-                if stored is not None:
-                    pending = self._canonical_intent(record, stored)
-                    pending["submission_outcome"] = "unknown"
-                    pending["submit_error"] = f"{exc.__class__.__name__}: {exc}"
-                    self.pair_store.persist_intent(
-                        pair_id, side, store_kind, pending,
-                        symbol=self.symbol)
-                self._set_pair_recovery_blocked(pair_id)
-                self._last_place_failures[side] = (
-                    f"{side.lower()}_recovery_pending")
-            print(
-                f"[{self.symbol}] {side} hard-stop response is ambiguous; "
-                "the persisted client ID must be reconciled")
+                self._update_stored_intent(
+                    pair_id, side, store_kind,
+                    submission_outcome="unknown",
+                    submit_error=f"{exc.__class__.__name__}: {exc}",
+                )
+                self._mark_recovery_pending(pair_id, side)
+            print(f"[{self.symbol}] {side} hard-stop response is ambiguous; the persisted client ID must be reconciled")
             return None
         clean_oid = extract_order_id(order_id, default=None)
         if not clean_oid:
             if self.pair_store is not None and pair_id:
-                self._set_pair_recovery_blocked(pair_id)
-                self._last_place_failures[side] = (
-                    f"{side.lower()}_recovery_pending")
+                self._mark_recovery_pending(pair_id, side)
             return None
         ticket = PairOrderTicket(
-            order_id=clean_oid, side=side, price=price, qty=final_qty,
-            pair_id=pair_id, revision=revision)
+            order_id=clean_oid, side=side, price=price, qty=final_qty, pair_id=pair_id, revision=revision
+        )
         self._known_tickets.append(ticket)
         if self.pair_store is not None and pair_id:
-            self.pair_store.accepted(
-                pair_id, side, ticket.order_id, kind=store_kind)
+            self.pair_store.accepted(pair_id, side, ticket.order_id, kind=store_kind)
             self._set_pair_recovery_blocked(pair_id, False)
         return ticket
 
     def order_status(self, order_id):
         status = self.executor.order_status(self.symbol, str(order_id))
         return PairOrderSnapshot(
-            status=status.status, filled_qty=status.filled_qty,
-            cost=status.cost, fee=status.fee)
+            status=status.status, filled_qty=status.filled_qty, cost=status.cost, fee=status.fee
+        )
 
     def cancel(self, order_id):
         try:
             self.executor.cancel_order(self.symbol, str(order_id))
             for ticket in getattr(self, "_known_tickets", []):
                 if ticket.order_id == str(order_id) and ticket.pair_id:
-                    trade_cooldown.release_pair_leg(
-                        self.symbol, ticket.pair_id, ticket.side)
+                    trade_cooldown.release_pair_leg(self.symbol, ticket.pair_id, ticket.side)
                     break
             return True
         except Exception as exc:  # noqa: BLE001 — the coordinator decides how to fail closed.
@@ -892,23 +714,16 @@ class _LivePairVenue:
 
 
 def _trend_too_strong(symbol):
-    """Return whether the regime should keep the spread bot idle.
-
-    Stand aside on a clear trend (``|gradient_recent| > K * epsilon``; adverse-selection
-    risk) AND when trend data is UNAVAILABLE (regime ``unknown``). With no data we cannot
-    tell a safe flat market from a trend, so we do nothing rather than trade blind: a data
-    outage must never be read as "flat" and green-light spread rounds. Only a CONFIRMED
-    ``sideways`` regime lets the bot run. Fail-CLOSED on no data (deliberately unlike the
-    pipeline's trend wait, which fails open).
-    """
+    """Return whether the regime should keep the spread bot idle (fail-closed on unknown/directional)."""
     if not RTRADE_TREND_FILTER_ENABLED:
         return False
     decision = _market_regime_decision(symbol)
     stand_aside = decision.directional or decision.regime == "unknown"
     if stand_aside:
-        print(f"[{symbol}] rtrade STANDING ASIDE: regime {decision.regime} "
-              f"strength={decision.strength} reason={decision.reason} "
-              f"window={RTRADE_TREND_WINDOW_SEC:.0f}s")
+        print(
+            f"[{symbol}] rtrade STANDING ASIDE: regime {decision.regime} "
+            f"strength={decision.strength} reason={decision.reason} window={RTRADE_TREND_WINDOW_SEC:.0f}s"
+        )
     return stand_aside
 
 
@@ -918,99 +733,46 @@ def _effective_trend_filter_k(snapshot) -> float:
     if not isinstance(snapshot, dict):
         return base_k
     n_f = safe_float(snapshot.get("n_samples"), default=None)
-    if n_f is not None and n_f - 1.0 > 10.0:
-        return base_k * math.sqrt(10.0 / (n_f - 1.0))
-    return base_k
+    return base_k * math.sqrt(10.0 / (n_f - 1.0)) if (n_f is not None and n_f - 1.0 > 10.0) else base_k
 
 
 def _market_regime_decision(symbol) -> MarketRegimeDecision:
     """Adapt the existing cache source to the provider-neutral regime evaluator."""
-    if not RTRADE_TREND_FILTER_ENABLED:
-        return mkt.market_regime(
-            symbol, horizon="short", snapshot={}, snapshot_source="cache24_dynamic",
-            strength_threshold=RTRADE_TREND_FILTER_K, allow_fallback=False)
-    try:
-        import cacheManager as cm
-        mgr = cm.get_short_trend_manager()
-        dyn = mgr.get_short_trend_for_window(symbol, RTRADE_TREND_WINDOW_SEC)
-    except Exception:
-        return mkt.market_regime(
-            symbol, horizon="short", snapshot={}, snapshot_source="cache24_dynamic",
-            strength_threshold=RTRADE_TREND_FILTER_K,
-            allow_fallback=RTRADE_TREND_OHLC_FALLBACK_ENABLED)
+    dyn, allow_fb = None, False
+    if RTRADE_TREND_FILTER_ENABLED:
+        allow_fb = RTRADE_TREND_OHLC_FALLBACK_ENABLED
+        try:
+            import cacheManager as cm
+            dyn = cm.get_short_trend_manager().get_short_trend_for_window(symbol, RTRADE_TREND_WINDOW_SEC)
+        except Exception:
+            dyn = None
     return mkt.market_regime(
-        symbol, horizon="short", snapshot=dyn or {},
+        symbol,
+        horizon="short",
+        snapshot=dyn or {},
         snapshot_source="cache24_dynamic",
         strength_threshold=_effective_trend_filter_k(dyn),
-        allow_fallback=RTRADE_TREND_OHLC_FALLBACK_ENABLED)
+        allow_fallback=allow_fb,
+    )
 
 
 def _is_gi_whale_enforced(bypass_guards=None) -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
-    try:
-        m = order_guard._load_margins()
-        for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
-            if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
-                return False
-        venue_bg = m.get("binance_bypass_guards", m.get("default_bypass_guards"))
-        bypassed = (
-            normalize_bypassed_guards(bypass_guards=bypass_guards)
-            | normalize_bypassed_guards(bypass_guards=venue_bg)
-        )
-        if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
-            return False
-    except Exception:
-        pass
-    return True
+    return sys.modules.get("external_order_guard", eog).is_gi_whale_enforced(bypass_guards, venue="binance")
 
 
 def _whale_flow_blocks_side(symbol: str, side: str, *, bypass_guards=None) -> tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating an rtrade round."""
-    side_u = (side or "").upper()
-    if side_u not in {"BUY", "SELL"}:
-        return False, "ok"
-    if not _is_gi_whale_enforced(bypass_guards):
-        return False, "gi_whale_bypassed_or_off"
-    try:
-        collector = sys.modules.get("external_order_guard", eog).get_whale_collector()
-        if collector is None:
-            return False, "no_collector"
-        snap = collector.fetch(symbol, allow_network=False)
-        if snap is None:
-            return False, "no_snapshot"
-        ratio = _finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0
-        oi_pct = safe_float(getattr(snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
-        div_regime = getattr(snap, "divergence_regime", None)
-        if side_u == "BUY":
-            if 0.0 < ratio < 0.80:
-                return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"
-            if div_regime == "aggressive_shorting":
-                return True, f"aggressive_shorting_divergence (OI={oi_pct:+.1f}%)"
-        elif side_u == "SELL":
-            if ratio > 1.25:
-                return True, f"taker_buy_dominance (ratio={ratio:.2f} > 1.25)"
-            if div_regime in ("short_squeeze", "short_squeeze_primed"):
-                return True, f"short_squeeze_divergence (OI={oi_pct:+.1f}%)"
-    except Exception as exc:
-        return False, f"error:{exc}"
-    return False, "ok"
+    return sys.modules.get("external_order_guard", eog).evaluate_whale_spread_flow(
+        symbol, side, bypass_guards=bypass_guards, enforced=_is_gi_whale_enforced(bypass_guards)
+    )
 
 
 def _effective_adjustment_fraction(symbol: str, base_adjustment: float, *, bypass_guards=None) -> float:
-    """Widen grid quote adjustment when moderate taker flow pressure exists (0.80 <= ratio < 0.90 or 1.11 < ratio <= 1.25)."""
-    if not _is_gi_whale_enforced(bypass_guards):
-        return base_adjustment
-    try:
-        collector = sys.modules.get("external_order_guard", eog).get_whale_collector()
-        if collector is not None:
-            snap = collector.fetch(symbol, allow_network=False)
-            ratio = (_finite_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0) if snap is not None else 0.0
-            if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
-                # Widen grid spacing by 50% to quote deeper on dips/rips rather than top/bottom ticks
-                return base_adjustment * 1.5
-    except Exception:
-        pass
-    return base_adjustment
+    """Widen grid quote adjustment when moderate taker flow pressure exists."""
+    return sys.modules.get("external_order_guard", eog).resolve_whale_spread_adjustment(
+        symbol, base_adjustment, bypass_guards=bypass_guards, enforced=_is_gi_whale_enforced(bypass_guards)
+    )
 
 
 def _order_fully_filled(symbol, order_id):
@@ -1024,8 +786,7 @@ def _order_fully_filled(symbol, order_id):
         return False
 
 
-def _preflight_routed_order(symbol, side, qty, price=None, *,
-                            market=False, kind=None):
+def _preflight_routed_order(symbol, side, qty, price=None, *, market=False, kind=None):
     provider_name = mkt.provider_name_for(symbol)
     executor = mkt.provider_by_name(provider_name)
     if executor is None:
@@ -1033,8 +794,7 @@ def _preflight_routed_order(symbol, side, qty, price=None, *,
     preflight = getattr(executor, "preflight_order", None)
     if not callable(preflight):
         raise RuntimeError(f"{provider_name} preflight unavailable for {symbol}")
-    return preflight(
-        symbol, side, qty, price, market=market, kind=kind)
+    return preflight(symbol, side, qty, price, market=market, kind=kind)
 
 
 def _cancel_order_confirmed(symbol, order_id):
@@ -1064,24 +824,13 @@ def _remaining_after_canceled_order(status, submitted_qty):
     """Return the unfilled terminal remainder, or ``None`` for invalid state."""
     sub_f = _finite_pos_float(submitted_qty, default=None)
     fill_f = safe_nonneg_float(getattr(status, "filled_qty", None), default=None)
-    if (
-        sub_f is None
-        or fill_f is None
-        or fill_f > sub_f + max(1e-12, sub_f * 1e-9)
-    ):
+    if sub_f is None or fill_f is None or fill_f > sub_f + max(1e-12, sub_f * 1e-9):
         return None
-    if status.fully_filled:
-        return 0.0
-    return max(0.0, sub_f - fill_f)
+    return 0.0 if status.fully_filled else max(0.0, sub_f - fill_f)
 
 
 def _place_failure_backoff(reason):
-    """Return ``(side, seconds)`` for a terminal placement failure.
-
-    Completely absent funds have an explicit reason. Other ``*_place_failed`` cases,
-    including price guards, minimum notional, weight limits, and API refusal, also need
-    throttling so transient errors cannot become an order loop with a new pair ID each time.
-    """
+    """Return ``(side, seconds)`` for a terminal placement failure."""
     reason = str(reason or "").strip().lower()
     marker = "_insufficient_funds:"
     if marker in reason:
@@ -1097,59 +846,35 @@ def _place_failure_backoff(reason):
 
 
 def _followup_exit_price(symbol, side, fill_ref_price):
-    """Anchor follow-up exit price to ensure the limit order targets profit.
-
-    For SELL: price must be at least fill_ref_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT).
-    For BUY: price must be at most fill_ref_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT).
-    """
+    """Anchor follow-up exit price to ensure the limit order targets profit."""
     current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
-    fill_ref_price = _finite_pos_float(fill_ref_price, 0.0)
-    if fill_ref_price <= 0:
-        fill_ref_price = current_price
+    fill_ref_price = _finite_pos_float(fill_ref_price, 0.0) or current_price
     if current_price <= 0:
         current_price = fill_ref_price
     side_u = str(side).upper()
     if side_u == "SELL":
-        return round(max(
-            current_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT),
-            fill_ref_price * (1 + RTRADE_FOLLOWUP_OFFSET_PCT)
-        ), 4)
-    elif side_u == "BUY":
-        return round(min(
-            current_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT),
-            fill_ref_price * (1 - RTRADE_FOLLOWUP_OFFSET_PCT)
-        ), 4)
+        return round(max(current_price, fill_ref_price) * (1 + RTRADE_FOLLOWUP_OFFSET_PCT), 4)
+    if side_u == "BUY":
+        return round(min(current_price, fill_ref_price) * (1 - RTRADE_FOLLOWUP_OFFSET_PCT), 4)
     raise ValueError(f"Invalid side: {side}")
 
 
 def _followup_force(symbol, side):
-    """Choose MARKET force for a post-fill flip only when trend is not adverse.
-
-    Selling into a clear decline or buying into a clear rise is adverse, so return False
-    and leave a patient limit at the flip price. A confirmed flat (``sideways``) or
-    favorable trend keeps immediate market behavior only when RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED
-    is true. When disabled (default), follow-ups always use patient limits to avoid dumping
-    at market into the bid-ask spread at a loss.
-    """
+    """Choose MARKET force for a post-fill flip only when trend is not adverse."""
+    su = (side or "").upper()
     if not RTRADE_FOLLOWUP_MARKET_FLIP_ENABLED:
-        print(f"[{symbol}] follow-up {(side or '').upper()}: market flip disabled "
-              "-> use a patient limit, NOT a market order")
+        print(f"[{symbol}] follow-up {su}: market flip disabled -> use a patient limit, NOT a market order")
         return False
     if not RTRADE_TREND_FILTER_ENABLED:
         return True
     decision = _market_regime_decision(symbol)
     if decision.regime == "unknown":
-        print(f"[{symbol}] follow-up {(side or '').upper()}: trend data unavailable "
-              "-> patient limit, NOT a market order")
+        print(f"[{symbol}] follow-up {su}: trend data unavailable -> patient limit, NOT a market order")
         return False
     if not decision.directional:
-        return True   # A confirmed flat (sideways) regime permits an immediate flip.
-    su = (side or "").upper()
-    exposure = "LONG" if su == "SELL" else "SOLD"
-    adverse = decision.adverse_to(exposure)
-    if adverse:
-        print(f"[{symbol}] follow-up {su}: adverse {decision.regime} regime "
-              "-> use a patient limit, NOT a market order")
+        return True
+    if decision.adverse_to("LONG" if su == "SELL" else "SOLD"):
+        print(f"[{symbol}] follow-up {su}: adverse {decision.regime} regime -> use a patient limit, NOT a market order")
         return False
     return True
 
@@ -1165,19 +890,32 @@ _TERMINAL_UNFILLED_REFUSALS = frozenset({
 })
 
 
+def _validate_coordinator_config() -> None:
+    if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
+        raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
+    if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
+        raise ValueError("RTRADE_PAIR_START_INTERVAL_SEC must be > 0")
+    if not RTRADE_PAIR_DIRECTIONS or any(s not in {"BUY", "SELL"} for s in RTRADE_PAIR_DIRECTIONS):
+        raise ValueError("RTRADE_PAIR_DIRECTIONS accepts only BUY,SELL")
+    if RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC <= 0:
+        raise ValueError("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC must be > 0")
+    if RTRADE_PLACE_FAILURE_BACKOFF_SEC <= 0:
+        raise ValueError("RTRADE_PLACE_FAILURE_BACKOFF_SEC must be > 0")
+    if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live", "emergency_only"}:
+        raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live|emergency_only")
+    if not RTRADE_HARD_STOP_PCT <= RTRADE_EMERGENCY_HARD_STOP_PCT < 1:
+        raise ValueError("RTRADE_EMERGENCY_HARD_STOP_PCT must be >= hard-stop and < 1")
+
+
 class TradingBot:
     def __init__(self, symbol, qty, DEFAULT_ADJUSTMENT_PERCENT):
         self.symbol = symbol
         self.qty = qty
-        self.transaction_state = "COMPLETED"  # Initial state.
+        self.transaction_state = "COMPLETED"
         current_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
         try:
-            last_buy = _finite_pos_float(
-                mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0
-            )
-            last_sell = _finite_pos_float(
-                mkt.latest_fill_price(symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0), 0.0
-            )
+            last_buy = _finite_pos_float(mkt.latest_fill_price(symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0), 0.0)
+            last_sell = _finite_pos_float(mkt.latest_fill_price(symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0), 0.0)
         except Exception:
             last_buy = last_sell = 0.0
         self.filled_buy_price = round(
@@ -1189,7 +927,7 @@ class TradingBot:
         self.buy_filled = False
         self.sell_filled = False
         self.DEFAULT_ADJUSTMENT_PERCENT = DEFAULT_ADJUSTMENT_PERCENT
-        self.lock = threading.RLock()  # Reentrant synchronization lock.
+        self.lock = threading.RLock()
         self._needs_startup_reconcile = True
 
     @property
@@ -1201,7 +939,7 @@ class TradingBot:
     def is_sell_filled(self):
         with self.lock:
             return self.sell_filled
-        
+
     def mark_buy_filled(self, filled_buy_price=None):
         with self.lock:
             self.buy_filled = True
@@ -1217,7 +955,7 @@ class TradingBot:
             if filled_sell_price:
                 self.filled_sell_price = filled_sell_price
             return self.filled_sell_price
-        
+
     def _get_pair_cond(self):
         cond = getattr(self, "_pair_precheck_cond", None)
         if cond is None:
@@ -1265,6 +1003,56 @@ class TradingBot:
                     cond.wait(timeout=remaining)
             return bool(getattr(self, "_round_aborted", False) and not opposite_filled_fn())
 
+    def _place_legacy_side_order(
+        self, side: str, is_buy: bool, is_opp_filled, target_price: float, target_qty: float,
+        adjustment_percent: float, failure_count: int, desp_hours_base: float, normal_hours: float,
+        submit_cache_permit, outcome_context: dict,
+    ):
+        if is_opp_filled():
+            if adjustment_percent == MIN_adjustment_percent:
+                print(f"[{self.symbol}] entering the urgent {side} path")
+            desp_extra = {} if is_buy else {"allow_math_reference_sell": True}
+            return mkt.place(
+                self.symbol, side, target_price, target_qty,
+                safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
+                force=False, cancelorders=True, hours=desp_hours_base / failure_count, smart=False,
+                bypass_guards={"G_PROF", "GLLM1"},
+                kind="rtrade_legacy_quote", caller_owns_retry=True,
+                cache_permit=submit_cache_permit, _outcome_context=outcome_context,
+                **desp_extra,
+            )
+        extra_place_kwargs = {}
+        if isinstance(getattr(self, "_pair_precheck_pending", None), set):
+            extra_place_kwargs["abort_if"] = lambda: self._pair_abort_if(side, is_opp_filled)
+        if not is_buy:
+            extra_place_kwargs["allow_math_reference_sell"] = bool(RTRADE_BYPASS_PROFIT_GUARD)
+        return mkt.place(
+            self.symbol, side, target_price, target_qty,
+            cancelorders=True, hours=normal_hours,
+            smart=False, kind="rtrade_legacy_quote",
+            bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
+            caller_owns_retry=True,
+            cache_permit=submit_cache_permit, _outcome_context=outcome_context,
+            **extra_place_kwargs,
+        )
+
+    def _should_exit_on_legacy_refusal(
+        self, side: str, opp_side: str, is_buy: bool, is_opp_filled, refusal_reason
+    ) -> bool:
+        if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
+            print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
+            return True
+        if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
+            print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
+            return True
+        if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
+            print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
+            return True
+        if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
+            print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
+            return True
+        return False
+
     def _repetitive_side_loop(self, side: str, current_price, filled_opp_price):
         is_buy = side == "BUY"
         opp_side = "SELL" if is_buy else "BUY"
@@ -1278,13 +1066,10 @@ class TradingBot:
         sign = -1.0 if is_buy else 1.0
 
         adjustment_percent = self.DEFAULT_ADJUSTMENT_PERCENT
-        failure_count = 1  # Count placement failures.
-        max_failures = RTRADE_MAX_FAILURES  # Maximum accepted failures.
-        pending_cache_permit = None
-        pending_replacement_price = None
-        pending_replacement_qty = None
-        cumulative_filled_qty = 0.0
-        cumulative_cost = 0.0
+        failure_count = 1
+        max_failures = RTRADE_MAX_FAILURES
+        pending_cache_permit = pending_replacement_price = pending_replacement_qty = None
+        cumulative_filled_qty = cumulative_cost = 0.0
         completed = False
 
         def _complete_followup(chunk_qty=0.0, chunk_price=0.0):
@@ -1294,11 +1079,7 @@ class TradingBot:
             if total_qty <= 1e-12:
                 return None
             total_cost = cumulative_cost + add_qty * float(chunk_price or 0.0)
-            avg_px = (
-                round(total_cost / total_qty, 4)
-                if total_cost > 0
-                else float(chunk_price or getattr(self, filled_attr))
-            )
+            avg_px = round(total_cost / total_qty, 4) if total_cost > 0 else float(chunk_price or getattr(self, filled_attr))
             setattr(self, filled_attr, avg_px)
             opp_price = _followup_exit_price(self.symbol, opp_side, avg_px)
             followup_extra = {"allow_math_reference_sell": True} if opp_side == "SELL" else {}
@@ -1306,9 +1087,9 @@ class TradingBot:
                 self.symbol, opp_side, opp_price, total_qty,
                 force=_followup_force(self.symbol, opp_side),
                 cancelorders=True, hours=RTRADE_FOLLOWUP_HOURS,
-                bypass_guards={"G_PROF", "GLLM1"},
-                caller_owns_retry=True,
-                **followup_extra)
+                bypass_guards={"G_PROF", "GLLM1"}, caller_owns_retry=True,
+                **followup_extra,
+            )
             completed = True
             return mark_filled(avg_px)
 
@@ -1321,9 +1102,7 @@ class TradingBot:
                 latest_price = _finite_pos_float(api.get_current_price(self.symbol), 0.0)
                 if latest_price > 0:
                     current_price = latest_price
-                current_price = _finite_pos_float(current_price, 0.0)
-                if current_price <= 0:
-                    current_price = _finite_pos_float(filled_opp_price, 0.0)
+                current_price = _finite_pos_float(current_price, 0.0) or _finite_pos_float(filled_opp_price, 0.0)
                 if current_price <= 0:
                     time.sleep(WAIT_FOR_ORDER)
                     failure_count += 1
@@ -1332,22 +1111,13 @@ class TradingBot:
                     continue
 
                 if is_opp_filled():
-                    adjustment_percent = max(
-                        MIN_adjustment_percent,
-                        adjustment_percent - adjustment_percent * decay_pct,
-                    )
+                    adjustment_percent = max(MIN_adjustment_percent, adjustment_percent * (1.0 - decay_pct))
 
-                calculated_price = round(
-                    current_price * (1.0 + sign * adjustment_percent), 4)
-                target_price = (
-                    calculated_price if pending_replacement_price is None
-                    else pending_replacement_price)
-                target_qty = (
-                    self.qty if pending_replacement_qty is None
-                    else pending_replacement_qty)
+                calculated_price = round(current_price * (1.0 + sign * adjustment_percent), 4)
+                target_price = calculated_price if pending_replacement_price is None else pending_replacement_price
+                target_qty = self.qty if pending_replacement_qty is None else pending_replacement_qty
                 submit_cache_permit = pending_cache_permit
-                pending_cache_permit = pending_replacement_price = None
-                pending_replacement_qty = None
+                pending_cache_permit = pending_replacement_price = pending_replacement_qty = None
                 print(f"[{self.symbol}] {side} order initiated at {target_price:.2f}; adjustment {adjustment_percent}%")
 
                 if is_side_filled():
@@ -1361,44 +1131,16 @@ class TradingBot:
                     print(f"[{self.symbol}] Aborting {side} order placement because {opp_side} worker exited without fill.")
                     return _complete_followup()
 
-                placed_order = None
                 outcome_context = {}
-                h = desp_hours_base / failure_count
                 try:
-                    if is_opp_filled():  # Desperate follow-up path.
-                        if adjustment_percent == MIN_adjustment_percent:
-                            print(f"[{self.symbol}] entering the urgent {side} path")
-                        desp_extra = {} if is_buy else {"allow_math_reference_sell": True}
-                        placed_order = mkt.place(
-                            self.symbol, side, target_price, target_qty,
-                            safeback_seconds=RTRADE_DESPERATE_SAFEBACK_SEC,
-                            force=False, cancelorders=True, hours=h, smart=False,
-                            bypass_guards={"G_PROF", "GLLM1"},
-                            kind="rtrade_legacy_quote", caller_owns_retry=True,
-                            cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context,
-                            **desp_extra)
-                    else:
-                        extra_place_kwargs = {}
-                        if isinstance(getattr(self, "_pair_precheck_pending", None), set):
-                            extra_place_kwargs["abort_if"] = (
-                                lambda: self._pair_abort_if(side, is_opp_filled)
-                            )
-                        if not is_buy:
-                            extra_place_kwargs["allow_math_reference_sell"] = bool(RTRADE_BYPASS_PROFIT_GUARD)
-                        placed_order = mkt.place(
-                            self.symbol, side, target_price, target_qty,
-                            cancelorders=True, hours=normal_hours,
-                            smart=False, kind="rtrade_legacy_quote",
-                            bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
-                            caller_owns_retry=True,
-                            cache_permit=submit_cache_permit,
-                            _outcome_context=outcome_context,
-                            **extra_place_kwargs)
+                    placed_order = self._place_legacy_side_order(
+                        side, is_buy, is_opp_filled, target_price, target_qty,
+                        adjustment_percent, failure_count, desp_hours_base, normal_hours,
+                        submit_cache_permit, outcome_context,
+                    )
                 except po.WeightLimitBlock as e:
                     self._finish_side_precheck(side, aborted=not is_opp_filled())
-                    side_tag = "" if is_buy else " (SELL)"
-                    print(f"[{self.symbol}] 24h limit reached{side_tag} — exiting without retry ({e})")
+                    print(f"[{self.symbol}] 24h limit reached{'' if is_buy else ' (SELL)'} — exiting without retry ({e})")
                     return _complete_followup()
                 except Exception:
                     self._finish_side_precheck(side, aborted=not is_opp_filled())
@@ -1406,22 +1148,10 @@ class TradingBot:
 
                 if placed_order is None:
                     refusal_reason = outcome_context.get("reason")
-                    terminal_unfilled = refusal_reason in _TERMINAL_UNFILLED_REFUSALS
                     self._finish_side_precheck(
-                        side,
-                        aborted=bool(terminal_unfilled and not is_opp_filled()),
+                        side, aborted=bool(refusal_reason in _TERMINAL_UNFILLED_REFUSALS and not is_opp_filled())
                     )
-                    if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
-                        print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
-                    if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
-                        print(f"[{self.symbol}] Blocked by profit guard ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
-                    if refusal_reason in {"trend_deferred", "medium_trend_deferred"} and not is_opp_filled():
-                        print(f"[{self.symbol}] Deferred by trend ({side}: {refusal_reason}) — exiting without retry")
-                        return _complete_followup()
-                    if (refusal_reason == "aborted_by_caller" or getattr(self, "_round_aborted", False)) and not is_opp_filled():
-                        print(f"[{self.symbol}] Aborting {side} loop because {opp_side} worker exited without fill.")
+                    if self._should_exit_on_legacy_refusal(side, opp_side, is_buy, is_opp_filled, refusal_reason):
                         return _complete_followup()
                     print(f"[{self.symbol}] Order {side} failed, retryed {failure_count} times. Retrying again ...")
                     _touch_rtrade_heartbeat()
@@ -1433,7 +1163,7 @@ class TradingBot:
                     continue
 
                 self._finish_side_precheck(side, aborted=False)
-                failure_count = 1  # reset failure count after a successful order placement
+                failure_count = 1
                 with self.lock:
                     self._round_placed_order = True
 
@@ -1462,53 +1192,47 @@ class TradingBot:
                 if latest_price > 0:
                     current_price = latest_price
                 bad_day = (
-                    current_price > filled_opp_price if is_buy else current_price < filled_opp_price
-                ) and not u.are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
+                    (current_price > filled_opp_price if is_buy else current_price < filled_opp_price)
+                    and not u.are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
+                )
                 if bad_day:
-                    op_sym = "-" if is_buy else "+"
-                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {op_sym} x2 {current_price:.2f}")
+                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {current_price:.2f}")
                     adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
                 aborting_unfilled = getattr(self, "_round_aborted", False) and not is_opp_filled()
                 if not aborting_unfilled:
-                    # Authorize the exact replacement before cancellation, then submit it
-                    # on the next iteration.
-                    replacement_price = round(
-                        current_price * (1.0 + sign * adjustment_percent), 4)
+                    replacement_price = round(current_price * (1.0 + sign * adjustment_percent), 4)
                     replacement_cache_permit = _preflight_routed_order(
-                        self.symbol, side, target_qty, replacement_price,
-                        market=False, kind="rtrade_legacy_quote")
+                        self.symbol, side, target_qty, replacement_price, market=False, kind="rtrade_legacy_quote"
+                    )
                 else:
-                    replacement_price = None
-                    replacement_cache_permit = None
+                    replacement_price = replacement_cache_permit = None
+
                 final_status = _cancel_order_confirmed(self.symbol, order_id)
                 if not final_status:
                     if _order_fully_filled(self.symbol, order_id):
                         print(f"[{self.symbol}] Cancel {side} order failed. Maybe it was filled :-)? Moving to {opp_side} ...")
                         print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (3)")
                         return _complete_followup(target_qty, getattr(self, filled_attr))
-                    else:
-                        print(
-                            f"[{self.symbol}] Cancel {side} order remains ambiguous; "
-                            "replacement is deferred.")
-                        return None
-                else:
-                    remaining_qty = _remaining_after_canceled_order(final_status, target_qty)
-                    if remaining_qty is None:
-                        print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
-                        return None
-                    if remaining_qty <= max(1e-12, target_qty * 1e-9):
-                        print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")
-                        return _complete_followup(target_qty, getattr(self, filled_attr))
-                    step_filled = max(0.0, target_qty - remaining_qty)
-                    if step_filled > 1e-12:
-                        cumulative_filled_qty += step_filled
-                        cumulative_cost += step_filled * getattr(self, filled_attr)
-                    if aborting_unfilled or (getattr(self, "_round_aborted", False) and not is_opp_filled()):
-                        print(f"[{self.symbol}] Aborting {side} loop after cancel because {opp_side} worker exited without fill.")
-                        return _complete_followup()
-                    pending_cache_permit = replacement_cache_permit
-                    pending_replacement_price = replacement_price
-                    pending_replacement_qty = remaining_qty
+                    print(f"[{self.symbol}] Cancel {side} order remains ambiguous; replacement is deferred.")
+                    return None
+
+                remaining_qty = _remaining_after_canceled_order(final_status, target_qty)
+                if remaining_qty is None:
+                    print(f"[{self.symbol}] Invalid final {side} quantity; replacement deferred.")
+                    return None
+                if remaining_qty <= max(1e-12, target_qty * 1e-9):
+                    print(f"[{self.symbol}] {side} filled during cancellation; moving to {opp_side}.")
+                    return _complete_followup(target_qty, getattr(self, filled_attr))
+                step_filled = max(0.0, target_qty - remaining_qty)
+                if step_filled > 1e-12:
+                    cumulative_filled_qty += step_filled
+                    cumulative_cost += step_filled * getattr(self, filled_attr)
+                if aborting_unfilled or (getattr(self, "_round_aborted", False) and not is_opp_filled()):
+                    print(f"[{self.symbol}] Aborting {side} loop after cancel because {opp_side} worker exited without fill.")
+                    return _complete_followup()
+                pending_cache_permit = replacement_cache_permit
+                pending_replacement_price = replacement_price
+                pending_replacement_qty = remaining_qty
         finally:
             if not completed:
                 self._abort_round()
@@ -1520,32 +1244,22 @@ class TradingBot:
         return self._repetitive_side_loop("SELL", current_price, filled_buy_price)
 
     def _run_pair(self, executor, current_price):
-        """Run both sides concurrently on the bot's persistent workers.
-
-        ``Future.result`` propagates worker exceptions to the main loop, which already
-        performs defensive reconciliation by canceling recent orders. The old version
-        created two threads per round and lost their exceptions on stderr.
-        """
+        """Run both sides concurrently on the bot's persistent workers."""
         cond = self._get_pair_cond()
         with cond:
             self._round_placed_order = False
             self._round_aborted = False
             self._pair_precheck_pending = {"BUY", "SELL"}
-        buy_future = executor.submit(
-            self.repetitive_buy, current_price, self.filled_sell_price)
-        sell_future = executor.submit(
-            self.repetitive_sell, current_price, self.filled_buy_price)
-        # Wait for both sides before propagating an exception. Resolving BUY immediately
-        # could leave the old SELL active after a fast BUY failure while the main loop
-        # starts another round over it.
+        buy_future = executor.submit(self.repetitive_buy, current_price, self.filled_sell_price)
+        sell_future = executor.submit(self.repetitive_sell, current_price, self.filled_buy_price)
         wait((buy_future, sell_future))
         return buy_future.result(), sell_future.result()
 
-    def _run_coordinator_forever(self):
-        pair_store = getattr(self, "pair_store", None) or RTradePairStore()
-        venue = _LivePairVenue(self.symbol, pair_store=pair_store)
-        policy = PairPolicy(
-            adjustment_fraction=self.DEFAULT_ADJUSTMENT_PERCENT,
+    def _build_pair_policy(self, adjustment_fraction: float | None = None) -> PairPolicy:
+        return PairPolicy(
+            adjustment_fraction=(
+                self.DEFAULT_ADJUSTMENT_PERCENT if adjustment_fraction is None else adjustment_fraction
+            ),
             quote_ttl_sec=WAIT_FOR_ORDER,
             poll_sec=RTRADE_PAIR_POLL_SEC,
             fast_fill_ratio=RTRADE_FAST_FILL_RATIO,
@@ -1553,147 +1267,144 @@ class TradingBot:
             shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT,
             hard_stop_fraction=RTRADE_HARD_STOP_PCT,
         )
-        if RTRADE_PAIR_MAX_ACTIVE_ROUNDS < 1:
-            raise ValueError("RTRADE_PAIR_MAX_ACTIVE_ROUNDS must be >= 1")
-        if RTRADE_PAIR_START_INTERVAL_SEC <= 0:
-            raise ValueError("RTRADE_PAIR_START_INTERVAL_SEC must be > 0")
-        if (not RTRADE_PAIR_DIRECTIONS
-                or any(side not in {"BUY", "SELL"} for side in RTRADE_PAIR_DIRECTIONS)):
-            raise ValueError("RTRADE_PAIR_DIRECTIONS accepts only BUY,SELL")
-        if RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC <= 0:
-            raise ValueError("RTRADE_INSUFFICIENT_FUNDS_BACKOFF_SEC must be > 0")
-        if RTRADE_PLACE_FAILURE_BACKOFF_SEC <= 0:
-            raise ValueError("RTRADE_PLACE_FAILURE_BACKOFF_SEC must be > 0")
-        if RTRADE_DYNAMIC_MARKET_EXIT_MODE not in {"off", "shadow", "live", "emergency_only"}:
-            raise ValueError("RTRADE_DYNAMIC_MARKET_EXIT_MODE: off|shadow|live|emergency_only")
-        if not RTRADE_HARD_STOP_PCT <= RTRADE_EMERGENCY_HARD_STOP_PCT < 1:
-            raise ValueError(
-                "RTRADE_EMERGENCY_HARD_STOP_PCT must be >= hard-stop and < 1")
 
-        # Each coordinator exclusively owns one round's order IDs and inventory. An
-        # exposed round continues managing its exit without blocking other rounds up
-        # to the configured per-symbol limit.
+    @staticmethod
+    def _clear_venue_blocked_pair(venue, pid):
+        unblock = getattr(venue, "_set_pair_recovery_blocked", None)
+        if callable(unblock):
+            unblock(pid, False)
+
+    @staticmethod
+    def _default_recovered_state(record) -> dict:
+        return {
+            "pair_id": record["pair_id"],
+            "qty": record["qty"],
+            "start_side": record["start_side"],
+            "phase": "quoting",
+            "reason": "recovered_by_client_order_id",
+            "shock": False,
+            "elapsed_sec": max(0.0, time.time() - float(record.get("created_ts") or time.time())),
+            "first_fill_elapsed_sec": None,
+            "first_fill_side": None,
+            "stop_order_id": None,
+            "limit_revisions": {"BUY": 0, "SELL": 0},
+            "hard_stop_revision": 0,
+            "hard_stop_reason": None,
+            "tickets": [],
+            "snapshots": {},
+        }
+
+    def _adopt_pair_record(self, venue, pair_store, policy: PairPolicy, record, *, retry_label: str = ""):
+        state = record.get("state") or self._default_recovered_state(record)
+        state = venue.merge_checkpoint_intents(record, state)
+        intents = record.get("intents", {})
+        all_exhausted = bool(intents) and all(
+            isinstance(i, dict) and i.get("recovery_state") in {"absence_confirmed_no_reuse", "horizon_exhausted"}
+            for i in intents.values()
+        )
+        if not state.get("tickets") and (
+            all_exhausted or state.get("phase") not in {"startup_recovery", "hard_stop_recovery"}
+        ):
+            state["phase"] = "failed"
+            state["reason"] = "recovery_horizon_exhausted" if all_exhausted else "recovery_intent_not_submitted"
+            pair_store.checkpoint(record["pair_id"], state, terminal=True)
+            self._clear_venue_blocked_pair(venue, record["pair_id"])
+            print(
+                f"[{self.symbol}] pair={record['pair_id']} recovery{retry_label}: "
+                "exhausted intent or no tickets placed; closed as terminal"
+            )
+            return None
+        pair_store.checkpoint(record["pair_id"], state, terminal=False)
+        return PairCoordinator.from_state(venue, policy, state)
+
+    def _cleanup_orphan_rt_orders(self, venue, pair_store) -> bool:
+        known_client_ids = {
+            intent.get("client_order_id")
+            for rec in pair_store.active(self.symbol)
+            for intent in (rec.get("intents") or {}).values()
+            if isinstance(intent, dict) and intent.get("client_order_id")
+        }
+        orphan_orders = [
+            order for order in venue.executor.open_orders(self.symbol)
+            if isinstance(order, dict)
+            and (coid := extract_client_order_id(order))
+            and coid.startswith("RT_")
+            and coid not in known_client_ids
+        ]
+        for order in orphan_orders:
+            order_id = extract_order_id(order) or ""
+            client_id = extract_client_order_id(order)
+            venue.executor.cancel_order(self.symbol, order_id)
+            try:
+                resolve_accepted_order(self.symbol, order_id)
+            except Exception:
+                pass
+            print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled order_id={order_id} client_id={client_id}")
+        if orphan_orders:
+            remaining = {extract_order_id(order) for order in venue.executor.open_orders(self.symbol)}
+            not_canceled = [
+                extract_order_id(order) for order in orphan_orders if extract_order_id(order) in remaining
+            ]
+            if not_canceled:
+                print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation for the RT_ orders {not_canceled}")
+                return True
+        return False
+
+    def _step_active_coordinators(self, venue, pair_store, active: list, now: float) -> list:
+        survivors, checkpoints = [], []
+        for coordinator in active:
+            outcome = coordinator.step(now=now)
+            export_state = getattr(coordinator, "export_state", None)
+            if callable(export_state):
+                checkpoints.append((coordinator.pair_id, export_state(), outcome.terminal))
+            if outcome.terminal:
+                self._clear_venue_blocked_pair(venue, coordinator.pair_id)
+                print(
+                    f"[{self.symbol}] pair={outcome.pair_id} "
+                    f"phase={outcome.phase} shock={outcome.shock} "
+                    f"latency={outcome.fill_latency_sec} "
+                    f"buy={outcome.buy_qty:.6f} sell={outcome.sell_qty:.6f} "
+                    f"net={outcome.net_qty:.6f} "
+                    f"cashflow={outcome.gross_pnl:.2f} "
+                    f"fees={outcome.fees:.2f} reason={outcome.reason}"
+                )
+            else:
+                survivors.append(coordinator)
+        pair_store.checkpoint_many(checkpoints)
+        return survivors
+
+    def _run_coordinator_forever(self):
+        pair_store = getattr(self, "pair_store", None) or RTradePairStore()
+        venue = _LivePairVenue(self.symbol, pair_store=pair_store)
+        policy = self._build_pair_policy()
+        _validate_coordinator_config()
+
         active = []
         recovery_blocked = False
-
-        def _clear_venue_blocked_pair(pid):
-            unblock = getattr(venue, "_set_pair_recovery_blocked", None)
-            if callable(unblock):
-                unblock(pid, False)
-
-        def _default_recovered_state(record):
-            return {
-                "pair_id": record["pair_id"], "qty": record["qty"],
-                "start_side": record["start_side"], "phase": "quoting",
-                "reason": "recovered_by_client_order_id", "shock": False,
-                "elapsed_sec": max(
-                    0.0, time.time() - float(record.get("created_ts") or time.time())),
-                "first_fill_elapsed_sec": None, "first_fill_side": None,
-                "stop_order_id": None,
-                "limit_revisions": {"BUY": 0, "SELL": 0},
-                "hard_stop_revision": 0, "hard_stop_reason": None,
-                "tickets": [], "snapshots": {},
-            }
-
-        def _adopt_record(record, *, retry_label=""):
-            state = record.get("state") or _default_recovered_state(record)
-            state = venue.merge_checkpoint_intents(record, state)
-            intents = record.get("intents", {})
-            all_exhausted = bool(intents) and all(
-                isinstance(i, dict) and i.get("recovery_state") in {
-                    "absence_confirmed_no_reuse", "horizon_exhausted"}
-                for i in intents.values()
-            )
-            if not state.get("tickets") and (
-                    all_exhausted or state.get("phase") not in {
-                        "startup_recovery", "hard_stop_recovery"}):
-                state["phase"] = "failed"
-                state["reason"] = (
-                    "recovery_horizon_exhausted" if all_exhausted
-                    else "recovery_intent_not_submitted"
-                )
-                pair_store.checkpoint(
-                    record["pair_id"], state, terminal=True)
-                _clear_venue_blocked_pair(record["pair_id"])
-                print(
-                    f"[{self.symbol}] pair={record['pair_id']} recovery{retry_label}: "
-                    "exhausted intent or no tickets placed; closed as terminal")
-                return None
-            pair_store.checkpoint(
-                record["pair_id"], state, terminal=False)
-            return PairCoordinator.from_state(venue, policy, state)
-
-        def _cleanup_orphan_rt_orders():
-            known_client_ids = {
-                intent.get("client_order_id")
-                for rec in pair_store.active(self.symbol)
-                for intent in (rec.get("intents") or {}).values()
-                if isinstance(intent, dict) and intent.get("client_order_id")
-            }
-            orphan_orders = [
-                order for order in venue.executor.open_orders(self.symbol)
-                if isinstance(order, dict)
-                and (coid := extract_client_order_id(order))
-                and coid.startswith("RT_")
-                and coid not in known_client_ids
-            ]
-            for order in orphan_orders:
-                order_id = extract_order_id(order) or ""
-                client_id = extract_client_order_id(order)
-                venue.executor.cancel_order(self.symbol, order_id)
-                try:
-                    resolve_accepted_order(self.symbol, order_id)
-                except Exception:
-                    pass
-                print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled "
-                      f"order_id={order_id} client_id={client_id}")
-            if orphan_orders:
-                remaining = {
-                    extract_order_id(order)
-                    for order in venue.executor.open_orders(self.symbol)
-                }
-                not_canceled = [
-                    extract_order_id(order) for order in orphan_orders
-                    if extract_order_id(order) in remaining
-                ]
-                if not_canceled:
-                    print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation "
-                          f"for the RT_ orders {not_canceled}")
-                    return True
-            return False
-
         for record in pair_store.active(self.symbol):
             try:
-                coordinator = _adopt_record(record)
-                if coordinator is None:
-                    continue
-                active.append(coordinator)
-                print(f"[{self.symbol}] pair={coordinator.pair_id} adopted "
-                      f"phase={coordinator.phase} tickets={len(coordinator.tickets)}")
+                coordinator = self._adopt_pair_record(venue, pair_store, policy, record)
+                if coordinator is not None:
+                    active.append(coordinator)
+                    print(f"[{self.symbol}] pair={coordinator.pair_id} adopted phase={coordinator.phase} tickets={len(coordinator.tickets)}")
             except Exception as exc:
-                print(
-                    f"[{self.symbol}] RECOVERY BLOCKED: "
-                    f"pair={record.get('pair_id')} {exc}")
+                print(f"[{self.symbol}] RECOVERY BLOCKED: pair={record.get('pair_id')} {exc}")
                 recovery_blocked = True
 
         try:
-            if _cleanup_orphan_rt_orders():
+            if self._cleanup_orphan_rt_orders(venue, pair_store):
                 recovery_blocked = True
         except Exception as exc:
             print(f"[{self.symbol}] RECOVERY BLOCKED: exchange inventory unavailable ({exc})")
             recovery_blocked = True
-        last_start_at = float("-inf")
-        last_recovery_retry = float("-inf")
-        last_recovery_diag_log = float("-inf")
-        last_active_summary_log = float("-inf")
+
+        last_start_at = last_recovery_retry = last_recovery_diag_log = last_active_summary_log = last_whale_log = float("-inf")
         recovery_blocked_since = (
-            time.monotonic()
-            if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False)))
-            else None
+            time.monotonic() if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False))) else None
         )
         next_direction = 0
-        last_whale_log = float("-inf")
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
+
         while True:
             try:
                 now = time.monotonic()
@@ -1704,7 +1415,10 @@ class TradingBot:
                         recovery_blocked_since = now
                     elapsed_blocked = now - recovery_blocked_since
                     if elapsed_blocked >= _RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:
-                        print(f"[{self.symbol}] FATAL: startup recovery remained blocked for {elapsed_blocked:.0f}s (>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart.")
+                        print(
+                            f"[{self.symbol}] FATAL: startup recovery remained blocked for {elapsed_blocked:.0f}s "
+                            f"(>{_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC:.0f}s). Exiting for orchestrator restart."
+                        )
                         sys.exit(1)
 
                     if now - last_recovery_diag_log >= 15.0:
@@ -1726,55 +1440,33 @@ class TradingBot:
                                 if record.get("pair_id") in adopted_ids:
                                     continue
                                 try:
-                                    coordinator = _adopt_record(record, retry_label=" retry")
-                                    if coordinator is None:
-                                        continue
-                                    active.append(coordinator)
-                                    adopted_ids.add(coordinator.pair_id)
+                                    coordinator = self._adopt_pair_record(
+                                        venue, pair_store, policy, record, retry_label=" retry"
+                                    )
+                                    if coordinator is not None:
+                                        active.append(coordinator)
+                                        adopted_ids.add(coordinator.pair_id)
                                 except Exception as adopt_exc:
                                     print(f"[{self.symbol}] startup recovery pair adoption still blocked: {adopt_exc}")
                                     retry_failed = True
-                            if _cleanup_orphan_rt_orders():
+                            if self._cleanup_orphan_rt_orders(venue, pair_store):
                                 retry_failed = True
                             if not retry_failed:
                                 recovery_blocked = False
                                 print(f"[{self.symbol}] startup recovery unblocked: exchange inventory verified")
                         except Exception as exc:
                             print(f"[{self.symbol}] startup recovery retry blocked: {exc}")
-                else:
-                    if recovery_blocked_since is not None:
-                        print(f"[{self.symbol}] RECOVERY UNBLOCKED: all pairs clear, resuming trading.")
-                        recovery_blocked_since = None
+                elif recovery_blocked_since is not None:
+                    print(f"[{self.symbol}] RECOVERY UNBLOCKED: all pairs clear, resuming trading.")
+                    recovery_blocked_since = None
 
-                # Only touch heartbeat when the process is healthy and actively trading / coordinating
                 if not is_recovery_blocked:
                     _touch_rtrade_heartbeat(now=now)
                     if now - last_active_summary_log >= 120.0:
                         last_active_summary_log = now
                         print(f"[{self.symbol}] health: active rounds={len(active)} heartbeat touched.")
 
-                survivors = []
-                checkpoints = []
-                for coordinator in active:
-                    outcome = coordinator.step(now=now)
-                    export_state = getattr(coordinator, "export_state", None)
-                    if callable(export_state):
-                        checkpoints.append((
-                            coordinator.pair_id, export_state(), outcome.terminal))
-                    if outcome.terminal:
-                        _clear_venue_blocked_pair(coordinator.pair_id)
-                        print(
-                            f"[{self.symbol}] pair={outcome.pair_id} "
-                            f"phase={outcome.phase} shock={outcome.shock} "
-                            f"latency={outcome.fill_latency_sec} "
-                            f"buy={outcome.buy_qty:.6f} sell={outcome.sell_qty:.6f} "
-                            f"net={outcome.net_qty:.6f} "
-                            f"cashflow={outcome.gross_pnl:.2f} "
-                            f"fees={outcome.fees:.2f} reason={outcome.reason}")
-                    else:
-                        survivors.append(coordinator)
-                pair_store.checkpoint_many(checkpoints)
-                active = survivors
+                active = self._step_active_coordinators(venue, pair_store, active, now)
 
                 can_start = (
                     not recovery_blocked
@@ -1788,8 +1480,7 @@ class TradingBot:
                         start_side = None
                         for _ in range(len(RTRADE_PAIR_DIRECTIONS)):
                             candidate = RTRADE_PAIR_DIRECTIONS[next_direction]
-                            next_direction = (
-                                next_direction + 1) % len(RTRADE_PAIR_DIRECTIONS)
+                            next_direction = (next_direction + 1) % len(RTRADE_PAIR_DIRECTIONS)
                             if now >= side_backoff_until[candidate]:
                                 blocked, b_reason = _whale_flow_blocks_side(self.symbol, candidate)
                                 if blocked:
@@ -1804,70 +1495,64 @@ class TradingBot:
                             continue
                         round_qty = RTRADE_NOTIONAL_USDC / float(current_price)
                         reserved_pair_id = uuid.uuid4().hex
-                        eff_adjustment = _effective_adjustment_fraction(
-                            self.symbol, self.DEFAULT_ADJUSTMENT_PERCENT)
+                        eff_adjustment = _effective_adjustment_fraction(self.symbol, self.DEFAULT_ADJUSTMENT_PERCENT)
                         round_policy = (
-                            policy if eff_adjustment == self.DEFAULT_ADJUSTMENT_PERCENT
-                            else PairPolicy(
-                                adjustment_fraction=eff_adjustment,
-                                quote_ttl_sec=WAIT_FOR_ORDER,
-                                poll_sec=RTRADE_PAIR_POLL_SEC,
-                                fast_fill_ratio=RTRADE_FAST_FILL_RATIO,
-                                min_edge_fraction=RTRADE_MIN_EDGE_PCT,
-                                shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT,
-                                hard_stop_fraction=RTRADE_HARD_STOP_PCT,
-                            )
+                            policy
+                            if eff_adjustment == self.DEFAULT_ADJUSTMENT_PERCENT
+                            else self._build_pair_policy(eff_adjustment)
                         )
-                        coordinator = PairCoordinator(
-                            venue, round_qty, round_policy, start_side=start_side)
-                        outcome = coordinator.start(
-                            current_price, pair_id=reserved_pair_id)
+                        coordinator = PairCoordinator(venue, round_qty, round_policy, start_side=start_side)
+                        outcome = coordinator.start(current_price, pair_id=reserved_pair_id)
                         export_state = getattr(coordinator, "export_state", None)
                         last_start_at = now
                         if not outcome.terminal:
-                            # Keep the in-memory owner before checkpoint I/O. If
-                            # persistence fails after venue acceptance, the same
-                            # process must still manage the orders and block new
-                            # rounds instead of waiting for a restart.
                             active.append(coordinator)
                         try:
                             if callable(export_state):
                                 pair_store.checkpoint(
-                                    coordinator.pair_id, export_state(),
-                                    terminal=outcome.terminal)
+                                    coordinator.pair_id, export_state(), terminal=outcome.terminal
+                                )
                         except Exception:
                             recovery_blocked = True
                             raise
                         if outcome.terminal:
-                            _clear_venue_blocked_pair(coordinator.pair_id)
-                            failed_side, backoff_sec = _place_failure_backoff(
-                                outcome.reason)
+                            self._clear_venue_blocked_pair(venue, coordinator.pair_id)
+                            failed_side, backoff_sec = _place_failure_backoff(outcome.reason)
                             if failed_side in side_backoff_until:
                                 side_backoff_until[failed_side] = now + backoff_sec
                                 print(
                                     f"[{self.symbol}] {failed_side} backoff "
-                                    f"{backoff_sec:.0f}s after a placement failure "
-                                    f"({outcome.reason})")
+                                    f"{backoff_sec:.0f}s after a placement failure ({outcome.reason})"
+                                )
                             print(
                                 f"[{self.symbol}] pair={outcome.pair_id} "
-                                f"direction={start_side}-first "
-                                f"phase={outcome.phase} reason={outcome.reason}")
+                                f"direction={start_side}-first phase={outcome.phase} reason={outcome.reason}"
+                            )
                         else:
                             print(
                                 f"[{self.symbol}] pair={outcome.pair_id} started "
-                                f"direction={start_side}-first "
-                                f"active={len(active)}/"
-                                f"{RTRADE_PAIR_MAX_ACTIVE_ROUNDS}")
+                                f"direction={start_side}-first active={len(active)}/{RTRADE_PAIR_MAX_ACTIVE_ROUNDS}"
+                            )
                 time.sleep(RTRADE_PAIR_POLL_SEC)
             except Exception as exc:  # noqa: BLE001 — retain rounds for reconciliation.
                 print(f"[{self.symbol}] pair coordinator error: {exc}")
-                # Do not globally cancel recent orders in a multi-round registry; that
-                # could destroy valid legs owned by other pair IDs.
                 time.sleep(RTRADE_PAIR_POLL_SEC)
 
     def _cancel_all_rtrade_open_orders(self):
         api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
         api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
+
+    def _resume_after_single_side_fill(self, filled_side: str, stale_side: str, normal_hours: float, attr_name: str, mark_fn):
+        last_px = _finite_pos_float(
+            mkt.latest_fill_price(self.symbol, filled_side, normal_hours * 3600.0), getattr(self, attr_name)
+        )
+        if last_px > 0:
+            mark_fn(round(last_px, 4))
+            print(
+                f"[{self.symbol}] startup recovery: resumed after {filled_side} fill at "
+                f"{getattr(self, attr_name):.2f}; cancelling stale {stale_side} order(s) to continue follow-up."
+            )
+        api.cancel_open_orders(stale_side, self.symbol, allowed_owners={"rtrade"})
 
     def _reconcile_startup_from_cache(self):
         """Reconcile open RT_ orders and recent fill state from the cached API on reboot."""
@@ -1883,29 +1568,13 @@ class TradingBot:
             return
         try:
             if has_sells and not has_buys:
-                last_buy = _finite_pos_float(
-                    mkt.latest_fill_price(self.symbol, "BUY", RTRADE_BUY_NORMAL_HOURS * 3600.0),
-                    self.filled_buy_price,
+                self._resume_after_single_side_fill(
+                    "BUY", "SELL", RTRADE_BUY_NORMAL_HOURS, "filled_buy_price", self.mark_buy_filled
                 )
-                if last_buy > 0:
-                    self.mark_buy_filled(round(last_buy, 4))
-                    print(
-                        f"[{self.symbol}] startup recovery: resumed after BUY fill at "
-                        f"{self.filled_buy_price:.2f}; cancelling stale SELL order(s) to continue follow-up."
-                    )
-                api.cancel_open_orders("SELL", self.symbol, allowed_owners={"rtrade"})
             elif has_buys and not has_sells:
-                last_sell = _finite_pos_float(
-                    mkt.latest_fill_price(self.symbol, "SELL", RTRADE_SELL_NORMAL_HOURS * 3600.0),
-                    self.filled_sell_price,
+                self._resume_after_single_side_fill(
+                    "SELL", "BUY", RTRADE_SELL_NORMAL_HOURS, "filled_sell_price", self.mark_sell_filled
                 )
-                if last_sell > 0:
-                    self.mark_sell_filled(round(last_sell, 4))
-                    print(
-                        f"[{self.symbol}] startup recovery: resumed after SELL fill at "
-                        f"{self.filled_sell_price:.2f}; cancelling stale BUY order(s) to continue follow-up."
-                    )
-                api.cancel_open_orders("BUY", self.symbol, allowed_owners={"rtrade"})
             else:
                 print(
                     f"[{self.symbol}] startup recovery: cancelling {len(open_buys)} BUY and "
@@ -1922,8 +1591,6 @@ class TradingBot:
         if getattr(self, "_needs_startup_reconcile", False):
             self._needs_startup_reconcile = False
             self._reconcile_startup_from_cache()
-        # Reuse exactly two workers per bot across rounds. BUY and SELL remain concurrent
-        # while avoiding thread churn and lost exceptions.
         prefix = f"rtrade-{self.symbol}"
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix=prefix) as executor:
             while True:
@@ -1936,15 +1603,12 @@ class TradingBot:
                         continue
                     print(f"[{self.symbol}] Current price: {current_price:.2f}")
 
-                    # If the asset trends clearly, keep the spread bot idle for this cycle
-                    # to avoid catching a falling knife. Retry on the next iteration.
                     if _trend_too_strong(self.symbol):
                         self._cancel_all_rtrade_open_orders()
                         time.sleep(WAIT_FOR_ORDER)
                         continue
 
                     buy_result, sell_result = self._run_pair(executor, current_price)
-
                     if not buy_result or not sell_result:
                         with self.lock:
                             self.buy_filled = self.sell_filled = False
@@ -1953,48 +1617,32 @@ class TradingBot:
                         time.sleep(WAIT_FOR_ORDER)
                         continue
 
-                    filled_buy_price = buy_result + RTRADE_ZERO_EPSILON  # avoid zero
+                    filled_buy_price = buy_result + RTRADE_ZERO_EPSILON
                     filled_sell_price = sell_result
-
-                    print(f"[{self.symbol}] Transaction complete: Bought at {filled_buy_price:.2f}, Sold at {filled_sell_price:.2f}")
-                    if filled_buy_price < filled_sell_price:
-                        print(f"[{self.symbol}] PROFIT: Profit ratio {filled_sell_price / filled_buy_price:.2f}")
-                    else:
-                        print(f"[{self.symbol}] LOSS: Loss ratio {filled_sell_price / filled_buy_price:.2f}")
-
+                    print(
+                        f"[{self.symbol}] Transaction complete: Bought at {filled_buy_price:.2f}, "
+                        f"Sold at {filled_sell_price:.2f}"
+                    )
+                    ratio_label = "PROFIT: Profit ratio" if filled_buy_price < filled_sell_price else "LOSS: Loss ratio"
+                    print(f"[{self.symbol}] {ratio_label} {filled_sell_price / filled_buy_price:.2f}")
                     time.sleep(1)
-
-                    # Reset for the next round.
                     with self.lock:
                         self.buy_filled = self.sell_filled = False
                 except Exception as e:
                     print(f"[{self.symbol}] Unexpected error: {e}")
                     with self.lock:
                         self.buy_filled = self.sell_filled = False
-                    # Guarantee atomic cleanup of all rtrade open orders on worker failure.
                     self._cancel_all_rtrade_open_orders()
                     time.sleep(1)
-                
-                
+
+
 DEFAULT_ADJUSTMENT_PERCENT = required_float_env("RTRADE_DEFAULT_ADJUSTMENT_PCT")
 print(f"[INFO] DEFAULT_ADJUSTMENT_PERCENT = {DEFAULT_ADJUSTMENT_PERCENT}")
 
-# Keep actual startup, including WebSocket setup and the infinite live order loop, under
-# ``__main__``. Historically it ran during import and could start live trading from a test.
-# Fleet startup executes ``python rtrade.py``, so production behavior remains unchanged
-# while importing the module is safe.
 if __name__ == "__main__":
-    # This bot owns one pair. Switching it requires an explicit registry selection;
-    # silently choosing the first of several pairs would leave assets unmanaged.
     symbol = single_symbol_for("binance", "rtrade")
-    # Explicit user-data bridge: placement guards inspect order/fill history, so the WS
-    # keeps that cache fresh instead of relying solely on three-minute polling.
     cm.enable_real_ws_event_sync()
 
-    # A VPN/feed blip at startup must not crash with a traceback (which trips the
-    # watchdog's traceback alarm at threshold 1 and respawn-loops). Retry briefly for
-    # the first price, then exit CLEANLY for the supervisor to relaunch later. Wording
-    # avoids "unavailable" so it does not trip the blind regex either.
     initial_price = 0.0
     for attempt in range(1, 13):
         initial_price = _finite_pos_float(api.get_current_price(symbol), 0.0)
@@ -2003,12 +1651,11 @@ if __name__ == "__main__":
         print(f"[{symbol}] startup: price feed not ready yet (attempt {attempt}/12); waiting 5s...")
         time.sleep(5)
     if initial_price <= 0:
-        print(f"[{symbol}] startup: price feed still not ready after 12 tries; exiting cleanly "
-              "for the supervisor to relaunch (transient feed gap, not a fault).")
+        print(
+            f"[{symbol}] startup: price feed still not ready after 12 tries; exiting cleanly "
+            "for the supervisor to relaunch (transient feed gap, not a fault)."
+        )
         raise SystemExit(0)
     initial_qty = RTRADE_NOTIONAL_USDC / initial_price
-    bot = TradingBot(symbol, initial_qty,
-                     DEFAULT_ADJUSTMENT_PERCENT=DEFAULT_ADJUSTMENT_PERCENT)
+    bot = TradingBot(symbol, initial_qty, DEFAULT_ADJUSTMENT_PERCENT=DEFAULT_ADJUSTMENT_PERCENT)
     bot.run()
-
-    
