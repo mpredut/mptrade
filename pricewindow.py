@@ -21,6 +21,7 @@ from bisect import bisect_left
 import numpy as np
 
 from botcore import (
+    diff_percent,
     float_env,
     safe_float,
     safe_int,
@@ -1141,8 +1142,8 @@ class WindowAnalyzer:
         max_price = w.get_max()
         newest_price = w.prices[-1]
 
-        price_diff_min = u.calculate_difference_percent(min_price, newest_price)
-        price_diff_max = u.calculate_difference_percent(max_price, newest_price)
+        price_diff_min = diff_percent(min_price, newest_price)
+        price_diff_max = diff_percent(max_price, newest_price)
         price_diff_newest = max(price_diff_min, price_diff_max)
 
         if (

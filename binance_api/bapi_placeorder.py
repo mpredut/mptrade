@@ -150,19 +150,6 @@ def _resolve_qty(qty):
     return float("inf") if qty is None else qty
 
 
-def _fresh_price(symbol):
-    """Return the freshest WS price, falling back to ``bapi.get_current_price``."""
-    try:
-        import cacheManager as cm
-        pf = safe_pos_float(cm.get_current_price_manager().get_price_value(symbol), default=None)
-        if pf is not None:
-            return pf
-    except Exception:
-        pass
-    return api.get_current_price(symbol)
-
-
-
 def apply_weight_limit(symbol, order_type, price, required_qty, available_qty):
     auto_qty = required_qty is None
     if isinstance(order_type, bool) or not isinstance(order_type, str):
@@ -461,20 +448,6 @@ def place_BUY_order(symbol, price, qty, client_order_id=None):
     return _submit_binance_order(
         "BUY", symbol, qty, price=price, client_order_id=client_order_id)
 
-def place_SELL_order(symbol, price, qty, client_order_id=None):
-    return _submit_binance_order(
-        "SELL", symbol, qty, price=price, client_order_id=client_order_id)
-
-
-def place_BUY_order_at_market(symbol, qty, client_order_id=None):
-    return _submit_binance_order(
-        "BUY", symbol, qty, market=True, client_order_id=client_order_id)
-
-
-def place_SELL_order_at_market(symbol, qty, client_order_id=None):
-    return _submit_binance_order(
-        "SELL", symbol, qty, market=True, client_order_id=client_order_id)
-
 
 def _last_opposite_fill_price(symbol, order_type):
     """Return the latest opposite fill price without a time limit.
@@ -725,16 +698,6 @@ def place_safe_order(order_type, symbol, price, qty=None,
 # The fleet-wide journal lives in order_outcomes_log.py as a single source used by
 # Instrument.place for every provider. Re-export the directory for backward compatibility.
 ORDER_OUTCOMES_LOG_DIR = _outcomes_log.ORDER_OUTCOMES_LOG_DIR
-
-
-def _log_order_outcome(symbol, side, price, qty, outcome, refuse_reason, motivation):
-    """Write one pipe-delimited fleet-wide record per placement attempt."""
-    try:
-        caller = os.path.basename(sys._getframe(2).f_code.co_filename)
-    except Exception:
-        caller = None
-    _outcomes_log.log_order_outcome(symbol, side, price, qty, outcome, refuse_reason,
-                                    motivation, caller=caller)
 
 
 # Retain ``pair`` only for compatibility with callers that explicitly pass it. It is

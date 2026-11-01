@@ -54,9 +54,8 @@ def get_interval_time(valoare_prestabilita=97 * 79, marja_aleatoare=10):
     
     return interval
  
-def calculate_difference_percent(val1, val2):
-    """Delegate to the shared fleet/bot botcore.diff_percent formula."""
-    return botcore.diff_percent(val1, val2)
+# Delegate to the shared fleet/bot botcore.diff_percent formula.
+calculate_difference_percent = botcore.diff_percent
 
     
 def value_diff_to_percent(value1, value2):
@@ -132,19 +131,16 @@ def timeToHMS(timestamp_sec):
         return "N/A"
 
 
-_safe_seconds = botcore.safe_nonneg_float
-
-
 def secondsToDays(max_age_seconds) -> float:
-    return _safe_seconds(max_age_seconds, default=0.0) / 86400.0
+    return botcore.safe_nonneg_float(max_age_seconds, default=0.0) / 86400.0
 
 
 def secondsToHours(max_age_seconds) -> float:
-    return _safe_seconds(max_age_seconds, default=0.0) / 3600.0
+    return botcore.safe_nonneg_float(max_age_seconds, default=0.0) / 3600.0
 
 
 def secondsToMinutes(max_age_seconds) -> float:
-    return _safe_seconds(max_age_seconds, default=0.0) / 60.0
+    return botcore.safe_nonneg_float(max_age_seconds, default=0.0) / 60.0
 
 
 def _parse_decay_params(initial_procent, expired_duration, passs, half_life_duration):

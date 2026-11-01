@@ -7,20 +7,15 @@ SINGLE source of truth for price thresholds and prevents live/backtest divergenc
 from __future__ import annotations
 
 from botcore import (
-    _parse_bool_flag,
-    are_close as _botcore_are_close,
-    diff_percent as _botcore_diff_percent,
+    _parse_bool_flag as _bool_flag,
+    are_close,
+    diff_percent,
     safe_float,
 )
 
 
 def _finite_float(val: object, default: float | None = None) -> float | None:
     return safe_float(val, default=default)
-
-
-_bool_flag = _parse_bool_flag
-diff_percent = _botcore_diff_percent
-are_close = _botcore_are_close
 
 
 def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]]:

@@ -410,25 +410,12 @@ class BinanceProvider(MarketDataProvider):
     def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None):
         # Use the Order-cache safeback window as tier-one reference. When dynamic windowing
         # is active on BUY and safeback_sec was not explicitly passed by caller, use dynamic window.
-        import order_guard
         from binance_api import bapi_placeorder as _po
-        sb = safe_pos_float(safeback_sec, default=None)
-        if sb is None:
-            win_s = order_guard.get_window_cfg(
-                "binance",
-                symbol=symbol,
-                order_type=side,
-                regime_context=regime_context,
-                module=module,
-                reference_mode=reference_mode,
-            )
-            sb = safe_pos_float(win_s, default=_po.PLACE_ORDER_SAFEBACK_SEC)
-        wr_kwargs = {}
-        if reference_mode is not None:
-            wr_kwargs["reference_mode"] = reference_mode
-        if module is not None:
-            wr_kwargs["module"] = module
-        return order_guard.window_reference(self, symbol, side, sb, **wr_kwargs)
+        return super().profit_guard_window_ref(
+            symbol, side, safeback_sec,
+            regime_context=regime_context, reference_mode=reference_mode, module=module,
+            prefer_safeback=True, default_safeback_sec=_po.PLACE_ORDER_SAFEBACK_SEC,
+        )
 
     def last_opposite_fill(self, symbol: str, order_type: str, since_s: float = 0) -> Optional[float]:
         # Persistent Binance source without a window: fill cache followed by direct
@@ -1269,8 +1256,7 @@ class MarketApi:
             return provider.round_amount(symbol, qty)
         return safe_float(qty, default=0.0)
 
-    def round_amount(self, symbol: str, qty: float, provider_name=None) -> float:
-        return self.round_quantity(symbol, qty, provider_name=provider_name)
+    round_amount = round_quantity
 
     def round_price(self, symbol: str, price: float, provider_name=None) -> float:
         provider = self._provider_explicit_or_routed(symbol, provider_name)

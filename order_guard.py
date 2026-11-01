@@ -376,7 +376,7 @@ _normalize_side_token = normalize_side
 
 def opposite_side(order_type: str) -> str:
     """Return the opposite order side ('SELL' for 'BUY', 'BUY' for 'SELL')."""
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     return "SELL" if side == "BUY" else "BUY"
@@ -384,7 +384,7 @@ def opposite_side(order_type: str) -> str:
 
 def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
     """Compute signed favorable profit percentage of `price` relative to `ref_price` symmetrically."""
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side == "BUY":
         return u.value_diff_to_percent(ref_price, price)
     if side == "SELL":
@@ -394,7 +394,7 @@ def profit_diff_pct(order_type: str, price: float, ref_price: float) -> float:
 
 def select_extreme_reference(prices, order_type: str, *, strict: bool = True):
     """Select the directional extreme reference symmetrically for BUY and SELL."""
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     if prices is None or isinstance(prices, (bool, str, bytes)):
@@ -424,7 +424,7 @@ def get_profit_guard_mode_cfg(
     if reference_mode is not None:
         return validate_profit_guard_mode_cfg(reference_mode)
 
-    side_u = _normalize_side_token(order_type)
+    side_u = normalize_side(order_type)
     if side_u not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     side_l = side_u.lower()
@@ -673,7 +673,7 @@ def get_dynamic_window_sec_cfg(
     - Adverse trend (BUY in bear / SELL in bull): 48h - 168h (configured via dynamic_window_adverse_h)
     - Flat / unknown trend: 12h - 48h (configured via dynamic_window_flat_h)
     """
-    side = "BUY" if (order_type is None or order_type == "") else _normalize_side_token(order_type)
+    side = "BUY" if (order_type is None or order_type == "") else normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
 
@@ -725,7 +725,7 @@ def get_window_cfg(
     Otherwise returns `<venue>_window_h` (or default_window_h) in seconds.
     """
     name = _provider_name(provider_name)
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
 
     if side in ("BUY", "SELL"):
         mode = get_profit_guard_mode_cfg(
@@ -816,7 +816,7 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, 
     cycles that were already closed by subsequent same-side fills within the window."""
     if not opp_orders:
         return None
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return None
     mode = validate_profit_guard_mode_cfg(reference_mode or "strict")
@@ -923,7 +923,7 @@ def window_reference(
     window_s_f = safe_pos_float(window_s, default=None)
     if window_s_f is None:
         return None
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     eff_mode = get_profit_guard_mode_cfg(
         provider, side, module=module, reference_mode=reference_mode
     )
@@ -1023,7 +1023,7 @@ def weight_limit(provider, symbol, order_type, price, required_qty, *, available
     provider.get_orders supplies 24-hour traded value. The shared quantity decision must
     supply the side-aware balance, which this guard does not re-read. Return the smaller
     of requested and permitted quantity. Errors propagate so the caller fails closed."""
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         raise ValueError(f"Invalid order_type {order_type!r}; expected 'BUY' or 'SELL'")
     provider_name = _provider_name(provider)
@@ -1079,7 +1079,7 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if GUARD_REGISTRY["GO1"].is_bypassed(bypassed):
             return True, None
     name = _provider_name(provider)
-    order_type = _normalize_side_token(order_type)
+    order_type = normalize_side(order_type)
     if order_type not in ("BUY", "SELL"):
         return False, "invalid_side"
     resolved_max_trades = exact_nonneg_int(max_daily_trades, default=None)
@@ -1431,7 +1431,7 @@ def check_intelligence_guards(
     if is_intelligence_master_off(m, require_key=True):
         return True, "intelligence_guards_off", 1.0
 
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -1616,7 +1616,7 @@ def _evaluate_intelligence_guards_raw(
     if is_intelligence_master_off(m, require_key=True):
         return True, "intelligence_guards_off", 1.0
 
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     if side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 
@@ -1710,7 +1710,7 @@ def check_math_profit_reference(
 
     Pure mathematical calculation (0 tokens, deterministic, no AI or macro push alerts).
     """
-    side = _normalize_side_token(order_type)
+    side = normalize_side(order_type)
     opp_side = opposite_side(order_type)
     provider_name = _provider_name(provider)
     mode = get_profit_guard_mode_cfg(
@@ -1820,9 +1820,6 @@ def check_math_profit_reference(
     return True
 
 
-_check_math_profit_reference = check_math_profit_reference
-
-
 def profit_guard(
     provider,
     symbol,
@@ -1884,7 +1881,7 @@ def profit_guard(
     if regime_context is not None and s_scale < 1.0:
         _record_context_suggested_scale(
             regime_context,
-            _normalize_side_token(order_type),
+            normalize_side(order_type),
             s_scale,
             intel_reason,
             reason_attr="intelligence_scale_reason",

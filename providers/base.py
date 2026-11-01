@@ -164,7 +164,7 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
                 return cleaned
         return default
     if hasattr(order, "order_id") and hasattr(order, "state"):
-        cleaned = _clean_single_order_id(getattr(order, "order_id", None))
+        cleaned = clean_order_id(getattr(order, "order_id", None))
         return cleaned if cleaned is not None else default
     if isinstance(order, dict):
         for key in _ORDER_ID_KEYS:
@@ -173,7 +173,7 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
                 if cleaned is not None:
                     return cleaned
         return default
-    cleaned = _clean_single_order_id(order)
+    cleaned = clean_order_id(order)
     return cleaned if cleaned is not None else default
 
 
@@ -704,7 +704,7 @@ def aggregate_fills_by_order_id(
             continue
         parent_oid = None
         for k in _PARENT_ORDER_ID_KEYS:
-            cleaned_oid = _clean_single_order_id(r.get(k))
+            cleaned_oid = clean_order_id(r.get(k))
             if cleaned_oid is not None:
                 parent_oid = cleaned_oid
                 break
@@ -785,7 +785,7 @@ def _derive_128bit_client_order_id(
     """Map one durable client ID to a venue's 128-bit hex clientOrderId form."""
     if isinstance(client_order_id, (bool, list, tuple, dict, set, frozenset)):
         raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
-    raw = _clean_single_order_id(client_order_id) or ""
+    raw = clean_order_id(client_order_id) or ""
     if not raw or len(raw) > 128:
         raise ProviderError(f"{venue_label} client_order_id must contain 1-128 characters")
     try:
@@ -912,9 +912,7 @@ class MarketDataProvider(ABC):
             pass
         return qty_f
 
-    def round_amount(self, symbol: str, qty: float) -> float:
-        """Backward-compatible alias for round_quantity."""
-        return self.round_quantity(symbol, qty)
+    round_amount = round_quantity
 
     def round_price(self, symbol: str, price: float) -> float:
         """Round price to venue price precision (tick size / price decimals)."""
@@ -980,18 +978,25 @@ class MarketDataProvider(ABC):
         """Cancel adverse opposing orders when the venue implements this policy."""
         return None
 
-    def profit_guard_window_ref(self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None):
+    def profit_guard_window_ref(
+        self, symbol: str, side: str, safeback_sec, regime_context=None, reference_mode=None, module=None,
+        *, prefer_safeback: bool = False, default_safeback_sec: float = 0.0,
+    ):
         import order_guard
-        window_s = order_guard.get_window_cfg(
-            self.name,
-            symbol=symbol,
-            order_type=side,
-            regime_context=regime_context,
-            module=module,
-            reference_mode=reference_mode,
-        )
-        win_f = safe_pos_float(window_s, default=None)
-        window_s = win_f if win_f is not None else safe_pos_float(safeback_sec, default=0.0)
+        sb_f = safe_pos_float(safeback_sec, default=None)
+        if prefer_safeback and sb_f is not None:
+            window_s = sb_f
+        else:
+            win_cfg = order_guard.get_window_cfg(
+                self.name,
+                symbol=symbol,
+                order_type=side,
+                regime_context=regime_context,
+                module=module,
+                reference_mode=reference_mode,
+            )
+            win_f = safe_pos_float(win_cfg, default=None)
+            window_s = win_f if win_f is not None else (sb_f if sb_f is not None else default_safeback_sec)
         wr_kwargs = {}
         if reference_mode is not None:
             wr_kwargs["reference_mode"] = reference_mode

@@ -247,29 +247,18 @@ def snapshot_cache_symbol_rows(manager, symbol: str) -> list[dict]:
         ]
 
 
-def get_trade_orders(order_type, symbol, max_age_seconds):
-    import cacheManager as cm
-    # Consumer processes read the cache written by the dedicated cacheManager process.
-    # Starting a second polling loop here duplicates API traffic and mixes cache logs
-    # into callers such as order_retry_worker.
-    cache_order_manager = cm.get_cache_manager("Order", start_sync=False)
-
+def filter_recent_cached_orders(manager, order_type, symbol, max_age_seconds):
+    """Validate inputs, snapshot symbol rows from ``manager``, and return recent ``(row, side, ts_ms, px, qty)``."""
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
-
-    orders_for_symbol = snapshot_cache_symbol_rows(cache_order_manager, symbol)
-    if not orders_for_symbol:
-        return []
-
-    #print(f" orders_for_symbol {orders_for_symbol}")
-    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
+    orders_for_symbol = snapshot_cache_symbol_rows(manager, symbol)
+    max_age_val = safe_nonneg_float(max_age_seconds, default=None) if orders_for_symbol else None
     if max_age_val is None:
         return []
     current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_val * 1000.0  # convert to ms
-
-    filtered_orders = []
+    max_age_ms = max_age_val * 1000.0
+    filtered = []
     for order in orders_for_symbol:
         side = extract_order_side(order)
         ts_ms = extract_timestamp_ms(order, default=0) or 0
@@ -277,12 +266,23 @@ def get_trade_orders(order_type, symbol, max_age_seconds):
         if ts_ms > 0 and (order_type is None or side == order_type) and -5_000 <= age_ms <= max_age_ms:
             px = extract_order_price(order)
             qty = extract_order_qty(order)
-            if px <= 0 or qty <= 0:
-                continue
-            filtered_orders.append(_build_trade_order_record(order.get('orderId'), px, qty, ts_ms, side))
+            if px > 0 and qty > 0:
+                filtered.append((order, side, ts_ms, px, qty))
+    return filtered
 
-    #print(f" filtered_orders {filtered_orders} , current_time_ms {current_time_ms} timestamp  max_age+ms {max_age_ms}")
-    return filtered_orders
+
+def get_trade_orders(order_type, symbol, max_age_seconds):
+    import cacheManager as cm
+    # Consumer processes read the cache written by the dedicated cacheManager process.
+    # Starting a second polling loop here duplicates API traffic and mixes cache logs
+    # into callers such as order_retry_worker.
+    cache_order_manager = cm.get_cache_manager("Order", start_sync=False)
+    return [
+        _build_trade_order_record(order.get("orderId"), px, qty, ts_ms, side)
+        for order, side, ts_ms, px, qty in filter_recent_cached_orders(
+            cache_order_manager, order_type, symbol, max_age_seconds
+        )
+    ]
 
 # The default aggregation window is the previous 24 hours.
 def get_total_traded_stats(symbol, period_seconds=86400):

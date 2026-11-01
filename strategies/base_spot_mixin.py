@@ -21,11 +21,10 @@ from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
     resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
-from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
+from providers.base import clean_order_id as _clean_order_id, normalize_side
 from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
     JsonStateStore, build_strategy_exit_manager,
-    clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
 
@@ -121,7 +120,7 @@ def sanitize_common_spot_state(
         cyc_i = max(1, int(cyc_f)) if cyc_f is not None else 1
     state["cycle"] = cyc_i
     for nkey in nonneg_float_keys:
-        state[nkey] = _clean_nonneg_float(state.get(nkey), 0.0) or 0.0
+        state[nkey] = safe_nonneg_float(state.get(nkey), 0.0) or 0.0
     for fkey in signed_float_keys:
         state[fkey] = safe_float(state.get(fkey), default=0.0) or 0.0
     for ikey in nonneg_int_keys:
@@ -132,7 +131,7 @@ def sanitize_common_spot_state(
         state[ikey] = i if (i is not None and i >= 0) else 0
     for pkey in pos_float_keys:
         if pkey in state and state.get(pkey) is not None:
-            state[pkey] = _clean_pos_float(state.get(pkey))
+            state[pkey] = safe_pos_float(state.get(pkey), None)
     for bkey in bool_keys:
         if bkey in state:
             state[bkey] = _parse_bool_flag(state.get(bkey), False)
@@ -230,7 +229,7 @@ class BaseSpotMixin:
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
-        self._simulated_ts = _clean_nonneg_float(ts)
+        self._simulated_ts = safe_nonneg_float(ts, None)
 
     def _next_paper_order_id(self) -> str:
         self._paper_seq += 1
@@ -298,8 +297,8 @@ class BaseSpotMixin:
 
     # -- Position, Fill Accounting & Order Helpers -----------------------------
     def _avg(self) -> float | None:
-        qty = _clean_pos_float(self.s.get("qty"))
-        cost = _clean_pos_float(self.s.get(self._cost_state_key))
+        qty = safe_pos_float(self.s.get("qty"), None)
+        cost = safe_pos_float(self.s.get(self._cost_state_key), None)
         if qty is None or cost is None or qty <= self._qty_eps:
             return None
         return safe_pos_float(cost / qty, default=None) if self._exit_manager_mode == "t212" else cost / qty
@@ -316,7 +315,7 @@ class BaseSpotMixin:
         if self.s["entry_price"] is None:
             self.s["entry_price"] = price
         raw_amt = order.get("amount")
-        amt_val = _clean_nonneg_float(raw_amt)
+        amt_val = safe_nonneg_float(raw_amt, None)
         self.s[self._spent_state_key] += (
             amt_val
             if (amt_val is not None and raw_amt is not None)
@@ -671,7 +670,7 @@ class BaseSpotMixin:
             return True, "no_last_sell"
 
         if not is_spot:
-            last_sell_ts = _clean_pos_float(self.s.get("last_sell_ts"))
+            last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
             if self.p.reentry_ttl_hours > 0 and last_sell_ts:
                 if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
                     self.s.pop("sl_rebuy", None)

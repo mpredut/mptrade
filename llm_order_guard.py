@@ -25,7 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
     clean_scale as _clean_scale,
     clean_symbol_key,
-    normalize_order_side as _normalize_side,
+    normalize_side as _normalize_side,
     obj_attr,
     resolve_now_ts as _resolve_now_ts,
     resolve_order_notional,

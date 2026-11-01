@@ -25,7 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     check_cooldown_gate,
     clean_scale as _clean_scale,
     clean_symbol_key,
-    normalize_order_side,
+    normalize_side,
     resolve_now_ts,
     safe_pos_float,
 )
@@ -84,7 +84,7 @@ def check_external_order_guards(
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
-    order_side = normalize_order_side(side)
+    order_side = normalize_side(side)
     if order_side not in ("BUY", "SELL"):
         return True, "not_supported_side", 1.0
 

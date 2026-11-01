@@ -261,28 +261,6 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
         return []
 
 
-def get_my_trades(order_type, symbol, backdays: int = 3, limit=1000):
-    order_type, backdays, limit = _validate_trade_query_args(
-        order_type, symbol, backdays, default_days=3, limit=limit
-    )
-    
-    all_trades = []
-    
-    for days_ago in range(backdays + 1):
-        print(f"[{symbol}] get_my_trades: Fetching trades for day {days_ago:03d}... ", end=" ")
-        trades = get_my_trades_24(order_type, symbol, days_ago=days_ago, limit=limit)
-        
-        if not trades:
-            continue
-        
-        print(f" [{len(trades)}] found ")
-        all_trades.extend(_filter_trades_by_side(trades, order_type))
-
-    print("")
-    return all_trades
-        
-        
-        
 def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
     order_type, backdays, limit = _validate_trade_query_args(
         order_type, symbol, backdays, default_days=3, limit=limit
@@ -306,111 +284,8 @@ def get_my_trades_simple(order_type, symbol, backdays=3, limit=1000):
         return []
 
 
-# Append newly fetched fills to an existing file.
-def save_trades_to_file(order_type, symbol, filename, limit=1000, years_to_keep=2):
-    order_type, years_to_keep, limit = _validate_trade_query_args(
-        order_type, symbol, years_to_keep, default_days=2, limit=limit
-    )
-    symbol = str(symbol).strip().upper().replace("/", "")
-    years_to_keep = years_to_keep or 2
-
-    print("save_trades_to_file")
-    print(f"{symbol} symbol and order_type {order_type} ")
-     
-    # Initialize the main collection as a list.
-    all_trades_list = []
-
-    # Load existing data with .previous recovery.
-    try:
-        all_trades_list = load_json_state(
-            filename, default_factory=list, fail_closed=False, label="bapi_trades", root_type=list
-        )
-        if all_trades_list:
-            print(f"Loaded {len(all_trades_list)} total trades from {filename}.")
-    except Exception:
-        print(f"Warning: Failed to decode JSON from {filename}. Starting with an empty list.")
-        all_trades_list = []
-
-    # Select existing fills for the current symbol.
-    existing_trades = [
-        trade for trade in all_trades_list
-        if isinstance(trade, dict) and str(trade.get('symbol') or '').strip().upper().replace('/', '') == symbol
-    ]
-    print(f"Already saved in file {len(existing_trades)} trades for {symbol}")
-
-    # Calculate the retention cutoff.
-    current_time_ms = int(time.time() * 1000)
-    cutoff_time_ms = current_time_ms - (years_to_keep * 365 * 24 * 60 * 60 * 1000)
-
-    # Remove fills older than the requested retention period.
-    filtered_existing_trades = [
-        trade for trade in existing_trades
-        if (extract_timestamp_ms(trade, default=0) or 0) > cutoff_time_ms
-    ]
-    print(f"Preserve ony {len(filtered_existing_trades)} trades for {symbol} , "
-        f"rest are too old , less than {years_to_keep * 365} days")
-
-    # Find the newest retained fill for this symbol.
-    most_recent_trade_time = max(
-        ((extract_timestamp_ms(trade, default=0) or 0) for trade in filtered_existing_trades),
-        default=0,
-    )
-    print(f"Most recent saved trade time is {u.timestampToTime(most_recent_trade_time)} for {symbol}")
-    
-    # Calculate how many days must be fetched.
-    if most_recent_trade_time == 0:
-        backdays = years_to_keep * 365
-    else:
-        time_diff_ms = max(0, current_time_ms - most_recent_trade_time)
-        backdays = max(1, time_diff_ms // (24 * 60 * 60 * 1000) + 1)
-
-    print(f"Fetching trades from the last {backdays} days for {symbol}, order type {order_type}.")
-
-    # Fetch new fills.
-    bd_f = safe_pos_float(backdays, default=1.0)
-    bd_ceil = int(bd_f) + (1 if bd_f > int(bd_f) else 0)
-    new_trades = get_my_trades_simple(order_type, symbol, backdays=bd_ceil, limit=limit)
-
-    # Remove duplicates by fill ID.
-    existing_trade_ids = {
-        k for k in (_trade_fill_key(trade) for trade in filtered_existing_trades)
-        if k is not None
-    }
-    unique_new_trades = [
-        trade for trade in new_trades
-        if isinstance(trade, dict) and (
-            _trade_fill_key(trade) is None or _trade_fill_key(trade) not in existing_trade_ids
-        )
-    ]
-
-    if unique_new_trades:
-        print(f"Found {len(unique_new_trades)} new trades for {symbol}.")
-        
-        # Merge retained and new fills in chronological order.
-        updated_trades = filtered_existing_trades + unique_new_trades
-        updated_trades.sort(key=lambda x: extract_timestamp_ms(x, default=0) or 0)
-
-        # Replace this symbol's entries in the main list.
-        all_trades_list = [
-            trade for trade in all_trades_list
-            if isinstance(trade, dict) and str(trade.get('symbol') or '').strip().upper().replace('/', '') != symbol
-        ]
-        all_trades_list.extend(updated_trades)
-
-        # Persist the updated list.
-        atomic_write_json(filename, all_trades_list)
-
-        print(f"Updated file with {len(updated_trades)} new trades for {symbol}.")
-    else:
-        print(f"No new trades found to save for {symbol}.")
-    print(f"Total trades in file: {len(all_trades_list)}.")
-
-
-
 def load_trades_from_file(filename):
-
     global trade_cache
-
     try:
         trade_cache = load_json_state(
             filename, default_factory=list, fail_closed=False, label="bapi_trades", root_type=list
@@ -422,60 +297,36 @@ def load_trades_from_file(filename):
     except Exception:
         print("Error reading file.")
         trade_cache = []
-        
     print(set(trade.get('symbol') for trade in trade_cache if isinstance(trade, dict) and trade.get('symbol')))
 
 
 # Return recent BUY or SELL fills from the manager cache.
 def get_trade_orders(order_type, symbol, max_age_seconds):
-   
     order_type = _normalize_side(order_type)
     sym.validate_ordertype(order_type)
     sym.validate_symbols(symbol)
-    
-    trades = apiorders.snapshot_cache_symbol_rows(init_cache_trade_manager(), symbol)
-    if not trades:
-        return []
-        
-    max_age_val = safe_nonneg_float(max_age_seconds, default=None)
-    if max_age_val is None:
-        return []
-    current_time_ms = int(time.time() * 1000)
-    max_age_ms = max_age_val * 1000.0  # Convert to milliseconds.
-    
     filtered_trades = []
-    for trade in trades:
-        side = extract_order_side(trade)
-        ts_ms = extract_timestamp_ms(trade, default=0) or 0
-        age_ms = current_time_ms - ts_ms
-        if ts_ms > 0 and (order_type is None or side == order_type) and -5_000 <= age_ms <= max_age_ms:
-            px = extract_order_price(trade)
-            qty = extract_order_qty(trade)
-            if px <= 0 or qty <= 0:
-                continue
-            is_buyer = side == "BUY"
-            raw_sym = trade.get('symbol')
-            sym_out = (
-                raw_sym.strip().upper()
-                if isinstance(raw_sym, str) and raw_sym.strip()
-                else symbol
-            )
-            clean_tid = _valid_fill_id(trade.get('id'))
-            clean_oid = _resolve_trade_order_id(trade)
-            filtered_trades.append({
-                'symbol': sym_out,
-                'id': clean_tid,
-                'orderId': clean_oid,
-                'orderListId': clean_oid,
-                'price': px,
-                'qty': qty,
-                'quantity': qty,
-                'time': ts_ms,
-                'timestamp': ts_ms,
-                'isBuyer': is_buyer,
-                'side': side,
-            })
-
-    #  filtered_trades.sort(key=lambda x: x['price'])
-
+    for trade, side, ts_ms, px, qty in apiorders.filter_recent_cached_orders(
+        init_cache_trade_manager(), order_type, symbol, max_age_seconds
+    ):
+        raw_sym = trade.get('symbol')
+        sym_out = (
+            raw_sym.strip().upper()
+            if isinstance(raw_sym, str) and raw_sym.strip()
+            else symbol
+        )
+        clean_oid = _resolve_trade_order_id(trade)
+        filtered_trades.append({
+            'symbol': sym_out,
+            'id': _valid_fill_id(trade.get('id')),
+            'orderId': clean_oid,
+            'orderListId': clean_oid,
+            'price': px,
+            'qty': qty,
+            'quantity': qty,
+            'time': ts_ms,
+            'timestamp': ts_ms,
+            'isBuyer': side == "BUY",
+            'side': side,
+        })
     return filtered_trades

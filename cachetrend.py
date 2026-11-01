@@ -29,7 +29,7 @@ from typing import Optional
 
 import pricewindow as pw
 import utils as u
-from botcore import safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import diff_percent, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from cachepaths import (
     CACHEDB_SUBDOMAINS,
     cache_path,
@@ -199,8 +199,8 @@ class CacheShortTrendManager(CacheManagerInterface):
     FAVORABLE_REL_EPS = 1e-5    # Price-relative fallback when epsilon is absent.
     TREND_STALE_SEC   = 15.0    # Do not delay based on older snapshots.
     # Percentage thresholds are scale-invariant and configurable per window or symbol.
-    PRICE_CHANGE_THRESHOLD_SMALL = u.calculate_difference_percent(60000, 60000 - 310)
-    PRICE_CHANGE_THRESHOLD_BIG   = u.calculate_difference_percent(97000, 95000 - 377)
+    PRICE_CHANGE_THRESHOLD_SMALL = diff_percent(60000, 60000 - 310)
+    PRICE_CHANGE_THRESHOLD_BIG   = diff_percent(97000, 95000 - 377)
     FULL_EVAL_INTERVAL_SEC = 3.0   # Cadence for expensive complete metrics.
     FLUSH_INTERVAL_SEC     = 0.5   # Writer-only file flush cadence.
     # Every window is a slice of the same 24-hour Cache24 buffer. The smallest is primary.

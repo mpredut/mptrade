@@ -66,11 +66,7 @@ except (ValueError, AttributeError):
 cprice = {}
 cprice_time = {}
 
-
-def _normalize_side(order_type):
-    if isinstance(order_type, str):
-        return normalize_side(order_type) or order_type.strip().upper()
-    return order_type
+_normalize_side = sym._normalize_ordertype
 
 
 def update_price(symbol):
@@ -111,12 +107,6 @@ def get_current_price(symbol):
     # A failed refresh returns None. It deliberately does not extend the timestamp
     # of an older quote, so repeated outages cannot keep stale data apparently fresh.
     return update_price(symbol)
-
-currenttime = time.time()       
-def get_current_time():
-        global currenttime
-        currenttime = time.time()
-        return currenttime
 
 
 def split_symbol(symbol: str):
@@ -268,9 +258,6 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
         if strict:
             raise
         return {}
- 
-          
-_resolve_valid_bapi_oid = clean_order_id
 
 
 def _cancel_and_resolve(symbol, order_id) -> bool:
@@ -363,7 +350,7 @@ def check_order_filled(order_id, symbol):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip().upper()
-        cleaned_oid = _resolve_valid_bapi_oid(order_id)
+        cleaned_oid = clean_order_id(order_id)
         if cleaned_oid is None:
             return False
         from providers.market_api import api as market_api
@@ -371,15 +358,6 @@ def check_order_filled(order_id, symbol):
     except Exception as e:
         print(f"Error checking order status: {e}")
         return False
-
-
-
-def check_order_filled_by_time(order_type, symbol, time_back_in_seconds, pret_min=None, pret_max=None):
-    """Legacy adapter that delegates fill discovery to the shared facade."""
-    from providers.market_api import api as market_api
-    return market_api.latest_fill_price(
-        symbol, order_type, time_back_in_seconds,
-        min_notional=pret_min, max_notional=pret_max)
 
 
 # ---------------- Portfolio value query API ----------------

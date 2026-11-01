@@ -65,6 +65,7 @@ from state_io import (
     discard_generation_file,
     read_json_dict,
     read_json_dict_cached,
+    read_json_dict_recovering,
     save_json_state,
 )
 
@@ -184,9 +185,7 @@ def obj_float(obj: Any, key: str, default: float = 0.0) -> float:
     return safe_float(obj_attr(obj, key, None), default)
 
 
-def normalize_order_side(side: Any) -> str:
-    """Normalize order side aliases ('BUY'/'B'/'BID'/'LONG' -> 'BUY', 'SELL'/'S'/'ASK'/'SHORT' -> 'SELL')."""
-    return normalize_side(side)
+normalize_order_side = normalize_side
 
 
 def clean_symbol_key(symbol: Any) -> str:
@@ -326,7 +325,7 @@ def inspect_daemon_heartbeat(
     """Inspect a background daemon's heartbeat file(s) and check PID liveness."""
     data = None
     for fname in filenames:
-        cand_data = read_json_dict(os.path.join(cache_dir, fname), default=None, recover_previous=True)
+        cand_data = read_json_dict_recovering(os.path.join(cache_dir, fname))
         if isinstance(cand_data, dict):
             data = cand_data
             break
@@ -1504,7 +1503,7 @@ def load_cached_fear_greed_snapshot(
     for fg_fname in get_cache_filenames("fear_greed_files"):
         fg_path = os.path.join(cache_dir, fg_fname)
         try:
-            fg_data = read_json_dict(fg_path, default=None, recover_previous=True)
+            fg_data = read_json_dict_recovering(fg_path)
             if not isinstance(fg_data, dict):
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
@@ -1546,7 +1545,7 @@ def load_cached_market_breadth_snapshot(
     for mb_fname in get_cache_filenames("market_breadth_files"):
         mb_path = os.path.join(cache_dir, mb_fname)
         try:
-            mb_data = read_json_dict(mb_path, default=None, recover_previous=True)
+            mb_data = read_json_dict_recovering(mb_path)
             if not isinstance(mb_data, dict):
                 continue
             raw_gainers = mb_data.get("top_gainers") or ()
@@ -1595,7 +1594,7 @@ def load_cached_whale_telemetry(
             if not safe_sym:
                 continue
             w_path = os.path.join(cache_dir, f"{prefix}{safe_sym}.json")
-            cand_w = read_json_dict(w_path, default=None, recover_previous=True)
+            cand_w = read_json_dict_recovering(w_path)
             if isinstance(cand_w, dict):
                 return cand_w
     return None
@@ -1605,7 +1604,7 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
     for fname in get_cache_filenames("sentiment_eval_files"):
         cand_path = os.path.join(cache_dir, fname)
-        data = read_json_dict(cand_path, default=None, recover_previous=True)
+        data = read_json_dict_recovering(cand_path)
         if isinstance(data, dict) and data:
             norm = dict(data)
             norm["market_bias"] = normalize_market_bias(data.get("market_bias"))
@@ -1619,7 +1618,7 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
     cand_path = os.path.join(cache_dir, fname)
-    data = read_json_dict(cand_path, default=None, recover_previous=True)
+    data = read_json_dict_recovering(cand_path)
     if isinstance(data, dict) and data:
         norm = dict(data)
         tl = normalize_threat_level(data.get("threat_level"))
