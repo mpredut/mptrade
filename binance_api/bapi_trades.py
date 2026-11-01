@@ -220,42 +220,14 @@ def get_my_trades_24(order_type, symbol, days_ago=0, limit=1000):
     order_type, days_ago, limit = _validate_trade_query_args(
         order_type, symbol, days_ago, default_days=0, limit=limit
     )
-    
-    all_trades = []
     try:
-        current_time = int(time.time() * 1000)
-        
-        # Calculate the requested historical day's start and end times.
-        end_time = current_time - days_ago * 24 * 60 * 60 * 1000
-        start_time = end_time - 24 * 60 * 60 * 1000  # Twenty-four hours before end_time.
-
-        # Binance returns at most ``limit`` fills per request. Advance start_time to
-        # the last fill time plus one millisecond until a short page arrives. A rare
-        # boundary case remains: multiple fills with the exact same millisecond at a
-        # page boundary can be skipped. ``paginate_my_trades`` uses ``fromId`` and is
-        # not vulnerable to that timestamp collision.
-        while start_time < end_time:
-
-            trades = api.client.get_my_trades(symbol=symbol, limit=limit, startTime=start_time, endTime=end_time)
-            time.sleep(2)
-                        
-            if not trades:
-                break
-
-            all_trades.extend(_filter_trades_by_side(trades, order_type))
-            
-            if len(trades) < limit:
-                break
-
-            # Continue one millisecond after the newest fill to avoid duplicates.
-            next_start = (extract_timestamp_ms(trades[-1], default=0) or 0) + 1
-            if next_start <= start_time:
-                break
-            start_time = next_start
-
-        return _dedup_trades_by_fill_id(all_trades)
-        
-
+        end_time = int(time.time() * 1000) - days_ago * 24 * 60 * 60 * 1000
+        start_time = end_time - 24 * 60 * 60 * 1000
+        trades = [
+            t for t in apiorders.paginate_my_trades(api.client, symbol, start_time, limit)
+            if (extract_timestamp_ms(t, default=0) or 0) <= end_time
+        ]
+        return _dedup_trades_by_fill_id(_filter_trades_by_side(trades, order_type))
     except Exception as e:
         print(f"get_my_trades_24: An error occurred: {e}")
         return []
