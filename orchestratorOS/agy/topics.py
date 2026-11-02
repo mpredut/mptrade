@@ -83,14 +83,14 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
         default_timeout_sec=120.0,
     ),
     "auto_cryptotrade_executor": TopicSpec(
-        "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 10m)",
+        "🎯 [auto_cryptotrade_executor] Autonomous Crypto Trade Decisions (Binance/Kraken/HL 6m)",
         can_trade=True,
         asset_scope="crypto",
         preferred_model=EXECUTOR_MODEL,
         default_timeout_sec=90.0,
     ),
     "auto_sharetrade_executor": TopicSpec(
-        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 10m)",
+        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 12m)",
         can_trade=True,
         asset_scope="equities",
         preferred_model=EXECUTOR_MODEL,
