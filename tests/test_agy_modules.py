@@ -25,6 +25,8 @@ from orchestratorOS.agy.topics import (
     load_topic_registry,
     prepare_topic_session,
     record_topic_turn,
+    save_topic_registry,
+    sync_all_topic_titles,
     topic_spec,
 )
 from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui
@@ -285,6 +287,14 @@ class TestMirrorTopicThreadToUi:
         assert stored == summary_ui_visible(raw, "Permanent Name")
         with open(os.path.join(ui_base, "annotations", f"{cid}.pbtxt")) as f:
             assert 'title:"Permanent Name"' in f.read()
+
+        # Once hard-linked into the visible dir, sync_all_topic_titles must not unlink unchanged topic threads
+        os.link(dst, stale)
+        save_topic_registry({"macro_sentiment": {"conversation_id": cid, "title": "old"}})
+        assert sync_all_topic_titles(cli_base=str(bot_base)) == 1
+        assert os.path.exists(stale) and os.path.samefile(dst, stale)
+        assert sync_all_topic_titles(cli_base=str(bot_base)) == 0
+        assert os.path.exists(stale) and os.path.samefile(dst, stale)
 
     def test_bidirectional_sync_preserves_user_interventions_in_ui_and_hybrid_markdown_json(self, tmp_path):
         cid = "cid-interactive-topic"

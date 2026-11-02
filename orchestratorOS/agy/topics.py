@@ -28,7 +28,12 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
-from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base, resolve_ui_cli_base
+from orchestratorOS.agy.paths import (
+    expand_config_path,
+    resolve_bot_cli_base,
+    resolve_ui_cli_base,
+    visible_conversations_dir,
+)
 from orchestratorOS.agy.summary_store import (
     delete_threads,
     get_thread_step_count,
@@ -213,6 +218,7 @@ def sync_all_topic_titles(
 ) -> int:
     """Ensure registry, bot store, and UI store carry the canonical TopicSpec title for every registered topic."""
     base = resolve_bot_cli_base(cli_base)
+    ui_base = resolve_ui_cli_base()
     reg = load_topic_registry(registry_path)
     updated = 0
     changed_reg = False
@@ -226,6 +232,30 @@ def sync_all_topic_titles(
         raw_cid = entry.get("conversation_id")
         cid = raw_cid.strip() if isinstance(raw_cid, str) else ""
         if not cid:
+            continue
+        bot_row = read_summary_row(base, cid)
+        ui_row = read_summary_row(ui_base, cid) if ui_base and os.path.isdir(ui_base) else None
+        ui_has_db = bool(
+            ui_base
+            and (
+                os.path.exists(os.path.join(ui_base, "conversations", f"{cid}.db"))
+                or os.path.exists(os.path.join(visible_conversations_dir(ui_base), f"{cid}.db"))
+            )
+        )
+        bot_steps = safe_nonneg_int((bot_row or {}).get("step_count"), 0)
+        ui_steps = safe_nonneg_int((ui_row or {}).get("step_count"), 0)
+        if ui_row is not None and ui_has_db and ui_steps >= bot_steps and ui_steps > 0:
+            if bot_row is not None and str(bot_row.get("title") or "").strip() != canonical:
+                try:
+                    upsert_ui_visible_summary(base, bot_row, canonical)
+                except OSError:
+                    pass
+            if str(ui_row.get("title") or "").strip() != canonical:
+                try:
+                    upsert_ui_visible_summary(ui_base, ui_row, canonical)
+                    updated += 1
+                except OSError:
+                    pass
             continue
         _apply_and_mirror_topic_title(base, cid, canonical)
         updated += 1
