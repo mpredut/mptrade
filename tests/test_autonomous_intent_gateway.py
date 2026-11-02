@@ -1364,3 +1364,75 @@ def test_durable_intent_upserts_from_concurrent_executors_never_drop_intents(tmp
     t.join(2.0)
     assert order == ["holder_done", "upsert_done"]
     assert [i["intent_id"] for i in load_durable_intents_state(intents_file)][-1] == "late_C"
+
+
+def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price_executes(temp_workspace):
+    """Restated AI LIMIT order at the same price & notional (replace_open_orders=False) is skipped, while a ladder order at a distinct price executes."""
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    hl_inst = MagicMock(symbol="HYPEUSDC", base="HYPE", quote="USDC", provider_name="hyperliquid")
+    hl_inst._provider.name = "hyperliquid"
+    hl_inst._provider.get_current_price.return_value = 86.50
+    hl_inst._provider.free_balance.return_value = 25.0
+    hl_inst.open_orders.return_value = [
+        {
+            "oid": 592714535208,
+            "side": "A",
+            "limitPx": "88.45",
+            "sz": "3.95",
+            "origSz": "3.95",
+            "cloid": "0x2708f6bd78122f4b86a9ba9643d508d8",
+        }
+    ]
+    hl_inst.place.return_value = {"orderId": "hl_new_1", "status": "NEW"}
+
+    # Seed the existing intent so its venue order ID / cloid is recognized as AI
+    gw.save_all_intents([
+        {
+            "intent_id": "intent_1793644299_sell_hypeusdc",
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 88.45,
+            "suggested_notional_usd": 350.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "592714535208", "status": "NEW", "price": "88.45", "origQty": "3.95"},
+            "history": [],
+        }
+    ])
+
+    with patch.object(gw, "_dispatch_notify", return_value=True):
+        dup_rec = gw.submit({
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 88.45,
+            "replace_open_orders": False,
+            "confidence": 0.90,
+            "suggested_notional_usd": 350.0,
+            "thesis": "Existing profit target order; capture upside as price rebounds.",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"HYPEUSDC": hl_inst})
+
+        assert dup_rec["status"] == "SKIPPED_DUPLICATE_OPEN_ORDER"
+        assert dup_rec["duplicate_of_order_id"] == "592714535208"
+        hl_inst.place.assert_not_called()
+
+        # Multi-tranche scale-out ladder at a distinct price (e.g. $92.00 vs $88.45) executes normally
+        ladder_rec = gw.submit({
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 92.00,
+            "replace_open_orders": False,
+            "confidence": 0.90,
+            "suggested_notional_usd": 350.0,
+            "thesis": "Second scale-out tranche at $92.00 resistance.",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"HYPEUSDC": hl_inst})
+
+        assert ladder_rec["status"] == "EXECUTED"
+        hl_inst.place.assert_called_once()
+

@@ -1732,6 +1732,49 @@ def cancel_existing_ai_open_orders(
     return canceled_ids
 
 
+def find_duplicate_ai_open_limit_order(
+    inst: Any,
+    side: str,
+    limit_price: float,
+    notional_usd: float,
+    *,
+    known_ai_order_ids: Optional[set[str]] = None,
+    intents: Optional[list[dict[str, Any]]] = None,
+) -> Optional[str]:
+    """Return the venue order ID of an unfilled AI open limit order at the same side, price (<= 1 bps), and notional (<= 5%)."""
+    open_fn = getattr(inst, "open_orders", None)
+    if not callable(open_fn) or not (limit_price and limit_price > 0) or not (notional_usd and notional_usd > 0):
+        return None
+    try:
+        raw_open = open_fn()
+        if not isinstance(raw_open, list):
+            return None
+        ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
+        for oo in raw_open:
+            if not isinstance(oo, dict):
+                continue
+            oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
+            if oo_side != side:
+                continue
+            if resolve_order_actor(oo, ai_oids) != "AI":
+                continue
+            if extract_executed_qty(oo) > 0:
+                continue
+            oo_px = extract_order_price(oo)
+            if oo_px <= 0 or abs(oo_px - limit_price) / limit_price > 1e-4:
+                continue
+            oo_qty = extract_orig_qty(oo)
+            oo_notional = oo_px * oo_qty
+            if oo_notional <= 0 or abs(oo_notional - notional_usd) / max(notional_usd, oo_notional) > 0.05:
+                continue
+            oid = extract_order_id(oo, default="")
+            if oid:
+                return str(oid)
+    except Exception:
+        return None
+    return None
+
+
 def parse_intent_gateway_config(
     conf: dict[str, str],
     *,

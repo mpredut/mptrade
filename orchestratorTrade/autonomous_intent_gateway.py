@@ -53,6 +53,7 @@ from providers.execution_audit import (
     cancel_existing_ai_open_orders,
     execute_enforce_intent_order,
     extract_intent_notional as _extract_intent_notional,
+    find_duplicate_ai_open_limit_order,
     load_durable_intents_state,
     parse_intent_confidence as _parse_intent_confidence,
     parse_intent_gateway_config,
@@ -290,6 +291,29 @@ class AutonomousIntentGateway:
             )
             if canceled_ids:
                 intent["canceled_prior_open_orders"] = canceled_ids
+        elif mode == "enforce" and is_limit:
+            dup_oid = find_duplicate_ai_open_limit_order(
+                inst,
+                decision,
+                price,
+                effective_usd,
+                intents=self.load_all_intents(),
+            )
+            if dup_oid:
+                logger.info(
+                    "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
+                    decision, inst.symbol, price, effective_usd, dup_oid,
+                )
+                intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
+                intent["duplicate_of_order_id"] = dup_oid
+                _append_intent_history(intent, {
+                    "ts": now,
+                    "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
+                    "duplicate_of_order_id": dup_oid,
+                    "price": price,
+                    "notional_usd": effective_usd,
+                })
+                return intent
 
         # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
         # Clamp desired notional strictly to real spot wallet free liquidity.
