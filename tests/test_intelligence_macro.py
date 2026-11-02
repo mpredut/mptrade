@@ -952,5 +952,63 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert geo_reason == "global_daytime_calm"
         assert geo_itv == pytest.approx(min(scaled_itvs["max_dynamic_geopolitical_interval_sec"], 27000.0 * 1.15))
 
+    def test_freeze_stem_excludes_freezers_and_normal_assessment_demotes_dynamic_acute_terms(self, tmp_path):
+        from intelligence.macro_sentiment_ssot import (
+            demote_dynamic_acute_terms,
+            discover_dynamic_terms_from_headlines,
+            get_active_acute_shock_phrases,
+            load_dynamic_lexicon,
+            match_high_severity_keywords,
+            update_dynamic_lexicon,
+        )
+
+        # 1. "freezers" must not match the "freeze" crisis stem unless an actual crisis word is in the bigram
+        freezer_headlines = [
+            {"title": "Shop freezers in seven European countries hit by outage", "source": "BBC"},
+            {"title": "Supermarket fridges and freezers in seven regions affected", "source": "Reuters"},
+        ]
+        discovered_freezers = discover_dynamic_terms_from_headlines(
+            freezer_headlines,
+            cache_dir=str(tmp_path),
+            now_ts=1_700_000_000.0,
+            persist=True,
+        )
+        assert "freezers seven" not in discovered_freezers
+        assert "supermarket fridges" not in discovered_freezers
+        assert match_high_severity_keywords("Shop freezers in seven countries", cache_dir=str(tmp_path)) == ()
+
+        # 2. Dynamic "acute" terms are demoted to "high" once LLM confirms threat_level != CRITICAL_SHOCK
+        update_dynamic_lexicon(
+            ["iran war"],
+            new_acute_terms=["iran war"],
+            cache_dir=str(tmp_path),
+            source="llm_assessment_feedback",
+            now_ts=1_700_000_000.0,
+        )
+        assert "iran war" in get_active_acute_shock_phrases(cache_dir=str(tmp_path), now_ts=1_700_000_010.0)
+
+        def normal_llm_runner(prompt, model, timeout):
+            return json.dumps({
+                "threat_level": "NORMAL",
+                "risk_score": 0.25,
+                "summary": "Ongoing rhetoric without fresh systemic escalation.",
+                "recommended_brake": "NONE",
+            })
+
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=GeminiClient(custom_runner=normal_llm_runner),
+            cache_ttl_sec=16200.0,
+            state_file=str(tmp_path / "geopolitical_eval.json"),
+        )
+        war_snap = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR, now_ts=1_700_000_020.0, cache_dir=str(tmp_path))
+        res = analyzer.assess(war_snap, force_refresh=True, now_ts=1_700_000_020.0)
+        assert res.threat_level == "NORMAL"
+
+        lex_after = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1_700_000_030.0)
+        assert "iran war" in lex_after["high_severity_terms"]
+        assert "iran war" not in lex_after["acute_shock_phrases"]
+        assert demote_dynamic_acute_terms(cache_dir=str(tmp_path), now_ts=1_700_000_030.0) is False
+
+
 
 

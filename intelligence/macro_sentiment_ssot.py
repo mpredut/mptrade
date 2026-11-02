@@ -945,6 +945,7 @@ _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
 
 _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
     "ban": frozenset({"ban", "bans", "banned", "banning"}),
+    "freeze": frozenset({"freeze", "freezes", "freezing", "frozen"}),
     "war": frozenset({
         "war", "wars", "warfare", "wartime", "warship", "warships",
         "warhead", "warheads", "warplane", "warplanes", "warzone", "warring",
@@ -1129,7 +1130,15 @@ def update_dynamic_lexicon(
         t = re.sub(r"\s+", " ", str(raw_t or "").strip().lower())
         if _is_noise_dynamic_keyword(t, stopwords):
             continue
-        tier = tier_override or existing_entries.get(t, {}).get("tier", "high")
+        prev_entry = existing_entries.get(t, {})
+        prev_tier = str(prev_entry.get("tier", "high")).lower()
+        prev_ts = safe_float(prev_entry.get("ts"), 0.0)
+        if tier_override:
+            tier = tier_override
+        elif prev_tier == "acute" and prev_ts > 0.0 and (now - prev_ts) <= 3600.0:
+            tier = "acute"
+        else:
+            tier = "high"
         existing_entries[t] = {"ts": now, "tier": tier, "source": source}
         changed = True
 
@@ -1143,6 +1152,50 @@ def update_dynamic_lexicon(
         _LEXICON_EVAL_CACHE.clear()
 
     return load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now)
+
+
+def demote_dynamic_acute_terms(
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
+) -> bool:
+    """Demote dynamically discovered ``acute`` terms to ``high`` once threat is not CRITICAL_SHOCK."""
+    now = resolve_now_ts(now_ts)
+    ttl = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
+    path = _dynamic_lexicon_path(cache_dir)
+    raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
+    if not isinstance(raw, dict) or not isinstance(raw.get("entries"), dict):
+        return False
+
+    stopwords = _get_stopwords_set()
+    cleaned_entries: Dict[str, Dict[str, Any]] = {}
+    changed = False
+    for k, v in raw["entries"].items():
+        if not isinstance(k, str) or not isinstance(v, dict):
+            changed = True
+            continue
+        k_clean = re.sub(r"\s+", " ", k.strip().lower())
+        if _is_noise_dynamic_keyword(k_clean, stopwords):
+            changed = True
+            continue
+        ts = safe_float(v.get("ts"), 0.0)
+        if ts <= 0.0 or (now - ts) > ttl:
+            changed = True
+            continue
+        entry = dict(v)
+        if str(entry.get("tier", "high")).lower() == "acute":
+            entry["tier"] = "high"
+            changed = True
+        cleaned_entries[k_clean] = entry
+
+    if changed:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            save_json_state(path, {"updated_ts": now, "entries": cleaned_entries}, indent=2)
+        except Exception as exc:
+            logger.debug("Could not save demoted dynamic lexicon to %s: %s", path, exc)
+        _LEXICON_FILE_CACHE.clear()
+        _LEXICON_EVAL_CACHE.clear()
+    return changed
 
 
 def get_active_severity_keywords(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
@@ -1678,10 +1731,11 @@ def compute_dynamic_geopolitical_interval(
     if changed_b and threat_level in ("NORMAL", "ELEVATED") and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
+        active_acute_phrases = get_active_acute_shock_phrases(now_ts=ts)
         has_new_acute = any(
             phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
             for h in high_sev[:12]
-            for phrase in ACUTE_SHOCK_PHRASES
+            for phrase in active_acute_phrases
         )
 
     if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:

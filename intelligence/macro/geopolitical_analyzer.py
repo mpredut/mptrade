@@ -10,7 +10,9 @@ from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
     clean_scale,
+    demote_dynamic_acute_terms,
     extract_high_severity_headlines_and_digest,
+    get_active_acute_shock_phrases,
     get_cache_filenames,
     has_acute_shock_keywords,
     normalize_recommended_brake,
@@ -171,6 +173,8 @@ class GeopoliticalThreatAnalyzer:
 
         raw_headlines = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
         high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
+        state_cache_dir = os.path.dirname(os.path.abspath(self._effective_state_file()))
+        active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
         has_new_acute_phrase = bool(
             high_sev
             and (
@@ -181,7 +185,7 @@ class GeopoliticalThreatAnalyzer:
                         phrase in str(obj_attr(h, "title", None) or "").lower()
                         and phrase not in self._last_headlines_digest.lower()
                         for h in high_sev[:12]
-                        for phrase in ACUTE_SHOCK_PHRASES
+                        for phrase in active_acute_phrases
                     )
                 )
             )
@@ -308,9 +312,11 @@ class GeopoliticalThreatAnalyzer:
                 built.summary,
                 extra_terms,
                 is_acute_shock=(built.threat_level == "CRITICAL_SHOCK"),
-                cache_dir=os.path.dirname(os.path.abspath(self._effective_state_file())),
+                cache_dir=state_cache_dir,
                 now_ts=now,
             )
+        if built.threat_level != "CRITICAL_SHOCK":
+            demote_dynamic_acute_terms(cache_dir=state_cache_dir, now_ts=now)
 
         return self._commit_assessment(built, now, headline_digest)
 
