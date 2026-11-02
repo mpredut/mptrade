@@ -406,6 +406,118 @@ class TestMirrorTopicThreadToUi:
         assert "[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:" in fallback_prompt
         assert "decision=SELL" in fallback_prompt
 
+    def test_prune_old_cli_threads_handles_minimal_schema_and_orphan_db_files(self, tmp_path, monkeypatch):
+        import time
+        from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+
+        cli_base = str(tmp_path / "bot_cli")
+        conv_dir = os.path.join(cli_base, "conversations")
+        os.makedirs(conv_dir, exist_ok=True)
+        monkeypatch.setenv("AGY_PROJECT", "autonommptrade")
+        monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path))
+
+        db_path = os.path.join(cli_base, "conversation_summaries.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE conversation_summaries (conversation_id text primary key, project_id text, step_count integer)"
+        )
+        conn.execute("INSERT INTO conversation_summaries VALUES ('cid-summary-old', 'autonommptrade', 2)")
+        conn.commit()
+        conn.close()
+
+        summary_db_file = os.path.join(conv_dir, "cid-summary-old.db")
+        orphan_db_file = os.path.join(conv_dir, "cid-orphan-no-row.db")
+        protected_db_file = os.path.join(conv_dir, "cid-protected.db")
+        for fpath in (summary_db_file, orphan_db_file, protected_db_file):
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write("sqlite-bytes")
+            old_ts = time.time() - 3600.0
+            os.utime(fpath, (old_ts, old_ts))
+
+        count, freed = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=0.0,
+            exclude_cids={"cid-protected"},
+        )
+        assert count == 2
+        assert freed > 0
+        assert not os.path.exists(summary_db_file)
+        assert not os.path.exists(orphan_db_file)
+        assert os.path.exists(protected_db_file)
+
+    def test_bapi_submit_permit_normalizes_symbol_and_side_and_hl_none_price_uses_ioc(self, monkeypatch):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from binance_api import bapi_placeorder as bp
+        from providers.hyperliquid_provider import HyperliquidProvider
+        from providers.strategy_executor import SubmissionRefused
+
+        fake_status = SimpleNamespace(
+            order_cache_version="v1",
+            trade_cache_version="v1",
+            order_age_sec=1.0,
+            trade_age_sec=1.0,
+        )
+        monkeypatch.setattr(bp.cfg, "is_trade_enabled", lambda: True)
+        monkeypatch.setattr(bp, "require_account_cache_for_submit", lambda: fake_status)
+        fake_client = MagicMock()
+        fake_client.get_symbol_info.return_value = {
+            "baseAsset": "BTC",
+            "quoteAsset": "USDC",
+            "filters": [
+                {"filterType": "PRICE_FILTER", "tickSize": "0.01", "minPrice": "0.01", "maxPrice": "1000000"},
+                {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001", "maxQty": "100000"},
+            ],
+        }
+
+        with pytest.raises(SubmissionRefused):
+            bp.issue_account_cache_submit_permit(True, "BUY", 1.0, 100.0, api_client=fake_client)
+        with pytest.raises(SubmissionRefused):
+            bp.cancel_opposite_orders("BUY", True, 100.0)
+
+        permit = bp.issue_account_cache_submit_permit(
+            " btcusdc ", "bid", 1.5, 100.0, kind="entry", api_client=fake_client
+        )
+        fake_client.get_symbol_info.assert_called_once_with("BTCUSDC")
+        bp._consume_account_cache_submit_permit(
+            permit,
+            symbol="BTCUSDC",
+            side="BUY",
+            qty=1.5,
+            actual_price=100.0,
+            requested_price=100.0,
+            market=False,
+            kind="entry",
+        )
+
+        hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+        monkeypatch.setattr(hl, "_pair", lambda: "@107")
+        monkeypatch.setattr(hl, "get_current_price", lambda _s: 20.0)
+        monkeypatch.setattr(hl, "round_price", lambda _s, p: round(float(p), 4))
+        monkeypatch.setattr(hl, "round_quantity", lambda _s, q: round(float(q), 2))
+        preflight_calls = []
+        monkeypatch.setattr(
+            hl,
+            "preflight_order",
+            lambda sym, side, qty, px, *, market=False, kind=None: preflight_calls.append((sym, side, qty, px, market, kind)),
+        )
+        fake_signer = MagicMock()
+        fake_signer.sz_decimals.return_value = 2
+        monkeypatch.setattr(hl, "_signer", lambda: fake_signer)
+        invoke_calls = []
+
+        def _fake_invoke(signer, pair, is_buy, qty, px, **kw):
+            invoke_calls.append((pair, is_buy, qty, px, kw))
+            return True, 12345, "ok"
+
+        monkeypatch.setattr(hl, "_invoke_spot_order", _fake_invoke)
+        oid = hl.submit_order("HYPEUSDC", "BUY", 1.25, price=None, market=False, kind="entry")
+        assert oid == "12345"
+        assert preflight_calls and preflight_calls[0][4] is True
+        assert invoke_calls and invoke_calls[0][4]["is_market"] is True
+        assert invoke_calls[0][4]["tif"] == "Ioc"
+
+
 
 
 

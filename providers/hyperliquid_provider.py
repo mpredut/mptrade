@@ -615,19 +615,19 @@ class HyperliquidProvider(MarketDataProvider):
         if pair is None:
             raise ProviderError(
                 f"submit_order({symbol}): spot pair unavailable")
-        is_market = _parse_bool_flag(market, False)
-        px, _ = self._resolve_spot_order_price_and_tif(
+        eff_market = _parse_bool_flag(market, False) or price is None
+        px, order_tif = self._resolve_spot_order_price_and_tif(
             symbol,
             is_buy,
             price,
-            is_market=is_market or price is None,
+            is_market=eff_market,
             caller="submit_order",
         )
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
         self.preflight_order(
-            symbol, side, qty, px, market=is_market, kind=kind,
+            symbol, side, qty, px, market=eff_market, kind=kind,
         )
         try:
             signer = self._signer()
@@ -638,8 +638,8 @@ class HyperliquidProvider(MarketDataProvider):
             )
             ok, oid, msg = self._invoke_spot_order(
                 signer, pair, is_buy, float(qty), float(px),
-                sz_decimals=szd, is_market=is_market,
-                tif="Ioc" if is_market else "Gtc", cloid=cloid,
+                sz_decimals=szd, is_market=eff_market,
+                tif=order_tif, cloid=cloid,
             )
         except ProviderError:
             raise

@@ -172,6 +172,9 @@ def prune_old_cli_threads(
             f"SELECT * FROM conversation_summaries WHERE project_id IN ({','.join('?' for _ in targets)})",
             list(targets),
         ).fetchall()
+        all_summary_cids = {
+            str(r[0]) for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall() if r[0]
+        }
     finally:
         conn.close()
 
@@ -179,26 +182,47 @@ def prune_old_cli_threads(
     if retention_days is None:
         retention_days = DEFAULT_RETENTION_DAYS
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc - timedelta(days=retention_days)
     candidates: Set[str] = set()
     kept: List[Tuple[datetime, str]] = []
     for row in rows:
+        row_keys = set(row.keys())
         cid, proj = row["conversation_id"], row["project_id"]
         if cid in protected:
             continue
-        raw_steps = row["step_count"] if "step_count" in row.keys() else 0
+        raw_steps = row["step_count"] if "step_count" in row_keys else 0
         steps = safe_nonneg_int(raw_steps, default=0)
-        automated = is_automated_thread(row["title"] or "", row["preview"] or "")
+        title_str = (row["title"] if "title" in row_keys else None) or ""
+        preview_str = (row["preview"] if "preview" in row_keys else None) or ""
+        automated = is_automated_thread(title_str, preview_str)
         if not automated and steps > INTERACTIVE_MIN_STEPS:
             continue   # multi-turn interactive conversation: never pruned, even with --all
         short_autonomous = proj in autonomous_projects and steps <= INTERACTIVE_MIN_STEPS
         if not (all_threads_in_project or automated or short_autonomous):
             continue
-        dt = parse_db_timestamp(row["last_modified_time"])
+        dt = parse_db_timestamp(row["last_modified_time"] if "last_modified_time" in row_keys else None)
         if dt is None or dt < cutoff:
             candidates.add(cid)
         else:
             kept.append((dt, cid))
+
+    if norm_project_id is None:
+        conv_dir = os.path.join(base, "conversations")
+        orphan_cutoff = min(cutoff, now_utc - timedelta(minutes=10))
+        if os.path.isdir(conv_dir):
+            for fname in os.listdir(conv_dir):
+                if not fname.endswith(".db"):
+                    continue
+                fcid = fname[:-3]
+                if not fcid or fcid in protected or fcid in all_summary_cids:
+                    continue
+                try:
+                    mtime_dt = datetime.fromtimestamp(os.path.getmtime(os.path.join(conv_dir, fname)), tz=timezone.utc)
+                except OSError:
+                    continue
+                if mtime_dt <= orphan_cutoff:
+                    candidates.add(fcid)
 
     # Hard count cap so autonomous threads never approach agy's conversation eviction limit
     max_threads_i: Optional[int] = (

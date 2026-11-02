@@ -111,8 +111,8 @@ class _AccountCacheSubmitPermit:
             expires_at_wall=issued_at_wall + _CACHE_SUBMIT_PERMIT_TTL_SEC,
             order_cache_version=str(status.order_cache_version),
             trade_cache_version=str(status.trade_cache_version),
-            symbol=str(symbol).upper(),
-            side=str(side).upper(),
+            symbol="" if isinstance(symbol, bool) else str(symbol or "").strip().upper(),
+            side="" if isinstance(side, bool) else str(_normalize_side(side or "")).strip().upper(),
             max_qty=float(qty),
             requested_price=None if is_market else float(price),
             price_tick_size=float(price_tick_size),
@@ -247,8 +247,8 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
                                       market=False, kind=None, api_client=None):
     """Authorize one narrowly scoped submit after a complete cache validation."""
     market = _parse_bool_flag(market, False)
-    side_str = str(_normalize_side(side or "")).strip().upper()
-    symbol_str = str(symbol or "").strip().upper()
+    side_str = "" if isinstance(side, bool) else str(_normalize_side(side or "")).strip().upper()
+    symbol_str = "" if isinstance(symbol, bool) else str(symbol or "").strip().upper()
     qty, price = safe_pos_float(qty, default=None), (None if market else safe_pos_float(price, default=None))
     if side_str not in {"BUY", "SELL"} or not symbol_str or qty is None or (not market and price is None):
         raise SubmissionRefused("invalid_order_parameters")
@@ -258,13 +258,13 @@ def issue_account_cache_submit_permit(symbol, side, qty, price=None, *,
     price_tick_size = 0.0
     if not market:
         try:
-            rules = BinanceOrderRules.from_symbol_info((api_client or client).get_symbol_info(symbol))
+            rules = BinanceOrderRules.from_symbol_info((api_client or client).get_symbol_info(symbol_str))
             price_tick_size = float(rules.tick_size)
         except Exception as exc:
             raise SubmissionRefused("binance_symbol_rules_unavailable") from exc
     status = _require_submit_permit_headroom(require_account_cache_for_submit())
     return _AccountCacheSubmitPermit(
-        _CACHE_SUBMIT_PERMIT_ISSUER, status=status, symbol=symbol, side=side,
+        _CACHE_SUBMIT_PERMIT_ISSUER, status=status, symbol=symbol_str, side=side_str,
         qty=qty, price=price, market=market, price_tick_size=price_tick_size, kind=kind,
     )
 
@@ -569,7 +569,8 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
-    req_px = None if isinstance(order_type, bool) else safe_pos_float(requested_price, default=None)
+    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip()
+    req_px = None if isinstance(order_type, bool) or not sym_str else safe_pos_float(requested_price, default=None)
     if req_px is None:
         raise SubmissionRefused("invalid_opposing_cancel_request")
     order_type = str(_normalize_side(order_type or "")).strip().upper()
@@ -580,14 +581,14 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
         open_kw = {"strict": True}
         if allowed_owners is not None:
             open_kw["allowed_owners"] = allowed_owners
-        open_orders = api.get_open_orders(opp_side, symbol, **open_kw)
+        open_orders = api.get_open_orders(opp_side, sym_str, **open_kw)
     except Exception as exc:
         raise SubmissionRefused("opposing_order_discovery_unavailable") from exc
     for order_id, order_details in open_orders.items():
         order_px = extract_order_price(order_details, default=0.0)
         if order_px > 0 and ((order_px < req_px) if order_type == "BUY" else (order_px > req_px)):
             try:
-                canceled = api._cancel_and_resolve(symbol, order_id)
+                canceled = api._cancel_and_resolve(sym_str, order_id)
             except Exception as exc:
                 raise SubmissionRefused("opposing_cancel_unconfirmed") from exc
             if not canceled:
@@ -597,18 +598,19 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price, cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
     cancel_opposite = _parse_bool_flag(cancel_opposite, True)
-    price = None if isinstance(order_type, bool) else safe_pos_float(price, default=None)
+    sym_str = "" if isinstance(symbol, bool) else str(symbol or "").strip()
+    price = None if isinstance(order_type, bool) or not sym_str else safe_pos_float(price, default=None)
     if price is None:
         raise SubmissionRefused("invalid_order_parameters")
     order_type = str(_normalize_side(order_type or "")).strip().upper()
     if cancel_opposite:
-        cancel_opposite_orders(order_type, symbol, price)
-    cp = safe_pos_float(api.get_current_price(symbol), default=None)
+        cancel_opposite_orders(order_type, sym_str, price)
+    cp = safe_pos_float(api.get_current_price(sym_str), default=None)
     if cp is not None and order_type in {"BUY", "SELL"}:
         price = order_candidate_price(order_type, price, cp) * (0.999 if order_type == "BUY" else 1.001)
     try:
         from providers.market_api import api as mkt
-        return mkt.round_price(symbol, price)
+        return mkt.round_price(sym_str, price)
     except Exception:
         return round(price, 8)
 
