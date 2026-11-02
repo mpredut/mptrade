@@ -428,6 +428,19 @@ def mode_post(timeout: int = 50) -> int:
         except OSError as e:
             log.warning("post: cannot link %s: %s", p1, e)
             bad += 1
+    if os.path.isdir(D1):
+        for p1 in sorted(glob.glob(os.path.join(glob.escape(D1), "*.db"))):
+            p2 = os.path.join(D2, os.path.basename(p1))
+            if os.path.lexists(p2) or os.path.islink(p1):
+                continue
+            if checkpoint(p1):
+                drop_sidecars(p1)
+                try:
+                    os.link(p1, p2)
+                    linked += 1
+                except OSError as e:
+                    log.warning("post: cannot link %s -> %s: %s", p1, p2, e)
+                    bad += 1
     log.info("post: linked=%d already=%d problems=%d waited=%.0fs", linked, exists, bad, time.time() - start)
     return 0
 

@@ -580,6 +580,27 @@ class TestMirrorTopicThreadToUi:
         assert models_called == ["gpt-oss-120b-medium", "claude-sonnet-5-5-medium"]
         assert parsed == {"decision": "HOLD", "confidence": 0.91}
 
+    def test_agy_store_fix_mode_post_links_files_mirrored_during_pre_post_gap(self, tmp_path, monkeypatch):
+        from orchestratorOS.admin import agy_store_fix as asf
+
+        d1 = tmp_path / "d1"
+        d2 = tmp_path / "d2"
+        d1.mkdir()
+        d2.mkdir()
+        _make_conv_db(str(d2 / "cid-in-d2.db"))
+        _make_conv_db(str(d1 / "cid-mirrored-gap.db"))
+
+        monkeypatch.setattr(asf, "D1", str(d1))
+        monkeypatch.setattr(asf, "D2", str(d2))
+        monkeypatch.setattr(asf, "main_pid", lambda: "1234")
+        monkeypatch.setattr(asf, "newest_daemon_log_ready", lambda since, pid="": True)
+        monkeypatch.setattr(asf.time, "sleep", lambda _s: None)
+
+        assert asf.mode_post(timeout=1) == 0
+        assert os.path.samefile(str(d1 / "cid-in-d2.db"), str(d2 / "cid-in-d2.db"))
+        assert os.path.samefile(str(d1 / "cid-mirrored-gap.db"), str(d2 / "cid-mirrored-gap.db"))
+
+
 
 
 
