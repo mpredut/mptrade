@@ -484,6 +484,8 @@ class AutonomousAIReconciler:
 
 def main() -> None:
     """CLI entry point for the cron-driven supervisor topics."""
+    import log  # noqa: F401 — ensure stdout/stderr mirroring to logger/autonomous_ai_reconciler_*.log from startup
+
     valid_topics = sorted(
         {k for k, v in TOPIC_SPECS.items() if v.can_trade or v.can_self_heal} | set(TOPIC_ALIASES.keys())
     )

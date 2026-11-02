@@ -7559,6 +7559,98 @@ def test_audited_executor_observe_only_locked_sell_qty_and_retry_filter(tmp_path
     assert st_lim["ref_px"] == pytest.approx(0.155)
 
 
+def test_cross_market_telemetry_sparse_7d_t212_audit_submit_ts_and_no_qty_format(tmp_path):
+    """Verify sparse 7d preference, cached T212 price seeding in crypto scope, T212 submit_accepted ts ordering across >500 audit lines, and clean Last SELL formatting when qty is None."""
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        enrich_24h_and_microstructure,
+        harvest_recent_orders_and_enrich_positions,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+
+    cache_dir = tmp_path / "cachedb"
+    prices_dir = cache_dir / "prices"
+    state_dir = cache_dir / "state"
+    t212_dir = tmp_path / "212trading"
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    for d in (prices_dir, state_dir, t212_dir, audit_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    now_s = 1_793_655_000.0
+    now_ms = int(now_s * 1000)
+
+    # 1. load_symbol_price_series prefers cache_sparse_price_<SYM>.jsonl for 7d when 24h series is >= 18h
+    (prices_dir / "cache_24_price_HYPEUSD.json").write_text(
+        json.dumps({"items": {"HYPEUSD": [[now_ms - 20 * 3600_000, 82.0], [now_ms, 84.5]]}}),
+        encoding="utf-8",
+    )
+    # 365_price only has recent 2-day points starting at 90.0 (-6.1%), while sparse_price has full 7-day starting at 78.0 (+8.3%)
+    (prices_dir / "cache_365_price_HYPEUSD.jsonl").write_text(
+        "\n".join([
+            json.dumps({"s": "HYPEUSD", "i": [now_ms - 2 * 86400_000, 90.0]}),
+            json.dumps({"s": "HYPEUSD", "i": [now_ms, 84.5]}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    (prices_dir / "cache_sparse_price_HYPEUSD.jsonl").write_text(
+        "\n".join([
+            json.dumps({"s": "HYPEUSD", "i": [now_ms - 6 * 86400_000, 78.0]}),
+            json.dumps({"s": "HYPEUSD", "i": [now_ms, 84.5]}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    _, vals_7d = load_symbol_price_series(str(cache_dir), "HYPEUSDC")
+    assert vals_7d[0] == pytest.approx(78.0)
+    assert vals_7d[-1] == pytest.approx(84.5)
+
+    # 2. enrich_24h_and_microstructure seeds T212 state tickers from venue_balances_state.json when inst_by_sym is crypto-only
+    (t212_dir / ".state_NVDA_US_EQ.json").write_text(json.dumps({"qty": 2.33, "cost": 480.46}), encoding="utf-8")
+    (state_dir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "price": 202.54}}),
+        encoding="utf-8",
+    )
+    pt_map = {}
+    enrich_24h_and_microstructure(str(cache_dir), str(tmp_path), pt_map, {}, {}, {}, now_s)
+    assert pt_map["NVDA_US_EQ"]["price"] == pytest.approx(202.54)
+
+    # 3. harvest_recent_orders_and_enrich_positions reads >500 audit lines and orders T212 fills by submit_accepted ts
+    audit_lines = [
+        json.dumps({"ts": now_s - 3600, "event": "submit_accepted", "venue": "t212", "symbol": "SPCX_US_EQ", "side": "buy", "order_id": "OID_SPCX_EARLY", "price": 138.01}),
+        json.dumps({"ts": now_s - 3590, "event": "order_terminal", "venue": "t212", "symbol": "SPCX_US_EQ", "side": "buy", "order_id": "OID_SPCX_EARLY", "cost": 28.9821, "filled_qty": 0.21}),
+        json.dumps({"ts": now_s - 3000, "event": "submit_accepted", "venue": "t212", "symbol": "NVDA_US_EQ", "side": "buy", "order_id": "OID_NVDA_1", "price": 203.66}),
+        json.dumps({"ts": now_s - 2000, "event": "submit_accepted", "venue": "t212", "symbol": "NVDA_US_EQ", "side": "buy", "order_id": "OID_NVDA_2", "price": 203.99}),
+        json.dumps({"ts": now_s - 1990, "event": "order_terminal", "venue": "t212", "symbol": "NVDA_US_EQ", "side": "buy", "order_id": "OID_NVDA_2", "cost": 28.5586, "filled_qty": 0.14}),
+    ]
+    # Add 520 non-T212 noise lines so early T212 fills sit >500 lines from the tail
+    for i in range(520):
+        audit_lines.append(json.dumps({"ts": now_s - 1000 + i, "event": "order_status", "venue": "binance", "symbol": "BTCUSDC"}))
+    # OID_NVDA_1 terminal arrives at the very end after status_error backoff
+    audit_lines.append(json.dumps({"ts": now_s - 10, "event": "order_terminal", "venue": "t212", "symbol": "NVDA_US_EQ", "side": "buy", "order_id": "OID_NVDA_1", "cost": 28.5124, "filled_qty": 0.14}))
+    (audit_dir / "execution_audit_2026-11-02.jsonl").write_text("\n".join(audit_lines) + "\n", encoding="utf-8")
+
+    ro = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir), {}, [], {"SPCX_US_EQ": {"price": 137.05}, "NVDA_US_EQ": {"price": 202.54}}, {}, {}, {}
+    )
+    assert ro["SPCX_US_EQ"]["last_buy"]["price"] == pytest.approx(138.01)
+    assert ro["NVDA_US_EQ"]["last_buy"]["price"] == pytest.approx(203.99)
+
+    # 4. _format_recent_order_line omits dangling '@ ' when qty is None
+    line_fmt = _format_recent_order_line(
+        "NVDA_US_EQ",
+        {
+            "last_action_side": "BUY",
+            "last_action_actor": "AI",
+            "last_buy": {"qty": 0.14, "price": 203.99, "ts_ms": now_ms - 3600_000, "actor": "AI"},
+            "last_sell": {"qty": None, "price": 239.99, "ts_ms": now_ms - 7200_000, "actor": "BOT"},
+        },
+        now_ms,
+    )
+    assert "Last BUY=0.14 @ 203.99" in line_fmt
+    assert "Last SELL=239.99 (age=2.0h, by=BOT)" in line_fmt
+    assert "Last SELL=@" not in line_fmt
+
+
+
 
 
 

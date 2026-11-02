@@ -413,8 +413,8 @@ def harvest_portfolio_and_venue_cycles(
         portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
     has_active_t212 = any(normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in inst_by_sym.values())
-    t212_cycles = dict(all_t212_cycles) if has_active_t212 else {}
-    if t212_cycles:
+    t212_cycles = all_t212_cycles
+    if has_active_t212 and t212_cycles:
         portfolio_summary["t212_cycles"] = t212_cycles
     if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), prices_and_trends, all_t212_cycles, _rj):
         portfolio_summary["kraken_xstocks"] = xst_summary
@@ -525,6 +525,9 @@ def populate_market_and_portfolio_snapshot(
     enrich_24h_and_microstructure(
         cache_dir, workspace_dir, snapshot.prices_and_trends, snapshot.microstructure, cur_p_items, inst_by_sym, now_ts, _rj
     )
+    enrich_cross_venue_trends(
+        snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
+    )
     sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure)
 
     kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
@@ -538,6 +541,11 @@ def populate_market_and_portfolio_snapshot(
         known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd,
         ai_intents=intents_data if isinstance(intents_data, list) else None,
     )
+    if t212_cycles:
+        if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), snapshot.prices_and_trends, t212_cycles, _rj):
+            snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
+        if cross_market_ctx := build_cross_market_context(snapshot.prices_and_trends, snapshot.microstructure, t212_cycles):
+            snapshot.portfolio_summary["cross_market_context"] = cross_market_ctx
     if recent_orders:
         snapshot.portfolio_summary["recent_orders"] = recent_orders
 

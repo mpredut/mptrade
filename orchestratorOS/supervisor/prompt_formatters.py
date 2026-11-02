@@ -761,7 +761,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
         tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
         qty_v = entry.get("qty")
-        qty_pfx = f"{qty_v} @ " if qty_v is not None else "@ "
+        qty_pfx = f"{qty_v} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
         return f"{qty_pfx}{px}{meta_sfx}"

@@ -881,8 +881,15 @@ def enrich_24h_and_microstructure(
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
     _rj = read_json_fn or read_json_cached
     btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
+    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
+    raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
+    cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
     for _, ticker in _iter_t212_state_files(workspace_dir):
-        prices_and_trends.setdefault(ticker, {"price": None, "trend": 0, "growth_coefficient": 0.0})
+        cached_pos = cached_bals.get(f"pos:t212:{ticker}")
+        cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
+        t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
+        if cached_t212_px is not None and (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0:
+            t_entry["price"] = cached_t212_px
     from instruments_config import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
@@ -1152,7 +1159,7 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
         except Exception:
             continue
         for fpath in files[:2]:
-            for rec in read_tail_jsonl_dicts(fpath, limit=250):
+            for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=1024 * 1024):
                 _, mod, rule = resolve_order_origin(rec)
                 if mod or rule:
                     for k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
@@ -1225,22 +1232,31 @@ def harvest_recent_orders_and_enrich_positions(
         if os.path.isdir(audit_dir):
             try:
                 t212_by_sym: Dict[str, List[Dict[str, Any]]] = {}
+                submit_ts_by_oid: Dict[str, float] = {}
                 audit_files = sorted((os.path.join(audit_dir, f) for f in os.listdir(audit_dir) if f.startswith("execution_audit") and f.endswith(".jsonl")))[-10:]
                 for af in audit_files:
-                    for rec in read_tail_jsonl_dicts(af, limit=500):
-                        if str(rec.get("event") or "") not in ("order_terminal", "order_terminal_retry") or normalize_venue_name(rec.get("venue")) != "t212":
+                    for rec in read_tail_jsonl_dicts(af, limit=None, max_bytes=1024 * 1024):
+                        if normalize_venue_name(rec.get("venue")) != "t212":
+                            continue
+                        ev_name = str(rec.get("event") or "")
+                        oid_s = str(rec.get("order_id") or "").strip()
+                        ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                        if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
+                            submit_ts_by_oid.setdefault(oid_s, ts_s)
+                            continue
+                        if ev_name not in ("order_terminal", "order_terminal_retry"):
                             continue
                         sym_t = str(rec.get("symbol") or "").strip().upper()
                         f_q = safe_pos_float(rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"), default=0.0) or 0.0
                         cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
                         px_f = safe_pos_float(rec.get("price"), default=None) or (round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None)
-                        ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                        eff_ts_s = submit_ts_by_oid.get(oid_s, ts_s) if oid_s else ts_s
                         side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
-                        if sym_t and f_q > 0 and px_f is not None and px_f > 0 and ts_s > 0 and side_t in ("BUY", "SELL"):
+                        if sym_t and f_q > 0 and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
                             t212_by_sym.setdefault(sym_t, []).append({
                                 "symbol": sym_t, "orderId": rec.get("order_id"), "clientOrderId": rec.get("client_order_id"),
                                 "side": side_t, "price": px_f, "qty": f_q, "executedQty": f_q,
-                                "timestamp": int(round(ts_s * 1000.0)), "status": "FILLED",
+                                "timestamp": int(round(eff_ts_s * 1000.0)), "status": "FILLED",
                             })
                 t212_ai_intents = _venue_intents("t212")
                 for sym_t, o_list in t212_by_sym.items():

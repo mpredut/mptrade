@@ -1066,6 +1066,8 @@ def _alert_giveups(records, now):
 
 
 def main():
+    import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--once", action="store_true", help="a single step, then exit")
     args = ap.parse_args()

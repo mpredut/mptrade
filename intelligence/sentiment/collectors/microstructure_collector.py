@@ -298,38 +298,52 @@ def load_symbol_price_series(
     p1 = _parse_ts_px_row(series_24h[-1]) if len(series_24h) >= 2 else None
     span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
 
-    # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_365_price_<SYM> / cache_sparse_price_<SYM>
+    # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_sparse_price_<SYM> / cache_365_price_<SYM>
     need_24h_supplement = span_24h_ms < 3600000.0 * 18
     archive_pts: list = []
+    sparse_7d_pts: list = []
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
-    for cand in (cands if (include_7d or need_24h_supplement) else ()):
-        for arch_path in _cand_paths(f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl"):
-            if not os.path.exists(arch_path):
-                continue
-            try:
-                if arch_path.endswith(".json"):
-                    aser = _extract_cached_items_series(read_json_cached(arch_path), cands)
-                    if len(aser) >= 2:
-                        archive_pts = list(aser)
-                        break
+
+    def _read_arch_file(arch_path: str, max_b: int = 1024 * 1024) -> list:
+        if not os.path.exists(arch_path):
+            return []
+        try:
+            if arch_path.endswith(".json"):
+                aser = _extract_cached_items_series(read_json_cached(arch_path), cands)
+                return list(aser) if len(aser) >= 2 else []
+            parsed_rows = []
+            for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
+                if isinstance(rec, dict):
+                    rec_s = rec.get("s")
+                    if isinstance(rec_s, str) and rec_s.strip() and cands_upper and rec_s.strip().upper() not in cands_upper:
+                        continue
+                    item = rec.get("i")
                 else:
-                    parsed_rows = []
-                    for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=1024 * 1024):
-                        if isinstance(rec, dict):
-                            rec_s = rec.get("s")
-                            if isinstance(rec_s, str) and rec_s.strip() and cands_upper and rec_s.strip().upper() not in cands_upper:
-                                continue
-                            item = rec.get("i")
-                        else:
-                            item = rec if isinstance(rec, list) else None
-                        if isinstance(item, (list, tuple)) and len(item) >= 2:
-                            parsed_rows.append([item[0], item[1]])
-                    if len(parsed_rows) >= 2:
-                        archive_pts = parsed_rows
-                        break
-            except Exception:
-                continue
+                    item = rec if isinstance(rec, list) else None
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    parsed_rows.append([item[0], item[1]])
+            return parsed_rows if len(parsed_rows) >= 2 else []
+        except Exception:
+            return []
+
+    for cand in (cands if (include_7d or need_24h_supplement) else ()):
+        primary_names = (
+            (f"cache_sparse_price_{cand}.jsonl", f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json")
+            if not need_24h_supplement
+            else (f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl")
+        )
+        for arch_path in _cand_paths(*primary_names):
+            if rows := _read_arch_file(arch_path):
+                archive_pts = rows
+                break
         if archive_pts:
+            if include_7d and need_24h_supplement:
+                a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
+                if a0 and a1 and (a1[0] - a0[0]) < 5.0 * 86400.0 * 1000.0:
+                    for sp_path in _cand_paths(f"cache_sparse_price_{cand}.jsonl"):
+                        if sp_rows := _read_arch_file(sp_path, max_b=512 * 1024):
+                            sparse_7d_pts = sp_rows
+                            break
             break
 
     if archive_pts:
@@ -343,6 +357,11 @@ def load_symbol_price_series(
                             pts_7d_vals.append(pt[1])
                         if need_24h_supplement and pt[0] >= cutoff_24h:
                             pts_24.append([pt[0], pt[1]])
+                if sparse_7d_pts and (sp_last := _parse_ts_px_row(sparse_7d_pts[-1])) is not None:
+                    sp_cutoff_7d = sp_last[0] - 7.0 * 86400.0 * 1000.0
+                    sp_vals = [pt[1] for row in sparse_7d_pts if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
+                    if len(sp_vals) >= 2:
+                        pts_7d_vals = sp_vals
                 if len(pts_7d_vals) >= 2:
                     vals_7d = pts_7d_vals
                 if need_24h_supplement and pts_24:
