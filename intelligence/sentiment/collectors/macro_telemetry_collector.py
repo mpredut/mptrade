@@ -272,6 +272,18 @@ def harvest_macro_and_news_sensors(
         data, s_path = _read_first_cached_dict(cache_dir, group_key, fname, _rj)
         if data is not None:
             enriched = _with_age_min(data, s_path)
+            if attr == "market_breadth":
+                for mover_key in ("top_gainers", "top_losers"):
+                    if isinstance(raw_movers := enriched.get(mover_key), list):
+                        enriched[mover_key] = [
+                            m
+                            for m in raw_movers
+                            if isinstance(m, (list, tuple))
+                            and len(m) >= 2
+                            and isinstance(m[0], str)
+                            and m[0].strip().isascii()
+                            and m[0].strip().isalnum()
+                        ]
             if attr == "macro_benchmarks" and not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                 enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched

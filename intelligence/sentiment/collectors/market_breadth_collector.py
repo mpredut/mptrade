@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     get_breadth_excluded_bases,
+    get_breadth_min_volume_usd,
     get_breadth_quote_suffixes,
+    get_breadth_top_mover_min_volume_usd,
     get_market_breadth_endpoint_url,
     is_cache_fresh,
     resolve_now_ts,
@@ -67,10 +69,13 @@ class MarketBreadthCollector:
             return None
 
         now = resolve_now_ts(now_ts)
-        min_vol = safe_nonneg_ts(min_volume_usd, 5_000_000.0)
+        default_min_vol = get_breadth_min_volume_usd()
+        min_vol = safe_nonneg_ts(min_volume_usd, default_min_vol)
+        top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
         quote_suffixes = get_breadth_quote_suffixes()
         excluded_suffixes = tuple(f"{b}{q}" for b in get_breadth_excluded_bases() for q in quote_suffixes)
         filtered: List[Tuple[str, float]] = []
+        filtered_with_vol: List[Tuple[str, float, float]] = []
 
         for item in tickers:
             if not isinstance(item, dict):
@@ -79,6 +84,8 @@ class MarketBreadthCollector:
             if not isinstance(raw_sym, str):
                 continue
             symbol = raw_sym.strip().upper()
+            if not symbol.isascii() or not symbol.isalnum():
+                continue
             if not symbol.endswith(quote_suffixes) or any(sp in symbol for sp in excluded_suffixes):
                 continue
 
@@ -86,11 +93,15 @@ class MarketBreadthCollector:
             change_pct = safe_float(item.get("priceChangePercent"), default=None)
             if quote_vol is not None and change_pct is not None and quote_vol >= min_vol:
                 filtered.append((symbol, change_pct))
+                filtered_with_vol.append((symbol, change_pct, quote_vol))
 
         if len(filtered) < 5:
             return None
 
         filtered.sort(key=lambda x: x[1])
+        filtered_with_vol.sort(key=lambda x: x[1])
+        top_pool = [(s, c) for s, c, qv in filtered_with_vol if qv >= top_mover_min_vol]
+        mover_pool = top_pool if len(top_pool) >= 3 else filtered
         changes = [x[1] for x in filtered]
         advancing = sum(1 for c in changes if c > 0)
         declining = sum(1 for c in changes if c < 0)
@@ -121,8 +132,8 @@ class MarketBreadthCollector:
             mean_change_pct=round(mean_change, 3),
             dispersion_std=round(dispersion_std, 3),
             regime=regime,
-            top_gainers=tuple(filtered[-3:][::-1]),
-            top_losers=tuple(filtered[:3]),
+            top_gainers=tuple(mover_pool[-3:][::-1]),
+            top_losers=tuple(mover_pool[:3]),
             ts=now,
         )
 

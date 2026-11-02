@@ -6962,3 +6962,156 @@ def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_
     assert kp.free_balance("HYPE") is None
 
 
+def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quote_usd(tmp_path, monkeypatch):
+    """Verify:
+    1. WhalePositioningCollector uses 5m intervals (limit=3 for 15m taker flow, limit=13 for 60m OI delta) and 60s/180s TTLs.
+    2. MarketBreadthCollector filters out non-ASCII symbols (e.g. '牛来USDT') and requires >= $10M 24h volume for top_gainers/top_losers.
+    3. enrich_24h_and_microstructure + harvest_recent_orders_and_enrich_positions synchronize Price (3A), ob_mid (3B), and px (3C).
+    4. harvest_tradable_positions_and_orders + _format_portfolio_section surface locked_quote_usd & replace_max_buy (and symmetric locked_base & replace_max_sell).
+    """
+    from types import SimpleNamespace
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        enrich_24h_and_microstructure,
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+        sync_sibling_symbol_telemetry,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
+
+    # 1. WhalePositioningCollector 5m rolling windows
+    wc = WhalePositioningCollector(cache_dir=str(tmp_path))
+    assert wc.cache_ttl_sec == 60.0
+    assert wc.disk_ttl_sec == 180.0
+    called_urls = []
+
+    def _mock_rows(url, label, lookup_sym):
+        called_urls.append(url)
+        if "topLongShortPositionRatio" in url:
+            rows = [{"longShortRatio": "1.78", "longAccount": "0.64"}]
+            return rows[-1], rows
+        if "takerlongshortRatio" in url:
+            rows = [
+                {"buySellRatio": "1.10", "buyVol": "100.0", "sellVol": "90.0"},
+                {"buySellRatio": "1.20", "buyVol": "120.0", "sellVol": "100.0"},
+                {"buySellRatio": "1.30", "buyVol": "130.0", "sellVol": "100.0"},
+            ]
+            return rows[-1], rows
+        if "openInterestHist" in url:
+            rows = [{"sumOpenInterest": str(1000 + i * 5), "sumOpenInterestValue": str((1000 + i * 5) * 80000)} for i in range(13)]
+            return rows[-1], rows
+        return None, []
+
+    monkeypatch.setattr(wc, "_fetch_latest_json_row", _mock_rows)
+    w_snap = wc.fetch("BTCUSDC", allow_network=True, now=1793627000.0)
+    assert w_snap is not None
+    assert any("period=5m&limit=3" in u for u in called_urls)
+    assert any("period=5m&limit=13" in u for u in called_urls)
+    # 350 buyVol / 290 sellVol = 1.2069
+    assert w_snap.taker_buy_sell_ratio == pytest.approx(round(350.0 / 290.0, 4))
+    # OI change across 13 bars (1000 -> 1060 = +6.0%)
+    assert w_snap.open_interest_1h_change_pct == pytest.approx(6.0)
+
+    # 2. MarketBreadthCollector filters out non-ASCII symbols ('牛来USDT') and sub-$10M microcaps from top_gainers
+    mb_snap = MarketBreadthCollector.parse_tickers(
+        [
+            {"symbol": "牛来USDT", "quoteVolume": "15000000", "priceChangePercent": "45.0"},
+            {"symbol": "SKHYBUSDT", "quoteVolume": "6000000", "priceChangePercent": "25.0"},
+            {"symbol": "BTCUSDT", "quoteVolume": "900000000", "priceChangePercent": "2.5"},
+            {"symbol": "ETHUSDT", "quoteVolume": "450000000", "priceChangePercent": "3.1"},
+            {"symbol": "SOLUSDT", "quoteVolume": "250000000", "priceChangePercent": "4.2"},
+            {"symbol": "ADAUSDT", "quoteVolume": "80000000", "priceChangePercent": "-1.5"},
+        ],
+        min_volume_usd=5_000_000.0,
+        now_ts=1793627000.0,
+    )
+    assert mb_snap is not None
+    # '牛来USDT' is completely excluded; 'SKHYBUSDT' ($6M) counts in breadth (5 symbols total) but is excluded from top_gainers (< $10M)
+    assert mb_snap.total_count == 5
+    gainer_syms = [g[0] for g in mb_snap.top_gainers]
+    assert "牛来USDT" not in gainer_syms
+    assert "SKHYBUSDT" not in gainer_syms
+    assert gainer_syms == ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
+
+    # 3. Price synchronization across Section 3A (Price), Section 3B (ob_mid), and Section 3C (px) + locked_quote_usd in Section 3C
+    (tmp_path / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSD",
+                "mid_price": 85.33,
+                "best_bid": 85.32,
+                "best_ask": 85.34,
+                "spread_bps": 2.34,
+                "imbalance_ratio": 0.56,
+                "bid_depth_usd": 200000.0,
+                "ask_depth_usd": 180000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    hl_inst = SimpleNamespace(
+        symbol="HYPEUSDC",
+        provider_name="hyperliquid",
+        base="HYPE",
+        quote="USDC",
+        params={},
+        _provider=SimpleNamespace(
+            get_current_price=lambda _s: 85.2685,
+            free_balance=lambda a: 12.264586 if a == "HYPE" else 13.84,
+        ),
+        open_orders=lambda: [
+            {"oid": 592351368110, "side": "B", "limitPx": "83.45", "sz": "3.13", "origSz": "3.13", "status": "OPEN"}
+        ],
+    )
+    prices_and_trends = {"HYPEUSD": {"price": 85.27, "trend": 0, "growth_coefficient": 0.0}}
+    microstructure = {}
+    positions, open_orders, venue_cash, inst_by_sym = harvest_tradable_positions_and_orders(
+        {"HYPERLIQUID_HYPE": hl_inst},
+        prices_and_trends,
+        {},
+        {},
+        known_ai_order_ids={"592351368110"},
+        gateway_max_usd=2000.0,
+    )
+    enrich_24h_and_microstructure(
+        str(tmp_path), str(tmp_path), prices_and_trends, microstructure, {}, inst_by_sym, 1793627000.0
+    )
+    sync_sibling_symbol_telemetry(prices_and_trends, microstructure)
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path), inst_by_sym, positions, prices_and_trends, {}, {}, {}, gateway_max_usd=2000.0
+    )
+
+    assert prices_and_trends["HYPEUSDC"]["price"] == pytest.approx(85.33)
+    assert prices_and_trends["HYPEUSD"]["price"] == pytest.approx(85.33)
+    assert positions[0]["price"] == pytest.approx(85.33)
+    assert positions[0]["locked_quote_usd"] == pytest.approx(261.20)
+    assert positions[0]["effective_max_buy_usd"] == pytest.approx(13.77)
+    assert positions[0]["replace_max_buy_usd"] == pytest.approx(273.66)
+    assert venue_cash["hyperliquid:USDC"]["locked_quote_usd"] == pytest.approx(261.20)
+
+    s_3a = "\n".join(_format_market_prices_section(prices_and_trends))
+    s_3b = "\n".join(_format_microstructure_section(microstructure, prices_and_trends))
+    s_3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "venue_quote_cash": venue_cash,
+                "tradable_positions": positions,
+                "open_limit_orders": open_orders,
+            },
+            "crypto",
+            max_usd=2000.0,
+        )
+    )
+    assert "HYPEUSDC (sibling venue: HYPEUSD=$85.33): Price=$85.33" in s_3a
+    assert "ob_mid=85.33" in s_3b
+    assert "px=85.33" in s_3c
+    assert "locked_quote_usd=$261.20" in s_3c
+    assert "max_buy=$13.77, locked_quote_usd=$261.2, replace_max_buy=$273.66" in s_3c
+
+
+

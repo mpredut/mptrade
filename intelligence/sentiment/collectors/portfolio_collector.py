@@ -53,6 +53,8 @@ def resolve_venue_fee_and_limits(
     price: float = 0.0,
     free_quote: Optional[float] = None,
     free_base: Optional[float] = None,
+    locked_quote_usd: Optional[float] = None,
+    locked_base_qty: Optional[float] = None,
     spread_bps: Optional[float] = None,
     gateway_max_usd: float = 2000.0,
 ) -> Dict[str, Any]:
@@ -158,10 +160,26 @@ def resolve_venue_fee_and_limits(
     if (sp_rounded := round_spread_bps(spread_bps)) is not None:
         out["spread_bps"] = sp_rounded
     gw_max = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
-    if (fq_f := safe_nonneg_float(free_quote, default=None)) is not None:
+    fq_f = safe_nonneg_float(free_quote, default=None)
+    fb_f = safe_nonneg_float(free_base, default=None)
+    lq_f = safe_pos_float(locked_quote_usd, default=0.0) or 0.0
+    lb_f = safe_pos_float(locked_base_qty, default=0.0) or 0.0
+    if fq_f is not None:
         out["effective_max_buy_usd"] = round(min(gw_max, fq_f * 0.995), 2)
-    if (fb_f := safe_nonneg_float(free_base, default=None)) is not None and px_f > 0.0:
+    if lq_f > 0.0:
+        out["locked_quote_usd"] = round(lq_f, 2)
+        if fq_f is not None:
+            out["replace_max_buy_usd"] = round(min(gw_max, (fq_f + lq_f) * 0.995), 2)
+    if fb_f is not None and px_f > 0.0:
         out["effective_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f) * px_f), 2)
+    if lb_f > 0.0:
+        out["locked_base_qty"] = round(lb_f, 6)
+        if px_f > 0.0:
+            out["locked_base_usd"] = round(lb_f * px_f, 2)
+            if fb_f is not None:
+                out["replace_max_sell_usd"] = round(
+                    min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f) * px_f), 2
+                )
     return out
 
 
@@ -588,11 +606,74 @@ def harvest_tradable_positions_and_orders(
                 try:
                     if isinstance(raw_open := open_fn(), list):
                         open_orders_list.extend(
-                            normalize_open_order(oo, venue=venue, symbol=sym, known_ai_order_ids=known_ai_order_ids)
-                            for oo in raw_open if isinstance(oo, dict)
+                            oo_norm
+                            for oo in raw_open
+                            if isinstance(oo, dict)
+                            and isinstance(
+                                oo_norm := normalize_open_order(
+                                    oo, venue=venue, symbol=sym, known_ai_order_ids=known_ai_order_ids
+                                ),
+                                dict,
+                            )
                         )
                 except Exception:
                     pass
+
+    if open_orders_list:
+        locked_quote_by_vq: Dict[tuple[str, str], float] = {}
+        locked_base_by_vs: Dict[tuple[str, str], float] = {}
+        for oo_item in open_orders_list:
+            if not isinstance(oo_item, dict):
+                continue
+            oo_v = normalize_venue_name(oo_item.get("venue"))
+            oo_sym = str(oo_item.get("symbol") or "").strip().upper()
+            oo_side = str(oo_item.get("side") or "").strip().upper()
+            oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
+            oo_rem = (
+                safe_pos_float(oo_item.get("remaining_qty"), default=None)
+                or safe_pos_float(oo_item.get("qty"), default=0.0)
+                or 0.0
+            )
+            if not oo_v or not oo_sym or oo_rem <= 0.0:
+                continue
+            _, oo_quote = resolve_assets(oo_sym, None, None)
+            oo_q_u = (oo_quote or "USD").strip().upper()
+            if oo_side == "BUY" and oo_px > 0.0:
+                vq_key = (oo_v, oo_q_u)
+                locked_quote_by_vq[vq_key] = locked_quote_by_vq.get(vq_key, 0.0) + oo_rem * oo_px
+            elif oo_side == "SELL":
+                vs_key = (oo_v, oo_sym)
+                locked_base_by_vs[vs_key] = locked_base_by_vs.get(vs_key, 0.0) + oo_rem
+
+        for cash_val in venue_quote_cash.values():
+            if not isinstance(cash_val, dict):
+                continue
+            cv_norm = normalize_venue_name(cash_val.get("venue"))
+            cq_u = str(cash_val.get("asset") or "").strip().upper()
+            if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
+                cash_val["locked_quote_usd"] = round(lq_val, 2)
+
+        for pos_entry in tradable_positions:
+            p_v_norm = normalize_venue_name(pos_entry.get("venue"))
+            p_sym_u = str(pos_entry.get("symbol") or "").strip().upper()
+            p_quote_u = str(pos_entry.get("quote") or "USD").strip().upper()
+            lq_pos = locked_quote_by_vq.get((p_v_norm, p_quote_u), 0.0)
+            lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
+            if lq_pos > 0.0 or lb_pos > 0.0:
+                inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
+                pos_entry.update(
+                    resolve_venue_fee_and_limits(
+                        str(pos_entry.get("venue") or ""),
+                        p_sym_u,
+                        inst_obj,
+                        price=safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0,
+                        free_quote=safe_nonneg_float(pos_entry.get("free_quote"), default=None),
+                        free_base=safe_nonneg_float(pos_entry.get("free_base"), default=None),
+                        locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
+                        locked_base_qty=lb_pos if lb_pos > 0.0 else None,
+                        gateway_max_usd=gateway_max_usd,
+                    )
+                )
 
     if bcache_path and updated_bals and ("PYTEST_CURRENT_TEST" not in os.environ or os.path.exists(bcache_path)):
         try:
@@ -860,9 +941,12 @@ def enrich_24h_and_microstructure(
         if m_info := load_symbol_microstructure(cache_dir, sym, _rj):
             is_usd_sym = "USD" in compatible_quote_suffixes(sym)
             sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
-            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and sym_px_m <= 0.0 and safe_pos_float(m_info.get("ob_mid_price"), default=None):
-                prices_and_trends[sym]["price"] = m_info["ob_mid_price"]
-            elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, m_info.get("ob_mid_price"))):
+            ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
+            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None:
+                if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
+                    prices_and_trends[sym]["price"] = ob_mid_m
+                    sym_px_m = ob_mid_m
+            elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, ob_mid_m)):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     m_info.pop(k_strip, None)
             enrich_microstructure_cvd(m_info, prices_and_trends.get(sym))
@@ -1130,7 +1214,8 @@ def harvest_recent_orders_and_enrich_positions(
         p_quote_variants = cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes)
         p_variants = (*p_quote_variants, *cache_symbol_variants(p_sym))
         pos_px_f = safe_float(pos.get("price"), 0.0)
-        if pos_px_f <= 0 and (cand_px := resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))) > 0:
+        cand_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))
+        if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px))):
             pos_px_f = cand_px
             pos["price"] = round(cand_px, 6)
             if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
@@ -1236,6 +1321,8 @@ def harvest_recent_orders_and_enrich_positions(
                 p_venue, p_sym, inst_obj, price=pos_px_f,
                 free_quote=safe_nonneg_float(pos.get("free_quote"), default=None),
                 free_base=safe_nonneg_float(pos.get("free_base"), default=None),
+                locked_quote_usd=safe_pos_float(pos.get("locked_quote_usd"), default=None),
+                locked_base_qty=safe_pos_float(pos.get("locked_base_qty"), default=None),
                 spread_bps=safe_nonneg_float(sym_spread, default=None),
                 gateway_max_usd=gateway_max_usd,
             )

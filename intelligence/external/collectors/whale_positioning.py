@@ -91,11 +91,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
 
     def __init__(
         self,
-        cache_ttl_sec: float = 120.0,
+        cache_ttl_sec: float = 60.0,
         cache_dir: Optional[str] = "cachedb",
-        disk_ttl_sec: float = 300.0,
+        disk_ttl_sec: float = 180.0,
     ) -> None:
-        super().__init__(cache_ttl_sec, 120.0, cache_dir, disk_ttl_sec, 300.0)
+        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 180.0)
 
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""
@@ -241,21 +241,26 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
 
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         try:
-            # 1. Top Trader Long/Short Position Ratio
-            url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=1h&limit=2"
+            # 1. Top Trader Long/Short Position Ratio (5m granularity for fresh intra-cycle updates)
+            url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=5m&limit=2"
             latest_top, _ = self._fetch_latest_json_row(url_top, "topLongShortPositionRatio", lookup_sym)
             top_ratio = _clean_dict_float(latest_top, "longShortRatio", 1.0)
             top_long_pct = _clean_dict_float(latest_top, "longAccount", 0.5)
 
-            # 2. Taker Buy/Sell Volume Ratio
-            url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=1h&limit=2"
-            latest_taker, _ = self._fetch_latest_json_row(url_taker, "takerlongshortRatio", lookup_sym)
-            taker_ratio = _clean_dict_float(latest_taker, "buySellRatio", 1.0)
-            taker_buy = max(0.0, _clean_dict_float(latest_taker, "buyVol", 0.0))
-            taker_sell = max(0.0, _clean_dict_float(latest_taker, "sellVol", 0.0))
+            # 2. Taker Buy/Sell Volume Ratio (3x5m = 15m rolling window for live CVD / taker flow)
+            url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=5m&limit=3"
+            latest_taker, data_taker = self._fetch_latest_json_row(url_taker, "takerlongshortRatio", lookup_sym)
+            taker_rows = [r for r in (data_taker[-3:] if isinstance(data_taker, list) else []) if isinstance(r, dict)] or [latest_taker]
+            taker_buy = sum(max(0.0, _clean_dict_float(r, "buyVol", 0.0)) for r in taker_rows)
+            taker_sell = sum(max(0.0, _clean_dict_float(r, "sellVol", 0.0)) for r in taker_rows)
+            taker_ratio = (
+                round(taker_buy / taker_sell, 4)
+                if taker_buy > 0.0 and taker_sell > 0.0
+                else _clean_dict_float(latest_taker, "buySellRatio", 1.0)
+            )
 
-            # 3. Open Interest History (compute 1h change and convert base-coin taker volumes to USD)
-            url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=1h&limit=3"
+            # 3. Open Interest History (13x5m = 1h rolling window for live 1h OI change and USD volume conversion)
+            url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=5m&limit=13"
             latest_oi, data_oi = self._fetch_latest_json_row(url_oi, "openInterestHist", lookup_sym)
             latest_oi_usd = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterestValue", 0.0))
             latest_oi_coins = max(0.0, _clean_dict_float(latest_oi, "sumOpenInterest", 0.0))
@@ -264,7 +269,8 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 mark_px = latest_oi_usd / latest_oi_coins
                 taker_buy = round(taker_buy * mark_px, 2)
                 taker_sell = round(taker_sell * mark_px, 2)
-            prev_oi_dict = data_oi[-2] if (len(data_oi) >= 2 and isinstance(data_oi[-2], dict)) else None
+            oi_rows = [r for r in (data_oi if isinstance(data_oi, list) else []) if isinstance(r, dict)]
+            prev_oi_dict = oi_rows[0] if len(oi_rows) >= 2 else None
             prev_oi_usd = (
                 max(0.0, _clean_dict_float(prev_oi_dict, "sumOpenInterestValue", latest_oi_usd))
                 if prev_oi_dict is not None

@@ -733,6 +733,14 @@ def get_breadth_quote_suffixes() -> Tuple[str, ...]:
     return _split_csv(_cfg_str("taxonomies", "breadth_quote_suffixes"), upper=True)
 
 
+def get_breadth_min_volume_usd() -> float:
+    return _cfg_float("taxonomies", "breadth_min_volume_usd", 5_000_000.0)
+
+
+def get_breadth_top_mover_min_volume_usd() -> float:
+    return _cfg_float("taxonomies", "breadth_top_mover_min_volume_usd", 10_000_000.0)
+
+
 def get_cache_filenames(group_key: str) -> Tuple[str, ...]:
     return _split_csv(_cfg_str("cache_files", group_key))
 
@@ -1559,9 +1567,13 @@ def load_cached_market_breadth_snapshot(
 
             def _norm_pairs(items: Any) -> Tuple[Tuple[str, float], ...]:
                 return tuple(
-                    (str(x[0]), safe_float(x[1], 0.0))
+                    (s_clean, safe_float(x[1], 0.0))
                     for x in (items if isinstance(items, (list, tuple)) else ())
-                    if isinstance(x, (list, tuple)) and len(x) >= 2 and x[0] is not None
+                    if isinstance(x, (list, tuple))
+                    and len(x) >= 2
+                    and x[0] is not None
+                    and (s_clean := str(x[0]).strip())
+                    and s_clean.isascii()
                 )
 
             return MarketBreadthSnapshot(

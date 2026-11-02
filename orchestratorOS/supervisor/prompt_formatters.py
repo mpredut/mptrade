@@ -709,11 +709,13 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         price=_parse_finite_float(pos.get("price"), 0.0),
         free_quote=pos.get("free_quote"),
         free_base=pos.get("free_base"),
+        locked_quote_usd=pos.get("locked_quote_usd"),
+        locked_base_qty=pos.get("locked_base_qty"),
         spread_bps=pos.get("spread_bps"),
         gateway_max_usd=max_usd,
     )
     eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
-    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd"):
+    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
         cap_v = _parse_finite_float(eff_pos.get(cap_k), None)
         if cap_v is not None and max_usd > 0 and cap_v > max_usd:
             eff_pos[cap_k] = round(float(max_usd), 2)
@@ -733,7 +735,11 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("step=", "step_size"),
         ("tick=", "tick_size"),
         ("max_buy=$", "effective_max_buy_usd"),
+        ("locked_quote_usd=$", "locked_quote_usd"),
+        ("replace_max_buy=$", "replace_max_buy_usd"),
         ("max_sell=$", "effective_max_sell_usd"),
+        ("locked_base=", "locked_base_qty"),
+        ("replace_max_sell=$", "replace_max_sell_usd"),
     ):
         if eff_pos.get(lim_k) is not None:
             lim_parts.append(f"{lim_pfx}{eff_pos[lim_k]}")
@@ -746,12 +752,18 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         if fb_val is not None and val_usd is not None
         else (f"{fb_val}" if fb_val is not None else "N/A")
     )
+    if (lb_q := _parse_finite_float(eff_pos.get("locked_base_qty"), None)) is not None and lb_q > 0.0:
+        lb_u = _parse_finite_float(eff_pos.get("locked_base_usd"), None)
+        lb_u_s = f" / ${lb_u:.2f}" if lb_u is not None and lb_u > 0.0 else ""
+        fb_str += f" [locked_base={lb_q:g}{lb_u_s}]"
     fq_val = pos.get("free_quote")
     fq_str = f"${fq_val}" if fq_val is not None else "N/A"
     fq_bd = pos.get("free_quote_breakdown")
     if fq_val is not None and isinstance(fq_bd, dict) and (len(fq_bd) > 1 or any(k != pos.get("quote") for k in fq_bd)):
         bd_s = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in fq_bd.items())
         fq_str += f" ({bd_s})"
+    if (lq_u := _parse_finite_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
+        fq_str += f", locked_quote_usd=${lq_u:.2f}"
     return (
         f"    - [{venue}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
         f"free_{pos['quote']}={fq_str}, "
@@ -820,6 +832,8 @@ def _format_portfolio_section(
             if isinstance(bd, dict) and (len(bd) > 1 or any(k != v.get("asset") for k in bd)):
                 bd_str = ", ".join(f"{bk}=${_parse_finite_float(bv, 0.0):,.2f}" for bk, bv in bd.items())
                 part += f" ({bd_str})"
+            if (lq_v := _parse_finite_float(v.get("locked_quote_usd"), 0.0)) > 0.0:
+                part += f" [locked_quote_usd=${lq_v:,.2f}]"
             cash_parts.append(part)
         if cash_parts:
             lines.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
