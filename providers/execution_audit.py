@@ -42,6 +42,7 @@ from state_io import append_jsonl_record, load_json_state, read_jsonl_dicts, sav
 from .base import (
     _UNFILLED_ORDER_STATUSES,
     _clean_single_order_id,
+    extract_client_order_id,
     extract_executed_qty,
     extract_order_id,
     extract_order_price,
@@ -126,6 +127,45 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     if normalized_venue == "hyperliquid":
         return f"0x{token}"                  # cloid: uint128 hexadecimal
     return None                              # T212/unknown venue: local correlation
+
+
+def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
+    """Durable ``AI_`` client ID of an autonomous intent (<= 36 chars, Binance newClientOrderId compatible)."""
+    raw = "" if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)) else str(intent_id or "").strip()
+    if not raw:
+        return None
+    cid_body = (
+        f"{raw[:18]}_{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:6]}_{raw[-7:]}"
+        if len(raw) > 33
+        else raw
+    )
+    return f"AI_{cid_body}"
+
+
+def venue_native_client_order_ids(client_order_id: Any) -> set[str]:
+    """Return the lowercase venue-native forms of one durable client ID (Binance raw, Kraken UUID hex, HL cloid)."""
+    raw = _clean_single_order_id(client_order_id)
+    if not raw:
+        return set()
+    out = {raw.lower()}
+    try:
+        from .kraken_provider import _kraken_client_order_id
+        out.add(_kraken_client_order_id(raw).lower())
+    except Exception:
+        pass
+    try:
+        from .hyperliquid_provider import _cloid_for_client_order_id
+        out.add(_cloid_for_client_order_id(raw).lower())
+    except Exception:
+        pass
+    return out
+
+
+def intent_venue_client_order_ids(intent: Any) -> set[str]:
+    """Return all lowercase venue-native client IDs an autonomous intent's order may carry on any venue."""
+    if not isinstance(intent, dict):
+        return set()
+    return venue_native_client_order_ids(ai_intent_client_order_id(_extract_intent_id(intent)))
 
 
 class ExecutionAudit:
@@ -672,6 +712,7 @@ def _resolve_intent_execution_details(
     )
 
     matched_open = None
+    expected_cids: Optional[set[str]] = None
     if isinstance(open_orders, list):
         for oo in open_orders:
             if not isinstance(oo, dict):
@@ -695,10 +736,15 @@ def _resolve_intent_execution_details(
                 and oo_venue == venue
                 and oo_sym
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
-                and resolve_order_actor(oo) == "AI"
             ):
-                matched_open = oo
-                break
+                # Response-lost intent: adopt only the order carrying this intent's own client ID
+                # (venue-native form), never a BOT / monitororder-repriced order or another AI intent's order.
+                if expected_cids is None:
+                    expected_cids = intent_venue_client_order_ids(i)
+                oo_cid = (extract_client_order_id(oo, default="") or "").lower()
+                if (oo_cid in expected_cids) if oo_cid else (resolve_order_actor(oo) == "AI"):
+                    matched_open = oo
+                    break
 
     fill_px = extract_order_price(exec_pay, default=None)
     filled_qty = extract_executed_qty(exec_pay, default=0.0)
@@ -750,17 +796,37 @@ def _resolve_intent_execution_details(
             None,
         )
         if isinstance(ro_entry, dict):
-            side_key = "last_buy" if side == "BUY" else ("last_sell" if side == "SELL" else "")
-            last_fill = ro_entry.get(side_key) if side_key else None
-            if isinstance(last_fill, dict):
-                f_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
-                f_actor = str(last_fill.get("actor") or "").strip().upper()
-                min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
+            side_key = "buy" if side == "BUY" else ("sell" if side == "SELL" else "")
+            # Scan newest-first across last_<side> and recent_<side>s: a later BOT fill on the same side
+            # (e.g. a monitororder-repriced tradeall order) must not hide this intent's own AI fill.
+            fill_cands: list[dict[str, Any]] = []
+            if side_key:
+                last_c = ro_entry.get(f"last_{side_key}")
+                recent_c = ro_entry.get(f"recent_{side_key}s")
+                for cand_f in ([last_c] if isinstance(last_c, dict) else []) + (
+                    list(reversed(recent_c)) if isinstance(recent_c, list) else []
+                ):
+                    if isinstance(cand_f, dict) and cand_f not in fill_cands:
+                        fill_cands.append(cand_f)
+            min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
+            last_fill = None
+            for cand_f in fill_cands:
+                f_oid = _clean_single_order_id(cand_f.get("order_id"))
+                if order_id is not None and f_oid:
+                    if f_oid == str(order_id):
+                        last_fill = cand_f
+                        break
+                    continue
+                f_ts_ms = normalize_timestamp_ms(cand_f.get("ts_ms"), default=0) or 0
+                f_actor = str(cand_f.get("actor") or "").strip().upper()
                 if f_actor != "BOT" and (ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= min_fill_ts_ms):
-                    if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
-                        fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
-                    if filled_qty <= 0:
-                        filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
+                    last_fill = cand_f
+                    break
+            if isinstance(last_fill, dict):
+                if fill_px is None or (venue_st in _UNFILLED_ORDER_STATUSES and filled_qty <= 0):
+                    fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
+                if filled_qty <= 0:
+                    filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
     is_unfilled_resting_limit = (
         order_type == "LIMIT"
         and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
@@ -1324,12 +1390,7 @@ def execute_enforce_intent_order(
         )
 
     try:
-        cid_body = (
-            f"{intent_id[:18]}_{hashlib.sha1(intent_id.encode('utf-8')).hexdigest()[:6]}_{intent_id[-7:]}"
-            if intent_id and len(intent_id) > 33
-            else intent_id
-        )
-        intent_cid = f"AI_{cid_body}" if cid_body else None
+        intent_cid = ai_intent_client_order_id(intent_id)
         outcome_ctx: dict[str, Any] = {}
         order_res = None
         for attempt in range(2):
@@ -1554,13 +1615,14 @@ def collect_known_ai_order_ids(
     intents: Any,
     initial_ids: Optional[set[str]] = None,
 ) -> set[str]:
-    """Collect all venue order IDs recorded in ``execution_payload`` and ``history`` across intent records."""
+    """Collect venue order IDs (``execution_payload`` / ``history``) and venue-native AI client IDs across intents."""
     ai_oids: set[str] = set(initial_ids or ())
     if not isinstance(intents, list):
         return ai_oids
     for item in intents:
         if not isinstance(item, dict):
             continue
+        ai_oids.update(intent_venue_client_order_ids(item))
         oid_rec = extract_order_id(item.get("execution_payload"), default="")
         if oid_rec:
             ai_oids.add(str(oid_rec))
@@ -1605,7 +1667,13 @@ def cancel_existing_ai_open_orders(
                 continue
             if oid:
                 try:
-                    cancel_fn(str(oid))
+                    if cancel_fn(str(oid)) is False:
+                        if log:
+                            log.warning(
+                                "[INTENT GATEWAY] Venue refused cancel of prior open order %s on %s; it stays active.",
+                                oid, getattr(inst, "symbol", ""),
+                            )
+                        continue
                     canceled_ids.append(str(oid))
                     if log:
                         log.info(

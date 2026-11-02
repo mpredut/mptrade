@@ -1128,7 +1128,11 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
     assert "fill_px" not in summary[1]
 
     known_ids = collect_known_ai_order_ids(intents, {"INIT_1"})
-    assert known_ids == {"INIT_1", "KRK_LIM_1", "HIST_OID_9"}
+    assert {"INIT_1", "KRK_LIM_1", "HIST_OID_9"} <= known_ids
+    # Venue-native AI client IDs (Binance AI_, Kraken UUID hex, HL cloid) are also known for each intent
+    from providers.execution_audit import intent_venue_client_order_ids
+    for it in intents:
+        assert intent_venue_client_order_ids(it) <= known_ids
 
     # When the resting LIMIT order later fills (no longer in open_orders) and recent_orders
     # records the fill price, fill_px updates to the actual fill price rather than staying
@@ -1204,6 +1208,10 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
     canceled = cancel_existing_ai_open_orders(inst, "SELL", intents=[])
     assert canceled == ["103"]
     inst.cancel_order.assert_called_once_with("103")
+    # A venue-refused cancel (False) is not reported as canceled
+    inst.cancel_order.reset_mock()
+    inst.cancel_order.return_value = False
+    assert cancel_existing_ai_open_orders(inst, "SELL", intents=[]) == []
 
     # 3. A response-lost AI LIMIT intent (no order_id) is never matched to a repriced BOT order on the same side
     now_ts = time.time()
@@ -1228,3 +1236,52 @@ def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_inten
     ai_open = [dict(bot_open[0], actor="AI", clientOrderId="AI_intent-lost-1", module=None)]
     details_ai = _resolve_intent_execution_details(intent, now_ts, extract_intent_notional, open_orders=ai_open)
     assert details_ai.get("exec_status") == "OPEN_RESTING"
+
+    # 4. Kraken / Hyperliquid hash the AI_ client ID into 128-bit form: response-lost intents still match
+    #    their own resting order, open orders are labeled AI, and another AI intent's order is not adopted.
+    from providers.base import normalize_open_order
+    from providers.execution_audit import collect_known_ai_order_ids
+    from providers.hyperliquid_provider import _cloid_for_client_order_id
+    from providers.kraken_provider import _kraken_client_order_id
+
+    for venue_name, native_cid in (
+        ("kraken", _kraken_client_order_id("AI_intent-lost-1")),
+        ("hyperliquid", _cloid_for_client_order_id("AI_intent-lost-1")),
+    ):
+        v_intent = dict(intent, venue=venue_name, symbol="BTCUSD")
+        raw_oo = {"orderId": "V1", "side": "BUY", "price": "77900", "clientOrderId": native_cid}
+        known = collect_known_ai_order_ids([v_intent])
+        norm_oo = normalize_open_order(raw_oo, venue=venue_name, symbol="BTCUSD", known_ai_order_ids=known)
+        assert norm_oo["actor"] == "AI"
+        v_details = _resolve_intent_execution_details(v_intent, now_ts, extract_intent_notional, open_orders=[norm_oo])
+        assert v_details.get("exec_status") == "OPEN_RESTING"
+        other_oo = dict(norm_oo, clientOrderId=_kraken_client_order_id("AI_other-intent-2"))
+        other_details = _resolve_intent_execution_details(v_intent, now_ts, extract_intent_notional, open_orders=[other_oo])
+        assert other_details.get("exec_status") == "CANCELED_OR_EXPIRED"
+
+
+def test_execution_details_finds_own_ai_fill_behind_later_bot_fill_and_matches_by_order_id():
+    """A later same-side BOT fill (e.g. monitororder-repriced tradeall order) must not hide the intent's own fill."""
+    from providers.execution_audit import _resolve_intent_execution_details, extract_intent_notional
+
+    now_ts = time.time()
+    intent = {
+        "intent_id": "lim-hidden-fill-1",
+        "timestamp": now_ts - 5000.0,
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "limit_price": 78000.0,
+        "status": "EXECUTED",
+        "execution_payload": {"orderId": "AI_OID_1", "status": "NEW", "price": "78000.0", "origQty": "0.004", "executedQty": "0.0"},
+        "history": [],
+    }
+    ai_fill = {"price": 77990.0, "qty": 0.004, "ts_ms": int((now_ts - 4000.0) * 1000), "actor": "AI", "order_id": "AI_OID_1"}
+    other_ai_fill = {"price": 77500.0, "qty": 0.01, "ts_ms": int((now_ts - 3000.0) * 1000), "actor": "AI", "order_id": "AI_OID_2"}
+    bot_fill = {"price": 77800.0, "qty": 0.02, "ts_ms": int((now_ts - 60.0) * 1000), "actor": "BOT", "module": "tradeall", "order_id": "MO_1"}
+    recent = {"binance:BTCUSDC": {"last_buy": bot_fill, "recent_buys": [ai_fill, other_ai_fill, bot_fill]}}
+    details = _resolve_intent_execution_details(intent, now_ts, extract_intent_notional, recent_orders=recent, open_orders=[])
+    assert details["exec_status"] == "FILLED"
+    assert details["fill_px"] == pytest.approx(77990.0)
+    assert details["filled_qty"] == pytest.approx(0.004)

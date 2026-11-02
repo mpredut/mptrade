@@ -538,6 +538,8 @@ def extract_symbol_recent_fills(
         p_f, q_f, ts_raw = round_opt_px(extract_order_price(o, default=None), 6), extract_executed_qty(o, default=None), extract_timestamp_ms(o, default=None)
         act_o, mod_o, rule_o, tag_o = _fill_origin(o)
         item_d: Dict[str, Any] = {"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o}
+        if oid_item := extract_order_id(o, default=""):
+            item_d["order_id"] = str(oid_item)
         if mod_o:
             item_d["module"] = mod_o
         if rule_o:

@@ -476,6 +476,8 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     raw_cid = _extract_order_cid(order).upper()
     if raw_cid.startswith("AI_"):
         return "AI"
+    if raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids:
+        return "AI"
     return "BOT"
 
 
