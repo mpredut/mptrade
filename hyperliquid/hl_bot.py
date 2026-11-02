@@ -29,10 +29,11 @@ _common_mod = load_local_module(_HERE, "common")
 load_env_stack = _common_mod.load_env_stack
 log = _common_mod.log
 single_instance = _common_mod.single_instance
+optional_env = _common_mod.optional_env
+bool_env = _common_mod.bool_env
 required_env = _common_mod.required_env
 required_bool_env = _common_mod.required_bool_env
 resolve_cli_arg = _common_mod.resolve_cli_arg
-_parse_bool_flag = _common_mod._parse_bool_flag
 from strategies.spot_engine import Strategy, StratParams
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.hyperliquid_provider import HyperliquidProvider
@@ -49,7 +50,7 @@ def state_dir_for(dry_run: bool) -> str:
 def main() -> int:
     # Load configuration before CLI defaults and PAPER/REAL calculation. `.env` wins
     # because load_dotenv does not override already defined variables.
-    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
+    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
 
     ap = argparse.ArgumentParser(description="base v2 (spot_dca) pe Hyperliquid HYPE.")
@@ -63,7 +64,7 @@ def main() -> int:
     strategy_enabled = required_bool_env("STRAT_EXECUTE")
     venue_enabled = required_bool_env("HL_LIVE_ORDERS")
     strat_dry = args.paper or not (strategy_enabled and venue_enabled)
-    observe_only = _parse_bool_flag(os.environ.get("HL_BOT_OBSERVE_ONLY"), False)
+    observe_only = bool_env("HL_BOT_OBSERVE_ONLY", False)
     if args.test_strategy:
         args.test_strategy = args.test_strategy.strip().upper()
         single_instance(f"hl_bot_{args.test_strategy.strip()}")

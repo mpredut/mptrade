@@ -26,7 +26,6 @@ logging, and notifications. See kraken/test_trailing_kraken.py.
 
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 import time
@@ -39,7 +38,7 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
-                           required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)
+                           required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float)
 from kraken_client import KrakenClient  # noqa: E402
 try:
     from kraken.notify import notify  # noqa: E402
@@ -48,11 +47,10 @@ except ImportError:
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingAdapterBase,
-    TrailingCore,
-    extract_rebuy_anchors,
     extract_short_trend_slope,
     extract_trailing_intent_action_asset,
-    resolve_rebuy_bypass_guards,
+    load_trailing_common_env,
+    parse_trailing_cli_args,
     should_sell,
     vwap_or_fallback,
 )
@@ -91,29 +89,23 @@ TRAIL_PCT = {"HYPE": required_float_env("KRAKEN_TRAILING_HYPE_PCT")}
 PAIR_FOR = {"HYPE": required_env("KRAKEN_TRAILING_HYPE_PAIR")}
 DEFAULT_TRAIL_PCT = required_float_env("KRAKEN_TRAILING_DEFAULT_PCT")
 MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
-CHECK_SECONDS = required_float_env("KRAKEN_TRAILING_CHECK_SECONDS")
+(
+    CHECK_SECONDS,
+    REBUY_ENABLED,
+    REBUY_BOUNCE_PCT,
+    REBUY_SKIP_IF_TREND_DOWN,
+    SELL_SKIP_IF_TREND_UP,
+    SELL_TREND_DEFER_MAX_SEC,
+    MIN_PROFIT_PCT,
+) = load_trailing_common_env("KRAKEN_TRAILING_")
+TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 # Discover any additional configured assets (e.g. TAO, ADA)
 for _env_k, _env_v in os.environ.items():
     if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR") and _env_k != "KRAKEN_TRAILING_HYPE_PAIR":
         _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")]
-        _pct_k = f"KRAKEN_TRAILING_{_asset}_PCT"
-        TRAIL_PCT[_asset] = required_float_env(_pct_k)
+        TRAIL_PCT[_asset] = required_float_env(f"KRAKEN_TRAILING_{_asset}_PCT")
         PAIR_FOR[_asset] = required_env(_env_k)
-
-# After a crash sale, re-buy when price rebounds BOUNCE% from the post-sale low.
-REBUY_ENABLED = required_bool_env("KRAKEN_TRAILING_REBUY_ENABLED")
-REBUY_BOUNCE_PCT = required_float_env("KRAKEN_TRAILING_REBUY_BOUNCE_PCT")
-# Trend filters use HYPE cache_short_trend and act only on a CLEAR opposing signal.
-# Neutral/unknown does not block, providing safe degradation. Skip re-buy on a clear
-# downtrend. Crash sells are unfiltered by default for reliability; true enables anti-wick.
-REBUY_SKIP_IF_TREND_DOWN = required_bool_env("KRAKEN_TRAILING_REBUY_SKIP_IF_TREND_DOWN")
-SELL_SKIP_IF_TREND_UP = required_bool_env("KRAKEN_TRAILING_SELL_SKIP_IF_TREND_UP")
-SELL_TREND_DEFER_MAX_SEC = required_float_env("KRAKEN_TRAILING_SELL_TREND_DEFER_MAX_SEC")
-# Minimum profit before trailing activates (0 means immediate activation as before).
-# This prevents selling at a loss after a normal dip immediately following a purchase.
-MIN_PROFIT_PCT = required_float_env("KRAKEN_TRAILING_MIN_PROFIT_PCT")
-TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
 
 class KrakenTrailing(TrailingAdapterBase):
@@ -128,28 +120,26 @@ class KrakenTrailing(TrailingAdapterBase):
     def __init__(self, client: KrakenClient, log=log, enabled=None, state_file=STATE_FILE,
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
         self.client = client
-        self.log = log
-        self.enabled = _parse_bool_flag(
-            enabled,
-            required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else False,
-        )
         self.trailing_market = _parse_bool_flag(
             trailing_market,
             TRAILING_MARKET if trailing_market is None else False,
         )
-        min_profit_pct = safe_nonneg_float(min_profit_pct, default=float(MIN_PROFIT_PCT))
-        self.state_file = state_file
         self._tick_balances: dict | None = None
-        self._retry_counts: dict[tuple[str, str], int] = {}
-        self.core = TrailingCore(
-            self, log=log, enabled=self.enabled, state_file=state_file,
-            min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
+        self._init_adapter_core(
+            log=log,
+            enabled=enabled,
+            default_enabled=required_bool_env("KRAKEN_TRAILING_ENABLED") if enabled is None else False,
+            state_file=state_file,
+            min_notional=MIN_NOTIONAL_USD,
+            rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
             sell_skip_if_trend_up=SELL_SKIP_IF_TREND_UP,
             sell_trend_defer_max_sec=SELL_TREND_DEFER_MAX_SEC,
-            sell_fraction=1.0, item_isolation=False,
-            min_profit_pct=min_profit_pct)
+            sell_fraction=1.0,
+            item_isolation=False,
+            min_profit_pct=safe_nonneg_float(min_profit_pct, default=float(MIN_PROFIT_PCT)),
+        )
         self.executor = AuditedStrategyExecutor(
             KrakenProvider(client=client), venue="Kraken")
         self.order_lifecycle = TrackedOrderLifecycle(
@@ -315,7 +305,7 @@ class KrakenTrailing(TrailingAdapterBase):
         return result
 
     def _submit_lifecycle_order(self, intent, persist, pair, side, qty, price,
-                                kind, bypass_guards=None, market=False):
+                                kind="TRAIL", bypass_guards=None, market=False):
         """Submit through StrategyExecutor with optional guard pre-checks."""
         if bypass_guards is None:
             bypass_guards = {"all"} if side.upper() == "SELL" else {"math_reference"}
@@ -375,58 +365,6 @@ class KrakenTrailing(TrailingAdapterBase):
             persist(None)
         return result
 
-    def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
-        use_market = bool(getattr(self, "trailing_market", True))
-        limit = price if use_market else (price * 0.995)
-        self._sync_retry_count_from_state(pair, "SELL", persist)
-        intent = self._order_intent(
-            "SELL", key, asset, pair, qty, limit, anchor=peak, trail=trail,
-            market=use_market)
-        result = self._submit_lifecycle_order(
-            intent, persist, pair, "SELL", qty, limit,
-            kind="TRAIL_SELL", bypass_guards={"all"}, market=use_market)
-        order_desc = "MARKET" if use_market else f"@ ~{limit:.4f}"
-        if result.outcome == "refused":
-            self.log(
-                f"  🛑 [TRAIL-K] SELL REFUSED {qty} {asset} {order_desc} "
-                f"({result.intent.get('refusal_reason')})"
-            )
-        else:
-            self.log(
-                f"  🛑 [TRAIL-K] SELL PENDING {qty} {asset} {order_desc} "
-                f"(orderId={result.intent.get('order_id')})"
-            )
-        return result
-
-    def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
-        limit = price * 1.005
-        self._sync_retry_count_from_state(pair, "REBUY", persist)
-        anchor_val, sell_price_val = extract_rebuy_anchors(rb, price)
-        bypass_guards = resolve_rebuy_bypass_guards(price, sell_price_val)
-        if "all" in bypass_guards and sell_price_val > 0 and limit >= sell_price_val:
-            limit = price
-        intent = self._order_intent(
-            "REBUY", key, asset, pair, qty, limit,
-            anchor=anchor_val,
-            sell_price=sell_price_val)
-        result = self._submit_lifecycle_order(
-            intent, persist, pair, "BUY", qty, limit,
-            kind="TRAIL_REBUY", bypass_guards=bypass_guards)
-        if result.outcome == "refused":
-            self.log(
-                f"  🟢 [TRAIL-K] RE-BUY REFUSED {qty} {asset} @ ~{limit:.4f} "
-                f"({result.intent.get('refusal_reason')}) (not catching the knife)"
-            )
-        else:
-            self.log(
-                f"  🟢 [TRAIL-K] REBUY PENDING {qty} {asset} @ ~{limit:.4f} "
-                f"(orderId={result.intent.get('order_id')})"
-            )
-        return result
-
-    def log_tick_error(self, e) -> None:
-        self.log(f"  ! [TRAIL-K] cycle failed ({e.__class__.__name__}: {e}) — retrying")
-
     # -- one step / loop -------------------------------------------------------
     def check_once(self) -> None:
         super().check_once()
@@ -437,27 +375,19 @@ class KrakenTrailing(TrailingAdapterBase):
 
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
-        self.log("=== TRAILING STOP KRAKEN started — " + mode + " ===")
-        self.log("    protejez: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items()) +
-                 "  (FREE balance only, not the bot position)")
-        self.log(f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (recul +{REBUY_BOUNCE_PCT}% de la minim)")
-        while True:
-            try:
-                self.check_once()
-            except KeyboardInterrupt:
-                return
-            except Exception as e:  # noqa: BLE001
-                self.log_tick_error(e)
-            time.sleep(CHECK_SECONDS)
+        self._run_trailing_loop(
+            CHECK_SECONDS,
+            [
+                "=== TRAILING STOP KRAKEN started — " + mode + " ===",
+                "    protejez: " + ", ".join(f"{a}={t}%" for a, t in TRAIL_PCT.items())
+                + "  (FREE balance only, not the bot position)",
+                f"    re-buy: {'ON' if REBUY_ENABLED else 'off'} (recul +{REBUY_BOUNCE_PCT}% de la minim)",
+            ],
+        )
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="A trailing-stop circuit breaker on Kraken (with a re-buy).")
-    ap.add_argument("--once", action="store_true")
-    ap.add_argument("--status", action="store_true")
-    args = ap.parse_args()
-    if not args.status:
-        single_instance("kraken_trailing")
+    args = parse_trailing_cli_args("A trailing-stop circuit breaker on Kraken (with a re-buy).", "kraken_trailing")
     # A dedicated trailing key (KRAKEN_API_KEY_TRAIL) keeps its nonce separate from
     # _BOT (kraken_bot + xstock_watch). Fall back to _BOT when _TRAIL is absent.
     credentials = kraken_credentials("trail")

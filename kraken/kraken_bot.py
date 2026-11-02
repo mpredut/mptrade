@@ -28,14 +28,14 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 try:
-    from kraken.kraken_common import (log, required_bool_env, required_env,
+    from kraken.kraken_common import (log, optional_env, required_bool_env, required_env,
                                       required_int_env, resolve_cli_arg, load_env_stack,
                                       single_instance, safe_pos_float)
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import check_pair_listing, get_price
     from kraken.notify import notify
 except ImportError:
-    from kraken_common import (log, required_bool_env, required_env,
+    from kraken_common import (log, optional_env, required_bool_env, required_env,
                                required_int_env, resolve_cli_arg, load_env_stack,
                                single_instance, safe_pos_float)
     from kraken_client import KrakenClient, KrakenError
@@ -64,7 +64,7 @@ def _build_executor(client: KrakenClient) -> AuditedStrategyExecutor:
 
 
 def main() -> int:
-    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
+    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(os.path.dirname(__file__), ".env")))
     load_env_stack(env_file)
     poll_seconds = required_int_env("KRAKEN_BOT_POLL_SEC")
 
@@ -130,9 +130,9 @@ def main() -> int:
     log(f"    pair         : {label}  ({pair})")
     log(
         f"    credentials  : "
-        f"{'yes' if os.environ.get('KRAKEN_API_KEY_BOT') else 'NO (public/paper only)'}")
+        f"{'yes' if optional_env('KRAKEN_API_KEY_BOT') else 'NO (public/paper only)'}")
     log(f"    execution    : {'OBSERVE ONLY (AI managed)' if observe_only else ('PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY')}")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
+    log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 
     # --- wait until the pair is LISTED and tradable, analogous to launch ---
     if not args.skip_wait:

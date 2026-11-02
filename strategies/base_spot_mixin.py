@@ -14,7 +14,8 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag, are_close, log, required_bool_env, required_float_env,
+    _parse_bool_flag, are_close, exact_nonneg_int, exact_pos_int, log, optional_env,
+    required_bool_env, required_env, required_float_env, required_int_env,
     safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
 from intelligence.internal.state.volatility import (
@@ -27,6 +28,95 @@ from .state_store import (
     JsonStateStore, build_strategy_exit_manager,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
+
+
+def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:
+    """Load shared core strategy settings across spot, T212, and Hyperliquid engines."""
+    mode = required_env("STRATEGY_MODE", env).strip().lower()
+    if mode not in {"avg_tp", "dca_only"}:
+        raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+    f = required_float_env
+    cfg: dict[str, Any] = {
+        "currency": required_env("STRAT_CURRENCY", env).strip().upper(),
+        "entry_discount_pct": f("STRAT_ENTRY_DISCOUNT_PCT", env),
+        "dca_drop_pct": f("STRAT_DCA_DROP_PCT", env),
+        "check_minutes": f("STRAT_CHECK_MINUTES", env),
+        "takeprofit_pct": f("STRAT_TAKEPROFIT_PCT", env),
+        "max_budget": f("STRAT_MAX_BUDGET", env),
+        "enable_takeprofit": (mode != "dca_only"),
+        "order_ttl_min": f("STRAT_ORDER_TTL_MIN", env),
+        "stop_loss_pct": f("STRAT_STOP_LOSS_PCT", env),
+        "reentry_tolerance_pct": f("STRAT_REENTRY_TOLERANCE_PCT", env),
+    }
+    if include_entry_dca:
+        cfg.update(
+            entry_amount=f("STRAT_ENTRY", env),
+            dca_amount=f("STRAT_DCA", env),
+            max_dca_buys=required_int_env("STRAT_MAX_DCA_BUYS", env),
+        )
+    return cfg
+
+
+def parse_tp_ladder_env(env: dict | None, generate_ladder_fn: Callable) -> list[tuple[float, float]]:
+    """Parse ``STRAT_TP_LADDER`` or ``STRAT_TP_LADDER_MIN/MAX/STEPS`` via shared botcore env API."""
+    mode = required_env("STRATEGY_MODE", env).strip().lower()
+    if mode not in {"avg_tp", "dca_only"}:
+        raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+    raw_ladder = optional_env("STRAT_TP_LADDER", env=env)
+    ladder_curve = optional_env("STRAT_TP_LADDER_CURVE", "linear", env=env).lower()
+    if raw_ladder:
+        clean_raw = raw_ladder.removeprefix("range:")
+        if clean_raw.count(":") == 2 and "," not in clean_raw:
+            try:
+                p_min, p_max, p_steps = clean_raw.split(":")
+                steps_i = exact_pos_int(p_steps, default=None)
+                min_f = safe_float(p_min, default=None)
+                max_f = safe_float(p_max, default=None)
+                if steps_i is None or min_f is None or max_f is None:
+                    raise ValueError("non-integer or non-finite steps")
+                return generate_ladder_fn(min_f, max_f, steps_i, curve=ladder_curve)
+            except (ValueError, OverflowError) as exc:
+                raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
+        ladder: list[tuple[float, float]] = []
+        for part in raw_ladder.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" not in part:
+                raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
+            lvl_s, frac_s = part.split(":", 1)
+            lvl_f = safe_pos_float(lvl_s, default=None)
+            frac_raw = safe_pos_float(frac_s, default=None)
+            if lvl_f is None or frac_raw is None:
+                raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
+            ladder.append((lvl_f, frac_raw / 100.0))
+        if sum(f for _, f in ladder) > 1.0 + 1e-6:
+            raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
+        return ladder
+    if optional_env("STRAT_TP_LADDER_MIN", env=env) and optional_env("STRAT_TP_LADDER_MAX", env=env):
+        return generate_ladder_fn(
+            required_float_env("STRAT_TP_LADDER_MIN", env),
+            required_float_env("STRAT_TP_LADDER_MAX", env),
+            required_int_env("STRAT_TP_LADDER_STEPS", env),
+            curve=ladder_curve,
+        )
+    return []
+
+
+def parse_max_dca_buys_env(
+    env: dict | None, budget: float, entry_amt: float, dca_amt: float
+) -> tuple[int, float]:
+    """Parse ``STRAT_MAX_DCA_BUYS`` (supporting ``auto``/``budget`` or explicit non-negative integer)."""
+    mdb = optional_env("STRAT_MAX_DCA_BUYS", env=env).lower()
+    if mdb in ("auto", "buget", "budget"):
+        max_dca = max(0, int((budget - entry_amt) // dca_amt)) if dca_amt > 0 else 0
+        return max_dca, budget - max_dca * dca_amt
+    if mdb:
+        max_dca_i = exact_nonneg_int(mdb, default=None)
+        if max_dca_i is None:
+            raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {mdb!r}")
+        return max_dca_i, entry_amt
+    raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
 
 
 def load_common_mhdpa_env(env: dict | None, *, include_spot_sl: bool = True) -> dict[str, Any]:
@@ -805,3 +895,50 @@ class BaseSpotMixin:
         if not placed:
             self._restore_reentry_state()
         return placed
+
+    def _run_strategy_loop(
+        self,
+        *,
+        price_fn: Callable[[], float | None],
+        status_log_fn: Callable[[float], None],
+        stop: Any = None,
+        reload_external: bool = False,
+    ) -> None:
+        """Shared self-healing execution loop for spot and T212 strategies."""
+        check_min = safe_pos_float(self.p.check_minutes, default=None)
+        sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
+        sleep_fn = self._mod_global("time", time).sleep
+
+        def _delay() -> None:
+            if stop is not None:
+                stop.wait(sleep_sec)
+            else:
+                sleep_fn(sleep_sec)
+
+        try:
+            while not (stop is not None and stop.is_set()):
+                price = safe_pos_float(price_fn(), default=None)
+                if price is None:
+                    self._log_msg("  [STRAT] price unavailable — retrying")
+                    _delay()
+                    continue
+                try:
+                    if not self._recover_state_write_or_skip():
+                        _delay()
+                        continue
+                    if reload_external:
+                        self._reload_if_externally_modified()
+                    if self.reconcile(price) is False:
+                        _delay()
+                        continue
+                    self.step(price)
+                    self._save()
+                except Exception as e:  # noqa: BLE001 — RESILIENCE: network/API down -> retry
+                    self._log_msg(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
+                    _delay()
+                    continue
+                status_log_fn(price)
+                _delay()
+        except KeyboardInterrupt:
+            self._log_msg("  [STRAT] stopped manually.")
+            self._save()

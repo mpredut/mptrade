@@ -31,20 +31,50 @@ ADAPTER contract (duck typing; see the two adapter classes):
 
 from __future__ import annotations
 
+import argparse
 import os
 import time
 
 import pricewindow as pw
 from botcore import (
     _parse_bool_flag,
+    required_bool_env,
+    required_float_env,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
+    single_instance,
 )
 from providers.execution_audit import intent_client_order_id
 from state_io import load_json_state, save_json_state
+
+
+def load_trailing_common_env(
+    prefix: str, env: dict | None = None
+) -> tuple[float, bool, float, bool, bool, float, float]:
+    """Load the 7 shared trailing-stop environment variables for ``prefix`` (e.g. ``'TRAILING_'`` or ``'KRAKEN_TRAILING_'``)."""
+    return (
+        required_float_env(f"{prefix}CHECK_SECONDS", env),
+        required_bool_env(f"{prefix}REBUY_ENABLED", env),
+        required_float_env(f"{prefix}REBUY_BOUNCE_PCT", env),
+        required_bool_env(f"{prefix}REBUY_SKIP_IF_TREND_DOWN", env),
+        required_bool_env(f"{prefix}SELL_SKIP_IF_TREND_UP", env),
+        required_float_env(f"{prefix}SELL_TREND_DEFER_MAX_SEC", env),
+        required_float_env(f"{prefix}MIN_PROFIT_PCT", env),
+    )
+
+
+def parse_trailing_cli_args(description: str, lock_name: str) -> argparse.Namespace:
+    """Parse standard ``--once`` / ``--status`` CLI arguments and acquire the single-instance lock unless ``--status``."""
+    ap = argparse.ArgumentParser(description=description)
+    ap.add_argument("--once", action="store_true", help="one check, then exit")
+    ap.add_argument("--status", action="store_true", help="the current peaks and thresholds")
+    args = ap.parse_args()
+    if not args.status:
+        single_instance(lock_name)
+    return args
 
 
 def extract_trailing_intent_action_asset(intent: object) -> tuple[str, str]:
@@ -639,6 +669,43 @@ class TrailingAdapterBase:
 
     _safe_float = staticmethod(safe_float)
 
+    def _init_adapter_core(
+        self,
+        *,
+        log,
+        enabled,
+        default_enabled: bool,
+        state_file: str,
+        min_notional: float,
+        rebuy_enabled: bool,
+        rebuy_bounce_pct: float,
+        rebuy_skip_if_trend_down: bool,
+        sell_skip_if_trend_up: bool,
+        sell_trend_defer_max_sec: float,
+        sell_fraction: float,
+        item_isolation: bool,
+        min_profit_pct: float,
+    ) -> None:
+        self.log = log
+        self.enabled = _parse_bool_flag(enabled, default_enabled if enabled is None else False)
+        self.state_file = state_file
+        self._retry_counts: dict[tuple[str, str], int] = {}
+        self.core = TrailingCore(
+            self,
+            log=log,
+            enabled=self.enabled,
+            state_file=state_file,
+            min_notional=min_notional,
+            rebuy_enabled=rebuy_enabled,
+            rebuy_bounce_pct=rebuy_bounce_pct,
+            rebuy_skip_if_trend_down=rebuy_skip_if_trend_down,
+            sell_skip_if_trend_up=sell_skip_if_trend_up,
+            sell_trend_defer_max_sec=sell_trend_defer_max_sec,
+            sell_fraction=sell_fraction,
+            item_isolation=item_isolation,
+            min_profit_pct=min_profit_pct,
+        )
+
     def _load(self) -> dict:
         return self.core.load()
 
@@ -728,5 +795,101 @@ class TrailingAdapterBase:
             f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)"
         )
 
+    def log_tick_error(self, e) -> None:
+        if self._VENUE_SLUG == "kraken":
+            self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) — retrying")
+        else:
+            self.log(f"  ! {self._LOG_TAG} cycle error ({e}) — continuing")
+
+    def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
+        is_kraken = self._VENUE_SLUG == "kraken"
+        use_market = bool(getattr(self, "trailing_market", True)) if is_kraken else True
+        order_price = (price if use_market else (price * 0.995)) if is_kraken else price
+        self._sync_retry_count_from_state(pair, "SELL", persist)
+        intent = self._order_intent(
+            "SELL", key, asset, pair, qty, order_price, anchor=peak, trail=trail,
+            **({"market": use_market} if is_kraken else {}),
+        )
+        result = self._submit_lifecycle_order(
+            intent, persist, pair, "SELL", qty, order_price,
+            kind="TRAIL_SELL", bypass_guards={"all"}, market=use_market,
+        )
+        if is_kraken:
+            order_desc = "MARKET" if use_market else f"@ ~{order_price:.4f}"
+            status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
+            detail = (
+                result.intent.get("refusal_reason")
+                if result.outcome == "refused"
+                else f"orderId={result.intent.get('order_id')}"
+            )
+            self.log(f"  🛑 {self._LOG_TAG} SELL {status_lbl} {qty} {asset} {order_desc} ({detail})")
+        else:
+            price_f = self._safe_float(price, 0.0)
+            peak_f = self._safe_float(peak, price_f)
+            if result.outcome == "refused":
+                self.log(
+                    f"  🛑 {self._LOG_TAG} SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
+                    f"({result.intent.get('refusal_reason')})"
+                )
+            else:
+                self.log(
+                    f"  🛑 {self._LOG_TAG} SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
+                    f"(peak {peak_f:.4f}, -{trail}%, orderId={result.intent.get('order_id')})"
+                )
+        return result
+
+    def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
+        is_kraken = self._VENUE_SLUG == "kraken"
+        self._sync_retry_count_from_state(pair, "REBUY", persist)
+        price_ref = price if is_kraken else safe_nonneg_float(price, 0.0)
+        anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_ref)
+        bypass_guards = resolve_rebuy_bypass_guards(price_ref, sell_price_val)
+        if is_kraken:
+            order_price = price * 1.005
+            if "all" in bypass_guards and sell_price_val > 0 and order_price >= sell_price_val:
+                order_price = price
+        else:
+            order_price = price
+        intent = self._order_intent(
+            "REBUY", key, asset, pair, qty, order_price,
+            anchor=anchor_val, sell_price=sell_price_val,
+        )
+        result = self._submit_lifecycle_order(
+            intent, persist, pair, "BUY", qty, order_price,
+            kind="TRAIL_REBUY", bypass_guards=bypass_guards,
+        )
+        if is_kraken:
+            if result.outcome == "refused":
+                self.log(
+                    f"  🟢 {self._LOG_TAG} RE-BUY REFUSED {qty} {asset} @ ~{order_price:.4f} "
+                    f"({result.intent.get('refusal_reason')}) (not catching the knife)"
+                )
+            else:
+                self.log(
+                    f"  🟢 {self._LOG_TAG} REBUY PENDING {qty} {asset} @ ~{order_price:.4f} "
+                    f"(orderId={result.intent.get('order_id')})"
+                )
+        else:
+            status_lbl = "REFUSED" if result.outcome == "refused" else "PENDING"
+            detail = (
+                result.intent.get("refusal_reason")
+                if result.outcome == "refused"
+                else f"orderId={result.intent.get('order_id')}"
+            )
+            self.log(f"  🟢 {self._LOG_TAG} RE-BUY {status_lbl} {pair} {qty} @ ~{price_ref:.4f} ({detail})")
+        return result
+
     def check_once(self) -> None:
         self.core.check_once()
+
+    def _run_trailing_loop(self, check_seconds: float, banner_lines: list[str] | tuple[str, ...]) -> None:
+        for line in banner_lines:
+            self.log(line)
+        while True:
+            try:
+                self.check_once()
+            except KeyboardInterrupt:
+                return
+            except Exception as e:  # noqa: BLE001
+                self.log_tick_error(e)
+            time.sleep(check_seconds)

@@ -39,7 +39,14 @@ from providers.base import (
 from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit, new_intent_id
 from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
-from strategies.base_spot_mixin import BaseSpotMixin, load_common_mhdpa_env, sanitize_common_spot_state
+from strategies.base_spot_mixin import (
+    BaseSpotMixin,
+    load_common_core_strat_env,
+    load_common_mhdpa_env,
+    parse_max_dca_buys_env,
+    parse_tp_ladder_env,
+    sanitize_common_spot_state,
+)
 from strategies.state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
@@ -201,89 +208,31 @@ class StratParams:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
         """Read the environment or an explicit mapping for collision-free multi-asset use."""
-        e = os.environ if env is None else env
-        mode = required_env("STRATEGY_MODE", e).strip().lower()
-        if mode not in {"avg_tp", "dca_only"}:
-            raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
-        _ladder = []
-        raw_ladder = (e.get("STRAT_TP_LADDER") or "").strip()
-        ladder_curve = (e.get("STRAT_TP_LADDER_CURVE") or "linear").strip().lower()
-        if raw_ladder:
-            clean_raw = raw_ladder.removeprefix("range:")
-            if clean_raw.count(":") == 2 and "," not in clean_raw:
-                try:
-                    p_min, p_max, p_steps = clean_raw.split(":")
-                    steps_i = exact_pos_int(p_steps, default=None)
-                    min_f = safe_float(p_min, default=None)
-                    max_f = safe_float(p_max, default=None)
-                    if steps_i is None or min_f is None or max_f is None:
-                        raise ValueError("non-integer or non-finite steps")
-                    _ladder = generate_tp_ladder(min_f, max_f, steps_i, curve=ladder_curve)
-                except (ValueError, OverflowError) as exc:
-                    raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}") from exc
-            else:
-                for _part in raw_ladder.split(","):
-                    _part = _part.strip()
-                    if not _part:
-                        continue
-                    if ":" not in _part:
-                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
-                    _lvl, _frac = _part.split(":", 1)
-                    lvl_f = safe_pos_float(_lvl, default=None)
-                    frac_raw = safe_pos_float(_frac, default=None)
-                    if lvl_f is None or frac_raw is None:
-                        raise ValueError(f"Invalid STRAT_TP_LADDER: {raw_ladder!r}")
-                    _ladder.append((lvl_f, frac_raw / 100.0))
-                if sum(f for _, f in _ladder) > 1.0 + 1e-6:
-                    raise ValueError(f"Invalid STRAT_TP_LADDER (fractions exceed 100%): {raw_ladder!r}")
-        elif e.get("STRAT_TP_LADDER_MIN") and e.get("STRAT_TP_LADDER_MAX"):
-            _ladder = generate_tp_ladder(
-                required_float_env("STRAT_TP_LADDER_MIN", e),
-                required_float_env("STRAT_TP_LADDER_MAX", e),
-                required_int_env("STRAT_TP_LADDER_STEPS", e),
-                curve=ladder_curve,
-            )
-        _budget = required_float_env("STRAT_MAX_BUDGET", e)
-        _entry = _budget * required_float_env("STRAT_ENTRY_PCT", e) / 100.0
-        _dca = _budget * required_float_env("STRAT_DCA_PCT", e) / 100.0
-        _mdb = (e.get("STRAT_MAX_DCA_BUYS") or "").strip().lower()
-        if _mdb in ("auto", "buget", "budget"):
-            _max_dca = max(0, int((_budget - _entry) // _dca)) if _dca > 0 else 0
-            _entry = _budget - _max_dca * _dca
-        elif _mdb:
-            _max_dca = exact_nonneg_int(_mdb, default=None)
-            if _max_dca is None:
-                raise ValueError(f"Invalid STRAT_MAX_DCA_BUYS: {_mdb!r}")
-        else:
-            raise ValueError("Missing or empty mandatory setting: STRAT_MAX_DCA_BUYS")
         b, f = required_bool_env, required_float_env
+        ladder = parse_tp_ladder_env(env, generate_tp_ladder)
+        core_cfg = load_common_core_strat_env(env, include_entry_dca=False)
+        budget = core_cfg["max_budget"]
+        entry_amt = budget * f("STRAT_ENTRY_PCT", env) / 100.0
+        dca_amt = budget * f("STRAT_DCA_PCT", env) / 100.0
+        max_dca, entry_amt = parse_max_dca_buys_env(env, budget, entry_amt, dca_amt)
         return cls(
-            currency=required_env("STRAT_CURRENCY", e).strip().upper(),
-            entry_amount=_entry,
-            entry_discount_pct=f("STRAT_ENTRY_DISCOUNT_PCT", e),
-            dca_amount=_dca,
-            dca_drop_pct=f("STRAT_DCA_DROP_PCT", e),
-            check_minutes=f("STRAT_CHECK_MINUTES", e),
-            takeprofit_pct=f("STRAT_TAKEPROFIT_PCT", e),
-            max_budget=_budget,
-            max_dca_buys=_max_dca,
+            **core_cfg,
+            entry_amount=entry_amt,
+            dca_amount=dca_amt,
+            max_dca_buys=max_dca,
             validity="GOOD_TILL_CANCEL",
-            enable_takeprofit=(mode != "dca_only"),
-            order_ttl_min=f("STRAT_ORDER_TTL_MIN", e),
-            stop_loss_pct=f("STRAT_STOP_LOSS_PCT", e),
-            yahoo_sym=required_env("YAHOO_SYMBOL", e),
-            reentry_drop_pct=f("STRAT_REENTRY_DROP_PCT", e),
-            reentry_tolerance_pct=f("STRAT_REENTRY_TOLERANCE_PCT", e),
-            tp_ladder=_ladder,
-            fx_fee_pct=f("STRAT_FX_FEE_PCT", e),
-            loss_alert_step=f("STRAT_LOSS_ALERT_STEP", e),
-            ladder_min_free=f("STRAT_LADDER_MIN_FREE", e),
-            sl_rebuy_enabled=b("STRAT_SL_REBUY_ENABLED", e),
-            sl_rebuy_bounce_pct=f("STRAT_SL_REBUY_BOUNCE_PCT", e),
-            dca_trend_gate_pct=f("STRAT_DCA_TREND_GATE_PCT", e),
-            trail_pct=f("STRAT_TRAIL_PCT", e),
-            trail_min_profit_pct=f("STRAT_TRAIL_MIN_PROFIT_PCT", e),
-            **load_common_mhdpa_env(e, include_spot_sl=False),
+            yahoo_sym=required_env("YAHOO_SYMBOL", env),
+            reentry_drop_pct=f("STRAT_REENTRY_DROP_PCT", env),
+            tp_ladder=ladder,
+            fx_fee_pct=f("STRAT_FX_FEE_PCT", env),
+            loss_alert_step=f("STRAT_LOSS_ALERT_STEP", env),
+            ladder_min_free=f("STRAT_LADDER_MIN_FREE", env),
+            sl_rebuy_enabled=b("STRAT_SL_REBUY_ENABLED", env),
+            sl_rebuy_bounce_pct=f("STRAT_SL_REBUY_BOUNCE_PCT", env),
+            dca_trend_gate_pct=f("STRAT_DCA_TREND_GATE_PCT", env),
+            trail_pct=f("STRAT_TRAIL_PCT", env),
+            trail_min_profit_pct=f("STRAT_TRAIL_MIN_PROFIT_PCT", env),
+            **load_common_mhdpa_env(env, include_spot_sl=False),
         )
 
 
@@ -1594,51 +1543,27 @@ class Strategy(BaseSpotMixin):
         log(f"      check      : la {self.p.check_minutes:.0f} min   |  1 {self.ccy} = {self.fx_to_usd:.4f} USD")
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
-        def _delay(delay_sec: float) -> None:
-            eff_sec = max(1.0, safe_float(delay_sec, default=60.0))
-            if stop is not None:
-                stop.wait(eff_sec)
+        def _log_status(price: float) -> None:
+            avg = self._avg_cost()
+            net = self.s.get("realized_net_usd", 0.0)
+            fees = self.s.get("fees_usd", 0.0)
+            if avg:
+                log(
+                    f"  [STRAT] price={price:.2f}  qty={self.s['qty']:.2f}  avg={avg:.2f}  "
+                    f"deployed={self.s['spent_cash']:.0f}{self.ccy}  "
+                    f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
+                    f"ord={len(self.s['orders'])}"
+                )
             else:
-                time.sleep(eff_sec)
+                log(
+                    f"  [STRAT] price={price:.2f}  qty=0  "
+                    f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
+                    f"(waiting for an entry)"
+                )
 
-        try:
-            while not (stop is not None and stop.is_set()):
-                price = get_price_usd(self.yahoo_sym)
-                if price is None:
-                    log("  [STRAT] price unavailable — retrying")
-                    _delay(self.p.check_minutes * 60)
-                    continue
-                try:
-                    if not self._recover_state_write_or_skip():
-                        _delay(self.p.check_minutes * 60)
-                        continue
-                    if self.reconcile(price) is False:
-                        _delay(self.p.check_minutes * 60)
-                        continue
-                    self.step(price)
-                    self._save()
-                except Exception as e:  # noqa: BLE001 — Resilience: retry network/API failures.
-                    log(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
-                    _delay(self.p.check_minutes * 60)
-                    continue
-
-                avg = self._avg_cost()
-                net = self.s.get("realized_net_usd", 0.0)
-                fees = self.s.get("fees_usd", 0.0)
-                if avg:
-                    log(
-                        f"  [STRAT] price={price:.2f}  qty={self.s['qty']:.2f}  avg={avg:.2f}  "
-                        f"deployed={self.s['spent_cash']:.0f}{self.ccy}  "
-                        f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
-                        f"ord={len(self.s['orders'])}"
-                    )
-                else:
-                    log(
-                        f"  [STRAT] price={price:.2f}  qty=0  "
-                        f"NET={net:+.2f}USD (gross {self.s['realized_pnl_usd']:+.2f}, fee {fees:.2f})  "
-                        f"(waiting for an entry)"
-                    )
-                _delay(self.p.check_minutes * 60)
-        except KeyboardInterrupt:
-            log("  [STRAT] stopped manually.")
-            self._save()
+        self._run_strategy_loop(
+            price_fn=lambda: get_price_usd(self.yahoo_sym),
+            status_log_fn=_log_status,
+            stop=stop,
+            reload_external=False,
+        )

@@ -423,6 +423,27 @@ def required_bool_env(key: str, env: dict | None = None) -> bool:
     return raw == "true"
 
 
+def optional_env(key: str, default: str | dict | None = "", env: dict | None = None) -> str:
+    """Read an optional string setting from os.environ or an injected dictionary, stripping inline comments."""
+    if isinstance(default, dict) and env is None:
+        env, default = default, ""
+    default_str = "" if default is None else str(default)
+    src = os.environ if env is None else env
+    val = src.get(key)
+    if val is None or isinstance(val, bool):
+        return default_str
+    raw = str(val).split("#", 1)[0].strip()
+    return raw if raw else default_str
+
+
+def bool_env(key: str, default: bool | dict = False, env: dict | None = None) -> bool:
+    """Read an optional boolean setting from os.environ or an injected dictionary."""
+    if isinstance(default, dict) and env is None:
+        env, default = default, False
+    src = os.environ if env is None else env
+    return bool(_parse_bool_flag(src.get(key), bool(default)))
+
+
 def resolve_cli_arg(
     argv: list[str] | tuple[str, ...] | None,
     flags: str | tuple[str, ...],

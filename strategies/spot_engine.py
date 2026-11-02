@@ -33,7 +33,7 @@ from intelligence.internal.state.volatility import (
 )
 
 from . import spot_rules as sr
-from .base_spot_mixin import BaseSpotMixin, load_common_mhdpa_env, sanitize_common_spot_state
+from .base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, load_common_mhdpa_env, sanitize_common_spot_state
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
@@ -262,31 +262,17 @@ class StratParams:
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
         """Load an explicit profile; missing financial policy is a startup error."""
-        mode = required_env("STRATEGY_MODE", env).lower()
-        if mode not in {"avg_tp", "dca_only"}:
-            raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+        core_cfg = load_common_core_strat_env(env, include_entry_dca=True)
         b, f, i = required_bool_env, required_float_env, required_int_env
         return cls(
-            currency=required_env("STRAT_CURRENCY", env).upper(),
-            entry_amount=f("STRAT_ENTRY", env),
-            entry_discount_pct=f("STRAT_ENTRY_DISCOUNT_PCT", env),
-            dca_amount=f("STRAT_DCA", env),
-            dca_drop_pct=f("STRAT_DCA_DROP_PCT", env),
-            check_minutes=f("STRAT_CHECK_MINUTES", env),
-            takeprofit_pct=f("STRAT_TAKEPROFIT_PCT", env),
-            max_budget=f("STRAT_MAX_BUDGET", env),
-            max_dca_buys=i("STRAT_MAX_DCA_BUYS", env),
+            **core_cfg,
             total_budget=f("STRAT_TOTAL_BUDGET", env),
             alloc_pct=f("STRAT_ALLOC_PCT", env),
             entry_pct=f("STRAT_ENTRY_PCT", env),
             dca_pct=f("STRAT_DCA_PCT", env),
-            enable_takeprofit=(mode != "dca_only"),
-            order_ttl_min=f("STRAT_ORDER_TTL_MIN", env),
-            stop_loss_pct=f("STRAT_STOP_LOSS_PCT", env),
             adopt_cost=f("STRAT_ADOPT_COST", env),
             adopt_qty=f("STRAT_ADOPT_QTY", env),
             reentry_drop_pct=f("STRAT_REENTRY_DROP_PCT", env),
-            reentry_tolerance_pct=f("STRAT_REENTRY_TOLERANCE_PCT", env),
             reentry_adaptive=b("STRAT_REENTRY_ADAPTIVE", env),
             shadow_k_reentry=f("SHADOW_K_REENTRY", env),
             reentry_sl_bounce_pct=f("STRAT_REENTRY_SL_BOUNCE_PCT", env),
@@ -1899,35 +1885,18 @@ class Strategy(BaseSpotMixin):
         if self.fee_note:
             log(f"      ! {self.fee_note}; TP={self.p.takeprofit_pct}%")
         self._maybe_adopt()
-        check_min = safe_pos_float(self.p.check_minutes, default=None)
-        sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
-        try:
-            while True:
-                price = safe_pos_float(self.client.get_current_price(self.pair), default=None)
-                if price is None:
-                    log("  [STRAT] price unavailable — retrying")
-                    time.sleep(sleep_sec)
-                    continue
-                try:
-                    if not self._recover_state_write_or_skip():
-                        time.sleep(sleep_sec)
-                        continue
-                    self._reload_if_externally_modified()
-                    self.reconcile(price)
-                    self.step(price)
-                    self._save()
-                except Exception as e:  # noqa: BLE001 — RESILIENCE: network/API down -> retry
-                    log(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) — retrying")
-                    time.sleep(sleep_sec)
-                    continue
-                avg = self._avg()
-                pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
-                log(
-                    f"  [STRAT] price={price}  {pos}  "
-                    f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
-                    f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}"
-                )
-                time.sleep(sleep_sec)
-        except KeyboardInterrupt:
-            log("  [STRAT] stopped manually.")
-            self._save()
+
+        def _log_status(price: float) -> None:
+            avg = self._avg()
+            pos = f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f}" if avg else "qty=0 (waiting for an entry)"
+            log(
+                f"  [STRAT] price={price}  {pos}  "
+                f"NET={self.s['realized_net']:+.2f} (gross {self.s['realized_gross']:+.2f}, "
+                f"fee {self.s['fees_total']:.2f}) {self.ccy}  ord={len(self.s['orders'])}"
+            )
+
+        self._run_strategy_loop(
+            price_fn=lambda: self.client.get_current_price(self.pair),
+            status_log_fn=_log_status,
+            reload_external=True,
+        )

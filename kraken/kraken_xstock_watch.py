@@ -32,7 +32,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from kraken.kraken_common import (
-        _parse_bool_flag, exact_pos_int, log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, optional_env, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from kraken.notify import notify
@@ -40,7 +40,7 @@ try:
     from kraken.market_data import is_pair_status_tradable
 except ImportError:
     from kraken_common import (
-        _parse_bool_flag, exact_pos_int, log, load_env_stack, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, optional_env, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
     from notify import notify
@@ -58,7 +58,7 @@ def _clean_pid(pid: object) -> int | None:
 
 def _state_file() -> str:
     """Return the configurable state path, allowing independent parallel watchers."""
-    return os.environ.get("XSTOCK_STATE_FILE") or os.path.join(_HERE, "xstock_state.json")
+    return optional_env("XSTOCK_STATE_FILE") or os.path.join(_HERE, "xstock_state.json")
 
 
 # -- state -------------------------------------------------------------------
@@ -356,8 +356,8 @@ def maybe_start_bot(st: dict, alloc_price: float, desktop: bool) -> None:
                      ("XSTOCK_BOT_DCA", "STRAT_DCA"),
                      ("XSTOCK_BOT_MAX_BUDGET", "STRAT_MAX_BUDGET"),
                      ("XSTOCK_BOT_CHECK_MINUTES", "STRAT_CHECK_MINUTES")):
-        if os.environ.get(src):
-            env[dst] = os.environ[src]
+        if (val := optional_env(src)):
+            env[dst] = val
     cmd = [sys.executable, BOT_SCRIPT, "--pair", st["pair"]]
     if required_bool_env("XSTOCK_BOT_PAPER"):
         cmd.append("--paper")

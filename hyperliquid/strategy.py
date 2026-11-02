@@ -39,6 +39,7 @@ from common import (
 from notify import notify
 from providers.base import _clean_single_order_id
 from state_io import load_json_state, save_json_state
+from strategies.base_spot_mixin import load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token as _safe_state_token
 from hl_client import HLClient
 from market_data import get_price
@@ -77,29 +78,15 @@ class StratParams:
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":
-        mode = required_env("STRATEGY_MODE", env).strip().lower()
-        if mode not in {"avg_tp", "dca_only"}:
-            raise ValueError(f"Invalid STRATEGY_MODE: {mode!r}")
+        core_cfg = load_common_core_strat_env(env, include_entry_dca=True)
         direction = required_env("HL_DIRECTION", env).strip().lower()
         if direction not in ("long", "short"):
             raise ValueError(f"Invalid HL_DIRECTION: {direction!r}")
         return cls(
-            currency           = required_env("STRAT_CURRENCY", env).strip().upper(),
-            direction          = direction,
-            entry_amount       = required_float_env("STRAT_ENTRY", env),
-            entry_discount_pct = required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env),
-            dca_amount         = required_float_env("STRAT_DCA", env),
-            dca_drop_pct       = required_float_env("STRAT_DCA_DROP_PCT", env),
-            check_minutes      = required_float_env("STRAT_CHECK_MINUTES", env),
-            takeprofit_pct     = required_float_env("STRAT_TAKEPROFIT_PCT", env),
-            max_budget         = required_float_env("STRAT_MAX_BUDGET", env),
-            max_dca_buys       = required_int_env("STRAT_MAX_DCA_BUYS", env),
-            enable_takeprofit  = (mode != "dca_only"),
-            order_ttl_min      = required_float_env("STRAT_ORDER_TTL_MIN", env),
-            signal_gate        = required_bool_env("HL_SIGNAL_GATE", env),
-            stop_loss_pct      = required_float_env("STRAT_STOP_LOSS_PCT", env),
-            reentry_tolerance_pct = required_float_env("STRAT_REENTRY_TOLERANCE_PCT", env),
-            fee_pct            = required_float_env("HL_FEE_PCT", env),
+            **core_cfg,
+            direction   = direction,
+            signal_gate = required_bool_env("HL_SIGNAL_GATE", env),
+            fee_pct     = required_float_env("HL_FEE_PCT", env),
         )
 
     @classmethod
@@ -200,13 +187,17 @@ def _sanitize_state(raw: dict) -> dict:
     merged = _new_state()
     if isinstance(raw, dict):
         merged.update(raw)
-    for k in ("qty", "cost", "spent", "fees_total"):
-        merged[k] = safe_nonneg_float(merged.get(k, 0.0), 0.0)
-    for k in ("realized_gross", "realized_net"):
-        merged[k] = safe_float(merged.get(k, 0.0), 0.0)
-    for k, default_i in (("cycle", 1), ("cycles_completed", 0), ("wins", 0), ("dca_buys", 0)):
-        vi = safe_int(merged.get(k, default_i), None)
-        merged[k] = max(default_i if k == "cycle" else 0, vi) if vi is not None else default_i
+    merged = sanitize_common_spot_state(
+        merged,
+        _new_state,
+        nonneg_float_keys=("qty", "cost", "spent", "fees_total"),
+        signed_float_keys=("realized_gross", "realized_net"),
+        nonneg_int_keys=("cycles_completed", "wins", "dca_buys"),
+        pos_float_keys=("entry_price", "last_open_price"),
+        bool_keys=(),
+        dict_keys=(),
+        sanitize_orders=False,
+    )
     for k in ("entry_price", "last_open_price"):
         merged[k] = safe_pos_float(merged.get(k), None)
     raw_orders = merged.get("orders")
@@ -216,17 +207,14 @@ def _sanitize_state(raw: dict) -> dict:
             if not isinstance(o, dict) or o.get("role") not in ("open", "close"):
                 continue
             stored_oid = _normalize_stored_oid(o.get("oid"))
-            if stored_oid is None:
-                continue
             px_f = safe_pos_float(o.get("px"), 0.0)
             sz_f = safe_pos_float(o.get("sz"), 0.0)
-            if px_f <= 0.0 or sz_f <= 0.0:
+            if stored_oid is None or px_f <= 0.0 or sz_f <= 0.0:
                 continue
-            o_copy = dict(o)
-            o_copy["oid"] = stored_oid
-            o_copy["px"] = px_f
-            o_copy["sz"] = sz_f
-            o_copy["amount"] = safe_nonneg_float(o_copy.get("amount", 0.0), 0.0)
+            o_copy = dict(
+                o, oid=stored_oid, px=px_f, sz=sz_f,
+                amount=safe_nonneg_float(o.get("amount", 0.0), 0.0),
+            )
             if "ts" in o_copy and o_copy.get("ts") is not None:
                 o_copy["ts"] = safe_nonneg_float(o_copy.get("ts"), 0.0)
             if "dca_counted" in o_copy:
@@ -559,24 +547,12 @@ class Strategy:
                     except Exception as e:
                         log(f"  ! [STRAT] failed to cancel leftover order {o.get('oid')}: {e}")
                         remaining_orders.append(o)
-            keep = (
-                self.s["realized_gross"],
-                self.s["realized_net"],
-                self.s["fees_total"],
-                self.s.get("cycle", 1) + 1,
-                self.s["cycles_completed"],
-                self.s.get("wins", 0),
-            )
+            preserved = {
+                k: self.s.get(k, 0) for k in ("realized_gross", "realized_net", "fees_total", "cycles_completed", "wins")
+            }
+            next_cycle = self.s.get("cycle", 1) + 1
             self.s = _new_state()
-            self.s["orders"] = remaining_orders
-            (
-                self.s["realized_gross"],
-                self.s["realized_net"],
-                self.s["fees_total"],
-                self.s["cycle"],
-                self.s["cycles_completed"],
-                self.s["wins"],
-            ) = keep
+            self.s.update(preserved, cycle=next_cycle, orders=remaining_orders)
             if not self.replay_mode:
                 log(f"  [STRAT] === ciclu inchis, reincep (ciclu {self.s['cycle']}) ===")
 

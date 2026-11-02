@@ -47,7 +47,7 @@ ensure_local_module_priority(
 
 try:
     from .ipo_common import (
-        load_t212_environment, log, now_str, float_env, required_env,
+        load_t212_environment, log, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
     from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
@@ -58,7 +58,7 @@ try:
     from .strategy import Strategy, StratParams
 except ImportError:
     from ipo_common import (
-        load_t212_environment, load_t212_market_data, log, now_str, float_env, required_env,
+        load_t212_environment, load_t212_market_data, log, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
     from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
@@ -125,8 +125,8 @@ def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
 # ---------------------------------------------------------------------------
 def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
-    env_file = resolve_cli_arg(sys.argv, "--env-file", os.environ.get("ENV_FILE", os.path.join(here, ".env")))
-    profile = resolve_cli_arg(sys.argv, ("--profile", "-p"), os.environ.get("IPO_PROFILE"))
+    env_file = resolve_cli_arg(sys.argv, "--env-file", optional_env("ENV_FILE", os.path.join(here, ".env")))
+    profile = resolve_cli_arg(sys.argv, ("--profile", "-p"), optional_env("IPO_PROFILE") or None)
     profile_file = None
     if profile:                                            # versioned per-profile config: config.<profile>.env
         cfg_dir = os.path.dirname(env_file) or "."
@@ -178,10 +178,10 @@ def main() -> int:
     )
 
     # Generic instrument.
-    t212_ticker  = (args.symbol or os.environ.get("T212_TICKER") or "").strip()
-    yahoo_symbol = os.environ.get("YAHOO_SYMBOL") or (t212_to_yahoo(t212_ticker) if t212_ticker else "")
-    label        = os.environ.get("SYMBOL_LABEL") or yahoo_symbol or t212_ticker
-    expected_isin = os.environ.get("EXPECTED_ISIN", "").strip()
+    t212_ticker  = (args.symbol or optional_env("T212_TICKER")).strip()
+    yahoo_symbol = optional_env("YAHOO_SYMBOL") or (t212_to_yahoo(t212_ticker) if t212_ticker else "")
+    label        = optional_env("SYMBOL_LABEL") or yahoo_symbol or t212_ticker
+    expected_isin = optional_env("EXPECTED_ISIN")
 
     # Strategy / order.
     strat_enabled = required_bool_env("STRAT_ENABLED")
@@ -220,7 +220,7 @@ def main() -> int:
     log(f"    mode         : {'STRATEGY (DCA+TP)' if strat_enabled else 'a single order'}")
     log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '⚠ REAL — REAL MONEY'}")
     log(f"    lansare      : checking until {label} is launched (already listed: immediately; IPO: at the open)")
-    log(f"    ntfy/email   : {os.environ.get('NTFY_TOPIC_TRADES') or '-'} / {os.environ.get('ALERT_TO_EMAIL') or '-'}")
+    log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 
     # --- PRE-FLIGHT: verify the instrument at STARTUP so configuration errors are caught
     #     immediately, not after waiting days for launch. Stop now on a wrong ISIN.

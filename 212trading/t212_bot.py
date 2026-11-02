@@ -35,8 +35,8 @@ from botcore import ensure_local_module_priority  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "listing_watcher", "strategy", "t212_client")
 try:
     from .ipo_common import (  # noqa: E402
-        load_t212_environment, log, parse_dotenv, single_instance,
-        required_env, required_float_env, required_bool_env, _parse_bool_flag,
+        bool_env, load_t212_environment, log, optional_env, parse_dotenv, single_instance,
+        required_env, required_float_env, required_bool_env,
     )
     from .ipo_notify import notify  # noqa: E402
     from .listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
@@ -44,8 +44,8 @@ try:
     from .t212_client import T212Client  # noqa: E402
 except ImportError:
     from ipo_common import (  # noqa: E402
-        load_t212_environment, log, parse_dotenv, single_instance,
-        required_env, required_float_env, required_bool_env, _parse_bool_flag,
+        bool_env, load_t212_environment, log, optional_env, parse_dotenv, single_instance,
+        required_env, required_float_env, required_bool_env,
     )
     from ipo_notify import notify  # noqa: E402
     from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
@@ -85,10 +85,10 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     ticker = required_env("T212_TICKER", cfg)
     label = required_env("SYMBOL_LABEL", cfg)
     yahoo = required_env("YAHOO_SYMBOL", cfg)
-    isin = (cfg.get("EXPECTED_ISIN") or "").strip()
+    isin = optional_env("EXPECTED_ISIN", env=cfg)
     strat_enabled = required_bool_env("STRAT_ENABLED", cfg)
     strat_dry = force_paper or not required_bool_env("STRAT_EXECUTE", cfg)
-    observe_only = _parse_bool_flag(cfg.get("T212_BOT_OBSERVE_ONLY") or os.environ.get("T212_BOT_OBSERVE_ONLY"), False)
+    observe_only = bool_env("T212_BOT_OBSERVE_ONLY", bool_env("T212_BOT_OBSERVE_ONLY", False), env=cfg)
     interval = required_float_env("POLL_SECONDS", cfg)
     if not (interval >= 30 and interval <= 86400):
         raise ValueError("POLL_SECONDS must be a finite number between 30 and 86400")
@@ -143,9 +143,9 @@ def main() -> int:
         log(f"=== {len(assets)} assets ===")
         for n, p in assets:
             c = parse_dotenv(p)
-            real = _parse_bool_flag(c.get("STRAT_EXECUTE"), False) and not args.paper
-            on = _parse_bool_flag(c.get("STRAT_ENABLED"), False)
-            log(f"  {n:<8} {c.get('T212_TICKER','?'):<14} "
+            real = bool_env("STRAT_EXECUTE", False, env=c) and not args.paper
+            on = bool_env("STRAT_ENABLED", False, env=c)
+            log(f"  {n:<8} {optional_env('T212_TICKER', '?', env=c):<14} "
                 f"{'STRAT' if on else 'OFF':<6} {'⚠ REAL' if real else 'PAPER'}")
         return 0
 

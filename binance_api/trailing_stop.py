@@ -33,7 +33,6 @@ SAFETY:
 
 from __future__ import annotations
 
-import argparse
 import os
 import statistics
 import sys
@@ -51,15 +50,14 @@ from order_retry import (
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     TrailingAdapterBase,
-    TrailingCore,
-    extract_rebuy_anchors,
     extract_short_trend_slope,
-    resolve_rebuy_bypass_guards,
+    load_trailing_common_env,
+    parse_trailing_cli_args,
     should_sell,
 )
 should_sell = should_sell  # Re-exported for test compatibility
-from botcore import (_parse_bool_flag, bounded_float, load_dotenv, log, required_bool_env, required_float_env,
-                     required_int_env, safe_float, safe_nonneg_float, safe_pos_float, single_instance)  # noqa: E402
+from botcore import (bounded_float, load_dotenv, log, required_bool_env, required_float_env,
+                     required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
 
 DEFAULT_STATE = cache_path("trailing_state.json")
@@ -90,27 +88,16 @@ _COST_BASIS_LOOKBACK_S = 120 * 24 * 3600
 TRAILING_ENABLED = required_bool_env("TRAILING_ENABLED")
 SELL_FRACTION = required_float_env("TRAILING_SELL_FRACTION")
 MIN_NOTIONAL_USD = 11.0
-CHECK_SECONDS = required_float_env("TRAILING_CHECK_SECONDS")
-
-# Re-buy after a crash stop-loss: the trailing component that sold with a bypass also
-# buys back with a bypass, avoiding the profit guard whose long window would block
-# re-entry. Trigger when price rebounds REBUY_BOUNCE_PCT% from the post-sale low,
-# confirming the fall has stopped before entry. One tranche is supported currently;
-# REBUY_TRANCHES is reserved for a future dip-DCA extension.
-REBUY_ENABLED = required_bool_env("TRAILING_REBUY_ENABLED")
-REBUY_BOUNCE_PCT = required_float_env("TRAILING_REBUY_BOUNCE_PCT")
+(
+    CHECK_SECONDS,
+    REBUY_ENABLED,
+    REBUY_BOUNCE_PCT,
+    REBUY_SKIP_IF_TREND_DOWN,
+    SELL_SKIP_IF_TREND_UP,
+    SELL_TREND_DEFER_MAX_SEC,
+    MIN_PROFIT_PCT,
+) = load_trailing_common_env("TRAILING_")
 REBUY_TRANCHES = required_int_env("TRAILING_REBUY_TRANCHES")
-# Trend filters read cache_short_trend through cacheManager. They act only on a
-# CLEAR opposing signal; neutral/unknown does not block, reverting to behavior
-# without a filter. Skip re-buy on a clear downtrend. Crash sells are unfiltered by
-# default so the circuit breaker remains reliable; enable the sell filter to avoid
-# selling while the instant trend is clearly up (anti-wick behavior).
-REBUY_SKIP_IF_TREND_DOWN = required_bool_env("TRAILING_REBUY_SKIP_IF_TREND_DOWN")
-SELL_SKIP_IF_TREND_UP = required_bool_env("TRAILING_SELL_SKIP_IF_TREND_UP")
-SELL_TREND_DEFER_MAX_SEC = required_float_env("TRAILING_SELL_TREND_DEFER_MAX_SEC")
-# Minimum profit before trailing activates (0 means immediate activation as before).
-# This prevents selling at a loss after a normal dip immediately following a purchase.
-MIN_PROFIT_PCT = required_float_env("TRAILING_MIN_PROFIT_PCT")
 # `trailing.rebuy = auto` follows a long-term trend: re-buy only while price is above
 # its N-day SMA. N = TRAILING_REBUY_TREND_DAYS (calendar days of DAILY closes). The
 # closed-candle average is cached per UTC day; the live comparison is never cached.
@@ -137,8 +124,6 @@ class TrailingStop(TrailingAdapterBase):
         self.api = api
         self.po = po
         self.sym = sym
-        self.log = log
-        self.enabled = _parse_bool_flag(enabled, TRAILING_ENABLED if enabled is None else False)
         self.sell_fraction = _finite(
             sell_fraction, name="TRAILING_SELL_FRACTION", minimum=0.0, maximum=1.0)
         min_profit_pct = _finite(
@@ -147,19 +132,23 @@ class TrailingStop(TrailingAdapterBase):
         _finite(REBUY_BOUNCE_PCT, name="TRAILING_REBUY_BOUNCE_PCT", minimum=0.0)
         if REBUY_TRANCHES != 1:
             raise ValueError("TRAILING_REBUY_TRANCHES currently supports only the value 1")
-        self.state_file = state_file
         self._balances = []
-        self._retry_counts = {}
         self._long_trend_cache = {}   # symbol -> (SMA, UTC day) for auto re-buy
-        self.core = TrailingCore(
-            self, log=log, enabled=self.enabled, state_file=state_file,
-            min_notional=MIN_NOTIONAL_USD, rebuy_enabled=REBUY_ENABLED,
+        self._init_adapter_core(
+            log=log,
+            enabled=enabled,
+            default_enabled=TRAILING_ENABLED if enabled is None else False,
+            state_file=state_file,
+            min_notional=MIN_NOTIONAL_USD,
+            rebuy_enabled=REBUY_ENABLED,
             rebuy_bounce_pct=REBUY_BOUNCE_PCT,
             rebuy_skip_if_trend_down=REBUY_SKIP_IF_TREND_DOWN,
             sell_skip_if_trend_up=SELL_SKIP_IF_TREND_UP,
             sell_trend_defer_max_sec=SELL_TREND_DEFER_MAX_SEC,
-            sell_fraction=self.sell_fraction, item_isolation=True,
-            min_profit_pct=min_profit_pct)
+            sell_fraction=self.sell_fraction,
+            item_isolation=True,
+            min_profit_pct=min_profit_pct,
+        )
         self.order_lifecycle = TrackedOrderLifecycle(
             self.po, provider_name="BINANCE", venue="Binance",
             missing_confirmations=1, retry_on_lookup_error=True,
@@ -379,7 +368,8 @@ class TrailingStop(TrailingAdapterBase):
     def price(self, pair: str):
         return safe_pos_float(self.api.get_current_price(pair), None)
 
-    def _submit_lifecycle_order(self, intent, persist, pair, side, price, qty, bypass_guards=None):
+    def _submit_lifecycle_order(self, intent, persist, pair, side, qty, price,
+                                kind="TRAIL", bypass_guards=None, market=False):
         """Submit through Instrument without losing its typed refusal state."""
         outcome_context = {}
         if bypass_guards is None:
@@ -402,79 +392,23 @@ class TrailingStop(TrailingAdapterBase):
             persist(None)
         return result
 
-    def execute_sell(self, key, asset, pair, qty, price, peak, trail, persist):
-        # July 30: use the single guarded proxy (self.po = market_api.api, .place()).
-        # force=True sells at MARKET for reliable crash execution.
-        # bypass_guards={"all"} bypasses profit/history/microstructure protection because this is a
-        # STOP-LOSS below the last buy; otherwise the guard would block it. Daily limits
-        # and cooldown remain active as before; the bypass skips only profit and weighting.
-        self._sync_retry_count_from_state(pair, "SELL", persist)
-        intent = self._order_intent(
-            "SELL", key, asset, pair, qty, price, anchor=peak, trail=trail)
-        result = self._submit_lifecycle_order(
-            intent, persist, pair, "SELL", price, qty, bypass_guards={"all"})
-        price_f = self._safe_float(price, 0.0)
-        peak_f = self._safe_float(peak, price_f)
-        if result.outcome == "refused":
-            self.log(
-                f"  🛑 [TRAIL] SELL REFUSED {pair} {qty} @ ~{price_f:.4f} "
-                f"({result.intent.get('refusal_reason')})")
-        else:
-            self.log(
-                f"  🛑 [TRAIL] SELL PENDING {pair} {qty} @ ~{price_f:.4f} "
-                f"(peak {peak_f:.4f}, -{trail}%, "
-                f"orderId={result.intent.get('order_id')})")
-        return result
-
-    def execute_rebuy(self, key, asset, pair, qty, price, rb, persist):
-        # Re-buy runs with force=True for reliable fill on bounce. When re-entering
-        # below sell_price, all guards are bypassed; at or above sell_price, only
-        # the historical math reference is bypassed while microstructure/AI guards remain active.
-        self._sync_retry_count_from_state(pair, "REBUY", persist)
-        price_f = safe_nonneg_float(price, 0.0)
-        anchor_val, sell_price_val = extract_rebuy_anchors(rb, price_f)
-        bypass_guards = resolve_rebuy_bypass_guards(price_f, sell_price_val)
-        intent = self._order_intent(
-            "REBUY", key, asset, pair, qty, price,
-            anchor=anchor_val,
-            sell_price=sell_price_val)
-        result = self._submit_lifecycle_order(
-            intent, persist, pair, "BUY", price, qty, bypass_guards=bypass_guards)
-        if result.outcome == "refused":
-            self.log(
-                f"  🟢 [TRAIL] RE-BUY REFUSED {pair} {qty} @ ~{price_f:.4f} "
-                f"({result.intent.get('refusal_reason')})")
-        else:
-            self.log(
-                f"  🟢 [TRAIL] RE-BUY PENDING {pair} {qty} @ ~{price_f:.4f} "
-                f"(orderId={result.intent.get('order_id')})")
-        return result
-
     def log_item_error(self, key, e) -> None:
         self.log(f"  ! [TRAIL] {key}: {e}")
 
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"
-        self.log(f"=== TRAILING STOP started — {mode} ===")
-        self.log("    coins/thresholds: " +
-                 ", ".join(f"{symbol}={trail}%" for symbol, _asset, _pair, trail in self.assets()))
-        while True:
-            try:
-                self.check_once()
-            except KeyboardInterrupt:
-                return
-            except Exception as e:  # noqa: BLE001
-                self.log(f"  ! [TRAIL] cycle error ({e}) — continuing")
-            time.sleep(CHECK_SECONDS)
+        self._run_trailing_loop(
+            CHECK_SECONDS,
+            [
+                f"=== TRAILING STOP started — {mode} ===",
+                "    coins/thresholds: "
+                + ", ".join(f"{symbol}={trail}%" for symbol, _asset, _pair, trail in self.assets()),
+            ],
+        )
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Per-instrument trailing stop (Binance).")
-    ap.add_argument("--once", action="store_true", help="one check, then exit")
-    ap.add_argument("--status", action="store_true", help="the current peaks and thresholds")
-    args = ap.parse_args()
-    if not args.status:
-        single_instance("binance_trailing")
+    args = parse_trailing_cli_args("Per-instrument trailing stop (Binance).", "binance_trailing")
 
     from binance_api import bapi as api
     from providers.market_api import api as po   # single guarded .place() proxy; formerly bapi_placeorder

@@ -17,7 +17,7 @@ if _ROOT not in sys.path:
 from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common import ...`)
     BUCHAREST, ET, HTTP_TIMEOUT, log, load_dotenv, parse_dotenv, float_env, int_env,
     http_get, http_post_json, http_request, fetch_public_json, single_instance, are_close, diff_percent,
-    defined_env, required_env, required_float_env, required_int_env, required_bool_env,
+    defined_env, optional_env, bool_env, required_env, required_float_env, required_int_env, required_bool_env,
     resolve_cli_arg, ensure_local_module_priority, load_local_module,
     _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_pos_int, safe_nonneg_int,
     exact_int, exact_pos_int, exact_nonneg_int,
