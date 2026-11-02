@@ -160,6 +160,39 @@ class GeminiClient:
         cid_out = raw_cid.strip() if isinstance(raw_cid, str) and raw_cid.strip() else None
         return (text_out or None), cid_out
 
+    @staticmethod
+    def _is_quota_or_credit_error(proc: Optional[subprocess.CompletedProcess]) -> bool:
+        """Return True when the CLI failed due to exhausted AI credits, quota, or rate limits."""
+        if proc is None:
+            return False
+        combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+        return any(
+            tok in combined
+            for tok in (
+                "credits balance is too low",
+                "resource_exhausted",
+                "quota exceeded",
+                "check quota",
+                "rate limit",
+                "too many requests",
+            )
+        )
+
+    @staticmethod
+    def _list_conversation_cids(bot_cli_base: str) -> set[str]:
+        """Return existing conversation IDs in ``<bot_cli_base>/conversations``."""
+        if not bot_cli_base or not isinstance(bot_cli_base, str):
+            return set()
+        conv_dir = os.path.join(bot_cli_base, "conversations")
+        try:
+            return {
+                fn[:-3]
+                for fn in os.listdir(conv_dir)
+                if fn.endswith(".db") and len(fn) > 3
+            }
+        except OSError:
+            return set()
+
     def query_text(
         self,
         prompt: str,
@@ -273,7 +306,12 @@ class GeminiClient:
                         )
                         continue
 
-                    if output is None and session.conversation_id and not conversation_id:
+                    if (
+                        output is None
+                        and session.conversation_id
+                        and not conversation_id
+                        and not self._is_quota_or_credit_error(proc)
+                    ):
                         # Runtime resilience: answer this call from a detached one-off thread.
                         logger.info(
                             "Resuming topic '%s' conversation %s failed with model %s; answering from a one-off thread.",
@@ -288,6 +326,8 @@ class GeminiClient:
                                     fallback_prompt = f"{effective_title}\n\n{fallback_body}" if effective_title else fallback_body
                             except Exception:
                                 pass
+                        pre_cids = self._list_conversation_cids(bot_cli_base) if not is_mocked else set()
+                        detached_cid = None
                         try:
                             proc = self._execute_cli(
                                 None, fallback_prompt, timeout_sec, model_candidate,
@@ -298,6 +338,11 @@ class GeminiClient:
                                 self._remove_detached_thread(bot_cli_base, detached_cid)
                         except Exception as exc:
                             logger.warning("One-off thread attempt failed for model %s: %s", model_candidate, exc)
+                        finally:
+                            if not is_mocked and not detached_cid:
+                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_cids:
+                                    if orphan_cid != session.conversation_id:
+                                        self._remove_detached_thread(bot_cli_base, orphan_cid)
                         turn_cid = None
 
                     if output:

@@ -884,6 +884,42 @@ class TestEnrichedPretradeTelemetry:
             res2 = cli_client.query_text("sample prompt 2")
             assert res2 == "success from gpt-oss-120b-medium"
             assert attempted_models == ["failing-model", "gemini-3.8-flash-low", "gpt-oss-120b-medium"]
+
+            # 4. Topic session with credit/quota exhaustion skips redundant one-off retry on the same model
+            from unittest.mock import patch
+            from orchestratorOS.agy.topics import TopicSession
+            import intelligence.sentiment.gemini_client as gc_mod
+
+            cli_invocations = []
+            def mock_subproc_credit(cmd, **kwargs):
+                m_idx = cmd.index("--model") + 1
+                used_m = cmd[m_idx]
+                has_conv = "--conversation" in cmd
+                cli_invocations.append((used_m, has_conv))
+                if used_m in ("failing-model", "gemini-3.8-flash-low"):
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        returncode=3,
+                        stdout="",
+                        stderr='error: Your AI credits balance is too low to continue.\nAGY_ERROR: {"status":"RESOURCE_EXHAUSTED"}',
+                    )
+                import json
+                return subprocess.CompletedProcess(
+                    cmd,
+                    returncode=0,
+                    stdout=json.dumps({"response": f"success from {used_m}", "conversation_id": "cid-topic-1"}),
+                )
+
+            subprocess.run = MagicMock(side_effect=mock_subproc_credit)
+            with patch.object(gc_mod, "prepare_topic_session", return_value=TopicSession("cid-topic-1", "", False)), \
+                 patch.object(gc_mod, "record_topic_turn"):
+                res3 = cli_client.query_text("sample prompt 3", topic_key="auto_cryptotrade_executor")
+            assert res3 == "success from gpt-oss-120b-medium"
+            assert cli_invocations == [
+                ("failing-model", True),
+                ("gemini-3.8-flash-low", True),
+                ("gpt-oss-120b-medium", True),
+            ]
         finally:
             subprocess.run = orig_run
 
