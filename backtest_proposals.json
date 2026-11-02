@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-01T14:09:33",
+    "ts": "2026-11-02T02:08:08",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -9,12 +9,12 @@
     "winner_value": 2.3,
     "margin_vs_current": {
       "half1": 108.2,
-      "half2": 800.0
+      "half2": 807.57
     },
-    "dev_commit": "80ba6e8c"
+    "dev_commit": "06010302"
   },
   {
-    "ts": "2026-11-01T14:09:33",
+    "ts": "2026-11-02T02:08:08",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -23,50 +23,22 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 51.76,
-      "half2": 402.63
+      "half2": 400.87
     },
-    "dev_commit": "80ba6e8c"
+    "dev_commit": "06010302"
   },
   {
-    "ts": "2026-11-01T14:09:33",
-    "full_key": "BINANCE_TAO.mt.lost",
+    "ts": "2026-11-02T02:08:08",
+    "full_key": "BINANCE_TAO.mt.maxage_days",
     "section": "BINANCE_TAO",
-    "key": "mt.lost",
-    "symbol": "TAOUSDC",
-    "current_on_dev": 5.875,
-    "winner_value": 4.8,
-    "margin_vs_current": {
-      "half1": 8.86,
-      "half2": 270.63
-    },
-    "dev_commit": "80ba6e8c"
-  },
-  {
-    "ts": "2026-11-01T14:09:33",
-    "full_key": "BINANCE_ARB.mt.lost",
-    "section": "BINANCE_ARB",
-    "key": "mt.lost",
-    "symbol": "ARBUSDC",
-    "current_on_dev": 3.7188,
-    "winner_value": 3.5,
-    "margin_vs_current": {
-      "half1": 3.45,
-      "half2": 6.87
-    },
-    "dev_commit": "80ba6e8c"
-  },
-  {
-    "ts": "2026-11-01T14:09:33",
-    "full_key": "BINANCE_ARB.mt.maxage_days",
-    "section": "BINANCE_ARB",
     "key": "mt.maxage_days",
-    "symbol": "ARBUSDC",
-    "current_on_dev": 9.5,
-    "winner_value": 17.0,
+    "symbol": "TAOUSDC",
+    "current_on_dev": 13.5,
+    "winner_value": 10.0,
     "margin_vs_current": {
-      "half1": 181.92,
-      "half2": 43.08
+      "half1": 145.43,
+      "half2": 693.53
     },
-    "dev_commit": "80ba6e8c"
+    "dev_commit": "06010302"
   }
 ]
