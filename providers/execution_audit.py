@@ -1072,9 +1072,11 @@ def summarize_recent_ai_intents(
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
         )
+        det_sym = str(det.get("symbol") or "").strip().upper()
         sym_side_key = (
-            str(det.get("venue") or "").strip().lower(),
-            str(det.get("symbol") or "").strip().upper(),
+            normalize_venue_name(det.get("venue")),
+            canonical_base_asset(det_sym) or det_sym,
+            compatible_quote_suffixes(det_sym),
             str(det.get("side") or "").strip().upper(),
         )
         if (
@@ -1845,7 +1847,7 @@ def find_duplicate_ai_open_limit_order(
                 continue
             oo_qty = extract_orig_qty(oo)
             oo_notional = oo_px * oo_qty
-            if oo_notional <= 0 or abs(oo_notional - notional_usd) / max(notional_usd, oo_notional) > 0.05:
+            if oo_notional <= 0 or abs(oo_notional - notional_usd) > max(1.0, 0.05 * max(notional_usd, oo_notional)):
                 continue
             oid = extract_order_id(oo, default="")
             if oid:

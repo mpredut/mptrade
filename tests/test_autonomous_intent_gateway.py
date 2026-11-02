@@ -1436,6 +1436,56 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
         assert ladder_rec["status"] == "EXECUTED"
         hl_inst.place.assert_called_once()
 
+    # Lot-size rounded small order ($10.00 requested -> 0.11 * $84.00 = $9.24 resting) is also recognized as duplicate
+    from providers.execution_audit import find_duplicate_ai_open_limit_order, summarize_recent_ai_intents, extract_intent_notional
+    hl_inst.open_orders.return_value = [
+        {
+            "oid": 592714999999,
+            "side": "B",
+            "limitPx": "84.00",
+            "sz": "0.11",
+            "origSz": "0.11",
+            "cloid": "0x2708f6bd78122f4b86a9ba9643d508d8",
+        }
+    ]
+    assert find_duplicate_ai_open_limit_order(
+        hl_inst, "BUY", 84.00, 10.00, known_ai_order_ids={"592714999999"}
+    ) == "592714999999"
+
+    # Superseded canceled intent on quote-compatible alias (HYPEUSDC vs HYPEUSD) is deduplicated in summarize_recent_ai_intents
+    alias_intents = [
+        {
+            "intent_id": "krk_old_canceled",
+            "timestamp": 1793660000.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 80.0,
+            "suggested_notional_usd": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"ordertxid": "KRK_OLD_CANC", "status": "CANCELED", "vol_exec": "0.0"},
+        },
+        {
+            "intent_id": "krk_new_resting",
+            "timestamp": 1793660300.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 81.0,
+            "suggested_notional_usd": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"ordertxid": "KRK_NEW_OPEN", "status": "OPEN", "vol_exec": "0.0"},
+        },
+    ]
+    sum_alias = summarize_recent_ai_intents(
+        alias_intents, "crypto", 1793660400.0, extract_intent_notional,
+        open_orders=[{"venue": "kraken", "symbol": "HYPEUSD", "side": "BUY", "order_id": "KRK_NEW_OPEN", "price": 81.0}],
+    )
+    assert [x.get("order_id") for x in sum_alias] == ["KRK_NEW_OPEN"]
+
+
 
 def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(tmp_path):
     from providers.execution_audit import (

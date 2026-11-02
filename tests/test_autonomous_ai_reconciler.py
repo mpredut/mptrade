@@ -7651,14 +7651,14 @@ def test_cross_market_telemetry_sparse_7d_t212_audit_submit_ts_and_no_qty_format
 
 
 def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_resource_watchdog_state(tmp_path):
-    from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+    from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files, read_json_recovering
 
     cache_dir = tmp_path / "cachedb"
     hb_dir = cache_dir / "system" / "heartbeat"
     hb_dir.mkdir(parents=True, exist_ok=True)
     now_ts = 1_800_000_000.0
 
-    # 1. JSON heartbeats + mtime-touched rtrade.heartbeat in subdomain directory
+    # 1. JSON heartbeats + mtime-touched rtrade.heartbeat in subdomain directory (including explicit read_json_recovering)
     (hb_dir / "macro_analyzer.heartbeat").write_text(json.dumps({"status": "alive", "ts": now_ts}), encoding="utf-8")
     rtrade_hb = hb_dir / "rtrade.heartbeat"
     rtrade_hb.write_text("", encoding="utf-8")
@@ -7669,7 +7669,7 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
     rw_state.write_text(json.dumps({"ts": now_ts}), encoding="utf-8")
     os.utime(rw_state, (now_ts - 60.0, now_ts - 60.0))
 
-    active_hb, state_files = harvest_heartbeats_and_state_files(str(cache_dir), str(tmp_path), now_ts)
+    active_hb, state_files = harvest_heartbeats_and_state_files(str(cache_dir), str(tmp_path), now_ts, read_json_recovering)
     assert "macro_analyzer.heartbeat" in active_hb
     assert "rtrade.heartbeat" in active_hb
     assert active_hb["rtrade.heartbeat"]["status"] == "alive"

@@ -998,7 +998,7 @@ def harvest_heartbeats_and_state_files(
         if isinstance(data, dict) and data:
             active_heartbeats[hb_name] = data
             continue
-        if hb_name == "rtrade.heartbeat" and read_json_fn is None:
+        if hb_name == "rtrade.heartbeat" and (read_json_fn is None or read_json_fn is read_json_recovering):
             hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
             if os.path.exists(hb_resolved):
                 try:
