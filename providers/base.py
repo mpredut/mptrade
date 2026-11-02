@@ -76,6 +76,28 @@ _FEE_KEYS = ("commission", "fee", "filled_fee", "n")
 _FEE_ASSET_KEYS = ("commissionAsset", "feeToken", "fee_asset", "feeAsset", "N")
 
 
+def _first_mapped(mapping: Any, keys: tuple[str, ...], parser: Any, default: Any = None) -> Any:
+    """Return the first non-None parsed value from ``mapping`` across ``keys``."""
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            val = parser(mapping[key])
+            if val is not None:
+                return val
+    return default
+
+
+def _pos_abs_float(value: Any) -> Optional[float]:
+    val = abs(safe_float(value, default=0.0))
+    return val if val > 0.0 else None
+
+
+def _nonneg_abs_float(value: Any) -> Optional[float]:
+    val = safe_float(value, default=None)
+    return abs(val) if val is not None else None
+
+
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
     """Normalize a raw timestamp (in seconds or milliseconds) to integer milliseconds.
 
@@ -89,37 +111,24 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
         return default
     if numeric == 0.0:
         return 0
-    if 1_000_000_000.0 <= numeric < 100_000_000_000.0:
-        return int(round(numeric * 1000.0))
-    if 0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer():
+    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
+        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
+    ):
         return int(round(numeric * 1000.0))
     return int(round(numeric))
 
 
 def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[int]:
     """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
-    if not isinstance(order, dict):
-        return default
-    for key in _TIMESTAMP_KEYS:
-        if key in order and order[key] is not None:
-            normalized = normalize_timestamp_ms(order[key], default=None)
-            if normalized is not None:
-                return normalized
-    return default
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
 
 
 def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
     """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
-    if not isinstance(order, dict):
+    numeric = _first_mapped(order, _TIMESTAMP_KEYS, lambda v: safe_nonneg_float(v, default=None))
+    if numeric is None:
         return default
-    for key in _TIMESTAMP_KEYS:
-        if key in order and order[key] is not None:
-            numeric = safe_nonneg_float(order[key], default=None)
-            if numeric is not None:
-                if numeric >= 100_000_000_000.0:
-                    return numeric / 1000.0
-                return numeric
-    return default
+    return numeric / 1000.0 if numeric >= 100_000_000_000.0 else numeric
 
 
 def clean_order_id(val: Any) -> Optional[str]:
@@ -146,9 +155,7 @@ def clean_order_id(val: Any) -> Optional[str]:
         text = text[:-2]
     if text in {"0", "+0"}:
         return None
-    if text.startswith("+") and text[1:].isdigit():
-        text = text[1:]
-    return text
+    return text[1:] if text.startswith("+") and text[1:].isdigit() else text
 
 
 _clean_single_order_id = clean_order_id
@@ -172,12 +179,7 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
         cleaned = clean_order_id(getattr(order, "order_id", None))
         return cleaned if cleaned is not None else default
     if isinstance(order, dict):
-        for key in _ORDER_ID_KEYS:
-            if key in order:
-                cleaned = extract_order_id(order[key])
-                if cleaned is not None:
-                    return cleaned
-        return default
+        return _first_mapped(order, _ORDER_ID_KEYS, extract_order_id, default)
     cleaned = clean_order_id(order)
     return cleaned if cleaned is not None else default
 
@@ -196,47 +198,36 @@ def normalize_side(side: Any) -> str:
 
 def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bool:
     """Return True when any market/force flag in args or kwargs is truthy."""
-    return (
-        _parse_bool_flag(force, False)
-        or _parse_bool_flag(market, False)
-        or _parse_bool_flag(kwargs.get("market", False), False)
-        or _parse_bool_flag(kwargs.get("force", False), False)
-    )
+    return any(_parse_bool_flag(v, False) for v in (force, market, kwargs.get("market"), kwargs.get("force")))
 
 
 def extract_order_side(order: Any) -> str:
     """Extract and normalize order side (``'BUY'`` or ``'SELL'``) from any venue shape."""
     if not isinstance(order, dict):
         return ""
-    for k in ("side", "S", "dir"):
-        s_norm = normalize_side(order.get(k))
-        if s_norm:
-            return s_norm
-    for raw_type in (
-        order.get("type"),
-        order["descr"].get("type") if isinstance(order.get("descr"), dict) else None,
-    ):
+    s_norm = _first_mapped(order, ("side", "S", "dir"), lambda v: normalize_side(v) or None)
+    if s_norm:
+        return s_norm
+    descr = order.get("descr")
+    for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
         t_norm = normalize_side(raw_type)
         if t_norm in ("BUY", "SELL"):
             return t_norm
-    if "isBuyer" in order and order.get("isBuyer") is not None:
-        raw_buyer = order["isBuyer"]
+    raw_buyer = order.get("isBuyer")
+    if raw_buyer is not None:
         parsed_b = _parse_bool_flag(raw_buyer, None)
         if parsed_b is not None:
             return "BUY" if parsed_b else "SELL"
         if isinstance(raw_buyer, str):
             b_norm = raw_buyer.strip().lower()
-            if b_norm in ("b", "buy"):
-                return "BUY"
-            if b_norm in ("s", "sell"):
-                return "SELL"
+            if b_norm in ("b", "buy", "s", "sell"):
+                return "BUY" if b_norm.startswith("b") else "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         sq = safe_float(order.get(sq_key), default=0.0)
-        if sq != 0.0:
-            if sq < 0.0:
-                return "SELL"
-            if sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order:
-                return "BUY"
+        if sq < 0.0:
+            return "SELL"
+        if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order):
+            return "BUY"
     return ""
 
 
@@ -244,11 +235,9 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
     """Extract order/fill price from any venue shape."""
     if not isinstance(order, dict):
         return default
-    for key in _PRICE_KEYS:
-        if key in order and order[key] is not None:
-            val = safe_pos_float(order[key], default=None)
-            if val is not None:
-                return val
+    val = _first_mapped(order, _PRICE_KEYS, lambda v: safe_pos_float(v, default=None))
+    if val is not None:
+        return val
     descr = order.get("descr")
     if isinstance(descr, dict):
         val = safe_pos_float(descr.get("price"), default=None)
@@ -267,9 +256,9 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         ("Z", "z"),
     ):
         if cost_key in order and exec_key in order:
-            cost_val = abs(safe_float(order.get(cost_key), default=0.0))
-            exec_val = abs(safe_float(order.get(exec_key), default=0.0))
-            if cost_val > 0 and exec_val > 0:
+            cost_val = _pos_abs_float(order.get(cost_key))
+            exec_val = _pos_abs_float(order.get(exec_key))
+            if cost_val and exec_val:
                 res = safe_pos_float(cost_val / exec_val, default=None)
                 if res is not None:
                     return res
@@ -278,13 +267,12 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
         total_quote = 0.0
         total_qty = 0.0
         for f in fills:
-            if not isinstance(f, dict):
-                continue
-            f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
-            f_qty = abs(safe_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))), default=0.0))
-            if f_px is not None and f_qty > 0:
-                total_quote += f_px * f_qty
-                total_qty += f_qty
+            if isinstance(f, dict):
+                f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
+                f_qty = _pos_abs_float(f.get("qty", f.get("quantity", f.get("sz", 0.0))))
+                if f_px is not None and f_qty is not None:
+                    total_quote += f_px * f_qty
+                    total_qty += f_qty
         if total_qty > 0:
             res = safe_pos_float(total_quote / total_qty, default=None)
             if res is not None:
@@ -299,37 +287,25 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
 
 def extract_order_qty(order: Any, default: float = 0.0) -> float:
     """Extract order/fill quantity from any venue shape."""
-    if not isinstance(order, dict):
-        return default
-    for key in _QTY_KEYS:
-        if key in order and order[key] is not None:
-            val = abs(safe_float(order[key], default=0.0))
-            if val > 0:
-                return val
-    return default
+    return _first_mapped(order, _QTY_KEYS, _pos_abs_float, default)
 
 
 def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     """Extract executed/filled quantity without falling back to origQty on unfilled/resting orders."""
     if not isinstance(order, dict):
         return default
-    for key in _EXEC_QTY_KEYS:
-        if key in order and order[key] is not None:
-            val = safe_float(order[key], default=None)
-            if val is not None:
-                return abs(val)
+    val = _first_mapped(order, _EXEC_QTY_KEYS, _nonneg_abs_float)
+    if val is not None:
+        return val
     filled_sub = order.get("filled")
-    if isinstance(filled_sub, dict):
-        for key in ("totalSz", "sz", "qty", *_EXEC_QTY_KEYS):
-            if key in filled_sub and filled_sub[key] is not None:
-                val = safe_float(filled_sub[key], default=None)
-                if val is not None:
-                    return abs(val)
+    val = _first_mapped(filled_sub, ("totalSz", "sz", "qty", *_EXEC_QTY_KEYS), _nonneg_abs_float)
+    if val is not None:
+        return val
     if "origSz" in order and "sz" in order:
-        orig_sz = safe_float(order.get("origSz"), default=None)
-        rem_sz = safe_float(order.get("sz"), default=None)
+        orig_sz = _nonneg_abs_float(order.get("origSz"))
+        rem_sz = _nonneg_abs_float(order.get("sz"))
         if orig_sz is not None and rem_sz is not None:
-            return round(max(0.0, abs(orig_sz) - abs(rem_sz)), 8)
+            return round(max(0.0, orig_sz - rem_sz), 8)
     msg_str = str(order.get("msg") or "").strip()
     if msg_str.lower() == "resting":
         return 0.0
@@ -351,18 +327,14 @@ def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[fl
     ``PARTIALLY_FILLED`` order never overwrites the total order quantity with
     the partial fill quantity.
     """
-    if order is None or isinstance(order, bool):
-        return default
     if hasattr(order, "native") and hasattr(order, "state"):
         order = getattr(order, "native", None)
-        if order is None or isinstance(order, bool):
-            return default
+    if order is None or isinstance(order, bool):
+        return default
     for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
-        raw = obj_attr(order, key)
-        if raw is not None:
-            val = abs(safe_float(raw, default=0.0))
-            if val > 0:
-                return val
+        val = _pos_abs_float(obj_attr(order, key))
+        if val is not None:
+            return val
     return default
 
 
@@ -374,19 +346,12 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     if rem_f is not None:
         return rem_f
     if "origSz" in order and "sz" in order and not any(k in order for k in _EXEC_QTY_KEYS):
-        sz_f = safe_float(order.get("sz"), default=None)
+        sz_f = _nonneg_abs_float(order.get("sz"))
         if sz_f is not None:
-            return abs(sz_f)
+            return sz_f
     orig = extract_orig_qty(order, default=0.0) or 0.0
     if orig > 0:
-        exec_q = next(
-            (
-                abs(vf)
-                for key in _EXEC_QTY_KEYS
-                if key in order and (vf := safe_float(order.get(key), default=0.0)) != 0.0
-            ),
-            0.0,
-        )
+        exec_q = _first_mapped(order, _EXEC_QTY_KEYS, _pos_abs_float, 0.0)
         return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
 
@@ -406,26 +371,14 @@ def extract_order_fee(
     """
     if not isinstance(order, dict):
         return None
-    fee = next(
-        (
-            cand_f
-            for key in _FEE_KEYS
-            if key in order and (cand_f := safe_nonneg_float(order[key], default=None)) is not None
-        ),
-        None,
-    )
+    fee = _first_mapped(order, _FEE_KEYS, lambda v: safe_nonneg_float(v, default=None))
     if fee is None:
         return None
 
-    fee_asset = ""
-    has_asset_key = False
-    for key in _FEE_ASSET_KEYS:
-        if key in order:
-            has_asset_key = True
-            val = order[key]
-            if isinstance(val, str) and val.strip():
-                fee_asset = val.strip().upper()
-                break
+    has_asset_key = any(k in order for k in _FEE_ASSET_KEYS)
+    fee_asset = _first_mapped(
+        order, _FEE_ASSET_KEYS, lambda v: v.strip().upper() if isinstance(v, str) and v.strip() else None, ""
+    )
 
     req_explicit = _parse_bool_flag(require_explicit_asset, False)
     if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):
@@ -493,25 +446,12 @@ _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
     ("SD", "trailing"),
 )
 _GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
-_CLIENT_ORDER_ID_KEYS = (
-    "clientOrderId",
-    "client_order_id",
-    "cloid",
-    "cl_ord_id",
-    "userref",
-)
+_CLIENT_ORDER_ID_KEYS = ("clientOrderId", "client_order_id", "cloid", "cl_ord_id", "userref")
 
 
 def extract_client_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
     """Extract and normalize client order ID or user reference from any venue shape."""
-    if not isinstance(order, dict):
-        return default
-    for key in _CLIENT_ORDER_ID_KEYS:
-        val = order.get(key)
-        cleaned = clean_order_id(val)
-        if cleaned is not None:
-            return cleaned
-    return default
+    return _first_mapped(order, _CLIENT_ORDER_ID_KEYS, clean_order_id, default)
 
 
 def _extract_order_cid(order: dict) -> str:
@@ -536,6 +476,11 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     return "BOT"
 
 
+def _first_nonempty_str(mapping: dict, keys: tuple[str, ...], *, lower: bool = False) -> Optional[str]:
+    val = _first_mapped(mapping, keys, lambda v: str(v).strip() or None)
+    return val.lower() if (val and lower) else val
+
+
 def resolve_order_origin(
     order: Any,
     known_ai_order_ids: Optional[set[str]] = None,
@@ -546,18 +491,8 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    mod = str(order.get("module") or order.get("bot") or order.get("caller") or "").strip().lower() or None
-    rule = (
-        str(
-            order.get("rule")
-            or order.get("trigger_rule")
-            or order.get("kind")
-            or order.get("role")
-            or order.get("motivation")
-            or ""
-        ).strip()
-        or None
-    )
+    mod = _first_nonempty_str(order, ("module", "bot", "caller"), lower=True)
+    rule = _first_nonempty_str(order, ("rule", "trigger_rule", "kind", "role", "motivation"))
     oid = extract_order_id(order, default="")
     raw_cid = _extract_order_cid(order)
 
@@ -565,22 +500,17 @@ def resolve_order_origin(
         for lookup_key in (str(oid) if oid else "", raw_cid):
             if lookup_key and lookup_key in audit_origin_map:
                 a_mod, a_rule = audit_origin_map[lookup_key]
-                if not mod and a_mod:
-                    mod = a_mod
-                if not rule and a_rule:
-                    rule = a_rule
+                mod = mod or a_mod
+                rule = rule or a_rule
 
     if raw_cid:
         cid_up = raw_cid.upper()
         for pfx, bot_name in _BOT_CID_PREFIX_MODULES:
             if cid_up.startswith(f"{pfx}_") or cid_up == pfx or (pfx in ("AGS", "AGB") and cid_up.startswith(pfx)):
-                if not mod:
-                    mod = bot_name
+                mod = mod or bot_name
                 if not rule:
-                    if pfx == "AGS":
-                        rule = "SL_PROTECT"
-                    elif pfx == "AGB":
-                        rule = "BUY_TIER"
+                    if pfx in ("AGS", "AGB"):
+                        rule = "SL_PROTECT" if pfx == "AGS" else "BUY_TIER"
                     else:
                         rem = raw_cid[len(pfx) :].lstrip("_-")
                         tokens = [t for t in re.split(r"[_-]+", rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
@@ -597,11 +527,7 @@ def format_actor_tag(actor: Optional[str], module: Optional[str] = None, rule: O
     act_u = str(actor or "").strip().upper()
     if act_u != "BOT":
         return act_u or "BOT"
-    parts: list[str] = []
-    if module:
-        parts.append(f"module={module}")
-    if rule:
-        parts.append(f"rule={rule}")
+    parts = [f"{k}={v}" for k, v in (("module", module), ("rule", rule)) if v]
     return f"BOT({', '.join(parts)})" if parts else "BOT"
 
 
@@ -629,12 +555,11 @@ def normalize_open_order(
     rem_f = extract_remaining_qty(order, default=max(0.0, orig_f - exec_f) if orig_f > 0 else 0.0)
     qty_f = rem_f if rem_f > 0 else orig_f
     raw_status = str(order.get("status") or "").strip().upper()
-    if exec_f > 0 and rem_f > 0:
-        norm_status = "PARTIALLY_FILLED"
-    elif raw_status in ("OPEN", "PENDING", "WORKING", "RESTING", ""):
-        norm_status = "NEW"
-    else:
-        norm_status = raw_status
+    norm_status = (
+        "PARTIALLY_FILLED"
+        if (exec_f > 0 and rem_f > 0)
+        else ("NEW" if raw_status in ("OPEN", "PENDING", "WORKING", "RESTING", "") else raw_status)
+    )
     descr = order.get("descr") if isinstance(order.get("descr"), dict) else {}
     raw_otype = (
         order.get("order_type")
@@ -707,12 +632,7 @@ def aggregate_fills_by_order_id(
     for r in rows:
         if not isinstance(r, dict):
             continue
-        parent_oid = None
-        for k in _PARENT_ORDER_ID_KEYS:
-            cleaned_oid = clean_order_id(r.get(k))
-            if cleaned_oid is not None:
-                parent_oid = cleaned_oid
-                break
+        parent_oid = _first_mapped(r, _PARENT_ORDER_ID_KEYS, clean_order_id)
         norm = normalize_order(r)
         ts_ms = norm["timestamp"]
         if cutoff_ms is not None:
@@ -750,22 +670,18 @@ def aggregate_fills_by_order_id(
                     g["timestamp"] = ts_val
         else:
             out.append(norm)
-    result: List[dict] = []
-    for item in out:
-        if "cost" in item:
-            total_qty = item["qty"]
-            cost_qty = item.get("cost_qty", total_qty)
-            vwap = (item["cost"] / cost_qty) if cost_qty > 0 else item["fallback_price"]
-            result.append({
-                "orderId": item["orderId"],
-                "side": item["side"],
-                "price": vwap,
-                "qty": total_qty,
-                "timestamp": item["timestamp"],
-            })
-        else:
-            result.append(item)
-    return result
+    return [
+        {
+            "orderId": item["orderId"],
+            "side": item["side"],
+            "price": (item["cost"] / cost_qty) if (cost_qty := item.get("cost_qty", item["qty"])) > 0 else item["fallback_price"],
+            "qty": item["qty"],
+            "timestamp": item["timestamp"],
+        }
+        if "cost" in item
+        else item
+        for item in out
+    ]
 
 
 # Compatibility alias retained for existing internal and external imports.
@@ -1062,19 +978,24 @@ class MarketDataProvider(ABC):
         """Return normalized pair precision and limits, or None if unavailable."""
         return None
 
+    def _pair_precision_attr(self, symbol: str, attr: str, default: Any = None) -> Any:
+        try:
+            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
+            if pp is not None:
+                return getattr(pp, attr, default)
+        except Exception:
+            pass
+        return default
+
     def round_quantity(self, symbol: str, qty: float) -> float:
         """Round or floor quantity to venue volume precision."""
         qty_f = safe_pos_float(qty, default=None)
         if qty_f is None:
             return 0.0
-        try:
-            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec = exact_nonneg_int(getattr(pp, "volume_decimals", None) if pp is not None else None, default=None)
-            if dec is not None:
-                factor = 10 ** min(dec, 18)
-                return math.floor(qty_f * factor + 1e-12) / factor
-        except Exception:
-            pass
+        dec = exact_nonneg_int(self._pair_precision_attr(symbol, "volume_decimals"), default=None)
+        if dec is not None:
+            factor = 10 ** min(dec, 18)
+            return math.floor(qty_f * factor + 1e-12) / factor
         return qty_f
 
     round_amount = round_quantity
@@ -1084,24 +1005,12 @@ class MarketDataProvider(ABC):
         price_f = safe_pos_float(price, default=None)
         if price_f is None:
             return 0.0
-        try:
-            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            dec = exact_nonneg_int(getattr(pp, "price_decimals", None) if pp is not None else None, default=None)
-            if dec is not None:
-                return round(price_f, min(dec, 18))
-        except Exception:
-            pass
-        return price_f
+        dec = exact_nonneg_int(self._pair_precision_attr(symbol, "price_decimals"), default=None)
+        return round(price_f, min(dec, 18)) if dec is not None else price_f
 
     def min_order_qty(self, symbol: str) -> float:
         """Return venue minimum order quantity; 0.0 means no known minimum."""
-        try:
-            pp = self.pair_precision(symbol) if hasattr(self, "pair_precision") else None
-            if pp is not None:
-                return safe_pos_float(getattr(pp, "order_min", 0.0), default=0.0)
-        except Exception:
-            pass
-        return 0.0
+        return safe_pos_float(self._pair_precision_attr(symbol, "order_min", 0.0), default=0.0)
 
     def order_filter_refusal(self, symbol: str, side: str, price: float,
                              qty: float, *, market: bool = False,
@@ -1122,9 +1031,7 @@ class MarketDataProvider(ABC):
     def policy_cap_quantity(self, symbol: str, side: str, price: float,
                             qty: float, available_qty: float, **kwargs) -> float:
         import order_guard
-        return order_guard.weight_limit(
-            self, symbol, side, price, qty,
-            available_qty=available_qty)
+        return order_guard.weight_limit(self, symbol, side, price, qty, available_qty=available_qty)
 
     def fee_cap_quantity(self, symbol: str, side: str, price: float,
                          available_qty: float) -> float:
@@ -1162,35 +1069,24 @@ class MarketDataProvider(ABC):
             )
             win_f = safe_pos_float(win_cfg, default=None)
             window_s = win_f if win_f is not None else (sb_f if sb_f is not None else default_safeback_sec)
-        wr_kwargs = {}
-        if reference_mode is not None:
-            wr_kwargs["reference_mode"] = reference_mode
-        if module is not None:
-            wr_kwargs["module"] = module
+        wr_kwargs = {k: v for k, v in (("reference_mode", reference_mode), ("module", module)) if v is not None}
         return order_guard.window_reference(self, symbol, side, window_s, **wr_kwargs)
 
     def last_opposite_fill(self, symbol: str, order_type: str,
                            since_s: float = 90 * 24 * 3600) -> Optional[float]:
         ot_norm = normalize_side(order_type)
-        if ot_norm == "BUY":
-            opposite = "SELL"
-        elif ot_norm == "SELL":
-            opposite = "BUY"
-        else:
+        if ot_norm not in ("BUY", "SELL"):
             return None
+        opposite = "SELL" if ot_norm == "BUY" else "BUY"
         eff_since_s = safe_nonneg_float(since_s, default=90.0 * 24.0 * 3600.0)
         fills = self.get_orders(symbol, opposite, eff_since_s)
         if fills is None:
             raise ProviderError(f"last_opposite_fill({symbol}): failed to read order history")
-        valid_fills = [
-            order for order in fills
-            if isinstance(order, dict) and extract_order_price(order, default=0.0) > 0.0
-        ]
+        valid_fills = [o for o in fills if isinstance(o, dict) and extract_order_price(o, default=0.0) > 0.0]
         if not valid_fills:
             return None
         latest = max(valid_fills, key=lambda order: extract_timestamp_ms(order, default=0) or 0)
-        price = extract_order_price(latest)
-        return price or None
+        return extract_order_price(latest) or None
 
     def ohlc_closes(self, symbol: str, interval_min: int) -> list:
         """Return completed-bar closing prices from closed interval series."""
