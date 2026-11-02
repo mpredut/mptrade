@@ -116,6 +116,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "smart_stop_loss_state.json",
             "rtrade_pairs_state.json",
             "autonomous_trade_intents_state.json",
+            "venue_balances_state.json",
         ),
         "prefixes": (
             "assetguardian_state",
@@ -124,6 +125,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "trailing_state.",
             "smart_stop_loss_state.",
             "autonomous_trade_intents",
+            "venue_balances_state",
         ),
         "suffixes": ("_state.json",),
     },

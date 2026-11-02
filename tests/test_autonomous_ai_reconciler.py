@@ -7138,5 +7138,202 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert 'next_high_impact_event="US CPI / PPI / NFP / Jobless Claims / Retail Sales (08:30 EST Release) at 15:30 EET in 10m"' in sec1_text
 
 
+def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_path):
+    """Verify open_orders/positions cache fallback, verified_open_venues guard against false CANCELED_OR_EXPIRED,
+    same-symbol BUY+SELL resting order preservation, and Hyperliquid HYPEUSDC seeding when inst_map fails."""
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        enrich_24h_and_microstructure,
+        harvest_tradable_positions_and_orders,
+    )
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        summarize_recent_ai_intents,
+    )
+
+    now_ts = 1793631619.0
+    prices_and_trends = {
+        "BTCUSDC": {"price": 76867.99, "trend": 0, "growth_coefficient": 0.0},
+        "TAOUSDC": {"price": 225.70, "trend": 0, "growth_coefficient": 0.0},
+        "HYPEUSD": {"price": 84.33, "trend": 0, "growth_coefficient": 0.0},
+        "HYPEUSDC": {"price": 84.38, "trend": 0, "growth_coefficient": 0.0},
+    }
+
+    bin_btc = MagicMock(symbol="BTCUSDC", base="BTC", quote="USDC", provider_name="binance", params={})
+    bin_btc._provider = MagicMock(free_balance=lambda a: 0.0005 if a == "BTC" else 2274.29)
+    bin_btc.open_orders.return_value = [
+        {"orderId": "10699014858", "clientOrderId": "AI_btc_buy", "side": "BUY", "type": "LIMIT", "price": "76620.0", "origQty": "0.01566", "executedQty": "0.0", "status": "NEW"}
+    ]
+
+    krk_hype = MagicMock(symbol="HYPEUSD", base="HYPE", quote="USD", provider_name="kraken", params={})
+    krk_hype._provider = MagicMock(
+        free_balance=lambda a: 0.597 if a == "HYPE" else 1384.61,
+        usd_cash_breakdown=lambda: {"ZUSD": 27.99, "USDC": 1356.62},
+    )
+    krk_hype.open_orders.return_value = [
+        {"orderId": "OWZ3YO-EKP5O-IPKB2Y", "side": "SELL", "type": "LIMIT", "price": "93.85", "origQty": "4.877", "executedQty": "0.0", "status": "OPEN"}
+    ]
+
+    known_ai_oids = {"10699014858", "OWZ3YO-EKP5O-IPKB2Y", "720911979", "720922115", "592351368110"}
+    bcache_file = tmp_path / "state" / "venue_balances_state.json"
+    bcache_file.parent.mkdir(parents=True, exist_ok=True)
+    bcache_file.write_text("{}", encoding="utf-8")
+
+    # 1. Initial healthy cycle populates venue_balances_state.json with balances, breakdown, positions, and open_orders
+    verified_v1: set[str] = set()
+    pos1, oo1, cash1, _ = harvest_tradable_positions_and_orders(
+        {"BTCUSDC": bin_btc, "KRAKEN_HYPE": krk_hype},
+        prices_and_trends,
+        {},
+        {},
+        known_ai_order_ids=known_ai_oids,
+        cache_dir=str(tmp_path),
+        verified_open_venues=verified_v1,
+    )
+    assert verified_v1 == {"binance", "kraken"}
+    assert len(oo1) == 2
+    assert cash1["kraken:USD"]["breakdown"] == {"ZUSD": 27.99, "USDC": 1356.62}
+
+    # 2. Simulate Kraken timeout on open_orders() and usd_cash_breakdown(): recovers from cache and marks kraken unverified
+    krk_hype.open_orders.side_effect = RuntimeError("Kraken API timeout at :00")
+    krk_hype._provider.usd_cash_breakdown.side_effect = RuntimeError("Kraken API timeout at :00")
+    verified_v2: set[str] = set()
+    pos2, oo2, cash2, _ = harvest_tradable_positions_and_orders(
+        {"BTCUSDC": bin_btc, "KRAKEN_HYPE": krk_hype},
+        prices_and_trends,
+        {},
+        {},
+        known_ai_order_ids=known_ai_oids,
+        cache_dir=str(tmp_path),
+        verified_open_venues=verified_v2,
+    )
+    assert verified_v2 == {"binance"}
+    assert any(o["order_id"] == "OWZ3YO-EKP5O-IPKB2Y" and o["actor"] == "AI" for o in oo2)
+    assert cash2["kraken:USD"]["breakdown"] == {"ZUSD": 27.99, "USDC": 1356.62}
+
+    # 3. Simulate total instrument load failure (inst_map={}) with allow_empty_inst_recovery=True
+    verified_v3: set[str] = set()
+    pos3, oo3, cash3, _ = harvest_tradable_positions_and_orders(
+        {},
+        prices_and_trends,
+        {},
+        {},
+        known_ai_order_ids=known_ai_oids,
+        cache_dir=str(tmp_path),
+        verified_open_venues=verified_v3,
+        allow_empty_inst_recovery=True,
+    )
+    assert verified_v3 == set()
+    assert len(pos3) == 2
+    assert len(oo3) == 2
+    assert "binance:USDC" in cash3 and "kraken:USD" in cash3
+
+    # 4. Even if open_orders=[] when verified_open_venues is empty, resting LIMIT orders >10m old are NEVER marked CANCELED_OR_EXPIRED
+    intents = [
+        {
+            "intent_id": "i_krk_hype",
+            "timestamp": now_ts - 260000.0,
+            "decision": "SELL",
+            "symbol": "HYPEUSD",
+            "venue": "kraken",
+            "order_type": "LIMIT",
+            "limit_price": 93.85,
+            "suggested_notional_usd": 457.7,
+            "status": "EXECUTED",
+            "execution_payload": {"txid": ["OWZ3YO-EKP5O-IPKB2Y"], "descr": {"order": "sell"}},
+        },
+        *[
+            {
+                "intent_id": f"i_tao_cancel_{idx}",
+                "timestamp": now_ts - 18000.0 + idx * 60.0,
+                "decision": "SELL",
+                "symbol": "TAOUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 238.80,
+                "suggested_notional_usd": 500.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": f"72089000{idx}", "status": "NEW"},
+            }
+            for idx in range(7)
+        ],
+        {
+            "intent_id": "i_tao_buy_active",
+            "timestamp": now_ts - 12000.0,
+            "decision": "BUY",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 223.80,
+            "suggested_notional_usd": 600.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "720911979", "status": "NEW", "price": "223.80", "origQty": "2.6809"},
+        },
+        {
+            "intent_id": "i_tao_sell_active",
+            "timestamp": now_ts - 9000.0,
+            "decision": "SELL",
+            "symbol": "TAOUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 238.80,
+            "suggested_notional_usd": 500.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "720922115", "status": "NEW", "price": "238.80", "origQty": "2.0938"},
+        },
+    ]
+    unverified_summary = summarize_recent_ai_intents(
+        intents, "crypto", now_ts, extract_intent_notional, recent_orders={}, open_orders=[], verified_open_venues=set()
+    )
+    assert all(item.get("venue_status") != "CANCELED_OR_EXPIRED" for item in unverified_summary)
+
+    # 5. With live open_orders, both TAOUSDC BUY + SELL and older Kraken HYPEUSD SELL are carried in last_cycle_execution_status and recent_ai_intents
+    live_open = [
+        {"venue": "kraken", "symbol": "HYPEUSD", "side": "SELL", "price": 93.85, "order_id": "OWZ3YO-EKP5O-IPKB2Y", "status": "OPEN"},
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "price": 223.80, "order_id": "720911979", "status": "NEW"},
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 238.80, "order_id": "720922115", "status": "NEW"},
+    ]
+    verified_summary = summarize_recent_ai_intents(
+        intents,
+        "crypto",
+        now_ts,
+        extract_intent_notional,
+        recent_orders={},
+        open_orders=live_open,
+        verified_open_venues={"binance", "kraken"},
+    )
+    assert verified_summary[0]["order_id"] == "OWZ3YO-EKP5O-IPKB2Y"
+    assert verified_summary[0]["venue_status"] == "OPEN"
+    assert verified_summary[-2]["order_id"] == "720911979" and verified_summary[-2]["venue_status"] == "NEW"
+    assert verified_summary[-1]["order_id"] == "720922115" and verified_summary[-1]["venue_status"] == "NEW"
+
+    last_st = build_last_cycle_execution_status(
+        intents,
+        "crypto",
+        now_ts,
+        extract_intent_notional,
+        recent_orders={},
+        open_orders=live_open,
+        verified_open_venues={"binance", "kraken"},
+    )
+    assert isinstance(last_st, list)
+    assert [(x["venue"], x["symbol"], x["side"], x["status"]) for x in last_st] == [
+        ("kraken", "HYPEUSD", "SELL", "OPEN_RESTING"),
+        ("binance", "TAOUSDC", "BUY", "OPEN_RESTING"),
+        ("binance", "TAOUSDC", "SELL", "OPEN_RESTING"),
+    ]
+
+    # 6. enrich_24h_and_microstructure seeds HYPEUSDC from hyperliquid/config.env even if inst_by_sym is empty
+    hl_dir = tmp_path / "hyperliquid"
+    hl_dir.mkdir(parents=True, exist_ok=True)
+    (hl_dir / "config.env").write_text("HL_LIVE_ORDERS=true\nHL_SPOT_TOKEN=HYPE\n", encoding="utf-8")
+    pt_hl = {"HYPEUSD": {"price": 84.33, "trend": 0, "growth_coefficient": 0.0}}
+    micro_hl: dict = {}
+    enrich_24h_and_microstructure(str(tmp_path), str(tmp_path), pt_hl, micro_hl, {}, {}, now_ts)
+    assert "HYPEUSDC" in pt_hl
+    assert pt_hl["HYPEUSDC"]["price"] == pytest.approx(84.33)
+
+
+
 
 

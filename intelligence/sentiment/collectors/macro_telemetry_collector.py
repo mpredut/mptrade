@@ -450,6 +450,7 @@ def populate_market_and_portfolio_snapshot(
     open_orders_list: List[Dict[str, Any]] = []
     venue_quote_cash: Dict[str, Dict[str, Any]] = {}
     inst_by_sym: Dict[str, Any] = {}
+    verified_open_venues: set[str] = set()
     load_tradable_fn = getattr(intent_gateway, "load_tradable_instruments", None)
     has_inst_source = (
         os.path.exists(os.path.join(workspace_dir, "instruments.conf"))
@@ -458,6 +459,7 @@ def populate_market_and_portfolio_snapshot(
         or (scope == "equities" and os.path.isdir(os.path.join(workspace_dir, "212trading")))
     )
     if callable(load_tradable_fn) and has_inst_source:
+        inst_load_failed = False
         try:
             try:
                 inst_map = load_tradable_fn(only_workspace_conf=(scope != "equities"), include_closed_rth=(scope == "equities"), asset_scope=scope)
@@ -467,10 +469,13 @@ def populate_market_and_portfolio_snapshot(
             if log:
                 log.debug("Could not load tradable instruments for telemetry: %s", exc)
             inst_map = {}
+            inst_load_failed = True
 
         tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym = harvest_tradable_positions_and_orders(
             inst_map, snapshot.prices_and_trends, trailing_map, trailing_by_venue,
             known_ai_order_ids=known_ai_oids, gateway_max_usd=gw_max_usd, cache_dir=cache_dir,
+            verified_open_venues=verified_open_venues,
+            allow_empty_inst_recovery=inst_load_failed,
         )
 
     if tradable_positions:
@@ -509,12 +514,25 @@ def populate_market_and_portfolio_snapshot(
         snapshot.portfolio_summary["recent_orders"] = recent_orders
 
     if isinstance(intents_data, list) and intents_data:
+        eff_verified_venues = verified_open_venues if has_inst_source else None
         if recent_intents_out := summarize_recent_ai_intents(
-            intents_data, scope, now_ts, extract_intent_notional, recent_orders=recent_orders, open_orders=open_orders_list
+            intents_data,
+            scope,
+            now_ts,
+            extract_intent_notional,
+            recent_orders=recent_orders,
+            open_orders=open_orders_list,
+            verified_open_venues=eff_verified_venues,
         ):
             snapshot.portfolio_summary["recent_ai_intents"] = recent_intents_out
         if (last_exec_status := build_last_cycle_execution_status(
-            intents_data, scope, now_ts, extract_intent_notional, recent_orders=recent_orders, open_orders=open_orders_list
+            intents_data,
+            scope,
+            now_ts,
+            extract_intent_notional,
+            recent_orders=recent_orders,
+            open_orders=open_orders_list,
+            verified_open_venues=eff_verified_venues,
         )) is not None:
             snapshot.portfolio_summary["last_cycle_execution_status"] = last_exec_status
 

@@ -490,7 +490,7 @@ class T212Provider(MarketDataProvider):
                 return []
             raw_orders = list_fn()
             if not isinstance(raw_orders, list):
-                return []
+                raise ProviderError(f"open_orders({symbol}): active orders unavailable")
             out: List[dict] = []
             for o in raw_orders:
                 if not isinstance(o, dict):
@@ -518,8 +518,10 @@ class T212Provider(MarketDataProvider):
                     "status": str(o.get("status") or "NEW").strip().upper(),
                 })
             return out
-        except Exception:
-            return []
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"open_orders({symbol}): {exc}") from exc
 
     def pair_precision(self, symbol: str) -> Optional[PairPrecision]:
         if not isinstance(symbol, str) or not symbol.strip():

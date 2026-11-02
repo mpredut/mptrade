@@ -950,3 +950,130 @@ def bind_notify(symbol_env_keys: tuple, default_symbol: str):
         notify(title, body, source, resolved, price=price, desktop=desktop, email=email)
     bound_notify.__name__ = "notify"
     return bound_notify
+
+
+def _dispatch_order_event_notification(
+    symbol: Any,
+    side: Any,
+    order_id: Any,
+    price: Any,
+    quantity: Any,
+    *,
+    default_verb: str,
+    default_icon: str,
+    venue: Optional[str] = None,
+    owner: Optional[str] = None,
+    source: Optional[str] = None,
+    order_type: Optional[str] = None,
+    allow_ai_executor: bool = True,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    notify_fn: Optional[Any] = None,
+    include_price: bool = True,
+) -> bool:
+    """Dispatch a standardized order placement or execution notification."""
+    sym_s = str(symbol or "TRADE").strip() or "TRADE"
+    owner_norm = str(owner or "").strip().lower()
+    if owner_norm == "ai_executor" and not _as_bool_flag(allow_ai_executor, True):
+        return False
+    px_f = safe_pos_float(price, default=0.0) or 0.0
+    qty_f = safe_pos_float(quantity, default=0.0) or 0.0
+    notional_f = px_f * qty_f
+    side_s = str(side or "").strip().upper() or "ORDER"
+    ord_type_s = str(order_type or "MARKET").strip().upper()
+    venue_s = str(venue or source or "venue").strip()
+    eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}"
+    eff_body = body or (
+        f"Venue: {venue_s} · Qty: {qty_f:g} @ ${px_f:,.2f} ({ord_type_s} · ${notional_f:,.0f})\n"
+        f"Order ID: {order_id}"
+    )
+    if callable(notify_fn):
+        if include_price:
+            notify_fn(title=eff_title, body=eff_body, symbol=sym_s, price=px_f)
+        else:
+            notify_fn(title=eff_title, body=eff_body, symbol=sym_s)
+        return True
+    notify(
+        title=eff_title,
+        body=eff_body,
+        source=str(source or owner or "llm_trader"),
+        symbol=sym_s,
+        price=px_f if include_price else None,
+    )
+    return True
+
+
+def notify_order_placed(
+    symbol: Any,
+    side: Any,
+    order_id: Any,
+    price: Any,
+    quantity: Any,
+    *,
+    venue: Optional[str] = None,
+    owner: Optional[str] = None,
+    source: Optional[str] = None,
+    order_type: str = "LIMIT",
+    allow_ai_executor: bool = True,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    notify_fn: Optional[Any] = None,
+    include_price: bool = True,
+) -> bool:
+    """Dispatch a passive order placement notification via notify_fn or notify_engine."""
+    return _dispatch_order_event_notification(
+        symbol,
+        side,
+        order_id,
+        price,
+        quantity,
+        default_verb="PLACED LIMIT",
+        default_icon="📝",
+        venue=venue,
+        owner=owner,
+        source=source,
+        order_type=order_type,
+        allow_ai_executor=allow_ai_executor,
+        title=title,
+        body=body,
+        notify_fn=notify_fn,
+        include_price=include_price,
+    )
+
+
+def notify_order_executed(
+    symbol: Any,
+    side: Any,
+    order_id: Any,
+    price: Any,
+    quantity: Any,
+    *,
+    venue: Optional[str] = None,
+    owner: Optional[str] = None,
+    source: Optional[str] = None,
+    order_type: str = "MARKET",
+    allow_ai_executor: bool = True,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    notify_fn: Optional[Any] = None,
+    include_price: bool = True,
+) -> bool:
+    """Dispatch an order execution notification via notify_fn or notify_engine."""
+    return _dispatch_order_event_notification(
+        symbol,
+        side,
+        order_id,
+        price,
+        quantity,
+        default_verb="EXECUTED",
+        default_icon="🎉",
+        venue=venue,
+        owner=owner,
+        source=source,
+        order_type=order_type,
+        allow_ai_executor=allow_ai_executor,
+        title=title,
+        body=body,
+        notify_fn=notify_fn,
+        include_price=include_price,
+    )

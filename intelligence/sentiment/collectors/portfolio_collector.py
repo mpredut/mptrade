@@ -491,6 +491,8 @@ def harvest_tradable_positions_and_orders(
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
     cache_dir: Optional[str] = None,
+    verified_open_venues: Optional[set[str]] = None,
+    allow_empty_inst_recovery: bool = False,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Any]]:
     """Harvest spot wallet balances, trailing peaks, and open orders across tradable instruments."""
     tradable_positions: List[Dict[str, Any]] = []
@@ -501,7 +503,9 @@ def harvest_tradable_positions_and_orders(
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = read_json_cached(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
-    updated_bals: Dict[str, float] = {}
+    updated_bals: Dict[str, Any] = {}
+    live_open_ok_venues: set[str] = set()
+    failed_open_venues: set[str] = set()
 
     def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
         if not asset:
@@ -525,15 +529,16 @@ def harvest_tradable_positions_and_orders(
         balance_memo[key] = val_f
         return val_f
 
-    if isinstance(inst_map, dict):
+    if isinstance(inst_map, dict) and inst_map:
         for inst in inst_map.values():
             sym = str(getattr(inst, "symbol", "") or "").strip().upper()
             venue = str(getattr(inst, "provider_name", "") or "").strip().lower()
             if not sym or not venue:
                 continue
+            v_norm = normalize_venue_name(venue)
             res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
             base, quote = res_b or sym, res_q or "USD"
-            inst_by_sym[sym] = inst_by_sym[f"{normalize_venue_name(venue)}:{sym}"] = inst
+            inst_by_sym[sym] = inst_by_sym[f"{v_norm}:{sym}"] = inst
 
             px = prices_and_trends.get(sym, {}).get("price")
             px_f = safe_pos_float(px, default=0.0) or 0.0
@@ -552,21 +557,26 @@ def harvest_tradable_positions_and_orders(
 
             base_free, quote_free = _query_free_bal(inst, base), _query_free_bal(inst, quote)
             quote_breakdown: Optional[Dict[str, float]] = None
+            bd_key = f"breakdown:{v_norm}:{quote.upper()}"
             if quote.upper() == "USD" and callable(bd_fn := getattr(inst._provider, "usd_cash_breakdown", None)):
                 try:
                     if isinstance(raw_bd := bd_fn(), dict) and raw_bd:
                         quote_breakdown = {str(k): round(vf, 2) for k, v in raw_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
+                        if quote_breakdown:
+                            updated_bals[bd_key] = quote_breakdown
                 except Exception:
                     quote_breakdown = None
+            if quote_breakdown is None and isinstance(cached_bd := cached_bals.get(bd_key), dict) and cached_bd:
+                quote_breakdown = {str(k): round(vf, 2) for k, v in cached_bd.items() if (vf := safe_pos_float(v, default=None)) is not None} or None
             if quote_free is not None:
                 cash_entry: Dict[str, Any] = {"venue": venue, "asset": quote, "free": round(quote_free, 2)}
                 if quote_breakdown:
                     cash_entry["breakdown"] = quote_breakdown
                 venue_quote_cash[f"{venue}:{quote}"] = cash_entry
+                updated_bals[f"cash:{v_norm}:{quote.upper()}"] = dict(cash_entry)
 
             pos_val_usd = round(base_free * px_f, 2) if base_free is not None and px_f > 0 else None
             params = getattr(inst, "params", {}) if isinstance(getattr(inst, "params", None), dict) else {}
-            v_norm = normalize_venue_name(venue)
             sym_quotes = compatible_quote_suffixes(sym, quote)
             t_state = _first_variant_dict(
                 trailing_by_venue.get(v_norm, {}),
@@ -602,11 +612,15 @@ def harvest_tradable_positions_and_orders(
             if params.get("mt.gain") or params.get("mt.lost"):
                 pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
             tradable_positions.append(pos_entry)
+            updated_bals[f"pos:{v_norm}:{sym}"] = dict(pos_entry)
 
             if callable(open_fn := getattr(inst, "open_orders", None)):
+                oo_key = f"open_orders:{v_norm}:{sym}"
+                sym_open_ok = False
                 try:
                     if isinstance(raw_open := open_fn(), list):
-                        open_orders_list.extend(
+                        sym_open_ok = True
+                        sym_norm_orders = [
                             oo_norm
                             for oo in raw_open
                             if isinstance(oo, dict)
@@ -616,9 +630,59 @@ def harvest_tradable_positions_and_orders(
                                 ),
                                 dict,
                             )
-                        )
+                        ]
+                        open_orders_list.extend(sym_norm_orders)
+                        updated_bals[oo_key] = sym_norm_orders
                 except Exception:
-                    pass
+                    sym_open_ok = False
+                if sym_open_ok:
+                    live_open_ok_venues.add(v_norm)
+                else:
+                    failed_open_venues.add(v_norm)
+                    if isinstance(cached_oo := cached_bals.get(oo_key), list):
+                        for oo in cached_oo:
+                            if isinstance(oo, dict) and isinstance(
+                                oo_norm := normalize_open_order(
+                                    oo, venue=venue, symbol=sym, known_ai_order_ids=known_ai_order_ids
+                                ),
+                                dict,
+                            ):
+                                open_orders_list.append(oo_norm)
+    elif allow_empty_inst_recovery and cached_bals:
+        for k, v in cached_bals.items():
+            if k.startswith("pos:") and isinstance(v, dict):
+                rec_pos = dict(v)
+                p_sym = str(rec_pos.get("symbol") or "").strip().upper()
+                p_quote = str(rec_pos.get("quote") or "USD").strip().upper()
+                if p_sym:
+                    px_rec = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=p_quote)
+                    if px_rec > 0:
+                        rec_pos["price"] = round_opt_px(px_rec, 6)
+                        fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
+                        if fb_val is not None:
+                            rec_pos["value_usd"] = round(fb_val * px_rec, 2)
+                        prices_and_trends.setdefault(p_sym, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
+                tradable_positions.append(rec_pos)
+            elif k.startswith("cash:") and isinstance(v, dict):
+                c_venue = str(v.get("venue") or "").strip().lower()
+                c_asset = str(v.get("asset") or "").strip().upper()
+                if c_venue and c_asset:
+                    venue_quote_cash[f"{c_venue}:{c_asset}"] = dict(v)
+            elif k.startswith("open_orders:") and isinstance(v, list):
+                parts = k.split(":", 2)
+                oo_v = parts[1] if len(parts) > 1 else ""
+                oo_s = parts[2] if len(parts) > 2 else ""
+                for oo in v:
+                    if isinstance(oo, dict) and isinstance(
+                        oo_norm := normalize_open_order(
+                            oo, venue=oo_v, symbol=oo_s, known_ai_order_ids=known_ai_order_ids
+                        ),
+                        dict,
+                    ):
+                        open_orders_list.append(oo_norm)
+
+    if isinstance(verified_open_venues, set):
+        verified_open_venues.update(live_open_ok_venues - failed_open_venues)
 
     if open_orders_list:
         locked_quote_by_vq: Dict[tuple[str, str], float] = {}
@@ -849,6 +913,19 @@ def enrich_24h_and_microstructure(
             ticker = fname[len(".state_") : -len(".json")].upper()
             if not fname.startswith("..") and ticker.replace("_", "").isalnum() and ticker not in prices_and_trends:
                 prices_and_trends[ticker] = {"price": None, "trend": 0, "growth_coefficient": 0.0}
+    from instruments_config import discover_hyperliquid_spot
+
+    for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
+        if hl_sym not in prices_and_trends and (
+            any(canonical_base_asset(k) == hl_base for k in prices_and_trends)
+            or load_symbol_microstructure(cache_dir, hl_sym, _rj)
+        ):
+            hl_px = resolve_symbol_price(hl_sym, prices_and_trends, explicit_quote=hl_quote)
+            prices_and_trends[hl_sym] = {
+                "price": hl_px if hl_px > 0 else None,
+                "trend": 0,
+                "growth_coefficient": 0.0,
+            }
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
         matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)

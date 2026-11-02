@@ -262,12 +262,23 @@ class KrakenProvider(MarketDataProvider):
         return None
 
     def _query_with_bot_fallback(self, fn, err_prefix: Optional[str] = None):
-        """Execute ``fn(cli)`` on primary client, falling back to BOT client on permission denied."""
+        """Execute ``fn(cli)`` on primary client, falling back to BOT client on permission denied or transient rate-limit/nonce contention."""
         cli = self._client()
         try:
             return fn(cli)
         except Exception as exc:  # noqa: BLE001
-            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
+            err_l = str(exc).lower()
+            can_fallback = any(
+                tok in err_l
+                for tok in (
+                    "permission denied",
+                    "invalid nonce",
+                    "rate limit",
+                    "temporary lockout",
+                    "eroare retea",
+                )
+            )
+            fb_cli = self._order_query_fallback_client() if can_fallback else None
             if fb_cli is not None:
                 try:
                     return fn(fb_cli)
@@ -363,7 +374,7 @@ class KrakenProvider(MarketDataProvider):
     def usd_cash_breakdown(self) -> dict[str, float]:
         """Return non-zero Kraken USD and 1:1 USD-stablecoin balances (USD/ZUSD, USDC, USDG, USDT)."""
         try:
-            bal = self._client().balance() or {}
+            bal = self._query_with_bot_fallback(lambda cli: cli.balance()) or {}
             if not isinstance(bal, dict):
                 return {}
             out: dict[str, float] = {}
@@ -379,7 +390,7 @@ class KrakenProvider(MarketDataProvider):
         if not asset or isinstance(asset, bool) or not str(asset).strip():
             return None
         try:
-            bal = self._client().balance() or {}
+            bal = self._query_with_bot_fallback(lambda cli: cli.balance()) or {}
             if not isinstance(bal, dict):
                 return None
             asset_u = str(asset).strip().upper()

@@ -23,9 +23,38 @@ from intelligence.macro_sentiment_ssot import clean_symbol_key
 from state_io import read_json_dict_recovering
 
 
+def _import_instrument_cls():
+    """Import Instrument, reloading stale local modules once if a mid-run git pull updated disk files."""
+    try:
+        from instrument import Instrument
+
+        return Instrument
+    except ImportError:
+        import importlib
+        import sys
+
+        ws_root = os.path.dirname(os.path.abspath(__file__))
+        for mod_name, mod_obj in list(sys.modules.items()):
+            mod_file = getattr(mod_obj, "__file__", None)
+            if (
+                isinstance(mod_file, str)
+                and os.path.abspath(mod_file).startswith(ws_root)
+                and os.path.exists(mod_file)
+            ):
+                try:
+                    importlib.reload(mod_obj)
+                except Exception:
+                    pass
+        for stale_mod in ("order_guard", "instrument"):
+            sys.modules.pop(stale_mod, None)
+        from instrument import Instrument
+
+        return Instrument
+
+
 def _bind(specs, api):
     # Import only at the binding boundary: symbols/cache discovery needs no API.
-    from instrument import Instrument
+    Instrument = _import_instrument_cls()
     return {name: Instrument(**asdict(spec), api=api) for name, spec in specs.items()}
 
 
@@ -127,7 +156,18 @@ def load_tradable_instruments(
         try:
             raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
         except Exception:
-            return {}
+            try:
+                Instrument = _import_instrument_cls()
+                reg_specs = load_registry(ws_inst_conf if os.path.exists(ws_inst_conf) else None)
+                for spec_name, spec in reg_specs.items():
+                    try:
+                        raw_map[spec_name] = Instrument(**asdict(spec), api=None)
+                    except Exception:
+                        continue
+            except Exception:
+                if only_workspace_conf:
+                    return {}
+                raw_map = {}
 
     active_map: dict = {}
 
@@ -143,7 +183,7 @@ def load_tradable_instruments(
         *, live: bool = False, validity: str | None = None, **kw,
     ) -> bool:
         try:
-            from instrument import Instrument
+            Instrument = _import_instrument_cls()
             inst = Instrument(name=name, provider=prov, symbol=sym, base=base, quote=quote, enabled=True, **kw)
             if hasattr(inst, "_provider"):
                 if live:

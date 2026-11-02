@@ -648,6 +648,7 @@ def _resolve_intent_execution_details(
     extract_notional_fn: Callable[..., Any],
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
+    verified_open_venues: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """Resolve fill price, filled quantity, execution status, and slippage (bps) for an intent."""
     venue = normalize_venue_name(i.get("venue")) or i.get("venue")
@@ -764,10 +765,15 @@ def _resolve_intent_execution_details(
         and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
         and filled_qty <= 0
     )
+    venue_open_verified = (
+        verified_open_venues is None
+        or (bool(venue) and normalize_venue_name(venue) in verified_open_venues)
+    )
     if (
         is_unfilled_resting_limit
         and matched_open is None
         and isinstance(open_orders, list)
+        and venue_open_verified
         and ts_val > 0
         and (now_ts - ts_val) > 600.0
     ):
@@ -861,14 +867,12 @@ def summarize_recent_ai_intents(
     *,
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
+    verified_open_venues: Optional[set[str]] = None,
 ) -> list[dict[str, Any]]:
     """Summarize the most recent AI trade intents filtered by asset scope."""
     scoped_intents = _filter_intents_by_scope(intents_data, scope)
-    recent_intents_out: list[dict[str, Any]] = []
-    for i in scoped_intents[-8:]:
-        det = _resolve_intent_execution_details(
-            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
-        )
+
+    def _to_summary(i: dict[str, Any], det: dict[str, Any]) -> dict[str, Any]:
         intent_summary: dict[str, Any] = {
             "decision": i.get("decision") or det["side"],
             "symbol": i.get("symbol"),
@@ -892,7 +896,44 @@ def summarize_recent_ai_intents(
             intent_summary["slippage_bps"] = det["slippage_bps"]
         if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
             intent_summary["age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
-        recent_intents_out.append(intent_summary)
+        return intent_summary
+
+    recent_intents_out: list[dict[str, Any]] = []
+    seen_oids: set[str] = set()
+    for i in scoped_intents[-8:]:
+        det = _resolve_intent_execution_details(
+            i,
+            now_ts,
+            extract_notional_fn,
+            recent_orders=recent_orders,
+            open_orders=open_orders,
+            verified_open_venues=verified_open_venues,
+        )
+        if det["order_id"] is not None:
+            seen_oids.add(str(det["order_id"]))
+        recent_intents_out.append(_to_summary(i, det))
+
+    if isinstance(open_orders, list) and open_orders and len(scoped_intents) > 8:
+        older_resting: list[dict[str, Any]] = []
+        for i in scoped_intents[:-8]:
+            det = _resolve_intent_execution_details(
+                i,
+                now_ts,
+                extract_notional_fn,
+                recent_orders=recent_orders,
+                open_orders=open_orders,
+                verified_open_venues=verified_open_venues,
+            )
+            if (
+                det.get("is_open_in_venue")
+                and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
+                and (det["order_id"] is None or str(det["order_id"]) not in seen_oids)
+            ):
+                if det["order_id"] is not None:
+                    seen_oids.add(str(det["order_id"]))
+                older_resting.append(_to_summary(i, det))
+        if older_resting:
+            recent_intents_out = older_resting + recent_intents_out
     return recent_intents_out
 
 
@@ -904,6 +945,7 @@ def build_last_cycle_execution_status(
     *,
     recent_orders: Optional[dict[str, Any]] = None,
     open_orders: Optional[list[dict[str, Any]]] = None,
+    verified_open_venues: Optional[set[str]] = None,
 ) -> Optional[Any]:
     """Build closed-loop mathematical fill confirmation (fill_px, slippage_bps, status) for the last cycle's intent(s)."""
     scoped_intents = _filter_intents_by_scope(intents_data, scope)
@@ -917,10 +959,11 @@ def build_last_cycle_execution_status(
     else:
         cycle_intents = [scoped_intents[-1]]
 
-    def _intent_sym_key(intent_obj: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    def _intent_sym_key(intent_obj: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
         v_norm = normalize_venue_name(intent_obj.get("venue"))
         s_raw = str(intent_obj.get("symbol") or "").strip().upper()
-        return (v_norm, canonical_base_asset(s_raw), compatible_quote_suffixes(s_raw))
+        side_norm = extract_intent_side(intent_obj)
+        return (v_norm, canonical_base_asset(s_raw), compatible_quote_suffixes(s_raw), side_norm)
 
     def _build_status_rec(det: dict[str, Any]) -> dict[str, Any]:
         rec: dict[str, Any] = {
@@ -942,28 +985,38 @@ def build_last_cycle_execution_status(
         return rec
 
     out: list[dict[str, Any]] = []
-    seen_sym_keys: set[tuple[str, str, tuple[str, ...]]] = set()
+    seen_sym_keys: set[tuple[str, str, tuple[str, ...], str]] = set()
     cycle_ids = {id(i) for i in cycle_intents}
     for i in cycle_intents:
         seen_sym_keys.add(_intent_sym_key(i))
         det = _resolve_intent_execution_details(
-            i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
+            i,
+            now_ts,
+            extract_notional_fn,
+            recent_orders=recent_orders,
+            open_orders=open_orders,
+            verified_open_venues=verified_open_venues,
         )
         out.append(_build_status_rec(det))
 
     if isinstance(open_orders, list) and open_orders:
         carried_resting: list[dict[str, Any]] = []
-        for i in reversed(scoped_intents[-8:]):
+        for i in reversed(scoped_intents):
             if id(i) in cycle_ids:
                 continue
             s_key = _intent_sym_key(i)
             if s_key in seen_sym_keys:
                 continue
-            seen_sym_keys.add(s_key)
             det = _resolve_intent_execution_details(
-                i, now_ts, extract_notional_fn, recent_orders=recent_orders, open_orders=open_orders
+                i,
+                now_ts,
+                extract_notional_fn,
+                recent_orders=recent_orders,
+                open_orders=open_orders,
+                verified_open_venues=verified_open_venues,
             )
             if det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"):
+                seen_sym_keys.add(s_key)
                 carried_resting.append(_build_status_rec(det))
         if carried_resting:
             out = list(reversed(carried_resting)) + out
@@ -1299,39 +1352,6 @@ def execute_enforce_intent_order(
                 f"Order ID: {order_id_str}\n"
                 f"Thesis: {thesis}"
             )
-            if callable(dispatch_notify_fn):
-                from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
-
-                notify_kwargs: dict[str, Any] = {
-                    "venue": inst.provider_name,
-                    "owner": "ai_executor",
-                    "source": None,
-                    "title": title,
-                    "body": body,
-                    "notify_fn": dispatch_notify_fn,
-                    "include_price": False,
-                }
-                if is_limit:
-                    notify_order_placed(
-                        inst.symbol,
-                        decision,
-                        order_id_str,
-                        price,
-                        target_qty,
-                        order_type="LIMIT",
-                        allow_ai_executor=True,
-                        **notify_kwargs,
-                    )
-                else:
-                    notify_order_executed(
-                        inst.symbol,
-                        decision,
-                        order_id_str,
-                        price,
-                        target_qty,
-                        **notify_kwargs,
-                    )
-
             intent["execution_payload"] = order_res
             extra_limit = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
             _record_intent_state(
@@ -1344,6 +1364,43 @@ def execute_enforce_intent_order(
                 payload=order_res,
                 **extra_limit,
             )
+
+            if callable(dispatch_notify_fn):
+                try:
+                    from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
+
+                    notify_kwargs: dict[str, Any] = {
+                        "venue": inst.provider_name,
+                        "owner": "ai_executor",
+                        "source": None,
+                        "title": title,
+                        "body": body,
+                        "notify_fn": dispatch_notify_fn,
+                        "include_price": False,
+                    }
+                    if is_limit:
+                        notify_order_placed(
+                            inst.symbol,
+                            decision,
+                            order_id_str,
+                            price,
+                            target_qty,
+                            order_type="LIMIT",
+                            allow_ai_executor=True,
+                            **notify_kwargs,
+                        )
+                    else:
+                        notify_order_executed(
+                            inst.symbol,
+                            decision,
+                            order_id_str,
+                            price,
+                            target_qty,
+                            **notify_kwargs,
+                        )
+                except Exception as notify_exc:
+                    if log:
+                        log.debug("Notification failed after order execution: %s", notify_exc)
         else:
             refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
             refusal_cat = str(outcome_ctx.get("category") or "")

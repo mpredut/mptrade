@@ -158,7 +158,22 @@ class KrakenClient:
                 result = self._parse(status, body)
                 break
             except KrakenError as e:
-                if "Invalid nonce" in str(e) and attempt < max_attempts - 1:
+                err_s = str(e)
+                if (
+                    any(
+                        tok in err_s
+                        for tok in (
+                            "Invalid nonce",
+                            "Rate limit",
+                            "Temporary lockout",
+                            "Service:Unavailable",
+                            "Service:Busy",
+                            "EService:",
+                        )
+                    )
+                    and (method not in _WRITE_METHODS or "Invalid nonce" in err_s)
+                    and attempt < max_attempts - 1
+                ):
                     time.sleep(0.15 * (attempt + 1))
                     continue
                 raise

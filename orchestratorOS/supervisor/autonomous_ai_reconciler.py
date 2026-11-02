@@ -82,6 +82,7 @@ from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
 from providers.execution_audit import (
     normalize_trading_decisions as _normalize_trading_decisions,  # noqa: F401 (re-export: test compat)
 )
+import instrument as _instrument_preload  # noqa: F401 — preload with core modules to prevent mid-deploy split-commit lazy import races
 
 _parse_finite_float = safe_float
 
