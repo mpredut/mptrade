@@ -233,11 +233,42 @@ def prune_old_cli_threads(
     if max_threads_i is not None and 0 <= max_threads_i < len(kept):
         kept.sort(reverse=True)
         candidates.update(cid for _, cid in kept[max_threads_i:])
-    if not candidates:
+
+    ui_candidates: Set[str] = set()
+    ui_base = resolve_ui_cli_base() if cli_base is None else ""
+    if ui_base and os.path.abspath(ui_base) != os.path.abspath(base) and autonomous_projects:
+        ui_db_path = os.path.join(ui_base, "conversation_summaries.db")
+        if os.path.exists(ui_db_path):
+            try:
+                uconn = sqlite3.connect(ui_db_path, timeout=5.0)
+                uconn.row_factory = sqlite3.Row
+                try:
+                    urows = uconn.execute(
+                        f"SELECT * FROM conversation_summaries WHERE project_id IN ({','.join('?' for _ in autonomous_projects)})",
+                        list(autonomous_projects),
+                    ).fetchall()
+                finally:
+                    uconn.close()
+                for urow in urows:
+                    ukeys = set(urow.keys())
+                    ucid = urow["conversation_id"]
+                    if not ucid or ucid in protected:
+                        continue
+                    udt = parse_db_timestamp(urow["last_modified_time"] if "last_modified_time" in ukeys else None)
+                    if udt is None or udt < cutoff:
+                        ui_candidates.add(ucid)
+            except sqlite3.Error:
+                pass
+
+    if not candidates and not ui_candidates:
         logger.info("No candidate threads older than %.1f days found in %s.", retention_days, sorted(targets))
         return (0, 0)
 
-    count, freed = delete_threads(candidates, base, dry_run=dry_run)
+    count, freed = delete_threads(candidates, base, dry_run=dry_run) if candidates else (0, 0)
+    if ui_candidates and ui_base:
+        u_cnt, u_freed = delete_threads(ui_candidates, ui_base, dry_run=dry_run)
+        count += u_cnt
+        freed += u_freed
     logger.info("%s %d automated threads (cutoff %s UTC, max_threads=%s), %.2f MB.",
                 "[DRY RUN] Would prune" if dry_run else "Pruned", count,
                 cutoff.strftime("%Y-%m-%d %H:%M:%S"), max_threads, freed / (1024 * 1024))

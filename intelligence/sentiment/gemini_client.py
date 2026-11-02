@@ -302,6 +302,7 @@ class GeminiClient:
 
                 for attempt_idx, model_candidate in enumerate(models_to_try):
                     output, turn_cid = None, None
+                    replaced_conversation = False
                     proc = None
                     pre_attempt_cids = (
                         self._list_conversation_cids(bot_cli_base)
@@ -385,7 +386,12 @@ class GeminiClient:
                                 bot_cli_base, run_env, is_mocked
                             )
                             output, detached_cid = self._parse_cli_payload(proc)
-                            if detached_cid and detached_cid != session.conversation_id and not is_mocked:
+                            if (
+                                detached_cid
+                                and detached_cid != session.conversation_id
+                                and not is_mocked
+                                and not (output and use_topic_session)
+                            ):
                                 self._remove_detached_thread(bot_cli_base, detached_cid)
                         except Exception as exc:
                             logger.warning("One-off thread attempt failed for model %s: %s", model_candidate, exc)
@@ -394,7 +400,11 @@ class GeminiClient:
                                 for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_cids:
                                     if orphan_cid != session.conversation_id:
                                         self._remove_detached_thread(bot_cli_base, orphan_cid)
-                        turn_cid = None
+                        if output and use_topic_session and detached_cid:
+                            turn_cid = detached_cid
+                            replaced_conversation = detached_cid != session.conversation_id
+                        else:
+                            turn_cid = None
 
                     if output:
                         if attempt_idx > 0:
@@ -409,7 +419,7 @@ class GeminiClient:
                             def _finalize_topic_turn(release_lock: bool = False) -> None:
                                 try:
                                     compacted_ok = False
-                                    if session.compact and turn_cid:
+                                    if session.compact and turn_cid and not replaced_conversation:
                                         compact_timeout = max(timeout_sec, 120.0)
                                         compact_snap = (
                                             snapshot_conversation_state(bot_cli_base, turn_cid)
@@ -445,13 +455,16 @@ class GeminiClient:
                                                 )
                                                 break
                                     try:
-                                        record_topic_turn(
-                                            topic_key=topic_key,
-                                            conversation_id=turn_cid,
-                                            response_text=output,
-                                            compacted=compacted_ok,
-                                            cli_base=bot_cli_base,
-                                        )
+                                        record_kwargs: Dict[str, Any] = {
+                                            "topic_key": topic_key,
+                                            "conversation_id": turn_cid,
+                                            "response_text": output,
+                                            "compacted": compacted_ok,
+                                            "cli_base": bot_cli_base,
+                                        }
+                                        if replaced_conversation:
+                                            record_kwargs["replace_conversation"] = True
+                                        record_topic_turn(**record_kwargs)
                                     except Exception as e:
                                         logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
                                 finally:

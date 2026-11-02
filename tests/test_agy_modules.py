@@ -158,8 +158,20 @@ class TestTopics:
         assert reg["compacted_at_step"] == 10 and reg["compaction_count"] == 1
         assert reg["title"] == TOPIC_SPECS["macro_sentiment"].title
 
-        # 6. Thread vanished from the store -> recreate once, replaying the rolling memory
-        os.remove(os.path.join(cli_base, "conversations", f"{cid1}.db"))
+        # 6. Exceeding max_steps rotates the bloated thread, deletes the old .db, and replays rolling memory
+        set_steps(cid1, 50)
+        rotated = prepare_topic_session("macro_sentiment", cli_base=cli_base, max_steps=40)
+        assert rotated.conversation_id is None and "TOPIC MEMORY" in rotated.history_prefix
+        assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid1}.db"))
+        assert load_topic_registry()["macro_sentiment"]["rotation_count"] == 1
+
+        # 7. Thread vanished from the store -> recreate once, replaying the rolling memory
+        cid2 = "cid-topic-222"
+        with open(os.path.join(cli_base, "conversations", f"{cid2}.db"), "w") as f:
+            f.write("db2")
+        set_steps(cid2, 2)
+        record_topic_turn("macro_sentiment", cid2, '{"summary": "rotated turn"}', cli_base=cli_base)
+        os.remove(os.path.join(cli_base, "conversations", f"{cid2}.db"))
         conn = sqlite3.connect(db_path)
         conn.execute("DELETE FROM conversation_summaries")
         conn.commit()
@@ -405,6 +417,8 @@ class TestMirrorTopicThreadToUi:
         fallback_prompt = fallback_cmd[-1]
         assert "[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:" in fallback_prompt
         assert "decision=SELL" in fallback_prompt
+        assert load_topic_registry()["auto_cryptotrade_executor"]["conversation_id"] == "detached-999"
+        assert not os.path.exists(os.path.join(cli_base, "conversations", f"{cid1}.db"))
 
     def test_prune_old_cli_threads_handles_minimal_schema_and_orphan_db_files(self, tmp_path, monkeypatch):
         import time

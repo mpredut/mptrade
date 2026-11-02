@@ -28,8 +28,9 @@ from botcore import (
     safe_nonneg_int,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
-from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base
+from orchestratorOS.agy.paths import expand_config_path, resolve_bot_cli_base, resolve_ui_cli_base
 from orchestratorOS.agy.summary_store import (
+    delete_threads,
     get_thread_step_count,
     read_summary_row,
     upsert_ui_visible_summary,
@@ -272,13 +273,33 @@ def format_topic_history_prefix(
     return "\n".join(lines) + "\n\n"
 
 
+def _delete_topic_thread_everywhere(base: str, cid: str) -> None:
+    """Remove a retired topic conversation from both the isolated bot store and the Web UI store."""
+    if not cid or not isinstance(cid, str):
+        return
+    clean_cid = cid.strip()
+    if not clean_cid:
+        return
+    try:
+        delete_threads({clean_cid}, base)
+    except Exception:
+        pass
+    try:
+        ui_base = resolve_ui_cli_base()
+        if ui_base and os.path.abspath(ui_base) != os.path.abspath(base):
+            delete_threads({clean_cid}, ui_base)
+    except Exception:
+        pass
+
+
 def prepare_topic_session(
     topic_key: str,
     cli_base: Optional[str] = None,
     compact_steps: Optional[int] = None,
     registry_path: Optional[str] = None,
+    max_steps: Optional[int] = None,
 ) -> TopicSession:
-    """Resolve the permanent conversation of a topic and whether this turn must compact it."""
+    """Resolve the permanent conversation of a topic and whether this turn must compact or rotate it."""
     topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
@@ -287,6 +308,8 @@ def prepare_topic_session(
     compact_steps_i = exact_pos_int(compact_steps, default=None)
     if compact_steps_i is None:
         raise ValueError(f"LLM_TOPIC_COMPACT_STEPS must be > 0, got {compact_steps}")
+    raw_max = max_steps if max_steps is not None else os.environ.get("LLM_TOPIC_MAX_STEPS")
+    max_steps_i = safe_nonneg_int(raw_max, 0)
 
     reg = load_topic_registry(registry_path)
     entry = reg.get(resolved)
@@ -299,6 +322,21 @@ def prepare_topic_session(
         sync_topic_thread_from_ui(cid, bot_cli_base=base)
         exists, step_count, _ = get_thread_step_count(cid, base)
         if exists:
+            if max_steps_i > 0 and step_count >= max_steps_i:
+                logger.info(
+                    "Topic '%s' conversation %s reached %d steps (max %d); rotating to a fresh thread with rolling memory.",
+                    resolved,
+                    cid,
+                    step_count,
+                    max_steps_i,
+                )
+                _delete_topic_thread_everywhere(base, cid)
+                entry["conversation_id"] = None
+                entry["compacted_at_step"] = 0
+                entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+                reg[resolved] = entry
+                save_topic_registry(reg, registry_path)
+                return TopicSession(None, format_topic_history_prefix(resolved, registry_path), False)
             compacted_at = safe_nonneg_int(entry.get("compacted_at_step"), 0)
             if compacted_at > step_count:
                 compacted_at = 0
@@ -405,16 +443,19 @@ def record_topic_turn(
     cli_base: Optional[str] = None,
     max_history_entries: Optional[int] = None,
     registry_path: Optional[str] = None,
+    replace_conversation: bool = False,
 ) -> None:
     """Update the topic registry after a completed turn and mirror the thread into the Web UI store.
 
-    The topic's conversation id is adopted once and then never replaced; ``compacted`` marks a turn that
-    compacted the thread in-place with `/compact` so the next compaction is scheduled from the current step count.
+    The topic's conversation id is adopted once and replaced only when rotated or explicitly replaced
+    via ``replace_conversation=True``; ``compacted`` marks a turn that compacted the thread in-place
+    with `/compact` so the next compaction is scheduled from the current step count.
     """
     spec = topic_spec(topic_key)
     resolved = canonical_topic_key(topic_key)
     base = resolve_bot_cli_base(cli_base)
     compacted = _parse_bool_flag(compacted, default=False)
+    replace_conv = _parse_bool_flag(replace_conversation, default=False)
     max_history_entries = safe_nonneg_int(max_history_entries, default=None)
     if max_history_entries is None:
         max_history_entries = required_int_env("LLM_TOPIC_HISTORY_MAX_ENTRIES")
@@ -427,7 +468,13 @@ def record_topic_turn(
     clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
     raw_existing = entry.get("conversation_id")
     existing_cid = raw_existing.strip() if isinstance(raw_existing, str) and raw_existing.strip() else None
-    if not existing_cid and clean_cid:
+    if replace_conv and clean_cid and existing_cid and clean_cid != existing_cid:
+        _delete_topic_thread_everywhere(base, existing_cid)
+        entry["conversation_id"] = clean_cid
+        entry["compacted_at_step"] = 0
+        entry["rotation_count"] = safe_nonneg_int(entry.get("rotation_count"), 0) + 1
+        existing_cid = clean_cid
+    elif not existing_cid and clean_cid:
         entry["conversation_id"] = clean_cid
         entry["compacted_at_step"] = 0
         existing_cid = clean_cid
