@@ -1043,6 +1043,7 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
     btc_inst._provider.free_balance.side_effect = [0.0, 500.0]  # First check returns 0.0, after cancel returns 500.0
     btc_inst.open_orders.return_value = [
         {"orderId": "bot_locking_buy", "clientOrderId": "TO_3", "side": "BUY", "price": "79000.0"},
+        {"orderId": "bot_trailing_sell", "clientOrderId": "SD_0123456789abcdef0123456789abcdef", "side": "SELL", "price": "85000.0"},
     ]
 
     with patch.object(gw, "_dispatch_notify", return_value=True):
@@ -1059,6 +1060,8 @@ def test_cancel_bot_open_orders_and_balance_unlock_via_replacement(temp_workspac
     assert "bot_locking_buy" in rec2["canceled_prior_open_orders"]
     assert rec2["canceled_bot_open_orders"] == ["bot_locking_buy"]
     btc_inst.cancel_order.assert_called_with("bot_locking_buy")
+    # The opposite-side protective SELL (trailing stop) frees no quote balance and must not be canceled
+    assert "bot_trailing_sell" not in rec2["canceled_prior_open_orders"]
 
 
 def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect_ai_ids():
@@ -1285,3 +1288,33 @@ def test_execution_details_finds_own_ai_fill_behind_later_bot_fill_and_matches_b
     assert details["exec_status"] == "FILLED"
     assert details["fill_px"] == pytest.approx(77990.0)
     assert details["filled_qty"] == pytest.approx(0.004)
+
+
+def test_reconcile_from_audit_scans_only_days_since_oldest_pending_intent(tmp_path):
+    """Audit reconciliation skips UTC-day files older than the oldest pending intent (minus 1 day) and caches files."""
+    import json
+    from datetime import datetime, timezone
+    from providers.execution_audit import reconcile_intents_from_execution_audit
+
+    audit_dir = tmp_path / "execution_audit"
+    audit_dir.mkdir()
+    intent_ts = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc).timestamp()
+    fill_rec = {
+        "event": "order_terminal", "intent_id": "intent_old_skip", "order_id": "X1", "venue": "binance",
+        "symbol": "BTCUSDC", "side": "buy", "status": "filled", "venue_status": "FILLED",
+        "filled_qty": 0.01, "cost": 800.0, "ts": intent_ts + 60.0,
+    }
+    # A record in a file 5 days before the intent cannot belong to it and must not be scanned
+    (audit_dir / "execution_audit_2026-10-15.jsonl").write_text(json.dumps(fill_rec) + "\n", encoding="utf-8")
+    intents = [{
+        "intent_id": "intent_old_skip", "timestamp": intent_ts, "decision": "BUY", "symbol": "BTCUSDC",
+        "venue": "binance", "status": "FAILED", "execution_payload": None, "history": [],
+    }]
+    assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is False
+    assert intents[0]["status"] == "FAILED"
+
+    # The same record in the intent's own UTC day is reconciled
+    (audit_dir / "execution_audit_2026-10-20.jsonl").write_text(json.dumps(fill_rec) + "\n", encoding="utf-8")
+    assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is True
+    assert intents[0]["status"] == "EXECUTED"
+    assert intents[0]["execution_payload"]["status"] == "FILLED"

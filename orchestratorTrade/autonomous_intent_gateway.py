@@ -297,11 +297,13 @@ class AutonomousIntentGateway:
             inst, decision, price, requested_effective_usd
         )
         if mode == "enforce" and replace_open and not cancel_bot_open and not guard_allowed:
+            # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
+            # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
             unlocked_ids = self._cancel_existing_ai_open_orders(
                 inst,
                 decision,
                 include_bot_orders=True,
-                any_side=True,
+                any_side=False,
             )
             if unlocked_ids:
                 prior_c = list(intent.get("canceled_prior_open_orders") or [])

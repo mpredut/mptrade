@@ -517,6 +517,29 @@ def _extract_audit_fill_metrics(
     return v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill
 
 
+_AUDIT_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_AUDIT_RECONCILE_EVENTS = frozenset({"submit_accepted", "order_terminal", "order_terminal_retry"})
+_AUDIT_FILE_RECORDS_CACHE: dict[str, tuple[tuple[float, int], list[dict[str, Any]]]] = {}
+
+
+def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
+    """Return reconciliation-relevant audit records of one file, cached by ``(mtime, size)`` (append-only files)."""
+    try:
+        st = os.stat(audit_path)
+        sig = (st.st_mtime, st.st_size)
+    except OSError:
+        return []
+    cached = _AUDIT_FILE_RECORDS_CACHE.get(audit_path)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    recs = [
+        rec for rec in read_jsonl_dicts(audit_path)
+        if str(rec.get("event") or "") in _AUDIT_RECONCILE_EVENTS and _extract_intent_id(rec)
+    ]
+    _AUDIT_FILE_RECORDS_CACHE[audit_path] = (sig, recs)
+    return recs
+
+
 def reconcile_intents_from_execution_audit(
     intents: list[dict[str, Any]],
     audit_dir: str,
@@ -546,10 +569,25 @@ def reconcile_intents_from_execution_audit(
     if (not failed_by_id and not executed_incomplete_by_id) or not os.path.isdir(audit_dir):
         return False
 
+    # Audit files are UTC-day partitioned and never precede the intent that produced them: scan only days
+    # from the oldest pending intent (minus one day of clock-skew margin), via the per-file record cache.
+    pending_ts = [
+        ts_i
+        for it in (*failed_by_id.values(), *executed_incomplete_by_id.values())
+        if (ts_i := safe_pos_float(it.get("timestamp"), default=0.0) or 0.0) > 0.0
+    ]
+    min_day = (
+        datetime.fromtimestamp(min(pending_ts) - 86400.0, timezone.utc).strftime("%Y-%m-%d")
+        if pending_ts
+        else ""
+    )
     matched_records: dict[str, dict[str, Any]] = {}
     matched_exec_records: dict[str, dict[str, Any]] = {}
     for audit_path in sorted(glob.glob(os.path.join(glob.escape(audit_dir), "execution_audit_*.jsonl"))):
-        for rec in read_jsonl_dicts(audit_path):
+        file_day = os.path.basename(audit_path)[len("execution_audit_"):-len(".jsonl")]
+        if min_day and _AUDIT_DAY_RE.fullmatch(file_day) and file_day < min_day:
+            continue
+        for rec in _read_audit_intent_records(audit_path):
             iid = _extract_intent_id(rec)
             if not iid:
                 continue
