@@ -1503,6 +1503,7 @@ def compute_dynamic_geopolitical_interval(
     news_snapshot: Optional[Any] = None,
     headlines_changed: bool = False,
     fallback_retry_ttl_sec: float = DEFAULT_FALLBACK_RETRY_TTL_SEC,
+    last_headlines_digest: str = "",
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_geopolitical`` evaluation."""
     base = max(60.0, safe_pos_float(base_interval_sec, DEFAULT_GEOPOLITICAL_INTERVAL_SEC))
@@ -1516,7 +1517,17 @@ def compute_dynamic_geopolitical_interval(
     has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
     high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
-    if has_shock and (threat_level == "NORMAL" or (threat_level == "ELEVATED" and changed_b)):
+    has_new_acute = changed_b
+    if changed_b and threat_level == "ELEVATED" and last_headlines_digest and news_snapshot is not None:
+        high_sev, _ = extract_high_severity_headlines_and_digest(news_snapshot)
+        prev_lower = last_headlines_digest.lower()
+        has_new_acute = any(
+            phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
+            for h in high_sev
+            for phrase in ACUTE_SHOCK_PHRASES
+        )
+
+    if has_shock and (threat_level == "NORMAL" or (threat_level == "ELEVATED" and has_new_acute)):
         return 0.0, "acute_shock_keyword_alert"
 
     if changed_b and high_sev_count > 0:

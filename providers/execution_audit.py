@@ -898,9 +898,14 @@ def summarize_recent_ai_intents(
             intent_summary["age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
         return intent_summary
 
-    recent_intents_out: list[dict[str, Any]] = []
+    recent_rev: list[dict[str, Any]] = []
     seen_oids: set[str] = set()
-    for i in scoped_intents[-8:]:
+    seen_sym_side: set[tuple[str, str, str]] = set()
+    recent_indices: set[int] = set()
+    for idx in range(len(scoped_intents) - 1, -1, -1):
+        if len(recent_rev) >= 8:
+            break
+        i = scoped_intents[idx]
         det = _resolve_intent_execution_details(
             i,
             now_ts,
@@ -909,13 +914,29 @@ def summarize_recent_ai_intents(
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
         )
+        sym_side_key = (
+            str(det.get("venue") or "").strip().lower(),
+            str(det.get("symbol") or "").strip().upper(),
+            str(det.get("side") or "").strip().upper(),
+        )
+        if (
+            det.get("exec_status") in ("CANCELED", "CANCELLED", "EXPIRED", "CANCELED_OR_EXPIRED")
+            and not det.get("filled_qty")
+            and sym_side_key in seen_sym_side
+        ):
+            continue
+        seen_sym_side.add(sym_side_key)
+        recent_indices.add(idx)
         if det["order_id"] is not None:
             seen_oids.add(str(det["order_id"]))
-        recent_intents_out.append(_to_summary(i, det))
+        recent_rev.append(_to_summary(i, det))
+    recent_intents_out: list[dict[str, Any]] = list(reversed(recent_rev))
 
-    if isinstance(open_orders, list) and open_orders and len(scoped_intents) > 8:
+    if isinstance(open_orders, list) and open_orders and len(scoped_intents) > len(recent_intents_out):
         older_resting: list[dict[str, Any]] = []
-        for i in scoped_intents[:-8]:
+        for idx, i in enumerate(scoped_intents):
+            if idx in recent_indices:
+                continue
             det = _resolve_intent_execution_details(
                 i,
                 now_ts,

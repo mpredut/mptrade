@@ -233,15 +233,22 @@ def harvest_macro_and_news_sensors(
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     _rj = read_json_fn or read_json_recovering
 
-    def _with_age_min(payload: Dict[str, Any], fpath: str) -> Dict[str, Any]:
+    def _with_age_min(payload: Dict[str, Any], fpath: str, *, is_fear_greed: bool = False) -> Dict[str, Any]:
         enriched = dict(payload)
         ref_ts = extract_timestamp_s(enriched)
         eff_path = str(resolve_cachedb_filepath(fpath))
-        if ref_ts is None and os.path.exists(eff_path):
+        if os.path.exists(eff_path):
             try:
-                ref_ts = os.path.getmtime(eff_path)
+                mtime = os.path.getmtime(eff_path)
+                if ref_ts is None or (
+                    is_fear_greed
+                    and int(ref_ts) % 86400 == 0
+                    and (now_ts - ref_ts) > 3600.0
+                    and ref_ts < mtime <= now_ts + 60.0
+                ):
+                    ref_ts = mtime
             except OSError:
-                ref_ts = None
+                pass
         if ref_ts is not None:
             enriched.setdefault("age_min", round(max(0.0, now_ts - ref_ts) / 60.0, 1))
         return enriched
@@ -256,7 +263,7 @@ def harvest_macro_and_news_sensors(
     ):
         data, s_path = _read_first_cached_dict(cache_dir, group_key, fname, _rj)
         if data is not None:
-            enriched = _with_age_min(data, s_path)
+            enriched = _with_age_min(data, s_path, is_fear_greed=(attr == "fear_greed"))
             if attr == "market_breadth":
                 for mover_key in ("top_gainers", "top_losers"):
                     if isinstance(raw_movers := enriched.get(mover_key), list):
@@ -267,7 +274,7 @@ def harvest_macro_and_news_sensors(
             if attr == "macro_benchmarks" and not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                 enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
-    if read_json_fn is None and "PYTEST_CURRENT_TEST" not in os.environ:
+    if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
         mb_cur = macro_sensors.get("market_breadth")
         mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
         if mb_cur is None or mb_age is None or mb_age > 5.5:

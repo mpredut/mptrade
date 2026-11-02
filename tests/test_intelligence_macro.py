@@ -816,4 +816,27 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert len(matched) > 0
         assert len(get_active_acute_shock_phrases(cache_dir=str(tmp_path), now_ts=1_700_000_250.0)) > 0
 
+        # 4. compute_dynamic_geopolitical_interval only returns 0.0s on ELEVATED when a NEW acute phrase arrives
+        from intelligence.macro_sentiment_ssot import compute_dynamic_geopolitical_interval
+
+        existing_digest = "strait of hormuz shipping update|fed inflation remarks"
+        non_acute_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item><title>Strait of Hormuz shipping update</title></item>
+  <item><title>Emergency sanctions tariff announcement</title></item>
+</channel></rss>"""
+        non_acute_change_snap = NewsFeedCollector.parse_rss_xml(non_acute_xml, now_ts=1_700_000_100.0)
+        itv_no_new_acute, reason_no_new = compute_dynamic_geopolitical_interval(
+            base_interval_sec=16200.0,
+            last_eval_ts=1_700_000_000.0,
+            now_ts=1_700_000_120.0,
+            cached_assessment={"threat_level": "ELEVATED", "is_fallback": False},
+            news_snapshot=non_acute_change_snap,
+            headlines_changed=True,
+            last_headlines_digest=existing_digest,
+        )
+        assert itv_no_new_acute == 3600.0
+        assert reason_no_new == "elevated_threat_new_headlines_1h"
+
+
 

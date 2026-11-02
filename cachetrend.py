@@ -154,8 +154,8 @@ class CacheLongTrendManager(CacheManagerInterface):
 
         if not isinstance(data, dict):
             return []
-        _, val = _find_by_symbol_variant(data, symbol)
-        return [val] if val is not None else []
+        matched_cand, val = _find_by_symbol_variant(data, symbol, allow_none=True)
+        return [val] if matched_cand is not None else []
 
 
 CacheLongTrend = CacheLongTrendManager
@@ -175,18 +175,26 @@ _MISSING_VARIANT = object()
 _LEGACY_SNAP_KEYS = ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
 
 
-def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None):
+def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None, allow_none: bool = False):
     """Look up ``symbol`` across ``_short_trend_symbol_variants(symbol)`` using ``casefold_get``.
 
     Returns ``(matched_candidate, value)`` or ``(None, None)`` when absent.
     """
     if not isinstance(mapping, dict):
         return None, None
-    for cand in _short_trend_symbol_variants(symbol):
+    cands = _short_trend_symbol_variants(symbol)
+    for cand in cands:
         val = casefold_get(mapping, cand, _MISSING_VARIANT)
         if val is not _MISSING_VARIANT and val is not None:
             if expected_type is None or isinstance(val, expected_type):
                 return cand, val
+    if allow_none and expected_type is None:
+        cf_keys = {k.casefold(): v for k, v in mapping.items() if isinstance(k, str)}
+        for cand in cands:
+            if cand in mapping and mapping[cand] is None:
+                return cand, None
+            if isinstance(cand, str) and cand.casefold() in cf_keys and cf_keys[cand.casefold()] is None:
+                return cand, None
     return None, None
 
 

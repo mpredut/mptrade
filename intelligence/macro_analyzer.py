@@ -279,9 +279,9 @@ class MacroAnalyzer:
             news_snap = self._load_news_snapshot(current_ts, explicit_now=now)
 
         headlines_changed = False
+        last_digest = str(getattr(self.geopolitical_analyzer, "_last_headlines_digest", "") or "")
         if news_snap is not None:
             _, digest = extract_high_severity_headlines_and_digest(news_snap)
-            last_digest = str(getattr(self.geopolitical_analyzer, "_last_headlines_digest", "") or "")
             headlines_changed = bool(digest and digest != last_digest)
 
         geo_interval, geo_reason = compute_dynamic_geopolitical_interval(
@@ -292,10 +292,11 @@ class MacroAnalyzer:
             news_snapshot=news_snap,
             headlines_changed=headlines_changed,
             fallback_retry_ttl_sec=retry_ttl,
+            last_headlines_digest=last_digest,
         )
         self._effective_geo_interval_sec = geo_interval
         self._effective_geo_reason = geo_reason
-        self.geopolitical_analyzer.cache_ttl_sec = geo_interval
+        self.geopolitical_analyzer.cache_ttl_sec = geo_interval if geo_interval > 0 else self.macro_llm_interval_sec
         results["effective_geo_interval_sec"] = geo_interval
         results["geo_interval_reason"] = geo_reason
 

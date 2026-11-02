@@ -1015,6 +1015,20 @@ def enrich_24h_and_microstructure(
                     prices_and_trends,
                     cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
                 )
+                if p_ref is None:
+                    ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
+                    ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
+                    if ref_px is None and ser_24h:
+                        ref_px = safe_pos_float(ser_24h[-1][1], default=None)
+                    if ref_px is not None:
+                        p_ref = {"price": ref_px, "trend": 0, "growth_coefficient": 0.0}
+                        if m_info_ref.get("spread_bps") is not None:
+                            p_ref["spread_bps"] = m_info_ref["spread_bps"]
+                        if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
+                            p_ref.update(m24_ref)
+                        if vals_7d and len(vals_7d) >= 2:
+                            p_ref.update(compute_7d_range_metrics(vals_7d))
+                        prices_and_trends[msym] = p_ref
                 enrich_microstructure_cvd(m_info_ref, p_ref)
                 m_info_ref.update(compute_liquidation_clusters(p_ref, m_info_ref))
                 microstructure[msym] = m_info_ref

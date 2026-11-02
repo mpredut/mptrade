@@ -7361,6 +7361,29 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
     assert "Market Breadth: advance_ratio=0.3582, regime=BEARISH_BREADTH" in sec2
     assert "age=2.4m" in sec2
 
+    # 8. Reference microstructure with mid_price (e.g. ADAUSD) seeds prices_and_trends & liquidation clusters,
+    #    and summarize_recent_ai_intents deduplicates superseded CANCELED_OR_EXPIRED intents per (venue, symbol, side)
+    assert [x["order_id"] for x in verified_summary] == [
+        "OWZ3YO-EKP5O-IPKB2Y",
+        "720911979",
+        "720922115",
+    ]
+    (tmp_path / "orderbook_depth_ADAUSD.json").write_text(
+        json.dumps({"mid_price": 0.18775, "imbalance_ratio": 0.633, "bid_depth_usd": 152000, "ask_depth_usd": 88000, "spread_bps": 5.33}),
+        encoding="utf-8",
+    )
+    (tmp_path / "derivatives_telemetry_ADAUSD.json").write_text(
+        json.dumps({"funding_rate": 0.00004, "open_interest_usd": 36690601.0}),
+        encoding="utf-8",
+    )
+    pt_ada = {"BTCUSDC": {"price": 85000.0, "trend": 0, "growth_coefficient": 0.0}}
+    micro_ada: dict = {}
+    enrich_24h_and_microstructure(str(tmp_path), str(tmp_path), pt_ada, micro_ada, {}, {}, now_ts)
+    assert "ADAUSD" in pt_ada
+    assert pt_ada["ADAUSD"]["price"] == pytest.approx(0.18775)
+    assert "long_liq_px" in micro_ada["ADAUSD"]
+
+
 
 
 

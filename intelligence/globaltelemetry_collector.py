@@ -124,7 +124,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "trend_7d_change": snap.trend_7d_change,
                         "is_extreme_fear": snap.is_extreme_fear,
                         "is_extreme_greed": snap.is_extreme_greed,
-                        "ts": safe_pos_float(getattr(snap, "timestamp", None), time.time()),
+                        "index_timestamp": safe_pos_float(getattr(snap, "timestamp", None), time.time()),
+                        "ts": time.time(),
                     },
                 )
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
