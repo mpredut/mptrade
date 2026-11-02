@@ -361,20 +361,62 @@ class KrakenProvider(MarketDataProvider):
     )
 
     @staticmethod
+    def _parse_balance_value(raw_val: object) -> Optional[float]:
+        if isinstance(raw_val, dict):
+            total = safe_nonneg_float(raw_val.get("balance"), default=None)
+            hold = safe_nonneg_float(raw_val.get("hold_trade", 0.0), default=None)
+            if total is None or hold is None:
+                return None
+            return max(0.0, total - hold)
+        return safe_nonneg_float(raw_val, default=None)
+
+    @staticmethod
     def _lookup_balance_candidates(bal: dict, candidates: tuple[str, ...] | List[str]) -> tuple[bool, Optional[float]]:
         for key in candidates:
             if key in bal:
-                return True, safe_nonneg_float(bal[key], default=None)
+                return True, KrakenProvider._parse_balance_value(bal[key])
         for key in candidates:
             raw_val = casefold_get(bal, key, _MISSING)
             if raw_val is not _MISSING:
-                return True, safe_nonneg_float(raw_val, default=None)
+                return True, KrakenProvider._parse_balance_value(raw_val)
         return False, 0.0
 
+    @staticmethod
+    def _available_balances_from_client(cli) -> dict:
+        """Read extended balances (BalanceEx, subtracting hold_trade) when supported, falling back to Balance."""
+        bal_fn = getattr(cli, "balance", None)
+        use_ex = (
+            "balance_ex" in getattr(cli, "__dict__", {})
+            or (
+                "balance_ex" in type(cli).__dict__
+                and getattr(bal_fn, "_is_default_kraken_balance", None) is True
+            )
+        )
+        if use_ex:
+            try:
+                bx = cli.balance_ex()
+                if isinstance(bx, dict) and bx:
+                    return bx
+            except Exception as exc:  # noqa: BLE001
+                err_l = str(exc).lower()
+                if any(
+                    tok in err_l
+                    for tok in (
+                        "permission denied",
+                        "invalid nonce",
+                        "rate limit",
+                        "temporary lockout",
+                        "eroare retea",
+                    )
+                ):
+                    raise
+        res = cli.balance() if callable(bal_fn) else {}
+        return res if isinstance(res, dict) else {}
+
     def usd_cash_breakdown(self) -> dict[str, float]:
-        """Return non-zero Kraken USD and 1:1 USD-stablecoin balances (USD/ZUSD, USDC, USDG, USDT)."""
+        """Return non-zero Kraken free USD and 1:1 USD-stablecoin balances (USD/ZUSD, USDC, USDG, USDT)."""
         try:
-            bal = self._query_with_bot_fallback(lambda cli: cli.balance()) or {}
+            bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return {}
             out: dict[str, float] = {}
@@ -390,7 +432,7 @@ class KrakenProvider(MarketDataProvider):
         if not asset or isinstance(asset, bool) or not str(asset).strip():
             return None
         try:
-            bal = self._query_with_bot_fallback(lambda cli: cli.balance()) or {}
+            bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return None
             asset_u = str(asset).strip().upper()
@@ -422,7 +464,7 @@ class KrakenProvider(MarketDataProvider):
             return
         try:
             cli = self._client()
-            bal = cli.balance() or {}
+            bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return
             _, zusd = self._lookup_balance_candidates(bal, ("ZUSD", "USD", "XUSD"))

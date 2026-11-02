@@ -297,6 +297,12 @@ class KrakenClient:
         """Return asset balances as {asset: quantity}."""
         return self._private("Balance")
 
+    balance._is_default_kraken_balance = True  # type: ignore[attr-defined]
+
+    def balance_ex(self) -> dict:
+        """Return extended asset balances as {asset: {'balance': str, 'hold_trade': str, ...}}."""
+        return self._private("BalanceEx")
+
     def price_decimals(self, pair: str) -> int:
         """Return Kraken's allowed PRICE decimals for the pair from AssetPairs,
         cached for one hour. Conservatively default to 2 when metadata is missing;

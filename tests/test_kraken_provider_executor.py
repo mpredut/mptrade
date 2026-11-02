@@ -417,6 +417,29 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 self.assertEqual(buy_call[1], "HYPEUSD")
                 self.assertEqual(buy_call[2], "buy")
 
+        with self.subTest(msg="balance_ex_subtracts_hold_trade_and_triggers_usdc_conversion"):
+            self.fake.calls.clear()
+            with patch.object(self.fake, "balance_ex", create=True, return_value={
+                "ZUSD": {"balance": "808.8325", "hold_trade": "800.0000"},
+                "USDC": {"balance": "2049.5800", "hold_trade": "0.0"},
+                "HYPE": {"balance": "4.9386", "hold_trade": "4.8769"},
+            }):
+                self.assertAlmostEqual(self.p.free_balance("HYPE"), 0.0617, places=4)
+                self.assertEqual(
+                    self.p.usd_cash_breakdown(),
+                    {"USD": 8.83, "USDC": 2049.58},
+                )
+                oid = self.p.submit_order("HYPEUSD", "buy", 9.81595, price=81.50)
+                self.assertEqual(oid, "OABC-123")
+                self.assertEqual(len(self.fake.calls), 2)
+                conv_call, buy_call = self.fake.calls
+                self.assertEqual(conv_call[0], "add_order")
+                self.assertEqual(conv_call[1], "USDCUSD")
+                self.assertEqual(conv_call[2], "sell")
+                self.assertGreaterEqual(conv_call[3], 790.0)
+                self.assertEqual(buy_call[1], "HYPEUSD")
+                self.assertEqual(buy_call[2], "buy")
+
     def test_ledger_to_fills_ignores_dustsweeping_and_multi_asset_groups(self):
         from kraken.kraken_cachemanager import _ledger_to_fills
         ledger = {
