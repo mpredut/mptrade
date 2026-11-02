@@ -122,7 +122,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
 
         return SlotContext()
 
-    def _instrument_place(self, *, force=False, client_order_id=None):
+    def _instrument_place(self, *, force=False, client_order_id=None, outcome_context=None):
         os.environ["KRAKEN_LIVE_ORDERS"] = "true"
         instrument = Instrument(
             "HYPE_KRAKEN", "HYPEUSD", "Kraken", base="HYPE", quote="USD",
@@ -138,6 +138,7 @@ class KrakenExecutorContractTest(unittest.TestCase):
                 "BUY", 60.0, 1.0, smart=False, wait_for_trend=False,
                 caller_owns_retry=True,
                 force=force, client_order_id=client_order_id,
+                _outcome_context=outcome_context,
                 bypass_guards={"all"})
 
     def test_satisfies_protocol(self):
@@ -207,6 +208,21 @@ class KrakenExecutorContractTest(unittest.TestCase):
             self.assertEqual(call[5], "market")
             self.assertIsNone(call[4])
             self.assertFalse(call[6])
+
+        with self.subTest(msg="definitive_venue_refusal_in_place_order_marks_refused_not_unknown"):
+            ctx_refused = {}
+            with patch.object(self.fake, "add_order", side_effect=RuntimeError("KrakenError: EOrder:Insufficient funds")):
+                order = self._instrument_place(outcome_context=ctx_refused)
+            self.assertIsNone(order)
+            self.assertEqual(ctx_refused.get("state"), "refused")
+            self.assertIn("Insufficient funds", str(ctx_refused.get("reason") or ""))
+
+            ctx_unknown = {}
+            with patch.object(self.fake, "add_order", side_effect=RuntimeError("network timeout")):
+                order = self._instrument_place(outcome_context=ctx_unknown)
+            self.assertIsNone(order)
+            self.assertEqual(ctx_unknown.get("state"), "unknown")
+            self.assertEqual(ctx_unknown.get("reason"), "response_without_order_id")
 
     def test_client_id_lookup_is_not_advertised_as_authoritative(self):
         self.assertFalse(

@@ -508,6 +508,8 @@ class HyperliquidProvider(MarketDataProvider):
             clean_oid = extract_order_id(oid, default=None)
             print(f"[HL] place_order {side} {symbol} -> ok={ok} oid={oid} ({msg})")
             if not (ok and clean_oid):
+                if not ok and self._is_definitive_refusal(msg):
+                    raise SubmissionRefused(f"place_order({symbol}) rejected: {msg}")
                 return None
             out_oid = (
                 exact_pos_int(oid, default=clean_oid)
@@ -515,9 +517,35 @@ class HyperliquidProvider(MarketDataProvider):
                 else clean_oid
             )
             return {"orderId": out_oid, "ok": ok, "msg": msg}
+        except SubmissionRefused:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[HL] place_order({side} {symbol}) failed: {e}")
+            if self._is_definitive_refusal(e):
+                raise SubmissionRefused(f"place_order({symbol}) rejected: {e}") from e
             return None
+
+    @staticmethod
+    def _is_definitive_refusal(error: object) -> bool:
+        text = str(error or "").lower()
+        return any(
+            token in text
+            for token in (
+                "insufficient",
+                "minimum value",
+                "order minimum",
+                "volume minimum",
+                "cost minimum",
+                "invalid price",
+                "invalid size",
+                "invalid order",
+                "invalid arguments",
+                "tick size",
+                "could not immediately match",
+                "price must be",
+                "too far from",
+            )
+        )
 
     @staticmethod
     def _invoke_spot_order(

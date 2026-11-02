@@ -649,8 +649,12 @@ class KrakenProvider(MarketDataProvider):
             return self._client().add_order(
                 symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
                 cl_ord_id=cl_ord_id)
+        except SubmissionRefused:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] place_order {symbol}: {e}")
+            if self._is_definitive_refusal(e):
+                raise SubmissionRefused(f"place_order {symbol} {s}: {e}") from e
             return None
 
     # -- StrategyExecutor contract delegated to kraken_client. -----------------

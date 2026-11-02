@@ -104,12 +104,27 @@ TERMINAL_FILTER_REFUSAL_PREFIXES = (
     "binance_filter_refused:",
     "filter_",
 )
+TERMINAL_FILTER_REFUSAL_SUBSTRINGS = (
+    "order minimum not met",
+    "volume minimum not met",
+    "cost minimum not met",
+    "minimum value of",
+    "invalid price",
+    "invalid size",
+    "invalid arguments",
+    "tick size check failed",
+)
 
 
 def is_terminal_filter_refusal(reason) -> bool:
     """Return whether unchanged order data can never pass its venue filters."""
     value = str(reason or "")
-    return value in TERMINAL_FILTER_REFUSAL_REASONS or value.startswith(TERMINAL_FILTER_REFUSAL_PREFIXES)
+    low = value.lower()
+    return (
+        value in TERMINAL_FILTER_REFUSAL_REASONS
+        or value.startswith(TERMINAL_FILTER_REFUSAL_PREFIXES)
+        or any(token in low for token in TERMINAL_FILTER_REFUSAL_SUBSTRINGS)
+    )
 
 
 POSSIBLY_SUBMITTED_REASONS = frozenset({
