@@ -249,15 +249,14 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     custom_ttl_map = {}
-    accepted_owner_map = {}
     try:
         custom_ttl_map = order_retry.get_accepted_order_ttl_map()
     except Exception:
-        pass
+        custom_ttl_map = {}
     try:
         accepted_owner_map = order_retry.get_accepted_order_owner_map()
     except Exception:
-        pass
+        accepted_owner_map = {}
 
     for order_id in list(orders.keys()):
         order = orders[order_id]
@@ -278,14 +277,15 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         if owner == "order_retry":
             owner = accepted_owner_map.get(oid_str) or accepted_owner_map.get(cid) or owner
 
-        if oid_str not in _notified_placed_order_ids:
-            _notified_placed_order_ids.add(oid_str)
-            if (oid_str not in _derived_replacement_order_ids
-                    and _monitororder_initialized
-                    and _should_notify_order_launched(owner)):
-                _notify_order_launched(symbol, order_type, order_id, price, extract_order_qty(order), owner=owner)
-        else:
-            _notified_placed_order_ids.add(oid_str)
+        already_notified = oid_str in _notified_placed_order_ids
+        _notified_placed_order_ids.add(oid_str)
+        if (
+            not already_notified
+            and oid_str not in _derived_replacement_order_ids
+            and _monitororder_initialized
+            and _should_notify_order_launched(owner)
+        ):
+            _notify_order_launched(symbol, order_type, order_id, price, extract_order_qty(order), owner=owner)
 
         # Check order age and Market TTL expiration (hard cap of 3 days or effective TTL).
         order_ts = extract_timestamp_s(order, default=0.0) or 0.0
@@ -293,8 +293,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         effective_ttl = resolve_effective_order_ttl(
             oid_str, cid, owner=owner, custom_ttl_map=custom_ttl_map)
         if order_ts > 0:
-            now = time.time()
-            age_sec = max(0.0, now - order_ts)
+            age_sec = max(0.0, time.time() - order_ts)
             if age_sec >= MAX_GLOBAL_ORDER_TTL_SEC or age_sec >= effective_ttl:
                 age_str = _format_duration_hm(age_sec)
                 ttl_str = _format_duration_hm(effective_ttl)
@@ -303,8 +302,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
                 )
                 try:
-                    canceled = mkt.cancel_order(symbol, oid_str)
-                    if canceled is False:
+                    if mkt.cancel_order(symbol, oid_str) is False:
                         print(f"[MONITORORDER] Cancel returned False for expired order {order_id}; will retry next cycle.")
                         continue
                     initial_prices.pop(order_id, None)
@@ -336,27 +334,20 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         difference_percent = abs(current_price - price) / price * 100
         print(f"{order_type.capitalize()} price {price}, current price {current_price} difference: {difference_percent:.2f}%, Order ID {order_id}")
         
-        are_close = u.are_close(current_price, price, MAX_PROC)
-        if are_close:
+        if u.are_close(current_price, price, MAX_PROC):
             print(f"Current price {current_price} and {order_type} price {price} are close!")
             
             difference_percent = abs(current_price - initial_prices[order_id]) / initial_prices[order_id] * 100
-            are_close = u.are_close(current_price, initial_prices[order_id], MAX_PROC)
-            if not are_close:
+            if not u.are_close(current_price, initial_prices[order_id], MAX_PROC):
                 print(f"However the price moved too much ({difference_percent}%) compared with the initial price ({initial_prices[order_id]}). The order is no longer modified.")
                 continue
-            else:
-                print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
+            print(f"Current price {current_price} and initial {order_type} price {initial_prices[order_id]} are close!")
             
             # Build and validate the exact replacement before canceling the live
             # order. Instrument.place repeats this check immediately before submit
             # to close the time-of-check/time-of-use window.
             if order_type == "SELL":
-                new_price = (
-                    current_price * 1.001
-                    if current_price <= 1.0
-                    else current_price * 1.001 + 1
-                )
+                new_price = current_price * 1.001 if current_price <= 1.0 else current_price * 1.001 + 1
             else:
                 new_price = current_price * 0.999 - 1
                 if new_price <= 0:
@@ -364,9 +355,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             effective_new_price = new_price
             round_px = getattr(mkt, "round_price", None)
             if callable(round_px) and not hasattr(round_px, "_mock_name"):
-                rounded = safe_pos_float(round_px(symbol, new_price), default=None)
-                if rounded is not None:
-                    effective_new_price = rounded
+                effective_new_price = safe_pos_float(round_px(symbol, new_price), default=new_price)
             if (
                 abs(effective_new_price - float(price)) <= 1e-12
                 or abs(new_price - float(price)) <= 1e-12
@@ -389,22 +378,13 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             # order. Response loss and transient refusals therefore leave a
             # durable intent for the shared worker; deterministic venue filters
             # are checked while the existing order is still active.
-            if owner == "tradeall":
-                replace_pfx = "MO_TA_OR"
-            elif owner == "manual":
-                replace_pfx = "MO_MN_OR"
-            else:
-                replace_pfx = "MO_OR"
+            replace_pfx = "MO_TA_OR" if owner == "tradeall" else ("MO_MN_OR" if owner == "manual" else "MO_OR")
             has_explicit_ttl = (
                 order_ts > 0
                 or oid_str in custom_ttl_map
                 or (cid and cid in custom_ttl_map)
             )
-            replacement_ttl = (
-                max(60.0, effective_ttl - age_sec)
-                if has_explicit_ttl
-                else None
-            )
+            replacement_ttl = max(60.0, effective_ttl - age_sec) if has_explicit_ttl else None
             replacement_id = order_retry.enqueue(
                 symbol, order_type, quantity,
                 {
@@ -511,13 +491,11 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                         "response was lost; continuing with its replacement."
                     )
             else:
+                order_retry.complete_claim(
+                    replacement_claim, "success" if status.terminal else "release"
+                )
                 if status.terminal:
-                    order_retry.complete_claim(
-                        replacement_claim, "success")
                     initial_prices.pop(order_id, None)
-                else:
-                    order_retry.complete_claim(
-                        replacement_claim, "release")
                 print(
                     f"Order {order_id} reconciled as {venue_status or 'UNKNOWN'}; "
                     "no replacement is submitted."
@@ -575,6 +553,21 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                         f"CRITICAL: replacement order {extract_order_id(new_order)} "
                         "was accepted but its durable tracker could not be updated."
                     )
+                raw_new_id = (
+                    new_order["orderId"]
+                    if isinstance(new_order, dict) and "orderId" in new_order
+                    else extract_order_id(new_order)
+                )
+                new_oid = _clean_monitor_id(raw_new_id) or str(raw_new_id)
+                _derived_replacement_order_ids.add(new_oid)
+                _notified_placed_order_ids.add(new_oid)
+                orders[raw_new_id] = {
+                    'price': new_price,
+                    'quantity': quantity
+                }
+                _remember_initial_price(
+                    initial_prices, raw_new_id, initial_prices.pop(order_id, float(price)))
+                print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             else:
                 failure_reason = str(
                     outcome.get("reason") or "replacement_not_accepted")
@@ -604,34 +597,16 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                         f"The {order_type} replacement was refused before submit "
                         f"after old order {order_id} was canceled; the stale "
                         f"replacement intent was removed ({failure_reason}).")
-            
-            if new_order:
-                raw_new_id = (
-                    new_order["orderId"]
-                    if isinstance(new_order, dict) and "orderId" in new_order
-                    else extract_order_id(new_order)
-                )
-                new_oid = _clean_monitor_id(raw_new_id) or str(raw_new_id)
-                _derived_replacement_order_ids.add(new_oid)
-                _notified_placed_order_ids.add(new_oid)
-                orders[raw_new_id] = {
-                    'price': new_price,
-                    'quantity': quantity
-                }
-                _remember_initial_price(
-                    initial_prices, raw_new_id, initial_prices.pop(order_id, float(price)))
-                print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
-            elif not terminal_pre_submit_refusal:
-                print(
-                    f"The {order_type} replacement was not accepted immediately; "
-                    "the persisted intent stays in the shared outbox for a retry."
-                )
+                else:
+                    print(
+                        f"The {order_type} replacement was not accepted immediately; "
+                        "the persisted intent stays in the shared outbox for a retry."
+                    )
 
     # Keep tracking set sizes bounded over long continuous execution
     for tracked_set in (_notified_placed_order_ids, _notified_expired_order_ids, _derived_replacement_order_ids):
         if len(tracked_set) > MAX_TRACKED_ORDER_IDS:
             tracked_set.trim(5000)
-
 
 
 MONITOR_BETWEEN_ORDERS_INTERVAL = 2
@@ -659,9 +634,6 @@ def warmup_open_orders():
 
 
 def monitor_orders():
-    # monitor_filled_buy_orders()
-    # return
-    
     # Warm up existing open orders so existing orders don't spam notifications on startup
     warmup_open_orders()
 
@@ -675,17 +647,16 @@ def monitor_orders():
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
             if currenttime < monitor_close_orders_by_age_lasttime:
                 monitor_close_orders_by_age_lasttime = currenttime - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
-            if(currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL) :
+            if currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL:
                 for symbol in sym.symbols:
-                    monitor_open_orders_by_type(symbol, "SELL")
-                    monitor_open_orders_by_type(symbol, "BUY")
+                    for side in ("SELL", "BUY"):
+                        monitor_open_orders_by_type(symbol, side)
                 monitor_open_orders_lasttime = currenttime
-            if(currenttime - monitor_close_orders_by_age_lasttime > MONITOR_CLOSE_ORDER_INTERVAL) :
-                #monitor_close_orders_by_age(max_age_seconds)
-                monitor_close_orders_by_age_lasttime = currenttime   
-                
+            if currenttime - monitor_close_orders_by_age_lasttime > MONITOR_CLOSE_ORDER_INTERVAL:
+                monitor_close_orders_by_age_lasttime = currenttime
+
             time.sleep(min(MONITOR_OPEN_ORDER_INTERVAL, MONITOR_CLOSE_ORDER_INTERVAL))
-            
+
         except BinanceAPIException as e:
             print(f"Binance API error: {e}")
             time.sleep(TIME_SLEEP_ERROR)

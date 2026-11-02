@@ -32,9 +32,12 @@ from .base import (
     _normalize_order,
     aggregate_fills_by_order_id,
     bool_env,
-    env_value,
+    build_price_history_points,
+    env_values_map,
     extract_client_order_id,
     normalize_side,
+    read_client_ohlc_series,
+    require_clean_order_id,
     resolve_market_flag,
 )
 from .strategy_executor import (
@@ -157,10 +160,7 @@ def _kraken_client_order_id(client_order_id: str) -> str:
 
 
 def _clean_kraken_order_id(order_id: object, caller: str) -> str:
-    clean = _clean_single_order_id(order_id) if isinstance(order_id, str) else None
-    if not clean:
-        raise ProviderError(f"{caller} {order_id}: invalid order id")
-    return clean
+    return require_clean_order_id(order_id, f"{caller} {order_id}", str_only=True)
 
 
 def _live() -> bool:
@@ -217,15 +217,14 @@ class KrakenProvider(MarketDataProvider):
         # Read Kraken-specific credentials, with environment variables taking
         # precedence. Preserve the existing whole-profile priority: primary,
         # then SPARE, then BOT. The resolver prevents cross-profile key mixing.
-        names = (
-            "KRAKEN_API_KEY", "KRAKEN_API_SECRET",
-            "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE",
-            "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT",
+        values = env_values_map(
+            _KRAKEN_DIR,
+            (
+                "KRAKEN_API_KEY", "KRAKEN_API_SECRET",
+                "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE",
+                "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT",
+            ),
         )
-        values = {
-            name: os.environ.get(name) or env_value(_KRAKEN_DIR, name)
-            for name in names
-        }
         try:
             credentials = kraken_credentials("fleet", values=values)
             api_key, api_secret = credentials.key, credentials.secret
@@ -251,11 +250,7 @@ class KrakenProvider(MarketDataProvider):
             return fb
         try:
             KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
-            names = ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT")
-            values = {
-                name: os.environ.get(name) or env_value(_KRAKEN_DIR, name)
-                for name in names
-            }
+            values = env_values_map(_KRAKEN_DIR, ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"))
             creds = kraken_credentials("bot", values=values)
             primary_key = getattr(self._cli, "api_key", None)
             if creds.key and creds.secret and creds.key != primary_key:
@@ -265,6 +260,24 @@ class KrakenProvider(MarketDataProvider):
         except Exception:  # noqa: BLE001
             pass
         return None
+
+    def _query_with_bot_fallback(self, fn, err_prefix: Optional[str] = None):
+        """Execute ``fn(cli)`` on primary client, falling back to BOT client on permission denied."""
+        cli = self._client()
+        try:
+            return fn(cli)
+        except Exception as exc:  # noqa: BLE001
+            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
+            if fb_cli is not None:
+                try:
+                    return fn(fb_cli)
+                except Exception as fb_exc:  # noqa: BLE001
+                    if err_prefix:
+                        raise ProviderError(f"{err_prefix}: {fb_exc}") from fb_exc
+                    raise
+            if err_prefix:
+                raise ProviderError(f"{err_prefix}: {exc}") from exc
+            raise
 
     # -- Public market data without keys. --------------------------------------
     def get_current_price(self, symbol: str) -> Optional[float]:
@@ -316,17 +329,13 @@ class KrakenProvider(MarketDataProvider):
             rows = next((v for k, v in res.items() if k != "last"), None)
             if not rows or not isinstance(rows, (list, tuple)):
                 return None
-            cutoff = time.time() - lookback_f * 3600
-            out = []
-            for r in rows:                       # [time, o, h, l, c, vwap, vol, cnt]
-                if not isinstance(r, (list, tuple)) or len(r) < 5:
-                    continue
-                t = safe_pos_float(r[0], default=None)
-                p = safe_pos_float(r[4], default=None)
-                if t is None or p is None or t < cutoff:
-                    continue
-                out.append({"timestamp": int(t * 1000), "price": p})
-            out.sort(key=lambda x: x["timestamp"])
+            out = build_price_history_points(
+                rows,
+                lambda r: r[0] if isinstance(r, (list, tuple)) and len(r) >= 5 else None,
+                lambda r: r[4] if isinstance(r, (list, tuple)) and len(r) >= 5 else None,
+                cutoff_s=time.time() - lookback_f * 3600,
+                ts_in_seconds=True,
+            )
             return out or None
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] history {symbol}: {e}")
@@ -454,17 +463,7 @@ class KrakenProvider(MarketDataProvider):
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return a strict Binance-shaped snapshot of active Kraken orders."""
-        try:
-            raw_orders = self._client().open_orders()
-        except Exception as exc:  # noqa: BLE001
-            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
-            if fb_cli is not None:
-                try:
-                    raw_orders = fb_cli.open_orders()
-                except Exception as fb_exc:  # noqa: BLE001
-                    raise ProviderError(f"open_orders({symbol}): {fb_exc}") from fb_exc
-            else:
-                raise ProviderError(f"open_orders({symbol}): {exc}") from exc
+        raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({symbol})")
         if not isinstance(raw_orders, dict):
             raise ProviderError(
                 f"open_orders({symbol}): payload Kraken invalid")
@@ -539,29 +538,17 @@ class KrakenProvider(MarketDataProvider):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
             return []
-        cli = self._client()
-        try:
-            res = cli._private("TradesHistory")
-        except Exception as exc:  # noqa: BLE001
-            fb_cli = self._order_query_fallback_client() if "permission denied" in str(exc).lower() else None
-            if fb_cli is not None:
-                res = fb_cli._private("TradesHistory")
-            else:
-                raise
+        res = self._query_with_bot_fallback(lambda cli: cli._private("TradesHistory"))
         if not isinstance(res, dict) or "trades" not in res:
             raise ProviderError(f"TradesHistory({symbol}): trades history payload missing or invalid")
         trades = res.get("trades")
         if not isinstance(trades, dict):
             raise ProviderError(f"TradesHistory({symbol}): trades mapping in payload is invalid")
-        rows = []
-        for tr in trades.values():
-            if not isinstance(tr, dict):
-                continue
-            p = str(tr.get("pair", "")).upper()
-            if not _kraken_pair_matches(symbol, p):
-                continue
-            rows.append(_normalize_kraken_fill(tr))
-        return rows
+        return [
+            _normalize_kraken_fill(tr)
+            for tr in trades.values()
+            if isinstance(tr, dict) and _kraken_pair_matches(symbol, str(tr.get("pair", "")).upper())
+        ]
 
     # -- Placement remains dry until KRAKEN_LIVE_ORDERS=true. ------------------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
@@ -682,68 +669,24 @@ class KrakenProvider(MarketDataProvider):
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price: Optional[float] = None, *, market: bool = False,
                         kind: Optional[str] = None) -> None:
-        """Reject an impossible SELL before creating a durable submit intent.
-
-        Kraken previously received the same TP repeatedly when persisted strategy
-        quantity exceeded the account balance. A read-only balance gate stops that
-        deterministic venue rejection without guessing a replacement quantity or
-        mutating strategy state. BUY funding remains venue-authoritative because its
-        required fee/slippage reserve depends on order type and execution.
-        """
-        if normalize_side(side) != "SELL":
-            return
-        if qty is None:
-            return
-        requested = safe_pos_float(qty, default=None)
-        if requested is None:
-            raise ProviderError(
-                f"preflight_order {symbol}: an invalid SELL quantity")
-
-        precision = self.pair_precision(symbol)
-        base_asset = precision.base_asset if precision else ""
-        if not base_asset:
-            raise ProviderError(
-                f"preflight_order {symbol}: base asset is unavailable")
-        avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
-        if avail_f is None:
-            raise ProviderError(
-                f"preflight_order {symbol}: {base_asset} balance is unavailable")
-        available = avail_f
-        decimals = precision.volume_decimals if precision else 8
-        tolerance = 0.5 * (10.0 ** -max(0, decimals))
-        if requested > available + tolerance:
-            raise ProviderError(
-                f"preflight_order {symbol}: insufficient funds SELL "
-                f"qty={requested} available={available} {base_asset}"
-            )
+        """Reject an impossible SELL before creating a durable submit intent."""
+        self._preflight_sell_base_balance(symbol, side, qty)
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
         clean_id = _clean_kraken_order_id(order_id, "order_status")
-        try:
-            res = self._client().query_orders(clean_id) or {}
-        except Exception as e:  # noqa: BLE001
-            fb_cli = self._order_query_fallback_client() if "permission denied" in str(e).lower() else None
-            if fb_cli is not None:
-                try:
-                    res = fb_cli.query_orders(clean_id) or {}
-                except Exception as fb_e:  # noqa: BLE001
-                    raise ProviderError(f"order_status {order_id}: {fb_e}") from fb_e
-            else:
-                raise ProviderError(f"order_status {order_id}: {e}") from e
+        res = self._query_with_bot_fallback(
+            lambda cli: cli.query_orders(clean_id) or {}, f"order_status {order_id}"
+        )
         if not isinstance(res, dict):
             raise ProviderError(f"order_status {order_id}: invalid Kraken response")
-        info = casefold_get(res, clean_id)
-        if info is None:
-            info = casefold_get(res, order_id)
+        info = casefold_get(res, clean_id) or casefold_get(res, order_id)
         if not isinstance(info, dict):
             fb_cli = self._order_query_fallback_client()
             if fb_cli is not None:
                 try:
                     fb_res = fb_cli.query_orders(clean_id) or {}
                     if isinstance(fb_res, dict):
-                        info = casefold_get(fb_res, clean_id)
-                        if info is None:
-                            info = casefold_get(fb_res, order_id)
+                        info = casefold_get(fb_res, clean_id) or casefold_get(fb_res, order_id)
                 except Exception:  # noqa: BLE001
                     pass
         if not isinstance(info, dict):
@@ -780,19 +723,10 @@ class KrakenProvider(MarketDataProvider):
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover an open or recently terminal Kraken order by ``cl_ord_id``."""
         wanted = _kraken_client_order_id(client_order_id)
-        try:
-            groups = (self._client().open_orders(), self._client().closed_orders())
-        except Exception as e:  # noqa: BLE001
-            fb_cli = self._order_query_fallback_client() if "permission denied" in str(e).lower() else None
-            if fb_cli is not None:
-                try:
-                    groups = (fb_cli.open_orders(), fb_cli.closed_orders())
-                except Exception as fb_e:  # noqa: BLE001
-                    raise ProviderError(
-                        f"order_by_client_id({symbol},{client_order_id}): {fb_e}") from fb_e
-            else:
-                raise ProviderError(
-                    f"order_by_client_id({symbol},{client_order_id}): {e}") from e
+        groups = self._query_with_bot_fallback(
+            lambda cli: (cli.open_orders(), cli.closed_orders()),
+            f"order_by_client_id({symbol},{client_order_id})",
+        )
         for orders in groups:
             if not isinstance(orders, dict):
                 continue
@@ -871,30 +805,6 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        interval_i = exact_pos_int(interval_min, default=None)
-        if interval_i is None:
-            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
-        try:
-            client = self._client()
-            series_reader = getattr(
-                client, "ohlc_closes_with_timestamps", None)
-            if callable(series_reader):
-                closes, timestamps = series_reader(symbol, interval_i)
-                timestamps = tuple(timestamps) if timestamps is not None else ()
-                observed_at = timestamps[-1] if timestamps else None
-            else:
-                reader = getattr(client, "ohlc_closes_with_timestamp", None)
-                if callable(reader):
-                    closes, observed_at = reader(symbol, interval_i)
-                else:
-                    closes = client.ohlc_closes(symbol, interval_i)
-                    observed_at = None
-                timestamps = ()
-            return ClosedPriceSeries(
-                tuple(closes) if closes is not None else (),
-                interval_i,
-                observed_at,
-                timestamps,
-            )
-        except Exception as exc:
-            raise ProviderError(f"ohlc_series {symbol}: {exc}") from exc
+        return read_client_ohlc_series(
+            self._client, symbol, interval_min, err_prefix=f"ohlc_series {symbol}"
+        )

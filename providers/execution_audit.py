@@ -436,6 +436,47 @@ def append_intent_history(intent: dict[str, Any], entry: dict[str, Any]) -> None
     hist.append(entry)
 
 
+def _record_intent_state(
+    intent: dict[str, Any],
+    status: str,
+    now_ts: float,
+    *,
+    action: Optional[str] = None,
+    **fields: Any,
+) -> None:
+    """Set ``intent['status'] = status`` and append a timestamped history entry."""
+    intent["status"] = status
+    append_intent_history(intent, {"ts": now_ts, "action": action or status, **fields})
+
+
+def _extract_audit_fill_metrics(
+    rec: dict[str, Any],
+    *,
+    fallback_ref_price: bool = False,
+) -> tuple[str, str, Any, Optional[float], Any, Optional[float], Optional[float], bool]:
+    """Extract normalized venue/local status, filled qty, cost, price, and fill flag from an audit record."""
+    v_stat = str(rec.get("venue_status") or "").upper()
+    l_stat = str(rec.get("status") or "").lower()
+    filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
+    f_q = safe_pos_float(filled_qty, default=None)
+    raw_cost = rec.get("cost")
+    cost_f = safe_pos_float(raw_cost, default=None)
+    f_px = safe_pos_float(rec.get("price"), default=None)
+    if f_px is None and cost_f is not None and f_q is not None and f_q > 0:
+        f_px = round(cost_f / f_q, 8)
+    if f_px is None and fallback_ref_price:
+        f_px = safe_pos_float(rec.get("reference_price"), default=None)
+    if raw_cost is None and f_q is not None and f_px is not None:
+        raw_cost = round(f_q * f_px, 8)
+        cost_f = safe_pos_float(raw_cost, default=None)
+    is_fill = (
+        v_stat in ("FILLED", "CLOSED", "PARTIALLY_FILLED")
+        or l_stat in ("closed", "filled", "partially_filled")
+        or (f_q is not None and f_q > 0.0)
+    )
+    return v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill
+
+
 def reconcile_intents_from_execution_audit(
     intents: list[dict[str, Any]],
     audit_dir: str,
@@ -456,12 +497,10 @@ def reconcile_intents_from_execution_audit(
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
             if not exec_pay.get("reconciled_terminal"):
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
-                cur_exec_q = extract_executed_qty(exec_pay, default=0.0)
-                cur_px = extract_order_price(exec_pay, default=0.0)
                 if (
                     cur_v_st not in ("FILLED", "CLOSED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
-                    or cur_exec_q <= 0.0
-                    or cur_px <= 0.0
+                    or extract_executed_qty(exec_pay, default=0.0) <= 0.0
+                    or extract_order_price(exec_pay, default=0.0) <= 0.0
                 ):
                     executed_incomplete_by_id[clean_id] = item
     if (not failed_by_id and not executed_incomplete_by_id) or not os.path.isdir(audit_dir):
@@ -479,17 +518,8 @@ def reconcile_intents_from_execution_audit(
                 if ev == "submit_accepted":
                     matched_records.setdefault(iid, rec)
                 elif ev in ("order_terminal", "order_terminal_retry"):
-                    v_stat = str(rec.get("venue_status") or "").upper()
-                    l_stat = str(rec.get("status") or "").lower()
-                    f_qty = safe_pos_float(
-                        rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
-                        0.0,
-                    )
-                    if (
-                        v_stat in ("FILLED", "CLOSED", "PARTIALLY_FILLED")
-                        or l_stat in ("closed", "filled", "partially_filled")
-                        or f_qty > 0.0
-                    ):
+                    *_, is_fill = _extract_audit_fill_metrics(rec)
+                    if is_fill:
                         matched_records[iid] = rec
                     elif matched_records.get(iid, {}).get("event") == "submit_accepted":
                         prev_oid = matched_records[iid].get("order_id")
@@ -502,16 +532,11 @@ def reconcile_intents_from_execution_audit(
                 rec_oid = extract_order_id(rec.get("order_id"), default=None)
                 if intent_oid is not None and rec_oid is not None and str(intent_oid) != str(rec_oid):
                     continue
-                v_stat = str(rec.get("venue_status") or "").upper()
-                l_stat = str(rec.get("status") or "").lower()
-                f_qty = safe_pos_float(
-                    rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"),
-                    0.0,
-                )
+                v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
                 if (
-                    v_stat in ("FILLED", "CLOSED", "PARTIALLY_FILLED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
-                    or l_stat in ("closed", "filled", "partially_filled", "canceled", "cancelled", "expired", "rejected")
-                    or f_qty > 0.0
+                    is_fill
+                    or v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+                    or l_stat in ("canceled", "cancelled", "expired", "rejected")
                 ):
                     matched_exec_records[iid] = rec
 
@@ -521,17 +546,9 @@ def reconcile_intents_from_execution_audit(
     updated = False
     for iid, rec in matched_records.items():
         intent = failed_by_id[iid]
-        filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
-        f_q = safe_pos_float(filled_qty, default=None)
-        raw_cost = rec.get("cost")
-        cost_f = safe_pos_float(raw_cost, default=None)
-        f_px = safe_pos_float(rec.get("price"), default=None)
-        if f_px is None and cost_f is not None and f_q is not None and f_q > 0:
-            f_px = round(cost_f / f_q, 8)
-        if f_px is None:
-            f_px = safe_pos_float(rec.get("reference_price"), default=None)
-        if raw_cost is None and f_q is not None and f_px is not None:
-            raw_cost = round(f_q * f_px, 8)
+        v_stat, _, filled_qty, _, raw_cost, _, f_px, _ = _extract_audit_fill_metrics(
+            rec, fallback_ref_price=True
+        )
         default_v_status = (
             "NEW"
             if (
@@ -541,7 +558,7 @@ def reconcile_intents_from_execution_audit(
             )
             else "FILLED"
         )
-        raw_v_status = str(rec.get("venue_status") or default_v_status).upper()
+        raw_v_status = v_stat or default_v_status
         if raw_v_status == "CLOSED":
             raw_v_status = "FILLED"
         exec_payload: dict[str, Any] = {
@@ -555,38 +572,22 @@ def reconcile_intents_from_execution_audit(
         }
         if f_px is not None:
             exec_payload["price"] = f_px
-        intent["status"] = "EXECUTED"
         intent["execution_payload"] = exec_payload
-        rec_ts = safe_pos_float(rec.get("ts"), time.time())
-        append_intent_history(intent, {
-            "ts": rec_ts,
-            "action": "RECONCILED_EXECUTED",
-            "order_id": rec.get("order_id"),
-            "payload": exec_payload,
-        })
+        _record_intent_state(
+            intent,
+            "EXECUTED",
+            safe_pos_float(rec.get("ts"), time.time()),
+            action="RECONCILED_EXECUTED",
+            order_id=rec.get("order_id"),
+            payload=exec_payload,
+        )
         updated = True
 
     for iid, rec in matched_exec_records.items():
         intent = executed_incomplete_by_id[iid]
         exec_pay = dict(intent.get("execution_payload")) if isinstance(intent.get("execution_payload"), dict) else {}
-        v_stat = str(rec.get("venue_status") or "").upper()
-        l_stat = str(rec.get("status") or "").lower()
-        filled_qty = rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty")
-        f_q = safe_pos_float(filled_qty, default=None)
-        raw_cost = rec.get("cost")
-        cost_f = safe_pos_float(raw_cost, default=None)
-        is_fill = (
-            v_stat in ("FILLED", "CLOSED", "PARTIALLY_FILLED")
-            or l_stat in ("closed", "filled", "partially_filled")
-            or (f_q is not None and f_q > 0.0)
-        )
+        v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec)
         if is_fill:
-            f_px = safe_pos_float(rec.get("price"), default=None)
-            if f_px is None and cost_f is not None and f_q is not None and f_q > 0:
-                f_px = round(cost_f / f_q, 8)
-            if raw_cost is None and f_q is not None and f_px is not None:
-                raw_cost = round(f_q * f_px, 8)
-                cost_f = safe_pos_float(raw_cost, default=None)
             norm_st = "PARTIALLY_FILLED" if (v_stat == "PARTIALLY_FILLED" or l_stat == "partially_filled") else "FILLED"
             if rec.get("order_id") is not None and not extract_order_id(exec_pay, default=None):
                 exec_pay["orderId"] = rec.get("order_id")
@@ -1176,20 +1177,18 @@ def record_shadow_intent_observation(
     if callable(dispatch_notify_fn):
         dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
-    intent["status"] = "OBSERVED_SHADOW"
-    hist_entry: dict[str, Any] = {
-        "ts": now_ts,
-        "action": "OBSERVED_SHADOW",
-        "guard_allowed": guard_allowed,
-        "guard_reason": guard_reason,
-        "price": price,
-        "qty": target_qty,
-        "notional_usd": effective_usd,
-    }
-    if is_limit:
-        hist_entry["order_type"] = "LIMIT"
-        hist_entry["limit_price"] = price
-    append_intent_history(intent, hist_entry)
+    extra_limit = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
+    _record_intent_state(
+        intent,
+        "OBSERVED_SHADOW",
+        now_ts,
+        guard_allowed=guard_allowed,
+        guard_reason=guard_reason,
+        price=price,
+        qty=target_qty,
+        notional_usd=effective_usd,
+        **extra_limit,
+    )
     return intent
 
 
@@ -1229,15 +1228,15 @@ def execute_enforce_intent_order(
         if callable(dispatch_notify_fn):
             dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
-        intent["status"] = "BLOCKED_BY_GUARD"
-        append_intent_history(intent, {
-            "ts": now_ts,
-            "action": "BLOCKED_BY_GUARD",
-            "guard_reason": guard_reason,
-            "price": price,
-            "qty": target_qty,
-            "notional_usd": effective_usd,
-        })
+        _record_intent_state(
+            intent,
+            "BLOCKED_BY_GUARD",
+            now_ts,
+            guard_reason=guard_reason,
+            price=price,
+            qty=target_qty,
+            notional_usd=effective_usd,
+        )
         return intent
 
     if log:
@@ -1303,6 +1302,15 @@ def execute_enforce_intent_order(
             if callable(dispatch_notify_fn):
                 from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
 
+                notify_kwargs: dict[str, Any] = {
+                    "venue": inst.provider_name,
+                    "owner": "ai_executor",
+                    "source": None,
+                    "title": title,
+                    "body": body,
+                    "notify_fn": dispatch_notify_fn,
+                    "include_price": False,
+                }
                 if is_limit:
                     notify_order_placed(
                         inst.symbol,
@@ -1310,15 +1318,9 @@ def execute_enforce_intent_order(
                         order_id_str,
                         price,
                         target_qty,
-                        venue=inst.provider_name,
-                        owner="ai_executor",
-                        source=None,
                         order_type="LIMIT",
                         allow_ai_executor=True,
-                        title=title,
-                        body=body,
-                        notify_fn=dispatch_notify_fn,
-                        include_price=False,
+                        **notify_kwargs,
                     )
                 else:
                     notify_order_executed(
@@ -1327,29 +1329,21 @@ def execute_enforce_intent_order(
                         order_id_str,
                         price,
                         target_qty,
-                        venue=inst.provider_name,
-                        owner="ai_executor",
-                        source=None,
-                        title=title,
-                        body=body,
-                        notify_fn=dispatch_notify_fn,
-                        include_price=False,
+                        **notify_kwargs,
                     )
 
-            intent["status"] = "EXECUTED"
             intent["execution_payload"] = order_res
-            hist_exec: dict[str, Any] = {
-                "ts": now_ts,
-                "action": "EXECUTED",
-                "price": price,
-                "qty": round(target_qty, 8),
-                "notional_usd": effective_usd,
-                "payload": order_res,
-            }
-            if is_limit:
-                hist_exec["order_type"] = "LIMIT"
-                hist_exec["limit_price"] = price
-            append_intent_history(intent, hist_exec)
+            extra_limit = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
+            _record_intent_state(
+                intent,
+                "EXECUTED",
+                now_ts,
+                price=price,
+                qty=round(target_qty, 8),
+                notional_usd=effective_usd,
+                payload=order_res,
+                **extra_limit,
+            )
         else:
             refusal_reason = str(outcome_ctx.get("reason") or "Instrument.place returned None")
             refusal_cat = str(outcome_ctx.get("category") or "")
@@ -1363,15 +1357,8 @@ def execute_enforce_intent_order(
             if callable(dispatch_notify_fn):
                 dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
-            intent["status"] = "FAILED"
-            hist_entry: dict[str, Any] = {
-                "ts": now_ts,
-                "action": "FAILED",
-                "reason": refusal_reason,
-            }
-            if refusal_cat:
-                hist_entry["category"] = refusal_cat
-            append_intent_history(intent, hist_entry)
+            extra_cat = {"category": refusal_cat} if refusal_cat else {}
+            _record_intent_state(intent, "FAILED", now_ts, reason=refusal_reason, **extra_cat)
     except Exception as e:
         if log:
             log.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
@@ -1380,12 +1367,7 @@ def execute_enforce_intent_order(
         if callable(dispatch_notify_fn):
             dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
 
-        intent["status"] = "FAILED"
-        append_intent_history(intent, {
-            "ts": now_ts,
-            "action": "ERROR",
-            "error": str(e),
-        })
+        _record_intent_state(intent, "FAILED", now_ts, action="ERROR", error=str(e))
 
     return intent
 
@@ -1700,10 +1682,7 @@ def preflight_intent_and_resolve_price(
     """Validate intent fields, confidence, instrument, and live/limit price before order execution."""
     intent_id, decision, symbol, venue = normalize_intent_fields(intent, now_ts)
     if decision not in ("BUY", "SELL"):
-        intent["status"] = "REJECTED_INVALID_DECISION"
-        append_intent_history(intent, {
-            "ts": now_ts, "action": "REJECTED_INVALID_DECISION", "decision": decision,
-        })
+        _record_intent_state(intent, "REJECTED_INVALID_DECISION", now_ts, decision=decision)
         return False, intent_id, decision, symbol, venue, 0.0, None, 0.0, 0.0, False
 
     confidence = parse_intent_confidence(intent.get("confidence"), 0.0)
@@ -1714,13 +1693,13 @@ def preflight_intent_and_resolve_price(
                 "[INTENT GATEWAY] Intent %s rejected: confidence %.2f < %.2f",
                 intent_id, confidence, min_confidence,
             )
-        intent["status"] = "REJECTED_LOW_CONFIDENCE"
-        append_intent_history(intent, {
-            "ts": now_ts,
-            "action": "REJECTED_LOW_CONFIDENCE",
-            "confidence": confidence,
-            "min_confidence": min_confidence,
-        })
+        _record_intent_state(
+            intent,
+            "REJECTED_LOW_CONFIDENCE",
+            now_ts,
+            confidence=confidence,
+            min_confidence=min_confidence,
+        )
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
     inst = resolve_instrument_fn(symbol, venue=venue, instruments_map=instruments_map)
@@ -1735,10 +1714,7 @@ def preflight_intent_and_resolve_price(
                 "[INTENT GATEWAY] Intent %s rejected: unknown or non-fiat instrument %s on %s",
                 intent_id, symbol, venue,
             )
-        intent["status"] = "REJECTED_UNKNOWN_INSTRUMENT"
-        append_intent_history(intent, {
-            "ts": now_ts, "action": "REJECTED_UNKNOWN_INSTRUMENT", "symbol": symbol, "venue": venue,
-        })
+        _record_intent_state(intent, "REJECTED_UNKNOWN_INSTRUMENT", now_ts, symbol=symbol, venue=venue)
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
     suggested_usd = extract_intent_notional(intent, max_notional_usd)
@@ -1748,10 +1724,7 @@ def preflight_intent_and_resolve_price(
     if live_price is None:
         if log:
             log.warning("[INTENT GATEWAY] Intent %s rejected: invalid price for %s", intent_id, symbol)
-        intent["status"] = "REJECTED_PRICE_UNAVAILABLE"
-        append_intent_history(intent, {
-            "ts": now_ts, "action": "REJECTED_PRICE_UNAVAILABLE", "symbol": symbol,
-        })
+        _record_intent_state(intent, "REJECTED_PRICE_UNAVAILABLE", now_ts, symbol=symbol)
         return False, intent_id, decision, symbol, venue, confidence, inst, effective_usd, 0.0, False
 
     intent["reference_price"] = round(live_price, 8)

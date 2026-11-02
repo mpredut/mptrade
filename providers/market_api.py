@@ -30,6 +30,8 @@ from .base import (
     extract_order_side,
     extract_timestamp_ms,
     normalize_side,
+    require_clean_order_id,
+    require_int_order_id,
     resolve_market_flag,
 )
 from .binance_filters import (
@@ -128,10 +130,7 @@ def _resolve_evaluated_at(now: Any) -> float:
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
-    oid = exact_pos_int(clean_order_id(order_id), default=None)
-    if oid is None:
-        raise ProviderError(f"{context}: invalid order id")
-    return oid
+    return require_int_order_id(order_id, context)
 
 
 def _step_decimals(step: str) -> int:
@@ -373,26 +372,17 @@ class BinanceProvider(MarketDataProvider):
         }
         if "market" in kwargs:
             mechanics_kwargs["market"] = is_market
-        if kwargs.get("client_order_id") is not None:
-            mechanics_kwargs["client_order_id"] = kwargs["client_order_id"]
-        if kwargs.get("_balance_verified") is not None:
-            mechanics_kwargs["_balance_verified"] = kwargs["_balance_verified"]
-        if kwargs.get("caller_owns_retry") is not None:
-            mechanics_kwargs["caller_owns_retry"] = kwargs["caller_owns_retry"]
-        if kwargs.get("known_balance") is not None:
-            mechanics_kwargs["known_balance"] = kwargs["known_balance"]
-        cancel_requested_price = kwargs.get(
-            "_cancel_opposite_requested_price")
-        if cancel_requested_price is not None:
-            mechanics_kwargs["cancel_opposite_requested_price"] = (
-                cancel_requested_price)
+        for opt_k in ("client_order_id", "_balance_verified", "caller_owns_retry", "known_balance"):
+            if kwargs.get(opt_k) is not None:
+                mechanics_kwargs[opt_k] = kwargs[opt_k]
+        if kwargs.get("_cancel_opposite_requested_price") is not None:
+            mechanics_kwargs["cancel_opposite_requested_price"] = kwargs["_cancel_opposite_requested_price"]
         if cache_permit is not None:
             mechanics_kwargs["cache_permit"] = cache_permit
             mechanics_kwargs["permit_requested_price"] = (
                 price if permit_requested_price is None and not is_market
                 else permit_requested_price)
-            mechanics_kwargs["kind"] = (
-                kwargs.get("kind") or kwargs.get("motivation"))
+            mechanics_kwargs["kind"] = kwargs.get("kind") or kwargs.get("motivation")
         return _po.place_order_mechanics(
             side, symbol, price, qty, **mechanics_kwargs)
 
@@ -857,10 +847,7 @@ class MarketApi:
 
     @staticmethod
     def _clean_order_id_arg(order_id: Any, provider_name: str) -> str:
-        clean_id = clean_order_id(order_id)
-        if clean_id is None:
-            raise ProviderError(f"{provider_name}: invalid order_id")
-        return clean_id
+        return require_clean_order_id(order_id, provider_name, msg_suffix="invalid order_id")
 
     def order_status(self, symbol: str, order_id: str, *,
                      provider_name=None) -> OrderStatus:

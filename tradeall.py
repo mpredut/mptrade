@@ -427,10 +427,8 @@ class TrendState:
         return count >= FIRE_MAX_PER_TREND
 
     def mark_confirmed(self, direction):
-        if direction == 'UP':
-            self._confirmed_count_up += 1
-        else:
-            self._confirmed_count_down += 1
+        attr = "_confirmed_count_up" if direction == "UP" else "_confirmed_count_down"
+        setattr(self, attr, getattr(self, attr) + 1)
 
     def can_retry_fire(self, direction):
         last = self._last_attempt_up_ts if direction == 'UP' else self._last_attempt_down_ts
@@ -440,10 +438,7 @@ class TrendState:
         return elapsed < 0 or elapsed >= FIRE_MIN_RETRY_INTERVAL_SEC
 
     def mark_fire_attempt(self, direction):
-        if direction == 'UP':
-            self._last_attempt_up_ts = self._now()
-        else:
-            self._last_attempt_down_ts = self._now()
+        setattr(self, "_last_attempt_up_ts" if direction == "UP" else "_last_attempt_down_ts", self._now())
 
     def confirm_trend(self):
         assert self.start_time is not None, "Trend must be started before confirming"
@@ -524,24 +519,19 @@ class TrendState:
         self.state = 'HOLD'
         self.confirm_count = 0
 
+    def _confirm_count_for(self, target_state):
+        if self.check_trend_expiration():
+            return self.confirm_count if target_state == "HOLD" else 0
+        return self.confirm_count if self.state == target_state else 0
+
     def is_trend_up(self):
-        if self.check_trend_expiration() :
-           return 0
-        if self.state == 'UP':
-            return self.confirm_count
-        return 0
+        return self._confirm_count_for("UP")
 
     def is_trend_down(self):
-        if self.check_trend_expiration() :
-           return 0
-        if self.state == 'DOWN':
-            return self.confirm_count
-        return 0
+        return self._confirm_count_for("DOWN")
 
     def is_hold(self):
-        if self.check_trend_expiration() or self.state == 'HOLD':
-            return self.confirm_count
-        return 0
+        return self._confirm_count_for("HOLD")
   
 
 
@@ -576,19 +566,30 @@ def _fire_trend_order(enable, symbol, trend_state, direction, action, price, rea
     return result
 
 
+def _dir_action(is_up: bool) -> tuple[str, str]:
+    return ("UP", "BUY") if is_up else ("DOWN", "SELL")
+
+
+def _resolve_regime_ctx(symbol: str, caller_tag: str = "TRADEALL"):
+    try:
+        return mkt.market_regime_context(symbol)
+    except Exception as e:
+        print(f"[{caller_tag}] Error resolving regime context for {symbol}: {e}")
+        return None
+
+
 def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None, price_window=None):
     """Evaluate fast-momentum and short-term acceleration impulses on the small price window."""
-    if gradient > 0 and slope > SMALL_SLOPE_THRESHOLD:
-        print(f"[SMALL-WINDOW] Momentum BUY surge: gradient={gradient}, slope={slope} > {SMALL_SLOPE_THRESHOLD}")
-        _fire_trend_order(enable, symbol, trend_state, "UP", "BUY", current_price,
-                          "small_window_surge_up", regime_ctx=regime_ctx)
+    if (gradient > 0 and slope > SMALL_SLOPE_THRESHOLD) or (gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD):
+        is_up = gradient > 0
+        direction, action = _dir_action(is_up)
+        cmp_str = f"> {SMALL_SLOPE_THRESHOLD}" if is_up else f"< -{SMALL_SLOPE_THRESHOLD}"
+        reason = "small_window_surge_up" if is_up else "small_window_plunge_down"
+        print(f"[SMALL-WINDOW] Momentum {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope} {cmp_str}")
+        _fire_trend_order(enable, symbol, trend_state, direction, action, current_price, reason, regime_ctx=regime_ctx)
+        return
 
-    elif gradient < 0 and slope < -SMALL_SLOPE_THRESHOLD:
-        print(f"[SMALL-WINDOW] Momentum SELL plunge: gradient={gradient}, slope={slope} < -{SMALL_SLOPE_THRESHOLD}")
-        _fire_trend_order(enable, symbol, trend_state, "DOWN", "SELL", current_price,
-                          "small_window_plunge_down", regime_ctx=regime_ctx)
-
-    elif ACCEL_ENABLED and price_window is not None and (
+    if ACCEL_ENABLED and price_window is not None and (
         (gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR)
         or (gradient < 0 and slope <= -PRICE_CHANGE_THRESHOLD_EUR)
     ):
@@ -602,14 +603,10 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
                 and sign * acc_short >= ACCEL_MIN_ACC_SHORT
                 and sign * vel_med >= ACCEL_MIN_VEL_MED
             ):
-                label = "BUY surge" if is_up else "SELL plunge"
-                direction, action, reason = (
-                    ("UP", "BUY", "accel_surge_up")
-                    if is_up
-                    else ("DOWN", "SELL", "accel_plunge_down")
-                )
+                direction, action = _dir_action(is_up)
+                reason = "accel_surge_up" if is_up else "accel_plunge_down"
                 print(
-                    f"[SMALL-WINDOW] Acceleration {label}: gradient={gradient}, slope={slope:.3f}, "
+                    f"[SMALL-WINDOW] Acceleration {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope:.3f}, "
                     f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
                 )
                 _fire_trend_order(
@@ -629,12 +626,10 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 
     # Check for trend confirmation or initiation
     if (gradient > 0 and slope < 0) or (gradient < 0 and slope > 0):
-        direction = "UP" if gradient > 0 else "DOWN"
-        action = "BUY" if direction == "UP" else "SELL"
+        direction, action = _dir_action(gradient > 0)
         label = "DOWN" if direction == "UP" else "UP"
         print(f"DIFERENTA MARE {win} {label}!")
-        is_matching = trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down()
-        if is_matching:
+        if trend_state.is_trend_up() if direction == "UP" else trend_state.is_trend_down():
             trend_state.confirm_trend()
             if trend_state.is_trend_uniform_confirmed() and trend_state.is_trend_fresh():
                 _fire_once(direction, action, f"trend_confirmed_{direction.lower()}")
@@ -647,8 +642,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 
     # Originally 18 confirmations per minute * 3; effectively six per minute.
     if (slope <= 0 and trend_state.is_trend_up()) or (slope >= 0 and trend_state.is_trend_down()):
-        direction = "UP" if trend_state.is_trend_up() else "DOWN"
-        action = "BUY" if direction == "UP" else "SELL"
+        direction, action = _dir_action(bool(trend_state.is_trend_up()))
         if (trend_state.is_trend_consistent_validated()
         or trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
             print(f"ATENTIE {action} ALL {win} .... ")
@@ -656,8 +650,7 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 
     # Extreme slope counter-trend exhaustion / reversal case
     if (slope <= -SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_down()) or (slope >= SLOPE_EXTREME_THRESHOLD and trend_state.is_trend_up()):
-        direction = "UP" if slope <= -SLOPE_EXTREME_THRESHOLD else "DOWN"
-        action = "BUY" if direction == "UP" else "SELL"
+        direction, action = _dir_action(slope <= -SLOPE_EXTREME_THRESHOLD)
         if (trend_state.is_trend_consistent_validated()
         and trend_state.is_started_trend_older_than(TREND_TO_BE_OLD_SECONDS)):
             print(f"ATENTIE 3: {action} ALL {win} .... ")
@@ -671,8 +664,6 @@ def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regi
 def handle_symbol(symbol, current_price, price_window, price_window_big,
                   analyzer, analyzer_big, trend_state, trend_state_big,
                   regime_ctx=None):
-
-    count = 0
 
     # Refresh the observed sampling rate from ``CacheCurrentPriceManager``.
     try:
@@ -689,17 +680,11 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
 
     if slope * gradient < 0:
         print(f"ALERT slope1 = {slope} gradient = {gradient}")
-    if slope == 0:
-        count = count + 1
-    else:
-        count = 0
 
     if regime_ctx is None:
-        try:
-            regime_ctx = mkt.market_regime_context(symbol)
+        regime_ctx = _resolve_regime_ctx(symbol, "TRADEALL")
+        if regime_ctx is not None:
             print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
-        except Exception as e:
-            print(f"[TRADEALL] Error resolving regime context for {symbol}: {e}")
     else:
         print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
@@ -851,11 +836,7 @@ class TrendCoordinator:
         current_price = safe_pos_float(current_price, default=None)
         if current_price is None:
             return None
-        regime_ctx = None
-        try:
-            regime_ctx = mkt.market_regime_context(symbol)
-        except Exception as e:
-            print(f"[TrendCoordinator] Error resolving regime context for {symbol}: {e}")
+        regime_ctx = _resolve_regime_ctx(symbol, "TrendCoordinator")
 
         win = self.instant_mgr.get_window(symbol)
         win_big = self.instant_mgr.get_window(symbol, self.instant_mgr.window_big_sec)

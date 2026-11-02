@@ -154,15 +154,8 @@ class CacheLongTrendManager(CacheManagerInterface):
 
         if not isinstance(data, dict):
             return []
-        variants = _short_trend_symbol_variants(symbol)
-        for cand in variants:
-            if cand in data:
-                return [data[cand]]
-        cf_map = {k.casefold(): v for k, v in data.items() if isinstance(k, str)}
-        for cand in variants:
-            if isinstance(cand, str) and cand.casefold() in cf_map:
-                return [cf_map[cand.casefold()]]
-        return []
+        _, val = _find_by_symbol_variant(data, symbol)
+        return [val] if val is not None else []
 
 
 CacheLongTrend = CacheLongTrendManager
@@ -176,6 +169,25 @@ def _short_trend_symbol_variants(symbol) -> list:
         include_base=True,
         quotes=("USDC", "USDT", "USD"),
     )
+
+
+_MISSING_VARIANT = object()
+_LEGACY_SNAP_KEYS = ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
+
+
+def _find_by_symbol_variant(mapping: dict, symbol, *, expected_type=None):
+    """Look up ``symbol`` across ``_short_trend_symbol_variants(symbol)`` using ``casefold_get``.
+
+    Returns ``(matched_candidate, value)`` or ``(None, None)`` when absent.
+    """
+    if not isinstance(mapping, dict):
+        return None, None
+    for cand in _short_trend_symbol_variants(symbol):
+        val = casefold_get(mapping, cand, _MISSING_VARIANT)
+        if val is not _MISSING_VARIANT and val is not None:
+            if expected_type is None or isinstance(val, expected_type):
+                return cand, val
+    return None, None
 
 
 class CacheShortTrendManager(CacheManagerInterface):
@@ -635,12 +647,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     # ── Calculation API ──────────────────────────────────────────────────────
     def _lookup_by_symbol_and_window(self, store: dict, symbol, seconds=None):
-        mapping = casefold_get(store, symbol)
-        if not mapping:
-            for cand in _short_trend_symbol_variants(symbol):
-                mapping = casefold_get(store, cand)
-                if mapping:
-                    break
+        _, mapping = _find_by_symbol_variant(store, symbol, expected_type=dict)
         mapping = mapping or {}
         if seconds is None:
             return mapping.get(self.window_seconds[0])
@@ -870,15 +877,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                 symbol, disk_entries, a, b, clamped, w_key, now_val, check_memo=False
             )
 
-        c24 = None
-        c24_sym = symbol
-        for cand in _short_trend_symbol_variants(symbol):
-            c24 = casefold_get(self._cache24_managers, cand)
-            if c24 is not None:
-                c24_sym = cand
-                break
+        matched_cand, c24 = _find_by_symbol_variant(self._cache24_managers, symbol)
         if c24 is None:
             return None
+        c24_sym = matched_cand or symbol
 
         now_val = now if now is not None else time.time()
         with self._lock:
@@ -1260,23 +1262,26 @@ class CacheShortTrendManager(CacheManagerInterface):
         except Exception:
             return {}
 
+    def _sync_symbol_cursor_from_snap(self, symbol: str, snap: dict) -> None:
+        ts_ms = self._snap_ts_ms(snap)
+        if ts_ms is not None:
+            self.fetchtime_per_symbol[symbol] = ts_ms
+            self._rest_sync_cursor_per_symbol[symbol] = ts_ms
+
     def _set_mem(self, symbol, **fields):
         """Merge fields in memory only; the flush loop owns file I/O."""
         with self._lock:
             snap = dict(
                 self._mem.get(symbol) or self._read_file().get(symbol) or {}
             )
-            for legacy_k in ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct"):
+            for legacy_k in _LEGACY_SNAP_KEYS:
                 snap.pop(legacy_k, None)
             snap.update(fields)
             snap["symbol"] = symbol
             self._mem[symbol] = snap
             self.cache = self._mem
             self._mem_dirty = True
-            ts_ms = self._snap_ts_ms(snap)
-            if ts_ms is not None:
-                self.fetchtime_per_symbol[symbol] = ts_ms
-                self._rest_sync_cursor_per_symbol[symbol] = ts_ms
+            self._sync_symbol_cursor_from_snap(symbol, snap)
 
     def update_snapshot(self, symbol, **fields):
         """Update memory and flush immediately only when this instance is the writer."""
@@ -1355,15 +1360,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                     and (overwrite or symbol not in self._mem)
                 ):
                     cleaned_snap = {
-                        k: v
-                        for k, v in snap.items()
-                        if k not in ("slope_max_min", "adapt_reentry_pct", "adapt_dca_pct")
+                        k: v for k, v in snap.items() if k not in _LEGACY_SNAP_KEYS
                     }
                     self._mem[symbol] = cleaned_snap
-                    ts_ms = self._snap_ts_ms(snap)
-                    if ts_ms is not None:
-                        self.fetchtime_per_symbol[symbol] = ts_ms
-                        self._rest_sync_cursor_per_symbol[symbol] = ts_ms
+                    self._sync_symbol_cursor_from_snap(symbol, snap)
             self.cache = self._mem
             self._account_cache_dirty = False
         return len(self._mem)
@@ -1374,18 +1374,12 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def get_snapshot(self, symbol):
         """Return local calculated/primed memory, or the file for a pure reader."""
-        variants = _short_trend_symbol_variants(symbol)
         with self._lock:
-            for cand in variants:
-                val = casefold_get(self._mem, cand)
-                if isinstance(val, dict):
-                    return dict(val)
-        file_data = self._read_file()
-        for cand in variants:
-            val = casefold_get(file_data, cand)
-            if isinstance(val, dict):
+            _, val = _find_by_symbol_variant(self._mem, symbol, expected_type=dict)
+            if val is not None:
                 return dict(val)
-        return None
+        _, val = _find_by_symbol_variant(self._read_file(), symbol, expected_type=dict)
+        return dict(val) if val is not None else None
 
     @staticmethod
     def _snapshot_is_usable(snap, now, max_age_sec):

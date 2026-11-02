@@ -23,7 +23,9 @@ from .base import (
     _normalize_order,
     bool_env,
     env_value,
+    env_values_map,
     normalize_side,
+    require_clean_order_id,
     resolve_market_flag,
 )
 from .strategy_executor import (
@@ -93,9 +95,7 @@ class T212Provider(MarketDataProvider):
         self._order_validity = order_validity
 
     def _orders_live(self) -> bool:
-        if self._live_enabled is None:
-            return _live()
-        return _parse_bool_flag(self._live_enabled, False)
+        return self._is_live_order_enabled("T212_LIVE_ORDERS")
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real T212 order."""
@@ -123,10 +123,7 @@ class T212Provider(MarketDataProvider):
         # mutation and also works in the installable wheel.
         T212Client = importlib.import_module("212trading.t212_client").T212Client
         # Use gitignored 212trading credentials, with fleet environment precedence.
-        values = {
-            name: os.environ.get(name) or env_value(_T212_DIR, name)
-            for name in ("T212_API_KEY", "T212_API_SECRET")
-        }
+        values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
         credentials = t212_credentials(values=values)
         env = os.environ.get("T212_ENV") or env_value(_T212_DIR, "T212_ENV")
         if not env:
@@ -381,10 +378,7 @@ class T212Provider(MarketDataProvider):
 
     @staticmethod
     def _require_oid(order_id: object, caller: str) -> str:
-        clean_oid = _clean_single_order_id(order_id)
-        if clean_oid is None:
-            raise ProviderError(f"{caller}({order_id}): invalid order id")
-        return clean_oid
+        return require_clean_order_id(order_id, f"{caller}({order_id})")
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
         clean_oid = self._require_oid(order_id, "order_status")

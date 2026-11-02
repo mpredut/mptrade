@@ -38,6 +38,7 @@ from .base import (
     _derive_128bit_client_order_id,
     aggregate_fills_by_order_id,
     bool_env,
+    build_price_history_points,
     extract_client_order_id,
     extract_order_fee,
     extract_order_id,
@@ -47,6 +48,7 @@ from .base import (
     extract_orig_qty,
     extract_timestamp_ms,
     normalize_side,
+    require_int_order_id,
     resolve_market_flag,
 )
 from .strategy_executor import (
@@ -144,9 +146,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real spot order."""
-        if self._live_enabled is None:
-            return bool_env(_LIVE_ENV)
-        return _parse_bool_flag(self._live_enabled, False)
+        return self._is_live_order_enabled(_LIVE_ENV)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
         return OrderReconciliationCapabilities(
@@ -253,17 +253,11 @@ class HyperliquidProvider(MarketDataProvider):
             end = int(time.time() * 1000)
             start = end - int(lookback_h * 3600 * 1000)
             candles = c.info.candles_snapshot(pair, interval, start, end) or []
-            out = []
-            for k in candles:
-                if not isinstance(k, dict):
-                    continue
-                t_f = safe_pos_float(k.get("t"), default=None)
-                c_f = safe_pos_float(k.get("c"), default=None)
-                if t_f is None or c_f is None:
-                    continue
-                out.append({"timestamp": int(t_f), "price": c_f})
-            out.sort(key=lambda x: x["timestamp"])
-            return out
+            return build_price_history_points(
+                candles,
+                lambda k: k.get("t") if isinstance(k, dict) else None,
+                lambda k: k.get("c") if isinstance(k, dict) else None,
+            )
         except Exception as e:  # noqa: BLE001
             print(f"[HL] get_price_history({symbol}) failed: {e}")
             return None
@@ -411,6 +405,44 @@ class HyperliquidProvider(MarketDataProvider):
         except Exception:
             return price_f
 
+    def _resolve_spot_order_price_and_tif(
+        self,
+        symbol: str,
+        is_buy: bool,
+        price: Optional[float],
+        *,
+        is_market: bool,
+        slippage: Optional[float] = None,
+        allow_price_fallback: bool = False,
+        caller: str = "submit_order",
+    ) -> tuple[float, str]:
+        """Resolve rounded aggressive-IOC or passive-GTC price and TIF, raising ``ProviderError`` on invalid inputs."""
+        if is_market:
+            curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
+            fb_px = (safe_pos_float(price, default=0.0) or 0.0) if allow_price_fallback else 0.0
+            base_px = curr_px if curr_px > 0.0 else fb_px
+            if base_px <= 0.0:
+                raise ProviderError(
+                    f"{caller}({symbol}) market: price unavailable"
+                    if caller == "submit_order"
+                    else f"{caller} {'BUY' if is_buy else 'SELL'} {symbol}: market price unavailable"
+                )
+            s_val = safe_nonneg_float(slippage, default=0.05) or 0.05
+            eff_slip = s_val if s_val < 1.0 else 0.05
+            raw_px = base_px * (1.0 + eff_slip if is_buy else 1.0 - eff_slip)
+            order_tif = "Ioc"
+        else:
+            if price is None or isinstance(price, bool):
+                raise ProviderError(f"{caller}({symbol}): invalid price={price!r}")
+            raw_px = safe_pos_float(price, default=None) if caller == "submit_order" else price
+            if raw_px is None:
+                raise ProviderError(f"{caller}({symbol}): invalid price={price!r}")
+            order_tif = "Gtc"
+        submit_px = self.round_price(symbol, raw_px)
+        if submit_px <= 0:
+            raise ProviderError(f"{caller}({symbol}): non-positive price={price!r}")
+        return submit_px, order_tif
+
     # -- Spot order placement, dry by default due to wallet co-mingling. --------
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):
@@ -428,28 +460,19 @@ class HyperliquidProvider(MarketDataProvider):
         side = s_norm
         live = self.execution_enabled()
         is_market = resolve_market_flag(force=force, **kwargs)
-
-        if is_market:
-            curr_px = safe_pos_float(self.get_current_price(symbol), default=0.0) or 0.0
-            fb_px = safe_pos_float(price, default=0.0) or 0.0
-            base_px = curr_px if curr_px > 0.0 else fb_px
-            if base_px <= 0.0:
-                print(f"[HL] place_order {side} {symbol}: market price unavailable")
-                return None
-            s_val = safe_nonneg_float(kwargs.get("slippage"), default=0.05) or 0.05
-            slippage = s_val if s_val < 1.0 else 0.05
-            aggressive_px = base_px * (1.0 + slippage if is_buy else 1.0 - slippage)
-            submit_px = self.round_price(symbol, aggressive_px)
-            order_tif = "Ioc"
-        else:
-            if price is None or isinstance(price, bool):
-                print(f"[HL] place_order {side} {symbol}: refused invalid price={price!r}")
-                return None
-            submit_px = self.round_price(symbol, price)
-            if submit_px <= 0:
-                print(f"[HL] place_order {side} {symbol}: refused non-positive price={price!r}")
-                return None
-            order_tif = "Gtc"
+        try:
+            submit_px, order_tif = self._resolve_spot_order_price_and_tif(
+                symbol,
+                is_buy,
+                price,
+                is_market=is_market,
+                slippage=kwargs.get("slippage"),
+                allow_price_fallback=True,
+                caller="place_order",
+            )
+        except ProviderError as exc:
+            print(f"[HL] {exc}")
+            return None
 
         if not live:
             print(f"[HL][DRY] would place {side} {symbol} qty={qty} @ {submit_px} "
@@ -593,20 +616,13 @@ class HyperliquidProvider(MarketDataProvider):
             raise ProviderError(
                 f"submit_order({symbol}): spot pair unavailable")
         is_market = _parse_bool_flag(market, False)
-        px = price
-        if is_market or px is None:
-            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
-            if mid_f is None:
-                raise ProviderError(f"submit_order({symbol}) market: price unavailable")
-            px = mid_f * (1.05 if is_buy else 0.95)               # Aggressive limit for immediate fill.
-        else:
-            px_f = safe_pos_float(px, default=None)
-            if px_f is None:
-                raise ProviderError(f"submit_order({symbol}): invalid price={px!r}")
-            px = px_f
-        px = self.round_price(symbol, px)
-        if px <= 0:
-            raise ProviderError(f"submit_order({symbol}): non-positive price={price!r}")
+        px, _ = self._resolve_spot_order_price_and_tif(
+            symbol,
+            is_buy,
+            price,
+            is_market=is_market or price is None,
+            caller="submit_order",
+        )
         qty = self.round_quantity(symbol, qty)
         if qty <= 0:
             raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
@@ -640,43 +656,11 @@ class HyperliquidProvider(MarketDataProvider):
     def preflight_order(self, symbol: str, side: str, qty: float,
                         price: Optional[float] = None, *, market: bool = False,
                         kind: Optional[str] = None) -> None:
-        """Reject a BUY that free USDC cannot fund in full.
-
-        Hyperliquid may partially execute an oversized order and cancel the rest,
-        consuming a DCA round for a fraction of its intended amount. submit_order
-        repeats this check to close the race after engine preflight.
-        """
+        """Reject a BUY that free USDC cannot fund in full."""
         self.validate_symbol(symbol)
-        if normalize_side(side) != "BUY":
-            return
-        if qty is None:
-            return
-        qty_f = safe_pos_float(qty, default=None)
-        if qty_f is None:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
-        if price is None:
-            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
-            if mid_f is None:
-                raise ProviderError(f"preflight_order({symbol}): price unavailable")
-            price_f = mid_f * (1.05 if _parse_bool_flag(market, False) else 1.0)
-        else:
-            price_f = safe_pos_float(price, default=None)
-            if price_f is None:
-                raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
-        required = safe_pos_float(qty_f * price_f, default=None)
-        if required is None:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
-        avail_f = safe_nonneg_float(self.free_balance("USDC"), default=None)
-        if avail_f is None:
-            raise ProviderError(
-                f"preflight_order({symbol}): the USDC balance cannot be confirmed"
-            )
-        tolerance = max(1e-9, required * 1e-12)
-        if avail_f + tolerance < required:
-            raise ProviderError(
-                f"preflight_order({symbol}) {kind or 'BUY'}: insufficient USDC balance "
-                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
-            )
+        self._preflight_buy_quote_balance(
+            symbol, side, qty, price, quote_asset="USDC", market=market, kind=kind
+        )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover a Hyperliquid spot order by CLOID when supported by the SDK."""
@@ -726,10 +710,7 @@ class HyperliquidProvider(MarketDataProvider):
 
     @staticmethod
     def _parse_oid(order_id: object, caller: str) -> int:
-        oid_i = exact_pos_int(_clean_single_order_id(order_id), default=None)
-        if oid_i is not None:
-            return oid_i
-        raise ProviderError(f"{caller}({order_id}): invalid order id")
+        return require_int_order_id(order_id, f"{caller}({order_id})")
 
     def order_status(self, symbol: str, order_id: str):
         self.validate_symbol(symbol)

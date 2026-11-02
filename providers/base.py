@@ -38,6 +38,11 @@ def env_value(folder: str, key: str) -> Optional[str]:
     return None
 
 
+def env_values_map(folder: str, names: tuple[str, ...] | List[str]) -> dict[str, Optional[str]]:
+    """Resolve each key from ``os.environ`` first, falling back to ``env_value(folder, name)``."""
+    return {name: os.environ.get(name) or env_value(folder, name) for name in names}
+
+
 def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> bool:
     """Resolve a boolean flag from os.environ or optional provider .env/config.env."""
     def_flag = _parse_bool_flag(default, False)
@@ -797,6 +802,98 @@ def _derive_128bit_client_order_id(
     return hex_prefix + hashlib.sha256(domain_prefix + encoded).hexdigest()[:32]
 
 
+def require_clean_order_id(
+    order_id: Any,
+    err_prefix: str,
+    *,
+    str_only: bool = False,
+    msg_suffix: str = "invalid order id",
+) -> str:
+    """Validate and return a clean string order ID, or raise ``ProviderError``."""
+    clean = clean_order_id(order_id) if (not str_only or isinstance(order_id, str)) else None
+    if not clean:
+        raise ProviderError(f"{err_prefix}: {msg_suffix}")
+    return clean
+
+
+def require_int_order_id(order_id: Any, err_prefix: str) -> int:
+    """Validate and return a positive integer order ID, or raise ``ProviderError``."""
+    oid = exact_pos_int(clean_order_id(order_id), default=None)
+    if oid is None:
+        raise ProviderError(f"{err_prefix}: invalid order id")
+    return oid
+
+
+def build_price_history_points(
+    rows: Any,
+    extract_ts: Any,
+    extract_px: Any,
+    *,
+    cutoff_s: Optional[float] = None,
+    ts_in_seconds: bool = False,
+) -> List[dict]:
+    """Extract, filter, and sort ascending ``{'timestamp': ms, 'price': float}`` rows."""
+    if not isinstance(rows, (list, tuple)):
+        return []
+    out: List[dict] = []
+    for row in rows:
+        t_f = safe_pos_float(extract_ts(row), default=None)
+        p_f = safe_pos_float(extract_px(row), default=None)
+        if t_f is None or p_f is None or (cutoff_s is not None and t_f < cutoff_s):
+            continue
+        out.append({"timestamp": int(t_f * 1000) if ts_in_seconds else int(t_f), "price": p_f})
+    out.sort(key=lambda x: x["timestamp"])
+    return out
+
+
+def read_client_ohlc_series(
+    client_or_factory: Any,
+    symbol: str,
+    interval_min: int,
+    *,
+    err_prefix: Optional[str] = None,
+):
+    """Read a ``ClosedPriceSeries`` from a client or executor supporting ``ohlc_series`` or ``ohlc_closes*``."""
+    from market_regime import ClosedPriceSeries
+
+    pfx = err_prefix or f"ohlc_series({symbol})"
+    direct_series = getattr(client_or_factory, "ohlc_series", None)
+    if callable(direct_series):
+        return direct_series(symbol, interval_min)
+    interval_i = exact_pos_int(interval_min, default=None)
+    if interval_i is None:
+        raise ProviderError(f"{pfx}: invalid interval_min={interval_min!r}")
+    try:
+        client = (
+            client_or_factory()
+            if callable(client_or_factory) and not hasattr(client_or_factory, "ohlc_closes")
+            else client_or_factory
+        )
+        series_reader = getattr(client, "ohlc_closes_with_timestamps", None)
+        if callable(series_reader):
+            closes, timestamps = series_reader(symbol, interval_i)
+            timestamps = tuple(timestamps) if timestamps is not None else ()
+            observed_at = timestamps[-1] if timestamps else None
+        else:
+            reader = getattr(client, "ohlc_closes_with_timestamp", None)
+            if callable(reader):
+                closes, observed_at = reader(symbol, interval_i)
+            else:
+                closes = client.ohlc_closes(symbol, interval_i)
+                observed_at = None
+            timestamps = ()
+        return ClosedPriceSeries(
+            tuple(closes) if closes is not None else (),
+            interval_i,
+            observed_at,
+            timestamps,
+        )
+    except ProviderError:
+        raise
+    except Exception as exc:
+        raise ProviderError(f"{pfx}: {exc}") from exc
+
+
 class MarketDataProvider(ABC):
     """Shared market-data, account, order, and policy-hook interface."""
 
@@ -851,6 +948,74 @@ class MarketDataProvider(ABC):
                         kind: Optional[str] = None) -> Any:
         """Validate venue state and optionally return opaque submit authorization."""
         return None
+
+    def _is_live_order_enabled(self, env_key: str, folder: Optional[str] = None) -> bool:
+        """Resolve live-order gate from explicit ``self._live_enabled`` override or ``bool_env``."""
+        live_override = getattr(self, "_live_enabled", None)
+        if live_override is None:
+            return bool_env(env_key, folder)
+        return _parse_bool_flag(live_override, False)
+
+    def _preflight_sell_base_balance(self, symbol: str, side: str, qty: float) -> None:
+        """Reject an impossible SELL before creating a durable submit intent."""
+        if normalize_side(side) != "SELL" or qty is None:
+            return
+        requested = safe_pos_float(qty, default=None)
+        if requested is None:
+            raise ProviderError(f"preflight_order {symbol}: an invalid SELL quantity")
+        precision = self.pair_precision(symbol)
+        base_asset = precision.base_asset if precision else ""
+        if not base_asset:
+            raise ProviderError(f"preflight_order {symbol}: base asset is unavailable")
+        avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
+        if avail_f is None:
+            raise ProviderError(f"preflight_order {symbol}: {base_asset} balance is unavailable")
+        decimals = precision.volume_decimals if precision else 8
+        tolerance = 0.5 * (10.0 ** -max(0, decimals))
+        if requested > avail_f + tolerance:
+            raise ProviderError(
+                f"preflight_order {symbol}: insufficient funds SELL "
+                f"qty={requested} available={avail_f} {base_asset}"
+            )
+
+    def _preflight_buy_quote_balance(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: Optional[float] = None,
+        *,
+        quote_asset: str = "USDC",
+        market: bool = False,
+        kind: Optional[str] = None,
+    ) -> None:
+        """Reject a BUY that free quote currency cannot fund in full."""
+        if normalize_side(side) != "BUY" or qty is None:
+            return
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
+        if price is None:
+            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
+            if mid_f is None:
+                raise ProviderError(f"preflight_order({symbol}): price unavailable")
+            price_f = mid_f * (1.05 if _parse_bool_flag(market, False) else 1.0)
+        else:
+            price_f = safe_pos_float(price, default=None)
+            if price_f is None:
+                raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
+        required = safe_pos_float(qty_f * price_f, default=None)
+        if required is None:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
+        avail_f = safe_nonneg_float(self.free_balance(quote_asset), default=None)
+        if avail_f is None:
+            raise ProviderError(f"preflight_order({symbol}): the {quote_asset} balance cannot be confirmed")
+        tolerance = max(1e-9, required * 1e-12)
+        if avail_f + tolerance < required:
+            raise ProviderError(
+                f"preflight_order({symbol}) {kind or 'BUY'}: insufficient {quote_asset} balance "
+                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
+            )
 
     def execution_enabled(self) -> bool:
         """Return whether this provider may create a real venue order now.
