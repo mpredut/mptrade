@@ -7333,6 +7333,34 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
     assert "HYPEUSDC" in pt_hl
     assert pt_hl["HYPEUSDC"]["price"] == pytest.approx(84.33)
 
+    # 7. _format_macro_and_news_section includes age=...m on Market Breadth line
+    from types import SimpleNamespace
+    from orchestratorOS.supervisor.prompt_formatters import _format_macro_and_news_section
+
+    snap_mb = SimpleNamespace(
+        fear_greed=None,
+        market_breadth={
+            "advance_ratio": 0.3582,
+            "regime": "BEARISH_BREADTH",
+            "median_change_pct": -0.52,
+            "mean_change_pct": -1.12,
+            "dispersion_std": 3.41,
+            "advancing": 24,
+            "total_symbols": 67,
+            "top_gainers": [["TAOUSDC", 4.5]],
+            "top_losers": [["ARBUSDC", -3.8]],
+            "age_min": 2.4,
+        },
+        macro_benchmarks=None,
+        macro_calendar=None,
+        sentiment_advisor=None,
+        geopolitical_threat=None,
+        breaking_news=[],
+    )
+    sec2 = "\n".join(_format_macro_and_news_section(snap_mb))
+    assert "Market Breadth: advance_ratio=0.3582, regime=BEARISH_BREADTH" in sec2
+    assert "age=2.4m" in sec2
+
 
 
 

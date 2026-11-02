@@ -8031,7 +8031,7 @@ def test_iteration54_triggers_cli_daemon_pricewindow_and_shadow_signals_nan_bool
     assert gtc.derivatives_interval_sec == 30.0
     assert gtc.whale_interval_sec == 60.0
     assert gtc.fear_greed_interval_sec == 1800.0
-    assert gtc.breadth_interval_sec == 900.0
+    assert gtc.breadth_interval_sec == 300.0
 
     # 4. PriceWindow & WindowAnalyzer
     pw = PriceWindow("BTCUSDC", window_size=True, sample_rate_sec=float("nan"), window_seconds=True)

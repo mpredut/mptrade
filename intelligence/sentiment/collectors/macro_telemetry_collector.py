@@ -287,9 +287,42 @@ def harvest_macro_and_news_sensors(
             if attr == "macro_benchmarks" and not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                 enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
-    if "macro_benchmarks" not in macro_sensors and read_json_fn is None and "PYTEST_CURRENT_TEST" not in os.environ:
-        if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=True), dict) and live_mb:
-            macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
+    if read_json_fn is None and "PYTEST_CURRENT_TEST" not in os.environ:
+        mb_cur = macro_sensors.get("market_breadth")
+        mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
+        if mb_cur is None or mb_age is None or mb_age > 5.5:
+            try:
+                from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+
+                breadth_snap = MarketBreadthCollector(cache_ttl_sec=60.0).fetch(force_refresh=True, now_ts=now_ts)
+                if breadth_snap is not None:
+                    raw_gainers = getattr(breadth_snap, "top_gainers", None) or ()
+                    raw_losers = getattr(breadth_snap, "top_losers", None) or ()
+                    tot = getattr(breadth_snap, "total_count", 0)
+                    mb_payload: Dict[str, Any] = {
+                        "advance_ratio": breadth_snap.advance_ratio,
+                        "median_change_pct": breadth_snap.median_change_pct,
+                        "mean_change_pct": breadth_snap.mean_change_pct,
+                        "dispersion_std": breadth_snap.dispersion_std,
+                        "regime": breadth_snap.regime,
+                        "total_symbols": tot,
+                        "total_count": tot,
+                        "advancing": breadth_snap.advancing_count,
+                        "advancing_count": breadth_snap.advancing_count,
+                        "declining": breadth_snap.declining_count,
+                        "declining_count": breadth_snap.declining_count,
+                        "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
+                        "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
+                        "ts": safe_pos_float(getattr(breadth_snap, "ts", None), now_ts) or now_ts,
+                    }
+                    mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
+                    save_json_state(mb_path, mb_payload, indent=2)
+                    macro_sensors["market_breadth"] = _with_age_min(mb_payload, mb_path)
+            except Exception:
+                pass
+        if "macro_benchmarks" not in macro_sensors:
+            if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=True), dict) and live_mb:
+                macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
 
     breaking_news: List[Dict[str, Any]] = []
     if isinstance(news_data := _rj(os.path.join(cache_dir, "news_feed_collect.json")), list) and news_data:

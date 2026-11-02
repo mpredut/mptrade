@@ -679,6 +679,19 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert itv_jump == 1800.0
         assert "fear_greed_jump" in reason_jump
 
+        # 5. Critical 15:30-18:30 EET US/EU overlap window -> 1080s (18m)
+        t_overlap = datetime(2026, 10, 27, 17, 0, tzinfo=tz_eet).timestamp()
+        itv_ovl, reason_ovl = compute_dynamic_sentiment_interval(
+            base_interval_sec=base,
+            last_eval_ts=t_overlap - 1200.0,
+            now_ts=t_overlap,
+            fear_greed=calm_fg,
+            breadth=calm_br,
+            geopolitical_threat_level="ELEVATED",
+        )
+        assert itv_ovl == 1080.0
+        assert "critical_us_eu_overlap_window" in reason_ovl
+
     def test_elevated_threat_escalates_immediately_on_new_acute_shock_headline(self, tmp_path):
         calls = []
 

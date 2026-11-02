@@ -54,7 +54,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         whale_interval_sec: float = 60.0,
         news_interval_sec: Optional[float] = None,
         fear_greed_interval_sec: float = 1800.0,
-        breadth_interval_sec: float = 900.0,
+        breadth_interval_sec: float = 300.0,
         macro_benchmarks_interval_sec: float = 300.0,
         skip_news: bool = False,
         skip_external: bool = False,
@@ -65,7 +65,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.whale_interval_sec = safe_pos_float(whale_interval_sec, 60.0)
         self.news_interval_sec = safe_pos_float(news_interval_sec, required_float_env("MACRO_NEWS_INTERVAL_SEC"))
         self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, 1800.0)
-        self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, 900.0)
+        self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, 300.0)
         self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, 300.0)
         self.skip_news = _parse_bool_flag(skip_news, False)
         self.skip_external = _parse_bool_flag(skip_external, False)
@@ -78,7 +78,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             history_file=os.path.join(self.cache_dir, "news_feed_collect.json"),
         )
         self.fear_greed_collector = FearGreedCollector(cache_ttl_sec=max(300.0, self.fear_greed_interval_sec * 0.8))
-        self.breadth_collector = MarketBreadthCollector(cache_ttl_sec=max(120.0, self.breadth_interval_sec * 0.8))
+        self.breadth_collector = MarketBreadthCollector(cache_ttl_sec=max(60.0, self.breadth_interval_sec * 0.5))
 
         self._last_orderbook_ts: Dict[str, float] = {}
         self._last_derivatives_ts: Dict[str, float] = {}

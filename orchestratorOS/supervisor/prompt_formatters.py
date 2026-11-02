@@ -180,6 +180,7 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
         + (f", top_gainers={mb_gainers}" if mb_gainers else "")
         + (f", top_losers={mb_losers}" if mb_losers else "")
+        + (f", age={mb.get('age_min')}m" if mb.get("age_min") is not None else "")
         if mb else "None"
     )
     sa_line = (

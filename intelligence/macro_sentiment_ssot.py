@@ -713,6 +713,7 @@ RECOMMENDED_BRAKES: Tuple[str, ...] = get_recommended_brakes()
 
 DEFAULT_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "default_sentiment_interval_sec", 10800.0)
 MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "min_dynamic_sentiment_interval_sec", 1800.0)
+PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "peak_overlap_sentiment_interval_sec", 1080.0)
 MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "max_dynamic_sentiment_interval_sec", 16200.0)
 SENTIMENT_CHECKPOINT_COOLDOWN_SEC: float = _cfg_float("intervals", "sentiment_checkpoint_cooldown_sec", 2700.0)
 
@@ -1507,23 +1508,40 @@ def compute_dynamic_sentiment_interval(
 
     scale = base / DEFAULT_SENTIMENT_INTERVAL_SEC
     min_interval = max(60.0, MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC * scale)
+    peak_overlap_interval = max(60.0, PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC * scale)
     max_interval = max(base, MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC * scale)
     checkpoint_cooldown = max(60.0, SENTIMENT_CHECKPOINT_COOLDOWN_SEC * scale)
+
+    session_ctx = resolve_global_trading_session(ts)
+    if not session_ctx.is_weekend:
+        dt_eet = _to_tz(
+            ts,
+            _cfg_str("sessions", "primary_timezone", "Europe/Bucharest"),
+            _cfg_int("sessions", "primary_fallback_offset_hours", 2),
+        )
+        minutes_eet = dt_eet.hour * 60 + dt_eet.minute
+        if (15 * 60 + 30) <= minutes_eet <= (18 * 60 + 30):
+            return peak_overlap_interval, f"critical_us_eu_overlap_window_{session_ctx.session_key}"
 
     norm_geo = normalize_threat_level(geopolitical_threat_level)
     cached_risk = normalize_risk_level(obj_attr(cached_assessment, "risk_level", None))
     breadth_regime = str(obj_attr(breadth, "regime", "NEUTRAL") or "NEUTRAL") if breadth is not None else "NEUTRAL"
     median_abs = abs(obj_float(breadth, "median_change_pct", 0.0)) if breadth is not None else 0.0
+    cur_adv = safe_float(obj_attr(breadth, "advance_ratio", None), None)
 
     if norm_geo == "CRITICAL_SHOCK":
         return min_interval, "critical_geopolitical_shock_30m"
-    if breadth_regime in ("PANIC_WASHOUT", "EUPHORIC_BLOWOFF") or median_abs >= 5.5 or cached_risk == "EXTREME":
+    if (
+        breadth_regime in ("PANIC_WASHOUT", "EUPHORIC_BLOWOFF")
+        or median_abs >= 5.5
+        or cached_risk == "EXTREME"
+        or (cur_adv is not None and (cur_adv <= 0.15 or cur_adv >= 0.85))
+    ):
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
     cur_fg_val = safe_int(obj_attr(fear_greed, "value", None), None)
     prev_fg_val = safe_int(prev_fear_greed_val, None)
     if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:
         return min_interval, f"fear_greed_jump_{cur_fg_val - prev_fg_val:+d}pts"
-    cur_adv = safe_float(obj_attr(breadth, "advance_ratio", None), None)
     prev_adv = safe_float(prev_advance_ratio, None)
     if cur_adv is not None and prev_adv is not None and abs(cur_adv - prev_adv) >= 0.18:
         return min_interval, f"breadth_shift_{cur_adv - prev_adv:+.2f}"
@@ -1532,7 +1550,6 @@ def compute_dynamic_sentiment_interval(
     if crossed_cp is not None:
         return max(min_interval, min(base, checkpoint_cooldown)), f"session_checkpoint_{crossed_cp}"
 
-    session_ctx = resolve_global_trading_session(ts)
     is_extreme_fg = bool(
         fear_greed is not None
         and (
