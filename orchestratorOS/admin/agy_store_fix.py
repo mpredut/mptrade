@@ -611,10 +611,20 @@ def last_store_activity() -> float:
 
 
 def daemon_started_at() -> float:
-    """Epoch timestamp when the current daemon instance started (from its cli-YYYYMMDD_HHMMSS.log filename)."""
+    """Epoch timestamp when the current remote-control daemon instance started (ignoring one-shot CLI logs)."""
     if not os.path.isdir(LOGS):
         return 0.0
-    return max((log_started_at(lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))), default=0.0)
+    candidates = sorted(
+        ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
+        reverse=True,
+    )
+    for ts, lf in candidates:
+        if ts <= 0.0:
+            break
+        txt = read_text_file(lf, default=None, errors="ignore")
+        if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
+            return ts
+    return 0.0
 
 
 def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
