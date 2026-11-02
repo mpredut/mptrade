@@ -68,50 +68,43 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
     return np.asarray(ts_list, dtype=float), np.asarray(px_list, dtype=float)
 
 
+def _coerce_xy_pairs(xs: Any, ys: Any, parser_x: Any, parser_y: Any) -> tuple[list[float], list[float]]:
+    if xs is None or ys is None or isinstance(xs, (bool, str, bytes)) or isinstance(ys, (bool, str, bytes)):
+        return [], []
+    try:
+        raw_x, raw_y = list(xs), list(ys)
+    except TypeError:
+        return [], []
+    n_common = min(len(raw_x), len(raw_y))
+    clean_x, clean_y = [], []
+    for xv, yv in zip(raw_x[:n_common], raw_y[:n_common]):
+        xf, yf = parser_x(xv), parser_y(yv)
+        if xf is not None and yf is not None:
+            clean_x.append(xf)
+            clean_y.append(yf)
+    return clean_x, clean_y
+
+
 def block_slopes(ts, px, window_h, step_h):
     """Return slope signs for each [t-window, t] window stepped by step_h."""
     out_t, out_s = [], []
-    if (
-        ts is None
-        or px is None
-        or isinstance(ts, (bool, str, bytes))
-        or isinstance(px, (bool, str, bytes))
-    ):
-        return np.array(out_t), np.array(out_s)
-    try:
-        raw_ts = list(ts)
-        raw_px = list(px)
-    except TypeError:
-        return np.array(out_t), np.array(out_s)
-    n_common = min(len(raw_ts), len(raw_px))
-    if n_common < 5:
-        return np.array(out_t), np.array(out_s)
-    clean_ts = []
-    clean_px = []
-    for t_val, p_val in zip(raw_ts[:n_common], raw_px[:n_common]):
-        tf = safe_pos_float(t_val, default=None)
-        pf = safe_pos_float(p_val, default=None)
-        if tf is not None and pf is not None:
-            clean_ts.append(tf)
-            clean_px.append(pf)
+    clean_ts, clean_px = _coerce_xy_pairs(
+        ts, px, lambda v: safe_pos_float(v, default=None), lambda v: safe_pos_float(v, default=None)
+    )
     if len(clean_ts) < 5:
         return np.array(out_t), np.array(out_s)
     ts = np.asarray(clean_ts, dtype=float)
     px = np.asarray(clean_px, dtype=float)
     if np.any(np.diff(ts) < 0):
         order = np.argsort(ts, kind="mergesort")
-        ts = ts[order]
-        px = px[order]
-    w_h = safe_pos_float(window_h, default=0.0)
-    s_h = safe_pos_float(step_h, default=0.0)
+        ts, px = ts[order], px[order]
+    w_h, s_h = safe_pos_float(window_h, default=0.0), safe_pos_float(step_h, default=0.0)
     if w_h <= 0.0 or s_h <= 0.0:
         return np.array(out_t), np.array(out_s)
     w, s = w_h * 3600.0, s_h * 3600.0
-    t = float(ts[0]) + w
-    t_end = float(ts[-1])
+    t, t_end = float(ts[0]) + w, float(ts[-1])
     while t <= t_end:
-        lo = int(np.searchsorted(ts, t - w, "left"))
-        hi = int(np.searchsorted(ts, t, "right"))
+        lo, hi = int(np.searchsorted(ts, t - w, "left")), int(np.searchsorted(ts, t, "right"))
         if hi - lo >= 5:
             dx = ts[lo:hi] - ts[lo]
             dev_x = dx - float(np.mean(dx))
@@ -127,48 +120,29 @@ def block_slopes(ts, px, window_h, step_h):
 def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
     """Return trend episodes in hours using the detector's semantics."""
     eps = []
-    if (
-        bt is None
-        or bs is None
-        or isinstance(bt, (bool, str, bytes))
-        or isinstance(bs, (bool, str, bytes))
-    ):
-        return eps
     w_h = safe_pos_float(window_h, default=0.0)
     if w_h <= 0.0:
         return eps
-    nt = safe_nonneg_int(noise_tolerance, default=2)
-    mc = safe_pos_int(min_confirm, default=3)
-    try:
-        raw_bt = list(bt)
-        raw_bs = list(bs)
-    except TypeError:
-        return eps
-    n_common = min(len(raw_bt), len(raw_bs))
-    clean_bt = []
-    clean_bs = []
-    for t_val, s_val in zip(raw_bt[:n_common], raw_bs[:n_common]):
-        tf = safe_float(t_val, default=None)
-        sf = safe_float(s_val, default=None)
-        if tf is not None and sf is not None:
-            clean_bt.append(tf)
-            clean_bs.append(1.0 if sf > 0 else (-1.0 if sf < 0 else 0.0))
+    nt, mc = safe_nonneg_int(noise_tolerance, default=2), safe_pos_int(min_confirm, default=3)
+    clean_bt, clean_bs = _coerce_xy_pairs(
+        bt,
+        bs,
+        lambda v: safe_float(v, default=None),
+        lambda v: (1.0 if sf > 0 else (-1.0 if sf < 0 else 0.0)) if (sf := safe_float(v, default=None)) is not None else None,
+    )
     n = len(clean_bt)
     if n == 0:
         return eps
-    bt = np.asarray(clean_bt, dtype=float)
-    bs = np.asarray(clean_bs, dtype=float)
+    bt, bs = np.asarray(clean_bt, dtype=float), np.asarray(clean_bs, dtype=float)
     i = 0
     while i < n:
         sign = bs[i]
         if sign == 0.0:
             i += 1
             continue
-        start = bt[i] - w_h * 3600.0
-        last_confirm = bt[i]
+        start, last_confirm = bt[i] - w_h * 3600.0, bt[i]
         confirms, noise = 1, 0
-        j = i + 1
-        while j < n:
+        for j in range(i + 1, n):
             if bs[j] == sign:
                 confirms += 1
                 noise = 0
@@ -177,16 +151,9 @@ def episodes(bt, bs, window_h, noise_tolerance=2, min_confirm=3):
                 noise += 1
             else:
                 break
-            j += 1
         if confirms >= mc:
-            eps.append(
-                {
-                    "dir": "up" if sign > 0 else "down",
-                    "dur_h": (last_confirm - start) / 3600.0,
-                }
-            )
-        nxt = int(np.searchsorted(bt, last_confirm, "right"))
-        i = max(nxt, i + 1)
+            eps.append({"dir": "up" if sign > 0 else "down", "dur_h": (last_confirm - start) / 3600.0})
+        i = max(int(np.searchsorted(bt, last_confirm, "right")), i + 1)
     return eps
 
 
@@ -439,30 +406,24 @@ def get_trend_survival_metrics(
     """Retrieve or compute empirical trend survival metrics for a symbol."""
     dur_sec = safe_pos_float(trend_duration_seconds, default=0.0) or 0.0
     duration_days = max(0.0, dur_sec / 86400.0)
-    median_d = 3.0
-    p90_d = 7.0
-    T_val = 8.0
+    median_d, p90_d, T_val = 3.0, 7.0, 8.0
     cached_t: Optional[float] = None
 
+    def _apply_entry(ent_dict: dict, *, require_n: bool = False) -> None:
+        nonlocal median_d, p90_d, T_val, cached_t
+        median_d = safe_pos_float(ent_dict.get("median_d"), default=median_d)
+        p90_d = safe_pos_float(ent_dict.get("p90_d"), default=p90_d)
+        t_cand = safe_pos_float(ent_dict.get("T"), default=0.0)
+        if t_cand > 0.0 and (not require_n or safe_pos_float(ent_dict.get("n"), default=0.0) > 0):
+            T_val = cached_t = t_cand
+
     cached_entry = get_cached_t_entry(symbol)
-    allow_net = _parse_bool_flag(allow_network, False)
     if cached_entry:
-        median_d = safe_pos_float(cached_entry.get("median_d"), default=median_d)
-        p90_d = safe_pos_float(cached_entry.get("p90_d"), default=p90_d)
-        t_cand = safe_pos_float(cached_entry.get("T"), default=0.0)
-        if t_cand > 0.0:
-            T_val = t_cand
-            cached_t = T_val
-    elif allow_net:
+        _apply_entry(cached_entry)
+    elif _parse_bool_flag(allow_network, False):
         try:
-            est = estimate_T(symbol)
-            if est:
-                median_d = safe_pos_float(est.get("median_d"), default=median_d)
-                p90_d = safe_pos_float(est.get("p90_d"), default=p90_d)
-                t_cand = safe_pos_float(est.get("T"), default=0.0)
-                if t_cand > 0.0 and safe_pos_float(est.get("n"), default=0.0) > 0:
-                    T_val = t_cand
-                    cached_t = T_val
+            if est := estimate_T(symbol):
+                _apply_entry(est, require_n=True)
         except Exception:
             pass
 

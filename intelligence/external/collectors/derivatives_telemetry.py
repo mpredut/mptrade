@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
+    _clean_snapshot_symbol,
     _resolve_binance_lookup_symbol,
 )
 
@@ -37,19 +38,13 @@ class DerivativesTelemetry:
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> DerivativesTelemetry:
         if not isinstance(data, dict):
             data = {}
-        raw_sym = data.get("symbol") or symbol
-        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         return cls(
-            symbol=sym_str,
+            symbol=_clean_snapshot_symbol(data, symbol),
             funding_rate=_clean_dict_float(data, "funding_rate", 0.0),
-            predicted_funding_rate=_clean_dict_float(
-                data, "predicted_funding_rate", _clean_dict_float(data, "pred_funding_rate", 0.0)
-            ),
-            open_interest=max(0.0, _clean_dict_float(data, "open_interest", 0.0)),
-            open_interest_usd=max(
-                0.0, _clean_dict_float(data, "open_interest_usd", _clean_dict_float(data, "oi_usd", 0.0))
-            ),
-            ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
+            predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0, "pred_funding_rate"),
+            open_interest=_clean_dict_float(data, "open_interest", 0.0, nonneg=True),
+            open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
+            ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
         )
 
 

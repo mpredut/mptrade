@@ -195,17 +195,11 @@ class PostStopReentryGuard:
             if valid_resp is None:
                 shadow_msg = f"shadow_mode ({dec.reason})"
             else:
-                raw_dec = valid_resp.get("decision")
+                raw_dec, raw_reason = valid_resp.get("decision"), valid_resp.get("reason")
                 decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
-                raw_reason = valid_resp.get("reason")
                 reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
                 shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
-            final_dec = GuardDecision.allow(
-                "PostStopReentryGuard",
-                shadow_msg,
-                notional_eur=notional,
-                shadow_decision=dec,
-            )
+            final_dec = GuardDecision.allow("PostStopReentryGuard", shadow_msg, notional_eur=notional, shadow_decision=dec)
         else:
             final_dec = dec
 
@@ -230,28 +224,23 @@ class PostStopReentryGuard:
             from notify_engine.alertnotifiers import notify
 
             scale_pct = int(round(clean_scale(getattr(decision, "suggested_scale", 1.0), 1.0) * 100))
-            if not decision.allowed:
-                action_label = "VETO"
-            elif decision.brake_action == BrakeAction.DOWNSCALE_QTY:
-                action_label = f"SCALE ({scale_pct}%)"
-            else:
-                action_label = "APPROVED"
-
+            action_label = (
+                "VETO"
+                if not decision.allowed
+                else (f"SCALE ({scale_pct}%)" if decision.brake_action == BrakeAction.DOWNSCALE_QTY else "APPROVED")
+            )
             ts = resolve_now_ts(now_ts)
-            notify_key = (clean_symbol_key(symbol), action_label)
             cooldown = self.cache_ttl_sec if self.cache_ttl_sec > 0 else 0.0
-            if cooldown > 0 and not check_cooldown_gate(_POST_STOP_NOTIFY_CACHE, notify_key, now_ts=ts, cooldown_sec=cooldown):
+            if cooldown > 0 and not check_cooldown_gate(_POST_STOP_NOTIFY_CACHE, (clean_symbol_key(symbol), action_label), now_ts=ts, cooldown_sec=cooldown):
                 return
 
-            title = f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}"
-            body = (
-                f"{symbol} @ ${current_price:.2f} (Bounce: +{bounce_pct:.2f}% de la minimul ${trough:.2f}, SL la: ${last_sell_price:.2f})\n"
-                f"Decizie: {action_label}\n"
-                f"Motiv AI: {decision.reason}"
-            )
             notify(
-                title=title,
-                body=body,
+                title=f"{topic_spec('guard_post_stop').ntfy_prefix} {action_label} {symbol}",
+                body=(
+                    f"{symbol} @ ${current_price:.2f} (Bounce: +{bounce_pct:.2f}% de la minimul ${trough:.2f}, SL la: ${last_sell_price:.2f})\n"
+                    f"Decizie: {action_label}\n"
+                    f"Motiv AI: {decision.reason}"
+                ),
                 source="post_stop_guard",
                 symbol=symbol,
                 price=current_price,
@@ -276,37 +265,20 @@ def get_post_stop_reentry_guard(
         m = margins
     if not isinstance(m, dict) or not m:
         raise KeyError("post_stop_reentry_mode")
-    mode = resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce")
-
-    timeout = safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC)
     raw_fb = m.get("post_stop_reentry_fallback", DEFAULT_FALLBACK)
-    fallback = str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK
     raw_notify = m.get("post_stop_reentry_notify")
-    notify_en = True if raw_notify is None else PostStopReentryGuard._as_bool_flag(raw_notify, default=False)
-    cache_ttl = safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC)
-
+    cfg = {
+        "timeout_sec": safe_pos_float(m.get("post_stop_reentry_timeout_sec"), DEFAULT_TIMEOUT_SEC),
+        "fallback_action": str(raw_fb if raw_fb is not None and not isinstance(raw_fb, bool) else DEFAULT_FALLBACK).strip().lower() or DEFAULT_FALLBACK,
+        "mode": resolve_hierarchical_guard_mode(m, "post_stop_reentry_mode", "llm_guard_mode", default="enforce"),
+        "notify_enabled": True if raw_notify is None else PostStopReentryGuard._as_bool_flag(raw_notify, default=False),
+        "cache_ttl_sec": safe_nonneg_ts(m.get("post_stop_reentry_cache_ttl_sec"), DEFAULT_POST_STOP_CACHE_TTL_SEC),
+    }
     if gemini_client is not None:
-        return PostStopReentryGuard(
-            gemini_client=gemini_client,
-            timeout_sec=timeout,
-            fallback_action=fallback,
-            mode=mode,
-            notify_enabled=notify_en,
-            cache_ttl_sec=cache_ttl,
-        )
-
+        return PostStopReentryGuard(gemini_client=gemini_client, **cfg)
     if _POST_STOP_GUARD_INSTANCE is None:
-        _POST_STOP_GUARD_INSTANCE = PostStopReentryGuard(
-            timeout_sec=timeout,
-            fallback_action=fallback,
-            mode=mode,
-            notify_enabled=notify_en,
-            cache_ttl_sec=cache_ttl,
-        )
+        _POST_STOP_GUARD_INSTANCE = PostStopReentryGuard(**cfg)
     else:
-        _POST_STOP_GUARD_INSTANCE.timeout_sec = timeout
-        _POST_STOP_GUARD_INSTANCE.fallback_action = fallback
-        _POST_STOP_GUARD_INSTANCE.mode = mode
-        _POST_STOP_GUARD_INSTANCE.notify_enabled = notify_en
-        _POST_STOP_GUARD_INSTANCE.cache_ttl_sec = cache_ttl
+        for k, v in cfg.items():
+            setattr(_POST_STOP_GUARD_INSTANCE, k, v)
     return _POST_STOP_GUARD_INSTANCE

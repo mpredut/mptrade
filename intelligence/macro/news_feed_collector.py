@@ -55,6 +55,11 @@ class NewsFeedSnapshot:
     ts: float
 
 
+def _xml_text(parent: Any, tag: str, default: str = "") -> str:
+    el = parent.find(tag) if parent is not None else None
+    return el.text.strip() if el is not None and el.text and el.text.strip() else default
+
+
 _NEWS_FILENAMES = get_cache_filenames("news_feed_files")
 DEFAULT_HISTORY_FILE = cache_path(_NEWS_FILENAMES[0] if _NEWS_FILENAMES else "news_feed_collect.json")
 
@@ -316,35 +321,24 @@ class NewsFeedCollector:
         if not items:
             return None
 
-        channel_title_el = root.find("./channel/title")
-        channel_source = (
-            channel_title_el.text.strip()
-            if channel_title_el is not None and channel_title_el.text and channel_title_el.text.strip()
-            else "Google News"
-        )
-
-        raw_items: List[Dict[str, str]] = []
-        for it in items:
-            title_el = it.find("title")
-            title = title_el.text.strip() if title_el is not None and title_el.text else ""
-            if not title:
-                continue
-            source_el, date_el, link_el = it.find("source"), it.find("pubDate"), it.find("link")
-            raw_items.append({
+        channel_source = _xml_text(root, "./channel/title", "Google News")
+        raw_items = [
+            {
                 "title": title,
-                "source": source_el.text.strip() if source_el is not None and source_el.text else channel_source,
-                "pub_date": date_el.text.strip() if date_el is not None and date_el.text else "",
-                "url": link_el.text.strip() if link_el is not None and link_el.text else "",
-            })
-
+                "source": _xml_text(it, "source", channel_source),
+                "pub_date": _xml_text(it, "pubDate"),
+                "url": _xml_text(it, "link"),
+            }
+            for it in items
+            if (title := _xml_text(it, "title"))
+        ]
         if not raw_items:
             return None
 
         emerging_terms = discover_dynamic_terms_from_headlines(raw_items, cache_dir=cache_dir, now_ts=now, persist=bool(cache_dir))
         parsed_headlines: List[NewsHeadline] = []
         for item in raw_items:
-            title = item["title"]
-            lower_title = title.lower()
+            title, lower_title = item["title"], item["title"].lower()
             matched_list = list(match_high_severity_keywords(title, cache_dir=cache_dir, now_ts=now))
             for em_term in emerging_terms:
                 if em_term in lower_title and em_term not in matched_list and re.search(r"\b" + re.escape(em_term) + r"\b", lower_title):
@@ -361,9 +355,7 @@ class NewsFeedCollector:
                 )
             )
 
-        return NewsFeedCollector._make_snapshot(
-            parsed_headlines, now, cache_dir, max_headlines=25, pass_now_ts=True
-        )
+        return NewsFeedCollector._make_snapshot(parsed_headlines, now, cache_dir, max_headlines=25, pass_now_ts=True)
 
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[NewsFeedSnapshot]:
         """Fetch latest geopolitical RSS headlines across specialized feeds and dynamic crisis queries."""

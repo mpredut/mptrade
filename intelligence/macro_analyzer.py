@@ -47,6 +47,15 @@ load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 logger = logging.getLogger("intelligence.macro_analyzer")
 
 
+def _call_with_optional_kwarg(fn: Any, *args: Any, opt_key: str, opt_val: Any, include_opt: bool = True, **kwargs: Any) -> Any:
+    if include_opt:
+        try:
+            return fn(*args, **{opt_key: opt_val}, **kwargs)
+        except TypeError:
+            pass
+    return fn(*args, **kwargs)
+
+
 class MacroAnalyzer:
     """Orchestrates periodic macro and sentiment LLM synthesis and publishes assessments."""
 
@@ -84,8 +93,7 @@ class MacroAnalyzer:
             cache_ttl_sec=self.advisor_interval_sec,
             cache_file=os.path.join(self.cache_dir, "sentiment_eval.json"),
         )
-        self.llm_advisor = self.sentiment_advisor
-        self.gemini_advisor = self.sentiment_advisor
+        self.llm_advisor = self.gemini_advisor = self.sentiment_advisor
 
         cached_geo_ts = safe_pos_float(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
         cached_adv_ts = safe_pos_float(
@@ -93,32 +101,24 @@ class MacroAnalyzer:
             or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0),
             0.0,
         )
-        self._last_macro_llm_ts: float = cached_geo_ts
-        self._last_notified_geo_ts: float = cached_geo_ts
-        self._last_advisor_ts: float = cached_adv_ts
-        self._last_notified_advisor_ts: float = cached_adv_ts
-        self._last_thread_prune_ts: float = 0.0
-        self._last_stdout_hb_ts: float = 0.0
+        self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
+        self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts
+        self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
         self._last_fg_value: Optional[int] = None
         self._last_advance_ratio: Optional[float] = None
-        self._effective_geo_interval_sec: float = self.macro_llm_interval_sec
-        self._effective_geo_reason: str = "init"
-        self._effective_advisor_interval_sec: float = self.advisor_interval_sec
-        self._effective_advisor_reason: str = "init"
+        self._effective_geo_interval_sec = self.macro_llm_interval_sec
+        self._effective_geo_reason = "init"
+        self._effective_advisor_interval_sec = self.advisor_interval_sec
+        self._effective_advisor_reason = "init"
         self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
 
     def _load_news_snapshot(self, eval_now: float, explicit_now: Optional[float] = None) -> Any:
         """Load passive news feed pool snapshot from cache_dir without network I/O."""
         from intelligence.macro.news_feed_collector import NewsFeedCollector
 
-        def _snap(nc: Any) -> Any:
-            try:
-                return nc.get_pool_snapshot(now_ts=eval_now) if explicit_now is not None else nc.get_pool_snapshot()
-            except TypeError:
-                return nc.get_pool_snapshot()
-
         cand_path = str(resolve_cachedb_filepath(os.path.join(self.cache_dir, "news_feed_collect.json")))
-        return _snap(NewsFeedCollector(history_file=cand_path))
+        nc = NewsFeedCollector(history_file=cand_path)
+        return _call_with_optional_kwarg(nc.get_pool_snapshot, opt_key="now_ts", opt_val=eval_now, include_opt=explicit_now is not None)
 
     def _maybe_notify_assessment(
         self,
@@ -160,14 +160,14 @@ class MacroAnalyzer:
         try:
             eval_now = self._resolve_now(now)
             news_snap = self._load_news_snapshot(eval_now, explicit_now=now)
-            try:
-                assessment = (
-                    self.geopolitical_analyzer.assess(news_snap, force_refresh=force, now_ts=eval_now)
-                    if now is not None
-                    else self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
-                )
-            except TypeError:
-                assessment = self.geopolitical_analyzer.assess(news_snap, force_refresh=force)
+            assessment = _call_with_optional_kwarg(
+                self.geopolitical_analyzer.assess,
+                news_snap,
+                opt_key="now_ts",
+                opt_val=eval_now,
+                include_opt=now is not None,
+                force_refresh=force,
+            )
             if assessment:
                 logger.info(
                     "Published geopolitical assessment: threat=%s, risk=%.2f, headlines=%d",
@@ -206,20 +206,16 @@ class MacroAnalyzer:
             mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=eval_now)
             whale_data = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
 
-            try:
-                assessment = (
-                    self.gemini_advisor.review(
-                        fear_greed=fg_snap, breadth=mb_snap, whale_telemetry=whale_data, force_refresh=force, now_ts=eval_now
-                    )
-                    if now is not None
-                    else self.gemini_advisor.review(
-                        fear_greed=fg_snap, breadth=mb_snap, whale_telemetry=whale_data, force_refresh=force
-                    )
-                )
-            except TypeError:
-                assessment = self.gemini_advisor.review(
-                    fear_greed=fg_snap, breadth=mb_snap, whale_telemetry=whale_data, force_refresh=force
-                )
+            assessment = _call_with_optional_kwarg(
+                self.gemini_advisor.review,
+                opt_key="now_ts",
+                opt_val=eval_now,
+                include_opt=now is not None,
+                fear_greed=fg_snap,
+                breadth=mb_snap,
+                whale_telemetry=whale_data,
+                force_refresh=force,
+            )
             if assessment:
                 if fg_snap is not None:
                     self._last_fg_value = int(fg_snap.value)

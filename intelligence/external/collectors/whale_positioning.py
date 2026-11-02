@@ -18,6 +18,7 @@ from cachepaths import telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
+    _clean_snapshot_symbol,
     _effective_now_ts,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
@@ -51,35 +52,20 @@ class WhalePositioningSnapshot:
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> WhalePositioningSnapshot:
         if not isinstance(data, dict):
             data = {}
-        fr_val = safe_float(data.get("funding_rate"), default=None)
-        raw_sym = data.get("symbol") or symbol
-        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
         raw_reg = data.get("divergence_regime")
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         return cls(
-            symbol=sym_str,
-            top_traders_long_ratio=max(
-                0.0, _clean_dict_float(data, "top_traders_long_ratio", _clean_dict_float(data, "whale_long_ratio", 1.0))
-            ),
-            top_traders_long_pct=min(
-                1.0,
-                max(
-                    0.0,
-                    _clean_dict_float(data, "top_traders_long_pct", _clean_dict_float(data, "whale_long_pct", 0.5)),
-                ),
-            ),
-            taker_buy_sell_ratio=max(0.0, _clean_dict_float(data, "taker_buy_sell_ratio", 1.0)),
-            taker_buy_vol_usd=max(0.0, _clean_dict_float(data, "taker_buy_vol_usd", 0.0)),
-            taker_sell_vol_usd=max(0.0, _clean_dict_float(data, "taker_sell_vol_usd", 0.0)),
-            open_interest_usd=max(
-                0.0, _clean_dict_float(data, "open_interest_usd", _clean_dict_float(data, "oi_usd", 0.0))
-            ),
-            open_interest_1h_change_pct=_clean_dict_float(
-                data, "open_interest_1h_change_pct", _clean_dict_float(data, "oi_1h_chg_pct", 0.0)
-            ),
+            symbol=_clean_snapshot_symbol(data, symbol),
+            top_traders_long_ratio=_clean_dict_float(data, "top_traders_long_ratio", 1.0, "whale_long_ratio", nonneg=True),
+            top_traders_long_pct=min(1.0, _clean_dict_float(data, "top_traders_long_pct", 0.5, "whale_long_pct", nonneg=True)),
+            taker_buy_sell_ratio=_clean_dict_float(data, "taker_buy_sell_ratio", 1.0, nonneg=True),
+            taker_buy_vol_usd=_clean_dict_float(data, "taker_buy_vol_usd", 0.0, nonneg=True),
+            taker_sell_vol_usd=_clean_dict_float(data, "taker_sell_vol_usd", 0.0, nonneg=True),
+            open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
+            open_interest_1h_change_pct=_clean_dict_float(data, "open_interest_1h_change_pct", 0.0, "oi_1h_chg_pct"),
             divergence_regime=reg_str,
-            ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
-            funding_rate=fr_val,
+            ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
+            funding_rate=safe_float(data.get("funding_rate"), default=None),
         )
 
 
@@ -127,18 +113,13 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             now_ts = _effective_now_ts(now)
             max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
             for s in _symbol_variants(symbol):
-                p = telemetry_cache_file_path(self.cache_dir, "derivatives_telemetry", s)
-                if not p:
+                if not (p := telemetry_cache_file_path(self.cache_dir, "derivatives_telemetry", s)):
                     continue
                 try:
                     d = read_json_dict(p, default=None, recover_previous=True)
-                    if not isinstance(d, dict):
-                        continue
-                    if not is_cache_fresh(d.get("ts"), now_ts, max_age):
-                        continue
-                    fr_val = safe_float(d.get("funding_rate"), default=None)
-                    if fr_val is not None:
-                        return fr_val
+                    if isinstance(d, dict) and is_cache_fresh(d.get("ts"), now_ts, max_age):
+                        if (fr_val := safe_float(d.get("funding_rate"), default=None)) is not None:
+                            return fr_val
                 except Exception:
                     continue
         except Exception as e:

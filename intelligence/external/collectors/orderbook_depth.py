@@ -37,8 +37,24 @@ _resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
 _symbol_variants = cache_symbol_variants
 
 
-def _clean_dict_float(data: Dict[str, Any], key: str, default: float) -> float:
-    return safe_float(data.get(key) if isinstance(data, dict) else None, default)
+def _clean_dict_float(
+    data: Dict[str, Any],
+    key: str,
+    default: float = 0.0,
+    alt_key: Optional[str] = None,
+    *,
+    nonneg: bool = False,
+) -> float:
+    if not isinstance(data, dict):
+        return max(0.0, default) if nonneg else default
+    fb = _clean_dict_float(data, alt_key, default) if alt_key else default
+    val = safe_float(data.get(key), fb)
+    return max(0.0, val) if nonneg else val
+
+
+def _clean_snapshot_symbol(data: Dict[str, Any], fallback: str = "") -> str:
+    raw = (data.get("symbol") if isinstance(data, dict) else None) or fallback
+    return raw.strip() if isinstance(raw, str) else ""
 
 
 def round_spread_bps(
@@ -51,15 +67,12 @@ def round_spread_bps(
     """Return bid-ask spread in bps rounded to 4 decimals when < 0.1 bps else 2 decimals."""
     sp = safe_pos_float(spread_bps, default=None)
     if sp is None:
-        b_bid = safe_pos_float(best_bid, default=None)
-        b_ask = safe_pos_float(best_ask, default=None)
+        b_bid, b_ask = safe_pos_float(best_bid, default=None), safe_pos_float(best_ask, default=None)
         if b_bid is not None and b_ask is not None and b_ask >= b_bid:
             eff_mid = safe_pos_float(mid_price, default=None) or ((b_bid + b_ask) / 2.0)
             if eff_mid > 0.0:
                 sp = ((b_ask - b_bid) / eff_mid) * 10000.0
-    if sp is None:
-        return None
-    return round(sp, 4 if sp < 0.1 else 2)
+    return round(sp, 4 if sp < 0.1 else 2) if sp is not None else None
 
 
 class _DiskBackedSymbolCollector:
@@ -97,11 +110,7 @@ class _DiskBackedSymbolCollector:
         return _symbol_variants(symbol)
 
     def _lookup_cached(self, symbol: str, now: float) -> Tuple[Any, Any]:
-        cached = None
-        for cand in self._candidate_variants(symbol):
-            cached = self._cache.get(cand)
-            if cached is not None:
-                break
+        cached = next((self._cache[c] for c in self._candidate_variants(symbol) if c in self._cache), None)
         if cached:
             c_ts = cached[0] if isinstance(cached, tuple) and len(cached) >= 2 else getattr(cached, "ts", None)
             if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
@@ -133,20 +142,17 @@ class _DiskBackedSymbolCollector:
         return None
 
     def _save_to_disk(self, snapshot: Any) -> None:
-        p = self._disk_path(snapshot.symbol)
-        if not p:
-            return
-        try:
-            save_json_state(p, snapshot.to_dict(), indent=2)
-        except Exception as e:
-            logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
+        if p := self._disk_path(snapshot.symbol):
+            try:
+                save_json_state(p, snapshot.to_dict(), indent=2)
+            except Exception as e:
+                logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
 
     def _fallback_stale(self, symbol: str, cached: Any) -> Optional[Any]:
-        if cached:
-            if isinstance(cached, tuple) and len(cached) >= 2:
-                return cached[1]
-            if self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
-                return cached
+        if isinstance(cached, tuple) and len(cached) >= 2:
+            return cached[1]
+        if cached and self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
+            return cached
         return self._load_from_disk(symbol, 0.0, ignore_ttl=True)
 
     def _record_item(self, item: Any, save_to_disk: bool = False) -> None:
@@ -165,17 +171,13 @@ class _DiskBackedSymbolCollector:
         allow_network: Any,
         now: Optional[float],
     ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
-        if not isinstance(symbol, str):
-            return None, 0.0, None, None, False
-        sym_clean = symbol.strip().upper()
-        if not sym_clean:
+        if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
             return None, 0.0, None, None, False
         now_f = _effective_now_ts(now)
         cached, fresh = self._lookup_cached(sym_clean, now_f)
         if fresh is not None:
             return sym_clean, now_f, cached, fresh, False
-        disk_snap = self._load_from_disk(sym_clean, now_f)
-        if disk_snap is not None:
+        if (disk_snap := self._load_from_disk(sym_clean, now_f)) is not None:
             return sym_clean, now_f, cached, disk_snap, False
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
         return sym_clean, now_f, cached, None, allow_net_bool
@@ -241,43 +243,28 @@ class OrderbookSnapshot:
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> OrderbookSnapshot:
         if not isinstance(data, dict):
             data = {}
-        raw_sym = data.get("symbol") or symbol
-        sym_str = raw_sym.strip() if isinstance(raw_sym, str) else ""
-        mid_price = max(
-            0.0,
-            _clean_dict_float(data, "mid_price", _clean_dict_float(data, "ob_mid_price", 0.0)),
-        )
-        best_bid = max(0.0, _clean_dict_float(data, "best_bid", 0.0))
-        best_ask = max(0.0, _clean_dict_float(data, "best_ask", 0.0))
+        mid_price = _clean_dict_float(data, "mid_price", 0.0, "ob_mid_price", nonneg=True)
+        best_bid = _clean_dict_float(data, "best_bid", 0.0, nonneg=True)
+        best_ask = _clean_dict_float(data, "best_ask", 0.0, nonneg=True)
         if mid_price <= 0.0 and best_bid > 0.0 and best_ask >= best_bid:
             mid_price = round((best_bid + best_ask) / 2.0, 6)
-        spread_bps = round_spread_bps(
-            data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price
-        ) or 0.0
-        bid_depth = max(0.0, _clean_dict_float(data, "bid_depth_usd", 0.0))
-        ask_depth = max(0.0, _clean_dict_float(data, "ask_depth_usd", 0.0))
-        d1_bid = max(0.0, _clean_dict_float(data, "depth_1pct_bid_usd", 0.0))
-        d1_ask = max(0.0, _clean_dict_float(data, "depth_1pct_ask_usd", 0.0))
-        if d1_bid <= 0.0 and bid_depth > 0.0:
-            d1_bid = round(bid_depth * (1.0 / 1.5), 2)
-        if d1_ask <= 0.0 and ask_depth > 0.0:
-            d1_ask = round(ask_depth * (1.0 / 1.5), 2)
-        imb_raw = _clean_dict_float(data, "imbalance_ratio", _clean_dict_float(data, "ob_imbalance", 0.5))
-        bid_wall_usd = _clean_dict_float(data, "largest_bid_wall_usd", _clean_dict_float(data, "bid_wall_usd", 0.0))
-        bid_wall_px = _clean_dict_float(data, "largest_bid_wall_price", _clean_dict_float(data, "bid_wall_px", 0.0))
-        ask_wall_usd = _clean_dict_float(data, "largest_ask_wall_usd", _clean_dict_float(data, "ask_wall_usd", 0.0))
-        ask_wall_px = _clean_dict_float(data, "largest_ask_wall_price", _clean_dict_float(data, "ask_wall_px", 0.0))
+        spread_bps = round_spread_bps(data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price) or 0.0
+        bid_depth = _clean_dict_float(data, "bid_depth_usd", 0.0, nonneg=True)
+        ask_depth = _clean_dict_float(data, "ask_depth_usd", 0.0, nonneg=True)
+        d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth / 1.5, 2) if bid_depth > 0.0 else 0.0)
+        d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth / 1.5, 2) if ask_depth > 0.0 else 0.0)
+        imb_raw = _clean_dict_float(data, "imbalance_ratio", 0.5, "ob_imbalance")
         return cls(
-            symbol=sym_str,
+            symbol=_clean_snapshot_symbol(data, symbol),
             mid_price=mid_price,
             bid_depth_usd=bid_depth,
             ask_depth_usd=ask_depth,
             imbalance_ratio=min(1.0, max(0.0, imb_raw)),
-            largest_bid_wall_usd=max(0.0, bid_wall_usd),
-            largest_bid_wall_price=max(0.0, bid_wall_px),
-            largest_ask_wall_usd=max(0.0, ask_wall_usd),
-            largest_ask_wall_price=max(0.0, ask_wall_px),
-            ts=max(0.0, _clean_dict_float(data, "ts", 0.0)),
+            largest_bid_wall_usd=_clean_dict_float(data, "largest_bid_wall_usd", 0.0, "bid_wall_usd", nonneg=True),
+            largest_bid_wall_price=_clean_dict_float(data, "largest_bid_wall_price", 0.0, "bid_wall_px", nonneg=True),
+            largest_ask_wall_usd=_clean_dict_float(data, "largest_ask_wall_usd", 0.0, "ask_wall_usd", nonneg=True),
+            largest_ask_wall_price=_clean_dict_float(data, "largest_ask_wall_price", 0.0, "ask_wall_px", nonneg=True),
+            ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
             best_bid=best_bid,
             best_ask=best_ask,
             spread_bps=spread_bps,

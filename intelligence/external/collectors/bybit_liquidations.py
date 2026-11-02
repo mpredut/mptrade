@@ -41,11 +41,7 @@ STABLE_SESSION_SEC = 60.0
 
 def _normalize_liq_side(raw_side: Any) -> Optional[str]:
     norm = normalize_side(raw_side)
-    if norm == "BUY":
-        return "LONG"
-    if norm == "SELL":
-        return "SHORT"
-    return None
+    return "LONG" if norm == "BUY" else ("SHORT" if norm == "SELL" else None)
 
 
 @dataclass(frozen=True)
@@ -210,6 +206,30 @@ class BybitLiquidationCollector:
             while dq and (safe_float(dq[0][0], default=None) is None or dq[0][0] < cutoff):
                 dq.popleft()
 
+    def _aggregate_window(
+        self,
+        items: List[Tuple[float, str, float]],
+        cutoff: float,
+        max_ts: Optional[float] = None,
+        *,
+        require_pos_notional: bool = False,
+    ) -> Tuple[float, float, int, int, float]:
+        long_usd = short_usd = last_ts = 0.0
+        long_n = short_n = 0
+        for ts, side, notional in items:
+            if safe_float(ts, default=None) is None or ts < cutoff or (max_ts is not None and ts > max_ts):
+                continue
+            if require_pos_notional and safe_pos_float(notional, default=None) is None:
+                continue
+            last_ts = max(last_ts, ts)
+            if side == "LONG":
+                long_usd += notional
+                long_n += 1
+            else:
+                short_usd += notional
+                short_n += 1
+        return long_usd, short_usd, long_n, short_n, last_ts
+
     def get_summary(
         self,
         symbol: str,
@@ -220,45 +240,27 @@ class BybitLiquidationCollector:
         symbol = clean_symbol_key(symbol)
         now_ts = safe_pos_float(now, default=None) or time.time()
         win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
-        cutoff = now_ts - win_sec
-        long_usd = short_usd = 0.0
-        events_n = 0
-        last_ts = 0.0
-
         with self._lock:
             items = list(self._events.get(symbol, ()))
             if not items:
                 for cand in cache_symbol_variants(symbol):
-                    cand_k = clean_symbol_key(cand)
-                    if cand_k and cand_k in self._events:
+                    if (cand_k := clean_symbol_key(cand)) and cand_k in self._events:
                         items = list(self._events[cand_k])
                         break
 
-        for ts, side, notional in items:
-            if safe_float(ts, default=None) is None or safe_pos_float(notional, default=None) is None:
-                continue
-            if ts < cutoff or ts > (now_ts + 5.0):
-                continue
-            last_ts = max(last_ts, ts)
-            events_n += 1
-            if side == "LONG":
-                long_usd += notional
-            else:
-                short_usd += notional
-
+        long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(
+            items, now_ts - win_sec, max_ts=now_ts + 5.0, require_pos_notional=True
+        )
         total = long_usd + short_usd
-        cap_ratio = long_usd / total if total > 0 else 0.5
-        sq_ratio = short_usd / total if total > 0 else 0.5
-
         return LiquidationSummary(
             symbol=symbol,
             window_sec=win_sec,
             long_liq_usd=long_usd,
             short_liq_usd=short_usd,
             net_usd=short_usd - long_usd,
-            capitulation_ratio=cap_ratio,
-            squeeze_ratio=sq_ratio,
-            events_count=events_n,
+            capitulation_ratio=long_usd / total if total > 0 else 0.5,
+            squeeze_ratio=short_usd / total if total > 0 else 0.5,
+            events_count=long_n + short_n,
             last_event_ts=last_ts,
         )
 
@@ -268,30 +270,14 @@ class BybitLiquidationCollector:
         sym_clean = clean_symbol_key(symbol_str)
         eff_win = safe_pos_float(window_sec, 300.0)
         now = time.time()
-        cutoff = now - eff_win
-        long_usd = short_usd = 0.0
-        long_n = short_n = 0
-        last_ts = 0.0
         with self._lock:
             items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol_str) or ())
             if not items and symbol_str:
-                for cand in cache_symbol_variants(
-                    symbol_str, include_original=True, quotes=("USDT", "USDC", "USD")
-                ):
-                    cand_items = casefold_get(self._events, cand)
-                    if cand_items:
+                for cand in cache_symbol_variants(symbol_str, include_original=True, quotes=("USDT", "USDC", "USD")):
+                    if cand_items := casefold_get(self._events, cand):
                         items = list(cand_items)
                         break
-        for ts, side, notional in items:
-            if safe_float(ts, default=None) is None or ts < cutoff:
-                continue
-            last_ts = max(last_ts, ts)
-            if side == "LONG":
-                long_usd += notional
-                long_n += 1
-            else:
-                short_usd += notional
-                short_n += 1
+        long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(items, now - eff_win)
         return {
             "symbol": symbol_str,
             "window_sec": eff_win,
