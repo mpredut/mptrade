@@ -43,10 +43,10 @@ from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_fl
 
 from cachepaths import cache_path
 from instrument_registry import select_instruments
+from providers.replay_clock import backtest_isolation_context
 from providers.replay_provider import ReplayMarketDataProvider, load_price_series
 from providers.market_api import MarketApi
 from instrument import Instrument
-import log
 import monitortrades as mt
 import pricewindow as pw
 from offline.research.monitortrades_backtest.replay_trend_source import (
@@ -209,12 +209,6 @@ def run_symbol(
     elif not series:
         return None
 
-    if quiet:
-        try:
-            log.disable_print()
-        except Exception:
-            pass
-
     provider = ReplayMarketDataProvider({symbol: series}, fee_pct=FEE_PCT)
     api = MarketApi([provider])
     inst = Instrument(name=symbol, symbol=symbol, provider="replay",
@@ -225,11 +219,6 @@ def run_symbol(
         maxage_days = 7.0
     maxage_s = max(60, int(maxage_days * 24 * 3600))
 
-    # 29 Jul: is_trend_up() REPLICATED from the replayed history (ReplayTrendSource),
-    # neutralizat — vezi replay_trend_source.py pt de ce (cursa fast/slow investigata
-    # and fixed live in cacheManager.py; tradeall.py ALWAYS runs live, so
-    # the signal is always available, just as it is here). trend_window_seconds is parameterised
-    # for A/B tests on another horizon (instant/medium/long), without changing the default.
     tape_key = _series_cache_key(symbol, series, trend_window_seconds)
     cached_tape = _TREND_TAPE_CACHE.get(tape_key)
     if cached_tape is None:
@@ -260,10 +249,6 @@ def run_symbol(
     mt._apply_post_stop_ai_guard = (
         lambda sym, px, spx, st, snap, bb, bq, q, inst=None: (True, bb, bq, q)
     )
-    _bt_env_keys = ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS", "DISABLE_GEMINI_LLM")
-    _orig_bt_env = {k: os.environ.get(k) for k in _bt_env_keys}
-    for _k in _bt_env_keys:
-        os.environ[_k] = "1"
     orig_get_relevant_trade = mt.get_relevant_trade
     orig_summarize_orders = mt._summarize_orders
 
@@ -331,207 +316,196 @@ def run_symbol(
 
     mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
     _clear_symbol_mt_state(symbol)
-    try:
-        first_price = provider.advance(symbol)
-        if first_price is None:
-            return None
-        last_price = first_price
-        if trend_source is not None:
-            trend_source.advance(symbol, provider.now(symbol), first_price)
-            recorded_tape.append(bool(trend_source.is_trend_up(symbol)))
-        provider.place_order(symbol, "BUY", first_price, SEED_NOTIONAL_USD / first_price)
-        n_seeds = 1
-        n_ticks = 0
-
-        trail_pct = safe_nonneg_float(params.get("trailing.pct"), 0.0)
-        trail_ratio = trail_pct / 100.0
-        trail_peak = first_price
-        min_trail_trigger_ratio = float("inf")
-        max_untriggered_trail_ratio = 0.0
-
-        now_s = 0.0
-        _now_fn = lambda: now_s
-        (
-            _cfg_gain, _cfg_lost, _cfg_maxage_s,
-            _cfg_hard_tp_pct, _cfg_hard_tp_frac, _cfg_hard_tp_cd,
-            _cfg_tp_ref, _cfg_buy_budget, _cfg_buy_qty, _cfg_max_budget,
-            _cfg_min_qty, _cfg_prov_label,
-        ) = mt._resolve_mt_inst_cfg(inst)
-        _eff_up_thresh = min(_cfg_gain, _cfg_hard_tp_pct) if mt.HARD_TP_ENABLED else _cfg_gain
-        _fast_ver = -1
-        _fast_min_ts_ms = -1.0
-        _fast_low_buy_px = -1.0
-        _fast_high_buy_px = -1.0
-        _fast_has_sells = False
-        _fast_sell_time = 0.0
-        _fast_reentry_high_px = float("inf")
-        _fast_exit_is_stop = False
-
-        while True:
-            price = provider.advance(symbol)
-            if price is None:
-                break
-            last_price = price
-            n_ticks += 1
-            tick_idx = n_ticks
-            # Feed the trend window BEFORE the decision — that way the signal
-            # it reflects only what would have been visible up to this tick (no look-ahead).
+    with backtest_isolation_context(quiet=quiet):
+        try:
+            first_price = provider.advance(symbol)
+            if first_price is None:
+                return None
+            last_price = first_price
             if trend_source is not None:
-                trend_source.advance(symbol, provider.now(symbol), price)
+                trend_source.advance(symbol, provider.now(symbol), first_price)
                 recorded_tape.append(bool(trend_source.is_trend_up(symbol)))
+            provider.place_order(symbol, "BUY", first_price, SEED_NOTIONAL_USD / first_price)
+            n_seeds = 1
+            n_ticks = 0
 
-            open_qty, _ = provider.position(symbol)
-            if open_qty > 0:
-                if price >= trail_peak:
-                    trail_peak = price
-                elif trail_ratio > 0:
-                    dd_ratio = (trail_peak - price) / trail_peak
-                    if dd_ratio >= trail_ratio:
-                        if dd_ratio < min_trail_trigger_ratio:
-                            min_trail_trigger_ratio = dd_ratio
-                        provider.place_order(symbol, "SELL", price, open_qty)
+            trail_pct = safe_nonneg_float(params.get("trailing.pct"), 0.0)
+            trail_ratio = trail_pct / 100.0
+            trail_peak = first_price
+            min_trail_trigger_ratio = float("inf")
+            max_untriggered_trail_ratio = 0.0
+
+            now_s = 0.0
+            _now_fn = lambda: now_s
+            (
+                _cfg_gain, _cfg_lost, _cfg_maxage_s,
+                _cfg_hard_tp_pct, _cfg_hard_tp_frac, _cfg_hard_tp_cd,
+                _cfg_tp_ref, _cfg_buy_budget, _cfg_buy_qty, _cfg_max_budget,
+                _cfg_min_qty, _cfg_prov_label,
+            ) = mt._resolve_mt_inst_cfg(inst)
+            _eff_up_thresh = min(_cfg_gain, _cfg_hard_tp_pct) if mt.HARD_TP_ENABLED else _cfg_gain
+            _fast_ver = -1
+            _fast_min_ts_ms = -1.0
+            _fast_low_buy_px = -1.0
+            _fast_high_buy_px = -1.0
+            _fast_has_sells = False
+            _fast_sell_time = 0.0
+            _fast_reentry_high_px = float("inf")
+            _fast_exit_is_stop = False
+
+            while True:
+                price = provider.advance(symbol)
+                if price is None:
+                    break
+                last_price = price
+                n_ticks += 1
+                tick_idx = n_ticks
+                if trend_source is not None:
+                    trend_source.advance(symbol, provider.now(symbol), price)
+                    recorded_tape.append(bool(trend_source.is_trend_up(symbol)))
+
+                open_qty, _ = provider.position(symbol)
+                if open_qty > 0:
+                    if price >= trail_peak:
                         trail_peak = price
-                        continue
-                    elif dd_ratio > max_untriggered_trail_ratio:
-                        max_untriggered_trail_ratio = dd_ratio
-            else:
-                trail_peak = price
+                    elif trail_ratio > 0:
+                        dd_ratio = (trail_peak - price) / trail_peak
+                        if dd_ratio >= trail_ratio:
+                            if dd_ratio < min_trail_trigger_ratio:
+                                min_trail_trigger_ratio = dd_ratio
+                            provider.place_order(symbol, "SELL", price, open_qty)
+                            trail_peak = price
+                            continue
+                        elif dd_ratio > max_untriggered_trail_ratio:
+                            max_untriggered_trail_ratio = dd_ratio
+                else:
+                    trail_peak = price
 
-            now_s = provider.now(symbol)
-            if not provider.has_orders_since(symbol, maxage_s):
-                provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
-                trail_peak = price
-                n_seeds += 1
-                continue
-
-            if (
-                quiet
-                and provider._orders_version == _fast_ver
-                and (int(now_s) - maxage_s) * 1000.0 <= _fast_min_ts_ms
-                and _fast_low_buy_px < price < _fast_high_buy_px
-                and symbol not in mt._SL_BOUNCE_STATE
-                and symbol not in mt._SL_EPISODE_STATE
-                and symbol not in mt._TP_RIDE_STATE
-                and symbol not in mt._PENDING_STOP_EXIT
-            ):
-                if not _fast_has_sells:
-                    if from_disk and n_ticks % 20000 == 0:
-                        sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                now_s = provider.now(symbol)
+                if not provider.has_orders_since(symbol, maxage_s):
+                    provider.place_order(symbol, "BUY", price, SEED_NOTIONAL_USD / price)
+                    trail_peak = price
+                    n_seeds += 1
                     continue
-                reentry_st = mt._REENTRY_STATE.get(symbol)
-                if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
-                    t_up = (
-                        cached_tape[tick_idx]
-                        if cached_tape is not None
-                        else bool(trend_source.is_trend_up(symbol))
-                    )
-                    if not t_up or (
-                        not _fast_exit_is_stop
-                        and not mt.MT_REENTRY_HYBRID_ENABLED
-                        and price > _fast_reentry_high_px
-                    ):
-                        if price < reentry_st["trough"]:
-                            reentry_st["trough"] = price
-                            reentry_st["peak_bounce"] = price
-                        else:
-                            reentry_st["peak_bounce"] = max(reentry_st.get("peak_bounce", price), price)
-                        if price > reentry_st["peak"]:
-                            reentry_st["peak"] = price
+
+                if (
+                    quiet
+                    and provider._orders_version == _fast_ver
+                    and (int(now_s) - maxage_s) * 1000.0 <= _fast_min_ts_ms
+                    and _fast_low_buy_px < price < _fast_high_buy_px
+                    and symbol not in mt._SL_BOUNCE_STATE
+                    and symbol not in mt._SL_EPISODE_STATE
+                    and symbol not in mt._TP_RIDE_STATE
+                    and symbol not in mt._PENDING_STOP_EXIT
+                ):
+                    if not _fast_has_sells:
                         if from_disk and n_ticks % 20000 == 0:
                             sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
                         continue
+                    reentry_st = mt._REENTRY_STATE.get(symbol)
+                    if reentry_st is not None and reentry_st.get("sell_time") == _fast_sell_time:
+                        t_up = (
+                            cached_tape[tick_idx]
+                            if cached_tape is not None
+                            else bool(trend_source.is_trend_up(symbol))
+                        )
+                        if not t_up or (
+                            not _fast_exit_is_stop
+                            and not mt.MT_REENTRY_HYBRID_ENABLED
+                            and price > _fast_reentry_high_px
+                        ):
+                            if price < reentry_st["trough"]:
+                                reentry_st["trough"] = price
+                                reentry_st["peak_bounce"] = price
+                            else:
+                                reentry_st["peak_bounce"] = max(reentry_st.get("peak_bounce", price), price)
+                            if price > reentry_st["peak"]:
+                                reentry_st["peak"] = price
+                            if from_disk and n_ticks % 20000 == 0:
+                                sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+                            continue
 
-            mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=_now_fn)
-            if (
-                quiet
-                and symbol not in mt._SL_BOUNCE_STATE
-                and symbol not in mt._SL_EPISODE_STATE
-                and symbol not in mt._TP_RIDE_STATE
-                and symbol not in mt._PENDING_STOP_EXIT
-            ):
-                cur_ver = provider._orders_version
-                if cur_ver != _fast_ver or (int(now_s) - maxage_s) * 1000.0 > _fast_min_ts_ms:
-                    b_ords = provider.get_orders(symbol, "BUY", maxage_s)
-                    s_ords = provider.get_orders(symbol, "SELL", maxage_s)
-                    min_ts = float("inf")
-                    for o in b_ords:
-                        if o["timestamp"] < min_ts:
-                            min_ts = float(o["timestamp"])
-                    for o in s_ords:
-                        if o["timestamp"] < min_ts:
-                            min_ts = float(o["timestamp"])
-                    _fast_min_ts_ms = min_ts
-                    pos = mt.get_position_stats(
-                        symbol, maxage_s, api=provider,
-                        buy_orders=b_ords, sell_orders=s_ords, now_ts=int(now_s),
-                    )
-                    b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol, now_fn=_now_fn)
-                    s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol, now_fn=_now_fn)
-                    active_avg_buy = float(
-                        pos.get("active_average_buy_price")
-                        or pos.get("average_buy_price")
-                        or 0.0
-                    )
-                    if _cfg_tp_ref == "average" and active_avg_buy > 0:
-                        b_px = active_avg_buy
-                    if _cfg_tp_ref == "average" and pos["average_sell_price"] > 0:
-                        s_px = pos["average_sell_price"]
-                    avail_q = provider.free_balance(base) or 0.0
-                    owned_q = max(float(pos["net_qty"]), 0.0)
-                    sellable_q = min(avail_q, owned_q) if inst.isolation == "own_ledger" else avail_q
-                    pos_closed = (
-                        bool(s_ords)
-                        and s_t > b_t
-                        and mt._is_untradable_dust(inst, symbol, sellable_q, price, _cfg_min_qty)
-                    )
-                    _tol = max(float(mt.MT_ARE_CLOSE_TOLERANCE_PCT), 0.0)
-                    _band_mult = max((200.0 - _tol) / max(200.0 + _tol, 1e-9) - 1e-9, 0.0)
-                    _re_mult = (200.0 + _tol) / max(200.0 - _tol, 1e-9) + 1e-9
-                    if not b_ords or pos_closed or not b_px:
-                        _fast_low_buy_px = -1.0
-                        _fast_high_buy_px = float("inf")
-                    else:
-                        _fast_low_buy_px = b_px * (1.0 - _cfg_lost * _band_mult)
-                        _fast_high_buy_px = b_px * (1.0 + _eff_up_thresh * _band_mult)
-                    _fast_has_sells = bool(s_ords) and (not b_ords or s_t >= b_t)
-                    _fast_sell_time = float(s_t) if s_ords else 0.0
-                    _fast_exit_is_stop = (mt._LAST_EXIT_KIND.get(symbol) == "STOP")
-                    _fast_reentry_high_px = (
-                        s_px * (1.0 - _cfg_gain) * _re_mult
-                    ) if (s_ords and s_px) else float("inf")
-                    _fast_ver = cur_ver
+                mt.monitor_price_and_trade(inst, sbs=SBS, now_fn=_now_fn)
+                if (
+                    quiet
+                    and symbol not in mt._SL_BOUNCE_STATE
+                    and symbol not in mt._SL_EPISODE_STATE
+                    and symbol not in mt._TP_RIDE_STATE
+                    and symbol not in mt._PENDING_STOP_EXIT
+                ):
+                    cur_ver = provider._orders_version
+                    if cur_ver != _fast_ver or (int(now_s) - maxage_s) * 1000.0 > _fast_min_ts_ms:
+                        b_ords = provider.get_orders(symbol, "BUY", maxage_s)
+                        s_ords = provider.get_orders(symbol, "SELL", maxage_s)
+                        min_ts = float("inf")
+                        for o in b_ords:
+                            if o["timestamp"] < min_ts:
+                                min_ts = float(o["timestamp"])
+                        for o in s_ords:
+                            if o["timestamp"] < min_ts:
+                                min_ts = float(o["timestamp"])
+                        _fast_min_ts_ms = min_ts
+                        pos = mt.get_position_stats(
+                            symbol, maxage_s, api=provider,
+                            buy_orders=b_ords, sell_orders=s_ords, now_ts=int(now_s),
+                        )
+                        b_px, b_t, _ = _fast_get_relevant_trade(b_ords, "BUY", symbol=symbol, now_fn=_now_fn)
+                        s_px, s_t, _ = _fast_get_relevant_trade(s_ords, "SELL", symbol=symbol, now_fn=_now_fn)
+                        active_avg_buy = float(
+                            pos.get("active_average_buy_price")
+                            or pos.get("average_buy_price")
+                            or 0.0
+                        )
+                        if _cfg_tp_ref == "average" and active_avg_buy > 0:
+                            b_px = active_avg_buy
+                        if _cfg_tp_ref == "average" and pos["average_sell_price"] > 0:
+                            s_px = pos["average_sell_price"]
+                        avail_q = provider.free_balance(base) or 0.0
+                        owned_q = max(float(pos["net_qty"]), 0.0)
+                        sellable_q = min(avail_q, owned_q) if inst.isolation == "own_ledger" else avail_q
+                        pos_closed = (
+                            bool(s_ords)
+                            and s_t > b_t
+                            and mt._is_untradable_dust(inst, symbol, sellable_q, price, _cfg_min_qty)
+                        )
+                        _tol = max(float(mt.MT_ARE_CLOSE_TOLERANCE_PCT), 0.0)
+                        _band_mult = max((200.0 - _tol) / max(200.0 + _tol, 1e-9) - 1e-9, 0.0)
+                        _re_mult = (200.0 + _tol) / max(200.0 - _tol, 1e-9) + 1e-9
+                        if not b_ords or pos_closed or not b_px:
+                            _fast_low_buy_px = -1.0
+                            _fast_high_buy_px = float("inf")
+                        else:
+                            _fast_low_buy_px = b_px * (1.0 - _cfg_lost * _band_mult)
+                            _fast_high_buy_px = b_px * (1.0 + _eff_up_thresh * _band_mult)
+                        _fast_has_sells = bool(s_ords) and (not b_ords or s_t >= b_t)
+                        _fast_sell_time = float(s_t) if s_ords else 0.0
+                        _fast_exit_is_stop = (mt._LAST_EXIT_KIND.get(symbol) == "STOP")
+                        _fast_reentry_high_px = (
+                            s_px * (1.0 - _cfg_gain) * _re_mult
+                        ) if (s_ords and s_px) else float("inf")
+                        _fast_ver = cur_ver
 
-            if from_disk and n_ticks % 20000 == 0:
-                sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
-        if cached_tape is None and len(recorded_tape) == len(series):
-            _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
-        _LAST_HARD_TP_TOUCHED[tape_key] = hard_tp_touched
-        _LAST_RUN_DIAGNOSTICS[tape_key] = {
-            "hard_tp_touched": hard_tp_touched,
-            "min_hard_tp_gain_ratio": min_hard_tp_gain_ratio,
-            "hard_tp_cooldown_dts": tuple(hard_tp_cooldown_dts),
-            "min_trail_trigger_ratio": min_trail_trigger_ratio,
-            "max_untriggered_trail_ratio": max_untriggered_trail_ratio,
-        }
-    finally:
-        if quiet:
-            try:
-                log.enable_print()
-            except Exception:
-                pass
-        _clear_symbol_mt_state(symbol)
-        mt.is_trend_up = orig_is_trend_up
-        mt.get_symbol_volatility_1h = orig_get_vol
-        mt._MT_PERSISTENCE_ENABLED = orig_persist
-        mt._apply_post_stop_ai_guard = orig_post_stop_ai
-        mt.get_relevant_trade = orig_get_relevant_trade
-        mt._summarize_orders = orig_summarize_orders
-        mt._evaluate_hard_take_profit = orig_eval_hard_tp
-        for _k, _v in _orig_bt_env.items():
-            if _v is None:
-                os.environ.pop(_k, None)
-            else:
-                os.environ[_k] = _v
+                if from_disk and n_ticks % 20000 == 0:
+                    sys.stderr.write(f"[{symbol}] {n_ticks} tick-uri, seed-uri={n_seeds}\n")
+            if cached_tape is None and len(recorded_tape) == len(series):
+                _TREND_TAPE_CACHE[tape_key] = tuple(recorded_tape)
+            _LAST_HARD_TP_TOUCHED[tape_key] = hard_tp_touched
+            _LAST_RUN_DIAGNOSTICS[tape_key] = {
+                "hard_tp_touched": hard_tp_touched,
+                "min_hard_tp_gain_ratio": min_hard_tp_gain_ratio,
+                "hard_tp_cooldown_dts": tuple(hard_tp_cooldown_dts),
+                "min_trail_trigger_ratio": min_trail_trigger_ratio,
+                "max_untriggered_trail_ratio": max_untriggered_trail_ratio,
+            }
+        finally:
+            _clear_symbol_mt_state(symbol)
+            mt.is_trend_up = orig_is_trend_up
+            mt.get_symbol_volatility_1h = orig_get_vol
+            mt._MT_PERSISTENCE_ENABLED = orig_persist
+            mt._apply_post_stop_ai_guard = orig_post_stop_ai
+            mt.get_relevant_trade = orig_get_relevant_trade
+            mt._summarize_orders = orig_summarize_orders
+            mt._evaluate_hard_take_profit = orig_eval_hard_tp
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

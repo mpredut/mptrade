@@ -39,7 +39,12 @@ from botcore import (
     required_int_env as _required_int_env,
     safe_pos_float,
 )
-from offline.backtests.metrics import format_performance_summary
+from offline.backtests.metrics import (
+    buy_hold_pct,
+    format_performance_summary,
+    print_single_backtest_report,
+    run_tp_drop_sl_sweep,
+)
 
 
 _common_mod = load_local_module(_HERE, "common")
@@ -140,35 +145,35 @@ def main() -> int:
         log("! budget must be > 0"); return 1
     fund = fetch_funding(coin, ts[0])
     sig = precompute_signal(closes, [t/1000 for t in ts], args.signal, args.fast, args.slow, args.band/100, args.win, args.step)
-    bh = (closes[-1]-closes[0])/closes[0]*100 if closes[0] > 0 else 0.0
+    bh = buy_hold_pct(closes)
 
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop, tp=tp,
                 maxdca=maxdca, budget=budget, fee=fee, sl=sl)
 
     if args.mode == "single":
-        total, m, wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)
-        log(f"=== BACKTEST COMPLET {coin} {args.days}z {direction} semnal={args.signal} ===")
-        log(f"  params: entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}")
-        log(f"  REAL TOTAL: {total:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + funding ${m['funding']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
-        log(f"  (the realised part alone: {m['net']/budget*100:+.2f}% — MISLEADING if a losing position remains)")
-        log(f"  cycles  : {m['cycles']}  win rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}  ({m['maxdd']/budget*100:.0f}% of the budget)")
-        for line in format_performance_summary(m, indent="  "):
-            log(line)
-        log(f"  buy&hold: {bh:+.2f}%   pozitie deschisa la final: {m['open_qty']:.4f} ({'PIERZATOARE' if m['final_upnl']<-1 else 'ok'})")
+        _total, m, _wr = run(coin, ohlc, ts, fund, sig, base, direction, budget)
+        print_single_backtest_report(
+            f"=== BACKTEST COMPLET {coin} {args.days}z {direction} semnal={args.signal} ===",
+            f"entry={entry} dca={dca} disc={disc}% drop={drop}% tp={tp}% sl={sl}% maxdca={maxdca}",
+            m,
+            budget=budget,
+            bh=bh,
+            include_funding=True,
+            open_qty_decimals=4,
+            emit=log,
+        )
         return 0
 
-    # Sweep TP x DROP for tuning.
     log(f"=== SWEEP {coin} {args.days}z {direction} semnal={args.signal} (buy&hold {bh:+.1f}%) ===")
-    results = []
-    for tp_val in (0.5, 0.8, 1.0, 1.5, 2.0, 3.0):
-        for drop_val in (1.0, 2.0, 3.0, 5.0):
-            P = dict(base); P["tp"] = tp_val; P["drop"] = drop_val
-            net, m, wr = run(coin, ohlc, ts, fund, sig, P, direction, budget)
-            results.append((net, tp_val, drop_val, m["cycles"], wr, m["maxdd"]))
-    results.sort(reverse=True)
-    log("  top 8 combinatii (net% | tp | drop | cicluri | win% | maxDD$):")
-    for net, tp, drop, cyc, wr, dd in results[:8]:
-        log(f"    {net:+7.2f}%  tp={tp:<4} drop={drop:<4} cic={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
+    run_tp_drop_sl_sweep(
+        base,
+        lambda p: simulate(ohlc, ts, fund, sig, p, direction),
+        budget=budget,
+        tp_values=(0.5, 0.8, 1.0, 1.5, 2.0, 3.0),
+        drop_values=(1.0, 2.0, 3.0, 5.0),
+        sl_values=None,
+        emit=log,
+    )
     return 0
 
 

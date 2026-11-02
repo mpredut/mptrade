@@ -8,9 +8,45 @@ but a correct replay replaces that value before strategy code reads the clock.
 """
 
 
+import contextlib
+import os
 import time
 
 from botcore import safe_float
+import log
+
+_BT_ENV_KEYS = (
+    "BACKTEST_MODE",
+    "REPLAY_MODE",
+    "DISABLE_EXTERNAL_NOTIFICATIONS",
+    "DISABLE_GEMINI_LLM",
+)
+
+
+@contextlib.contextmanager
+def backtest_isolation_context(quiet: bool = False):
+    """Temporarily set backtest/replay isolation env flags and optional print suppression."""
+    if quiet:
+        try:
+            log.disable_print()
+        except Exception:
+            pass
+    orig_env = {k: os.environ.get(k) for k in _BT_ENV_KEYS}
+    for k in _BT_ENV_KEYS:
+        os.environ[k] = "1"
+    try:
+        yield
+    finally:
+        for k, v in orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if quiet:
+            try:
+                log.enable_print()
+            except Exception:
+                pass
 
 
 def _clean_ts(val: float) -> float:

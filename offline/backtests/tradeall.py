@@ -32,11 +32,10 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
 from botcore import safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
-from providers.replay_clock import SimClock as _SimClock  # noqa: F401
+from providers.replay_clock import SimClock as _SimClock, backtest_isolation_context  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get
-import log
 from offline.research.monitortrades_backtest.replay_trend_source import (  # noqa: E402
     DynamicReplayTrendSource,
 )
@@ -334,30 +333,11 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     os.makedirs(out_dir, exist_ok=True)
     price_path = os.path.join(out_dir, "tradeall_price_samples.log")
 
-    if quiet:
-        # tradeall.logic()/check_price_change() print() on every tick, mirrored onto
-        # disk (log.py) — on DENSE data (cache24, tens of thousands of ticks) that dominates the
-        # run time. log.disable_print() suppresses print() globally (OUR messages use
-        # sys.stderr.write, which stays visible).
-        try:
-            log.disable_print()
-        except Exception:
-            pass
-
-    # 29 Jul (user's idea): a "wait for a favourable moment" gate for the
-    # BUY/SELL retry intents — an isolated DynamicReplayTrendSource (it does not touch
-    # cache_short_trend.json), fed tick by tick below, in the main loop.
     trend_gate = DynamicReplayTrendSource([symbol]) if trend_gate_timeout_sec is not None else None
-
     clock = _SimClock()
     broker = BacktestBroker(out_dir, clock, trend_gate=trend_gate,
                             trend_gate_timeout_sec=trend_gate_timeout_sec,
                             trend_gate_max_wait_sec=trend_gate_max_wait_sec)
-    # 30 Jul: tradeall._fire_order now uses mkt.place(symbol, side, price, qty, ...)
-    # (a single proxy), not po.place_order_smart(side, symbol, ...). We stub ta.mkt.place with a
-    # an adapter that swaps the order (symbol,side)->(side,symbol) and calls the simulated broker
-    # -> it does NOT touch the network. (We also patch ta.po.place_order_smart as a safety net for
-    # any residual path.)
     orig_place_smart = getattr(getattr(ta, "po", None), "place_order_smart", None)
     orig_mkt_place = getattr(ta.mkt, "place", None)
     orig_mkt_cancel = getattr(ta.mkt, "cancel_order", None)
@@ -365,216 +345,185 @@ def run_backtest(symbol, start_ts, end_ts, speed, run_id, source, cache24_file=N
     orig_log_decision = getattr(ta, "log_decision", None)
     orig_kalman_ref = getattr(ta, "_kalman_ref", None)
     orig_gate_log = getattr(ta, "GATE_OUTCOME_LOG", None)
-    _bt_env_keys = ("BACKTEST_MODE", "REPLAY_MODE", "DISABLE_EXTERNAL_NOTIFICATIONS", "DISABLE_GEMINI_LLM")
-    _orig_bt_env = {k: os.environ.get(k) for k in _bt_env_keys}
-    for _k in _bt_env_keys:
-        os.environ[_k] = "1"
 
-    try:
-        ta.mkt.cancel_order = lambda *a, **kw: True
-        if hasattr(ta, "api"):
-            ta.api.cancel_expired_orders = lambda *a, **kw: None
-        if kalman_primary:
-            # PRIMARY KALMAN MODE: the old model only LOGS (its orders are not
-            # executes); the broker is driven exclusively by the Kalman transitions.
-            _old_attempts = {"n": 0}
-            def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
-                _old_attempts["n"] += 1
-                return None
-            if hasattr(ta, "po"):
-                ta.po.place_order_smart = _journal_only
-            ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: _journal_only(
-                side_, symbol_, price_, qty_, **kw)
-        else:
-            if hasattr(ta, "po"):
-                ta.po.place_order_smart = broker.place_order_smart           # A stub — it does NOT touch the network.
-            ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
-                side_, symbol_, price_, qty_, **kw)
-        decision_path = os.path.join(out_dir, "tradeall_decisions.log")
-
-        window_small = ta.PriceWindow(symbol, 300, sample_rate_sec=ta.TIME_SLEEP_GET_PRICE,
-                                       window_seconds=ta.WINDOW_SECONDS_SMALL)
-        window_big = ta.PriceWindow(symbol, 300, sample_rate_sec=ta.TIME_SLEEP_GET_PRICE,
-                                     window_seconds=ta.WINDOW_SECONDS_BIG)
-        analyzer_small = ta.WindowAnalyzer(window_small)
-        analyzer_big = ta.WindowAnalyzer(window_big)
-        trend_state = ta.TrendState(max_duration_seconds=2.5 * 60 * 60, expiration_trend_time=2.7 * 60,
-                                     fresh_trend_time=3.7 * 60, now_fn=clock)
-        trend_state_big = ta.TrendState(max_duration_seconds=3 * 60 * 60, expiration_trend_time=2.7 * 60,
-                                         fresh_trend_time=3.7 * 60, now_fn=clock)
-    
-        # SHADOW (observational, the 17 Jul plan): the same objects as live, with the simulated
-        # clock; a FLAT journal in the run's folder (the backtest monitor draws it).
-        shadow = shadow_signals.KalmanStateTracker(
-            journal=shadow_signals.KalmanJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
-            now_fn=clock,
-            compute_vol=(speed != "fast"))
-        # The KALMAN GATE is in the backtest too (parity with live), but with the block journal
-        # redirected into the run's folder — NEVER into the live order_outcomes (A5).
-        ta._kalman_ref = shadow
-        def _bt_gate_log(symbol_, side, price_, qty, outcome, reason, motivation):
-            cols = [clock(), symbol_, side, price_, qty, outcome, reason, "backtest", motivation]
-            broker.write_outcome_row(cols)
-        ta.GATE_OUTCOME_LOG = _bt_gate_log
-    
-        if source == "cache24":
-            tick_source = load_ticks_cache24(symbol, start_ts, end_ts, filename=cache24_file)
-        else:
-            tick_source = load_ticks_history(symbol, start_ts, end_ts)
-    
-        prev_ts = None
-        n = 0
-        first_price = None
-        prev_ktrend = 0
-        slope = slope_big = gradient = _gc = _sf = _gr = 0.0
-        fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
-        def _persist_analysis_state(cur_px, cur_ts, cur_shadow):
-            try:
-                state_obj = {symbol: {
-                    "current_price": cur_px, "final_trend": gradient,
-                    "growth_coefficient": _gc, "slope_full": _sf,
-                    "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
-                    "epsilon": window_small.get_noise_epsilon(), "ts": cur_ts,
-                    **cur_shadow,
-                }}
-                atomic_write_json(os.path.join(out_dir, "analysis_state.json"), state_obj)
-            except Exception:
-                pass
-
-        with open(price_path, "a", encoding="utf-8") as price_f, \
-             open(broker.path, "a", encoding="utf-8") as outcome_f, \
-             open(decision_path, "a", encoding="utf-8") as decision_f:
-            broker._log_f = outcome_f
-            ta.log_decision = make_decision_logger(out_dir, clock, file_handle=decision_f)
-            for ts, price in tick_source:
-                clock.ts = ts   # The simulated clock = the time of the REPLAYED tick, not the real clock (A5).
-                if speed == "real" and prev_ts is not None:
-                    time.sleep(max(0.0, ts - prev_ts))
-                dt = ts - prev_ts if prev_ts is not None else None
-                prev_ts = ts
-    
-                if dt and dt > 0:
-                    window_small.set_sample_rate(dt)
-                    window_big.set_sample_rate(dt)
-                window_small.process_price(price)
-                window_big.process_price(price)
-                if trend_gate is not None:
-                    trend_gate.advance(symbol, ts, price)
-                    broker.process_pending(symbol, ts, price)   # Execute delayed orders that became favourable.
-                price_f.write(f"{ts}|{symbol}|{price}\n")
-    
-                if not fast_kalman_only:
-                    thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
-    
-                    slope, _pos = analyzer_small.check_price_change(thr_small)
-                    gradient, _gc, _sf, _gr = window_small.get_short_trend()
-                    ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
-                                   price_window=window_small)
-    
-                    slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
-                    ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
-    
-                # SHADOW: the same call as in the live TrendCoordinator.evaluate, with a simulated clock.
-                need_eps = (
-                    ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
-                    and len(shadow._fed_prices.get(symbol, ())) < 4
-                )
-                shadow_fields = shadow.update(
-                    symbol,
-                    ts,
-                    price,
-                    epsilon=window_small.get_noise_epsilon() if need_eps else 0.0,
-                    big_prices=window_big.prices,
-                    big_sample_rate=window_big.sample_rate_sec,
-                )
-    
-                if first_price is None:
-                    first_price = price
-                # 23 Jul: broker.last_price is updated UNCONDITIONALLY, on every tick — not
-                # only in kalman_primary mode. Bug found today: without it, mark_to_market()
-                # uses the price of the LAST TRADE (not the current market price) for any
-                # position left OPEN at the end in normal mode (model_actual) — a BUY
-                # at 100 followed by a rise to 150 without another trade reported mark_to_market=$0
-                # instead of $50 (verified in isolation: net_total -$0.10 versus the correct +$49.90).
-                broker.last_price = price
-                if kalman_primary:
-                    ktrend = shadow_fields.get("kalman_trend", prev_ktrend)
-                    if ktrend != prev_ktrend:
-                        if ktrend == 1:
-                            broker.place_order_smart("BUY", symbol, price, BACKTEST_NOTIONAL_USD / price,
-                                                      motivation="kalman_up")
-                        elif ktrend == -1:
-                            broker.sell_all(symbol, price, motivation="kalman_down")
-                        prev_ktrend = ktrend
-    
-                n += 1
-                if speed != "fast" and n % 100 == 0:
-                    _persist_analysis_state(price, ts, shadow_fields)
-                if n % 5000 == 0:
-                    # sys.stderr.write, not print(): in --quiet mode, print() is suppressed globally
-                    # (log.disable_print()) — OUR progress messages still have to be visible.
-                    sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts)} "
-                                     f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
-            broker._log_f = None
-        if n > 0:
-            try:
-                if fast_kalman_only:
-                    slope, _ = analyzer_small.check_price_change(ta.PRICE_CHANGE_THRESHOLD_EUR)
-                    gradient, _gc, _sf, _gr = window_small.get_short_trend()
-                    slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
-                if not shadow.compute_vol and shadow_fields:
-                    v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
-                    adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
-                    shadow_fields = {
-                        **shadow_fields,
-                        "vol_1h_pct": v1h,
-                        "adapt_reentry_pct": adapt_re,
-                        "adapt_dca_pct": adapt_dca,
-                    }
-            except Exception:
-                pass
-            _persist_analysis_state(price, ts, shadow_fields)
-    
-        pnl = broker.pnl_summary()
-        if first_price and broker.last_price:
-            # benchmark: buy & hold on the same standard quantity, the same interval
-            bh_qty = BACKTEST_NOTIONAL_USD / first_price if first_price else 0
-            pnl["buy_hold_net"] = round((broker.last_price - first_price) * bh_qty
-                                         - 2 * bh_qty * first_price * FEE_PCT / 100, 2)
-        pnl["mode"] = "kalman_primary" if kalman_primary else "model_actual"
+    with backtest_isolation_context(quiet=quiet):
         try:
-            atomic_write_json(os.path.join(out_dir, "pnl.json"), pnl, indent=1)
-        except OSError:
-            pass
-        sys.stderr.write(f"[tradeall_backtest] P&L: {pnl}\n")
-        sys.stderr.write(f"[tradeall_backtest] DONE: {n} ticks, BUY={broker.n_buy} SELL={broker.n_sell}\n")
-        sys.stderr.write(f"[tradeall_backtest] results in: {out_dir}\n")
-        sys.stderr.write(f"[tradeall_backtest] view: "
-                          f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
-    finally:
-        if orig_place_smart is not None and hasattr(ta, "po"):
-            ta.po.place_order_smart = orig_place_smart
-        if orig_mkt_place is not None:
-            ta.mkt.place = orig_mkt_place
-        if orig_mkt_cancel is not None:
-            ta.mkt.cancel_order = orig_mkt_cancel
-        if orig_api_cancel_expired is not None and hasattr(ta, "api"):
-            ta.api.cancel_expired_orders = orig_api_cancel_expired
-        if orig_log_decision is not None:
-            ta.log_decision = orig_log_decision
-        ta._kalman_ref = orig_kalman_ref
-        if orig_gate_log is not None:
-            ta.GATE_OUTCOME_LOG = orig_gate_log
-        for _k, _v in _orig_bt_env.items():
-            if _v is None:
-                os.environ.pop(_k, None)
+            ta.mkt.cancel_order = lambda *a, **kw: True
+            if hasattr(ta, "api"):
+                ta.api.cancel_expired_orders = lambda *a, **kw: None
+            if kalman_primary:
+                _old_attempts = {"n": 0}
+                def _journal_only(order_type, symbol_, price_, qty_=None, motivation=None, **kw):
+                    _old_attempts["n"] += 1
+                    return None
+                if hasattr(ta, "po"):
+                    ta.po.place_order_smart = _journal_only
+                ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: _journal_only(
+                    side_, symbol_, price_, qty_, **kw)
             else:
-                os.environ[_k] = _v
-        if quiet:
+                if hasattr(ta, "po"):
+                    ta.po.place_order_smart = broker.place_order_smart
+                ta.mkt.place = lambda symbol_, side_, price_, qty_=None, **kw: broker.place_order_smart(
+                    side_, symbol_, price_, qty_, **kw)
+            decision_path = os.path.join(out_dir, "tradeall_decisions.log")
+
+            window_small = ta.PriceWindow(symbol, 300, sample_rate_sec=ta.TIME_SLEEP_GET_PRICE,
+                                           window_seconds=ta.WINDOW_SECONDS_SMALL)
+            window_big = ta.PriceWindow(symbol, 300, sample_rate_sec=ta.TIME_SLEEP_GET_PRICE,
+                                         window_seconds=ta.WINDOW_SECONDS_BIG)
+            analyzer_small = ta.WindowAnalyzer(window_small)
+            analyzer_big = ta.WindowAnalyzer(window_big)
+            trend_state = ta.TrendState(max_duration_seconds=2.5 * 60 * 60, expiration_trend_time=2.7 * 60,
+                                         fresh_trend_time=3.7 * 60, now_fn=clock)
+            trend_state_big = ta.TrendState(max_duration_seconds=3 * 60 * 60, expiration_trend_time=2.7 * 60,
+                                             fresh_trend_time=3.7 * 60, now_fn=clock)
+
+            shadow = shadow_signals.KalmanStateTracker(
+                journal=shadow_signals.KalmanJournal(fixed_path=os.path.join(out_dir, "tradeall_shadow.log")),
+                now_fn=clock,
+                compute_vol=(speed != "fast"))
+            ta._kalman_ref = shadow
+            ta.GATE_OUTCOME_LOG = lambda symbol_, side, price_, qty, outcome, reason, motivation: (
+                broker.write_outcome_row([clock(), symbol_, side, price_, qty, outcome, reason, "backtest", motivation])
+            )
+
+            tick_source = (
+                load_ticks_cache24(symbol, start_ts, end_ts, filename=cache24_file)
+                if source == "cache24"
+                else load_ticks_history(symbol, start_ts, end_ts)
+            )
+
+            prev_ts = None
+            n = 0
+            first_price = None
+            prev_ktrend = 0
+            slope = slope_big = gradient = _gc = _sf = _gr = 0.0
+            fast_kalman_only = bool(kalman_primary and speed == "fast" and quiet)
+            def _persist_analysis_state(cur_px, cur_ts, cur_shadow):
+                try:
+                    state_obj = {symbol: {
+                        "current_price": cur_px, "final_trend": gradient,
+                        "growth_coefficient": _gc, "slope_full": _sf,
+                        "gradient_recent": _gr, "slope_small": slope, "slope_big": slope_big,
+                        "epsilon": window_small.get_noise_epsilon(), "ts": cur_ts,
+                        **cur_shadow,
+                    }}
+                    atomic_write_json(os.path.join(out_dir, "analysis_state.json"), state_obj)
+                except Exception:
+                    pass
+
+            with open(price_path, "a", encoding="utf-8") as price_f, \
+                 open(broker.path, "a", encoding="utf-8") as outcome_f, \
+                 open(decision_path, "a", encoding="utf-8") as decision_f:
+                broker._log_f = outcome_f
+                ta.log_decision = make_decision_logger(out_dir, clock, file_handle=decision_f)
+                for ts, price in tick_source:
+                    clock.ts = ts
+                    if speed == "real" and prev_ts is not None:
+                        time.sleep(max(0.0, ts - prev_ts))
+                    dt = ts - prev_ts if prev_ts is not None else None
+                    prev_ts = ts
+
+                    if dt and dt > 0:
+                        window_small.set_sample_rate(dt)
+                        window_big.set_sample_rate(dt)
+                    window_small.process_price(price)
+                    window_big.process_price(price)
+                    if trend_gate is not None:
+                        trend_gate.advance(symbol, ts, price)
+                        broker.process_pending(symbol, ts, price)
+                    price_f.write(f"{ts}|{symbol}|{price}\n")
+
+                    if not fast_kalman_only:
+                        thr_small, thr_big = ta.PRICE_CHANGE_THRESHOLD_EUR, ta.PRICE_CHANGE_THRESHOLD_BIG_EUR
+                        slope, _pos = analyzer_small.check_price_change(thr_small)
+                        gradient, _gc, _sf, _gr = window_small.get_short_trend()
+                        ta.logic_small("SMALL", True, symbol, gradient, slope, trend_state, price,
+                                       price_window=window_small)
+                        slope_big, _price_diff = analyzer_big.check_price_change(thr_big)
+                        ta.logic("BIG", True, symbol, gradient, slope_big, trend_state_big, price)
+
+                    need_eps = (
+                        ts - shadow._last_fed.get(symbol, -1e18) >= shadow_signals.KALMAN_SAMPLE_SEC
+                        and len(shadow._fed_prices.get(symbol, ())) < 4
+                    )
+                    shadow_fields = shadow.update(
+                        symbol,
+                        ts,
+                        price,
+                        epsilon=window_small.get_noise_epsilon() if need_eps else 0.0,
+                        big_prices=window_big.prices,
+                        big_sample_rate=window_big.sample_rate_sec,
+                    )
+
+                    if first_price is None:
+                        first_price = price
+                    broker.last_price = price
+                    if kalman_primary:
+                        ktrend = shadow_fields.get("kalman_trend", prev_ktrend)
+                        if ktrend != prev_ktrend:
+                            if ktrend == 1:
+                                broker.place_order_smart("BUY", symbol, price, BACKTEST_NOTIONAL_USD / price,
+                                                          motivation="kalman_up")
+                            elif ktrend == -1:
+                                broker.sell_all(symbol, price, motivation="kalman_down")
+                            prev_ktrend = ktrend
+
+                    n += 1
+                    if speed != "fast" and n % 100 == 0:
+                        _persist_analysis_state(price, ts, shadow_fields)
+                    if n % 5000 == 0:
+                        sys.stderr.write(f"[tradeall_backtest] {n} ticks, the last {datetime.fromtimestamp(ts)} "
+                                         f"(BUY {broker.n_buy} / SELL {broker.n_sell})\n")
+                broker._log_f = None
+            if n > 0:
+                try:
+                    if fast_kalman_only:
+                        slope, _ = analyzer_small.check_price_change(ta.PRICE_CHANGE_THRESHOLD_EUR)
+                        gradient, _gc, _sf, _gr = window_small.get_short_trend()
+                        slope_big, _ = analyzer_big.check_price_change(ta.PRICE_CHANGE_THRESHOLD_BIG_EUR)
+                    if not shadow.compute_vol and shadow_fields:
+                        v1h = shadow_signals.vol_1h_pct(window_big.prices, window_big.sample_rate_sec)
+                        adapt_re, adapt_dca = shadow_signals.adaptive_thresholds(v1h)
+                        shadow_fields = {
+                            **shadow_fields,
+                            "vol_1h_pct": v1h,
+                            "adapt_reentry_pct": adapt_re,
+                            "adapt_dca_pct": adapt_dca,
+                        }
+                except Exception:
+                    pass
+                _persist_analysis_state(price, ts, shadow_fields)
+
+            pnl = broker.pnl_summary()
+            if first_price and broker.last_price:
+                bh_qty = BACKTEST_NOTIONAL_USD / first_price if first_price else 0
+                pnl["buy_hold_net"] = round((broker.last_price - first_price) * bh_qty
+                                             - 2 * bh_qty * first_price * FEE_PCT / 100, 2)
+            pnl["mode"] = "kalman_primary" if kalman_primary else "model_actual"
             try:
-                log.enable_print()
-            except Exception:
+                atomic_write_json(os.path.join(out_dir, "pnl.json"), pnl, indent=1)
+            except OSError:
                 pass
+            sys.stderr.write(f"[tradeall_backtest] P&L: {pnl}\n")
+            sys.stderr.write(f"[tradeall_backtest] DONE: {n} ticks, BUY={broker.n_buy} SELL={broker.n_sell}\n")
+            sys.stderr.write(f"[tradeall_backtest] results in: {out_dir}\n")
+            sys.stderr.write(f"[tradeall_backtest] view: "
+                              f"python -m visuals.tradeall_observe --backtest-dir {out_dir} --symbols {symbol}\n")
+        finally:
+            if orig_place_smart is not None and hasattr(ta, "po"):
+                ta.po.place_order_smart = orig_place_smart
+            if orig_mkt_place is not None:
+                ta.mkt.place = orig_mkt_place
+            if orig_mkt_cancel is not None:
+                ta.mkt.cancel_order = orig_mkt_cancel
+            if orig_api_cancel_expired is not None and hasattr(ta, "api"):
+                ta.api.cancel_expired_orders = orig_api_cancel_expired
+            if orig_log_decision is not None:
+                ta.log_decision = orig_log_decision
+            ta._kalman_ref = orig_kalman_ref
+            if orig_gate_log is not None:
+                ta.GATE_OUTCOME_LOG = orig_gate_log
 
 
 def main():

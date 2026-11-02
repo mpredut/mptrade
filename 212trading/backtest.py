@@ -23,7 +23,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from offline.backtests.evaluation import load_venue_module
-from offline.backtests.metrics import format_performance_summary
+from offline.backtests.metrics import (
+    buy_hold_pct,
+    format_performance_summary,
+    print_single_backtest_report,
+    run_tp_drop_sl_sweep,
+)
 from botcore import (
     _parse_bool_flag,
     float_env,
@@ -50,39 +55,37 @@ def fetch_candles(sym, rng, interval):
 
 
 _SIMULATE_ENV_DEFAULTS = {
-    "STRAT_FX_FEE_PCT": "0.15",
-    "STRAT_STOP_LOSS_PCT": "0.0",
-    "STRAT_CHECK_MINUTES": "1",
-    "STRAT_ORDER_TTL_MIN": "10",
-    "STRAT_REENTRY_DROP_PCT": "0",
-    "STRAT_REENTRY_TOLERANCE_PCT": "0.05",
-    "STRAT_LOSS_ALERT_STEP": "1",
-    "STRAT_LADDER_MIN_FREE": "6",
-    "STRAT_SL_REBUY_ENABLED": "false",
-    "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
-    "STRAT_DCA_TREND_GATE_PCT": "0",
-    "STRAT_TRAIL_PCT": "0",
-    "STRAT_TRAIL_MIN_PROFIT_PCT": "5",
-    "STRAT_SL_MHDSL_ENABLED": "false",
-    "STRAT_TP_MDHTP_ENABLED": "false",
-    "STRAT_REENTRY_HYBRID_ENABLED": "false",
-    "STRAT_REENTRY_PEAK_RELATIVE": "false",
-    "STRAT_REENTRY_PULLBACK_PCT": "1.5",
-    "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false",
-    "STRAT_REENTRY_PULLBACK_K": "1.0",
-    "STRAT_REENTRY_PULLBACK_MIN": "0.8",
-    "STRAT_REENTRY_PULLBACK_MAX": "4.0",
-    "STRAT_REENTRY_TTL_HOURS": "0.0",
-    "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
-    "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0",
-    "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
-    "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40",
-    "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
-    "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true",
-    "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
-    "STRAT_TP_LADDER": "",
-    "STRAT_TP_LADDER_CURVE": "linear",
+    "STRAT_FX_FEE_PCT": "0.15", "STRAT_STOP_LOSS_PCT": "0.0",
+    "STRAT_CHECK_MINUTES": "1", "STRAT_ORDER_TTL_MIN": "10",
+    "STRAT_REENTRY_DROP_PCT": "0", "STRAT_REENTRY_TOLERANCE_PCT": "0.05",
+    "STRAT_LOSS_ALERT_STEP": "1", "STRAT_LADDER_MIN_FREE": "6",
+    "STRAT_SL_REBUY_ENABLED": "false", "STRAT_SL_REBUY_BOUNCE_PCT": "1.2",
+    "STRAT_DCA_TREND_GATE_PCT": "0", "STRAT_TRAIL_PCT": "0",
+    "STRAT_TRAIL_MIN_PROFIT_PCT": "5", "STRAT_SL_MHDSL_ENABLED": "false",
+    "STRAT_TP_MDHTP_ENABLED": "false", "STRAT_REENTRY_HYBRID_ENABLED": "false",
+    "STRAT_REENTRY_PEAK_RELATIVE": "false", "STRAT_REENTRY_PULLBACK_PCT": "1.5",
+    "STRAT_REENTRY_PULLBACK_ADAPTIVE": "false", "STRAT_REENTRY_PULLBACK_K": "1.0",
+    "STRAT_REENTRY_PULLBACK_MIN": "0.8", "STRAT_REENTRY_PULLBACK_MAX": "4.0",
+    "STRAT_REENTRY_TTL_HOURS": "0.0", "STRAT_SL_DISASTER_BUFFER_RATIO": "0.30",
+    "STRAT_SL_DISASTER_BUFFER_MAX_PCT": "15.0", "STRAT_SL_TREND_DEFER_MAX_SEC": "220.0",
+    "STRAT_SL_BOUNCE_MIN_RECOVERY_PCT": "0.40", "STRAT_SL_BOUNCE_PULLBACK_PCT": "0.30",
+    "STRAT_SL_STRUCTURAL_BREAK_ENABLED": "true", "STRAT_TP_STAGNATION_MAX_SEC": "1080.0",
+    "STRAT_TP_LADDER": "", "STRAT_TP_LADDER_CURVE": "linear",
 }
+_SIMULATE_ALIAS_MAP = (
+    (("fee", "fx_fee_pct"), "STRAT_FX_FEE_PCT"),
+    (("sl", "stop_loss_pct"), "STRAT_STOP_LOSS_PCT"),
+    (("check_min",), "STRAT_CHECK_MINUTES"),
+    (("ttl_min",), "STRAT_ORDER_TTL_MIN"),
+    (("reentry_drop",), "STRAT_REENTRY_DROP_PCT"),
+    (("reentry_tol",), "STRAT_REENTRY_TOLERANCE_PCT"),
+    (("loss_alert_step",), "STRAT_LOSS_ALERT_STEP"),
+    (("ladder_min_free",), "STRAT_LADDER_MIN_FREE"),
+    (("sl_rebuy_bounce",), "STRAT_SL_REBUY_BOUNCE_PCT"),
+    (("dca_trend_gate",), "STRAT_DCA_TREND_GATE_PCT"),
+    (("trail_pct",), "STRAT_TRAIL_PCT"),
+    (("trail_min_profit",), "STRAT_TRAIL_MIN_PROFIT_PCT"),
+)
 
 
 def simulate(ohlc, P):
@@ -108,7 +111,10 @@ def simulate(ohlc, P):
         default=((raw_dca / budget * 100.0) if budget > 0 and raw_dca is not None else 10.0),
     )
 
-    env_overrides = {k: str(os.environ.get(k) or v) if k in ("STRAT_CHECK_MINUTES", "STRAT_ORDER_TTL_MIN") else str(os.environ.get(k, v)) for k, v in _SIMULATE_ENV_DEFAULTS.items()}
+    env_overrides = {
+        k: str(os.environ.get(k) or v) if k in ("STRAT_CHECK_MINUTES", "STRAT_ORDER_TTL_MIN") else str(os.environ.get(k, v))
+        for k, v in _SIMULATE_ENV_DEFAULTS.items()
+    }
     env_overrides.update({
         "STRATEGY_MODE": str(_p_val(("mode",), os.environ.get("STRATEGY_MODE") or "avg_tp")),
         "STRAT_CURRENCY": str(_p_val(("currency",), os.environ.get("STRAT_CURRENCY") or "USD")),
@@ -121,20 +127,7 @@ def simulate(ohlc, P):
         "STRAT_MAX_DCA_BUYS": str(_p_val(("maxdca", "max_dca_buys"), 10)),
         "STRAT_MAX_BUDGET": str(budget),
     })
-    for alias, env_key in (
-        (("fee", "fx_fee_pct"), "STRAT_FX_FEE_PCT"),
-        (("sl", "stop_loss_pct"), "STRAT_STOP_LOSS_PCT"),
-        (("check_min",), "STRAT_CHECK_MINUTES"),
-        (("ttl_min",), "STRAT_ORDER_TTL_MIN"),
-        (("reentry_drop",), "STRAT_REENTRY_DROP_PCT"),
-        (("reentry_tol",), "STRAT_REENTRY_TOLERANCE_PCT"),
-        (("loss_alert_step",), "STRAT_LOSS_ALERT_STEP"),
-        (("ladder_min_free",), "STRAT_LADDER_MIN_FREE"),
-        (("sl_rebuy_bounce",), "STRAT_SL_REBUY_BOUNCE_PCT"),
-        (("dca_trend_gate",), "STRAT_DCA_TREND_GATE_PCT"),
-        (("trail_pct",), "STRAT_TRAIL_PCT"),
-        (("trail_min_profit",), "STRAT_TRAIL_MIN_PROFIT_PCT"),
-    ):
+    for alias, env_key in _SIMULATE_ALIAS_MAP:
         val = _p_val(alias, None)
         if val is not None:
             env_overrides[env_key] = str(val)
@@ -150,14 +143,12 @@ def simulate(ohlc, P):
                 env_overrides["STRAT_TP_LADDER"] = str(v)
         elif v is None or k in ("reentry_drop", "reentry_tol", "sl_rebuy_bounce"):
             continue
-        elif k.startswith("STRAT_") or k.startswith("sl_") or k.startswith("tp_") or k.startswith("reentry_"):
+        elif k.startswith(("STRAT_", "sl_", "tp_", "reentry_")):
             env_key = k if k.startswith("STRAT_") else f"STRAT_{k.upper()}"
             env_overrides[env_key] = str(v).lower() if isinstance(v, bool) else str(v)
 
     params = StratParams.from_env(env_overrides)
-    return run_replay(
-        ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=1.0,
-    )
+    return run_replay(ohlc, params, bar_minutes=P.get("bar_minutes"), fx_to_usd=1.0)
 
 
 
@@ -227,8 +218,7 @@ def main() -> int:
         print(f"! not enough data ({len(ohlc)})"); return 1
     if budget <= 0:
         print("! budget must be > 0"); return 1
-    closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] > 0 else 0.0
+    bh = buy_hold_pct(ohlc)
     base = dict(entry=entry, dca=dca, disc=disc, drop=drop,
                 tp=tp, maxdca=maxdca, budget=budget, fee=fee, sl=sl,
                 sym=sym, bar_minutes=interval_minutes(args.interval),
@@ -237,31 +227,19 @@ def main() -> int:
 
     if args.mode == "single":
         m = simulate(ohlc, base)
-        tot = m["total"]/budget*100
-        wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
         prof_info = f" [profile={args.profile}]" if args.profile else ""
-        print(f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bare){prof_info} ===")
-        print(f"  params: entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}")
-        print(f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
-        print(f"  (the realised part alone: {m['net']/budget*100:+.2f}% — misleading if a losing position remains)")
-        print(f"  cicluri: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
-        for line in format_performance_summary(m, indent="  "):
-            print(line)
-        print(f"  buy&hold: {bh:+.2f}%   pozitie la final: {m['open_qty']:.4f}")
+        print_single_backtest_report(
+            f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bare){prof_info} ===",
+            f"entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}",
+            m,
+            budget=budget,
+            bh=bh,
+            open_qty_decimals=4,
+        )
         return 0
 
     print(f"=== SWEEP {sym} {args.range}/{args.interval}  (buy&hold {bh:+.1f}%) ===")
-    rows = []
-    for tp in (1.0, 1.5, 2.0, 3.0, 5.0):
-        for drop in (1.0, 2.0, 3.0, 5.0):
-            for sl in (8.0, 15.0):
-                P = dict(base); P["tp"] = tp; P["drop"] = drop; P["sl"] = sl
-                m = simulate(ohlc, P)
-                rows.append((m["total"]/budget*100, tp, drop, sl, m["cycles"], m["maxdd"]))
-    rows.sort(reverse=True)
-    print("  top 8 (total% | tp | drop | sl | cicluri | maxDD$):")
-    for tot, tp, drop, sl, cyc, dd in rows[:8]:
-        print(f"    {tot:+7.2f}%  tp={tp:<4} drop={drop:<4} sl={sl:<4} cic={cyc:<3} dd=${dd:.0f}")
+    run_tp_drop_sl_sweep(base, lambda p: simulate(ohlc, p), budget=budget)
     return 0
 
 

@@ -43,11 +43,13 @@ from offline.backtests.datasets import (
 )
 from offline.backtests.evaluation import (
     evaluate_segment as _evaluate_segment,
+    evaluate_spot_segment as _segment_result,
     load_venue_module,
 )
 from offline.backtests.execution import ExecutionModel
 from offline.backtests.hype_candidates import (
     Candidate,
+    default_candidates,
     hype_240_candidates,
 )
 from offline.backtests.walk_forward import (
@@ -55,10 +57,7 @@ from offline.backtests.walk_forward import (
     walk_forward_splits,
 )
 from strategies.spot_engine import StratParams
-from strategies.spot_replay import (
-    align_spot_interval_params,
-    make_spot_replay_adapter,
-)
+from strategies.spot_replay import align_spot_interval_params
 
 DEFAULT_FEE_STRESS = {
     "kraken": "0.16,0.26,0.35,0.50",
@@ -67,37 +66,6 @@ DEFAULT_FEE_STRESS = {
     "trading212": "0.00,0.02,0.05,0.10",
     "t212": "0.00,0.02,0.05,0.10",
 }
-
-
-def default_candidates() -> list[Candidate]:
-    """A small, interpretable neighbourhood around the live configuration."""
-    return [
-        Candidate("live", "the live configuration, unchanged", {}),
-        Candidate("classic_tp", "a fixed TP; the trailing is off", {"tp_trend_hold": False}),
-        Candidate("trail_2", "trailing 2%", {"tp_trail_pct": 2.0}),
-        Candidate("trail_4", "trailing 4%", {"tp_trail_pct": 4.0}),
-        Candidate("trail_5", "trailing 5%", {"tp_trail_pct": 5.0}),
-        Candidate("tp_4", "prag TP 4%", {"takeprofit_pct": 4.0}),
-        Candidate("tp_6", "prag TP 6%", {"takeprofit_pct": 6.0}),
-        Candidate("dca_drop_1", "DCA on a 1% drop", {"dca_drop_pct": 1.0}),
-        Candidate("dca_drop_1_5", "DCA on a 1.5% drop", {"dca_drop_pct": 1.5}),
-        Candidate("dca_drop_2", "DCA on a 2% drop", {"dca_drop_pct": 2.0}),
-        Candidate("reentry_1_5", "re-entry after -1.5%", {"reentry_drop_pct": 1.5}),
-        Candidate("reentry_3", "re-entry after -3%", {"reentry_drop_pct": 3.0}),
-        Candidate("sl_off", "the stop-loss is off", {"stop_loss_pct": 0.0}),
-        Candidate("sl_10", "stop-loss 10%", {"stop_loss_pct": 10.0}),
-        Candidate("sl_15", "stop-loss 15%", {"stop_loss_pct": 15.0}),
-        Candidate("max_dca_6", "maximum 6 DCA", {"max_dca_buys": 6}),
-        Candidate(
-            "lower_sizing", "entry 500 + DCA 250 USD",
-            {"entry_amount": 500.0, "dca_amount": 250.0},
-        ),
-        Candidate(
-            "confirm_dca_1_5_trail_2",
-            "confirmare: DCA 1,5% + trailing 2%",
-            {"dca_drop_pct": 1.5, "tp_trail_pct": 2.0},
-        ),
-    ]
 
 
 _as_bool = _parse_bool_flag
@@ -328,29 +296,6 @@ def _build_venue_evaluator(venue: str, source_report: dict, baseline_dir: Path |
         return base_params, base_fee, segment_fn
 
     raise ValueError(f"Unsupported venue: {venue}")
-
-
-def _segment_result(
-    records: list[dict],
-    params: StratParams,
-    fee_pct: float,
-    interval: int,
-    warmup_records: list[dict] | tuple = (),
-    execution: ExecutionModel | None = None,
-) -> dict:
-    interval_params = align_spot_interval_params(params, interval)
-    adapter = make_spot_replay_adapter(
-        interval_params,
-        fee_pct=fee_pct,
-        bar_minutes=interval,
-        execution=execution,
-    )
-    return _evaluate_segment(
-        records,
-        adapter,
-        warmup_records=warmup_records,
-        validate_contract=True,
-    )
 
 
 def _candidate_windows(

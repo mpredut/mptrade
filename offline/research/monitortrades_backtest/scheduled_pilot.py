@@ -277,19 +277,19 @@ def _eval_one_half(task: tuple[str, str, dict, int]):
     return symbol, params, half_idx, res, diag
 
 
+def _seed_cached_half(symbol: str, params: dict, series: list, res: dict | None, diag: dict) -> None:
+    ck = _run_one_cache_key(symbol, params, series)
+    _RUN_ONE_CACHE[ck] = res
+    _RUN_ONE_DIAG_CACHE[ck] = dict(diag)
+
+
 def _eval_symbol_baseline(symbol: str, base: str):
     half1, half2 = _split_series(symbol)
     if len(half1) < 100 or len(half2) < 100:
         return symbol, None, None, None, {}, {}
     base_params = dict(rb.SYMBOLS[symbol]["params"])
-    r1 = _run_one(symbol, base, base_params, half1)
-    ck1 = _run_one_cache_key(symbol, base_params, half1)
-    k1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
-    diag1 = dict(_RUN_ONE_DIAG_CACHE.get(ck1) or rb._LAST_RUN_DIAGNOSTICS.get(k1) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k1, True)})
-    r2 = _run_one(symbol, base, base_params, half2)
-    ck2 = _run_one_cache_key(symbol, base_params, half2)
-    k2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
-    diag2 = dict(_RUN_ONE_DIAG_CACHE.get(ck2) or rb._LAST_RUN_DIAGNOSTICS.get(k2) or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(k2, True)})
+    _, _, _, r1, diag1 = _eval_one_half((symbol, base, base_params, 0))
+    _, _, _, r2, diag2 = _eval_one_half((symbol, base, base_params, 1))
     return symbol, base_params, r1, r2, diag1, diag2
 
 
@@ -306,10 +306,6 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if len(half1) < 100 or len(half2) < 100:
         return {"full_key": full_key, "action": "skipped", "reason": "not enough history for 2 windows"}
 
-    # Make sure the current LIVE value is among those tested: without it we cannot
-    # compares the winner AGAINST it, and an INERT parameter (every value giving
-    # identical results) would be falsely "applied" to the first element of the grid
-    # (max() on a tie returns the first). Found 28 Jul at #15 hardtp.
     test_values = [v for v in grid_values if safe_float(v, default=None) is not None]
     if not test_values:
         return {"full_key": full_key, "action": "skipped", "reason": "no_grid_annotation"}
@@ -317,48 +313,33 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
         test_values.append(_num_str(current))
 
     eval_order = sorted(test_values, key=lambda x: safe_float(x, 0.0)) if key == "mt.hardtp" else test_values
-    invariant_r1 = None
-    invariant_max_htp1 = -1.0
-    invariant_r2 = None
-    invariant_max_htp2 = -1.0
+    inv_state = [[None, -1.0], [None, -1.0]]
+
+    def _run_half_with_htp_invariance(half_idx: int, half_series: list, params: dict, v_ratio: float):
+        inv_res, inv_max = inv_state[half_idx]
+        if key == "mt.hardtp" and inv_res is not None and v_ratio <= inv_max:
+            res = dict(inv_res)
+            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half_series)] = res
+            return res
+        res = _run_one(symbol, base, params, half_series)
+        if key == "mt.hardtp" and res is not None:
+            ck = _run_one_cache_key(symbol, params, half_series)
+            tk = rb._series_cache_key(symbol, half_series, rb.DEFAULT_WINDOW_SECONDS)
+            d = _RUN_ONE_DIAG_CACHE.get(ck) or rb._LAST_RUN_DIAGNOSTICS.get(tk) or {}
+            htp_touched = d.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk, True))
+            if not htp_touched:
+                inv_state[half_idx] = [res, float("inf")]
+            elif d.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
+                inv_state[half_idx] = [res, float(d["min_hard_tp_gain_ratio"])]
+        return res
+
     raw_results = {}
     for v in eval_order:
         t0 = time.time()
-        params = dict(base_params)
-        params[key] = v
+        params = dict(base_params, **{key: v})
         v_ratio = safe_float(v, 0.0) / 100.0 if key == "mt.hardtp" else 0.0
-        if key == "mt.hardtp" and invariant_r1 is not None and v_ratio <= invariant_max_htp1:
-            r1 = dict(invariant_r1)
-            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half1)] = r1
-        else:
-            r1 = _run_one(symbol, base, params, half1)
-            if key == "mt.hardtp" and r1 is not None:
-                ck1 = _run_one_cache_key(symbol, params, half1)
-                tk1 = rb._series_cache_key(symbol, half1, rb.DEFAULT_WINDOW_SECONDS)
-                d1 = _RUN_ONE_DIAG_CACHE.get(ck1) or rb._LAST_RUN_DIAGNOSTICS.get(tk1) or {}
-                htp_touched1 = d1.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk1, True))
-                if not htp_touched1:
-                    invariant_r1 = r1
-                    invariant_max_htp1 = float("inf")
-                elif d1.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
-                    invariant_r1 = r1
-                    invariant_max_htp1 = float(d1["min_hard_tp_gain_ratio"])
-        if key == "mt.hardtp" and invariant_r2 is not None and v_ratio <= invariant_max_htp2:
-            r2 = dict(invariant_r2)
-            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half2)] = r2
-        else:
-            r2 = _run_one(symbol, base, params, half2)
-            if key == "mt.hardtp" and r2 is not None:
-                ck2 = _run_one_cache_key(symbol, params, half2)
-                tk2 = rb._series_cache_key(symbol, half2, rb.DEFAULT_WINDOW_SECONDS)
-                d2 = _RUN_ONE_DIAG_CACHE.get(ck2) or rb._LAST_RUN_DIAGNOSTICS.get(tk2) or {}
-                htp_touched2 = d2.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk2, True))
-                if not htp_touched2:
-                    invariant_r2 = r2
-                    invariant_max_htp2 = float("inf")
-                elif d2.get("min_hard_tp_gain_ratio", 0.0) >= v_ratio:
-                    invariant_r2 = r2
-                    invariant_max_htp2 = float(d2["min_hard_tp_gain_ratio"])
+        r1 = _run_half_with_htp_invariance(0, half1, params, v_ratio)
+        r2 = _run_half_with_htp_invariance(1, half2, params, v_ratio)
         sys.stderr.write(f"  [{full_key}] {key}={v}: half1={r1} half2={r2} ({time.time()-t0:.1f}s)\n")
         if r1 is None or r2 is None:
             continue
@@ -571,12 +552,8 @@ def main():
         diag1, diag2 = entry_b["diag"]
         if base_params is not None:
             half1, half2 = _split_series(sym)
-            bck1 = _run_one_cache_key(sym, base_params, half1)
-            bck2 = _run_one_cache_key(sym, base_params, half2)
-            _RUN_ONE_CACHE[bck1] = r1
-            _RUN_ONE_CACHE[bck2] = r2
-            _RUN_ONE_DIAG_CACHE[bck1] = dict(diag1)
-            _RUN_ONE_DIAG_CACHE[bck2] = dict(diag2)
+            _seed_cached_half(sym, base_params, half1, r1, diag1)
+            _seed_cached_half(sym, base_params, half2, r2, diag2)
             htp1 = diag1.get("hard_tp_touched", True)
             htp2 = diag2.get("hard_tp_touched", True)
             base_htp = safe_float(base_params.get("mt.hardtp"), 0.0)
@@ -586,73 +563,38 @@ def main():
             for fk, (k_sym, _k_base, k_name) in keys.items():
                 if k_sym != sym:
                     continue
-                if k_name == "mt.hardtp_fraction":
-                    for gv in all_ranges.get(fk, ()):
-                        if safe_float(gv, default=None) is None:
-                            continue
-                        p = dict(base_params, **{k_name: gv})
+                for gv in all_ranges.get(fk, ()):
+                    gv_f = safe_float(gv, default=None)
+                    if gv_f is None:
+                        continue
+                    p = dict(base_params, **{k_name: gv})
+                    if k_name == "mt.hardtp_fraction":
                         if not htp1:
-                            ck = _run_one_cache_key(sym, p, half1)
-                            _RUN_ONE_CACHE[ck] = r1
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
+                            _seed_cached_half(sym, p, half1, r1, diag1)
                         if not htp2:
-                            ck = _run_one_cache_key(sym, p, half2)
-                            _RUN_ONE_CACHE[ck] = r2
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
-                elif k_name == "mt.hardtp_cooldown_h":
-                    dts1 = diag1.get("hard_tp_cooldown_dts", ())
-                    dts2 = diag2.get("hard_tp_cooldown_dts", ())
-                    for gv in all_ranges.get(fk, ()):
-                        gv_f = safe_float(gv, default=None)
-                        if gv_f is None:
-                            continue
+                            _seed_cached_half(sym, p, half2, r2, diag2)
+                    elif k_name == "mt.hardtp_cooldown_h":
                         cand_cd_s = gv_f * 3600.0
-                        p = dict(base_params, **{k_name: gv})
-                        if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts1):
-                            ck = _run_one_cache_key(sym, p, half1)
-                            _RUN_ONE_CACHE[ck] = r1
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
-                        if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in dts2):
-                            ck = _run_one_cache_key(sym, p, half2)
-                            _RUN_ONE_CACHE[ck] = r2
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
-                elif k_name == "mt.hardtp" and base_htp > 0:
-                    min_g1 = diag1.get("min_hard_tp_gain_ratio", 0.0)
-                    min_g2 = diag2.get("min_hard_tp_gain_ratio", 0.0)
-                    for gv in all_ranges.get(fk, ()):
-                        gv_f = safe_float(gv, default=None)
-                        if gv_f is None:
-                            continue
+                        if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag1.get("hard_tp_cooldown_dts", ())):
+                            _seed_cached_half(sym, p, half1, r1, diag1)
+                        if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag2.get("hard_tp_cooldown_dts", ())):
+                            _seed_cached_half(sym, p, half2, r2, diag2)
+                    elif k_name == "mt.hardtp" and base_htp > 0 and gv_f >= base_htp:
                         gv_r = gv_f / 100.0
-                        if gv_f >= base_htp:
-                            p = dict(base_params, **{k_name: gv})
-                            if not htp1 or min_g1 >= gv_r:
-                                ck = _run_one_cache_key(sym, p, half1)
-                                _RUN_ONE_CACHE[ck] = r1
-                                _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
-                            if not htp2 or min_g2 >= gv_r:
-                                ck = _run_one_cache_key(sym, p, half2)
-                                _RUN_ONE_CACHE[ck] = r2
-                                _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
-                elif k_name == "trailing.pct" and base_tr > 0:
-                    min_tr1 = diag1.get("min_trail_trigger_ratio", 0.0)
-                    max_untr1 = diag1.get("max_untriggered_trail_ratio", 1.0)
-                    min_tr2 = diag2.get("min_trail_trigger_ratio", 0.0)
-                    max_untr2 = diag2.get("max_untriggered_trail_ratio", 1.0)
-                    for gv in all_ranges.get(fk, ()):
-                        gv_f = safe_float(gv, default=None)
-                        if gv_f is None:
-                            continue
+                        if not htp1 or diag1.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
+                            _seed_cached_half(sym, p, half1, r1, diag1)
+                        if not htp2 or diag2.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
+                            _seed_cached_half(sym, p, half2, r2, diag2)
+                    elif k_name == "trailing.pct" and base_tr > 0:
                         gv_r = gv_f / 100.0
-                        p = dict(base_params, **{k_name: gv})
-                        if (gv_r >= base_tr_r and gv_r <= min_tr1) or (gv_r <= base_tr_r and gv_r > max_untr1):
-                            ck = _run_one_cache_key(sym, p, half1)
-                            _RUN_ONE_CACHE[ck] = r1
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag1)
-                        if (gv_r >= base_tr_r and gv_r <= min_tr2) or (gv_r <= base_tr_r and gv_r > max_untr2):
-                            ck = _run_one_cache_key(sym, p, half2)
-                            _RUN_ONE_CACHE[ck] = r2
-                            _RUN_ONE_DIAG_CACHE[ck] = dict(diag2)
+                        if (gv_r >= base_tr_r and gv_r <= diag1.get("min_trail_trigger_ratio", 0.0)) or (
+                            gv_r <= base_tr_r and gv_r > diag1.get("max_untriggered_trail_ratio", 1.0)
+                        ):
+                            _seed_cached_half(sym, p, half1, r1, diag1)
+                        if (gv_r >= base_tr_r and gv_r <= diag2.get("min_trail_trigger_ratio", 0.0)) or (
+                            gv_r <= base_tr_r and gv_r > diag2.get("max_untriggered_trail_ratio", 1.0)
+                        ):
+                            _seed_cached_half(sym, p, half2, r2, diag2)
 
     # Pre-evaluate all remaining uncached (symbol, base, params, half_idx) tasks across the worker pool,
     # sorted by descending series length so no single worker is left with a long tail.

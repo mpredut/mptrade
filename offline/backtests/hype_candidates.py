@@ -16,6 +16,34 @@ class Candidate:
     overrides: dict
 
 
+def default_candidates() -> list[Candidate]:
+    """A small, interpretable neighbourhood around the live configuration."""
+    return [
+        Candidate("live", "the live configuration, unchanged", {}),
+        Candidate("classic_tp", "a fixed TP; the trailing is off", {"tp_trend_hold": False}),
+        Candidate("trail_2", "trailing 2%", {"tp_trail_pct": 2.0}),
+        Candidate("trail_4", "trailing 4%", {"tp_trail_pct": 4.0}),
+        Candidate("trail_5", "trailing 5%", {"tp_trail_pct": 5.0}),
+        Candidate("tp_4", "prag TP 4%", {"takeprofit_pct": 4.0}),
+        Candidate("tp_6", "prag TP 6%", {"takeprofit_pct": 6.0}),
+        Candidate("dca_drop_1", "DCA on a 1% drop", {"dca_drop_pct": 1.0}),
+        Candidate("dca_drop_1_5", "DCA on a 1.5% drop", {"dca_drop_pct": 1.5}),
+        Candidate("dca_drop_2", "DCA on a 2% drop", {"dca_drop_pct": 2.0}),
+        Candidate("reentry_1_5", "re-entry after -1.5%", {"reentry_drop_pct": 1.5}),
+        Candidate("reentry_3", "re-entry after -3%", {"reentry_drop_pct": 3.0}),
+        Candidate("sl_off", "the stop-loss is off", {"stop_loss_pct": 0.0}),
+        Candidate("sl_10", "stop-loss 10%", {"stop_loss_pct": 10.0}),
+        Candidate("sl_15", "stop-loss 15%", {"stop_loss_pct": 15.0}),
+        Candidate("max_dca_6", "maximum 6 DCA", {"max_dca_buys": 6}),
+        Candidate("lower_sizing", "entry 500 + DCA 250 USD", {"entry_amount": 500.0, "dca_amount": 250.0}),
+        Candidate(
+            "confirm_dca_1_5_trail_2",
+            "confirmare: DCA 1,5% + trailing 2%",
+            {"dca_drop_pct": 1.5, "tp_trail_pct": 2.0},
+        ),
+    ]
+
+
 def _tp4(name: str) -> Candidate:
     return Candidate(name, "prag TP 4%", {"takeprofit_pct": 4.0})
 

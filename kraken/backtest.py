@@ -23,7 +23,12 @@ if _ROOT not in sys.path:
 
 import dataclasses
 from strategies.spot_engine import StratParams
-from offline.backtests.metrics import format_performance_summary
+from offline.backtests.metrics import (
+    buy_hold_pct,
+    format_performance_summary,
+    print_single_backtest_report,
+    run_tp_drop_sl_sweep,
+)
 from botcore import exact_nonneg_int, load_dotenv, parse_dotenv, safe_float, safe_pos_float
 from kraken import replay as rp
 from kraken.market_data import fetch_ohlc_candles
@@ -143,8 +148,7 @@ def main() -> int:
         print(f"! not enough data ({len(ohlc)})"); return 1
     if args.budget <= 0:
         print("! budget must be > 0"); return 1
-    closes = [x[3] for x in ohlc]
-    bh = (closes[-1] - closes[0]) / closes[0] * 100 if closes[0] > 0 else 0.0
+    bh = buy_hold_pct(ohlc)
     base = dict(entry=args.entry, dca=args.dca, disc=args.disc, drop=args.drop,
                 tp=args.tp, maxdca=args.maxdca, budget=args.budget, fee=args.fee,
                 sl=args.sl, interval=args.interval)
@@ -153,33 +157,24 @@ def main() -> int:
     if args.mode == "single":
         m = rp.run_replay(
             ohlc, _bt_params(base), fee_pct=args.fee, bar_minutes=args.interval)
-        tot = m["total"]/args.budget*100
-        wr = 100*m["wins"]/m["cycles"] if m["cycles"] else 0
-        print(f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bars) [{engine}] ===")
-        print(f"  params: entry={args.entry} dca={args.dca} drop={args.drop}% tp={args.tp}% sl={args.sl}% fee={args.fee}%/leg")
-        print(f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${m['realized']:+.2f} + the open position ${m['final_upnl']:+.2f} - fees ${m['fees']:.2f}")
-        print(f"  (realized alone: {m['net']/args.budget*100:+.2f}%)")
-        print(f"  cycles: {m['cycles']}  win-rate {wr:.0f}%   max drawdown ${m['maxdd']:.2f}")
-        for line in format_performance_summary(m, indent="  "):
-            print(line)
-        print(f"  buy&hold: {bh:+.2f}%   final position: {m['open_qty']:.6f}")
+        print_single_backtest_report(
+            f"=== BACKTEST KRAKEN {args.pair} interval={args.interval}m ({len(ohlc)} bars) [{engine}] ===",
+            f"entry={args.entry} dca={args.dca} drop={args.drop}% tp={args.tp}% sl={args.sl}% fee={args.fee}%/leg",
+            m,
+            budget=args.budget,
+            bh=bh,
+            open_qty_decimals=6,
+        )
         return 0
 
     print(f"=== SWEEP {args.pair} interval={args.interval}m  (buy&hold {bh:+.1f}%) [{engine}] ===")
     if len(ohlc) > 40 and hasattr(rp, "prewarm_trend_series"):
         rp.prewarm_trend_series(ohlc, warmup=0, params=_bt_params(base), bar_minutes=args.interval)
-    rows = []
-    for tp in (1.0, 1.5, 2.0, 3.0, 5.0):
-        for drop in (1.0, 2.0, 3.0, 5.0):
-            for sl in (8.0, 15.0):
-                P = dict(base); P["tp"] = tp; P["drop"] = drop; P["sl"] = sl
-                m = rp.run_replay(
-                    ohlc, _bt_params(P), fee_pct=args.fee, bar_minutes=args.interval)
-                rows.append((m["total"]/args.budget*100, tp, drop, sl, m["cycles"], m["maxdd"]))
-    rows.sort(reverse=True)
-    print("  top 8 (total% | tp | drop | sl | cycles | maxDD$):")
-    for tot, tp, drop, sl, cyc, dd in rows[:8]:
-        print(f"    {tot:+7.2f}%  tp={tp:<4} drop={drop:<4} sl={sl:<4} cyc={cyc:<3} dd=${dd:.0f}")
+    run_tp_drop_sl_sweep(
+        base,
+        lambda p: rp.run_replay(ohlc, _bt_params(p), fee_pct=args.fee, bar_minutes=args.interval),
+        budget=args.budget,
+    )
     return 0
 
 

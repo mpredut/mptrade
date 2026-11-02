@@ -36,7 +36,7 @@ from offline.backtests.datasets import (  # noqa: E402
 from offline.backtests.evaluation import (  # noqa: E402
     add_walk_forward_cli_args,
     build_execution_model_from_args,
-    evaluate_segment as _evaluate_segment,
+    evaluate_spot_segment,
     evaluate_walk_forward as _evaluate_walk_forward,
     load_layered_env_config,
     parse_dataset_specs as _parse_dataset_specs,
@@ -54,16 +54,9 @@ def fetch_closed_candles(pair: str, interval: int) -> list[dict]:
 def _segment_result(records: list[dict], params: StratParams, fee_pct: float,
                     interval: int, warmup_records: list[dict] | tuple = (),
                     execution: ExecutionModel | None = None) -> dict:
-    adapter = kraken_replay.make_kraken_replay_adapter(
-        align_spot_interval_params(params, interval),
-        fee_pct=fee_pct,
-        bar_minutes=interval,
-        execution=execution,
-    )
-    return _evaluate_segment(
-        records,
-        adapter,
-        warmup_records=warmup_records,
+    return evaluate_spot_segment(
+        records, params, fee_pct, interval,
+        warmup_records=warmup_records, execution=execution, validate_contract=False,
     )
 
 

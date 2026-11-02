@@ -175,6 +175,120 @@ def format_performance_summary(m: dict, indent: str = "  ") -> list[str]:
     return lines
 
 
+def buy_hold_pct(ohlc_or_closes: Sequence) -> float:
+    """Compute percentage buy-and-hold return across an OHLC bar sequence or close series."""
+    if not ohlc_or_closes:
+        return 0.0
+    first, last = ohlc_or_closes[0], ohlc_or_closes[-1]
+    if isinstance(first, (list, tuple)):
+        if len(first) < 4 or len(last) < 4:
+            return 0.0
+        c0 = safe_pos_float(first[3], default=None)
+        c1 = safe_float(last[3], default=None)
+    else:
+        c0 = safe_pos_float(first, default=None)
+        c1 = safe_float(last, default=None)
+    if c0 is None or c1 is None:
+        return 0.0
+    return (c1 - c0) / c0 * 100.0
+
+
+def print_single_backtest_report(
+    header: str,
+    params_line: str,
+    m: dict,
+    *,
+    budget: float,
+    bh: float,
+    include_funding: bool = False,
+    open_qty_decimals: int = 4,
+    emit=print,
+) -> None:
+    """Emit standardized single-run CLI backtest report across Kraken, Hyperliquid, and T212."""
+    b_val = safe_pos_float(budget, default=1.0)
+    tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
+    net_pct = safe_float(m.get("net"), 0.0) / b_val * 100.0
+    cycles = int(safe_float(m.get("cycles"), 0.0))
+    wins = int(safe_float(m.get("wins"), 0.0))
+    wr = 100.0 * wins / cycles if cycles else 0.0
+    realized = safe_float(m.get("realized"), 0.0)
+    upnl = safe_float(m.get("final_upnl"), 0.0)
+    fees = safe_float(m.get("fees"), 0.0)
+    maxdd = safe_float(m.get("maxdd"), 0.0)
+    open_qty = safe_float(m.get("open_qty"), 0.0)
+    emit(header)
+    emit(f"  params: {params_line}")
+    if include_funding:
+        funding = safe_float(m.get("funding"), 0.0)
+        emit(
+            f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${realized:+.2f} "
+            f"+ funding ${funding:+.2f} + the open position ${upnl:+.2f} - fees ${fees:.2f}"
+        )
+        emit(f"  (the realised part alone: {net_pct:+.2f}% — MISLEADING if a losing position remains)")
+        emit(
+            f"  cycles  : {cycles}  win rate {wr:.0f}%   max drawdown ${maxdd:.2f}  "
+            f"({maxdd / b_val * 100.0:.0f}% of the budget)"
+        )
+    else:
+        emit(
+            f"  REAL TOTAL: {tot:+.2f}% of the budget  ⇐ realised ${realized:+.2f} "
+            f"+ the open position ${upnl:+.2f} - fees ${fees:.2f}"
+        )
+        emit(f"  (realized alone: {net_pct:+.2f}%)")
+        emit(f"  cycles: {cycles}  win-rate {wr:.0f}%   max drawdown ${maxdd:.2f}")
+    for line in format_performance_summary(m, indent="  "):
+        emit(line)
+    if include_funding:
+        status = "PIERZATOARE" if upnl < -1 else "ok"
+        emit(f"  buy&hold: {bh:+.2f}%   pozitie deschisa la final: {open_qty:.{open_qty_decimals}f} ({status})")
+    else:
+        emit(f"  buy&hold: {bh:+.2f}%   final position: {open_qty:.{open_qty_decimals}f}")
+
+
+def run_tp_drop_sl_sweep(
+    base: dict,
+    eval_fn,
+    *,
+    budget: float,
+    tp_values: Sequence[float] = (1.0, 1.5, 2.0, 3.0, 5.0),
+    drop_values: Sequence[float] = (1.0, 2.0, 3.0, 5.0),
+    sl_values: Sequence[float] | None = (8.0, 15.0),
+    top_n: int = 8,
+    emit=print,
+) -> list[tuple]:
+    """Run a TP x DROP (x SL) parameter sweep and print the top N configurations."""
+    b_val = safe_pos_float(budget, default=1.0)
+    rows: list[tuple] = []
+    if sl_values is None:
+        for tp_val in tp_values:
+            for drop_val in drop_values:
+                p = dict(base, tp=tp_val, drop=drop_val)
+                m = eval_fn(p)
+                tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
+                cyc = int(safe_float(m.get("cycles"), 0.0))
+                wins = int(safe_float(m.get("wins"), 0.0))
+                wr = 100.0 * wins / cyc if cyc else 0.0
+                rows.append((tot, tp_val, drop_val, cyc, wr, safe_float(m.get("maxdd"), 0.0)))
+        rows.sort(reverse=True)
+        emit(f"  top {top_n} combinatii (net% | tp | drop | cicluri | win% | maxDD$):")
+        for net, tp_v, drop_v, cyc, wr, dd in rows[:top_n]:
+            emit(f"    {net:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} cic={cyc:<3} win={wr:.0f}% dd=${dd:.0f}")
+        return rows
+
+    for tp_val in tp_values:
+        for drop_val in drop_values:
+            for sl_val in sl_values:
+                p = dict(base, tp=tp_val, drop=drop_val, sl=sl_val)
+                m = eval_fn(p)
+                tot = safe_float(m.get("total"), 0.0) / b_val * 100.0
+                rows.append((tot, tp_val, drop_val, sl_val, int(safe_float(m.get("cycles"), 0.0)), safe_float(m.get("maxdd"), 0.0)))
+    rows.sort(reverse=True)
+    emit(f"  top {top_n} (total% | tp | drop | sl | cycles | maxDD$):")
+    for tot, tp_v, drop_v, sl_v, cyc, dd in rows[:top_n]:
+        emit(f"    {tot:+7.2f}%  tp={tp_v:<4} drop={drop_v:<4} sl={sl_v:<4} cyc={cyc:<3} dd=${dd:.0f}")
+    return rows
+
+
 def validate_replay_metrics(result: dict) -> None:
     """Assert that a replay result conforms to the canonical metrics schema."""
     if not isinstance(result, dict):

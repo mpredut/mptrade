@@ -414,3 +414,99 @@ def resolve_window_sizes(
     if args.train is None:
         return automatic_window_sizes(record_count)
     return args.train, args.validation, args.test, (args.step or args.test)
+
+
+def evaluate_spot_segment(
+    records: Sequence[dict],
+    params: Any,
+    fee_pct: float,
+    interval: int,
+    warmup_records: Sequence[dict] = (),
+    execution: ExecutionModel | None = None,
+    *,
+    validate_contract: bool = True,
+) -> dict:
+    """Evaluate an OHLC segment using aligned spot parameters and the canonical spot replay adapter."""
+    from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
+
+    adapter = make_spot_replay_adapter(
+        align_spot_interval_params(params, interval),
+        fee_pct=fee_pct,
+        bar_minutes=interval,
+        execution=execution,
+    )
+    return evaluate_segment(
+        records,
+        adapter,
+        warmup_records=warmup_records,
+        validate_contract=validate_contract,
+    )
+
+
+def build_and_save_interval_baseline_report(
+    records: Sequence[dict],
+    adapter: ReplayFunction,
+    *,
+    args: argparse.Namespace,
+    interval: int,
+    symbol_or_coin: str,
+    purpose: str,
+    runtime: dict[str, Any],
+    strategy_params: dict[str, Any],
+    fee_pct: float,
+    execution: ExecutionModel,
+    source_label: str,
+    frozen_path: Path,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Run walk-forward evaluation for a single interval, assess evidence, and write the baseline JSON report."""
+    import dataclasses as _dc
+    from offline.backtests.datasets import dataset_metadata
+    from state_io import atomic_write_json
+
+    train_size, val_size, test_size, step_size = resolve_window_sizes(args, len(records))
+    wf_result = evaluate_walk_forward(
+        records,
+        adapter,
+        train_size=train_size,
+        validation_size=val_size,
+        test_size=test_size,
+        step_size=step_size,
+        warmup_bars=args.warmup,
+        validate_contract=True,
+    )
+    evidence = assess_decision_evidence(records, wf_result["aggregate_test"])
+    generated_at = dt.datetime.now(tz=dt.timezone.utc)
+    meta = dataset_metadata(records, interval_minutes=interval)
+    report = {
+        "schema_version": 1,
+        "generated_at_utc": generated_at.isoformat(),
+        "purpose": purpose,
+        "runtime": runtime,
+        "strategy_params": strategy_params,
+        "fee_pct_per_leg": fee_pct,
+        "execution_model": _dc.asdict(execution),
+        "dataset": {
+            "source": source_label,
+            "frozen_file": str(frozen_path),
+            **meta,
+        },
+        "windows": {
+            "train": train_size,
+            "validation": val_size,
+            "test": test_size,
+            "step": step_size,
+            "signal_warmup_bars": args.warmup,
+        },
+        "evidence": evidence,
+        "aggregate_test": wf_result["aggregate_test"],
+        "folds": wf_result["folds"],
+    }
+    report_path = output_dir / f"{symbol_or_coin}_{interval}m_baseline.json"
+    atomic_write_json(report_path, report, indent=2, ensure_ascii=False)
+    print(
+        f"[{symbol_or_coin} {interval}m] Verdict: {evidence['verdict']} | "
+        f"Worst Return: {(wf_result['aggregate_test'].get('worst_return_pct') or 0.0):+.2f}% | "
+        f"Folds: {wf_result['aggregate_test']['fold_count']} -> {report_path.name}"
+    )
+    return wf_result["aggregate_test"]

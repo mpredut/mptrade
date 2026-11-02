@@ -28,6 +28,7 @@ from kraken.backtest import _bt_params, fetch_candles, simulate
 from kraken.kraken_common import safe_float, safe_int, safe_pos_float
 from kraken.market_data import fetch_ohlc_candles
 from kraken import replay as rp
+from offline.backtests.metrics import buy_hold_pct as bh
 
 
 def fetch_with_time(pair, interval):
@@ -68,16 +69,6 @@ def simulate_trail(ohlc, P):
 def base_params(budget=3000):
     return dict(entry=300, dca=150, disc=0.8, drop=1.0, tp=5.0, maxdca=10,
                 budget=budget, fee=0.25, sl=7.0, trail=3.0)
-
-
-def bh(ohlc):
-    if not ohlc or len(ohlc[0]) < 4 or len(ohlc[-1]) < 4:
-        return 0.0
-    c0 = safe_pos_float(ohlc[0][3], default=None)
-    c1 = safe_float(ohlc[-1][3], default=None)
-    if c0 is None or c1 is None:
-        return 0.0
-    return (c1 - c0) / c0 * 100.0
 
 
 def run_compare(pairs, intervals):
