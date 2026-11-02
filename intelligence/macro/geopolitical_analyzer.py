@@ -173,22 +173,25 @@ class GeopoliticalThreatAnalyzer:
         high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
         has_new_acute_phrase = bool(
             high_sev
-            and headline_digest != self._last_headlines_digest
-            and any(
-                phrase in str(obj_attr(h, "title", None) or "").lower()
-                and phrase not in self._last_headlines_digest.lower()
-                for h in high_sev
-                for phrase in ACUTE_SHOCK_PHRASES
+            and (
+                not self._last_headlines_digest
+                or (
+                    headline_digest != self._last_headlines_digest
+                    and any(
+                        phrase in str(obj_attr(h, "title", None) or "").lower()
+                        and phrase not in self._last_headlines_digest.lower()
+                        for h in high_sev[:12]
+                        for phrase in ACUTE_SHOCK_PHRASES
+                    )
+                )
             )
         )
         acute_shock_alert = (
             news_snapshot is not None
             and self._as_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False))
             and self._cached_assessment is not None
-            and (
-                self._cached_assessment.threat_level == "NORMAL"
-                or (self._cached_assessment.threat_level == "ELEVATED" and has_new_acute_phrase)
-            )
+            and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
+            and has_new_acute_phrase
         )
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
             if headline_digest and not self._cached_assessment.is_fallback:

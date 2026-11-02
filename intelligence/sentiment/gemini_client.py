@@ -61,6 +61,19 @@ class GeminiClient:
     with fallback to Google AI Studio REST API if an API key is configured.
     """
 
+    _TOPIC_LOCKS: Dict[str, threading.Lock] = {}
+    _TOPIC_LOCKS_GUARD = threading.Lock()
+
+    @classmethod
+    def _get_topic_lock(cls, topic_key: str) -> threading.Lock:
+        key = str(topic_key or "").strip()
+        with cls._TOPIC_LOCKS_GUARD:
+            lock = cls._TOPIC_LOCKS.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                cls._TOPIC_LOCKS[key] = lock
+            return lock
+
     def __init__(
         self,
         model: Optional[str] = None,
@@ -256,12 +269,17 @@ class GeminiClient:
 
         # 2. Local authenticated CLI runner (subscription mode)
         if self.cli_path and os.path.exists(self.cli_path):
+            topic_lock: Optional[threading.Lock] = None
+            topic_lock_transferred = False
             try:
                 bot_cli_base = resolve_bot_cli_base()
                 is_mocked = hasattr(subprocess.run, "_mock_name")
                 use_topic_session = bool(
                     topic_key and (not is_mocked or hasattr(prepare_topic_session, "_mock_name"))
                 )
+                if use_topic_session and topic_key:
+                    topic_lock = self._get_topic_lock(topic_key)
+                    topic_lock.acquire()
                 session = TopicSession(conversation_id, "", False)
                 if use_topic_session and not conversation_id:
                     session = prepare_topic_session(topic_key, cli_base=bot_cli_base)
@@ -388,58 +406,63 @@ class GeminiClient:
                         if cache_ttl_sec > 0:
                             self._cache[prompt] = (now, output)
                         if use_topic_session:
-                            def _finalize_topic_turn() -> None:
-                                compacted_ok = False
-                                if session.compact and turn_cid:
-                                    compact_timeout = max(timeout_sec, 120.0)
-                                    compact_snap = (
-                                        snapshot_conversation_state(bot_cli_base, turn_cid)
-                                        if not is_mocked
-                                        else None
-                                    )
-                                    for compact_model in models_to_try[attempt_idx:]:
-                                        try:
-                                            c_proc = self._execute_cli(
-                                                turn_cid,
-                                                "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
-                                                compact_timeout,
-                                                compact_model,
-                                                bot_cli_base,
-                                                run_env,
-                                                is_mocked,
-                                            )
-                                            c_out, c_cid = self._parse_cli_payload(c_proc)
-                                            compacted_ok = bool(c_out or c_cid)
-                                            if compacted_ok:
-                                                break
-                                            if not is_mocked and compact_snap is not None:
-                                                restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
-                                        except Exception as exc:
-                                            if not is_mocked and compact_snap is not None:
-                                                restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
-                                            logger.warning(
-                                                "In-place /compact for topic '%s' conversation %s with model %s failed: %s",
-                                                topic_key,
-                                                turn_cid,
-                                                compact_model,
-                                                exc,
-                                            )
-                                            break
+                            def _finalize_topic_turn(release_lock: bool = False) -> None:
                                 try:
-                                    record_topic_turn(
-                                        topic_key=topic_key,
-                                        conversation_id=turn_cid,
-                                        response_text=output,
-                                        compacted=compacted_ok,
-                                        cli_base=bot_cli_base,
-                                    )
-                                except Exception as e:
-                                    logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+                                    compacted_ok = False
+                                    if session.compact and turn_cid:
+                                        compact_timeout = max(timeout_sec, 120.0)
+                                        compact_snap = (
+                                            snapshot_conversation_state(bot_cli_base, turn_cid)
+                                            if not is_mocked
+                                            else None
+                                        )
+                                        for compact_model in models_to_try[attempt_idx:]:
+                                            try:
+                                                c_proc = self._execute_cli(
+                                                    turn_cid,
+                                                    "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
+                                                    compact_timeout,
+                                                    compact_model,
+                                                    bot_cli_base,
+                                                    run_env,
+                                                    is_mocked,
+                                                )
+                                                c_out, c_cid = self._parse_cli_payload(c_proc)
+                                                compacted_ok = bool(c_out or c_cid)
+                                                if compacted_ok:
+                                                    break
+                                                if not is_mocked and compact_snap is not None:
+                                                    restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                                            except Exception as exc:
+                                                if not is_mocked and compact_snap is not None:
+                                                    restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                                                logger.warning(
+                                                    "In-place /compact for topic '%s' conversation %s with model %s failed: %s",
+                                                    topic_key,
+                                                    turn_cid,
+                                                    compact_model,
+                                                    exc,
+                                                )
+                                                break
+                                    try:
+                                        record_topic_turn(
+                                            topic_key=topic_key,
+                                            conversation_id=turn_cid,
+                                            response_text=output,
+                                            compacted=compacted_ok,
+                                            cli_base=bot_cli_base,
+                                        )
+                                    except Exception as e:
+                                        logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
+                                finally:
+                                    if release_lock and topic_lock is not None:
+                                        topic_lock.release()
 
                             if session.compact and turn_cid and not is_mocked:
-                                threading.Thread(target=_finalize_topic_turn, daemon=False).start()
+                                topic_lock_transferred = True
+                                threading.Thread(target=_finalize_topic_turn, args=(True,), daemon=False).start()
                             else:
-                                _finalize_topic_turn()
+                                _finalize_topic_turn(False)
                         return output
                     else:
                         logger.warning(
@@ -453,6 +476,9 @@ class GeminiClient:
                 return None
             except Exception as e:
                 logger.warning("Failed to invoke agy CLI: %s", e)
+            finally:
+                if topic_lock is not None and not topic_lock_transferred:
+                    topic_lock.release()
 
         # 3. Direct REST API fallback if API key is provided
         if self.api_key:

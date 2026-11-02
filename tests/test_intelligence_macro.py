@@ -269,6 +269,11 @@ class TestGeopoliticalThreatAnalyzer:
         assert res2.recommended_brake == "NONE"
         assert res2.is_fallback is False
 
+        # Subsequent poll on the same headlines with NORMAL cached assessment must NOT re-trigger LLM
+        res3 = analyzer.assess(snap, now_ts=t0 + 130.0)
+        assert len(calls) == 2
+        assert res3 == res2
+
 
 
 class TestGeopoliticalShockGuard:
@@ -837,6 +842,32 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         )
         assert itv_no_new_acute == 3600.0
         assert reason_no_new == "elevated_threat_new_headlines_1h"
+
+        # 5. NORMAL assessment on already-digested shock headlines must NOT loop at 0.0s
+        itv_normal_same, reason_normal_same = compute_dynamic_geopolitical_interval(
+            base_interval_sec=16200.0,
+            last_eval_ts=1_700_000_000.0,
+            now_ts=1_700_000_015.0,
+            cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+            news_snapshot=non_acute_change_snap,
+            headlines_changed=False,
+            last_headlines_digest=existing_digest,
+        )
+        assert itv_normal_same == 16200.0
+        assert reason_normal_same == "standard_geopolitical_ttl_normal"
+
+        # Whereas a brand-new acute phrase under NORMAL still triggers 0.0s immediately
+        itv_normal_fresh, reason_normal_fresh = compute_dynamic_geopolitical_interval(
+            base_interval_sec=16200.0,
+            last_eval_ts=1_700_000_000.0,
+            now_ts=1_700_000_015.0,
+            cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+            news_snapshot=non_acute_change_snap,
+            headlines_changed=True,
+            last_headlines_digest="fed inflation remarks",
+        )
+        assert itv_normal_fresh == 0.0
+        assert reason_normal_fresh == "acute_shock_keyword_alert"
 
     def test_dynamic_telemetry_interval_scaling_from_executor_cadence(self, tmp_path, monkeypatch):
         from datetime import datetime, timezone

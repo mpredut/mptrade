@@ -1645,17 +1645,17 @@ def compute_dynamic_geopolitical_interval(
     has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
     high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
-    has_new_acute = changed_b
-    if changed_b and threat_level == "ELEVATED" and last_headlines_digest and news_snapshot is not None:
+    has_new_acute = not bool(last_headlines_digest)
+    if changed_b and threat_level in ("NORMAL", "ELEVATED") and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
         has_new_acute = any(
             phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
-            for h in high_sev
+            for h in high_sev[:12]
             for phrase in ACUTE_SHOCK_PHRASES
         )
 
-    if has_shock and (threat_level == "NORMAL" or (threat_level == "ELEVATED" and has_new_acute)):
+    if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:
         return 0.0, "acute_shock_keyword_alert"
 
     if changed_b and high_sev_count > 0:
