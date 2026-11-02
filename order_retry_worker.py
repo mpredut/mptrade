@@ -487,11 +487,11 @@ def process_once(mkt, now=None):
             else "live_owner_lookup_unavailable"
         )
         quarantined += 1
-        _alert_producer_quarantine(r, reason=quarantine_reason)
-        _audit_event(
-            r, "producer_reconciliation_deferred",
-            reconciliation_state=reconciliation_state, quarantine_reason=quarantine_reason,
-        )
+        if _alert_producer_quarantine(r, reason=quarantine_reason):
+            _audit_event(
+                r, "producer_reconciliation_deferred",
+                reconciliation_state=reconciliation_state, quarantine_reason=quarantine_reason,
+            )
 
     for r in claimed:
         lifecycle = str(r.get("lifecycle") or "submit_pending").lower()
@@ -526,14 +526,15 @@ def process_once(mkt, now=None):
             if not absence_reliable:
                 quarantine_reason = not_found_reason or "lookup_unavailable"
                 quarantined += 1
-                _alert_reconciliation_quarantine(r, reason=quarantine_reason)
+                newly_quarantined = _alert_reconciliation_quarantine(r, reason=quarantine_reason)
                 oq.complete_claim(r, "release", now)
-                _audit_event(
-                    r, "reconciliation_deferred",
-                    failure_reason=r.get("last_failure_reason"),
-                    reconciliation_state=reconciliation_state,
-                    quarantine_reason=quarantine_reason,
-                )
+                if newly_quarantined:
+                    _audit_event(
+                        r, "reconciliation_deferred",
+                        failure_reason=r.get("last_failure_reason"),
+                        reconciliation_state=reconciliation_state,
+                        quarantine_reason=quarantine_reason,
+                    )
                 continue
 
         try:

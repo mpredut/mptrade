@@ -1273,7 +1273,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     target_oid = _clean_retry_order_id(order_id)
     if not target_sym or not target_oid:
         return False
-    removed = False
+    removed_records: list[dict] = []
     _ensure_dir()
     with FileLock(LOCK_FILE):
         existing = _read_nolock()
@@ -1284,12 +1284,37 @@ def resolve_accepted_order(symbol, order_id) -> bool:
                 and str(rec.get("symbol") or "").strip().upper() == target_sym
                 and _clean_retry_order_id(rec.get("order_id")) == target_oid
             ):
-                removed = True
+                removed_records.append(rec)
             else:
                 remaining.append(rec)
-        if removed:
+        if removed_records:
             _write_nolock(remaining)
-    return removed
+    if removed_records:
+        try:
+            from providers.execution_audit import ExecutionAudit
+
+            audit = ExecutionAudit()
+            for rec in removed_records:
+                audit.record(
+                    "order_terminal",
+                    intent_id=str(rec.get("intent_id") or f"outbox-{rec.get('id')}"),
+                    venue=str(rec.get("provider_name") or "routed"),
+                    symbol=str(rec.get("symbol") or target_sym),
+                    side=str(rec.get("side") or "").lower() or None,
+                    kind=rec.get("kind"),
+                    client_order_id=_record_client_order_id(rec),
+                    order_id=rec.get("order_id") or target_oid,
+                    revision=rec.get("revision"),
+                    status="canceled",
+                    venue_status="CANCELED",
+                    filled_qty=safe_nonneg_float(rec.get("filled_qty"), default=0.0) or 0.0,
+                    cost=safe_nonneg_float(rec.get("filled_cost"), default=0.0) or 0.0,
+                    fee=safe_nonneg_float(rec.get("filled_fee"), default=0.0) or 0.0,
+                    retry=False,
+                )
+        except Exception:
+            pass
+    return bool(removed_records)
 
 
 @dataclass(frozen=True)

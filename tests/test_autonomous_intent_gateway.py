@@ -1436,3 +1436,100 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
         assert ladder_rec["status"] == "EXECUTED"
         hl_inst.place.assert_called_once()
 
+
+def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(tmp_path):
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        reconcile_intents_from_execution_audit,
+    )
+
+    now_ts = 1793660000.0
+    intents = [
+        {
+            "intent_id": "intent_old_replaced",
+            "timestamp": now_ts - 3600.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 41.0,
+            "reference_price": 41.2,
+            "suggested_notional_usd": 120.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "HL_OLD_1", "status": "NEW", "msg": "resting", "executedQty": "0.0"},
+        },
+        {
+            "intent_id": "intent_new_replacer",
+            "timestamp": now_ts - 1800.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 41.5,
+            "reference_price": 41.6,
+            "suggested_notional_usd": 120.0,
+            "status": "EXECUTED",
+            "canceled_prior_open_orders": ["HL_OLD_1"],
+            "execution_payload": {"orderId": "HL_OPEN_2", "status": "NEW", "price": "41.5", "executedQty": "0.0"},
+        },
+        {
+            "intent_id": "intent_blocked_latest",
+            "timestamp": now_ts - 600.0,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 41.6,
+            "reference_price": 41.7,
+            "suggested_notional_usd": 120.0,
+            "status": "BLOCKED_BY_GUARD",
+            "execution_payload": {"guard": "G_QLIMIT1"},
+        },
+        {
+            "intent_id": "intent_arb_tranche_1",
+            "timestamp": now_ts - 1200.0,
+            "decision": "SELL",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 0.1628,
+            "reference_price": 0.1610,
+            "suggested_notional_usd": 120.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "562350381", "status": "NEW", "price": "0.1628", "executedQty": "0.0"},
+        },
+        {
+            "intent_id": "intent_arb_tranche_2",
+            "timestamp": now_ts - 10.0,
+            "decision": "SELL",
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 0.1598,
+            "reference_price": 0.1585,
+            "suggested_notional_usd": 85.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "562352955", "status": "NEW", "price": "0.1598", "executedQty": "0.0"},
+        },
+    ]
+
+    changed = reconcile_intents_from_execution_audit(intents, str(tmp_path))
+    assert changed is True
+    assert intents[0]["execution_payload"]["status"] == "CANCELED"
+    assert intents[0]["execution_payload"]["reconciled_terminal"] is True
+    assert "msg" not in intents[0]["execution_payload"]
+
+    open_orders = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "BUY", "order_id": "HL_OPEN_2", "price": 41.5},
+        {"venue": "binance", "symbol": "ARBUSDC", "side": "SELL", "order_id": "562350381", "price": 0.1628},
+        {"venue": "binance", "symbol": "ARBUSDC", "side": "SELL", "order_id": "562352955", "price": 0.1598},
+    ]
+    last_st = build_last_cycle_execution_status(
+        intents, "crypto", now_ts, extract_intent_notional, recent_orders={}, open_orders=open_orders
+    )
+    assert isinstance(last_st, list)
+    assert [x.get("order_id") for x in last_st] == ["HL_OPEN_2", "562350381", "562352955"]
+    assert all(x["status"] == "OPEN_RESTING" for x in last_st)
+
+

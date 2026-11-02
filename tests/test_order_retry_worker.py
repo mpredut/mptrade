@@ -1450,6 +1450,68 @@ class ProcessOnceTest(unittest.TestCase):
         self.assertEqual(_resolve_provider_label(source="hl"), "Hyperliquid")
         self.assertEqual(_resolve_provider_label(source="bin"), "Binance")
 
+    def test_resolve_accepted_order_audits_terminal_cancel_and_reconciliation_deferred_dedupes(self):
+        from unittest.mock import patch
+
+        audit_events = []
+        with patch.object(worker._AUDIT, "record", side_effect=lambda ev, **kw: audit_events.append((ev, kw))):
+            rec = oq.enqueue_claimed(
+                "BTCUSDC",
+                "BUY",
+                0.01,
+                {"client_order_id": "AI_ttl_cancel_1"},
+                requested_price=70000.0,
+                provider_name="binance",
+                intent_id="intent_test_ttl_cancel",
+                kind="LIMIT",
+                now=1000.0,
+            )
+            oq.complete_claim(
+                rec,
+                "accepted",
+                order={"orderId": "10695093717", "status": "NEW", "origQty": "0.01"},
+                provider_name="binance",
+                now=1001.0,
+            )
+            with patch("providers.execution_audit.ExecutionAudit.record", side_effect=lambda ev, **kw: audit_events.append((ev, kw))):
+                self.assertTrue(oq.resolve_accepted_order("BTCUSDC", "10695093717"))
+            self.assertEqual(len(audit_events), 1)
+            ev_name, ev_kw = audit_events[0]
+            self.assertEqual(ev_name, "order_terminal")
+            self.assertEqual(ev_kw["intent_id"], "intent_test_ttl_cancel")
+            self.assertEqual(ev_kw["order_id"], "10695093717")
+            self.assertEqual(ev_kw["status"], "canceled")
+            self.assertEqual(ev_kw["venue_status"], "CANCELED")
+
+            # Now verify reconciliation_deferred is audited only once across repeated worker passes
+            audit_events.clear()
+            ambig = oq.enqueue_claimed(
+                "HYPEUSD",
+                "SELL",
+                1.0,
+                {"client_order_id": "33f77eb2dc47451cbd1d08098796b329"},
+                requested_price=29.5,
+                provider_name="kraken",
+                intent_id="intent_ambig_1",
+                kind="LIMIT",
+                now=1000.0,
+            )
+            oq.complete_claim(
+                ambig,
+                "failure",
+                failure_reason="EOrder:Insufficient funds",
+                submission_state="unknown",
+                now=1001.0,
+            )
+
+            class _NoReconcileMkt:
+                pass
+
+            worker.process_once(_NoReconcileMkt(), now=2000.0)
+            worker.process_once(_NoReconcileMkt(), now=2600.0)
+            deferred_events = [e for e in audit_events if e[0] == "reconciliation_deferred"]
+            self.assertEqual(len(deferred_events), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
