@@ -989,15 +989,27 @@ def harvest_heartbeats_and_state_files(
     now_ts: float,
     read_json_fn: Any = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Harvest active heartbeat JSON files and watchdog state file ages."""
+    """Harvest active heartbeat JSON/mtime files and watchdog state file ages."""
     _rj = read_json_fn or read_json_recovering
-    active_heartbeats = {
-        hb_name: data
-        for hb_name in ("macro_analyzer.heartbeat", "globaltelemetry_collector.heartbeat", "rtrade.heartbeat")
-        if isinstance((data := _rj(os.path.join(cache_dir, hb_name))), dict) and data
-    }
+    active_heartbeats: Dict[str, Any] = {}
+    for hb_name in ("macro_analyzer.heartbeat", "globaltelemetry_collector.heartbeat", "rtrade.heartbeat"):
+        hb_raw_path = os.path.join(cache_dir, hb_name)
+        data = _rj(hb_raw_path)
+        if isinstance(data, dict) and data:
+            active_heartbeats[hb_name] = data
+            continue
+        if hb_name == "rtrade.heartbeat" and read_json_fn is None:
+            hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
+            if os.path.exists(hb_resolved):
+                try:
+                    mtime = os.path.getmtime(hb_resolved)
+                    age_sec = max(0.0, now_ts - mtime)
+                    if age_sec <= 300.0:
+                        active_heartbeats[hb_name] = {"status": "alive", "ts": mtime, "age_seconds": round(age_sec, 1)}
+                except OSError:
+                    pass
     state_files: Dict[str, Any] = {}
-    for s_file in (".watchdog_state.json", ".anomaly_watchdog_state.json"):
+    for s_file in (".resource_watchdog_state.json", ".watchdog_state.json", ".anomaly_watchdog_state.json"):
         s_path = os.path.join(workspace_dir, s_file)
         if os.path.exists(s_path):
             try:

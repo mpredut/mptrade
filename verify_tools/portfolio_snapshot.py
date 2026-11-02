@@ -23,12 +23,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
-from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
-from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
-from kraken.kraken_client import KrakenClient  # noqa: E402
-os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
-from state_io import read_json_dict, save_json_state  # noqa: E402
-from strategies.state_store import state_path_for  # noqa: E402
+with contextlib.redirect_stdout(io.StringIO()):
+    from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
+    from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
+    from kraken.kraken_client import KrakenClient  # noqa: E402
+    os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
+    from state_io import read_json_dict, save_json_state  # noqa: E402
+    from strategies.state_store import state_path_for  # noqa: E402
 
 _ROOT_CONFIG = parse_dotenv(os.path.join(ROOT, "config.env"))
 
