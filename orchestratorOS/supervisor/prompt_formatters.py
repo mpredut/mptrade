@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
 from cachepaths import canonical_base_asset, compatible_quote_suffixes
+from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     format_bottom_structure_6h_parts,
     format_macro_benchmarks_summary_line,
@@ -206,12 +207,29 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         f"- Macro Sentiment Advisor: {sa_line}",
         f"- Geopolitical Threat Shield: {gt_line}",
     ]
+    breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
+    mc = (
+        getattr(sensors, "macro_calendar", None)
+        or macro.get("macro_calendar")
+        or resolve_macro_economic_calendar(breaking_news=breaking_news)
+    )
+    if isinstance(mc, dict) and mc.get("next_high_impact_event"):
+        mc_parts = [
+            f'session="{mc.get("session_label")}"',
+            f'next_high_impact_event="{mc.get("next_high_impact_event")}"',
+        ]
+        if mc.get("active_release_window") and mc.get("next_scheduled_event"):
+            mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
+        if mc.get("upcoming_windows"):
+            mc_parts.append(f'upcoming={mc.get("upcoming_windows")}')
+        if mc.get("detected_macro_headlines"):
+            mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
+        lines.append(f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}")
     mb_bench_line = _extract_macro_benchmarks_line(mb_bench)
     if mb_bench_line:
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
-    breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
     if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
         for hn in breaking_news:
@@ -738,7 +756,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("locked_quote_usd=$", "locked_quote_usd"),
         ("replace_max_buy=$", "replace_max_buy_usd"),
         ("max_sell=$", "effective_max_sell_usd"),
-        ("locked_base=", "locked_base_qty"),
+        ("locked_base_qty=", "locked_base_qty"),
         ("replace_max_sell=$", "replace_max_sell_usd"),
     ):
         if eff_pos.get(lim_k) is not None:
@@ -754,8 +772,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     )
     if (lb_q := _parse_finite_float(eff_pos.get("locked_base_qty"), None)) is not None and lb_q > 0.0:
         lb_u = _parse_finite_float(eff_pos.get("locked_base_usd"), None)
-        lb_u_s = f" / ${lb_u:.2f}" if lb_u is not None and lb_u > 0.0 else ""
-        fb_str += f" [locked_base={lb_q:g}{lb_u_s}]"
+        lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
+        fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
     fq_val = pos.get("free_quote")
     fq_str = f"${fq_val}" if fq_val is not None else "N/A"
     fq_bd = pos.get("free_quote_breakdown")

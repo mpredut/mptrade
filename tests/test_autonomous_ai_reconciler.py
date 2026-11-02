@@ -7065,7 +7065,8 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
             free_balance=lambda a: 12.264586 if a == "HYPE" else 13.84,
         ),
         open_orders=lambda: [
-            {"oid": 592351368110, "side": "B", "limitPx": "83.45", "sz": "3.13", "origSz": "3.13", "status": "OPEN"}
+            {"oid": 592351368110, "side": "B", "limitPx": "83.45", "sz": "3.13", "origSz": "3.13", "status": "OPEN"},
+            {"oid": 592351368111, "side": "A", "limitPx": "90.00", "sz": "2.00", "origSz": "2.00", "status": "OPEN"},
         ],
     )
     prices_and_trends = {"HYPEUSD": {"price": 85.27, "trend": 0, "growth_coefficient": 0.0}}
@@ -7075,7 +7076,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
         prices_and_trends,
         {},
         {},
-        known_ai_order_ids={"592351368110"},
+        known_ai_order_ids={"592351368110", "592351368111"},
         gateway_max_usd=2000.0,
     )
     enrich_24h_and_microstructure(
@@ -7090,6 +7091,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert prices_and_trends["HYPEUSD"]["price"] == pytest.approx(85.33)
     assert positions[0]["price"] == pytest.approx(85.33)
     assert positions[0]["locked_quote_usd"] == pytest.approx(261.20)
+    assert positions[0]["locked_base_qty"] == pytest.approx(2.0)
     assert positions[0]["effective_max_buy_usd"] == pytest.approx(13.77)
     assert positions[0]["replace_max_buy_usd"] == pytest.approx(273.66)
     assert venue_cash["hyperliquid:USDC"]["locked_quote_usd"] == pytest.approx(261.20)
@@ -7110,8 +7112,31 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert "HYPEUSDC (sibling venue: HYPEUSD=$85.33): Price=$85.33" in s_3a
     assert "ob_mid=85.33" in s_3b
     assert "px=85.33" in s_3c
+    assert "locked_base_qty=2" in s_3c
     assert "locked_quote_usd=$261.20" in s_3c
     assert "max_buy=$13.77, locked_quote_usd=$261.2, replace_max_buy=$273.66" in s_3c
+
+    # 4. Macro Economic Calendar sensor in Section 1 (next_high_impact_event countdown + live macro headlines)
+    from datetime import datetime, timezone
+    from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
+    from orchestratorOS.supervisor.prompt_formatters import _format_macro_and_news_section
+
+    # Monday 2026-11-02 15:20 EET is 13:20 UTC -> 10 minutes before 15:30 EET US Macro release window
+    ts_1520_eet = datetime(2026, 11, 2, 13, 20, tzinfo=timezone.utc).timestamp()
+    mc_1520 = resolve_macro_economic_calendar(
+        now_ts=ts_1520_eet,
+        breaking_news=[{"title": "US CPI inflation report and Jobless Claims preview ahead of Fed FOMC"}],
+    )
+    assert "15:30 EET in 10m" in mc_1520["next_high_impact_event"]
+    assert "CPI" in mc_1520["next_high_impact_event"]
+    assert mc_1520["detected_macro_headlines"] == [
+        "US CPI inflation report and Jobless Claims preview ahead of Fed FOMC"
+    ]
+    sec1_lines = _format_macro_and_news_section(SimpleNamespace(macro_calendar=mc_1520, breaking_news=[]))
+    sec1_text = "\n".join(sec1_lines)
+    assert "- Macro Economic Calendar & Session Window:" in sec1_text
+    assert 'next_high_impact_event="US CPI / PPI / NFP / Jobless Claims / Retail Sales (08:30 EST Release) at 15:30 EET in 10m"' in sec1_text
+
 
 
 

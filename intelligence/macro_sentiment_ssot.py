@@ -1387,6 +1387,98 @@ def did_cross_session_checkpoint(
     return crossed_label
 
 
+def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
+    """Load weekday macro economic & liquidity calendar windows from ``macro_intelligence.conf``."""
+    parsed: List[Tuple[int, int, str, str]] = []
+    for item in _split_csv(_cfg_str("sessions", "macro_calendar_windows_eet")):
+        parts = [p.strip() for p in item.split("|")]
+        if len(parts) >= 3 and ":" in parts[0]:
+            try:
+                hh_s, mm_s = parts[0].split(":", 1)
+                parsed.append((int(hh_s), int(mm_s), parts[1], parts[2]))
+            except ValueError:
+                continue
+    return tuple(parsed)
+
+
+def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
+    """Load macro economic calendar keywords from ``macro_intelligence.conf``."""
+    return _split_csv(_cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
+
+
+def _fmt_countdown_min(delta_min: float) -> str:
+    m = int(round(abs(delta_min)))
+    if m < 60:
+        return f"{m}m"
+    h, rem = divmod(m, 60)
+    return f"{h}h{rem:02d}m" if rem else f"{h}h"
+
+
+def resolve_macro_economic_calendar(
+    now_ts: Optional[float] = None,
+    breaking_news: Optional[Sequence[Any]] = None,
+) -> Dict[str, Any]:
+    """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
+    ts = resolve_now_ts(now_ts)
+    session_ctx = resolve_global_trading_session(ts)
+    primary_tz = _cfg_str("sessions", "primary_timezone", "Europe/Bucharest")
+    p_off = _cfg_int("sessions", "primary_fallback_offset_hours", 2)
+    dt_eet = _to_tz(ts, primary_tz, p_off)
+    tz_abbr = dt_eet.strftime("%Z") or "EET"
+    windows = get_macro_calendar_windows_eet()
+
+    active_window: Optional[str] = None
+    upcoming: List[Tuple[float, str, str, str]] = []
+    for day_offset in range(0, 4):
+        cand_date = (dt_eet + timedelta(days=day_offset)).date()
+        if cand_date.weekday() >= 5:
+            continue
+        for hh, mm, code, desc in windows:
+            ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
+            delta_min = (ev_dt.timestamp() - ts) / 60.0
+            time_lbl = f"{hh:02d}:{mm:02d} {tz_abbr}"
+            if day_offset > 0:
+                time_lbl = f"{ev_dt.strftime('%a')} {time_lbl}"
+            if -20.0 <= delta_min <= 0.0 and active_window is None:
+                active_window = f"{desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — ACTIVE VOLATILITY WINDOW)"
+            elif delta_min > 0.0:
+                upcoming.append((delta_min, code, desc, f"{desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
+
+    upcoming.sort(key=lambda x: x[0])
+    next_event = upcoming[0][3] if upcoming else "None scheduled"
+    next_code = upcoming[0][1] if upcoming else "NONE"
+    next_in_min = round(upcoming[0][0], 1) if upcoming else None
+    upcoming_schedule = [x[3] for x in upcoming[:3]]
+
+    macro_kws = get_macro_calendar_headline_keywords()
+    detected_macro_headlines: List[str] = []
+    if breaking_news and macro_kws:
+        for item in breaking_news:
+            title = str(obj_attr(item, "title", "") or "").strip()
+            if not title:
+                continue
+            t_low = title.lower()
+            if any(re.search(r"\b" + re.escape(kw) + r"\b", t_low) for kw in macro_kws):
+                detected_macro_headlines.append(title)
+
+    return {
+        "session_key": session_ctx.session_key,
+        "session_label": session_ctx.session_label,
+        "eet_time": session_ctx.eet_time_str,
+        "ny_time": session_ctx.ny_time_str,
+        "is_weekend": session_ctx.is_weekend,
+        "active_release_window": active_window,
+        "next_high_impact_event": active_window or next_event,
+        "next_scheduled_event": next_event,
+        "next_event_code": next_code,
+        "next_event_in_min": next_in_min,
+        "upcoming_windows": upcoming_schedule,
+        "detected_macro_headlines": detected_macro_headlines[:3],
+        "ts": ts,
+    }
+
+
+
 # ============================================================================
 # 4. Context-Adaptive Dynamic Interval Calculators
 # ============================================================================

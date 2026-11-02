@@ -15,7 +15,7 @@ from cachepaths import (
 )
 from intelligence.macro_sentiment_ssot import (
     filter_valid_severity_keywords, get_cache_filenames, obj_attr,
-    safe_float, safe_nonneg_ts, safe_pos_float,
+    resolve_macro_economic_calendar, safe_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     _MICRO_PRICE_ANCHOR_KEYS, _first_variant_dict, _prices_diverged,
@@ -310,6 +310,7 @@ def harvest_macro_and_news_sensors(
                 "keywords": item.get("matched_keywords") or [],
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
             })
+    macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(now_ts=now_ts, breaking_news=breaking_news)
     return macro_sensors, breaking_news
 
 
