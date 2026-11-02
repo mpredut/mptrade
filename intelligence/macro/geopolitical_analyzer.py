@@ -76,9 +76,10 @@ class GeopoliticalThreatAnalyzer:
         self._load_from_disk()
 
     def _effective_state_file(self) -> str:
-        if self.state_file == DEFAULT_STATE_FILE:
+        sf = getattr(self, "state_file", DEFAULT_STATE_FILE) or DEFAULT_STATE_FILE
+        if sf == DEFAULT_STATE_FILE:
             return cache_path(_GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_eval.json")
-        return self.state_file
+        return str(sf)
 
     def _build_assessment(
         self,
@@ -173,8 +174,11 @@ class GeopoliticalThreatAnalyzer:
 
         raw_headlines = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
         high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
-        state_cache_dir = os.path.dirname(os.path.abspath(self._effective_state_file()))
-        active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
+        if high_sev:
+            state_cache_dir = os.path.dirname(os.path.abspath(self._effective_state_file()))
+            active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
+        else:
+            active_acute_phrases = ()
         has_new_acute_phrase = bool(
             high_sev
             and (
