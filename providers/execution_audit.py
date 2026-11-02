@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
@@ -35,10 +36,11 @@ from cachepaths import (
     canonical_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
+    resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
-from state_io import append_jsonl_record, load_json_state, read_jsonl_dicts, save_json_state
+from state_io import append_jsonl_record, generation_lock_path, load_json_state, read_jsonl_dicts, save_json_state
 from .base import (
     _UNFILLED_ORDER_STATUSES,
     _clean_single_order_id,
@@ -1824,17 +1826,18 @@ def load_durable_intents_state(
     reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
 ) -> list[dict[str, Any]]:
     """Load all trade intents from the durable JSON queue with `.previous` crash recovery."""
-    data = load_json_state(
-        intents_file,
-        default_factory=list,
-        fail_closed=False,
-        label="autonomous_trade_intents",
-        root_type=list,
-    )
-    items = [item for item in data if isinstance(item, dict)]
-    if callable(reconcile_fn):
-        reconcile_fn(items)
-    return items
+    with durable_intents_lock(intents_file):
+        data = load_json_state(
+            intents_file,
+            default_factory=list,
+            fail_closed=False,
+            label="autonomous_trade_intents",
+            root_type=list,
+        )
+        items = [item for item in data if isinstance(item, dict)]
+        if callable(reconcile_fn):
+            reconcile_fn(items)
+        return items
 
 
 def save_durable_intents_state(
@@ -1847,12 +1850,68 @@ def save_durable_intents_state(
 
     try:
         cleaned = clean_json_value(intents if isinstance(intents, list) else [])
-        save_json_state(intents_file, cleaned, indent=2)
+        with durable_intents_lock(intents_file):
+            save_json_state(intents_file, cleaned, indent=2)
         return True
     except Exception as e:
         if log:
             log.error("Failed saving intents to %s: %s", intents_file, e)
         return False
+
+
+_INTENTS_LOCK_LOCAL = threading.local()
+
+
+@contextmanager
+def durable_intents_lock(intents_file: str):
+    """Reentrant (per thread) cross-process lock serializing read-modify-write of the durable intents file.
+
+    The crypto and share executors run as separate cron processes whose cycles can overlap; without this lock
+    one process's load -> append -> save silently drops the other's intents (lost update).
+    """
+    from lock.file_lock import FileLock
+
+    key = generation_lock_path(str(resolve_cachedb_filepath(os.fspath(intents_file))))
+    depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)
+    if depths is None:
+        depths = _INTENTS_LOCK_LOCAL.depths = {}
+    if depths.get(key):
+        depths[key] += 1
+        try:
+            yield
+        finally:
+            depths[key] -= 1
+        return
+    with FileLock(key):
+        depths[key] = 1
+        try:
+            yield
+        finally:
+            depths.pop(key, None)
+
+
+def upsert_durable_intent(
+    intents_file: str,
+    intent: dict[str, Any],
+    *,
+    reconcile_fn: Optional[Callable[[list[dict[str, Any]]], Any]] = None,
+    log: Optional[Any] = None,
+) -> bool:
+    """Atomically merge one intent (by ``intent_id``) into the freshly reloaded durable intents file."""
+    if not isinstance(intent, dict):
+        return False
+    iid = _extract_intent_id(intent)
+    with durable_intents_lock(intents_file):
+        intents = load_durable_intents_state(intents_file, reconcile_fn=reconcile_fn)
+        idx = next(
+            (k for k in range(len(intents) - 1, -1, -1) if iid and _extract_intent_id(intents[k]) == iid),
+            None,
+        )
+        if idx is None:
+            intents.append(intent)
+        else:
+            intents[idx] = intent
+        return save_durable_intents_state(intents_file, intents, log=log)
 
 
 def preflight_intent_and_resolve_price(

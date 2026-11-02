@@ -61,6 +61,7 @@ from providers.execution_audit import (
     record_shadow_intent_observation,
     resolve_intent_topic_tag,
     save_durable_intents_state,
+    upsert_durable_intent,
     validate_and_build_intent_dict,
 )
 from providers.quantity import clamp_notional_to_wallet_balance
@@ -418,8 +419,7 @@ class AutonomousIntentGateway:
         )
         if intent is None:
             return None
-        intents.append(intent)
-        self.save_all_intents(intents)
+        self._upsert_intent(intent)
         norm_max_mode = (
             "off"
             if isinstance(max_mode, bool)
@@ -429,9 +429,12 @@ class AutonomousIntentGateway:
             norm_max_mode = "off"
         mode = min(self.mode, norm_max_mode, key=lambda m: MODE_RANK.get(m, 0))
         processed = self.process_intent(intent, instruments_map=instruments_map, mode=mode)
-        intents[-1] = processed
-        self.save_all_intents(intents)
+        self._upsert_intent(processed)
         return processed
+
+    def _upsert_intent(self, intent: Dict[str, Any]) -> bool:
+        """Merge one intent into the freshly reloaded durable file under the cross-process intents lock."""
+        return upsert_durable_intent(self.intents_file, intent, reconcile_fn=self.reconcile_intents, log=logger)
 
     def process_all_pending(self) -> List[Dict[str, Any]]:
         """Processes all pending trade intents from the durable queue."""
@@ -458,7 +461,7 @@ class AutonomousIntentGateway:
             updated = self.process_intent(intents[idx], instruments_map=instruments_map)
             intents[idx] = updated
             processed.append(updated)
-            self.save_all_intents(intents)
+            self._upsert_intent(updated)
 
         return processed
 

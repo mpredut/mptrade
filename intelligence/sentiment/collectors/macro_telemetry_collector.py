@@ -460,13 +460,17 @@ def populate_market_and_portfolio_snapshot(
     t_trend_map = t_trend_data if isinstance(t_trend_data, dict) else {}
     snapshot.prices_and_trends = harvest_initial_prices_and_trends(cache_dir, prices_data, trends_data, _rj)
 
-    intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
-    if isinstance(intents_data, list) and intents_data and callable(reconcile_fn := getattr(intent_gateway, "reconcile_intents", None)):
+    intents_data = None
+    if callable(load_intents_fn := getattr(intent_gateway, "load_all_intents", None)):
+        # Locked load + audit reconciliation (persisted under the cross-process intents lock) instead of
+        # re-saving a stale snapshot that could drop intents appended concurrently by the other executor.
         try:
-            if reconcile_fn(intents_data) and callable(save_fn := getattr(intent_gateway, "save_all_intents", None)):
-                save_fn(intents_data)
+            loaded = load_intents_fn()
+            intents_data = loaded if isinstance(loaded, list) else None
         except Exception:
-            pass
+            intents_data = None
+    if intents_data is None:
+        intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
     known_ai_oids = collect_known_ai_order_ids(intents_data)
     gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 

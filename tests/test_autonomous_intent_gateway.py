@@ -1318,3 +1318,49 @@ def test_reconcile_from_audit_scans_only_days_since_oldest_pending_intent(tmp_pa
     assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is True
     assert intents[0]["status"] == "EXECUTED"
     assert intents[0]["execution_payload"]["status"] == "FILLED"
+
+
+def test_durable_intent_upserts_from_concurrent_executors_never_drop_intents(tmp_path):
+    """Overlapping executors merging intents by id under the cross-process lock never lose each other's records."""
+    import threading
+    from providers.execution_audit import (
+        durable_intents_lock,
+        load_durable_intents_state,
+        save_durable_intents_state,
+        upsert_durable_intent,
+    )
+
+    intents_file = str(tmp_path / "autonomous_trade_intents_state.json")
+    save_durable_intents_state(intents_file, [{"intent_id": "existing_1", "status": "EXECUTED"}])
+
+    # Executor A took a stale snapshot before executor B appended its intent; A must merge, not overwrite.
+    stale_snapshot = load_durable_intents_state(intents_file)
+    assert upsert_durable_intent(intents_file, {"intent_id": "share_B", "status": "PENDING"})
+    crypto_a = {"intent_id": "crypto_A", "status": "PENDING"}
+    stale_snapshot.append(crypto_a)
+    assert upsert_durable_intent(intents_file, crypto_a)
+    crypto_a_done = dict(crypto_a, status="EXECUTED")
+    assert upsert_durable_intent(intents_file, crypto_a_done)
+    ids = [i["intent_id"] for i in load_durable_intents_state(intents_file)]
+    assert ids == ["existing_1", "share_B", "crypto_A"]
+    assert load_durable_intents_state(intents_file)[-1]["status"] == "EXECUTED"
+
+    # The lock is reentrant within a thread (load/save nested inside upsert) and exclusive across threads.
+    order: list[str] = []
+    entered = threading.Event()
+
+    def _holder():
+        with durable_intents_lock(intents_file):
+            with durable_intents_lock(intents_file):
+                entered.set()
+                time.sleep(0.3)
+                order.append("holder_done")
+
+    t = threading.Thread(target=_holder)
+    t.start()
+    entered.wait(2.0)
+    upsert_durable_intent(intents_file, {"intent_id": "late_C", "status": "PENDING"})
+    order.append("upsert_done")
+    t.join(2.0)
+    assert order == ["holder_done", "upsert_done"]
+    assert [i["intent_id"] for i in load_durable_intents_state(intents_file)][-1] == "late_C"
