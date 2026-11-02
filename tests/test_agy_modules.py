@@ -531,6 +531,46 @@ class TestMirrorTopicThreadToUi:
         assert invoke_calls and invoke_calls[0][4]["is_market"] is True
         assert invoke_calls[0][4]["tif"] == "Ioc"
 
+    def test_query_json_falls_back_to_next_model_when_candidate_returns_non_json_prose(self, tmp_path, monkeypatch):
+        import subprocess
+        from unittest.mock import patch
+        from intelligence.sentiment.gemini_client import GeminiClient
+
+        fake_bin = tmp_path / "agy-bot"
+        fake_bin.write_text("#!/bin/sh\n")
+        models_called = []
+
+        def fake_run(cmd, **kwargs):
+            model_idx = cmd.index("--model") + 1
+            m_name = cmd[model_idx]
+            models_called.append(m_name)
+            if m_name == "gpt-oss-120b-medium":
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout='{"response": "**Clarification Needed** I see the latest summary, which option do you want?", "conversation_id": "cid-1"}',
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout='{"response": "{\\"decision\\": \\"HOLD\\", \\"confidence\\": 0.91}", "conversation_id": "cid-1"}',
+                stderr="",
+            )
+
+        with patch("subprocess.run", side_effect=fake_run):
+            client = GeminiClient(
+                model="gpt-oss-120b-medium",
+                fallback_models=("claude-sonnet-5-5-medium",),
+                cli_path=str(fake_bin),
+                project_id="autonommptrade",
+            )
+            parsed = client.query_json("Return JSON decision only.")
+
+        assert models_called == ["gpt-oss-120b-medium", "claude-sonnet-5-5-medium"]
+        assert parsed == {"decision": "HOLD", "confidence": 0.91}
+
+
 
 
 

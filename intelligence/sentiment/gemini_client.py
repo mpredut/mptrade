@@ -63,6 +63,7 @@ class GeminiClient:
 
     _TOPIC_LOCKS: Dict[str, threading.Lock] = {}
     _TOPIC_LOCKS_GUARD = threading.Lock()
+    _JSON_MODE_LOCAL = threading.local()
 
     @classmethod
     def _get_topic_lock(cls, topic_key: str) -> threading.Lock:
@@ -179,7 +180,7 @@ class GeminiClient:
 
     @staticmethod
     def _is_quota_or_credit_error(proc: Optional[subprocess.CompletedProcess]) -> bool:
-        """Return True when the CLI failed due to exhausted AI credits, quota, or rate limits."""
+        """Return True when the CLI failed due to exhausted AI credits, quota, rate limits, or unrecognized model."""
         if proc is None:
             return False
         combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
@@ -192,6 +193,10 @@ class GeminiClient:
                 "check quota",
                 "rate limit",
                 "too many requests",
+                "invalid model selection",
+                "not recognized as a known model",
+                "unknown model",
+                "model not found",
             )
         )
 
@@ -235,11 +240,13 @@ class GeminiClient:
         selected_model = explicit_call_model or topic_preferred_model or self.model
         timeout_sec = safe_pos_float(timeout_sec, 15.0)
         cache_ttl_sec = safe_pos_float(cache_ttl_sec, 0.0)
+        require_json = bool(getattr(self._JSON_MODE_LOCAL, "require_json", False))
 
         if cache_ttl_sec > 0:
             cached = self._cache.get(prompt)
             if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now, ttl_sec=cache_ttl_sec):
-                return cached[1]
+                if not require_json or extract_json_object(str(cached[1])) is not None:
+                    return cached[1]
 
         # 1. Custom runner (used for unit tests)
         if self._custom_runner is not None:
@@ -351,6 +358,22 @@ class GeminiClient:
                         )
                         continue
 
+                    if require_json and isinstance(output, str) and extract_json_object(output) is None:
+                        logger.warning(
+                            "agy CLI with model '%s' returned non-JSON output (%s); rolling back and trying fallback.",
+                            model_candidate,
+                            output.strip()[:160],
+                        )
+                        if not is_mocked:
+                            if session.conversation_id and conv_snapshot is not None:
+                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
+                            elif not session.conversation_id:
+                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
+                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
+                        output = None
+                        turn_cid = None
+                        continue
+
                     if output is None and not is_mocked:
                         if session.conversation_id and conv_snapshot is not None:
                             restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
@@ -386,6 +409,13 @@ class GeminiClient:
                                 bot_cli_base, run_env, is_mocked
                             )
                             output, detached_cid = self._parse_cli_payload(proc)
+                            if require_json and isinstance(output, str) and extract_json_object(output) is None:
+                                logger.warning(
+                                    "agy CLI one-off thread with model '%s' returned non-JSON output (%s); trying fallback.",
+                                    model_candidate,
+                                    output.strip()[:160],
+                                )
+                                output = None
                             if (
                                 detached_cid
                                 and detached_cid != session.conversation_id
@@ -529,6 +559,12 @@ class GeminiClient:
                         text = raw_text.strip() if isinstance(raw_text, str) else ""
                         if not text:
                             continue
+                        if require_json and extract_json_object(text) is None:
+                            logger.warning(
+                                "Gemini REST API with model %s returned non-JSON output; trying next.",
+                                r_model,
+                            )
+                            continue
                         if cache_ttl_sec > 0:
                             self._cache[prompt] = (now, text)
                         return text
@@ -559,15 +595,19 @@ class GeminiClient:
         conversation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query Gemini and parse the response strictly as a JSON object."""
-        raw_text = self.query_text(
-            prompt,
-            model=model,
-            timeout_sec=timeout_sec,
-            cache_ttl_sec=cache_ttl_sec,
-            thread_title=thread_title,
-            topic_key=topic_key,
-            conversation_id=conversation_id,
-        )
+        self._JSON_MODE_LOCAL.require_json = True
+        try:
+            raw_text = self.query_text(
+                prompt,
+                model=model,
+                timeout_sec=timeout_sec,
+                cache_ttl_sec=cache_ttl_sec,
+                thread_title=thread_title,
+                topic_key=topic_key,
+                conversation_id=conversation_id,
+            )
+        finally:
+            self._JSON_MODE_LOCAL.require_json = False
         if not raw_text:
             return None
         if isinstance(raw_text, dict):
