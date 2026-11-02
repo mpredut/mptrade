@@ -247,6 +247,127 @@ def read_summary_row(cli_base: str, cid: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def snapshot_conversation_state(cli_base: str, cid: str) -> Optional[dict]:
+    """Capture a lightweight in-memory rollback checkpoint of ``<cid>.db`` and its summary row."""
+    if not cli_base or not isinstance(cli_base, str) or not cid or not isinstance(cid, str):
+        return None
+    clean_cid = cid.strip()
+    db_path = conversation_db(cli_base, clean_cid)
+    if not os.path.exists(db_path):
+        return None
+    tables_state: dict[str, dict[str, Any]] = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            tables = [
+                r[0]
+                for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                if isinstance(r[0], str) and r[0] and not r[0].startswith("sqlite_")
+            ]
+            for tbl in tables:
+                cols = [r[1] for r in conn.execute(f"PRAGMA table_info(`{tbl}`)").fetchall()]
+                if not cols:
+                    continue
+                if "idx" in cols:
+                    max_idx = conn.execute(f"SELECT MAX(idx) FROM `{tbl}`").fetchone()[0]
+                    tail_row = (
+                        conn.execute(f"SELECT * FROM `{tbl}` WHERE idx=?", (max_idx,)).fetchone()
+                        if max_idx is not None
+                        else None
+                    )
+                    tables_state[tbl] = {
+                        "mode": "idx",
+                        "cols": cols,
+                        "max_idx": max_idx,
+                        "tail_row": tuple(tail_row) if tail_row is not None else None,
+                    }
+                else:
+                    rows = [tuple(r) for r in conn.execute(f"SELECT * FROM `{tbl}`").fetchall()]
+                    tables_state[tbl] = {
+                        "mode": "full",
+                        "cols": cols,
+                        "rows": rows,
+                    }
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.debug("snapshot_conversation_state failed for %s: %s", db_path, exc)
+        return None
+    return {
+        "cid": clean_cid,
+        "tables": tables_state,
+        "summary_row": read_summary_row(cli_base, clean_cid),
+    }
+
+
+def restore_conversation_state(cli_base: str, cid: str, snapshot: Optional[dict]) -> bool:
+    """Roll back ``<cid>.db`` and its summary row to a checkpoint captured by ``snapshot_conversation_state``."""
+    if not isinstance(snapshot, dict) or not cli_base or not isinstance(cli_base, str) or not cid or not isinstance(cid, str):
+        return False
+    clean_cid = cid.strip()
+    db_path = conversation_db(cli_base, clean_cid)
+    if not os.path.exists(db_path):
+        return False
+    tables_state = snapshot.get("tables")
+    if not isinstance(tables_state, dict) or not tables_state:
+        return False
+    try:
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            for tbl, tstate in tables_state.items():
+                if not isinstance(tstate, dict):
+                    continue
+                cols = tstate.get("cols") or []
+                if not cols:
+                    continue
+                col_sql = ",".join(f"`{c}`" for c in cols)
+                val_sql = ",".join("?" for _ in cols)
+                if tstate.get("mode") == "idx":
+                    max_idx = tstate.get("max_idx")
+                    if max_idx is None:
+                        conn.execute(f"DELETE FROM `{tbl}`")
+                    else:
+                        conn.execute(f"DELETE FROM `{tbl}` WHERE idx > ?", (max_idx,))
+                        tail_row = tstate.get("tail_row")
+                        if tail_row is not None:
+                            conn.execute(
+                                f"INSERT OR REPLACE INTO `{tbl}` ({col_sql}) VALUES ({val_sql})",
+                                tail_row,
+                            )
+                else:
+                    conn.execute(f"DELETE FROM `{tbl}`")
+                    for row in tstate.get("rows") or ():
+                        conn.execute(
+                            f"INSERT INTO `{tbl}` ({col_sql}) VALUES ({val_sql})",
+                            row,
+                        )
+            conn.commit()
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("restore_conversation_state failed for %s: %s", db_path, exc)
+        return False
+    summary_row = snapshot.get("summary_row")
+    if isinstance(summary_row, dict):
+        try:
+            upsert_summary_row_dict(cli_base, summary_row)
+            raw_sum = summary_row.get("raw_summary")
+            if raw_sum:
+                for name in SUMMARIES_PB_FILES:
+                    pb_path = os.path.join(cli_base, name)
+                    if os.path.exists(pb_path):
+                        buf, updated = replace_summary_entry(read_bytes_file(pb_path, default=b""), clean_cid, raw_sum)
+                        if updated:
+                            atomic_write_bytes(pb_path, buf)
+        except (sqlite3.Error, OSError):
+            pass
+    return True
+
+
 def _clean_cid_set(cids: Iterable[Any]) -> Set[str]:
     return {
         c.strip()

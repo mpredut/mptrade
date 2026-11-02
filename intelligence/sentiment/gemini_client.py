@@ -15,7 +15,11 @@ import urllib.request
 from botcore import _parse_bool_flag, load_dotenv, required_env
 from intelligence.macro_sentiment_ssot import is_cache_fresh, safe_pos_float
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
-from orchestratorOS.agy.summary_store import delete_threads
+from orchestratorOS.agy.summary_store import (
+    delete_threads,
+    restore_conversation_state,
+    snapshot_conversation_state,
+)
 from orchestratorOS.agy.topics import (
     TopicSession,
     extract_json_object,
@@ -272,10 +276,20 @@ class GeminiClient:
 
                 # Attempt primary model followed by fallback models if CLI call fails
                 models_to_try = self.get_model_candidates(selected_model)
+                conv_snapshot = (
+                    snapshot_conversation_state(bot_cli_base, session.conversation_id)
+                    if (session.conversation_id and not is_mocked)
+                    else None
+                )
 
                 for attempt_idx, model_candidate in enumerate(models_to_try):
                     output, turn_cid = None, None
                     proc = None
+                    pre_attempt_cids = (
+                        self._list_conversation_cids(bot_cli_base)
+                        if (not session.conversation_id and not is_mocked)
+                        else set()
+                    )
                     try:
                         proc = self._execute_cli(
                             session.conversation_id, cli_prompt, timeout_sec, model_candidate,
@@ -283,6 +297,12 @@ class GeminiClient:
                         )
                         output, turn_cid = self._parse_cli_payload(proc)
                     except subprocess.TimeoutExpired:
+                        if not is_mocked:
+                            if session.conversation_id and conv_snapshot is not None:
+                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
+                            elif not session.conversation_id:
+                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
+                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
                         if not (session.conversation_id and not conversation_id):
                             if attempt_idx == len(models_to_try) - 1:
                                 raise
@@ -299,12 +319,25 @@ class GeminiClient:
                             timeout_sec,
                         )
                     except Exception as exc:
+                        if not is_mocked:
+                            if session.conversation_id and conv_snapshot is not None:
+                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
+                            elif not session.conversation_id:
+                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
+                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
                         logger.warning(
                             "Model candidate %s failed with exception: %s; trying fallback.",
                             model_candidate,
                             exc,
                         )
                         continue
+
+                    if output is None and not is_mocked:
+                        if session.conversation_id and conv_snapshot is not None:
+                            restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
+                        elif not session.conversation_id:
+                            for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
+                                self._remove_detached_thread(bot_cli_base, orphan_cid)
 
                     if (
                         output is None
@@ -359,25 +392,39 @@ class GeminiClient:
                                 compacted_ok = False
                                 if session.compact and turn_cid:
                                     compact_timeout = max(timeout_sec, 120.0)
-                                    try:
-                                        c_proc = self._execute_cli(
-                                            turn_cid,
-                                            "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
-                                            compact_timeout,
-                                            model_candidate,
-                                            bot_cli_base,
-                                            run_env,
-                                            is_mocked,
-                                        )
-                                        c_out, c_cid = self._parse_cli_payload(c_proc)
-                                        compacted_ok = bool(c_out or c_cid)
-                                    except Exception as exc:
-                                        logger.warning(
-                                            "In-place /compact for topic '%s' conversation %s failed: %s",
-                                            topic_key,
-                                            turn_cid,
-                                            exc,
-                                        )
+                                    compact_snap = (
+                                        snapshot_conversation_state(bot_cli_base, turn_cid)
+                                        if not is_mocked
+                                        else None
+                                    )
+                                    for compact_model in models_to_try[attempt_idx:]:
+                                        try:
+                                            c_proc = self._execute_cli(
+                                                turn_cid,
+                                                "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
+                                                compact_timeout,
+                                                compact_model,
+                                                bot_cli_base,
+                                                run_env,
+                                                is_mocked,
+                                            )
+                                            c_out, c_cid = self._parse_cli_payload(c_proc)
+                                            compacted_ok = bool(c_out or c_cid)
+                                            if compacted_ok:
+                                                break
+                                            if not is_mocked and compact_snap is not None:
+                                                restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                                        except Exception as exc:
+                                            if not is_mocked and compact_snap is not None:
+                                                restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                                            logger.warning(
+                                                "In-place /compact for topic '%s' conversation %s with model %s failed: %s",
+                                                topic_key,
+                                                turn_cid,
+                                                compact_model,
+                                                exc,
+                                            )
+                                            break
                                 try:
                                     record_topic_turn(
                                         topic_key=topic_key,

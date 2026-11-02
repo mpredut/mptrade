@@ -1718,7 +1718,7 @@ def load_cached_fear_greed_snapshot(
         fg_path = os.path.join(cache_dir, fg_fname)
         try:
             fg_data = read_json_dict_recovering(fg_path)
-            if not isinstance(fg_data, dict):
+            if not isinstance(fg_data, dict) or not fg_data:
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
             fg_cls = _clean_nonbool_str(fg_data.get("classification"), "") or _clean_nonbool_str(fg_data.get("sentiment"), "Neutral")
@@ -1766,7 +1766,7 @@ def load_cached_market_breadth_snapshot(
         mb_path = os.path.join(cache_dir, mb_fname)
         try:
             mb_data = read_json_dict_recovering(mb_path)
-            if not isinstance(mb_data, dict):
+            if not isinstance(mb_data, dict) or not mb_data:
                 continue
             raw_adv = mb_data.get("advancing_count") if mb_data.get("advancing_count") is not None else mb_data.get("advancing")
             raw_dec = mb_data.get("declining_count") if mb_data.get("declining_count") is not None else mb_data.get("declining")
@@ -1801,7 +1801,7 @@ def load_cached_whale_telemetry(
             safe_sym = clean_symbol_key(cand_sym)
             if safe_sym:
                 cand_w = read_json_dict_recovering(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
-                if isinstance(cand_w, dict):
+                if isinstance(cand_w, dict) and cand_w:
                     return cand_w
     return None
 

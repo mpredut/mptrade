@@ -1002,6 +1002,95 @@ def test_order_actor_resolution_and_recent_fills_tagging():
     assert res["last_sell"]["actor"] == "BOT"
 
 
+def test_conversation_state_snapshot_and_rollback_and_cache_empty_dict_skip(tmp_path):
+    """Verify failed model attempts and failed /compact steps are rolled back from <cid>.db and empty {} cache files are skipped."""
+    import sqlite3
+    from orchestratorOS.agy.summary_store import (
+        conversation_db,
+        read_summary_row,
+        restore_conversation_state,
+        snapshot_conversation_state,
+        summaries_db,
+    )
+    from intelligence.macro_sentiment_ssot import (
+        load_cached_fear_greed_snapshot,
+        load_cached_market_breadth_snapshot,
+        load_cached_whale_telemetry,
+    )
+
+    cli_base = str(tmp_path / "bot_cli")
+    conv_dir = tmp_path / "bot_cli" / "conversations"
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    cid = "cid-rollback-test"
+    c_path = conversation_db(cli_base, cid)
+
+    conn = sqlite3.connect(c_path)
+    conn.execute("CREATE TABLE `steps` (`idx` integer PRIMARY KEY, `step_type` integer, `step_payload` blob)")
+    conn.execute("CREATE TABLE `gen_metadata` (`idx` integer PRIMARY KEY, `data` blob, `size` integer)")
+    conn.execute("CREATE TABLE `trajectory_metadata_blob` (`id` text PRIMARY KEY, `data` blob)")
+    conn.execute("INSERT INTO `steps` VALUES (0, 14, ?), (1, 15, ?)", (b"prompt-0", b"reply-0"))
+    conn.execute("INSERT INTO `gen_metadata` VALUES (0, ?, 10)", (b"meta-0",))
+    conn.execute("INSERT INTO `trajectory_metadata_blob` VALUES ('main', ?)", (b"blob-v1",))
+    conn.commit()
+    conn.close()
+
+    s_conn = sqlite3.connect(summaries_db(cli_base))
+    s_conn.execute(
+        "CREATE TABLE conversation_summaries (conversation_id text primary key, title text, step_count integer, raw_summary blob)"
+    )
+    s_conn.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?)", (cid, "Topic Title", 2, b"raw-v1"))
+    s_conn.commit()
+    s_conn.close()
+
+    snap = snapshot_conversation_state(cli_base, cid)
+    assert snap is not None
+
+    # Simulate failed model attempt polluting <cid>.db and conversation_summaries.db
+    conn = sqlite3.connect(c_path)
+    conn.execute(
+        "INSERT INTO `steps` VALUES (2, 14, ?), (3, 101, ?), (4, 17, ?)",
+        (b"duplicate-80kb-prompt", b"header", b"RESOURCE_EXHAUSTED"),
+    )
+    conn.execute("INSERT INTO `gen_metadata` VALUES (1, ?, 99)", (b"meta-polluted",))
+    conn.execute("UPDATE `trajectory_metadata_blob` SET data=? WHERE id='main'", (b"blob-polluted",))
+    conn.commit()
+    conn.close()
+
+    s_conn = sqlite3.connect(summaries_db(cli_base))
+    s_conn.execute("UPDATE conversation_summaries SET step_count=5, raw_summary=? WHERE conversation_id=?", (b"raw-polluted", cid))
+    s_conn.commit()
+    s_conn.close()
+
+    assert restore_conversation_state(cli_base, cid, snap) is True
+
+    conn = sqlite3.connect(c_path)
+    steps_after = conn.execute("SELECT idx, step_type, step_payload FROM steps ORDER BY idx").fetchall()
+    gen_after = conn.execute("SELECT idx, data FROM gen_metadata ORDER BY idx").fetchall()
+    blob_after = conn.execute("SELECT data FROM trajectory_metadata_blob WHERE id='main'").fetchone()[0]
+    conn.close()
+
+    assert steps_after == [(0, 14, b"prompt-0"), (1, 15, b"reply-0")]
+    assert gen_after == [(0, b"meta-0")]
+    assert blob_after == b"blob-v1"
+    s_row = read_summary_row(cli_base, cid)
+    assert s_row is not None and s_row["step_count"] == 2 and s_row["raw_summary"] == b"raw-v1"
+
+    # Verify empty {} JSON files return None instead of fabricating synthetic 50 / 0.5 snapshots, and skip to next symbol
+    cache_dir = tmp_path / "cache_test"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "fear_greed_collect.json").write_text("{}")
+    assert load_cached_fear_greed_snapshot(str(cache_dir)) is None
+
+    (cache_dir / "market_breadth_collect.json").write_text("{}")
+    assert load_cached_market_breadth_snapshot(str(cache_dir)) is None
+
+    (cache_dir / "whale_snapshot_BTCUSDC.json").write_text("{}")
+    (cache_dir / "whale_snapshot_BTCUSDT.json").write_text(json.dumps({"long_ratio": 0.64}))
+    w_snap = load_cached_whale_telemetry(str(cache_dir), symbols=["BTCUSDC", "BTCUSDT"])
+    assert w_snap == {"long_ratio": 0.64}
+
+
+
 
 
 
