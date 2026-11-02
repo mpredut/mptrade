@@ -447,7 +447,10 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
                         issues.append(f"{cfg_name}:{idx} malformed line missing '=': {line[:60]!r}")
                         continue
                     k, v = line.split("=", 1)
-                    if not (k_clean := k.strip().lower()):
+                    k_raw = k.strip()
+                    if k_raw.startswith("export "):
+                        k_raw = k_raw[len("export "):].strip()
+                    if not (k_clean := k_raw.lower()):
                         issues.append(f"{cfg_name}:{idx} empty key name")
                     else:
                         seen_keys[k_clean] = v.strip().strip("\"'")

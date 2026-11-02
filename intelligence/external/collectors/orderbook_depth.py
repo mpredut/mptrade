@@ -291,6 +291,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         super().__init__(cache_ttl_sec, 5.0, cache_dir, disk_ttl_sec, 60.0)
         self.depth_band_pct = safe_pos_float(depth_band_pct, default=1.5) or 1.5
         self.whale_wall_usd = safe_pos_float(whale_wall_usd, default=500_000.0) or 500_000.0
+        self._preferred_url: Dict[str, str] = {}
 
     def fetch(
         self,
@@ -318,10 +319,16 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 if (usdc_sym and usdc_sym != lookup_sym)
                 else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
             )
-            urls = (
+            base_urls = (
                 *spot_urls,
                 f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
                 f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+            )
+            pref_url = self._preferred_url.get(symbol)
+            urls = (
+                (pref_url, *(u for u in base_urls if u != pref_url))
+                if (pref_url and pref_url in base_urls)
+                else base_urls
             )
             for url in urls:
                 try:
@@ -338,6 +345,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         else:
                             raise ValueError(f"Empty Kraken depth result for {kraken_pair}")
                     data = raw_data
+                    self._preferred_url[symbol] = url
                     break
                 except Exception as url_exc:
                     last_err = url_exc

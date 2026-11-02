@@ -283,6 +283,19 @@ def check_cooldown_gate(
     return True
 
 
+_ACTIVE_BOUNDED_STEPS: Dict[str, threading.Thread] = {}
+_ACTIVE_BOUNDED_LOCK = threading.Lock()
+
+
+def compute_step_retry_ts(last_ts: float, current_ts: float, interval_sec: float) -> float:
+    """Compute a bounded retry timestamp after a failed/timed-out step to prevent 1s poll hammering."""
+    itv = safe_pos_float(interval_sec, 0.0)
+    if itv <= 0.0:
+        return last_ts
+    retry_delay = min(itv, max(5.0, itv * 0.25))
+    return max(safe_nonneg_ts(last_ts, 0.0), current_ts - itv + retry_delay)
+
+
 def run_step_bounded(
     fn: Callable[..., Any],
     *args: Any,
@@ -293,6 +306,12 @@ def run_step_bounded(
     """Execute ``fn(*args)`` in a daemon thread so a hung socket/DNS read cannot freeze the daemon."""
     log = logger_inst or logger
     timeout_f = safe_pos_float(timeout_sec, 15.0)
+    with _ACTIVE_BOUNDED_LOCK:
+        existing = _ACTIVE_BOUNDED_STEPS.get(label)
+        if existing is not None and existing.is_alive():
+            log.warning("Step '%s' still running from previous timeout; skipping duplicate execution.", label)
+            return False
+
     outcome: List[bool] = [False]
     err_holder: List[BaseException] = []
 
@@ -301,8 +320,14 @@ def run_step_bounded(
             outcome[0] = bool(fn(*args))
         except BaseException as exc:
             err_holder.append(exc)
+        finally:
+            with _ACTIVE_BOUNDED_LOCK:
+                if _ACTIVE_BOUNDED_STEPS.get(label) is threading.current_thread():
+                    _ACTIVE_BOUNDED_STEPS.pop(label, None)
 
     t = threading.Thread(target=_target, name=f"step-{label}", daemon=True)
+    with _ACTIVE_BOUNDED_LOCK:
+        _ACTIVE_BOUNDED_STEPS[label] = t
     t.start()
     t.join(timeout=timeout_f)
     if t.is_alive():
@@ -548,9 +573,9 @@ class ExternalTelemetryMixin:
         if getattr(self, "skip_external", False):
             return
         steps = (
-            ("orderbook_updated", "_last_orderbook_ts", self.orderbook_interval_sec, self.update_orderbook, 10.0, "ob"),
-            ("derivatives_updated", "_last_derivatives_ts", self.derivatives_interval_sec, self.update_derivatives, 12.0, "deriv"),
-            ("whale_updated", "_last_whale_ts", self.whale_interval_sec, self.update_whale, 15.0, "whale"),
+            ("orderbook_updated", "_last_orderbook_ts", self.orderbook_interval_sec, self.update_orderbook, 15.0, "ob"),
+            ("derivatives_updated", "_last_derivatives_ts", self.derivatives_interval_sec, self.update_derivatives, 15.0, "deriv"),
+            ("whale_updated", "_last_whale_ts", self.whale_interval_sec, self.update_whale, 18.0, "whale"),
         )
         for sym in getattr(self, "symbols", ()):
             for res_key, ts_attr, interval_sec, fn, timeout_s, lbl_prefix in steps:
@@ -564,6 +589,8 @@ class ExternalTelemetryMixin:
                     if ok:
                         results[res_key] += 1
                         ts_map[sym] = current_ts
+                    elif bounded:
+                        ts_map[sym] = compute_step_retry_ts(ts_map.get(sym, 0.0), current_ts, interval_sec)
             if on_symbol_done is not None:
                 on_symbol_done()
 

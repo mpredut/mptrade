@@ -22,6 +22,7 @@ from botcore import _parse_bool_flag, load_dotenv
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
+    compute_step_retry_ts,
     detect_active_binance_symbols,
     is_interval_due,
     parse_symbol_list,
@@ -210,17 +211,27 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if self._run_step_bounded(self.update_news, force, timeout_sec=15.0, label="news"):
                 results["news_updated"] = True
                 self._last_news_ts = current_ts
+            else:
+                self._last_news_ts = compute_step_retry_ts(self._last_news_ts, current_ts, self.news_interval_sec)
             self.write_heartbeat(results)
 
         if is_interval_due(current_ts, self._last_fear_greed_ts, self.fear_greed_interval_sec, force=force):
             if self._run_step_bounded(self.update_fear_greed, force, timeout_sec=12.0, label="fear_greed"):
                 results["fear_greed_updated"] = True
                 self._last_fear_greed_ts = current_ts
+            else:
+                self._last_fear_greed_ts = compute_step_retry_ts(
+                    self._last_fear_greed_ts, current_ts, self.fear_greed_interval_sec
+                )
 
         if is_interval_due(current_ts, self._last_breadth_ts, self.breadth_interval_sec, force=force):
             if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
                 results["breadth_updated"] = True
                 self._last_breadth_ts = current_ts
+            else:
+                self._last_breadth_ts = compute_step_retry_ts(
+                    self._last_breadth_ts, current_ts, self.breadth_interval_sec
+                )
 
         if not self.skip_external and is_interval_due(
             current_ts, self._last_macro_benchmarks_ts, self.macro_benchmarks_interval_sec, force=force
@@ -228,6 +239,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             if self._run_step_bounded(self.update_macro_benchmarks, force, timeout_sec=15.0, label="macro_benchmarks"):
                 results["macro_benchmarks_updated"] = True
                 self._last_macro_benchmarks_ts = current_ts
+            else:
+                self._last_macro_benchmarks_ts = compute_step_retry_ts(
+                    self._last_macro_benchmarks_ts, current_ts, self.macro_benchmarks_interval_sec
+                )
 
         if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
             logger.info("Global telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())

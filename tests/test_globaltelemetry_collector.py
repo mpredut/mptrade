@@ -163,3 +163,80 @@ def test_collector_bounded_step_timeout_still_writes_heartbeat(temp_cache_dir):
     collector.write_heartbeat({"ts": time.time(), "symbols": ["BTCUSDC"]})
     assert os.path.exists(hb_path)
 
+
+def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
+    import threading
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+
+    collector = GlobalTelemetryCollector(
+        symbols=["HYPEUSD"],
+        cache_dir=temp_cache_dir,
+        orderbook_interval_sec=60.0,
+        derivatives_interval_sec=60.0,
+        whale_interval_sec=60.0,
+    )
+
+    gate = threading.Event()
+    calls = 0
+
+    def blocked_step():
+        nonlocal calls
+        calls += 1
+        gate.wait(timeout=2.0)
+        return True
+
+    try:
+        assert collector._run_step_bounded(blocked_step, timeout_sec=0.05, label="overlap_test") is False
+        # While the first timed-out thread is still alive, a second call with the same label must not spawn a duplicate thread
+        assert collector._run_step_bounded(blocked_step, timeout_sec=0.05, label="overlap_test") is False
+        assert calls == 1
+    finally:
+        gate.set()
+
+    # Verify failed step applies retry backoff instead of retrying 1s later
+    with patch.object(collector, "update_orderbook", return_value=False) as mock_ob, \
+         patch.object(collector, "update_derivatives", return_value=True), \
+         patch.object(collector, "update_whale", return_value=True), \
+         patch.object(collector, "update_news", return_value=True), \
+         patch.object(collector, "update_fear_greed", return_value=True), \
+         patch.object(collector, "update_market_breadth", return_value=True), \
+         patch.object(collector, "update_macro_benchmarks", return_value=True):
+        collector.run_cycle(force=False, now=1000.0)
+        assert mock_ob.call_count == 1
+        # 1 second later (now=1001.0), orderbook must still be in backoff (15s for 60s interval)
+        collector.run_cycle(force=False, now=1001.0)
+        assert mock_ob.call_count == 1
+        # 16 seconds later (now=1016.0), retry backoff has elapsed and it retries
+        collector.run_cycle(force=False, now=1016.0)
+        assert mock_ob.call_count == 2
+
+    # Verify OrderbookDepthCollector remembers the working URL per symbol after fallback
+    ob_col = OrderbookDepthCollector(cache_dir=temp_cache_dir, cache_ttl_sec=0.0, disk_ttl_sec=0.0)
+    urls_called = []
+
+    def fake_fetch_json(url, label, lookup_sym, **kwargs):
+        urls_called.append(url)
+        if "api.binance.com" in url:
+            raise RuntimeError("HTTP 400 Invalid symbol")
+        return {
+            "result": {
+                "HYPEUSD": {
+                    "bids": [["20.0", "10.0"]],
+                    "asks": [["20.1", "10.0"]],
+                }
+            }
+        }
+
+    with patch.object(ob_col, "_fetch_json_dict", side_effect=fake_fetch_json):
+        s1 = ob_col.fetch("HYPEUSD", allow_network=True, now=1000.0)
+        assert s1 is not None
+        assert len(urls_called) == 3  # HYPEUSDC spot, HYPEUSDT spot, then Kraken HYPEUSD
+        assert "api.kraken.com" in urls_called[-1]
+
+        urls_called.clear()
+        s2 = ob_col.fetch("HYPEUSD", allow_network=True, now=1010.0)
+        assert s2 is not None
+        assert len(urls_called) == 1  # Goes straight to preferred Kraken URL on subsequent fetch!
+        assert "api.kraken.com" in urls_called[0]
+
+
