@@ -610,7 +610,14 @@ def last_store_activity() -> float:
     return newest
 
 
-def mode_ui_sync_check(idle_sec: int) -> int:
+def daemon_started_at() -> float:
+    """Epoch timestamp when the current daemon instance started (from its cli-YYYYMMDD_HHMMSS.log filename)."""
+    if not os.path.isdir(LOGS):
+        return 0.0
+    return max((log_started_at(lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))), default=0.0)
+
+
+def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
     idle_sec_f = safe_pos_float(idle_sec, default=None)
     if idle_sec_f is None:
         raise ValueError(f"--idle-sec must be > 0, got {idle_sec}")
@@ -621,7 +628,15 @@ def mode_ui_sync_check(idle_sec: int) -> int:
     if not entries:
         discard_generation_file(UI_SYNC_STATE, include_previous=True)
         return UI_SYNC_NOTHING
-    idle_for = time.time() - last_store_activity()
+    now = time.time()
+    min_itv_f = safe_pos_float(min_interval_sec, default=0.0) or 0.0
+    if min_itv_f > 0.0:
+        started_ts = daemon_started_at()
+        uptime_for = now - started_ts if started_ts > 0.0 else min_itv_f
+        if 0.0 <= uptime_for < max(0.0, min_itv_f - 30.0):
+            log.info("ui-sync-check: %d pending, daemon uptime %.0fs (< %gs cadence); waiting", len(entries), uptime_for, min_itv_f)
+            return UI_SYNC_BUSY
+    idle_for = now - last_store_activity()
     if idle_for < idle_sec_f:
         log.info("ui-sync-check: %d pending, store active %.0fs ago (< %gs); waiting", len(entries), idle_for, idle_sec_f)
         return UI_SYNC_BUSY
@@ -631,7 +646,7 @@ def mode_ui_sync_check(idle_sec: int) -> int:
         log.warning("ui-sync-check: same %d pending entries persisted after the last restart; not restarting again: %s",
                     len(entries), entries[:5])
         return UI_SYNC_STUCK
-    save_json_state(UI_SYNC_STATE, {"fingerprint": fingerprint, "ts": time.time(), "entries": entries}, indent=1)
+    save_json_state(UI_SYNC_STATE, {"fingerprint": fingerprint, "ts": now, "entries": entries}, indent=1)
     log.info("ui-sync-check: restart due (%d pending, idle %.0fs): %s", len(entries), idle_for, entries[:10])
     return UI_SYNC_READY
 
@@ -665,7 +680,10 @@ def main(argv) -> int:
             if mode == "ui-sync-check":
                 if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
                     raise ValueError("ui-sync-check requires --idle-sec <seconds>")
-                return mode_ui_sync_check(float(argv[argv.index("--idle-sec") + 1]))
+                min_itv = 0.0
+                if "--min-interval-sec" in argv and argv.index("--min-interval-sec") + 1 < len(argv):
+                    min_itv = safe_pos_float(argv[argv.index("--min-interval-sec") + 1], default=0.0) or 0.0
+                return mode_ui_sync_check(float(argv[argv.index("--idle-sec") + 1]), min_interval_sec=min_itv)
             print(__doc__)
             return 1
         except Exception:

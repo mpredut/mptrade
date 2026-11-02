@@ -150,16 +150,17 @@ do_status() {
 do_ui_sync() {
     exec 200>"$LOCK_FILE"
     flock -w 10 200 || exit 0
-    local idle_sec rc=0
+    local idle_sec min_interval_sec rc=0
     idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
     if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
         log "ERROR: AGY_UI_SYNC_IDLE_SEC missing or invalid in config.env ('$idle_sec')" >&2
         exit 1
     fi
+    min_interval_sec="$(/usr/bin/python3 -c "import sys; sys.path.insert(0, '$ROOT'); from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; print(int(resolve_derived_telemetry_intervals()['ui_sync_interval_sec']))" 2>/dev/null || echo 720)"
     is_active || exit 0
-    /usr/bin/python3 "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" >/dev/null 2>&1 || rc=$?
+    /usr/bin/python3 "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" --min-interval-sec "$min_interval_sec" >/dev/null 2>&1 || rc=$?
     case "$rc" in
-        0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s; restarting to surface threads."
+        0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s (cadence >= ${min_interval_sec}s); restarting to surface threads."
             do_restart ;;
         10|11|12|3) ;;
         *)  log "WARNING: ui-sync-check failed (rc=$rc); see ~/agy_store_fix.log" >&2 ;;

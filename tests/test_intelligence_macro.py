@@ -884,6 +884,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         base_itvs = resolve_derived_telemetry_intervals(executor_interval_sec=360.0)
         assert base_itvs["crypto_executor_interval_sec"] == 360.0
         assert base_itvs["share_executor_interval_sec"] == 720.0
+        assert base_itvs["ui_sync_interval_sec"] == 720.0
         assert base_itvs["orderbook_interval_sec"] == 15.0
         assert base_itvs["derivatives_interval_sec"] == 30.0
         assert base_itvs["whale_interval_sec"] == 60.0
@@ -910,6 +911,7 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         scaled_itvs = resolve_derived_telemetry_intervals()
         assert scaled_itvs["crypto_executor_interval_sec"] == 600.0
         assert scaled_itvs["share_executor_interval_sec"] == 1200.0
+        assert scaled_itvs["ui_sync_interval_sec"] == 1200.0
         assert scaled_itvs["orderbook_interval_sec"] == 25.0
         assert scaled_itvs["derivatives_interval_sec"] == 50.0
         assert scaled_itvs["whale_interval_sec"] == 100.0

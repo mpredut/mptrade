@@ -240,7 +240,13 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
         "I1026 10:05:01.000000 4 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels\n"
     )
     assert len(asf.pending_ui_sync()) == 3
-    assert asf.mode_ui_sync_check(900) == asf.UI_SYNC_READY
+    # When daemon just started (< 720s cadence), min_interval_sec defers the restart
+    recent_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() - 180))
+    recent_log = log_dir / f"cli-{recent_stamp}.log"
+    recent_log.write_text("I1102 23:00:00.000000 1 remote_control_v2.go:2056] Connection status: Connected\n")
+    assert asf.mode_ui_sync_check(120, min_interval_sec=720.0) == asf.UI_SYNC_BUSY
+    os.remove(recent_log)
+    assert asf.mode_ui_sync_check(900, min_interval_sec=720.0) == asf.UI_SYNC_READY
 
 
 
