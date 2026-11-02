@@ -13,8 +13,8 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     safe_float,
     safe_nonneg_ts,
-    safe_pos_float,
 )
+from providers.base import extract_timestamp_s
 
 logger = logging.getLogger("intelligence.sentiment.fear_greed")
 
@@ -41,20 +41,14 @@ class FearGreedCollector:
         endpoint_url: Optional[str] = None,
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 900.0)
-        self.endpoint_url = (
-            endpoint_url.strip()
-            if isinstance(endpoint_url, str) and endpoint_url.strip()
-            else get_fear_greed_endpoint_url()
-        )
+        self.endpoint_url = (endpoint_url or "").strip() or get_fear_greed_endpoint_url()
         self._cached_snapshot: Optional[FearGreedSnapshot] = None
         self._last_fetch_ts: float = 0.0
 
     @staticmethod
     def parse_payload(payload: Dict[str, Any]) -> Optional[FearGreedSnapshot]:
         """Parse raw JSON response payload into a FearGreedSnapshot."""
-        if not isinstance(payload, dict):
-            return None
-        data = payload.get("data")
+        data = payload.get("data") if isinstance(payload, dict) else None
         if not data or not isinstance(data, list) or not isinstance(data[0], dict):
             return None
 
@@ -63,19 +57,14 @@ class FearGreedCollector:
         if val_f is None:
             return None
         val = max(0, min(100, int(round(val_f))))
-
         raw_cls = current.get("value_classification")
         classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
-        ts_f = safe_pos_float(current.get("timestamp"), default=0.0) or 0.0
-        ts = (ts_f / 1000.0 if ts_f > 1e11 else ts_f) if ts_f > 0 else time.time()
-
-        history: list[int] = []
-        for item in data:
-            if isinstance(item, dict):
-                v_f = safe_float(item.get("value"), default=None)
-                if v_f is not None:
-                    history.append(max(0, min(100, int(round(v_f)))))
-
+        ts = extract_timestamp_s(current) or time.time()
+        history = [
+            max(0, min(100, int(round(v_f))))
+            for item in data
+            if isinstance(item, dict) and (v_f := safe_float(item.get("value"), default=None)) is not None
+        ]
         trend_7d = (history[0] - history[6]) if len(history) >= 7 else ((history[0] - history[-1]) if len(history) > 1 else 0)
 
         return FearGreedSnapshot(
@@ -91,19 +80,13 @@ class FearGreedCollector:
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
         """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
         now = resolve_now_ts(now_ts)
-        if self._cached_snapshot and is_cache_fresh(
-            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
-        ):
+        if self._cached_snapshot and is_cache_fresh(self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh):
             return self._cached_snapshot
-
         try:
-            data = fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0")
-            snapshot = self.parse_payload(data)
+            snapshot = self.parse_payload(fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0"))
             if snapshot:
-                self._cached_snapshot = snapshot
-                self._last_fetch_ts = now
+                self._cached_snapshot, self._last_fetch_ts = snapshot, now
                 return snapshot
         except Exception as e:
             logger.warning("Failed to fetch Fear & Greed Index: %s. Using cached fallback if available.", e)
-
         return self._cached_snapshot

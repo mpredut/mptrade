@@ -13,7 +13,7 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 import os
@@ -564,59 +564,44 @@ class ExternalTelemetryMixin:
             if on_symbol_done is not None:
                 on_symbol_done()
 
-    def update_orderbook(self, symbol: str) -> bool:
-        """Fetch spot orderbook depth and update disk snapshot."""
+    def _fetch_and_log(self, collector: Any, symbol: str, err_label: str, fmt_msg: str, *attr_specs: Any) -> bool:
         log = getattr(self, "_telemetry_logger", logger)
         try:
-            snap = self.orderbook_collector.fetch(symbol, allow_network=True)
+            snap = collector.fetch(symbol, allow_network=True)
             if snap:
-                log.debug(
-                    "[%s] Orderbook updated: mid=%.2f, bid_depth=$%.0f, ask_depth=$%.0f, imbalance=%.2f",
-                    symbol,
-                    obj_float(snap, "mid_price"),
-                    obj_float(snap, "bid_depth_usd"),
-                    obj_float(snap, "ask_depth_usd"),
-                    obj_float(snap, "imbalance_ratio"),
-                )
+                vals = [
+                    obj_attr(snap, spec[0], spec[1]) if isinstance(spec, tuple) else obj_float(snap, spec)
+                    for spec in attr_specs
+                ]
+                log.debug(fmt_msg, symbol, *vals)
                 return True
         except Exception as exc:
-            log.warning("[%s] Failed updating orderbook: %s", symbol, exc)
+            log.warning("[%s] Failed updating %s: %s", symbol, err_label, exc)
         return False
+
+    def update_orderbook(self, symbol: str) -> bool:
+        """Fetch spot orderbook depth and update disk snapshot."""
+        return self._fetch_and_log(
+            self.orderbook_collector, symbol, "orderbook",
+            "[%s] Orderbook updated: mid=%.2f, bid_depth=$%.0f, ask_depth=$%.0f, imbalance=%.2f",
+            "mid_price", "bid_depth_usd", "ask_depth_usd", "imbalance_ratio",
+        )
 
     def update_derivatives(self, symbol: str) -> bool:
         """Fetch perpetual derivatives funding rate & OI and update disk snapshot."""
-        log = getattr(self, "_telemetry_logger", logger)
-        try:
-            tel = self.derivatives_collector.fetch(symbol, allow_network=True)
-            if tel:
-                log.debug(
-                    "[%s] Derivatives updated: funding=%.6f, OI=$%.0f",
-                    symbol,
-                    obj_float(tel, "funding_rate"),
-                    obj_float(tel, "open_interest_usd"),
-                )
-                return True
-        except Exception as exc:
-            log.warning("[%s] Failed updating derivatives: %s", symbol, exc)
-        return False
+        return self._fetch_and_log(
+            self.derivatives_collector, symbol, "derivatives",
+            "[%s] Derivatives updated: funding=%.6f, OI=$%.0f",
+            "funding_rate", "open_interest_usd",
+        )
 
     def update_whale(self, symbol: str) -> bool:
         """Fetch whale positioning & OI divergence and update disk snapshot."""
-        log = getattr(self, "_telemetry_logger", logger)
-        try:
-            snap = self.whale_collector.fetch(symbol, allow_network=True)
-            if snap:
-                log.debug(
-                    "[%s] Whale positioning updated: top_ratio=%.2f, taker_ratio=%.2f, regime=%s",
-                    symbol,
-                    obj_float(snap, "top_traders_long_ratio"),
-                    obj_float(snap, "taker_buy_sell_ratio"),
-                    obj_attr(snap, "divergence_regime", "NEUTRAL"),
-                )
-                return True
-        except Exception as exc:
-            log.warning("[%s] Failed updating whale positioning: %s", symbol, exc)
-        return False
+        return self._fetch_and_log(
+            self.whale_collector, symbol, "whale positioning",
+            "[%s] Whale positioning updated: top_ratio=%.2f, taker_ratio=%.2f, regime=%s",
+            "top_traders_long_ratio", "taker_buy_sell_ratio", ("divergence_regime", "NEUTRAL"),
+        )
 
 
 # ============================================================================
@@ -626,23 +611,19 @@ class ExternalTelemetryMixin:
 def _split_csv(raw: str, *, lower: bool = False, upper: bool = False) -> Tuple[str, ...]:
     items: List[str] = []
     for part in re.split(r"[,\n]+", raw or ""):
-        cleaned = part.strip()
-        if not cleaned:
-            continue
-        cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
-        if cleaned not in items:
-            items.append(cleaned)
+        if cleaned := part.strip():
+            cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
+            if cleaned not in items:
+                items.append(cleaned)
     return tuple(items)
 
 
 def _parse_kv_map(raw: str) -> Dict[str, str]:
-    mapping: Dict[str, str] = {}
-    for item in _split_csv(raw, upper=True):
-        if ":" in item:
-            k, v = item.split(":", 1)
-            if k.strip() and v.strip():
-                mapping[k.strip()] = v.strip()
-    return mapping
+    return {
+        k.strip(): v.strip()
+        for item in _split_csv(raw, upper=True)
+        if ":" in item and (k := item.split(":", 1)[0]).strip() and (v := item.split(":", 1)[1]).strip()
+    }
 
 
 def load_macro_intelligence_config(config_path: Optional[str] = None) -> configparser.ConfigParser:
@@ -680,28 +661,32 @@ def _cfg_int(section: str, key: str, fallback: int) -> int:
     return safe_int(_cfg_str(section, key, ""), fallback)
 
 
+def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:
+    return _split_csv(_cfg_str("taxonomies", key), lower=lower, upper=not lower)
+
+
 def get_market_biases() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "market_biases"), upper=True)
+    return _tax_tuple("market_biases")
 
 
 def get_risk_levels() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "risk_levels"), upper=True)
+    return _tax_tuple("risk_levels")
 
 
 def get_recommended_actions() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "recommended_actions"), upper=True)
+    return _tax_tuple("recommended_actions")
 
 
 def get_breadth_regimes() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "breadth_regimes"), upper=True)
+    return _tax_tuple("breadth_regimes")
 
 
 def get_threat_levels() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "threat_levels"), upper=True)
+    return _tax_tuple("threat_levels")
 
 
 def get_recommended_brakes() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "recommended_brakes"), upper=True)
+    return _tax_tuple("recommended_brakes")
 
 
 MARKET_BIASES: Tuple[str, ...] = get_market_biases()
@@ -734,11 +719,11 @@ def get_market_breadth_endpoint_url() -> str:
 
 
 def get_breadth_excluded_bases() -> Set[str]:
-    return set(_split_csv(_cfg_str("taxonomies", "breadth_excluded_bases"), upper=True))
+    return set(_tax_tuple("breadth_excluded_bases"))
 
 
 def get_breadth_quote_suffixes() -> Tuple[str, ...]:
-    return _split_csv(_cfg_str("taxonomies", "breadth_quote_suffixes"), upper=True)
+    return _tax_tuple("breadth_quote_suffixes")
 
 
 def get_breadth_min_volume_usd() -> float:
@@ -763,9 +748,7 @@ def _normalize_taxonomy(
 ) -> str:
     fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
     cleaned = str(value or "").strip().upper()
-    if cleaned in allowed:
-        return cleaned
-    return _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
+    return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
 
 
 def normalize_market_bias(value: Any, default: Optional[str] = None) -> str:
@@ -789,16 +772,12 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
     cleaned = str(value or "").strip().upper()
     if cleaned in brakes:
         return cleaned
-    aliases = _parse_kv_map(_cfg_str("taxonomies", "brake_aliases"))
-    if cleaned in aliases:
-        return aliases[cleaned]
+    if (aliased := _parse_kv_map(_cfg_str("taxonomies", "brake_aliases")).get(cleaned)) is not None:
+        return aliased
     levels = get_threat_levels()
     norm_threat = normalize_threat_level(threat_level)
-    if len(levels) >= 3 and len(brakes) >= 3:
-        if norm_threat == levels[2]:
-            return brakes[2]
-        if norm_threat == levels[1]:
-            return brakes[1]
+    if len(levels) >= 3 and len(brakes) >= 3 and norm_threat in (levels[1], levels[2]):
+        return brakes[2 if norm_threat == levels[2] else 1]
     return brakes[0] if brakes else "NONE"
 
 
@@ -839,20 +818,25 @@ def _get_stopwords_set() -> Set[str]:
     return set(_split_csv(_cfg_str("lexicon_seed", "stopwords"), lower=True))
 
 
+def _get_crisis_stems_set() -> Set[str]:
+    return set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
+
+
+def _get_seed_terms_set() -> Set[str]:
+    return set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
+        _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
+    )
+
+
 def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
     """Return True if ``tok`` is a genuine derivative of a configured crisis stem (avoiding substring false positives)."""
     w = (tok or "").strip().lower()
     if len(w) < 3:
         return False
-    for stem in crisis_stems:
-        allowed = _STEM_EXACT_PREFIX_WHITELIST.get(stem)
-        if allowed is not None:
-            if w in allowed:
-                return True
-            continue
-        if w.startswith(stem):
-            return True
-    return False
+    return any(
+        (w in allowed if (allowed := _STEM_EXACT_PREFIX_WHITELIST.get(stem)) is not None else w.startswith(stem))
+        for stem in crisis_stems
+    )
 
 
 def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -> bool:
@@ -860,26 +844,17 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     if not isinstance(term, str):
         return True
     t = re.sub(r"\s+", " ", term.strip().lower())
-    if len(t) < 4 or t in _NOISE_LEXICON_PHRASES:
-        return True
     sw = stopwords if stopwords is not None else _get_stopwords_set()
-    if t in sw:
+    if len(t) < 4 or t in _NOISE_LEXICON_PHRASES or t in sw:
         return True
     words = re.findall(r"[a-zA-Z]{2,}", t)
-    if not words or any(w in sw for w in words):
-        return True
-    return False
+    return not words or any(w in sw for w in words)
 
 
 def _dynamic_keyword_has_crisis_stem(term: str, crisis_stems: Optional[Set[str]] = None) -> bool:
     """Return True if at least one token in ``term`` matches a configured crisis stem."""
-    stems = (
-        crisis_stems
-        if crisis_stems is not None
-        else set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
-    )
-    words = re.findall(r"[a-zA-Z]{3,}", (term or "").lower())
-    return any(_token_matches_crisis_stem(w, stems) for w in words)
+    stems = crisis_stems if crisis_stems is not None else _get_crisis_stems_set()
+    return any(_token_matches_crisis_stem(w, stems) for w in re.findall(r"[a-zA-Z]{3,}", (term or "").lower()))
 
 
 def filter_valid_severity_keywords(
@@ -890,10 +865,8 @@ def filter_valid_severity_keywords(
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
     """Filter a headline's matched keywords, stripping generic stopword/publisher noise while keeping seed terms."""
-    seed_set = set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
-        _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
-    )
-    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
+    seed_set = _get_seed_terms_set()
+    crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
@@ -1052,8 +1025,7 @@ def discover_dynamic_terms_from_headlines(
     persist: bool = True,
 ) -> Tuple[str, ...]:
     """Extract emerging crisis bigrams/topics that surge across specialized feeds."""
-    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
-    stopwords = _get_stopwords_set()
+    crisis_stems, stopwords = _get_crisis_stems_set(), _get_stopwords_set()
     if not crisis_stems or not headlines:
         return ()
 
@@ -1063,29 +1035,20 @@ def discover_dynamic_terms_from_headlines(
 
     for h in headlines:
         raw_title = obj_attr(h, "title", "")
-        source = obj_attr(h, "source", "")
         if not isinstance(raw_title, str) or not raw_title.strip():
             continue
-        title = _strip_headline_publisher_suffix(raw_title)
-        norm_title = re.sub(r"\s+", " ", title.lower()).strip()
-        raw_words = set(re.findall(r"[a-zA-Z]{3,}", norm_title))
-        eff_stems = (
-            crisis_stems - {"strike"}
-            if (raw_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS)
-            else crisis_stems
-        )
-        tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", norm_title) if tok not in stopwords]
+        norm_title = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(raw_title).lower()).strip()
+        all_words = re.findall(r"[a-zA-Z]{3,}", norm_title)
+        eff_stems = crisis_stems - {"strike"} if (set(all_words) & _NON_CRISIS_STRIKE_CONTEXT_WORDS) else crisis_stems
+        tokens = [tok for tok in all_words if tok not in stopwords]
         if len(tokens) < 2:
             continue
         stem_flags = [_token_matches_crisis_stem(tok, eff_stems) for tok in tokens]
         if not any(stem_flags):
             continue
-        src_key = str(source or "unknown").strip().lower()
+        src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
         for i in range(len(tokens) - 1):
-            # Require the bigram itself or an immediately adjacent token to be a crisis stem
-            win_lo = max(0, i - 1)
-            win_hi = min(len(tokens), i + 3)
-            if not any(stem_flags[win_lo:win_hi]):
+            if not any(stem_flags[max(0, i - 1) : min(len(tokens), i + 3)]):
                 continue
             bigram = f"{tokens[i]} {tokens[i + 1]}"
             if _is_noise_dynamic_keyword(bigram, stopwords):
@@ -1097,8 +1060,7 @@ def discover_dynamic_terms_from_headlines(
     discovered = [
         phrase
         for phrase, count in phrase_counts.items()
-        if len(phrase_headlines.get(phrase, set())) >= 2
-        and (count >= 2 or len(phrase_sources.get(phrase, set())) >= 2)
+        if len(phrase_headlines.get(phrase, set())) >= 2 and (count >= 2 or len(phrase_sources.get(phrase, set())) >= 2)
     ]
     if discovered and persist:
         update_dynamic_lexicon(discovered, cache_dir=cache_dir, source="specialized_feed_salience", now_ts=now_ts)
@@ -1114,19 +1076,15 @@ def record_dynamic_crisis_terms_from_assessment(
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
     """Extract salient crisis phrases from AI geopolitical/sentiment assessments into dynamic lexicon."""
-    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
-    stopwords = _get_stopwords_set()
-
+    crisis_stems, stopwords = _get_crisis_stems_set(), _get_stopwords_set()
     extracted: List[str] = []
-    for text in [str(summary or "")] + [str(r or "") for r in (key_risks or ())]:
+    for text in (str(summary or ""), *(str(r or "") for r in (key_risks or ()))):
         tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", text.lower()) if tok not in stopwords]
-        for i in range(len(tokens) - 1):
-            w1, w2 = tokens[i], tokens[i + 1]
+        for w1, w2 in zip(tokens, tokens[1:]):
             if any(_token_matches_crisis_stem(w, crisis_stems) for w in (w1, w2)):
                 bg = f"{w1} {w2}"
                 if not _is_noise_dynamic_keyword(bg, stopwords) and bg not in extracted:
                     extracted.append(bg)
-
     if extracted:
         update_dynamic_lexicon(
             extracted,
@@ -1143,25 +1101,17 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
     template = _cfg_str("feeds", "dynamic_search_rss_template")
     max_terms = max(4, _cfg_int("feeds", "dynamic_search_max_terms", 16))
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts)
-    prioritized: List[str] = []
-    for t in dyn.get("acute_shock_phrases", ()) + dyn.get("high_severity_terms", ()) + get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts):
-        if t and t not in prioritized:
-            prioritized.append(t)
-        if len(prioritized) >= max_terms:
-            break
-
-    encoded_terms = [urllib.parse.quote_plus(f'"{t}"' if " " in t else t) for t in prioritized[:max_terms]]
+    candidates = (*dyn.get("acute_shock_phrases", ()), *dyn.get("high_severity_terms", ()), *get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts))
+    prioritized = list(dict.fromkeys(t for t in candidates if t))[:max_terms]
+    encoded_terms = [urllib.parse.quote_plus(f'"{t}"' if " " in t else t) for t in prioritized]
     query_str = "+OR+".join(encoded_terms) if encoded_terms else "macro"
     return template.format(query=query_str) if "{query}" in template else template
 
 
 def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
     """Return curated specialized editorial RSS feeds + dynamically built crisis query feed."""
-    urls = list(_split_csv(_cfg_str("feeds", "specialized_rss_urls")))
     dyn_url = build_dynamic_rss_url(cache_dir=cache_dir, now_ts=now_ts)
-    if dyn_url and dyn_url not in urls:
-        urls.append(dyn_url)
-    return tuple(urls)
+    return tuple(dict.fromkeys((*_split_csv(_cfg_str("feeds", "specialized_rss_urls")), *([dyn_url] if dyn_url else []))))
 
 
 HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = get_active_severity_keywords()
@@ -1178,10 +1128,7 @@ def match_high_severity_keywords(
     lower = (text or "").lower()
     if not lower:
         return ()
-    seed_set = set(_split_csv(_cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
-        _split_csv(_cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
-    )
-    crisis_stems = set(_split_csv(_cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
+    seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
     return tuple(
         kw
         for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
@@ -1229,18 +1176,7 @@ class GlobalSessionContext:
     llm_session_guidance: str
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "session_key": self.session_key,
-            "session_label": self.session_label,
-            "eet_time_str": self.eet_time_str,
-            "ny_time_str": self.ny_time_str,
-            "utc_time_str": self.utc_time_str,
-            "is_weekend": self.is_weekend,
-            "is_active_western_session": self.is_active_western_session,
-            "is_peak_transition_window": self.is_peak_transition_window,
-            "trader_flow_profile": self.trader_flow_profile,
-            "llm_session_guidance": self.llm_session_guidance,
-        }
+        return asdict(self)
 
 
 # Declarative intraday weekday session windows in EET minutes:
@@ -1324,11 +1260,15 @@ def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
     return datetime.fromtimestamp(now_ts, tz=timezone(timedelta(hours=fallback_offset_hours)))
 
 
+def _primary_eet_dt(ts: float) -> datetime:
+    return _to_tz(ts, _cfg_str("sessions", "primary_timezone", "Europe/Bucharest"), _cfg_int("sessions", "primary_fallback_offset_hours", 2))
+
+
 def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSessionContext:
     """Resolve current global market session and European/US/Asian trader flow dynamics."""
     ts = resolve_now_ts(now_ts)
     dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
-    dt_eet = _to_tz(ts, _cfg_str("sessions", "primary_timezone", "Europe/Bucharest"), _cfg_int("sessions", "primary_fallback_offset_hours", 2))
+    dt_eet = _primary_eet_dt(ts)
     dt_ny = _to_tz(ts, _cfg_str("sessions", "secondary_timezone", "America/New_York"), _cfg_int("sessions", "secondary_fallback_offset_hours", -5))
 
     eet_str, ny_str, utc_str = dt_eet.strftime("%Y-%m-%d %H:%M %Z"), dt_ny.strftime("%Y-%m-%d %H:%M %Z"), dt_utc.strftime("%Y-%m-%d %H:%M UTC")
@@ -1377,11 +1317,7 @@ def did_cross_session_checkpoint(
     if last_f <= 0.0 or now_f <= last_f or (now_f - last_f) < cooldown_f:
         return None
 
-    primary_tz = _cfg_str("sessions", "primary_timezone", "Europe/Bucharest")
-    p_off = _cfg_int("sessions", "primary_fallback_offset_hours", 2)
-    dt_last = _to_tz(last_f, primary_tz, p_off)
-    dt_now = _to_tz(now_f, primary_tz, p_off)
-
+    dt_last, dt_now = _primary_eet_dt(last_f), _primary_eet_dt(now_f)
     candidate_days = [dt_last.date()] + ([dt_now.date()] if dt_now.date() != dt_last.date() else [])
     crossed_label: Optional[str] = None
     for day in candidate_days:
@@ -1429,9 +1365,7 @@ def resolve_macro_economic_calendar(
     """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
     ts = resolve_now_ts(now_ts)
     session_ctx = resolve_global_trading_session(ts)
-    primary_tz = _cfg_str("sessions", "primary_timezone", "Europe/Bucharest")
-    p_off = _cfg_int("sessions", "primary_fallback_offset_hours", 2)
-    dt_eet = _to_tz(ts, primary_tz, p_off)
+    dt_eet = _primary_eet_dt(ts)
     tz_abbr = dt_eet.strftime("%Z") or "EET"
     windows = get_macro_calendar_windows_eet()
 
@@ -1444,9 +1378,7 @@ def resolve_macro_economic_calendar(
         for hh, mm, code, desc in windows:
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0
-            time_lbl = f"{hh:02d}:{mm:02d} {tz_abbr}"
-            if day_offset > 0:
-                time_lbl = f"{ev_dt.strftime('%a')} {time_lbl}"
+            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
             if -20.0 <= delta_min <= 0.0 and active_window is None:
                 active_window = f"{desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — ACTIVE VOLATILITY WINDOW)"
             elif delta_min > 0.0:
@@ -1456,17 +1388,13 @@ def resolve_macro_economic_calendar(
     next_event = upcoming[0][3] if upcoming else "None scheduled"
     next_code = upcoming[0][1] if upcoming else "NONE"
     next_in_min = round(upcoming[0][0], 1) if upcoming else None
-    upcoming_schedule = [x[3] for x in upcoming[:3]]
 
     macro_kws = get_macro_calendar_headline_keywords()
     detected_macro_headlines: List[str] = []
     if breaking_news and macro_kws:
         for item in breaking_news:
             title = str(obj_attr(item, "title", "") or "").strip()
-            if not title:
-                continue
-            t_low = title.lower()
-            if any(re.search(r"\b" + re.escape(kw) + r"\b", t_low) for kw in macro_kws):
+            if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
                 detected_macro_headlines.append(title)
 
     return {
@@ -1480,11 +1408,10 @@ def resolve_macro_economic_calendar(
         "next_scheduled_event": next_event,
         "next_event_code": next_code,
         "next_event_in_min": next_in_min,
-        "upcoming_windows": upcoming_schedule,
+        "upcoming_windows": [x[3] for x in upcoming[:3]],
         "detected_macro_headlines": detected_macro_headlines[:3],
         "ts": ts,
     }
-
 
 
 # ============================================================================
@@ -1616,6 +1543,30 @@ def compute_dynamic_geopolitical_interval(
 # 5. Unified Cached Telemetry & Assessment Loaders (SSOT)
 # ============================================================================
 
+def read_first_cached_dict(
+    cache_dir: str,
+    group_key: str = "",
+    *extra_filenames: str,
+    read_json_fn: Any = None,
+) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Read and return the first non-empty cached dict and its path from candidate filenames."""
+    reader = read_json_fn if callable(read_json_fn) else read_json_dict_recovering
+    candidates = (*(get_cache_filenames(group_key) if group_key else ()), *extra_filenames)
+    for fname in dict.fromkeys(f for f in candidates if f):
+        path = os.path.join(cache_dir, fname)
+        try:
+            data = reader(path)
+        except Exception:
+            data = None
+        if isinstance(data, dict) and data:
+            return data, path
+    return None, ""
+
+
+def _clean_nonbool_str(val: Any, default: str = "") -> str:
+    return str(val).strip() if (val is not None and not isinstance(val, bool) and str(val).strip()) else default
+
+
 def load_cached_fear_greed_snapshot(
     cache_dir: str,
     now_ts: Optional[float] = None,
@@ -1631,25 +1582,20 @@ def load_cached_fear_greed_snapshot(
             if not isinstance(fg_data, dict):
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
-            raw_cls = fg_data.get("classification")
-            if raw_cls is None or isinstance(raw_cls, bool) or not str(raw_cls).strip():
-                raw_cls = fg_data.get("sentiment")
-            fg_cls = str(raw_cls).strip() if (raw_cls is not None and not isinstance(raw_cls, bool) and str(raw_cls).strip()) else "Neutral"
+            fg_cls = _clean_nonbool_str(fg_data.get("classification"), "") or _clean_nonbool_str(fg_data.get("sentiment"), "Neutral")
             raw_fg_ts = fg_data.get("ts") if fg_data.get("ts") is not None else fg_data.get("timestamp")
-            fg_ts = safe_pos_float(raw_fg_ts, eval_now)
-            fg_t7d = int(round(safe_float(fg_data.get("trend_7d_change"), 0.0)))
             raw_hist = fg_data.get("historical_values") or ()
-            hist_vals = [
-                max(0, min(100, int(round(safe_float(v, -1.0)))))
+            hist_vals = tuple(
+                max(0, min(100, int(round(v_f))))
                 for v in (raw_hist if isinstance(raw_hist, (list, tuple)) else ())
-                if safe_float(v, -1.0) >= 0.0
-            ]
+                if (v_f := safe_float(v, -1.0)) >= 0.0
+            )
             return FearGreedSnapshot(
                 value=fg_val,
                 classification=fg_cls,
-                timestamp=fg_ts,
-                historical_values=tuple(hist_vals),
-                trend_7d_change=fg_t7d,
+                timestamp=safe_pos_float(raw_fg_ts, eval_now),
+                historical_values=hist_vals,
+                trend_7d_change=int(round(safe_float(fg_data.get("trend_7d_change"), 0.0))),
                 is_extreme_fear=_parse_bool_flag(fg_data.get("is_extreme_fear"), fg_val <= 25),
                 is_extreme_greed=_parse_bool_flag(fg_data.get("is_extreme_greed"), fg_val >= 75),
             )
@@ -1665,6 +1611,17 @@ def load_cached_market_breadth_snapshot(
     """Load cached Market Breadth snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
+    def _norm_pairs(items: Any) -> Tuple[Tuple[str, float], ...]:
+        return tuple(
+            (s_clean, safe_float(x[1], 0.0))
+            for x in (items if isinstance(items, (list, tuple)) else ())
+            if isinstance(x, (list, tuple))
+            and len(x) >= 2
+            and x[0] is not None
+            and (s_clean := str(x[0]).strip())
+            and s_clean.isascii()
+        )
+
     eval_now = resolve_now_ts(now_ts)
     for mb_fname in get_cache_filenames("market_breadth_files"):
         mb_path = os.path.join(cache_dir, mb_fname)
@@ -1672,26 +1629,10 @@ def load_cached_market_breadth_snapshot(
             mb_data = read_json_dict_recovering(mb_path)
             if not isinstance(mb_data, dict):
                 continue
-            raw_gainers = mb_data.get("top_gainers") or ()
-            raw_losers = mb_data.get("top_losers") or ()
             raw_adv = mb_data.get("advancing_count") if mb_data.get("advancing_count") is not None else mb_data.get("advancing")
             raw_dec = mb_data.get("declining_count") if mb_data.get("declining_count") is not None else mb_data.get("declining")
             raw_tot = mb_data.get("total_count") if mb_data.get("total_count") is not None else mb_data.get("total_symbols")
-            raw_reg = mb_data.get("regime")
-            mb_regime = str(raw_reg).strip() if (raw_reg is not None and not isinstance(raw_reg, bool) and str(raw_reg).strip()) else "NEUTRAL"
             raw_ts = mb_data.get("ts") if mb_data.get("ts") is not None else mb_data.get("timestamp")
-
-            def _norm_pairs(items: Any) -> Tuple[Tuple[str, float], ...]:
-                return tuple(
-                    (s_clean, safe_float(x[1], 0.0))
-                    for x in (items if isinstance(items, (list, tuple)) else ())
-                    if isinstance(x, (list, tuple))
-                    and len(x) >= 2
-                    and x[0] is not None
-                    and (s_clean := str(x[0]).strip())
-                    and s_clean.isascii()
-                )
-
             return MarketBreadthSnapshot(
                 advance_ratio=safe_float(mb_data.get("advance_ratio"), 0.5),
                 advancing_count=safe_int(raw_adv, 0),
@@ -1700,9 +1641,9 @@ def load_cached_market_breadth_snapshot(
                 median_change_pct=safe_float(mb_data.get("median_change_pct"), 0.0),
                 mean_change_pct=safe_float(mb_data.get("mean_change_pct"), 0.0),
                 dispersion_std=safe_float(mb_data.get("dispersion_std"), 0.0),
-                regime=mb_regime,
-                top_gainers=_norm_pairs(raw_gainers),
-                top_losers=_norm_pairs(raw_losers),
+                regime=_clean_nonbool_str(mb_data.get("regime"), "NEUTRAL"),
+                top_gainers=_norm_pairs(mb_data.get("top_gainers") or ()),
+                top_losers=_norm_pairs(mb_data.get("top_losers") or ()),
                 ts=safe_float(raw_ts, eval_now),
             )
         except Exception as mb_err:
@@ -1717,42 +1658,39 @@ def load_cached_whale_telemetry(
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (list(symbols) if symbols else ["BTCUSDC"]):
-        for cand_sym in ([sym] + [v for v in cache_symbol_variants(sym) if v != sym]):
+        for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
             safe_sym = clean_symbol_key(cand_sym)
-            if not safe_sym:
-                continue
-            w_path = os.path.join(cache_dir, f"{prefix}{safe_sym}.json")
-            cand_w = read_json_dict_recovering(w_path)
-            if isinstance(cand_w, dict):
-                return cand_w
+            if safe_sym:
+                cand_w = read_json_dict_recovering(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
+                if isinstance(cand_w, dict):
+                    return cand_w
     return None
 
 
 def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
-    for fname in get_cache_filenames("sentiment_eval_files"):
-        cand_path = os.path.join(cache_dir, fname)
-        data = read_json_dict_recovering(cand_path)
-        if isinstance(data, dict) and data:
-            norm = dict(data)
-            norm["market_bias"] = normalize_market_bias(data.get("market_bias"))
-            norm["risk_level"] = normalize_risk_level(data.get("risk_level"))
-            norm["recommended_action"] = normalize_recommended_action(data.get("recommended_action"))
-            return norm
+    data, _ = read_first_cached_dict(cache_dir, "sentiment_eval_files")
+    if data:
+        return {
+            **data,
+            "market_bias": normalize_market_bias(data.get("market_bias")),
+            "risk_level": normalize_risk_level(data.get("risk_level")),
+            "recommended_action": normalize_recommended_action(data.get("recommended_action")),
+        }
     return None
 
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
-    cand_path = os.path.join(cache_dir, fname)
-    data = read_json_dict_recovering(cand_path)
-    if isinstance(data, dict) and data:
-        norm = dict(data)
+    data, _ = read_first_cached_dict(cache_dir, "", fname)
+    if data:
         tl = normalize_threat_level(data.get("threat_level"))
-        norm["threat_level"] = tl
-        norm["recommended_brake"] = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl)
-        return norm
+        return {
+            **data,
+            "threat_level": tl,
+            "recommended_brake": normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl),
+        }
     return None
 
 

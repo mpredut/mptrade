@@ -28,7 +28,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     extract_symbol_recent_fills, load_symbol_microstructure, load_symbol_price_series, round_opt_px,
 )
 from instrument_registry import casefold_get
-from providers.base import extract_order_side, normalize_open_order, resolve_order_origin
+from providers.base import extract_order_side, normalize_open_order, normalize_timestamp_ms, resolve_order_origin
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as read_json_cached, read_tail_jsonl_dicts,
@@ -82,17 +82,17 @@ def resolve_venue_fee_and_limits(
     step_size = float(safe_pos_float(params.get("step_size"), default=default_step))
     tick_size = float(safe_pos_float(params.get("tick_size"), default=default_tick))
 
-    # Non-blocking inspection of already-cached provider metadata (Kraken / Hyperliquid / Binance)
     prov = getattr(inst, "_provider", None) if inst is not None else None
     if v_norm == "kraken" and prov is not None:
         sym_u = str(symbol or "").strip().upper()
-        kr_cands: list[str] = []
-        for kc in (symbol, sym_u, clean_symbol_key(sym_u), resolve_kraken_lookup_symbol(sym_u) if "USD" in compatible_quote_suffixes(sym_u) else None):
-            if isinstance(kc, str) and kc and kc not in kr_cands:
-                kr_cands.append(kc)
+        kr_cands = list(
+            dict.fromkeys(
+                kc for kc in (symbol, sym_u, clean_symbol_key(sym_u), resolve_kraken_lookup_symbol(sym_u) if "USD" in compatible_quote_suffixes(sym_u) else None)
+                if isinstance(kc, str) and kc
+            )
+        )
         if isinstance((minqty_map := getattr(prov, "_minqty", None)), dict):
-            if (mq_cached := next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), None)) is not None:
-                min_qty = mq_cached
+            min_qty = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), min_qty)
         client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
         cache_dict = getattr(client, "_CACHE", None)
         if not isinstance(cache_dict, dict):
@@ -100,8 +100,7 @@ def resolve_venue_fee_and_limits(
             cache_dict = getattr(kc_mod, "_CACHE", None)
         if isinstance(cache_dict, dict):
             def _cache_val(ckey: Any) -> Any:
-                hit = cache_dict.get(ckey)
-                return hit[1] if isinstance(hit, tuple) and len(hit) >= 2 else None
+                return hit[1] if isinstance((hit := cache_dict.get(ckey)), tuple) and len(hit) >= 2 else None
 
             p_meta = next((m for kc in kr_cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
             if p_meta is None:
@@ -120,10 +119,8 @@ def resolve_venue_fee_and_limits(
                                 maker_bps = round(fv * 100.0, 2)
                             else:
                                 taker_bps = round(fv * 100.0, 2)
-                if (ord_min := safe_pos_float(p_meta.get("ordermin"), default=None)) is not None:
-                    min_qty = ord_min
-                if (cost_min := safe_pos_float(p_meta.get("costmin"), default=None)) is not None:
-                    min_notional = cost_min
+                min_qty = safe_pos_float(p_meta.get("ordermin"), default=min_qty) or min_qty
+                min_notional = safe_pos_float(p_meta.get("costmin"), default=min_notional) or min_notional
                 if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None:
                     step_size = round(10.0 ** (-int(lot_dec)), 8)
                 if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None:
@@ -143,8 +140,7 @@ def resolve_venue_fee_and_limits(
             sz_i = int(sz_dec)
             step_size = min_qty = round(10.0 ** (-sz_i), 8)
             if safe_pos_float(params.get("tick_size"), default=None) is None:
-                max_px_dec = max(8 - sz_i, 0)
-                eff_px_dec = min(max_px_dec, max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
+                eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
                 tick_size = round(10.0 ** (-eff_px_dec), 8)
 
     out: Dict[str, Any] = {
@@ -178,9 +174,7 @@ def resolve_venue_fee_and_limits(
         if px_f > 0.0:
             out["locked_base_usd"] = round(lb_f * px_f, 2)
             if fb_f is not None:
-                out["replace_max_sell_usd"] = round(
-                    min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f) * px_f), 2
-                )
+                out["replace_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f) * px_f), 2)
     return out
 
 
@@ -278,9 +272,21 @@ def parse_venue_cycle_state(
             cyc_entry["resting_orders"] = close_orders
     if include_meta:
         for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
-            if (raw_ts := safe_pos_float(st_data.get(src_k), default=None)) is not None:
-                cyc_entry[dst_k] = int(round(raw_ts * 1000.0)) if raw_ts < 1e11 else int(round(raw_ts))
+            if (ts_ms := normalize_timestamp_ms(st_data.get(src_k), default=None)) is not None:
+                cyc_entry[dst_k] = ts_ms
     return cyc_entry
+
+
+def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
+    if not os.path.isdir(t212_dir := os.path.join(workspace_dir, "212trading")):
+        return []
+    out: List[Tuple[str, str]] = []
+    for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
+        fname = os.path.basename(st_path)
+        ticker = fname[len(".state_") : -len(".json")].upper()
+        if not fname.startswith("..") and ticker.replace("_", "").isalnum():
+            out.append((st_path, ticker))
+    return out
 
 
 def harvest_venue_cycles(
@@ -321,14 +327,23 @@ def harvest_venue_cycles(
                 _record_cyc(hyperliquid_cycles, st_path, raw_tok if raw_tok.endswith("USDC") else f"{raw_tok}USDC", 6)
 
     all_t212_cycles: Dict[str, Any] = {}
-    if os.path.isdir(t212_dir := os.path.join(workspace_dir, "212trading")):
-        for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
-            fname = os.path.basename(st_path)
-            ticker = fname[len(".state_") : -len(".json")].upper()
-            if not fname.startswith("..") and ticker.replace("_", "").isalnum():
-                _record_cyc(all_t212_cycles, st_path, ticker, 4)
+    for st_path, ticker in _iter_t212_state_files(workspace_dir):
+        _record_cyc(all_t212_cycles, st_path, ticker, 4)
 
     return kraken_cycles, hyperliquid_cycles, all_t212_cycles
+
+
+def _normalize_open_orders_list(
+    raw_orders: Any, venue: str, symbol: str, known_ai_order_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not isinstance(raw_orders, list):
+        return []
+    return [
+        oo_norm
+        for oo in raw_orders
+        if isinstance(oo, dict)
+        and isinstance((oo_norm := normalize_open_order(oo, venue=venue, symbol=symbol, known_ai_order_ids=known_ai_order_ids)), dict)
+    ]
 
 
 def harvest_kraken_xstocks(
@@ -620,17 +635,7 @@ def harvest_tradable_positions_and_orders(
                 try:
                     if isinstance(raw_open := open_fn(), list):
                         sym_open_ok = True
-                        sym_norm_orders = [
-                            oo_norm
-                            for oo in raw_open
-                            if isinstance(oo, dict)
-                            and isinstance(
-                                oo_norm := normalize_open_order(
-                                    oo, venue=venue, symbol=sym, known_ai_order_ids=known_ai_order_ids
-                                ),
-                                dict,
-                            )
-                        ]
+                        sym_norm_orders = _normalize_open_orders_list(raw_open, venue, sym, known_ai_order_ids)
                         open_orders_list.extend(sym_norm_orders)
                         updated_bals[oo_key] = sym_norm_orders
                 except Exception:
@@ -639,15 +644,7 @@ def harvest_tradable_positions_and_orders(
                     live_open_ok_venues.add(v_norm)
                 else:
                     failed_open_venues.add(v_norm)
-                    if isinstance(cached_oo := cached_bals.get(oo_key), list):
-                        for oo in cached_oo:
-                            if isinstance(oo, dict) and isinstance(
-                                oo_norm := normalize_open_order(
-                                    oo, venue=venue, symbol=sym, known_ai_order_ids=known_ai_order_ids
-                                ),
-                                dict,
-                            ):
-                                open_orders_list.append(oo_norm)
+                    open_orders_list.extend(_normalize_open_orders_list(cached_bals.get(oo_key), venue, sym, known_ai_order_ids))
     elif allow_empty_inst_recovery and cached_bals:
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
@@ -658,28 +655,17 @@ def harvest_tradable_positions_and_orders(
                     px_rec = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=p_quote)
                     if px_rec > 0:
                         rec_pos["price"] = round_opt_px(px_rec, 6)
-                        fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
-                        if fb_val is not None:
+                        if (fb_val := safe_nonneg_float(rec_pos.get("free_base"), default=None)) is not None:
                             rec_pos["value_usd"] = round(fb_val * px_rec, 2)
                         prices_and_trends.setdefault(p_sym, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
                 tradable_positions.append(rec_pos)
             elif k.startswith("cash:") and isinstance(v, dict):
-                c_venue = str(v.get("venue") or "").strip().lower()
-                c_asset = str(v.get("asset") or "").strip().upper()
+                c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
                 if c_venue and c_asset:
                     venue_quote_cash[f"{c_venue}:{c_asset}"] = dict(v)
             elif k.startswith("open_orders:") and isinstance(v, list):
                 parts = k.split(":", 2)
-                oo_v = parts[1] if len(parts) > 1 else ""
-                oo_s = parts[2] if len(parts) > 2 else ""
-                for oo in v:
-                    if isinstance(oo, dict) and isinstance(
-                        oo_norm := normalize_open_order(
-                            oo, venue=oo_v, symbol=oo_s, known_ai_order_ids=known_ai_order_ids
-                        ),
-                        dict,
-                    ):
-                        open_orders_list.append(oo_norm)
+                open_orders_list.extend(_normalize_open_orders_list(v, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "", known_ai_order_ids))
 
     if isinstance(verified_open_venues, set):
         verified_open_venues.update(live_open_ok_venues - failed_open_venues)
@@ -694,29 +680,21 @@ def harvest_tradable_positions_and_orders(
             oo_sym = str(oo_item.get("symbol") or "").strip().upper()
             oo_side = str(oo_item.get("side") or "").strip().upper()
             oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
-            oo_rem = (
-                safe_pos_float(oo_item.get("remaining_qty"), default=None)
-                or safe_pos_float(oo_item.get("qty"), default=0.0)
-                or 0.0
-            )
+            oo_rem = safe_pos_float(oo_item.get("remaining_qty"), default=None) or safe_pos_float(oo_item.get("qty"), default=0.0) or 0.0
             if not oo_v or not oo_sym or oo_rem <= 0.0:
                 continue
             _, oo_quote = resolve_assets(oo_sym, None, None)
             oo_q_u = (oo_quote or "USD").strip().upper()
             if oo_side == "BUY" and oo_px > 0.0:
-                vq_key = (oo_v, oo_q_u)
-                locked_quote_by_vq[vq_key] = locked_quote_by_vq.get(vq_key, 0.0) + oo_rem * oo_px
+                locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + oo_rem * oo_px
             elif oo_side == "SELL":
-                vs_key = (oo_v, oo_sym)
-                locked_base_by_vs[vs_key] = locked_base_by_vs.get(vs_key, 0.0) + oo_rem
+                locked_base_by_vs[(oo_v, oo_sym)] = locked_base_by_vs.get((oo_v, oo_sym), 0.0) + oo_rem
 
         for cash_val in venue_quote_cash.values():
-            if not isinstance(cash_val, dict):
-                continue
-            cv_norm = normalize_venue_name(cash_val.get("venue"))
-            cq_u = str(cash_val.get("asset") or "").strip().upper()
-            if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
-                cash_val["locked_quote_usd"] = round(lq_val, 2)
+            if isinstance(cash_val, dict):
+                cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
+                if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
+                    cash_val["locked_quote_usd"] = round(lq_val, 2)
 
         for pos_entry in tradable_positions:
             p_v_norm = normalize_venue_name(pos_entry.get("venue"))
@@ -762,22 +740,18 @@ def enrich_cross_venue_trends(
     watcher_price_items: Any,
 ) -> None:
     """Enrich every symbol with cross-venue short slopes, Kalman velocity, long trend, Weibull, and 7d range."""
-    trends_items_map = (
-        trends_data.get("items")
-        if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict)
-        else (trends_data if isinstance(trends_data, dict) else {})
-    )
-    pa_map = (
-        priceanalysis_data.get("items")
-        if isinstance(priceanalysis_data, dict) and isinstance(priceanalysis_data.get("items"), dict)
-        else (priceanalysis_data if isinstance(priceanalysis_data, dict) else {})
-    )
+    def _unwrap_items_dict(raw: Any) -> Dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw["items"] if isinstance(raw.get("items"), dict) else raw
+        return {}
+
+    trends_items_map, pa_map = _unwrap_items_dict(trends_data), _unwrap_items_dict(priceanalysis_data)
     for sym, entry in list(prices_and_trends.items()):
         sym_quotes = compatible_quote_suffixes(sym)
         cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
         has_slopes = any(entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
 
-        if not has_slopes and isinstance(trends_items_map, dict):
+        if not has_slopes and trends_items_map:
             for ck in cand_keys[1:]:
                 tinfo = casefold_get(trends_items_map, ck)
                 if isinstance(tinfo, dict) and apply_short_trend_item(
@@ -798,7 +772,7 @@ def enrich_cross_venue_trends(
                             entry[k_inh] = sib[k_inh]
                     break
 
-        if entry.get("vol_1h_pct") is None and isinstance(trends_items_map, dict):
+        if entry.get("vol_1h_pct") is None and trends_items_map:
             for ck in cand_keys:
                 if isinstance(t_vol_info := casefold_get(trends_items_map, ck), dict) and t_vol_info.get("vol_1h_pct") is not None:
                     entry["vol_1h_pct"] = t_vol_info.get("vol_1h_pct")
@@ -907,12 +881,8 @@ def enrich_24h_and_microstructure(
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
     _rj = read_json_fn or read_json_cached
     btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
-    if os.path.isdir(t212_dir := os.path.join(workspace_dir, "212trading")):
-        for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
-            fname = os.path.basename(st_path)
-            ticker = fname[len(".state_") : -len(".json")].upper()
-            if not fname.startswith("..") and ticker.replace("_", "").isalnum() and ticker not in prices_and_trends:
-                prices_and_trends[ticker] = {"price": None, "trend": 0, "growth_coefficient": 0.0}
+    for _, ticker in _iter_t212_state_files(workspace_dir):
+        prices_and_trends.setdefault(ticker, {"price": None, "trend": 0, "growth_coefficient": 0.0})
     from instruments_config import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
@@ -921,11 +891,7 @@ def enrich_24h_and_microstructure(
             or load_symbol_microstructure(cache_dir, hl_sym, _rj)
         ):
             hl_px = resolve_symbol_price(hl_sym, prices_and_trends, explicit_quote=hl_quote)
-            prices_and_trends[hl_sym] = {
-                "price": hl_px if hl_px > 0 else None,
-                "trend": 0,
-                "growth_coefficient": 0.0,
-            }
+            prices_and_trends[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
         matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)

@@ -14,7 +14,7 @@ from cachepaths import (
     get_cachedb_dir, normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
-    filter_valid_severity_keywords, get_cache_filenames, obj_attr,
+    filter_valid_severity_keywords, obj_attr, read_first_cached_dict,
     resolve_macro_economic_calendar, safe_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
@@ -172,6 +172,16 @@ def apply_asset_scope_filter(
     t212_sym_set = {str(s).upper() for s in t212_cycles} | {
         str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
     }
+
+    def _set_or_pop(key: str, val: Any) -> None:
+        if val:
+            portfolio_summary[key] = val
+        else:
+            portfolio_summary.pop(key, None)
+
+    def _is_t212_venue(item: Any) -> bool:
+        return isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
+
     if want_t212:
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
         microstructure = {}
@@ -184,14 +194,7 @@ def apply_asset_scope_filter(
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         portfolio_summary.pop("t212_cycles", None)
     if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
-        filtered_cash = {
-            ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items()
-            if isinstance(cv, dict) and (normalize_venue_name(cv.get("venue")) == "t212") == want_t212
-        }
-        if filtered_cash:
-            portfolio_summary["venue_quote_cash"] = filtered_cash
-        else:
-            portfolio_summary.pop("venue_quote_cash", None)
+        _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_venue(cv)})
     if isinstance(portfolio_summary.get("recent_orders"), dict):
         def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
             if isinstance(rv, dict) and rv.get("venue"):
@@ -201,32 +204,19 @@ def apply_asset_scope_filter(
                 return True
             return False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
 
-        filtered_ro = {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212}
-        if filtered_ro:
-            portfolio_summary["recent_orders"] = filtered_ro
-        else:
-            portfolio_summary.pop("recent_orders", None)
+        _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
     for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
         if isinstance(portfolio_summary.get(list_key), list):
-            filtered_items = [item for item in portfolio_summary[list_key] if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212]
-            if filtered_items:
-                portfolio_summary[list_key] = filtered_items
-            else:
-                portfolio_summary.pop(list_key, None)
+            _set_or_pop(list_key, [item for item in portfolio_summary[list_key] if _is_t212_venue(item)])
     if isinstance(portfolio_summary.get("open_limit_orders"), list):
-        portfolio_summary["open_limit_orders"] = [
-            item for item in portfolio_summary["open_limit_orders"] if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
-        ]
+        portfolio_summary["open_limit_orders"] = [item for item in portfolio_summary["open_limit_orders"] if _is_t212_venue(item)]
     last_exec = portfolio_summary.get("last_cycle_execution_status")
     if isinstance(last_exec, dict):
-        if (normalize_venue_name(last_exec.get("venue")) == "t212") != want_t212:
+        if not _is_t212_venue(last_exec):
             portfolio_summary.pop("last_cycle_execution_status", None)
     elif isinstance(last_exec, list):
-        filtered_exec = [item for item in last_exec if isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212]
-        if filtered_exec:
-            portfolio_summary["last_cycle_execution_status"] = filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec
-        else:
-            portfolio_summary.pop("last_cycle_execution_status", None)
+        filtered_exec = [item for item in last_exec if _is_t212_venue(item)]
+        _set_or_pop("last_cycle_execution_status", (filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec) if filtered_exec else None)
     return prices_and_trends, microstructure
 
 
@@ -234,12 +224,7 @@ def _read_first_cached_dict(
     cache_dir: str, group_key: str, default_file: str, read_json_fn: Any = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Read the first non-empty dict matching `get_cache_filenames(group_key)` (or `default_file`) in `cache_dir`."""
-    rj = read_json_cached if read_json_fn is None else read_json_fn
-    for fname in (get_cache_filenames(group_key) or (default_file,)):
-        fpath = os.path.join(cache_dir, fname)
-        if isinstance(data := rj(fpath), dict) and data:
-            return data, fpath
-    return None, ""
+    return read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn=read_json_cached if read_json_fn is None else read_json_fn)
 
 
 def harvest_macro_and_news_sensors(
@@ -276,13 +261,8 @@ def harvest_macro_and_news_sensors(
                 for mover_key in ("top_gainers", "top_losers"):
                     if isinstance(raw_movers := enriched.get(mover_key), list):
                         enriched[mover_key] = [
-                            m
-                            for m in raw_movers
-                            if isinstance(m, (list, tuple))
-                            and len(m) >= 2
-                            and isinstance(m[0], str)
-                            and m[0].strip().isascii()
-                            and m[0].strip().isalnum()
+                            m for m in raw_movers
+                            if isinstance(m, (list, tuple)) and len(m) >= 2 and isinstance(m[0], str) and m[0].strip().isascii() and m[0].strip().isalnum()
                         ]
             if attr == "macro_benchmarks" and not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                 enriched["summary_line"] = summary_s
@@ -332,8 +312,7 @@ def harvest_macro_and_news_sensors(
                 continue
             raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
-            is_high_sev = False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity"))
-            valid_news.append({**item, "matched_keywords": clean_kws, "is_high_severity": is_high_sev})
+            valid_news.append({**item, "matched_keywords": clean_kws, "is_high_severity": False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity"))})
         valid_news.sort(key=lambda x: (1 if x.get("is_high_severity") else 0, safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0), reverse=True)
         for item in valid_news[:6]:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0

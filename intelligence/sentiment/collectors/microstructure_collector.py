@@ -121,11 +121,8 @@ def compute_volume_profile_metrics(
 
         cur_px = samples[-1][0]
         low_px, high_px = min(p for p, _ in samples), max(p for p, _ in samples)
-        if high_px <= low_px or low_px <= 0.0:
-            return {}
-
         n_bins = max(8, min(64, int(num_bins)))
-        bin_w = (high_px - low_px) / float(n_bins)
+        bin_w = (high_px - low_px) / float(n_bins) if high_px > low_px and low_px > 0.0 else 0.0
         if bin_w <= 0.0:
             return {}
 
@@ -146,17 +143,13 @@ def compute_volume_profile_metrics(
         while acc_vol < target_vol and (val_idx > 0 or vah_idx < n_bins - 1):
             down_vol = bin_vols[val_idx - 1] if val_idx > 0 else -1.0
             up_vol = bin_vols[vah_idx + 1] if vah_idx < n_bins - 1 else -1.0
-            if up_vol > down_vol or (up_vol == down_vol and (poc_idx - val_idx) > (vah_idx - poc_idx) and vah_idx < n_bins - 1):
-                vah_idx += 1
-                acc_vol += up_vol
-            elif val_idx > 0:
-                val_idx -= 1
-                acc_vol += down_vol
-            elif vah_idx < n_bins - 1:
+            go_up = up_vol > down_vol or (up_vol == down_vol and (poc_idx - val_idx) > (vah_idx - poc_idx) and vah_idx < n_bins - 1)
+            if go_up or val_idx == 0:
                 vah_idx += 1
                 acc_vol += up_vol
             else:
-                break
+                val_idx -= 1
+                acc_vol += down_vol
 
         eff_dec = _auto_px_decimals(cur_px, decimals)
         poc_px = round(poc_raw, eff_dec)
@@ -182,10 +175,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
 
         def _sample_at(mins: float) -> Tuple[Optional[float], float]:
             target = now_ms - mins * 60000.0
-            for tms, p_val in reversed(clean_series):
-                if tms <= target:
-                    return tms, p_val
-            return None, clean_series[0][1]
+            return next(((tms, p_val) for tms, p_val in reversed(clean_series) if tms <= target), (None, clean_series[0][1]))
 
         def _has_sample_near(mins: float, max_gap_mins: float) -> bool:
             tms, _ = _sample_at(mins)
@@ -252,8 +242,7 @@ def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
     raw_items = data.get("items") if "items" in data else data
     if isinstance(raw_items, dict):
         for k_cand in cands:
-            ser = casefold_get(raw_items, k_cand, [])
-            if isinstance(ser, list) and ser:
+            if isinstance((ser := casefold_get(raw_items, k_cand, [])), list) and ser:
                 return ser
         if "items" in data and len(raw_items) == 1 and cands:
             only_k, first_val = next(iter(raw_items.items()))
@@ -285,10 +274,17 @@ def load_symbol_price_series(
     series_24h: list = []
     vals_7d: list = []
 
+    def _cand_paths(*basenames: str) -> list[str]:
+        return [
+            p
+            for bn in basenames
+            for full_p in (str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))),)
+            for p in (full_p, *legacy_filenames_for(full_p))
+        ]
+
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
     for cand in cands:
-        primary_24 = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")))
-        for p24_path in (primary_24, *legacy_filenames_for(primary_24)):
+        for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
             ser = _extract_cached_items_series(read_json_cached(p24_path), cands)
@@ -298,24 +294,16 @@ def load_symbol_price_series(
         if series_24h:
             break
 
-    def _span_ms(pts: list) -> float:
-        if len(pts) < 2:
-            return 0.0
-        p0, p1 = _parse_ts_px_row(pts[0]), _parse_ts_px_row(pts[-1])
-        return max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
+    p0 = _parse_ts_px_row(series_24h[0]) if len(series_24h) >= 2 else None
+    p1 = _parse_ts_px_row(series_24h[-1]) if len(series_24h) >= 2 else None
+    span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
 
     # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_365_price_<SYM> / cache_sparse_price_<SYM>
-    need_24h_supplement = _span_ms(series_24h) < 3600000.0 * 18
+    need_24h_supplement = span_24h_ms < 3600000.0 * 18
     archive_pts: list = []
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
     for cand in (cands if (include_7d or need_24h_supplement) else ()):
-        candidate_paths = [
-            p
-            for bn in (f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl")
-            for full_p in (str(resolve_cachedb_filepath(os.path.join(cachedb_dir, bn))),)
-            for p in (full_p, *legacy_filenames_for(full_p))
-        ]
-        for arch_path in candidate_paths:
+        for arch_path in _cand_paths(f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl"):
             if not os.path.exists(arch_path):
                 continue
             try:
@@ -332,10 +320,8 @@ def load_symbol_price_series(
                             if isinstance(rec_s, str) and rec_s.strip() and cands_upper and rec_s.strip().upper() not in cands_upper:
                                 continue
                             item = rec.get("i")
-                        elif isinstance(rec, list):
-                            item = rec
                         else:
-                            continue
+                            item = rec if isinstance(rec, list) else None
                         if isinstance(item, (list, tuple)) and len(item) >= 2:
                             parsed_rows.append([item[0], item[1]])
                     if len(parsed_rows) >= 2:
@@ -379,34 +365,32 @@ def load_symbol_price_series(
                 series_24h = list(series_24h) + cand_pts
                 break
             elif (px_f := extract_current_price_item(cur_item)) is not None and series_24h and last_24_pt is not None:
-                if _prices_diverged(last_24_pt[1], px_f):
-                    continue
-                series_24h = list(series_24h) + [[last_24_pt[0] + 1000.0, px_f]]
-                break
+                if not _prices_diverged(last_24_pt[1], px_f):
+                    series_24h = list(series_24h) + [[last_24_pt[0] + 1000.0, px_f]]
+                    break
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] (or [tms, px, vol]) points
     if series_24h:
-        cleaned_24h = [
-            ([pt[0], pt[1], vol_v] if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None else [pt[0], pt[1]])
-            for row in series_24h if (pt := _parse_ts_px_row(row)) is not None
-        ]
+        cleaned_24h = sorted(
+            (
+                ([pt[0], pt[1], vol_v] if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None else [pt[0], pt[1]])
+                for row in series_24h if (pt := _parse_ts_px_row(row)) is not None
+            ),
+            key=lambda x: x[0],
+        )
         if len(cleaned_24h) >= 2:
-            cleaned_24h.sort(key=lambda x: x[0])
             dedup_24h = [cleaned_24h[0]]
             for pt in cleaned_24h[1:]:
                 if pt[0] > dedup_24h[-1][0]:
                     dedup_24h.append(pt)
-                elif len(pt) < 3 and len(dedup_24h[-1]) >= 3:
-                    dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]]
                 else:
-                    dedup_24h[-1] = pt
+                    dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
             series_24h = dedup_24h if len(dedup_24h) >= 2 else []
         else:
             series_24h = []
 
-    if vals_7d and series_24h:
-        latest_px = safe_pos_float(series_24h[-1][1], default=None)
-        if latest_px is not None and vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
+    if vals_7d and series_24h and (latest_px := safe_pos_float(series_24h[-1][1], default=None)) is not None:
+        if vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
             vals_7d.append(latest_px)
 
     return series_24h, vals_7d
@@ -487,8 +471,7 @@ def extract_symbol_recent_fills(
         if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() != "EXECUTED":
             continue
         exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-        it_oid = extract_order_id(exec_pay, default="")
-        if it_oid and str(it_oid) in valid_oids:
+        if (it_oid := extract_order_id(exec_pay, default="")) and str(it_oid) in valid_oids:
             continue
         i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
         i_ts_s = safe_pos_float(it.get("timestamp"), default=0.0) or 0.0
@@ -509,8 +492,7 @@ def extract_symbol_recent_fills(
         act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
         if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
             o_side = extract_order_side(o)
-            o_ts_ms = extract_timestamp_ms(o, default=0) or 0
-            o_ts_s = o_ts_ms / 1000.0 if o_ts_ms > 0 else 0.0
+            o_ts_s = (extract_timestamp_ms(o, default=0) or 0) / 1000.0
             o_qty = extract_executed_qty(o, default=0.0) or 0.0
             o_sym = str(o.get("symbol") or "").strip().upper()
             for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
@@ -521,13 +503,13 @@ def extract_symbol_recent_fills(
                 if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
                     act_v = "AI"
                     break
-        oid_v = extract_order_id(o, default="")
-        if oid_v:
+        if oid_v := extract_order_id(o, default=""):
+            oid_str = str(oid_v)
             if act_v == "AI":
-                ai_oids.add(str(oid_v))
-            prev = origin_by_oid.get(str(oid_v))
+                ai_oids.add(oid_str)
+            prev = origin_by_oid.get(oid_str)
             if prev is None or (not prev[1] and mod_v) or (not prev[2] and rule_v) or act_v == "AI":
-                origin_by_oid[str(oid_v)] = (
+                origin_by_oid[oid_str] = (
                     "AI" if (act_v == "AI" or (prev and prev[0] == "AI")) else "BOT",
                     mod_v or (prev[1] if prev else None),
                     rule_v or (prev[2] if prev else None),
@@ -536,8 +518,7 @@ def extract_symbol_recent_fills(
             origin_by_side_ts[(extract_order_side(o), extract_timestamp_ms(o, default=None))] = (act_v, mod_v, rule_v)
 
     if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
-        if agg := aggregate_fills_by_order_id(valid):
-            valid = agg
+        valid = aggregate_fills_by_order_id(valid) or valid
 
     def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         if not isinstance(o, dict):
@@ -572,10 +553,7 @@ def extract_symbol_recent_fills(
         elif side_o == "SELL":
             sells_fmt.append(item_d)
             if q_f is not None:
-                if q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12:
-                    cost_qty, active_avg = 0.0, 0.0
-                else:
-                    cost_qty -= q_f
+                cost_qty, active_avg = (0.0, 0.0) if (q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12) else (cost_qty - q_f, active_avg)
 
     last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
     out_fills: Dict[str, Any] = {
@@ -596,6 +574,14 @@ def extract_symbol_recent_fills(
     return out_fills
 
 
+_WINDOW_TREND_SPECS: Tuple[Tuple[str, str, str, str], ...] = (
+    ("90", "slope_90s", "trend_90s", "growth_90s"),
+    ("222", "slope_3_7m", "trend_3_7m", "growth_3_7m"),
+    ("900", "slope_15m", "trend_15m", "growth_15m"),
+    ("9000", "slope_2_5h", "trend_2_5h", "growth_2_5h"),
+)
+
+
 def apply_short_trend_item(
     entry: Dict[str, Any],
     tinfo: Dict[str, Any],
@@ -606,13 +592,10 @@ def apply_short_trend_item(
 ) -> bool:
     """Populate short/dynamic trend slopes (90s, 3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
     dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-    d90 = dyn.get("90", {}) if isinstance(dyn.get("90"), dict) else {}
-    d222 = dyn.get("222", {}) if isinstance(dyn.get("222"), dict) else {}
-    if d222.get("slope_full") is None:
-        d222 = tinfo if tinfo.get("slope_full") is not None else (d90 if d90.get("slope_full") is not None else d222)
-    d900 = dyn.get("900", {}) if isinstance(dyn.get("900"), dict) else {}
-    d9000 = dyn.get("9000", {}) if isinstance(dyn.get("9000"), dict) else {}
-    if require_any_slope and not any(x.get("slope_full") is not None for x in (d222, d900, d9000, tinfo)):
+    wins = {wk: (dyn.get(wk) if isinstance(dyn.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
+    if wins["222"].get("slope_full") is None:
+        wins["222"] = tinfo if tinfo.get("slope_full") is not None else (wins["90"] if wins["90"].get("slope_full") is not None else wins["222"])
+    if require_any_slope and not any(x.get("slope_full") is not None for x in (wins["222"], wins["900"], wins["9000"], tinfo)):
         return False
     cur_px = safe_pos_float(fallback_price, default=None) or safe_pos_float(tinfo.get("current_price"), default=None)
     if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
@@ -632,17 +615,11 @@ def apply_short_trend_item(
         for ak in ("adapt_reentry_pct", "adapt_dca_pct"):
             if tinfo.get(ak) is not None:
                 entry[ak] = tinfo[ak]
-    if d90.get("slope_full") is not None:
-        entry["slope_90s"], entry["trend_90s"] = d90.get("slope_full"), d90.get("final_trend", trend)
-    if d90.get("growth_coefficient") is not None:
-        entry["growth_90s"] = d90.get("growth_coefficient")
-    for w_dict, s_key, t_key, g_key in (
-        (d222, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
-        (d900, "slope_15m", "trend_15m", "growth_15m"),
-        (d9000, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
-    ):
-        if w_dict.get("slope_full") is not None or require_any_slope:
-            entry[s_key] = w_dict.get("slope_full", 0.0) if require_any_slope else w_dict.get("slope_full")
+    for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
+        w_dict = wins[wk]
+        is_90 = wk == "90"
+        if w_dict.get("slope_full") is not None or (require_any_slope and not is_90):
+            entry[s_key] = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
             entry[t_key] = w_dict.get("final_trend", trend)
         if w_dict.get("growth_coefficient") is not None:
             entry[g_key] = w_dict.get("growth_coefficient")
@@ -651,10 +628,9 @@ def apply_short_trend_item(
 
 def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fallback_price: Any = None) -> None:
     """Overlay fresh 1-second sampled dynamic windows (90s, 3.7m, 15m, 2.5h) from `cachedb/24trend/live_<SYM>.json`."""
-    w90 = lt_win.get("90") if isinstance(lt_win.get("90"), dict) else {}
-    w222 = lt_win.get("222") if isinstance(lt_win.get("222"), dict) else w90
-    w900 = lt_win.get("900") if isinstance(lt_win.get("900"), dict) else {}
-    w9000 = lt_win.get("9000") if isinstance(lt_win.get("9000"), dict) else {}
+    wins = {wk: (lt_win.get(wk) if isinstance(lt_win.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
+    w90, w222, w900 = wins["90"], wins["222"] or wins["90"], wins["900"]
+    wins["222"] = w222
     live_px = (
         safe_pos_float(fallback_price, default=None)
         or safe_pos_float(w222.get("current_price"), default=None)
@@ -671,15 +647,11 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             entry["gradient_recent_fast"] = gf_live
     if entry.get("epsilon") is None and (eps_live := w222.get("epsilon") or w90.get("epsilon")) is not None:
         entry["epsilon"] = eps_live
-    for w_dict, s_key, t_key, g_key, keep_existing_default in (
-        (w90, "slope_90s", "trend_90s", "growth_90s", False),
-        (w222, "slope_3_7m", "trend_3_7m", "growth_3_7m", True),
-        (w900, "slope_15m", "trend_15m", "growth_15m", True),
-        (w9000, "slope_2_5h", "trend_2_5h", "growth_2_5h", True),
-    ):
+    for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
+        w_dict = wins[wk]
         if not w_dict:
             continue
-        if keep_existing_default:
+        if wk != "90":
             entry[s_key] = w_dict.get("slope_full", entry.get(s_key, 0.0))
             entry[t_key] = w_dict.get("final_trend", entry.get(t_key, 0))
         else:
@@ -839,8 +811,7 @@ def load_symbol_microstructure(
             ("depth_1pct_bid_usd", "depth_1pct_bid_usd"), ("depth_1pct_ask_usd", "depth_1pct_ask_usd"),
             ("largest_bid_wall_usd", "bid_wall_usd"), ("largest_ask_wall_usd", "ask_wall_usd"),
         ):
-            raw_v = obj_attr(ob, k_src, obj_attr(ob, k_dst) if k_src != k_dst else None)
-            val = safe_nonneg_float(raw_v, default=None)
+            val = safe_nonneg_float(obj_attr(ob, k_src, obj_attr(ob, k_dst) if k_src != k_dst else None), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
         m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")) if ob_same_quote else None
         m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")) if ob_same_quote else None

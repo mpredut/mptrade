@@ -50,11 +50,7 @@ class MarketBreadthCollector:
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
         self.min_volume_usd = safe_nonneg_ts(min_volume_usd, 5_000_000.0)
-        self.endpoint_url = (
-            endpoint_url.strip()
-            if isinstance(endpoint_url, str) and endpoint_url.strip()
-            else get_market_breadth_endpoint_url()
-        )
+        self.endpoint_url = (endpoint_url or "").strip() or get_market_breadth_endpoint_url()
         self._cached_snapshot: Optional[MarketBreadthSnapshot] = None
         self._last_fetch_ts: float = 0.0
 
@@ -69,40 +65,31 @@ class MarketBreadthCollector:
             return None
 
         now = resolve_now_ts(now_ts)
-        default_min_vol = get_breadth_min_volume_usd()
-        min_vol = safe_nonneg_ts(min_volume_usd, default_min_vol)
+        min_vol = safe_nonneg_ts(min_volume_usd, get_breadth_min_volume_usd())
         top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
         quote_suffixes = get_breadth_quote_suffixes()
         excluded_suffixes = tuple(f"{b}{q}" for b in get_breadth_excluded_bases() for q in quote_suffixes)
-        filtered: List[Tuple[str, float]] = []
-        filtered_with_vol: List[Tuple[str, float, float]] = []
+        rows: List[Tuple[str, float, float]] = []
 
         for item in tickers:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or not isinstance(item.get("symbol"), str):
                 continue
-            raw_sym = item.get("symbol")
-            if not isinstance(raw_sym, str):
+            symbol = item["symbol"].strip().upper()
+            if not (symbol.isascii() and symbol.isalnum() and symbol.endswith(quote_suffixes)) or any(sp in symbol for sp in excluded_suffixes):
                 continue
-            symbol = raw_sym.strip().upper()
-            if not symbol.isascii() or not symbol.isalnum():
-                continue
-            if not symbol.endswith(quote_suffixes) or any(sp in symbol for sp in excluded_suffixes):
-                continue
-
             quote_vol = safe_float(item.get("quoteVolume"), default=None)
             change_pct = safe_float(item.get("priceChangePercent"), default=None)
             if quote_vol is not None and change_pct is not None and quote_vol >= min_vol:
-                filtered.append((symbol, change_pct))
-                filtered_with_vol.append((symbol, change_pct, quote_vol))
+                rows.append((symbol, change_pct, quote_vol))
 
-        if len(filtered) < 5:
+        if len(rows) < 5:
             return None
 
-        filtered.sort(key=lambda x: x[1])
-        filtered_with_vol.sort(key=lambda x: x[1])
-        top_pool = [(s, c) for s, c, qv in filtered_with_vol if qv >= top_mover_min_vol]
+        rows.sort(key=lambda x: x[1])
+        filtered = [(s, c) for s, c, _ in rows]
+        top_pool = [(s, c) for s, c, qv in rows if qv >= top_mover_min_vol]
         mover_pool = top_pool if len(top_pool) >= 3 else filtered
-        changes = [x[1] for x in filtered]
+        changes = [c for _, c, _ in rows]
         advancing = sum(1 for c in changes if c > 0)
         declining = sum(1 for c in changes if c < 0)
         total = len(changes)
@@ -110,7 +97,7 @@ class MarketBreadthCollector:
 
         median_change = float(statistics.median(changes))
         mean_change = float(statistics.fmean(changes))
-        dispersion_std = float(statistics.pstdev(changes)) if len(changes) > 1 else 0.0
+        dispersion_std = float(statistics.pstdev(changes)) if total > 1 else 0.0
 
         if advance_ratio <= 0.20 and median_change <= -4.0:
             regime = "PANIC_WASHOUT"
@@ -140,20 +127,15 @@ class MarketBreadthCollector:
     def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[MarketBreadthSnapshot]:
         """Fetch latest 24hr tickers from public Binance API and return market breadth snapshot."""
         now = resolve_now_ts(now_ts)
-        if self._cached_snapshot and is_cache_fresh(
-            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
-        ):
+        if self._cached_snapshot and is_cache_fresh(self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh):
             return self._cached_snapshot
-
         try:
             data = fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0")
             if isinstance(data, list):
                 snapshot = self.parse_tickers(data, min_volume_usd=self.min_volume_usd, now_ts=now)
                 if snapshot:
-                    self._cached_snapshot = snapshot
-                    self._last_fetch_ts = now
+                    self._cached_snapshot, self._last_fetch_ts = snapshot, now
                     return snapshot
         except Exception as e:
             logger.warning("Failed to fetch market breadth: %s. Using cached fallback if available.", e)
-
         return self._cached_snapshot
