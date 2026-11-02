@@ -916,7 +916,12 @@ def test_order_actor_resolution_and_recent_fills_tagging():
     assert resolve_order_actor({"actor": "AI"}) == "AI"
     assert resolve_order_actor({"actor": "bot"}) == "BOT"
     assert resolve_order_actor({"clientOrderId": "AI_12345"}) == "AI"
-    assert resolve_order_actor({"cloid": "SD_a1b2c3d4e5f60718293a4b5c6d7e8f90"}) == "AI"
+    # SD_<32hex> is the generic intent cid of deterministic bots (Binance trailing_stop / spot_engine), never AI
+    assert resolve_order_actor({"cloid": "SD_a1b2c3d4e5f60718293a4b5c6d7e8f90"}) == "BOT"
+    assert resolve_order_origin({"clientOrderId": "SD_a1b2c3d4e5f60718293a4b5c6d7e8f90"})[:2] == ("BOT", "trailing")
+    # monitororder replacements of manual orders and venue-native manual orders keep manual attribution
+    assert resolve_order_origin({"clientOrderId": "MO_MN_OR_MainThread_1A2B"})[:2] == ("BOT", "manual")
+    assert resolve_order_origin({"clientOrderId": "web_8f2c1d9e"})[:2] == ("BOT", "manual")
     assert resolve_order_actor({"cloid": "sd_manual_1"}) == "BOT"
     assert resolve_order_actor({"userref": "AI_KRAKEN"}) == "AI"
     assert resolve_order_actor({"orderId": 999}, known_ai_order_ids={"999"}) == "AI"

@@ -8,7 +8,7 @@ import time
 
 from typing import Optional, Union, Iterable
 from botcore import safe_nonneg_int
-from providers.base import clean_order_id
+from providers.base import MANUAL_CID_PREFIXES, clean_order_id
 
 CLIENT_ORDER_ID_MAX_LEN = 36
 
@@ -52,7 +52,7 @@ BOT_PREFIX_MAP.update({
 })
 _SORTED_BOT_PREFIXES = tuple(sorted(BOT_PREFIX_MAP.items(), key=lambda kv: len(kv[0]), reverse=True))
 
-MANUAL_PREFIXES = ("and_", "ios_", "web_", "x-", "electron_")
+MANUAL_PREFIXES = MANUAL_CID_PREFIXES
 
 REPRICEABLE_BOTS = frozenset({"tradeall", "monitororder", "manual"})
 

@@ -423,6 +423,7 @@ def normalize_order(order: dict) -> dict:
 
 
 _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
+    ("MO_MN", "manual"),
     ("MO_TA", "tradeall"),
     ("MO_MT", "monitortrades"),
     ("MO_RT", "rtrade"),
@@ -433,6 +434,7 @@ _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
     ("RT_OR", "rtrade"),
     ("SD_OR", "trailing"),
     ("MO_OR", "monitororder"),
+    ("MN_OR", "manual"),
     ("AGS", "assetguardian"),
     ("AGB", "assetguardian"),
     ("TRL", "trailing"),
@@ -444,7 +446,10 @@ _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
     ("MO", "monitororder"),
     ("TS", "trailing"),
     ("SD", "trailing"),
+    ("MN", "manual"),
 )
+# Venue-native manual order client-ID prefixes (Binance app/web/API UIs); SSOT shared with order_id_context.
+MANUAL_CID_PREFIXES: tuple[str, ...] = ("and_", "ios_", "web_", "x-", "electron_")
 _GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
 _CLIENT_ORDER_ID_KEYS = ("clientOrderId", "client_order_id", "cloid", "cl_ord_id", "userref")
 
@@ -470,8 +475,6 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
         return "AI"
     raw_cid = _extract_order_cid(order).upper()
     if raw_cid.startswith("AI_"):
-        return "AI"
-    if raw_cid.startswith("SD_") and len(raw_cid) >= 20 and all(c in "0123456789ABCDEF" for c in raw_cid[3:]):
         return "AI"
     return "BOT"
 
@@ -519,6 +522,8 @@ def resolve_order_origin(
                             if not (len(cand) >= 8 and all(c in "0123456789abcdefABCDEF" for c in cand)) and not cand.isdigit():
                                 rule = cand.upper()
                 break
+        if mod is None and raw_cid.lower().startswith(MANUAL_CID_PREFIXES):
+            mod = "manual"
     return "BOT", mod, rule
 
 

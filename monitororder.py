@@ -184,10 +184,10 @@ def reset_monitororder_state_for_test():
 
 
 def _should_notify_order_launched(owner):
-    """Return False for fast scalpers (rtrade) to prevent notification spam on placement."""
+    """Return False for fast scalpers (rtrade) and for ai_executor (the intent gateway already notifies placement)."""
     if not owner or isinstance(owner, bool):
         return True
-    return str(owner).strip().lower() != "rtrade"
+    return str(owner).strip().lower() not in ("rtrade", "ai_executor")
 
 
 def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=None):

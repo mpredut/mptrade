@@ -73,6 +73,7 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering,
+    read_text_lines,
     save_json_state,
 )
 
@@ -80,7 +81,9 @@ logger = logging.getLogger(__name__)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
+DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
 _CONFIG_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "parser": None}
+_CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
 
 
 # ============================================================================
@@ -648,17 +651,124 @@ def load_macro_intelligence_config(config_path: Optional[str] = None) -> configp
     return parser
 
 
-def _cfg_str(section: str, key: str, fallback: str = "") -> str:
-    cfg = load_macro_intelligence_config()
+def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:
+    cfg = load_macro_intelligence_config(config_path)
     return cfg.get(section, key).strip() if cfg.has_option(section, key) else fallback
 
 
-def _cfg_float(section: str, key: str, fallback: float) -> float:
-    return safe_float(_cfg_str(section, key, ""), fallback)
+def _cfg_float(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    return safe_float(_cfg_str(section, key, "", config_path=config_path), fallback)
 
 
-def _cfg_int(section: str, key: str, fallback: int) -> int:
-    return safe_int(_cfg_str(section, key, ""), fallback)
+def _cfg_ratio(section: str, key: str, fallback: float, config_path: Optional[str] = None) -> float:
+    """Parse a float or rational multiplier expression (e.g. ``1/24``, ``5/6``, ``5/3``) from config."""
+    raw = _cfg_str(section, key, "", config_path=config_path)
+    if not raw:
+        return fallback
+    if "/" in raw:
+        num_s, den_s = raw.split("/", 1)
+        num = safe_float(num_s.strip(), None)
+        den = safe_pos_float(den_s.strip(), 0.0)
+        if num is not None and den > 0.0:
+            return float(num) / float(den)
+    return safe_float(raw, fallback)
+
+
+def _cfg_int(section: str, key: str, fallback: int, config_path: Optional[str] = None) -> int:
+    return safe_int(_cfg_str(section, key, "", config_path=config_path), fallback)
+
+
+def _parse_crontab_executor_interval_sec(crontab_path: Optional[str] = None) -> Optional[float]:
+    """Extract ``auto_cryptotrade_executor`` schedule cadence in seconds from crontab (e.g. ``*/6`` -> 360s, ``*/10`` -> 600s)."""
+    target = crontab_path or os.environ.get("MPTRADE_CRONTAB_PATH") or DEFAULT_CRONTAB_PATH
+    try:
+        mtime = os.path.getmtime(target) if os.path.exists(target) else -1.0
+    except OSError:
+        mtime = -1.0
+    if mtime >= 0.0 and _CRONTAB_CACHE.get("path") == target and _CRONTAB_CACHE.get("mtime") == mtime:
+        return _CRONTAB_CACHE.get("interval_sec")
+    resolved: Optional[float] = None
+    if mtime >= 0.0:
+        for raw_line in read_text_lines(target):
+            line = (raw_line or "").strip()
+            if not line or line.startswith("#") or "auto_cryptotrade_executor" not in line:
+                continue
+            m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*\s+", line)
+            if m:
+                mins = safe_pos_float(m.group(1), 0.0)
+                if mins > 0.0:
+                    resolved = mins * 60.0
+                    break
+    _CRONTAB_CACHE.update(path=target, mtime=mtime, interval_sec=resolved)
+    return resolved
+
+
+def resolve_crypto_executor_interval_sec(
+    config_path: Optional[str] = None,
+    crontab_path: Optional[str] = None,
+) -> float:
+    """Resolve primary ``auto_cryptotrade_executor`` cycle interval in seconds (default 360s = 6m)."""
+    env_sec = safe_pos_float(os.environ.get("AUTO_CRYPTOTRADE_INTERVAL_SEC"), 0.0)
+    if env_sec > 0.0:
+        return max(30.0, env_sec)
+    env_min = safe_pos_float(os.environ.get("AUTO_CRYPTOTRADE_INTERVAL_MIN"), 0.0)
+    if env_min > 0.0:
+        return max(30.0, env_min * 60.0)
+
+    cfg_sec = safe_pos_float(_cfg_float("intervals", "crypto_executor_interval_sec", 360.0, config_path=config_path), 360.0)
+    cron_sec = _parse_crontab_executor_interval_sec(crontab_path=crontab_path)
+    if cron_sec is not None and cron_sec > 0.0:
+        if crontab_path is not None or os.environ.get("MPTRADE_CRONTAB_PATH") or (cfg_sec == 360.0 and cron_sec != 360.0):
+            return max(30.0, cron_sec)
+    return max(30.0, cfg_sec)
+
+
+def resolve_derived_telemetry_intervals(
+    executor_interval_sec: Optional[float] = None,
+    config_path: Optional[str] = None,
+    crontab_path: Optional[str] = None,
+) -> Dict[str, float]:
+    """Compute all dependent collector, freshness, grace, and LLM evaluator intervals as mathematical functions of ``T_exec``."""
+    exec_sec = safe_pos_float(executor_interval_sec, 0.0) or resolve_crypto_executor_interval_sec(
+        config_path=config_path,
+        crontab_path=crontab_path,
+    )
+    exec_min = exec_sec / 60.0
+
+    def _sec(mult_key: str, default_mult: float, legacy_sec_key: str = "") -> float:
+        if legacy_sec_key:
+            explicit = safe_pos_float(_cfg_str("intervals", legacy_sec_key, "", config_path=config_path), 0.0)
+            if explicit > 0.0:
+                return explicit
+        return round(exec_sec * _cfg_ratio("intervals", mult_key, default_mult, config_path=config_path), 6)
+
+    return {
+        "crypto_executor_interval_sec": round(exec_sec, 6),
+        "share_executor_interval_sec": _sec("share_executor_interval_mult", 2.0),
+        "orderbook_interval_sec": _sec("orderbook_interval_mult", 1.0 / 24.0),
+        "derivatives_interval_sec": _sec("derivatives_interval_mult", 1.0 / 12.0),
+        "whale_interval_sec": _sec("whale_interval_mult", 1.0 / 6.0),
+        "news_interval_sec": _sec("news_interval_mult", 1.0 / 3.0),
+        "breadth_interval_sec": _sec("breadth_interval_mult", 5.0 / 6.0),
+        "macro_benchmarks_interval_sec": _sec("macro_benchmarks_interval_mult", 5.0 / 6.0),
+        "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
+        "sensor_stale_age_min": round(
+            exec_min * _cfg_ratio("intervals", "sensor_stale_age_mult", 11.0 / 12.0, config_path=config_path),
+            6,
+        ),
+        "unfilled_order_cancel_grace_sec": _sec("unfilled_order_cancel_grace_mult", 5.0 / 3.0),
+        "default_sentiment_interval_sec": _sec("default_sentiment_interval_mult", 30.0, "default_sentiment_interval_sec"),
+        "min_dynamic_sentiment_interval_sec": _sec("min_dynamic_sentiment_interval_mult", 5.0, "min_dynamic_sentiment_interval_sec"),
+        "peak_overlap_sentiment_interval_sec": _sec("peak_overlap_sentiment_interval_mult", 3.0, "peak_overlap_sentiment_interval_sec"),
+        "max_dynamic_sentiment_interval_sec": _sec("max_dynamic_sentiment_interval_mult", 45.0, "max_dynamic_sentiment_interval_sec"),
+        "sentiment_checkpoint_cooldown_sec": _sec("sentiment_checkpoint_cooldown_mult", 7.5, "sentiment_checkpoint_cooldown_sec"),
+        "default_geopolitical_interval_sec": _sec("default_geopolitical_interval_mult", 45.0, "default_geopolitical_interval_sec"),
+        "min_dynamic_geopolitical_interval_sec": _sec("min_dynamic_geopolitical_interval_mult", 2.5, "min_dynamic_geopolitical_interval_sec"),
+        "max_dynamic_geopolitical_interval_sec": _sec("max_dynamic_geopolitical_interval_mult", 60.0, "max_dynamic_geopolitical_interval_sec"),
+        "default_news_rolling_window_sec": _sec("default_news_rolling_window_mult", 40.0, "default_news_rolling_window_sec"),
+        "default_fallback_retry_ttl_sec": _sec("default_fallback_retry_ttl_mult", 1.0 / 3.0, "default_fallback_retry_ttl_sec"),
+        "dynamic_lexicon_ttl_sec": _sec("dynamic_lexicon_ttl_mult", 720.0, "dynamic_lexicon_ttl_sec"),
+    }
 
 
 def _tax_tuple(key: str, *, lower: bool = False) -> Tuple[str, ...]:
@@ -696,18 +806,19 @@ BREADTH_REGIMES: Tuple[str, ...] = get_breadth_regimes()
 THREAT_LEVELS: Tuple[str, ...] = get_threat_levels()
 RECOMMENDED_BRAKES: Tuple[str, ...] = get_recommended_brakes()
 
-DEFAULT_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "default_sentiment_interval_sec", 10800.0)
-MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "min_dynamic_sentiment_interval_sec", 1800.0)
-PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "peak_overlap_sentiment_interval_sec", 1080.0)
-MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _cfg_float("intervals", "max_dynamic_sentiment_interval_sec", 16200.0)
-SENTIMENT_CHECKPOINT_COOLDOWN_SEC: float = _cfg_float("intervals", "sentiment_checkpoint_cooldown_sec", 2700.0)
+_INIT_DERIVED_INTERVALS: Dict[str, float] = resolve_derived_telemetry_intervals()
+DEFAULT_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["default_sentiment_interval_sec"]
+MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["min_dynamic_sentiment_interval_sec"]
+PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["peak_overlap_sentiment_interval_sec"]
+MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["max_dynamic_sentiment_interval_sec"]
+SENTIMENT_CHECKPOINT_COOLDOWN_SEC: float = _INIT_DERIVED_INTERVALS["sentiment_checkpoint_cooldown_sec"]
 
-DEFAULT_GEOPOLITICAL_INTERVAL_SEC: float = _cfg_float("intervals", "default_geopolitical_interval_sec", 16200.0)
-MIN_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _cfg_float("intervals", "min_dynamic_geopolitical_interval_sec", 900.0)
-MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _cfg_float("intervals", "max_dynamic_geopolitical_interval_sec", 21600.0)
-DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = _cfg_float("intervals", "default_news_rolling_window_sec", 14400.0)
-DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _cfg_float("intervals", "default_fallback_retry_ttl_sec", 120.0)
-DYNAMIC_LEXICON_TTL_SEC: float = _cfg_float("intervals", "dynamic_lexicon_ttl_sec", 259200.0)
+DEFAULT_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["default_geopolitical_interval_sec"]
+MIN_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["min_dynamic_geopolitical_interval_sec"]
+MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["max_dynamic_geopolitical_interval_sec"]
+DEFAULT_NEWS_ROLLING_WINDOW_SEC: float = _INIT_DERIVED_INTERVALS["default_news_rolling_window_sec"]
+DEFAULT_FALLBACK_RETRY_TTL_SEC: float = _INIT_DERIVED_INTERVALS["default_fallback_retry_ttl_sec"]
+DYNAMIC_LEXICON_TTL_SEC: float = _INIT_DERIVED_INTERVALS["dynamic_lexicon_ttl_sec"]
 
 
 def get_fear_greed_endpoint_url() -> str:
@@ -1430,14 +1541,19 @@ def compute_dynamic_sentiment_interval(
     geopolitical_threat_level: str = "NORMAL",
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_sentiment`` evaluation."""
-    base = max(60.0, safe_pos_float(base_interval_sec, DEFAULT_SENTIMENT_INTERVAL_SEC))
+    derived = resolve_derived_telemetry_intervals()
+    dyn_default_sent = derived["default_sentiment_interval_sec"]
+    raw_base = safe_pos_float(base_interval_sec, dyn_default_sent)
+    if raw_base == DEFAULT_SENTIMENT_INTERVAL_SEC and dyn_default_sent != DEFAULT_SENTIMENT_INTERVAL_SEC:
+        raw_base = dyn_default_sent
+    base = max(60.0, raw_base)
     ts = resolve_now_ts(now_ts)
 
-    scale = base / DEFAULT_SENTIMENT_INTERVAL_SEC
-    min_interval = max(60.0, MIN_DYNAMIC_SENTIMENT_INTERVAL_SEC * scale)
-    peak_overlap_interval = max(60.0, PEAK_OVERLAP_SENTIMENT_INTERVAL_SEC * scale)
-    max_interval = max(base, MAX_DYNAMIC_SENTIMENT_INTERVAL_SEC * scale)
-    checkpoint_cooldown = max(60.0, SENTIMENT_CHECKPOINT_COOLDOWN_SEC * scale)
+    scale = base / dyn_default_sent
+    min_interval = max(60.0, derived["min_dynamic_sentiment_interval_sec"] * scale)
+    peak_overlap_interval = max(60.0, derived["peak_overlap_sentiment_interval_sec"] * scale)
+    max_interval = max(base, derived["max_dynamic_sentiment_interval_sec"] * scale)
+    checkpoint_cooldown = max(60.0, derived["sentiment_checkpoint_cooldown_sec"] * scale)
 
     session_ctx = resolve_global_trading_session(ts)
     if not session_ctx.is_weekend:
@@ -1506,12 +1622,24 @@ def compute_dynamic_geopolitical_interval(
     last_headlines_digest: str = "",
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_geopolitical`` evaluation."""
-    base = max(60.0, safe_pos_float(base_interval_sec, DEFAULT_GEOPOLITICAL_INTERVAL_SEC))
+    derived = resolve_derived_telemetry_intervals()
+    dyn_default_geo = derived["default_geopolitical_interval_sec"]
+    raw_base = safe_pos_float(base_interval_sec, dyn_default_geo)
+    if raw_base == DEFAULT_GEOPOLITICAL_INTERVAL_SEC and dyn_default_geo != DEFAULT_GEOPOLITICAL_INTERVAL_SEC:
+        raw_base = dyn_default_geo
+    base = max(60.0, raw_base)
+    geo_scale = base / dyn_default_geo
+    min_geo_itv = max(60.0, derived["min_dynamic_geopolitical_interval_sec"] * geo_scale)
+    max_geo_itv = max(base, derived["max_dynamic_geopolitical_interval_sec"] * geo_scale)
+    cp_cooldown_itv = max(60.0, derived["sentiment_checkpoint_cooldown_sec"] * geo_scale)
     ts = resolve_now_ts(now_ts)
     changed_b = _parse_bool_flag(headlines_changed)
 
     if cached_assessment is not None and _parse_bool_flag(obj_attr(cached_assessment, "is_fallback", False)):
-        return max(30.0, safe_pos_float(fallback_retry_ttl_sec, DEFAULT_FALLBACK_RETRY_TTL_SEC)), "fallback_short_retry"
+        raw_retry = safe_pos_float(fallback_retry_ttl_sec, derived["default_fallback_retry_ttl_sec"])
+        if raw_retry == DEFAULT_FALLBACK_RETRY_TTL_SEC and derived["default_fallback_retry_ttl_sec"] != DEFAULT_FALLBACK_RETRY_TTL_SEC:
+            raw_retry = derived["default_fallback_retry_ttl_sec"]
+        return max(30.0, raw_retry), "fallback_short_retry"
 
     threat_level = normalize_threat_level(obj_attr(cached_assessment, "threat_level", None))
     has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
@@ -1532,20 +1660,20 @@ def compute_dynamic_geopolitical_interval(
 
     if changed_b and high_sev_count > 0:
         if threat_level == "CRITICAL_SHOCK":
-            return min(base, 1800.0), "critical_shock_active_monitoring_30m"
+            return min(base, min_geo_itv * 2.0), "critical_shock_active_monitoring_30m"
         if threat_level == "ELEVATED":
-            return min(base, 3600.0), "elevated_threat_new_headlines_1h"
+            return min(base, min_geo_itv * 4.0), "elevated_threat_new_headlines_1h"
         if high_sev_count >= 3:
-            return min(base, 2700.0), f"high_severity_headline_surge_{high_sev_count}"
-        crossed_cp = did_cross_session_checkpoint(last_eval_ts, ts, min_cooldown_sec=2700.0)
+            return min(base, cp_cooldown_itv), f"high_severity_headline_surge_{high_sev_count}"
+        crossed_cp = did_cross_session_checkpoint(last_eval_ts, ts, min_cooldown_sec=cp_cooldown_itv)
         if crossed_cp is not None:
-            return min(base, 2700.0), f"geopolitical_session_checkpoint_{crossed_cp}"
+            return min(base, cp_cooldown_itv), f"geopolitical_session_checkpoint_{crossed_cp}"
 
     if high_sev_count == 0 and threat_level == "NORMAL":
         session_ctx = resolve_global_trading_session(ts)
         if not session_ctx.is_active_western_session:
-            return min(MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC, base * 1.3333), "global_overnight_calm_6h"
-        return min(MAX_DYNAMIC_GEOPOLITICAL_INTERVAL_SEC, base * 1.15), "global_daytime_calm"
+            return min(max_geo_itv, base * 1.3333), "global_overnight_calm_6h"
+        return min(max_geo_itv, base * 1.15), "global_daytime_calm"
 
     return base, f"standard_geopolitical_ttl_{threat_level.lower()}"
 

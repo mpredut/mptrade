@@ -12957,6 +12957,8 @@ def test_iteration124_monitororder_ttl_owner_and_monitortrades_uid_safety():
     # 2. _should_notify_order_launched treats boolean owner as True (not suppressed)
     assert mo._should_notify_order_launched(True) is True
     assert mo._should_notify_order_launched("rtrade") is False
+    assert mo._should_notify_order_launched("ai_executor") is False
+    assert mo._should_notify_order_launched("tradeall") is True
 
     # 3. resolve_order_owner matches uppercase/mixed-case manual prefixes
     assert rc.resolve_order_owner("WEB_abc123") == "manual"

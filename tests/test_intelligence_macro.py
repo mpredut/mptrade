@@ -838,5 +838,84 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert itv_no_new_acute == 3600.0
         assert reason_no_new == "elevated_threat_new_headlines_1h"
 
+    def test_dynamic_telemetry_interval_scaling_from_executor_cadence(self, tmp_path, monkeypatch):
+        from datetime import datetime, timezone
+        from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+        from intelligence.macro_analyzer import MacroAnalyzer
+        from intelligence.macro_sentiment_ssot import (
+            compute_dynamic_geopolitical_interval,
+            compute_dynamic_sentiment_interval,
+            resolve_crypto_executor_interval_sec,
+            resolve_derived_telemetry_intervals,
+        )
+
+        # 1. Baseline 6-minute (360s) cadence
+        base_itvs = resolve_derived_telemetry_intervals(executor_interval_sec=360.0)
+        assert base_itvs["crypto_executor_interval_sec"] == 360.0
+        assert base_itvs["share_executor_interval_sec"] == 720.0
+        assert base_itvs["orderbook_interval_sec"] == 15.0
+        assert base_itvs["derivatives_interval_sec"] == 30.0
+        assert base_itvs["whale_interval_sec"] == 60.0
+        assert base_itvs["news_interval_sec"] == 120.0
+        assert base_itvs["breadth_interval_sec"] == 300.0
+        assert base_itvs["macro_benchmarks_interval_sec"] == 300.0
+        assert base_itvs["fear_greed_interval_sec"] == 1800.0
+        assert base_itvs["sensor_stale_age_min"] == 5.5
+        assert base_itvs["unfilled_order_cancel_grace_sec"] == 600.0
+        assert base_itvs["peak_overlap_sentiment_interval_sec"] == 1080.0
+        assert base_itvs["default_sentiment_interval_sec"] == 10800.0
+        assert base_itvs["default_geopolitical_interval_sec"] == 16200.0
+
+        # 2. Automatic propagation when crontab changes from */6 to */10 (10m = 600s)
+        cron_10m = tmp_path / "crontab.prod.txt"
+        cron_10m.write_text(
+            "*/10 * * * * cd $HOME/mptrade && ./orchestratorOS/run_python.sh "
+            "orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("MPTRADE_CRONTAB_PATH", str(cron_10m))
+        assert resolve_crypto_executor_interval_sec() == 600.0
+
+        scaled_itvs = resolve_derived_telemetry_intervals()
+        assert scaled_itvs["crypto_executor_interval_sec"] == 600.0
+        assert scaled_itvs["share_executor_interval_sec"] == 1200.0
+        assert scaled_itvs["orderbook_interval_sec"] == 25.0
+        assert scaled_itvs["derivatives_interval_sec"] == 50.0
+        assert scaled_itvs["whale_interval_sec"] == 100.0
+        assert scaled_itvs["news_interval_sec"] == 200.0
+        assert scaled_itvs["breadth_interval_sec"] == 500.0
+        assert scaled_itvs["macro_benchmarks_interval_sec"] == 500.0
+        assert scaled_itvs["fear_greed_interval_sec"] == 3000.0
+        assert round(scaled_itvs["sensor_stale_age_min"], 2) == 9.17
+        assert scaled_itvs["unfilled_order_cancel_grace_sec"] == 1000.0
+        assert scaled_itvs["peak_overlap_sentiment_interval_sec"] == 1800.0
+        assert scaled_itvs["min_dynamic_sentiment_interval_sec"] == 3000.0
+        assert scaled_itvs["default_sentiment_interval_sec"] == 18000.0
+        assert scaled_itvs["default_geopolitical_interval_sec"] == 27000.0
+
+        # 3. GlobalTelemetryCollector and MacroAnalyzer automatically inherit the scaled 10m intervals
+        gtc_10m = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(tmp_path), skip_news=True, skip_external=True)
+        assert gtc_10m.orderbook_interval_sec == 25.0
+        assert gtc_10m.derivatives_interval_sec == 50.0
+        assert gtc_10m.whale_interval_sec == 100.0
+        assert gtc_10m.news_interval_sec == 200.0
+        assert gtc_10m.breadth_interval_sec == 500.0
+        assert gtc_10m.macro_benchmarks_interval_sec == 500.0
+        assert gtc_10m.fear_greed_interval_sec == 3000.0
+
+        ma_10m = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["BTCUSDC"])
+        assert ma_10m.advisor_interval_sec == 18000.0
+        assert ma_10m.macro_llm_interval_sec == 27000.0
+
+        # Peak overlap window (16:00 EET = 14:00 UTC) scales from 1080s (18m) to 1800s (30m)
+        ts_1600_eet = datetime(2026, 2, 11, 14, 0, 0, tzinfo=timezone.utc).timestamp()
+        sent_itv, sent_reason = compute_dynamic_sentiment_interval(now_ts=ts_1600_eet)
+        assert sent_itv == 1800.0
+        assert "critical_us_eu_overlap_window" in sent_reason
+
+        geo_itv, geo_reason = compute_dynamic_geopolitical_interval(now_ts=ts_1600_eet)
+        assert geo_reason == "global_daytime_calm"
+        assert geo_itv == pytest.approx(min(scaled_itvs["max_dynamic_geopolitical_interval_sec"], 27000.0 * 1.15))
+
 
 

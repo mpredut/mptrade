@@ -1174,3 +1174,57 @@ def test_execution_details_resting_limit_ignores_prior_recent_orders_and_collect
 
 
 
+
+
+def test_ai_order_identity_is_isolated_from_monitororder_repricing_and_bot_intent_cids():
+    """AI orders are never repriced by monitororder, and bot/repriced orders are never adopted as AI orders."""
+    from binance_api import order_id_context as rc
+    from providers.execution_audit import (
+        _resolve_intent_execution_details,
+        cancel_existing_ai_open_orders,
+        extract_intent_notional,
+    )
+
+    # 1. AI_ cids resolve to ai_executor and are protected from monitororder repricing
+    assert rc.resolve_order_owner("AI_20261102-BUY-BTCUSDC_ab12cd_7f9e1a2") == "ai_executor"
+    assert rc.is_order_repriceable_by_monitororder("AI_20261102-BUY-BTCUSDC_ab12cd_7f9e1a2") is False
+    # monitororder replacement cids (tradeall/manual) stay repriceable BOT lineage, never AI
+    assert rc.resolve_order_owner("MO_TA_OR_MainThread_1A2B3C4D") == "tradeall"
+    assert rc.resolve_order_owner("MO_MN_OR_MainThread_1A2B3C4D") == "manual"
+
+    # 2. Gateway replace_open_orders never cancels Binance trailing_stop SD_<hex> intent orders as "AI" orders
+    trailing_cid = "SD_0123456789abcdef0123456789abcdef"
+    inst = MagicMock()
+    inst.symbol = "BTCUSDC"
+    inst.open_orders.return_value = [
+        {"orderId": 101, "side": "SELL", "clientOrderId": trailing_cid, "price": "80000"},
+        {"orderId": 102, "side": "SELL", "clientOrderId": "MO_TA_OR_MainThread_1A2B3C4D", "price": "80100"},
+        {"orderId": 103, "side": "SELL", "clientOrderId": "AI_20261102-SELL-BTCUSDC_ab12cd_7f9e1a2", "price": "80200"},
+    ]
+    canceled = cancel_existing_ai_open_orders(inst, "SELL", intents=[])
+    assert canceled == ["103"]
+    inst.cancel_order.assert_called_once_with("103")
+
+    # 3. A response-lost AI LIMIT intent (no order_id) is never matched to a repriced BOT order on the same side
+    now_ts = time.time()
+    intent = {
+        "intent_id": "intent-lost-1",
+        "timestamp": now_ts - 5000.0,
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "limit_price": 78000.0,
+        "status": "EXECUTED",
+        "execution_payload": None,
+        "history": [],
+    }
+    bot_open = [{
+        "venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "555", "orderId": "555",
+        "actor": "BOT", "module": "tradeall", "clientOrderId": "MO_TA_OR_MainThread_1A2B3C4D", "price": 77900.0,
+    }]
+    details = _resolve_intent_execution_details(intent, now_ts, extract_intent_notional, open_orders=bot_open)
+    assert details.get("exec_status") == "CANCELED_OR_EXPIRED"
+    ai_open = [dict(bot_open[0], actor="AI", clientOrderId="AI_intent-lost-1", module=None)]
+    details_ai = _resolve_intent_execution_details(intent, now_ts, extract_intent_notional, open_orders=ai_open)
+    assert details_ai.get("exec_status") == "OPEN_RESTING"

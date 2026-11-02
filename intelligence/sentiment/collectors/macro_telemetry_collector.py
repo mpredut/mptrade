@@ -275,9 +275,12 @@ def harvest_macro_and_news_sensors(
                 enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+        from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+
+        stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
         mb_cur = macro_sensors.get("market_breadth")
         mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
-        if mb_cur is None or mb_age is None or mb_age > 5.5:
+        if mb_cur is None or mb_age is None or mb_age > stale_age_min:
             try:
                 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
@@ -307,7 +310,9 @@ def harvest_macro_and_news_sensors(
                     macro_sensors["market_breadth"] = _with_age_min(mb_payload, mb_path)
             except Exception:
                 pass
-        if "macro_benchmarks" not in macro_sensors:
+        bench_cur = macro_sensors.get("macro_benchmarks")
+        bench_age = safe_float(bench_cur.get("age_min") if isinstance(bench_cur, dict) else None, 999.0)
+        if bench_cur is None or bench_age is None or bench_age > stale_age_min:
             if isinstance(live_mb := collect_macro_benchmarks_snapshot(cache_dir, now_ts=now_ts, timeout_sec=2.5, persist=True), dict) and live_mb:
                 macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
 

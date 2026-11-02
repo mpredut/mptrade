@@ -695,6 +695,7 @@ def _resolve_intent_execution_details(
                 and oo_venue == venue
                 and oo_sym
                 and (extract_order_side(oo) or str(oo.get("side") or "").strip().upper()) == side
+                and resolve_order_actor(oo) == "AI"
             ):
                 matched_open = oo
                 break
@@ -775,9 +776,12 @@ def _resolve_intent_execution_details(
         and isinstance(open_orders, list)
         and venue_open_verified
         and ts_val > 0
-        and (now_ts - ts_val) > 600.0
     ):
-        venue_st = "CANCELED_OR_EXPIRED"
+        from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+
+        cancel_grace_sec = resolve_derived_telemetry_intervals()["unfilled_order_cancel_grace_sec"]
+        if (now_ts - ts_val) > cancel_grace_sec:
+            venue_st = "CANCELED_OR_EXPIRED"
     if fill_px is None and raw_intent_st in ("EXECUTED", "OBSERVED_SHADOW") and not is_unfilled_resting_limit:
         fill_px = safe_pos_float(
             last_hist.get("price")

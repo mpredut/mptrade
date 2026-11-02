@@ -33,6 +33,7 @@ from intelligence.macro_sentiment_ssot import (
     load_cached_whale_telemetry,
     parse_symbol_list,
     prune_automated_cli_threads,
+    resolve_derived_telemetry_intervals,
     resolve_global_trading_session,
     resolve_now_ts,
     run_daemon_loop,
@@ -72,13 +73,21 @@ class MacroAnalyzer:
         self.cache_dir = cache_dir
         from order_guard import _load_margins
         conf_margins = _load_margins()
+        derived = resolve_derived_telemetry_intervals()
+        exec_scale = derived["crypto_executor_interval_sec"] / 360.0
 
-        default_macro_itv = safe_pos_float(conf_margins.get("macro_llm_interval_sec"), DEFAULT_GEOPOLITICAL_INTERVAL_SEC)
-        default_adv_itv = safe_pos_float(conf_margins.get("macro_advisor_interval_sec"), DEFAULT_SENTIMENT_INTERVAL_SEC)
+        default_macro_itv = safe_pos_float(
+            conf_margins.get("macro_llm_interval_sec"),
+            derived["default_geopolitical_interval_sec"],
+        ) * exec_scale
+        default_adv_itv = safe_pos_float(
+            conf_margins.get("macro_advisor_interval_sec"),
+            derived["default_sentiment_interval_sec"],
+        ) * exec_scale
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, default_macro_itv)
         self.advisor_interval_sec = safe_pos_float(advisor_interval_sec, default_adv_itv)
         self.shadow_notify = _parse_bool_flag(conf_margins.get("shadow_notify", True), False)
-        self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, 10800.0)
+        self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, derived["default_sentiment_interval_sec"])
         self.symbols = parse_symbol_list(symbols) or ["BTCUSDC"]
         self.running = False
 

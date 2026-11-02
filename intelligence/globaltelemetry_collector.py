@@ -18,13 +18,14 @@ import signal
 import time
 from typing import Any, Dict, List, Optional
 
-from botcore import _parse_bool_flag, load_dotenv, required_float_env
+from botcore import _parse_bool_flag, load_dotenv
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     detect_active_binance_symbols,
     is_interval_due,
     parse_symbol_list,
+    resolve_derived_telemetry_intervals,
     resolve_now_ts,
     run_daemon_loop,
     safe_pos_float,
@@ -49,24 +50,30 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self,
         symbols: Optional[List[str]] = None,
         cache_dir: str = "cachedb",
-        orderbook_interval_sec: float = 15.0,
-        derivatives_interval_sec: float = 30.0,
-        whale_interval_sec: float = 60.0,
+        orderbook_interval_sec: Optional[float] = None,
+        derivatives_interval_sec: Optional[float] = None,
+        whale_interval_sec: Optional[float] = None,
         news_interval_sec: Optional[float] = None,
-        fear_greed_interval_sec: float = 1800.0,
-        breadth_interval_sec: float = 300.0,
-        macro_benchmarks_interval_sec: float = 300.0,
+        fear_greed_interval_sec: Optional[float] = None,
+        breadth_interval_sec: Optional[float] = None,
+        macro_benchmarks_interval_sec: Optional[float] = None,
         skip_news: bool = False,
         skip_external: bool = False,
     ) -> None:
         self.cache_dir = cache_dir
-        self.orderbook_interval_sec = safe_pos_float(orderbook_interval_sec, 15.0)
-        self.derivatives_interval_sec = safe_pos_float(derivatives_interval_sec, 30.0)
-        self.whale_interval_sec = safe_pos_float(whale_interval_sec, 60.0)
-        self.news_interval_sec = safe_pos_float(news_interval_sec, required_float_env("MACRO_NEWS_INTERVAL_SEC"))
-        self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, 1800.0)
-        self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, 300.0)
-        self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, 300.0)
+        derived = resolve_derived_telemetry_intervals()
+        default_news_itv = (
+            derived["news_interval_sec"]
+            if derived["crypto_executor_interval_sec"] != 360.0
+            else safe_pos_float(os.environ.get("MACRO_NEWS_INTERVAL_SEC"), derived["news_interval_sec"])
+        )
+        self.orderbook_interval_sec = safe_pos_float(orderbook_interval_sec, derived["orderbook_interval_sec"])
+        self.derivatives_interval_sec = safe_pos_float(derivatives_interval_sec, derived["derivatives_interval_sec"])
+        self.whale_interval_sec = safe_pos_float(whale_interval_sec, derived["whale_interval_sec"])
+        self.news_interval_sec = safe_pos_float(news_interval_sec, default_news_itv)
+        self.fear_greed_interval_sec = safe_pos_float(fear_greed_interval_sec, derived["fear_greed_interval_sec"])
+        self.breadth_interval_sec = safe_pos_float(breadth_interval_sec, derived["breadth_interval_sec"])
+        self.macro_benchmarks_interval_sec = safe_pos_float(macro_benchmarks_interval_sec, derived["macro_benchmarks_interval_sec"])
         self.skip_news = _parse_bool_flag(skip_news, False)
         self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
@@ -273,9 +280,9 @@ def main():
     parser.add_argument("--once", action="store_true", help="Run a single update cycle and exit.")
     parser.add_argument("--skip-news", action="store_true", help="Skip RSS macro news collection.")
     parser.add_argument("--skip-external", action="store_true", help="Skip external orderbook and derivatives telemetry.")
-    parser.add_argument("--ob-interval", type=float, default=15.0, help="Orderbook refresh interval in seconds.")
-    parser.add_argument("--deriv-interval", type=float, default=30.0, help="Derivatives refresh interval in seconds.")
-    parser.add_argument("--whale-interval", type=float, default=60.0, help="Whale positioning refresh interval in seconds.")
+    parser.add_argument("--ob-interval", type=float, default=None, help="Orderbook refresh interval in seconds.")
+    parser.add_argument("--deriv-interval", type=float, default=None, help="Derivatives refresh interval in seconds.")
+    parser.add_argument("--whale-interval", type=float, default=None, help="Whale positioning refresh interval in seconds.")
     parser.add_argument("--news-interval", type=float, default=None, help="Macro news RSS aggregation interval in seconds.")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
     args = parser.parse_args()
