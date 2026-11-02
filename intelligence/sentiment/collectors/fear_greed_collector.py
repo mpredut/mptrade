@@ -41,7 +41,7 @@ class FearGreedCollector:
         endpoint_url: Optional[str] = None,
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 900.0)
-        self.endpoint_url = (endpoint_url or "").strip() or get_fear_greed_endpoint_url()
+        self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or get_fear_greed_endpoint_url()
         self._cached_snapshot: Optional[FearGreedSnapshot] = None
         self._last_fetch_ts: float = 0.0
 

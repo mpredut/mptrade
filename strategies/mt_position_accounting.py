@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import math
+import sys
 from typing import Any, Optional, Tuple
 
 from botcore import (
@@ -199,19 +200,27 @@ def _inst_provider(inst: Any = None) -> Optional[str]:
     return raw if isinstance(raw, str) else (getattr(raw, "name", None) or getattr(raw, "provider_label", None))
 
 
+def _mt_attr(name: str, default: Any) -> Any:
+    mod = sys.modules.get("monitortrades")
+    return getattr(mod, name, default) if mod is not None else default
+
+
 def _as_instrument(x):
     """Accept an Instrument or adapt a symbol string through the provider facade."""
-    if isinstance(x, _Instrument):
+    inst_cls = _mt_attr("_Instrument", _Instrument)
+    if isinstance(x, inst_cls):
         return x
     sym_s = str(x)
-    return _Instrument(name=sym_s, symbol=sym_s, provider=mkt.provider_name_for(sym_s), base=u.base_asset(sym_s))
+    facade = _mt_attr("mkt", mkt)
+    return inst_cls(name=sym_s, symbol=sym_s, provider=facade.provider_name_for(sym_s), base=u.base_asset(sym_s))
 
 
 def get_available_qty(symbol, api=None):
     """Return free base quantity, preserving ``None`` when balance is unavailable."""
-    api = api or mkt
+    facade = _mt_attr("mkt", mkt)
+    api = api or facade
     try:
-        value = _as_instrument(symbol).free() if api is mkt else api.free_balance(u.base_asset(symbol))
+        value = _mt_attr("_as_instrument", _as_instrument)(symbol).free() if api is facade else api.free_balance(u.base_asset(symbol))
         return safe_nonneg_float(value, default=None)
     except Exception as e:
         print(f"get_available_qty {symbol}: {e}")
@@ -223,7 +232,7 @@ def _is_terminal_dust_refusal(reason: Optional[str]) -> bool:
     if not reason:
         return False
     try:
-        return order_retry.is_terminal_filter_refusal(str(reason))
+        return _mt_attr("order_retry", order_retry).is_terminal_filter_refusal(str(reason))
     except Exception:
         r = str(reason)
         return r == "below_min_notional" or r.startswith(("filter_", "binance_filter_refused:"))
@@ -235,11 +244,11 @@ def _is_untradable_dust(inst, symbol: str, sellable_qty: float, current_price: f
         return True
     prov = getattr(inst, "_provider", None)
     if prov is not None and current_price and current_price > 0:
-        refusal = check_order_filter_refusal(
+        refusal = _mt_attr("check_order_filter_refusal", check_order_filter_refusal)(
             prov, symbol, "SELL", current_price, sellable_qty,
             market=True, enforce_business_minimum=False,
         )
-        if _is_terminal_dust_refusal(refusal):
+        if _mt_attr("_is_terminal_dust_refusal", _is_terminal_dust_refusal)(refusal):
             return True
     return False
 
@@ -258,7 +267,7 @@ def _cancel_resting_tp_orders(inst, symbol: str) -> list[dict]:
                     if callable(cancel_fn) and cancel_fn(oid) is not False:
                         cancelled.append(active_ord)
                         try:
-                            order_retry.resolve_accepted_order(symbol, oid)
+                            _mt_attr("order_retry", order_retry).resolve_accepted_order(symbol, oid)
                         except Exception:
                             pass
     except Exception as cancel_exc:
@@ -270,7 +279,7 @@ def _restore_resting_tp_orders(inst, symbol: str, cancelled_orders: list[dict], 
     """Restore previously cancelled TP orders if Stop-Loss submission failed."""
     if not cancelled_orders:
         return
-    restore_cancelled_orders(
+    _mt_attr("restore_cancelled_orders", restore_cancelled_orders)(
         cancelled_orders,
         restore_fn=lambda p: bool(
             inst.place(
@@ -327,7 +336,9 @@ def _resolve_inst_bypass_guards(inst: Any = None, provider: Any = None, extra_by
         or getattr(inst, "provider_label", None)
         or "binance"
     )
-    return order_guard.resolve_effective_bypass_guards(raw_venue, bypass_guards=extra_bypass, inst_bypass=inst_bg)
+    return _mt_attr("order_guard", order_guard).resolve_effective_bypass_guards(
+        raw_venue, bypass_guards=extra_bypass, inst_bypass=inst_bg
+    )
 
 
 def _eval_reentry_buy_quantity_decision(
@@ -335,7 +346,9 @@ def _eval_reentry_buy_quantity_decision(
     reentry_bg: set[str], buy_safeback_hours: float = 1.0,
 ):
     bypass_qlimit1 = GUARD_REGISTRY["G_QLIMIT1"].is_bypassed(reentry_bg) or "all" in reentry_bg or "*" in reentry_bg
-    base_asset, quote_asset = resolve_assets(symbol, getattr(inst, "base", None), getattr(inst, "quote", None))
+    base_asset, quote_asset = _mt_attr("resolve_assets", resolve_assets)(
+        symbol, getattr(inst, "base", None), getattr(inst, "quote", None)
+    )
     decision = provider.quantity_decision(
         symbol, "BUY", current_price, requested_qty,
         base=base_asset, quote=quote_asset,
@@ -349,11 +362,11 @@ def _validate_scaled_buy_qty(
     provider, symbol: str, current_price: float, raw_qty: float, scale: float,
     min_qty: float, prefix_msg: str, qty_label: str = "scaled qty",
 ) -> Tuple[bool, float]:
-    scaled_qty = round_provider_qty(provider, symbol, raw_qty * scale)
+    scaled_qty = _mt_attr("round_provider_qty", round_provider_qty)(provider, symbol, raw_qty * scale)
     if scaled_qty <= 0.0 or (min_qty and scaled_qty < float(min_qty)):
         print(f"[{symbol}] {prefix_msg}: {qty_label} {scaled_qty} below min_qty {min_qty} (scale={scale:.2f})")
         return False, scaled_qty
-    scaled_refusal = check_order_filter_refusal(
+    scaled_refusal = _mt_attr("check_order_filter_refusal", check_order_filter_refusal)(
         provider, symbol, "BUY", current_price, scaled_qty,
         market=False, enforce_business_minimum=True,
     )

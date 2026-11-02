@@ -240,17 +240,15 @@ def run_symbol(
         return False
 
     orig_is_trend_up = mt.is_trend_up
-    mt.is_trend_up = _replay_is_trend_up
     orig_get_vol = mt.get_symbol_volatility_1h
-    mt.get_symbol_volatility_1h = lambda s: None
     orig_persist = mt._MT_PERSISTENCE_ENABLED
-    mt._MT_PERSISTENCE_ENABLED = False
     orig_post_stop_ai = mt._apply_post_stop_ai_guard
-    mt._apply_post_stop_ai_guard = (
-        lambda sym, px, spx, st, snap, bb, bq, q, inst=None: (True, bb, bq, q)
-    )
     orig_get_relevant_trade = mt.get_relevant_trade
     orig_summarize_orders = mt._summarize_orders
+    orig_eval_hard_tp = mt._evaluate_hard_take_profit
+    hard_tp_touched = False
+    min_hard_tp_gain_ratio = float("inf")
+    hard_tp_cooldown_dts: list[float] = []
 
     def _fast_get_relevant_trade(trade_orders, trade_type, threshold_s=0, symbol=None, now_fn=None):
         if not trade_orders:
@@ -277,13 +275,6 @@ def run_symbol(
         if hasattr(orders, "_summary"):
             orders._summary = res
         return res
-
-    mt.get_relevant_trade = _fast_get_relevant_trade
-    mt._summarize_orders = _fast_summarize_orders
-    orig_eval_hard_tp = mt._evaluate_hard_take_profit
-    hard_tp_touched = False
-    min_hard_tp_gain_ratio = float("inf")
-    hard_tp_cooldown_dts: list[float] = []
 
     def _tracked_eval_hard_tp(*a, **kw):
         nonlocal hard_tp_touched, min_hard_tp_gain_ratio
@@ -314,10 +305,18 @@ def run_symbol(
         ):
             st_dict.pop(sym, None)
 
-    mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
-    _clear_symbol_mt_state(symbol)
     with backtest_isolation_context(quiet=quiet):
         try:
+            mt.is_trend_up = _replay_is_trend_up
+            mt.get_symbol_volatility_1h = lambda s: None
+            mt._MT_PERSISTENCE_ENABLED = False
+            mt._apply_post_stop_ai_guard = (
+                lambda sym, px, spx, st, snap, bb, bq, q, inst=None: (True, bb, bq, q)
+            )
+            mt.get_relevant_trade = _fast_get_relevant_trade
+            mt._summarize_orders = _fast_summarize_orders
+            mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
+            _clear_symbol_mt_state(symbol)
             first_price = provider.advance(symbol)
             if first_price is None:
                 return None

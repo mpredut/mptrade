@@ -251,8 +251,8 @@ class OrderbookSnapshot:
         spread_bps = round_spread_bps(data.get("spread_bps"), best_bid=best_bid, best_ask=best_ask, mid_price=mid_price) or 0.0
         bid_depth = _clean_dict_float(data, "bid_depth_usd", 0.0, nonneg=True)
         ask_depth = _clean_dict_float(data, "ask_depth_usd", 0.0, nonneg=True)
-        d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth / 1.5, 2) if bid_depth > 0.0 else 0.0)
-        d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth / 1.5, 2) if ask_depth > 0.0 else 0.0)
+        d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth * (1.0 / 1.5), 2) if bid_depth > 0.0 else 0.0)
+        d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth * (1.0 / 1.5), 2) if ask_depth > 0.0 else 0.0)
         imb_raw = _clean_dict_float(data, "imbalance_ratio", 0.5, "ob_imbalance")
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),

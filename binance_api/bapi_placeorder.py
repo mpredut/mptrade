@@ -569,10 +569,10 @@ def place_order_smart(order_type, symbol, price, qty=None, safeback_seconds=PLAC
 
 def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=None):
     """Cancel adverse opposing Binance orders without changing the target price."""
-    order_type = "" if isinstance(order_type, bool) else str(_normalize_side(order_type or "")).strip().upper()
     req_px = None if isinstance(order_type, bool) else safe_pos_float(requested_price, default=None)
-    if not order_type or req_px is None:
+    if req_px is None:
         raise SubmissionRefused("invalid_opposing_cancel_request")
+    order_type = str(_normalize_side(order_type or "")).strip().upper()
     if order_type not in {"BUY", "SELL"}:
         return
     opp_side = "SELL" if order_type == "BUY" else "BUY"
@@ -597,10 +597,10 @@ def cancel_opposite_orders(order_type, symbol, requested_price, allowed_owners=N
 def adjust_price_and_cancel_opposite(order_type, symbol, price, cancel_opposite=True):
     """Apply Binance price mechanics and optionally cancel opposing orders."""
     cancel_opposite = _parse_bool_flag(cancel_opposite, True)
-    order_type = str(_normalize_side(order_type or "")).strip().upper()
-    price = safe_pos_float(price, default=None)
-    if not order_type or price is None:
+    price = None if isinstance(order_type, bool) else safe_pos_float(price, default=None)
+    if price is None:
         raise SubmissionRefused("invalid_order_parameters")
+    order_type = str(_normalize_side(order_type or "")).strip().upper()
     if cancel_opposite:
         cancel_opposite_orders(order_type, symbol, price)
     cp = safe_pos_float(api.get_current_price(symbol), default=None)

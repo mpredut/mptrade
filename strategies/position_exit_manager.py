@@ -595,7 +595,9 @@ class PositionExitManager:
             disaster_buffer = max(0.0, disaster_floor - lost_threshold)
             disaster_meta = {**disaster_meta, "source": "episode_locked", "effective_buffer": disaster_buffer}
 
-        episode_state = self.sl_episode_state.get(symbol) or {}
+        episode_state = self.sl_episode_state.get(symbol)
+        if not isinstance(episode_state, dict):
+            episode_state = {}
         episode_started_at = _clamp_state_ts(episode_state, "started_at", now)
         sl_episode_expired = (now - episode_started_at) >= self.config.sl_trend_defer_max_sec
 

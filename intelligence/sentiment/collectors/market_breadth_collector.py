@@ -50,7 +50,7 @@ class MarketBreadthCollector:
     ) -> None:
         self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
         self.min_volume_usd = safe_nonneg_ts(min_volume_usd, 5_000_000.0)
-        self.endpoint_url = (endpoint_url or "").strip() or get_market_breadth_endpoint_url()
+        self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or get_market_breadth_endpoint_url()
         self._cached_snapshot: Optional[MarketBreadthSnapshot] = None
         self._last_fetch_ts: float = 0.0
 
