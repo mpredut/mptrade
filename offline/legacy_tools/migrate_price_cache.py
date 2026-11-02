@@ -24,7 +24,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 from botcore import safe_pos_float
 from cachepaths import get_cachedb_dir
-from state_io import atomic_write_json, atomic_write_text, read_json_dict, read_jsonl_dicts
+from state_io import atomic_write_json, atomic_write_text, durable_replace_file, read_json_dict, read_jsonl_dicts
 
 CACHE_DIR = get_cachedb_dir()
 
@@ -103,7 +103,7 @@ def migrate_file(json_path, dry_run=False):
     atomic_write_text(jsonl_path, "".join(ln + "\n" for ln in lines))
     atomic_write_json(jsonl_path + ".meta", {"max_ts": max_ts, "saved_at": int(time.time() * 1000),
                                             "fetchtime": fetchtime, "counts": counts})
-    os.replace(json_path, json_path + ".bak")     # A backup; we do not delete directly.
+    durable_replace_file(json_path, json_path + ".bak")  # A backup; we do not delete directly.
     return added_total
 
 

@@ -64,7 +64,7 @@ from instrument_registry import select_instruments
 from offline.research.backtest_ranges import scan_backtest_ranges
 from offline.research.monitortrades_backtest import run_replay_backtest as rb
 from providers.replay_provider import load_price_series
-from state_io import atomic_write_json, atomic_write_text, read_jsonl_dicts, read_text_lines
+from state_io import append_jsonl_record, atomic_write_json, atomic_write_text, read_jsonl_dicts, read_text_lines
 
 
 def _env_float(name: str, default: float) -> float:
@@ -127,10 +127,7 @@ def _git_head_short():
 
 
 def _append_audit(entry):
-    os.makedirs(os.path.dirname(AUDIT_LOG), exist_ok=True)
-    entry = dict(entry, ts=_now_iso())
-    with open(AUDIT_LOG, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    append_jsonl_record(AUDIT_LOG, dict(entry, ts=_now_iso()))
 
 
 def _last_change_for(full_key):

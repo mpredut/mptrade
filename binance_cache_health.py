@@ -26,7 +26,7 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import resolve_cachedb_filepath
-from state_io import atomic_write_json, read_json_dict
+from state_io import atomic_write_json, read_json_dict, read_text_file, read_text_lines
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -102,8 +102,7 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
     if pid_val is None:
         return None
     try:
-        with open(f"/proc/{pid_val}/stat", "r", encoding="utf-8") as handle:
-            stat = handle.read()
+        stat = read_text_file(f"/proc/{pid_val}/stat")
         # The command name can contain spaces and parentheses. Fields after the final
         # closing parenthesis start at field 3; process start ticks are field 22.
         rparen = stat.rfind(")")
@@ -112,10 +111,12 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         start_ticks = int(stat[rparen + 2:].split()[19])
         if start_ticks <= 0:
             return None
-        with open("/proc/stat", "r", encoding="utf-8") as handle:
-            boot_seconds = next(
-                int(line.split()[1]) for line in handle if line.startswith("btime ")
-            )
+        proc_lines = read_text_lines("/proc/stat")
+        if not proc_lines:
+            return None
+        boot_seconds = next(
+            int(line.split()[1]) for line in proc_lines if line.startswith("btime ")
+        )
         ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
         return int((boot_seconds + start_ticks / ticks_per_second) * 1000)
     except (OSError, StopIteration, TypeError, ValueError, IndexError):

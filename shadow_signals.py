@@ -33,7 +33,7 @@ from intelligence.internal.triggers.kalman_trigger import (
     KALMAN_QR,
     KalmanTrend,
 )
-from state_io import read_json_dict, save_json_state
+from state_io import append_text_line, durable_replace_file, read_json_dict, save_json_state
 
 
 # Feed Kalman at a subsampled cadence. One-second ticks track minute oscillations
@@ -73,8 +73,7 @@ class KalmanJournal:
             if not self.fixed_path:
                 os.makedirs(self.out_dir, exist_ok=True)
             cols = [ts, symbol, signal, "trend_start", state, old_state, price, vel, vel_std]
-            with open(self._path(), "a", encoding="utf-8") as f:
-                f.write("|".join(self._sanitize(c) for c in cols) + "\n")
+            append_text_line(self._path(), "|".join(self._sanitize(c) for c in cols))
         except Exception as e:  # noqa: BLE001 — Logging must not stop the host.
             print(f"[shadow_signals] error writing kalman journal: {e}")
 
@@ -119,7 +118,7 @@ class KalmanStateTracker:
                 for legacy_name in ("kalman_state.json", "shadow_state.json"):
                     legacy_path = os.path.join(os.path.dirname(self.state_path), legacy_name)
                     if legacy_path != self.state_path and os.path.exists(legacy_path):
-                        os.replace(legacy_path, self.state_path)
+                        durable_replace_file(legacy_path, self.state_path)
                         break
             loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
             if isinstance(loaded, dict):

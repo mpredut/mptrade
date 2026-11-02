@@ -173,10 +173,6 @@ def _normalize(txid, tr):
     )
 
 
-def _atomic_write(path, obj):
-    save_json_state(path, obj, indent=1)
-
-
 def _load_initial_cache(path):
     """Load existing Kraken trade cache (or recover from .previous) so transient startup errors do not wipe history."""
     loaded = read_json_dict(path, default=None, recover_previous=True)
@@ -329,7 +325,7 @@ def poll_loop(client):
     while True:
         try:
             _fetch_rest_into(client, cache)
-            _atomic_write(CACHE_FILE, cache)
+            save_json_state(CACHE_FILE, cache, indent=1)
             log(f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
                 f"for {list(cache['items'].keys())}")
             backoff = POLL_BACKOFF_INIT   # reset after success
@@ -388,7 +384,7 @@ def ws_loop(client):
     last_flush_ms = [0]
     try:
         _merge_rest_into(client, cache)      # initial snapshot merged incrementally
-        _atomic_write(CACHE_FILE, cache)
+        save_json_state(CACHE_FILE, cache, indent=1)
         last_flush_ms[0] = int(time.time() * 1000)
     except Exception as e:
         log(f"[kraken_cache][ws] REST seed failed: {e}")
@@ -414,7 +410,7 @@ def ws_loop(client):
             # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
             if isinstance(data, dict) and (now_ms - last_flush_ms[0]) >= 15_000:
                 _touch_ws_fetchtimes(cache, now_ms)
-                _atomic_write(CACHE_FILE, cache)
+                save_json_state(CACHE_FILE, cache, indent=1)
                 last_flush_ms[0] = now_ms
             return
         changed = False
@@ -439,7 +435,7 @@ def ws_loop(client):
                     changed = True
         if changed or (now_ms - last_flush_ms[0]) >= 15_000:
             _touch_ws_fetchtimes(cache, now_ms)
-            _atomic_write(CACHE_FILE, cache)             # immediate fill write for zero lag
+            save_json_state(CACHE_FILE, cache, indent=1)  # immediate fill write for zero lag
             last_flush_ms[0] = now_ms
 
     def on_error(ws, err):
@@ -456,7 +452,7 @@ def ws_loop(client):
         time.sleep(5)
         try:
             _merge_rest_into(client, cache)
-            _atomic_write(CACHE_FILE, cache)
+            save_json_state(CACHE_FILE, cache, indent=1)
             last_flush_ms[0] = int(time.time() * 1000)
         except Exception as e:
             log(f"[kraken_cache][ws] REST resync after disconnect failed: {e}")

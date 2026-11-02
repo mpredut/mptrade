@@ -17,6 +17,10 @@ import shutil
 import tempfile
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 
 from botcore import (
     _parse_bool_flag,
@@ -150,7 +154,13 @@ def load_json_state(path: str, *, default_factory, fail_closed: bool,
 
 
 @contextlib.contextmanager
-def _atomic_stream_writer(path: str, mode: str, **open_kwargs: Any) -> Iterator[Any]:
+def _atomic_stream_writer(
+    path: str,
+    mode: str,
+    *,
+    preserve_mode: bool = False,
+    **open_kwargs: Any,
+) -> Iterator[Any]:
     destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
@@ -163,6 +173,8 @@ def _atomic_stream_writer(path: str, mode: str, **open_kwargs: Any) -> Iterator[
         handle.flush()
         os.fsync(handle.fileno())
         handle.close()
+        if preserve_mode and os.path.exists(destination):
+            shutil.copymode(destination, temporary)
         os.replace(temporary, destination)
         _fsync_parent_directory(destination)
     except BaseException:
@@ -264,15 +276,76 @@ def save_json_state(path: str, value: Any, *, indent: int | None = None,
         raise
 
 
-def atomic_binary_writer(path: str) -> contextlib.AbstractContextManager[Any]:
+def atomic_binary_writer(
+    path: str,
+    *,
+    preserve_mode: bool = False,
+) -> contextlib.AbstractContextManager[Any]:
     """Yield a binary handle and atomically publish it only after a durable write."""
-    return _atomic_stream_writer(path, "wb")
+    return _atomic_stream_writer(path, "wb", preserve_mode=_parse_bool_flag(preserve_mode, False))
 
 
-def atomic_write_bytes(path: str, data: bytes | bytearray | memoryview) -> None:
+def atomic_write_bytes(
+    path: str,
+    data: bytes | bytearray | memoryview,
+    *,
+    preserve_mode: bool = False,
+) -> None:
     """Durably and atomically write binary bytes to ``path``."""
-    with atomic_binary_writer(path) as handle:
+    with atomic_binary_writer(path, preserve_mode=preserve_mode) as handle:
         handle.write(data)
+
+
+def append_text_line(
+    path: str,
+    line: str,
+    *,
+    encoding: str = "utf-8",
+    flock: bool = False,
+) -> None:
+    """Append a single newline-terminated text line to ``path``, creating parent directories."""
+    destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
+    directory = os.path.dirname(destination)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    text = str(line)
+    if not text.endswith("\n"):
+        text += "\n"
+    use_flock = _parse_bool_flag(flock, False) and fcntl is not None
+    with open(destination, "a", encoding=encoding) as handle:
+        if use_flock:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            handle.write(text)
+            if use_flock:
+                handle.flush()
+        finally:
+            if use_flock:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def append_jsonl_record(
+    path: str,
+    record: Any,
+    *,
+    ensure_ascii: bool = True,
+    sort_keys: bool = False,
+    separators=None,
+    allow_nan: bool = False,
+    default: Any = None,
+    flock: bool = False,
+) -> None:
+    """Serialize one JSON record and append it as a single line to ``path``."""
+    dump_kwargs = {"default": default} if default is not None else {}
+    line = json.dumps(
+        record,
+        ensure_ascii=_parse_bool_flag(ensure_ascii, True),
+        sort_keys=_parse_bool_flag(sort_keys, False),
+        separators=separators,
+        allow_nan=_parse_bool_flag(allow_nan, False),
+        **dump_kwargs,
+    )
+    append_text_line(path, line, flock=flock)
 
 
 @contextlib.contextmanager

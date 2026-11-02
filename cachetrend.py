@@ -92,12 +92,6 @@ def _cm_attr(name: str, default=None):
     return default
 
 
-def _write_json_atomic(path, data, **kwargs):
-    return save_json_state(
-        path, data, write_fn=_cm_attr("atomic_write_json", atomic_write_json), **kwargs
-    )
-
-
 _dynamic_window_key = pw.dynamic_window_key
 
 
@@ -948,7 +942,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 for wk, wv in sym_live.items()
                 if isinstance(wv, dict)
             }
-            _write_json_atomic(self._live_trend_file(symbol), clean)
+            save_json_state(self._live_trend_file(symbol), clean)
         except Exception as e:
             print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
 
@@ -1115,7 +1109,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                         sym_hist[k] = v
             sym_hist[slice_key] = res
             try:
-                _write_json_atomic(hist_path, sym_hist)
+                save_json_state(hist_path, sym_hist)
             except Exception as e:
                 print(f"[{self.cls_name}] hist write failure for {symbol}: {e}")
         return dict(res)
@@ -1222,9 +1216,8 @@ class CacheShortTrendManager(CacheManagerInterface):
                     "fetchtime": fetchtime,
                     "rest_sync_cursor": dict(fetchtime),
                 }
-                write_fn = _cm_attr("atomic_write_json", atomic_write_json)
                 if not self._commit_file_and_meta_locked(
-                    lambda: write_fn(self.filename, snapshot_mem),
+                    lambda: atomic_write_json(self.filename, snapshot_mem),
                     metadata,
                 ):
                     return False

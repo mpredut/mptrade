@@ -16,6 +16,7 @@ from datetime import datetime
 
 from botcore import _parse_bool_flag, safe_float
 from intelligence.macro_sentiment_ssot import obj_attr as _regime_attr
+from state_io import append_text_line
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
@@ -121,7 +122,6 @@ def log_order_outcome(
             else ""
             for c in cols
         )
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_text_line(path, line)
     except Exception as e:
         print(f"[log_order_outcome] error writing outcomes log: {e}")

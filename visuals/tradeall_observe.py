@@ -42,7 +42,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from active_intents import build_active_intent_index
 from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
-from state_io import atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
+from state_io import append_text_line, atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
 from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
@@ -192,12 +192,14 @@ def sample_current_prices(symbols):
     os.makedirs(LOGGER_DIR, exist_ok=True)
     path = _daily_log_path(PRICE_SAMPLES_PREFIX, datetime.now().date())
     try:
-        with open(path, "a", encoding="utf-8") as f:
-            for symbol, sample_ts, current_price in pending:
-                # Use the snapshot timestamp, not our clock. If the source freezes,
-                # a current timestamp on stale data would create a false jagged block.
-                f.write(f"{sample_ts}|{_sanitize_field(symbol)}|{current_price}\n")
-                _LAST_SAMPLED_TS[symbol] = sample_ts
+        lines = []
+        for symbol, sample_ts, current_price in pending:
+            # Use the snapshot timestamp, not our clock. If the source freezes,
+            # a current timestamp on stale data would create a false jagged block.
+            lines.append(f"{sample_ts}|{_sanitize_field(symbol)}|{current_price}")
+        append_text_line(path, "\n".join(lines))
+        for symbol, sample_ts, _ in pending:
+            _LAST_SAMPLED_TS[symbol] = sample_ts
     except OSError as e:
         print(f"[tradeall_observe] error writing the price samples: {e}")
 

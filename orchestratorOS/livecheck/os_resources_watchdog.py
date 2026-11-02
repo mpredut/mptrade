@@ -10,6 +10,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import watchdog_common as wc
 from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_nonneg_int, safe_pos_int
+from state_io import read_bytes_file, read_text_file
 from technical_repair_ssot import fleet_script_basenames
 
 ROOT = wc.ROOT
@@ -102,7 +103,7 @@ def _restart_managed(proc, state, now):
 
 
 def _system_ticks():
-    fields = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+    fields = read_text_file("/proc/stat").splitlines()[0].split()[1:]
     return sum(int(value) for value in fields)
 
 
@@ -136,11 +137,11 @@ def _processes():
             continue
         try:
             comm, start_time, ticks, rss_pages = _parse_proc_stat(
-                (entry / "stat").read_text()
+                read_text_file(entry / "stat")
             )
             key = f"{entry.name}:{start_time}"
             rss_mb = rss_pages * page_size / 1024 / 1024
-            command = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+            command = read_bytes_file(entry / "cmdline").replace(b"\0", b" ").decode(
                 errors="replace").strip()
             if not command:
                 command = comm

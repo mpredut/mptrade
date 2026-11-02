@@ -17,6 +17,7 @@ import order_outcomes_log
 from providers.base import extract_order_id, normalize_side
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).
+from state_io import append_text_line
 
 from pricewindow import (  # noqa: F401 (re-export: test compat)
     DEFAULT_SAMPLE_RATE_SEC,
@@ -163,9 +164,7 @@ def log_decision(symbol, event, **fields):
         cols = [time.time(), symbol, event,
                 fields.get("state", ""), fields.get("old_state", ""), fields.get("price", ""),
                 fields.get("prev_confirm_count", "")]
-        line = "|".join(_sanitize_field(c) for c in cols)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        append_text_line(path, "|".join(_sanitize_field(c) for c in cols))
     except Exception as e:
         print(f"[log_decision] error writing decisions log: {e}")
 

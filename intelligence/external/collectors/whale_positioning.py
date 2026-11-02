@@ -95,7 +95,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         cache_dir: Optional[str] = "cachedb",
         disk_ttl_sec: float = 180.0,
     ) -> None:
-        super().__init__(cache_ttl_sec, 60.0, cache_dir, disk_ttl_sec, 180.0)
+        super().__init__(cache_ttl_sec, 120.0, cache_dir, disk_ttl_sec, 300.0)
 
     def _resolve_price_1h_change_pct(self, symbol: str) -> float:
         """Resolve 1-hour price change percentage from cached price history (0 ms local)."""

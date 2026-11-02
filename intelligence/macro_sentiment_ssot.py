@@ -58,7 +58,14 @@ from botcore import (
 )
 
 fetch_public_json = _fetch_public_json
-from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset, resolve_cachedb_filepath
+from cachepaths import (
+    cache_path,
+    cache_symbol_variants,
+    canonical_base_asset,
+    canonical_symbol_key,
+    resolve_cachedb_filepath,
+)
+from instrument_registry import casefold_get
 from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
@@ -1729,4 +1736,60 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
         norm["threat_level"] = tl
         norm["recommended_brake"] = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl)
         return norm
+    return None
+
+
+def lookup_symbol_cache_items(
+    mapping: Any,
+    symbol: Any,
+    *,
+    cand_keys: Optional[Sequence[Any]] = None,
+    allow_base_fallback: bool = True,
+    require_list: bool = False,
+) -> Any:
+    """Resolve symbol entries from a cache dictionary across symbol variants and optional base-asset fallback."""
+    if not isinstance(mapping, dict) or not isinstance(symbol, str) or not symbol.strip():
+        return None
+    sym_u = symbol.strip().upper()
+    sym_clean = clean_symbol_key(sym_u)
+    sym_canon = canonical_symbol_key(sym_u)
+    cands: Sequence[Any] = (
+        cand_keys
+        if cand_keys is not None
+        else (symbol, sym_u, sym_clean, *( [sym_canon] if sym_canon else [] ), *cache_symbol_variants(symbol))
+    )
+    for cand in cands:
+        if not cand:
+            continue
+        items = casefold_get(mapping, cand)
+        if items and (not require_list or isinstance(items, list)):
+            return items
+    if allow_base_fallback:
+        s_base = canonical_base_asset(symbol)
+        if s_base:
+            for k, v in mapping.items():
+                if v and (not require_list or isinstance(v, list)) and canonical_base_asset(str(k)) == s_base:
+                    return v
+    return None
+
+
+def scan_latest_long_trend_value(
+    entries: Any,
+    parser: Callable[[Dict[str, Any]], Any],
+    *,
+    stop_on_none: bool = True,
+) -> Any:
+    """Scan a symbol's long-trend entries list (or dict) from newest to oldest and return the first parsed value."""
+    if isinstance(entries, dict):
+        return parser(entries)
+    if isinstance(entries, list):
+        for entry in reversed(entries):
+            if entry is None:
+                if stop_on_none:
+                    break
+                continue
+            if isinstance(entry, dict):
+                val = parser(entry)
+                if val is not None:
+                    return val
     return None

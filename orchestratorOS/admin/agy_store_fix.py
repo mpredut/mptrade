@@ -48,6 +48,7 @@ from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
 from state_io import (  # noqa: E402
     atomic_write_bytes,
     discard_generation_file,
+    durable_replace_file,
     read_bytes_file,
     read_json_dict,
     read_text_file,
@@ -161,11 +162,7 @@ def disable_webrtc_mesh(stamp: str) -> str:
         os.makedirs(backup_dir, exist_ok=True)
         shutil.copy2(AGY_BIN, os.path.join(backup_dir, "agy.orig"))
         patched = data.replace(WEBRTC_FLAG_ORIG, WEBRTC_FLAG_PATCHED)
-        tmp_bin = AGY_BIN + ".tmp"
-        with open(tmp_bin, "wb") as f:
-            f.write(patched)
-        shutil.copymode(AGY_BIN, tmp_bin)
-        os.replace(tmp_bin, AGY_BIN)
+        atomic_write_bytes(AGY_BIN, patched, preserve_mode=True)
         log.info("pre: patched %s to disable remote-control-webrtc-mesh (backup in %s)", AGY_BIN, backup_dir)
         return "patched"
     except OSError as e:
@@ -263,7 +260,7 @@ def mode_pre(force: bool = False) -> int:
             diverged += 1
             if os.stat(p1).st_mtime_ns > os.stat(p2).st_mtime_ns and checkpoint(p1) and checkpoint(p2):
                 backup_file(p2, stamp)
-                os.replace(p1, p2)
+                durable_replace_file(p1, p2)
                 drop_sidecars(p1)
             elif checkpoint(p1):
                 backup_file(p1, stamp)

@@ -38,7 +38,7 @@ from cachepaths import (
 )
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
-from state_io import load_json_state, read_jsonl_dicts, save_json_state
+from state_io import append_jsonl_record, load_json_state, read_jsonl_dicts, save_json_state
 from .base import (
     _UNFILLED_ORDER_STATUSES,
     _clean_single_order_id,
@@ -161,20 +161,19 @@ class ExecutionAudit:
                 cleaned = _json_safe_value(value)
                 if cleaned is not None:
                     payload[key] = cleaned
-            line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=str)
-            os.makedirs(self.directory, exist_ok=True)
             day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
             path = os.path.join(self.directory, f"execution_audit_{day}.jsonl")
             with _WRITE_LOCK:
-                with open(path, "a", encoding="utf-8") as handle:
-                    if fcntl is not None:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                    try:
-                        handle.write(line + "\n")
-                        handle.flush()
-                    finally:
-                        if fcntl is not None:
-                            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                append_jsonl_record(
+                    path,
+                    payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    default=str,
+                    flock=True,
+                )
             return True
         except Exception as exc:  # noqa: BLE001 - auditing must never stop trading
             print(f"[execution_audit] the write failed: {exc}")
@@ -1292,7 +1291,8 @@ def execute_enforce_intent_order(
                     ord_lbl, inst.symbol, order_res,
                 )
             act_verb = "PLACED LIMIT" if is_limit else "EXECUTED"
-            title = f"🚀 {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
+            icon = "📝" if is_limit else "🎉"
+            title = f"{icon} {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
             order_id_str = extract_order_id(order_res, default="N/A")
             body = (
                 f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} "
@@ -1301,7 +1301,40 @@ def execute_enforce_intent_order(
                 f"Thesis: {thesis}"
             )
             if callable(dispatch_notify_fn):
-                dispatch_notify_fn(title=title, body=body, symbol=inst.symbol)
+                from notify_engine.alertnotifiers import notify_order_executed, notify_order_placed
+
+                if is_limit:
+                    notify_order_placed(
+                        inst.symbol,
+                        decision,
+                        order_id_str,
+                        price,
+                        target_qty,
+                        venue=inst.provider_name,
+                        owner="ai_executor",
+                        source=None,
+                        order_type="LIMIT",
+                        allow_ai_executor=True,
+                        title=title,
+                        body=body,
+                        notify_fn=dispatch_notify_fn,
+                        include_price=False,
+                    )
+                else:
+                    notify_order_executed(
+                        inst.symbol,
+                        decision,
+                        order_id_str,
+                        price,
+                        target_qty,
+                        venue=inst.provider_name,
+                        owner="ai_executor",
+                        source=None,
+                        title=title,
+                        body=body,
+                        notify_fn=dispatch_notify_fn,
+                        include_price=False,
+                    )
 
             intent["status"] = "EXECUTED"
             intent["execution_payload"] = order_res

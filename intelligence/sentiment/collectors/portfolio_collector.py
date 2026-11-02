@@ -18,7 +18,8 @@ from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.internal.triggers.kalman_trigger import KalmanTrend
 from intelligence.macro_sentiment_ssot import (
-    clean_symbol_key, safe_float, safe_nonneg_float, safe_pos_float,
+    clean_symbol_key, lookup_symbol_cache_items, safe_float, safe_nonneg_float,
+    safe_pos_float, scan_latest_long_trend_value,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     _MICRO_PRICE_ANCHOR_KEYS, _build_vp_position_dict, _first_variant_dict, _parse_ts_px_row,
@@ -763,17 +764,15 @@ def enrich_cross_venue_trends(
                 entry["adapt_dca_pct"] = calc_dca
 
         lt_obj: Optional[Dict[str, Any]] = None
-        if isinstance(long_items, dict):
-            for ck in cand_keys:
-                raw_lt = casefold_get(long_items, ck)
-                if isinstance(raw_lt, list) and (valid_lts := [x for x in raw_lt if isinstance(x, dict) and x.get("direction")]):
-                    lt_obj = valid_lts[-1]
+        for lt_source in (long_items, pa_map):
+            if isinstance(lt_source, dict):
+                lt_obj = scan_latest_long_trend_value(
+                    lookup_symbol_cache_items(lt_source, sym, cand_keys=cand_keys, allow_base_fallback=False),
+                    lambda e: e if e.get("direction") else None,
+                    stop_on_none=False,
+                )
+                if isinstance(lt_obj, dict):
                     break
-                elif isinstance(raw_lt, dict) and raw_lt.get("direction"):
-                    lt_obj = raw_lt
-                    break
-        if lt_obj is None and isinstance(pa_map, dict):
-            lt_obj = next((val for ck in cand_keys if isinstance((val := casefold_get(pa_map, ck)), dict) and val.get("direction")), None)
         if isinstance(lt_obj, dict):
             entry["long_trend_dir"] = lt_obj.get("direction")
             entry["long_trend_hours"] = round(safe_float(lt_obj.get("duration_seconds"), 0.0) / 3600.0, 1)

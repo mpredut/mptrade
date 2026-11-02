@@ -13,8 +13,8 @@ from typing import Optional
 from state_io import (
     atomic_gzip_file,
     atomic_snapshot_file,
-    atomic_text_writer,
-    atomic_write_json as _atomic_write_json,
+    atomic_text_writer as atomic_write,
+    atomic_write_json,
     commit_file_and_meta,
     discard_generation_file,
     generation_lock_path,
@@ -129,16 +129,6 @@ for _name, _value in (
 #def print(*args, **kwargs):
 #   pass
 #log.print = lambda *args, **kwargs: None
-
-
-def atomic_write(path):
-    """Compatibility wrapper around the repository-wide atomic writer."""
-    return atomic_text_writer(path)
-
-
-def atomic_write_json(path, obj, indent=None):
-    """Atomically write JSON through ``atomic_write`` and propagate failures."""
-    _atomic_write_json(path, obj, indent=indent)
 
 #log.disable_print()
 

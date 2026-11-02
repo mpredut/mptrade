@@ -40,7 +40,11 @@ from guard_hierarchy import (
     make_intel_cache_key,
     normalize_bypassed_guards,
 )
-from intelligence.macro_sentiment_ssot import resolve_order_notional
+from intelligence.macro_sentiment_ssot import (
+    lookup_symbol_cache_items,
+    resolve_order_notional,
+    scan_latest_long_trend_value,
+)
 from instrument_registry import casefold_get
 from market_regime import MarketRegimeService, MarketRegimeDecision, MarketRegimeContext
 from providers.base import (
@@ -302,6 +306,30 @@ def _provider_name(provider):
     return normalize_venue_name(provider, default="")
 
 
+def _venue_cfg(
+    provider_name,
+    suffix: str = "",
+    default: Any = None,
+    *,
+    margins: Optional[Dict[str, Any]] = None,
+    required: bool = False,
+):
+    """Resolve `<venue><suffix>` with fallback to `default<suffix>` from `order_guard.conf`."""
+    m = margins if isinstance(margins, dict) else _load_margins()
+    venue = (_provider_name(provider_name) or str(provider_name or "")).strip().lower()
+    venue_key = f"{venue}{suffix}" if venue else ""
+    default_key = f"default{suffix}"
+    if venue_key and venue_key in m:
+        return m[venue_key]
+    if default_key in m:
+        return m[default_key]
+    if required:
+        raise KeyError(
+            f"Missing required profit guard config key {venue_key or default_key!r} (and {default_key!r}) in order_guard.conf"
+        )
+    return default
+
+
 def resolve_effective_bypass_guards(
     venue: Any = None,
     *,
@@ -310,14 +338,9 @@ def resolve_effective_bypass_guards(
     margins: Optional[Dict[str, Any]] = None,
 ) -> set[str]:
     """Return normalized bypass guards unioning venue config, instrument config, and caller overrides."""
-    m = margins if isinstance(margins, dict) else _load_margins()
-    v_norm = normalize_venue_name(venue, default="") or str(venue or "").strip().lower()
-    venue_bg = (
-        m.get(f"{v_norm}_bypass_guards", m.get("default_bypass_guards"))
-        if v_norm
-        else m.get("default_bypass_guards")
+    res = normalize_bypassed_guards(
+        bypass_guards=_venue_cfg(venue, "_bypass_guards", margins=margins)
     )
-    res = normalize_bypassed_guards(bypass_guards=venue_bg)
     if inst_bypass:
         res |= normalize_bypassed_guards(bypass_guards=inst_bypass)
     if bypass_guards:
@@ -444,16 +467,8 @@ def get_profit_guard_mode_cfg(
         if mod_val != "venue":
             return validate_profit_guard_mode_cfg(mod_val)
 
-    venue_key = f"{venue}_{side_l}_reference"
-    if venue_key in m:
-        return validate_profit_guard_mode_cfg(m[venue_key])
-
-    default_key = f"default_{side_l}_reference"
-    if default_key in m:
-        return validate_profit_guard_mode_cfg(m[default_key])
-
-    raise KeyError(
-        f"Missing required profit guard config key {venue_key!r} (and {default_key!r}) in order_guard.conf"
+    return validate_profit_guard_mode_cfg(
+        _venue_cfg(venue, f"_{side_l}_reference", margins=m, required=True)
     )
 
 
@@ -633,12 +648,6 @@ def _symbol_trend(
         return regime
     except Exception:
         return "unknown"
-
-
-def _venue_cfg(provider_name, suffix: str = "", default: Any = None):
-    m = _load_margins()
-    venue = _provider_name(provider_name).strip().lower()
-    return m.get(f"{venue}{suffix}", m.get(f"default{suffix}", default))
 
 
 def get_margin_cfg(provider_name):
@@ -1155,22 +1164,10 @@ def _read_json_recovering(path: str) -> Optional[dict]:
 
 def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
     try:
-        cachedb_dir = _resolve_cachedb_dir()
-        p = os.path.join(cachedb_dir, "cache_long_trend.json")
+        p = os.path.join(_resolve_cachedb_dir(), "cache_long_trend.json")
         data = _read_json_recovering(p)
-        if not isinstance(data, dict):
-            return None
-        all_items = data.get("items", {})
-        if not isinstance(all_items, dict):
-            return None
-        for cand in (symbol, symbol.upper(), *cache_symbol_variants(symbol)):
-            items = casefold_get(all_items, cand)
-            if items and isinstance(items, list):
-                return items
-        su_base = _normalize_base_asset(symbol)
-        for k, v in all_items.items():
-            if v and isinstance(v, list) and _normalize_base_asset(k) == su_base:
-                return v
+        if isinstance(data, dict):
+            return lookup_symbol_cache_items(data.get("items"), symbol, require_list=True)
     except Exception:
         pass
     return None
@@ -1178,16 +1175,31 @@ def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
 
 def _scan_cached_long_trend(symbol: str, parser):
     try:
-        for entry in reversed(_read_cached_long_trend_entries(symbol) or ()):
-            if entry is None:
-                break
-            if isinstance(entry, dict):
-                val = parser(entry)
-                if val is not None:
-                    return val
+        return scan_latest_long_trend_value(_read_cached_long_trend_entries(symbol), parser)
+    except Exception:
+        return None
+
+
+def _resolve_long_trend_field(
+    symbol: str,
+    field: str,
+    parser: Callable[[Any], Any],
+    fallback_fn: Callable[[str], Any],
+    default: Any = None,
+) -> Any:
+    if not symbol or not isinstance(symbol, str):
+        return default
+    try:
+        import cacheManager as cm
+        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
+        if isinstance(trend_meta, dict) and field in trend_meta:
+            parsed = parser(trend_meta.get(field))
+            if parsed is not None:
+                return parsed
     except Exception:
         pass
-    return None
+    res = fallback_fn(symbol)
+    return default if res is None else res
 
 
 def _read_cached_trend_duration(symbol: str) -> float:
@@ -1198,18 +1210,13 @@ def _read_cached_trend_duration(symbol: str) -> float:
 
 def _resolve_trend_duration(symbol: str) -> float:
     """Resolve trend duration in seconds from memory/cache files once."""
-    if not symbol or not isinstance(symbol, str):
-        return 0.0
-    try:
-        import cacheManager as cm
-        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
-        if trend_meta and "duration_seconds" in trend_meta:
-            dur = safe_pos_float(trend_meta["duration_seconds"], default=None)
-            if dur is not None:
-                return dur
-    except Exception:
-        pass
-    return _read_cached_trend_duration(symbol)
+    return _resolve_long_trend_field(
+        symbol,
+        "duration_seconds",
+        lambda v: safe_pos_float(v, default=None),
+        _read_cached_trend_duration,
+        default=0.0,
+    )
 
 
 def resolve_effective_trend_duration(
@@ -1242,18 +1249,13 @@ def _resolve_trend_direction(symbol: str, regime_context=None) -> Optional[str]:
         norm_rt = _normalize_trend_dir_token(rt)
         if norm_rt is not None:
             return norm_rt
-    if not symbol:
-        return None
-    try:
-        import cacheManager as cm
-        trend_meta = getattr(cm, "read_long_term_trend_file", lambda s: None)(symbol)
-        if trend_meta and trend_meta.get("direction"):
-            norm_m = _normalize_trend_dir_token(trend_meta["direction"])
-            if norm_m is not None:
-                return norm_m
-    except Exception:
-        pass
-    return _read_cached_trend_direction(symbol)
+    return _resolve_long_trend_field(
+        symbol,
+        "direction",
+        _normalize_trend_dir_token,
+        _read_cached_trend_direction,
+        default=None,
+    )
 
 
 def _read_cached_price_history(
@@ -1278,9 +1280,6 @@ def _read_cached_price_history(
     cachedb_dir = _resolve_cachedb_dir()
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
-
-    # 1. Primary: dedicated 24h cache (cache_24_price_{symbol}.json)
-    su_base = _normalize_base_asset(su)
     cand_symbols = cache_symbol_variants(symbol, include_base=True)
 
     def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
@@ -1291,18 +1290,6 @@ def _read_cached_price_history(
         if ts_raw is None or px is None:
             return None
         return (ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw), px
-
-    def _lookup_symbol_items(mapping: Any) -> Any:
-        if not isinstance(mapping, dict):
-            return None
-        for cand in cand_symbols:
-            items = casefold_get(mapping, cand)
-            if items:
-                return items
-        for k, v in mapping.items():
-            if k and v and _normalize_base_asset(str(k)) == su_base:
-                return v
-        return None
 
     def _extract_valid_ticks(raw_items: Any) -> None:
         if isinstance(raw_items, list) and len(raw_items) > 512:
@@ -1332,35 +1319,27 @@ def _read_cached_price_history(
                 if cutoff_ts <= ts_sec <= (now_ts + 5.0):
                     history.append((ts_sec, px))
 
-    p24_paths: List[str] = []
-    for cand in cand_symbols:
-        if "/" in cand or "_" in cand:
-            continue
-        p_cand = os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
-        if p_cand not in p24_paths:
-            p24_paths.append(p_cand)
-    for p24 in p24_paths:
-        data = _read_json_recovering(p24)
+    p24_paths = list(dict.fromkeys(
+        os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
+        for cand in cand_symbols
+        if "/" not in cand and "_" not in cand
+    ))
+    for p_path in (*p24_paths, os.path.join(cachedb_dir, "cache_watcher_all_price.json")):
+        data = _read_json_recovering(p_path)
         if not isinstance(data, dict):
             continue
         try:
             items_map = data.get("items", {})
-            raw_items = items_map if isinstance(items_map, list) else _lookup_symbol_items(items_map)
+            raw_items = (
+                items_map
+                if isinstance(items_map, list)
+                else lookup_symbol_cache_items(items_map, su, cand_keys=cand_symbols)
+            )
             _extract_valid_ticks(raw_items)
             if history:
                 break
         except Exception:
             pass
-
-    # 2. Fallback: shared multi-symbol cache (cache_watcher_all_price.json)
-    if not history:
-        p_multi = os.path.join(cachedb_dir, "cache_watcher_all_price.json")
-        data = _read_json_recovering(p_multi)
-        if isinstance(data, dict):
-            try:
-                _extract_valid_ticks(_lookup_symbol_items(data.get("items", {})))
-            except Exception:
-                pass
 
     return history if history else None
 
@@ -1392,6 +1371,57 @@ def _record_context_suggested_scale(
                 object.__setattr__(regime_context, reason_attr, reason)
     except Exception:
         pass
+
+
+def _update_context_intel_cache(
+    regime_context: Any,
+    cache_key: Any,
+    price: Any,
+    notional: Any,
+    *,
+    dur_sec: Optional[float] = None,
+    decision: Any = None,
+) -> None:
+    if regime_context is None:
+        return
+    try:
+        decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
+        if not isinstance(decisions_map, dict):
+            decisions_map = {}
+        entry = dict(decisions_map.get(cache_key) or {})
+        entry["price"] = price
+        if decision is not None:
+            entry["decision"] = decision
+            entry["notional"] = notional
+            if dur_sec is not None:
+                entry["trend_duration_seconds"] = dur_sec
+            decisions_map[cache_key] = entry
+            object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
+            object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
+            object.__setattr__(regime_context, "_intelligence_decision", decision)
+            object.__setattr__(regime_context, "_intelligence_notional", notional)
+            if dur_sec is not None:
+                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", dur_sec)
+        elif cache_key in decisions_map:
+            if notional is not None:
+                entry["notional"] = notional
+            decisions_map[cache_key] = entry
+        object.__setattr__(regime_context, "_intelligence_price", price)
+        if decision is None and notional is not None:
+            object.__setattr__(regime_context, "_intelligence_notional", notional)
+    except Exception:
+        pass
+
+
+def _merge_guard_scale(
+    effective_scale: float,
+    active_reason: str,
+    new_scale: float,
+    new_reason: str,
+) -> Tuple[float, str]:
+    if new_scale < 1.0 and new_scale <= effective_scale:
+        return new_scale, new_reason
+    return effective_scale, active_reason
 
 
 def check_intelligence_guards(
@@ -1458,9 +1488,7 @@ def check_intelligence_guards(
         cached_notional = getattr(regime_context, "_intelligence_notional", None)
         cached_dur = safe_pos_float(getattr(regime_context, "_intelligence_trend_duration_seconds", 0.0), 0.0)
     else:
-        cached_res = None
-        cached_price = None
-        cached_notional = None
+        cached_res = cached_price = cached_notional = None
         cached_dur = 0.0
 
     if (
@@ -1497,26 +1525,9 @@ def check_intelligence_guards(
             bypass_guards=raw_bypass,
         )
         if valid_context:
-            try:
-                decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
-                if not isinstance(decisions_map, dict):
-                    decisions_map = {}
-                existing_entry = decisions_map.get(cache_key, {})
-                decisions_map[cache_key] = {
-                    **existing_entry,
-                    "decision": cached_res,
-                    "price": price,
-                    "notional": computed_notional,
-                    "trend_duration_seconds": explicit_dur_sec,
-                }
-                object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
-                object.__setattr__(regime_context, "_intelligence_decision_key", cache_key)
-                object.__setattr__(regime_context, "_intelligence_decision", cached_res)
-                object.__setattr__(regime_context, "_intelligence_price", price)
-                object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
-                object.__setattr__(regime_context, "_intelligence_trend_duration_seconds", explicit_dur_sec)
-            except Exception:
-                pass
+            _update_context_intel_cache(
+                regime_context, cache_key, price, computed_notional, dur_sec=explicit_dur_sec, decision=cached_res
+            )
 
     static_allowed, static_reason, static_scale = cached_res
     if not static_allowed:
@@ -1547,9 +1558,7 @@ def check_intelligence_guards(
         )
         if not q_ok:
             return False, q_reason, 0.0
-        if q_scale < 1.0 and q_scale <= effective_scale:
-            effective_scale = q_scale
-            active_reason = q_reason
+        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, q_scale, q_reason)
 
     # 2. Dynamic LLM Pre-Trade Guard (GLLM1) if notional crossed the threshold
     dur_sec = resolve_effective_trend_duration(symbol, explicit_dur_sec, regime_context)
@@ -1573,23 +1582,11 @@ def check_intelligence_guards(
     )
     if not hs_ok:
         return False, hs_reason, 0.0
-    if hs_scale < 1.0 and hs_scale <= effective_scale:
-        effective_scale = hs_scale
-        active_reason = hs_reason
+    effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, hs_scale, hs_reason)
 
     final_res = (True, active_reason if effective_scale < 1.0 else "ok", effective_scale)
     if valid_context:
-        try:
-            decisions_map = getattr(regime_context, "_intelligence_decisions_by_key", None)
-            if isinstance(decisions_map, dict) and cache_key in decisions_map:
-                decisions_map[cache_key]["price"] = price
-                if computed_notional is not None:
-                    decisions_map[cache_key]["notional"] = computed_notional
-            object.__setattr__(regime_context, "_intelligence_price", price)
-            if computed_notional is not None:
-                object.__setattr__(regime_context, "_intelligence_notional", computed_notional)
-        except Exception:
-            pass
+        _update_context_intel_cache(regime_context, cache_key, price, computed_notional)
         _record_context_suggested_scale(regime_context, side, effective_scale, active_reason)
     return final_res
 
@@ -1646,9 +1643,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not int_ok:
             return False, int_reason, 0.0
-        if int_scale < 1.0:
-            effective_scale = min(effective_scale, int_scale)
-            active_reason = int_reason
+        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, int_scale, int_reason)
 
     # 2. External Microstructure & Derivatives Guards (GI_OBOOK, GI_WHALE, GI_FUNDING)
     if not is_category_bypassed("intelligence", bypassed):
@@ -1665,9 +1660,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not ext_ok:
             return False, ext_reason, 0.0
-        if ext_scale < 1.0 and ext_scale <= effective_scale:
-            effective_scale = ext_scale
-            active_reason = ext_reason
+        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, ext_scale, ext_reason)
 
     # 3. LLM Guards (GLLM1 High-Stake + GLLM2 Sentiment + GLLM3 Geopolitical)
     if not is_category_bypassed("llm", bypassed):
@@ -1686,9 +1679,7 @@ def _evaluate_intelligence_guards_raw(
         )
         if not intel_ok:
             return False, intel_reason, 0.0
-        if intel_scale < 1.0 and intel_scale <= effective_scale:
-            effective_scale = intel_scale
-            active_reason = intel_reason
+        effective_scale, active_reason = _merge_guard_scale(effective_scale, active_reason, intel_scale, intel_reason)
 
     return True, active_reason if effective_scale < 1.0 else "ok", effective_scale
 

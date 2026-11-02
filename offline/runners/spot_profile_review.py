@@ -17,7 +17,7 @@ import subprocess
 
 from dotenv import dotenv_values
 from botcore import safe_pos_float
-from state_io import atomic_write_json, read_json_file
+from state_io import atomic_write_json, read_bytes_file, read_json_file
 from strategies.spot_replay import align_spot_interval_params, make_spot_replay_adapter
 from strategies.spot_engine import StratParams
 from offline.backtests.datasets import dataset_sha256, load_dataset, validate_dataset
@@ -106,7 +106,7 @@ def review(baseline: str, candidate: str, cash: float) -> dict:
         reports[name] = report
     return {"baseline_config": baseline, "candidate_config": candidate,
             "code": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=ROOT).strip(),
-            "source_sha256": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            "source_sha256": {name: hashlib.sha256(read_bytes_file(ROOT / name)).hexdigest()
                               for name in ("strategies/spot_engine.py", "strategies/spot_replay.py", "offline/runners/spot_profile_review.py")},
             "cash_scenario": cash, "profiles": reports,
             "gates": {"current_vs_previous": evaluate_dual_promotion(reports["previous"], reports["current"]),

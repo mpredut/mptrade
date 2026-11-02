@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cachepaths import normalize_venue_name  # noqa: E402
-from state_io import atomic_write_json, atomic_write_text  # noqa: E402
+from state_io import atomic_write_json, atomic_write_text, read_text_file  # noqa: E402
 from offline.backtests.comparison import format_number as _fmt  # noqa: E402
 from offline.backtests.execution_calibration import (  # noqa: E402
     calibrate_execution_events,
@@ -42,19 +42,18 @@ def _load(paths: list[Path], venue: str | None) -> list[dict]:
     events = []
     norm_venue = _norm_audit_venue(venue)
     for path in paths:
-        with path.open(encoding="utf-8") as handle:
-            for line_number, raw in enumerate(handle, start=1):
-                if not raw.strip():
-                    continue
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError as error:
-                    raise ValueError(f"{path}:{line_number}: JSON invalid") from error
-                if not isinstance(event, dict):
-                    raise ValueError(f"{path}:{line_number}: JSON invalid")
-                if norm_venue and _norm_audit_venue(event.get("venue")) != norm_venue:
-                    continue
-                events.append(event)
+        for line_number, raw in enumerate(read_text_file(path).splitlines(), start=1):
+            if not raw.strip():
+                continue
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"{path}:{line_number}: JSON invalid") from error
+            if not isinstance(event, dict):
+                raise ValueError(f"{path}:{line_number}: JSON invalid")
+            if norm_venue and _norm_audit_venue(event.get("venue")) != norm_venue:
+                continue
+            events.append(event)
     return events
 
 

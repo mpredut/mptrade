@@ -52,7 +52,7 @@ from providers.base import (
     normalize_side,
 )
 from providers.strategy_executor import OrderStatus
-from state_io import atomic_write_jsonl
+from state_io import atomic_write_jsonl, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_ROOT, "config.env"))
@@ -151,8 +151,7 @@ def _process_start_identity(pid):
     if isinstance(pid, bool) or int(pid) <= 0:
         raise ValueError("process PID must be a positive integer")
     pid = int(pid)
-    with open(f"/proc/{pid}/stat", "r", encoding="ascii") as stat_file:
-        raw_stat = stat_file.read().strip()
+    raw_stat = read_text_file(f"/proc/{pid}/stat", encoding="ascii").strip()
     closing_paren = raw_stat.rfind(")")
     if closing_paren < 0:
         raise ValueError("malformed process stat")
@@ -164,8 +163,7 @@ def _process_start_identity(pid):
     start_ticks = int(fields[19])
     if start_ticks <= 0:
         raise ValueError("process start time must be positive")
-    with open("/proc/sys/kernel/random/boot_id", "r", encoding="ascii") as boot_file:
-        boot_id = boot_file.read().strip()
+    boot_id = read_text_file("/proc/sys/kernel/random/boot_id", encoding="ascii").strip()
     if not boot_id:
         raise ValueError("kernel boot ID is unavailable")
     return f"linux:{boot_id}:{start_ticks}"
@@ -210,24 +208,23 @@ def _read_nolock(*, validate=False):
     if not os.path.exists(q_path):
         return []
     items = []
-    with open(q_path, "r", encoding="utf-8") as f:
-        for line_number, raw_line in enumerate(f, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except (TypeError, ValueError) as exc:
-                raise RetryQueueCorruptionError(QUEUE_FILE, line_number, raw_line, str(exc)) from exc
-            if not isinstance(item, dict):
-                raise RetryQueueCorruptionError(
-                    QUEUE_FILE, line_number, raw_line, f"expected a JSON object, got {type(item).__name__}"
-                )
-            if validate and not valid_record(item):
-                raise RetryQueueCorruptionError(
-                    QUEUE_FILE, line_number, raw_line, "record failed semantic validation"
-                )
-            items.append(item)
+    for line_number, raw_line in enumerate(read_text_lines(q_path, keepends=True), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except (TypeError, ValueError) as exc:
+            raise RetryQueueCorruptionError(QUEUE_FILE, line_number, raw_line, str(exc)) from exc
+        if not isinstance(item, dict):
+            raise RetryQueueCorruptionError(
+                QUEUE_FILE, line_number, raw_line, f"expected a JSON object, got {type(item).__name__}"
+            )
+        if validate and not valid_record(item):
+            raise RetryQueueCorruptionError(
+                QUEUE_FILE, line_number, raw_line, "record failed semantic validation"
+            )
+        items.append(item)
     return items
 
 

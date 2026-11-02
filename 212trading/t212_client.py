@@ -32,6 +32,7 @@ except ImportError:
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from providers.base import _clean_single_order_id, extract_order_id
+from state_io import atomic_write_json, read_json_dict
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -98,8 +99,7 @@ class T212Client:
         if not self._shared_cache_enabled() or max_age_sec <= 0.0:
             return False, None, 0.0
         try:
-            with open(self._shared_cache_path, "r", encoding="utf-8") as fh:
-                payload = json.load(fh)
+            payload = read_json_dict(self._shared_cache_path, default=None)
             if not isinstance(payload, dict):
                 return False, None, 0.0
             entry = payload.get(attr)
@@ -120,20 +120,11 @@ class T212Client:
         if not self._shared_cache_enabled():
             return
         try:
-            payload: dict = {}
-            if os.path.exists(self._shared_cache_path):
-                try:
-                    with open(self._shared_cache_path, "r", encoding="utf-8") as fh:
-                        raw = json.load(fh)
-                    if isinstance(raw, dict):
-                        payload = raw
-                except Exception:
-                    payload = {}
+            payload = read_json_dict(self._shared_cache_path, default={})
+            if not isinstance(payload, dict):
+                payload = {}
             payload[attr] = {"ts": time.time(), "data": data}
-            tmp_path = f"{self._shared_cache_path}.{os.getpid()}.{threading.get_ident()}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-            os.replace(tmp_path, self._shared_cache_path)
+            atomic_write_json(self._shared_cache_path, payload)
         except Exception:
             pass
 

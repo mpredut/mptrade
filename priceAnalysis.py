@@ -31,6 +31,7 @@ from intelligence.internal.state.persistence import (
     classify_hurst_regime as hurst_regime,
 )
 from intelligence.internal.state.survival import estimate_T
+from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from instrument_registry import casefold_get
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
@@ -832,37 +833,15 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
     all_trend_data = cm.get_cache_manager("LongTrend").cache
-    sym_u = (symbol or "").strip().upper()
-    sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
-    sym_canon = canonical_symbol_key(sym_u)
-    items = (
-        casefold_get(all_trend_data, symbol)
-        or casefold_get(all_trend_data, sym_u)
-        or casefold_get(all_trend_data, sym_clean)
-        or (casefold_get(all_trend_data, sym_canon) if sym_canon else None)
-    )
-    if not items:
-        # Fallback to normalized base asset match (e.g. ARBUSD -> ARBUSDC)
-        s_base = canonical_base_asset(symbol)
-        for k, v in all_trend_data.items():
-            if v and canonical_base_asset(k) == s_base:
-                items = v
-                break
+    items = lookup_symbol_cache_items(all_trend_data, symbol)
     if not items:
         print(f"Symbol {symbol} is not present in the trends that were read.")
         return None
 
     # Retrieve latest trend record; an explicit trailing None is a neutral snapshot
-    trend = None
-    if isinstance(items, list):
-        for entry in reversed(items):
-            if entry is None:
-                break
-            if isinstance(entry, dict) and entry.get("duration_seconds") is not None:
-                trend = entry
-                break
-    elif isinstance(items, dict):
-        trend = items
+    trend = scan_latest_long_trend_value(
+        items, lambda e: e if e.get("duration_seconds") is not None else None
+    )
 
     if trend is None:
         print(f" No trend in cache for symbol {symbol}.")

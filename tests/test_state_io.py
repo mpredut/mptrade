@@ -125,13 +125,16 @@ def test_invalid_observational_state_can_reset(tmp_path):
 def test_trailing_once_commands_share_daemon_lock():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
+    core_text = (root / "trailing_core.py").read_text(encoding="utf-8")
+    assert "if not args.status:" in core_text
+    assert "single_instance(lock_name)" in core_text
     for relative, lock_name in (
         ("binance_api/trailing_stop.py", "binance_trailing"),
         ("kraken/trailing_stop.py", "kraken_trailing"),
     ):
         text = (root / relative).read_text(encoding="utf-8")
-        assert "if not args.status:" in text
-        assert f'single_instance("{lock_name}")' in text
+        assert "parse_trailing_cli_args(" in text
+        assert f'"{lock_name}"' in text
 
 
 def test_xstock_once_shares_lock_but_isolated_trial_does_not():

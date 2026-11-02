@@ -68,9 +68,14 @@ def test_specialized_atomic_writers_are_explicitly_bounded():
             continue
         text = path.read_text(encoding="utf-8")
         owns_temporary = re.search(
-            r"\b(?:tmp|tmp_file|temporary)\s*=.*(?:\.tmp|mkstemp)", text,
+            r"\b(?:tmp|tmp_file|tmp_path|tmp_bin|temporary)\s*=.*(?:\.tmp|mkstemp)", text,
         )
-        if owns_temporary and ("os.replace" in text or "mkstemp" in text):
+        defines_local_atomic = re.search(
+            r"^\s*def\s+(?:_?atomic_write(?:_json)?|_write_json_atomic)\b",
+            text,
+            re.MULTILINE,
+        )
+        if (owns_temporary and ("os.replace" in text or "mkstemp" in text)) or defines_local_atomic:
             candidates.append(relative)
     assert set(candidates) == remaining
 
