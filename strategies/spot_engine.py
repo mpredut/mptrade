@@ -1396,21 +1396,26 @@ class Strategy(BaseSpotMixin):
             log(f"  ! [STRAT] ledger reconciliation unavailable ({exc}); decisions blocked")
             return True
         tolerance = max(2 * 10.0 ** -max(self.vol_dec, 1), 1e-12)
-        if self.observe_only and ledger_qty + tolerance < held:
-            try:
-                raw_cli = getattr(self.client, "_inner", self.client)
-                if hasattr(raw_cli, "open_orders"):
+        free_ledger_qty = ledger_qty
+        open_sell_qty = 0.0
+        if self.observe_only:
+            raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
+            if hasattr(raw_cli, "open_orders"):
+                try:
                     open_rows = raw_cli.open_orders(self.pair)
-                    if isinstance(open_rows, list):
-                        open_sell_qty = sum(
-                            _clean_pos_float(r.get("remaining_qty") or r.get("origQty") or r.get("qty")) or 0.0
-                            for r in open_rows
-                            if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
-                        )
-                        if open_sell_qty > 0.0:
-                            ledger_qty = min(held, ledger_qty + open_sell_qty)
-            except Exception:
-                pass
+                except Exception as exc:
+                    if ledger_qty + tolerance < held:
+                        log(f"  ! [STRAT] ledger reconciliation deferred (open_orders query failed: {exc})")
+                        return True
+                    open_rows = None
+                if isinstance(open_rows, list):
+                    open_sell_qty = sum(
+                        _clean_pos_float(r.get("remaining_qty") or r.get("qty") or r.get("origQty")) or 0.0
+                        for r in open_rows
+                        if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
+                    )
+                    if open_sell_qty > 0.0:
+                        ledger_qty += open_sell_qty
         if ledger_qty <= tolerance:
             if held > 1e-12:
                 log(f"  [STRAT] LEDGER RECONCILE: position closed on venue ({base}=0); resetting cycle")
@@ -1443,6 +1448,20 @@ class Strategy(BaseSpotMixin):
             self.s["ledger_reconcile_required"] = False
             self._save()
             return True
+        if (
+            self.observe_only
+            and open_sell_qty > 0.0
+            and held > tolerance
+            and abs(free_ledger_qty - held) <= tolerance
+        ):
+            avg_existing = self._avg()
+            if avg_existing is not None and avg_existing > 0.0:
+                self.s["qty"] = ledger_qty
+                self.s["cost"] = ledger_qty * avg_existing
+                self.s["spent"] = ledger_qty * avg_existing
+                self.s["ledger_reconcile_required"] = False
+                self._save()
+                return True
         if self.observe_only and ledger_qty > held + tolerance and (ledger_qty - held) * price >= 5.0:
             log(
                 f"  ! [STRAT] LEDGER RECONCILE: external BUY on venue ({base}: "
@@ -1451,7 +1470,7 @@ class Strategy(BaseSpotMixin):
             fill_px = price
             fill_ts = clean_ts if clean_ts is not None else self._now()
             try:
-                raw_cli = getattr(self.client, "_inner", self.client)
+                raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
                 if hasattr(raw_cli, "get_orders"):
                     buy_rows = raw_cli.get_orders(self.pair, "BUY", 3600.0)
                     if isinstance(buy_rows, list) and buy_rows and isinstance(buy_rows[-1], dict):

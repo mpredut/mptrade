@@ -7384,6 +7384,182 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
     assert "long_liq_px" in micro_ada["ADAUSD"]
 
 
+def test_audited_executor_observe_only_locked_sell_qty_and_retry_filter(tmp_path):
+    """Verify AuditedStrategyExecutor open_orders delegation, observe_only locked SELL qty reconciliation, and terminal AI retry filtering."""
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        harvest_bot_runtime_states,
+        harvest_recent_orders_and_enrich_positions,
+    )
+    from providers.execution_audit import (
+        AuditedStrategyExecutor,
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+    )
+    from providers.strategy_executor import PairPrecision
+    from strategies.spot_engine import StratParams, Strategy
+
+    class _FakeVenueProvider:
+        name = "Kraken"
+
+        def __init__(self, free_hype: float, open_rows: list):
+            self.free_hype = free_hype
+            self.open_rows = open_rows
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=2, volume_decimals=6, order_min=0.01, base_asset="HYPE")
+
+        def free_balance(self, asset: str):
+            return self.free_hype if asset == "HYPE" else 2000.0
+
+        def open_orders(self, symbol: str):
+            return self.open_rows
+
+        def get_current_price(self, symbol: str):
+            return 83.42
+
+        def ohlc_closes(self, symbol: str, interval_min: int):
+            return [83.0] * 35
+
+    prov = _FakeVenueProvider(0.0617, [{"side": "SELL", "qty": 4.876931, "price": 93.85}])
+    audited = AuditedStrategyExecutor(prov, venue="Kraken")
+    assert audited._inner is prov
+    assert len(audited.open_orders("HYPEUSD")) == 1
+
+    params = StratParams.from_dict(StratParams._DEFAULT_DICT_FIELDS)
+    init_state = {
+        "cycle": 18,
+        "qty": 0.0617,
+        "cost": 0.0617 * 91.21,
+        "spent": 0.0617 * 91.21,
+        "dca_buys": 0,
+        "entry_price": 91.21,
+        "last_buy_price": 91.21,
+        "orders": [],
+    }
+    strat = Strategy(
+        audited,
+        "HYPEUSD",
+        params,
+        dry_run=False,
+        initial_state=init_state,
+        state_dir=str(tmp_path),
+        observe_only=True,
+    )
+    strat.step(83.42, timestamp=1793655000.0)
+    assert strat.s["qty"] == pytest.approx(4.938631)
+    assert strat.s["cost"] == pytest.approx(4.938631 * 91.21)
+    assert strat.s["dca_buys"] == 0
+    assert strat.s["last_buy_price"] == pytest.approx(91.21)
+
+    # Subsequent tick keeps qty stable at free + locked without false BUY/SELL reconciliation
+    strat.step(83.50, timestamp=1793655060.0)
+    assert strat.s["qty"] == pytest.approx(4.938631)
+    assert strat.s["dca_buys"] == 0
+
+    # Portfolio collector restores cycle qty/cost when state file only had free_base, and preserves limit_px
+    krk_cycles = {
+        "HYPEUSD": {
+            "qty": 0.0617,
+            "cost_usd": 5.63,
+            "avg_cost_px": 91.209992,
+            "entry_price": 91.209992,
+            "last_buy_price": 91.209992,
+            "dca_buys": 0,
+            "dd_pct": -8.54,
+        }
+    }
+    positions = [
+        {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "base": "HYPE",
+            "quote": "USD",
+            "price": 83.425,
+            "free_base": 0.0617,
+            "locked_base_qty": 4.876931,
+            "free_quote": 2060.16,
+        }
+    ]
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        positions,
+        {"HYPEUSD": {"price": 83.425}},
+        krk_cycles,
+        {},
+        {},
+    )
+    assert krk_cycles["HYPEUSD"]["qty"] == pytest.approx(4.938631)
+    assert krk_cycles["HYPEUSD"]["cost_usd"] == pytest.approx(450.45, abs=0.02)
+
+    # Terminal AI intents in autonomous_trade_intents_state.json are filtered out of active_retry_queue
+    (tmp_path / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([{"intent_id": "intent_1_dead", "status": "FAILED"}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "order_retry_queue.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "r1",
+                        "intent_id": "intent_1_dead",
+                        "provider_name": "kraken",
+                        "symbol": "HYPEUSD",
+                        "side": "BUY",
+                        "qty": 9.81,
+                        "requested_price": 81.5,
+                        "lifecycle": "submit_pending",
+                        "last_failure_reason": "response_without_order_id",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "id": "r2",
+                        "intent_id": "bot_dca_1",
+                        "provider_name": "binance",
+                        "symbol": "TAOUSDC",
+                        "side": "BUY",
+                        "qty": 1.0,
+                        "requested_price": 220.0,
+                        "lifecycle": "pending",
+                        "last_failure_reason": "trend_deferred",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime_st = harvest_bot_runtime_states(str(tmp_path), 1793655000.0)
+    assert len(runtime_st["active_retry_queue"]) == 1
+    assert runtime_st["active_retry_queue"][0]["symbol"] == "TAOUSDC"
+
+    st_lim = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": 1793652176.0,
+                "decision": "SELL",
+                "symbol": "ARBUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 0.1598,
+                "reference_price": 0.155,
+                "suggested_notional_usd": 600.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "562352955", "status": "NEW"},
+            }
+        ],
+        "crypto",
+        1793652200.0,
+        extract_intent_notional,
+        open_orders=[{"venue": "binance", "symbol": "ARBUSDC", "side": "SELL", "order_id": "562352955", "price": 0.1598}],
+    )
+    assert st_lim["limit_px"] == pytest.approx(0.1598)
+    assert st_lim["ref_px"] == pytest.approx(0.155)
+
+
+
 
 
 

@@ -15,7 +15,7 @@ from cachepaths import (
     normalize_venue_name, resolve_kraken_lookup_symbol, split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
-from intelligence.internal.state.volatility import adaptive_thresholds
+from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
 from intelligence.internal.triggers.kalman_trigger import KalmanTrend
 from intelligence.macro_sentiment_ssot import (
     clean_symbol_key, lookup_symbol_cache_items, safe_float, safe_nonneg_float,
@@ -31,7 +31,7 @@ from instrument_registry import casefold_get
 from providers.base import extract_order_side, normalize_open_order, normalize_timestamp_ms, resolve_order_origin
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
-    read_json_dict_recovering as read_json_cached, read_tail_jsonl_dicts,
+    read_json_dict_recovering as read_json_cached, read_json_file, read_tail_jsonl_dicts,
     resolve_cachedb_filepath, save_json_state,
 )
 
@@ -1018,6 +1018,25 @@ def enrich_24h_and_microstructure(
                 if p_ref is None:
                     ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                     ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
+                    if not ser_24h and msym.endswith("USD") and "PYTEST_CURRENT_TEST" not in os.environ:
+                        try:
+                            from providers.kraken_provider import KrakenProvider
+
+                            krk_p = KrakenProvider()
+                            s5, cutoff_24h = krk_p.ohlc_series(msym, 5), now_ts - 86400.0
+                            s5_vols = getattr(s5, "volumes", ()) or ()
+                            ser_24h = [
+                                ([int(ts * 1000), float(px), float(s5_vols[idx])] if idx < len(s5_vols) and (safe_pos_float(s5_vols[idx], 0.0) or 0.0) > 0.0 else [int(ts * 1000), float(px)])
+                                for idx, (ts, px) in enumerate(zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ())))
+                                if ts >= cutoff_24h and float(px) > 0
+                            ]
+                            if ref_px is not None and ser_24h and abs(ref_px - float(ser_24h[-1][1])) > 1e-9 and not _prices_diverged(ref_px, float(ser_24h[-1][1])):
+                                ser_24h.append([int(now_ts * 1000), ref_px])
+                            if len(vals_7d) < 2:
+                                s60, cutoff_7d = krk_p.ohlc_series(msym, 60), now_ts - 7 * 86400.0
+                                vals_7d = [float(px) for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
+                        except Exception:
+                            pass
                     if ref_px is None and ser_24h:
                         ref_px = safe_pos_float(ser_24h[-1][1], default=None)
                     if ref_px is not None:
@@ -1026,6 +1045,29 @@ def enrich_24h_and_microstructure(
                             p_ref["spread_bps"] = m_info_ref["spread_bps"]
                         if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
                             p_ref.update(m24_ref)
+                            if "chg_1h_pct" in m24_ref:
+                                c1h_r = safe_float(m24_ref.get("chg_1h_pct"), 0.0)
+                                if c1h_r >= 0.25 or c1h_r <= -0.25:
+                                    p_ref["trend"] = 1 if c1h_r >= 0.25 else -1
+                            if btc_series_24h and canonical_base_asset(msym) != "BTC":
+                                cross_btc_r = compute_cross_btc_metrics(ser_24h, btc_series_24h)
+                                for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct"):
+                                    if cross_btc_r.get(ck) is not None:
+                                        p_ref[ck] = cross_btc_r[ck]
+                            if isinstance(k_fb_r := _compute_kalman_from_series(ser_24h), dict):
+                                for kk, kv in k_fb_r.items():
+                                    if kv is not None:
+                                        p_ref[kk] = kv
+                            if len(ser_24h) >= 20:
+                                tail_pts = ser_24h[-60:]
+                                dt_s = max(60.0, (float(tail_pts[-1][0]) - float(tail_pts[0][0])) / (1000.0 * max(1, len(tail_pts) - 1)))
+                                if (v1h := calculate_volatility_1h([float(r[1]) for r in tail_pts], dt_s)) is not None and v1h > 0:
+                                    p_ref["vol_1h_pct"] = v1h
+                                    re_th, dca_th = adaptive_thresholds(v1h)
+                                    if re_th is not None:
+                                        p_ref["adapt_reentry_pct"] = re_th
+                                    if dca_th is not None:
+                                        p_ref["adapt_dca_pct"] = dca_th
                         if vals_7d and len(vals_7d) >= 2:
                             p_ref.update(compute_7d_range_metrics(vals_7d))
                         prices_and_trends[msym] = p_ref
@@ -1284,8 +1326,10 @@ def harvest_recent_orders_and_enrich_positions(
         v_ro_map = venue_recent_orders.get(p_venue, {})
         ro = _first_variant_dict(v_ro_map, p_quote_variants)
         fb_cur = safe_float(pos.get("free_base"), -1.0)
+        lb_cur = safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0
+        held_cur = (fb_cur + lb_cur) if fb_cur >= 0.0 else (lb_cur if lb_cur > 0.0 else -1.0)
         min_notional_f = max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 1.0))
-        is_flat_balance = fb_cur >= 0.0 and (fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < min_notional_f))
+        is_flat_balance = held_cur >= 0.0 and (held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f))
         if is_flat_balance:
             pos.pop("trailing_peak", None)
             pos.pop("dd_from_peak_pct", None)
@@ -1312,10 +1356,21 @@ def harvest_recent_orders_and_enrich_positions(
             if not isinstance(cyc, dict):
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+            if (
+                cyc_qty is not None
+                and fb_cur >= 0.0
+                and lb_cur > 0.0
+                and abs(cyc_qty - fb_cur) <= max(1e-4, fb_cur * 0.02)
+            ):
+                cyc_qty = round(fb_cur + lb_cur, 6)
+                cyc["qty"] = cyc_qty
+                if (c_avg_px := safe_pos_float(cyc.get("avg_cost_px"), default=None)) is not None:
+                    cyc["cost_usd"] = round(cyc_qty * c_avg_px, 2)
             if pos.get("free_base") is None and cyc_qty is not None:
                 pos["free_base"] = round(cyc_qty, 6)
                 fb_cur = cyc_qty
-                is_flat_balance = fb_cur <= 1e-8 or (pos_px_f > 0.0 and fb_cur * pos_px_f < 1.0)
+                held_cur = fb_cur + lb_cur
+                is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < 1.0)
                 if pos_px_f > 0:
                     pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
             cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
@@ -1401,8 +1456,21 @@ def harvest_bot_runtime_states(
             import order_retry as _oq
         except Exception:
             _oq = None
+        terminal_ai_intent_ids: set[str] = set()
+        intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
+        intents_raw = read_json_file(intents_path, default=[], recover_previous=True) if os.path.exists(intents_path) else []
+        if isinstance(intents_raw, list):
+            for it in intents_raw:
+                if isinstance(it, dict) and str(it.get("status") or "").upper() in {
+                    "FAILED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "BLOCKED_BY_GUARD",
+                }:
+                    if iid := str(it.get("intent_id") or "").strip():
+                        terminal_ai_intent_ids.add(iid)
         active_retries: List[Dict[str, Any]] = []
         for rec in read_tail_jsonl_dicts(retry_q_path, limit=50):
+            rec_iid = str(rec.get("intent_id") or "").strip()
+            if rec_iid and rec_iid in terminal_ai_intent_ids:
+                continue
             lifecycle = str(rec.get("lifecycle") or "").lower()
             exp_ts = safe_float(rec.get("expires_at_ts"), 0.0)
             if _oq is not None and (rec.get("created_ts") is not None or rec.get("ttl_started_ts") is not None):

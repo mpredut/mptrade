@@ -442,6 +442,18 @@ class AuditedStrategyExecutor:
     def ohlc_closes(self, symbol: str, interval_min: int):
         return self._executor.ohlc_closes(symbol, interval_min)
 
+    @property
+    def _inner(self):
+        return self._executor
+
+    def open_orders(self, symbol: str):
+        reader = getattr(self._executor, "open_orders", None)
+        return reader(symbol) if callable(reader) else []
+
+    def get_orders(self, symbol: str, side: Optional[str] = None, lookback: Optional[float] = None):
+        reader = getattr(self._executor, "get_orders", None)
+        return reader(symbol, side, lookback) if callable(reader) else []
+
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)
@@ -547,6 +559,14 @@ def reconcile_intents_from_execution_audit(
     audit_dir: str,
 ) -> bool:
     """Reconcile FAILED/PENDING_EXECUTION intents and enrich incomplete EXECUTED intents from execution_audit_*.jsonl."""
+    canceled_prior_oids: set[str] = {
+        oid_s
+        for item in intents
+        if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list)
+        for raw_oid in item["canceled_prior_open_orders"]
+        if (oid_s := _clean_single_order_id(raw_oid))
+    }
+    updated = False
     failed_by_id: dict[str, dict[str, Any]] = {}
     executed_incomplete_by_id: dict[str, dict[str, Any]] = {}
     for item in intents:
@@ -562,14 +582,33 @@ def reconcile_intents_from_execution_audit(
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
             if not exec_pay.get("reconciled_terminal"):
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
+                item_oid = _clean_single_order_id(extract_order_id(exec_pay, default=None))
+                has_fill_metrics = (
+                    extract_executed_qty(exec_pay, default=0.0) > 0.0
+                    and extract_order_price(exec_pay, default=0.0) > 0.0
+                )
+                is_resting_msg = str(exec_pay.get("msg") or "").strip().lower() == "resting"
                 if (
-                    cur_v_st not in ("FILLED", "CLOSED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
-                    or extract_executed_qty(exec_pay, default=0.0) <= 0.0
-                    or extract_order_price(exec_pay, default=0.0) <= 0.0
+                    item_oid
+                    and item_oid in canceled_prior_oids
+                    and cur_v_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
+                    and extract_executed_qty(exec_pay, default=0.0) <= 0.0
                 ):
-                    executed_incomplete_by_id[clean_id] = item
+                    exec_pay = dict(exec_pay)
+                    exec_pay["status"] = "CANCELED"
+                    if is_resting_msg:
+                        exec_pay.pop("msg", None)
+                    exec_pay["reconciled_terminal"] = True
+                    item["execution_payload"] = exec_pay
+                    updated = True
+                    continue
+                if cur_v_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+                    continue
+                if has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
+                    continue
+                executed_incomplete_by_id[clean_id] = item
     if (not failed_by_id and not executed_incomplete_by_id) or not os.path.isdir(audit_dir):
-        return False
+        return updated
 
     # Audit files are UTC-day partitioned and never precede the intent that produced them: scan only days
     # from the oldest pending intent (minus one day of clock-skew margin), via the per-file record cache.
@@ -621,9 +660,8 @@ def reconcile_intents_from_execution_audit(
                     matched_exec_records[iid] = rec
 
     if not matched_records and not matched_exec_records:
-        return False
+        return updated
 
-    updated = False
     for iid, rec in matched_records.items():
         intent = failed_by_id[iid]
         v_stat, _, filled_qty, _, raw_cost, _, f_px, _ = _extract_audit_fill_metrics(
@@ -816,7 +854,7 @@ def _resolve_intent_execution_details(
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
-        and venue_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+        and venue_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED")
         and isinstance(recent_orders, dict)
         and symbol
     ):
@@ -949,6 +987,15 @@ def _resolve_intent_execution_details(
         if filled_qty > 0
         else (orig_qty if (orig_qty is not None and exec_status in ("FILLED", "SHADOW_SIMULATED")) else None)
     )
+    limit_px = (
+        safe_pos_float(
+            i.get("limit_price")
+            or (matched_open.get("price") if isinstance(matched_open, dict) else None),
+            default=None,
+        )
+        if order_type == "LIMIT"
+        else None
+    )
     return {
         "venue": venue,
         "symbol": symbol,
@@ -960,6 +1007,7 @@ def _resolve_intent_execution_details(
         "is_open_in_venue": matched_open is not None,
         "order_id": str(order_id) if order_id is not None else None,
         "fill_px": round(fill_px, 6) if fill_px is not None else None,
+        "limit_px": round(limit_px, 6) if limit_px is not None else None,
         "ref_px": round(ref_px, 6) if ref_px is not None else None,
         "filled_qty": round(eff_qty, 8) if eff_qty is not None and eff_qty > 0 else None,
         "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
@@ -1047,6 +1095,8 @@ def summarize_recent_ai_intents(
         for idx, i in enumerate(scoped_intents):
             if idx in recent_indices:
                 continue
+            if str(i.get("status") or "").strip().upper() != "EXECUTED":
+                continue
             det = _resolve_intent_execution_details(
                 i,
                 now_ts,
@@ -1109,6 +1159,8 @@ def build_last_cycle_execution_status(
             "notional_usd": det["notional_usd"],
             "slippage_bps": det["slippage_bps"],
         }
+        if det.get("limit_px") is not None:
+            rec["limit_px"] = det["limit_px"]
         if det["order_id"] is not None:
             rec["order_id"] = det["order_id"]
         if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
@@ -1116,10 +1168,10 @@ def build_last_cycle_execution_status(
         return rec
 
     out: list[dict[str, Any]] = []
+    seen_oids: set[str] = set()
     seen_sym_keys: set[tuple[str, str, tuple[str, ...], str]] = set()
     cycle_ids = {id(i) for i in cycle_intents}
     for i in cycle_intents:
-        seen_sym_keys.add(_intent_sym_key(i))
         det = _resolve_intent_execution_details(
             i,
             now_ts,
@@ -1128,6 +1180,10 @@ def build_last_cycle_execution_status(
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
         )
+        if det["order_id"] is not None:
+            seen_oids.add(str(det["order_id"]))
+        if det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"):
+            seen_sym_keys.add(_intent_sym_key(i))
         out.append(_build_status_rec(det))
 
     if isinstance(open_orders, list) and open_orders:
@@ -1135,8 +1191,7 @@ def build_last_cycle_execution_status(
         for i in reversed(scoped_intents):
             if id(i) in cycle_ids:
                 continue
-            s_key = _intent_sym_key(i)
-            if s_key in seen_sym_keys:
+            if str(i.get("status") or "").strip().upper() != "EXECUTED":
                 continue
             det = _resolve_intent_execution_details(
                 i,
@@ -1146,9 +1201,18 @@ def build_last_cycle_execution_status(
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
             )
-            if det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"):
-                seen_sym_keys.add(s_key)
-                carried_resting.append(_build_status_rec(det))
+            if not (det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")):
+                continue
+            oid_str = str(det["order_id"]) if det["order_id"] is not None else None
+            s_key = _intent_sym_key(i)
+            if oid_str is not None:
+                if oid_str in seen_oids:
+                    continue
+                seen_oids.add(oid_str)
+            elif s_key in seen_sym_keys:
+                continue
+            seen_sym_keys.add(s_key)
+            carried_resting.append(_build_status_rec(det))
         if carried_resting:
             out = list(reversed(carried_resting)) + out
 
@@ -1542,6 +1606,22 @@ def execute_enforce_intent_order(
 
             extra_cat = {"category": refusal_cat} if refusal_cat else {}
             _record_intent_state(intent, "FAILED", now_ts, reason=refusal_reason, **extra_cat)
+            if outcome_ctx.get("state") == "refused" and intent_id:
+                try:
+                    import order_retry
+
+                    rm_ids = [
+                        str(r["id"])
+                        for r in order_retry.load_queue()
+                        if isinstance(r, dict)
+                        and str(r.get("intent_id") or "") == str(intent_id)
+                        and str(r.get("submission_state") or "").lower() == "refused"
+                        and r.get("id") is not None
+                    ]
+                    if rm_ids:
+                        order_retry.remove_ids(rm_ids)
+                except Exception:
+                    pass
     except Exception as e:
         if log:
             log.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)
