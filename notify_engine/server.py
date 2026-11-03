@@ -218,8 +218,15 @@ class NotificationServer:
         if allowed:
             return out_payload or (title, body, priority, topic)
         logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
-        if reason == "buffered_for_bulk":
-            self.flush_pending_bulk()
+        if reason in ("buffered_for_bulk", "topic_queue_full_dropped", "queue_full_dropped"):
+            flushed = self.flush_pending_bulk()
+            if flushed and reason in ("topic_queue_full_dropped", "queue_full_dropped"):
+                allowed_retry, reason_retry, _, out_retry = pass_common_gate(
+                    "ntfy", title, body, priority, topic, alerts, urgent=urgent,
+                )
+                if allowed_retry:
+                    return out_retry or (title, body, priority, topic)
+                logging.info(f"ntfy delivery gated after due-batch flush ({reason_retry}): {title}")
         elif (
             reason not in ("duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped")
             and not skip_email

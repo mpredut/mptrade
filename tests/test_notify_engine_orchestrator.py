@@ -998,6 +998,23 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertNotIn("Macro A", b_body)
             self.assertNotIn("Macro C Overflow", b_body)
 
+            # Evicted ("Macro A") and dropped ("Macro C Overflow") items were never sent and must not be
+            # suppressed as "duplicate" once queue space is available again
+            ok_re_a, r_re_a, _, _ = pass_common_gate("ntfy", "Macro A", "body A", "default", "ntfy-macro-test", now=t2 + 610)
+            self.assertEqual(r_re_a, "buffered_for_bulk")
+            ok_re_c, r_re_c, _, _ = pass_common_gate("ntfy", "Macro C Overflow", "body C", "default", "ntfy-macro-test", now=t2 + 611)
+            self.assertEqual(r_re_c, "buffered_for_bulk")
+
+            # Verify mailer.send_email treats bounded-queue overflow drops as policy-handled (True)
+            # so NotificationServer._send_email does not re-enqueue dropped overflow emails into notify_queue.json
+            from notify_engine import mailer
+            with mock.patch.object(mailer, "_config", return_value={"server": "smtp.test", "port": 587, "username": "u", "password": "p", "to": "t@test"}), \
+                 mock.patch.object(mailer, "pass_common_gate", return_value=(False, "queue_full_dropped", False, None)):
+                if os.path.exists(self.server.queue_file):
+                    os.remove(self.server.queue_file)
+                self.assertTrue(self.server._send_email("Overflow Email", "body"))
+                self.assertFalse(os.path.exists(self.server.queue_file))
+
             # Also verify NotificationServer._enqueue_payload caps queue.jsonl to NOTIFICATION_QUEUE_MAX_ITEMS=3
             self.server._enqueue_payload("ntfy_webhook", {"title": "Q1"})
             self.server._enqueue_payload("ntfy_webhook", {"title": "Q2"})

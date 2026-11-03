@@ -8032,6 +8032,54 @@ def test_iteration51_long_trend_freshness_neutral_override_and_parse_rss_valid_k
         assert "intel stock" not in hl.matched_keywords
 
 
+def test_harvest_log_anomalies_ignores_supervisor_gated_ntfy_and_patch_rollback_preserves_uncommitted(tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
+    from orchestratorOS.lib.technical_repair_ssot import (
+        apply_code_patch_safely,
+        harvest_log_anomalies_from_dirs,
+    )
+
+    log_dir = tmp_path / "logger"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reconciler_log = log_dir / "autonomous_ai_reconciler_2026-11-03.log"
+    reconciler_log.write_text(
+        f"{now_str} [INFO] Supervisor ntfy gated by common policy (buffered_for_bulk): 🚨 [auto_technical_repair] ERROR Issues: 1 | Actions: 0\n"
+        f"{now_str} [INFO] [SHADOW WOULD EXECUTE] Venue/fleet action RESTART_BOT for kraken_bot (fleet): Exception in poll\n"
+        f"{now_str} [INFO] [ENFORCE ATTEMPTING PATCH] Applying self-healing patch on foo.py: fix RuntimeError\n",
+        encoding="utf-8",
+    )
+    summary = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=1.0)
+    assert summary.error_count == 0
+    assert summary.critical_events == []
+    assert summary.persistent_errors == []
+
+    # Verify apply_code_patch_safely restores exact pre-patch content via atomic_write_text without running git checkout --
+    target_py = tmp_path / "sample_mod.py"
+    original_uncommitted = "VALUE = 42  # uncommitted local edit\n"
+    target_py.write_text(original_uncommitted, encoding="utf-8")
+
+    git_calls = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        git_calls.append(list(cmd))
+        return SimpleNamespace(returncode=1, stdout="", stderr="failed test")
+
+    monkeypatch.setattr("orchestratorOS.lib.technical_repair_ssot.subprocess.run", _fake_run)
+    ok = apply_code_patch_safely(
+        target_file="sample_mod.py",
+        search_block="VALUE = 42",
+        replace_block="VALUE = 99",
+        rationale="test rollback",
+        workspace_dir=str(tmp_path),
+    )
+    assert ok is False
+    assert target_py.read_text(encoding="utf-8") == original_uncommitted
+    assert not any(c[:2] == ["git", "checkout"] for c in git_calls)
+
+
+
 
 
 

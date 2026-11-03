@@ -139,7 +139,13 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
         )
         if not allowed:
             logging.info(f"Email gated by common delivery policy ({reason}): {subject}")
-            return reason in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+            return reason in (
+                "duplicate",
+                "similar_eliminated",
+                "buffered_for_bulk",
+                "topic_queue_full_dropped",
+                "queue_full_dropped",
+            )
         if out_payload:
             subject, body, _, _ = out_payload
             subject = re.sub(r"[\r\n]+", " ", "" if isinstance(subject, bool) else str(subject or "")).strip() or "Alert"

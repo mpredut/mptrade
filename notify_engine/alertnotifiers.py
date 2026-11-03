@@ -375,6 +375,7 @@ def _enqueue_bounded_bulk(
     new_item: dict,
     topic_max: int,
     queue_max: int,
+    last_map: Optional[dict[str, float]] = None,
 ) -> tuple[bool, str]:
     """Bounded producer enqueue: cap per-topic and total queue sizes, dropping lower/equal priority overflow."""
     t_key = _canonical_topic_key(new_item.get("topic"))
@@ -389,7 +390,10 @@ def _enqueue_bounded_bulk(
         victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
         if new_rank <= victim_rank:
             return False, "topic_queue_full_dropped"
-        pending_bulk.pop(victim_idx)
+        evicted = pending_bulk.pop(victim_idx)
+        if isinstance(last_map, dict) and isinstance(evicted, dict):
+            last_map.pop(str(evicted.get("fingerprint") or ""), None)
+            last_map.pop(str(evicted.get("sim_key") or ""), None)
 
     if len(pending_bulk) >= queue_max:
         victim_idx = min(
@@ -399,7 +403,10 @@ def _enqueue_bounded_bulk(
         victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
         if new_rank <= victim_rank:
             return False, "queue_full_dropped"
-        pending_bulk.pop(victim_idx)
+        evicted = pending_bulk.pop(victim_idx)
+        if isinstance(last_map, dict) and isinstance(evicted, dict):
+            last_map.pop(str(evicted.get("fingerprint") or ""), None)
+            last_map.pop(str(evicted.get("sim_key") or ""), None)
 
     pending_bulk.append(new_item)
     return True, "buffered_for_bulk"
@@ -651,11 +658,12 @@ def pass_common_gate(
         )
 
         if central_gate_closed or topic_window_closed or has_due_other_topic:
-            last_map[fingerprint] = now_ts
-            last_map[sim_key] = now_ts
-            _, q_reason = _enqueue_bounded_bulk(
-                pending_bulk, new_item, _topic_bulk_max_items(), _queue_max_items()
+            enqueued, q_reason = _enqueue_bounded_bulk(
+                pending_bulk, new_item, _topic_bulk_max_items(), _queue_max_items(), last_map
             )
+            if enqueued:
+                last_map[fingerprint] = now_ts
+                last_map[sim_key] = now_ts
             _save_delivery_state(path, state)
             return False, q_reason, False, None
 

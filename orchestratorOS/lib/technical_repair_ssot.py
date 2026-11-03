@@ -677,8 +677,10 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
     supervisor_summary_pattern = re.compile(
         r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
+        r"\[SHADOW WOULD (?:EXECUTE|APPLY)\]|\[ENFORCE (?:EXECUTING|ATTEMPTING PATCH)\]|"
         r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
-        r"ntfy delivery gated by common policy|Dispatched ntfy alert to|"
+        r"(?:Supervisor\s+)?ntfy(?: delivery)? gated (?:by common policy|after due-batch flush)|Dispatched ntfy alert to|"
+        r"Retry queue full .* dropping oldest notification|"
         r"<!--\s*a padding to disable MSIE|<(?:head|center)>.*500 Internal Server Error|"
         r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed|"
         r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited))",
@@ -886,18 +888,23 @@ def apply_code_patch_safely(
             return True
         if log:
             log.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-        atomic_write_text(real_target, content)
-        subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+        try:
+            atomic_write_text(real_target, content)
+        except OSError:
+            subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
         return False
     except Exception as e:
         if log:
             log.error("Error during safe code patching: %s. Performing rollback.", e)
+        restored = False
         if content is not None:
             try:
                 atomic_write_text(real_target, content)
+                restored = True
             except OSError:
-                pass
-        subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+                restored = False
+        if not restored:
+            subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
         return False
 
 
