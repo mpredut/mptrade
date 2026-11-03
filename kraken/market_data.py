@@ -9,7 +9,16 @@ a valid price. HYPE qualifies; an unlisted future pair does not.
 
 from __future__ import annotations
 
+import os
+import sys
 import urllib.parse
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from providers.base import validate_ohlc_candle_bar
 
 try:
     from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
@@ -66,23 +75,17 @@ def fetch_ohlc_candles(
     for x in rows:
         if not isinstance(x, (list, tuple)) or len(x) < 5:
             continue
-        raw_ts = safe_pos_float(x[0], default=None)
-        o_val = safe_pos_float(x[1], default=None)
-        h_val = safe_pos_float(x[2], default=None)
-        l_val = safe_pos_float(x[3], default=None)
-        c_val = safe_pos_float(x[4], default=None)
-        if raw_ts is None or o_val is None or h_val is None or l_val is None or c_val is None:
-            continue
-        ts = int(raw_ts)
-        if ts <= 0 or h_val < l_val or h_val < max(o_val, c_val) or l_val > min(o_val, c_val):
-            continue
-        records.append({
-            "timestamp": ts,
-            "open": o_val,
-            "high": h_val,
-            "low": l_val,
-            "close": c_val,
-        })
+        bar = validate_ohlc_candle_bar(
+            x[0],
+            x[1],
+            x[2],
+            x[3],
+            x[4],
+            drop_incomplete=False,
+            ts_in_ms=False,
+        )
+        if bar is not None:
+            records.append(bar)
     return records
 
 

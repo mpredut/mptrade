@@ -843,6 +843,77 @@ def build_price_history_points(
     return out
 
 
+OHLC_INTERVALS_MIN_TO_STR: dict[int, str] = {
+    1: "1m",
+    3: "3m",
+    5: "5m",
+    15: "15m",
+    30: "30m",
+    60: "1h",
+    120: "2h",
+    240: "4h",
+    360: "6h",
+    480: "8h",
+    720: "12h",
+    1440: "1d",
+    4320: "3d",
+    10080: "1w",
+    43200: "1M",
+}
+
+OHLC_INTERVALS_STR_TO_MIN: dict[str, int] = {
+    v: k for k, v in OHLC_INTERVALS_MIN_TO_STR.items()
+}
+
+
+def validate_ohlc_candle_bar(
+    open_ts: Any,
+    open_px: Any,
+    high_px: Any,
+    low_px: Any,
+    close_px: Any,
+    *,
+    close_ts: Any = None,
+    now_ms: Optional[int] = None,
+    drop_incomplete: bool = True,
+    close_inclusive: bool = False,
+    ts_in_ms: bool = True,
+) -> Optional[dict]:
+    """Validate and normalize a single OHLC candle into ``{'timestamp': int, 'open': float, 'high': float, 'low': float, 'close': float}``."""
+    ot_f = safe_pos_float(open_ts, default=None)
+    o_v = safe_pos_float(open_px, default=None)
+    h_v = safe_pos_float(high_px, default=None)
+    l_v = safe_pos_float(low_px, default=None)
+    c_v = safe_pos_float(close_px, default=None)
+    if ot_f is None or o_v is None or h_v is None or l_v is None or c_v is None:
+        return None
+    open_i = int(ot_f)
+    if open_i <= 0:
+        return None
+    if close_ts is not None:
+        ct_f = safe_pos_float(close_ts, default=None)
+        if ct_f is None:
+            return None
+        close_i = int(ct_f)
+        if close_i < open_i:
+            return None
+        if drop_incomplete and now_ms is not None:
+            if (close_i >= now_ms) if close_inclusive else (close_i > now_ms):
+                return None
+    if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
+        return None
+    ts_sec = open_i // 1000 if ts_in_ms else open_i
+    if ts_sec <= 0:
+        return None
+    return {
+        "timestamp": ts_sec,
+        "open": o_v,
+        "high": h_v,
+        "low": l_v,
+        "close": c_v,
+    }
+
+
 def read_client_ohlc_series(
     client_or_factory: Any,
     symbol: str,

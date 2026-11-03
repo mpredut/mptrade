@@ -19,6 +19,10 @@ if _ROOT not in sys.path:
 
 
 from botcore import load_local_module  # noqa: E402
+from providers.base import (  # noqa: E402
+    OHLC_INTERVALS_MIN_TO_STR,
+    validate_ohlc_candle_bar,
+)
 
 _common = load_local_module(_HERE, "common")
 _load_hl_local = _common.load_hl_local
@@ -32,19 +36,9 @@ HLClient = _load_hl_local("hl_client").HLClient
 
 API_URL = "https://api.hyperliquid.xyz/info"
 INTERVALS = {
-    1: "1m",
-    3: "3m",
-    5: "5m",
-    15: "15m",
-    30: "30m",
-    60: "1h",
-    120: "2h",
-    240: "4h",
-    480: "8h",
-    720: "12h",
-    1440: "1d",
-    4320: "3d",
-    10080: "1w",
+    k: v
+    for k, v in OHLC_INTERVALS_MIN_TO_STR.items()
+    if k not in (360, 43200)
 }
 _REV_INTERVALS = {v: k for k, v in INTERVALS.items()}
 
@@ -78,36 +72,23 @@ def normalize_closed_candles(
     for row in rows:
         if not isinstance(row, dict):
             continue
+        bar = validate_ohlc_candle_bar(
+            row.get("t"),
+            row.get("o"),
+            row.get("h"),
+            row.get("l"),
+            row.get("c"),
+            close_ts=row.get("T"),
+            now_ms=now_ms,
+            drop_incomplete=drop_incomplete,
+            close_inclusive=True,
+            ts_in_ms=True,
+        )
+        if bar is None:
+            continue
         t_f = safe_pos_float(row.get("t"), default=None)
-        T_f = safe_pos_float(row.get("T"), default=None)
-        o_val = safe_pos_float(row.get("o"), default=None)
-        h_val = safe_pos_float(row.get("h"), default=None)
-        l_val = safe_pos_float(row.get("l"), default=None)
-        c_val = safe_pos_float(row.get("c"), default=None)
-        if (
-            t_f is None
-            or T_f is None
-            or o_val is None
-            or h_val is None
-            or l_val is None
-            or c_val is None
-        ):
-            continue
-        open_time = int(t_f)
-        close_time = int(T_f)
-        if open_time <= 0 or close_time < open_time:
-            continue
-        if h_val < l_val or h_val < max(o_val, c_val) or l_val > min(o_val, c_val):
-            continue
-        if drop_incomplete and close_time >= now_ms:
-            continue
-        by_open_time[open_time] = {
-            "timestamp": open_time // 1000,
-            "open": o_val,
-            "high": h_val,
-            "low": l_val,
-            "close": c_val,
-        }
+        if t_f is not None:
+            by_open_time[int(t_f)] = bar
     return [by_open_time[key] for key in sorted(by_open_time)]
 
 

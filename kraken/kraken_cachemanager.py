@@ -379,17 +379,25 @@ def _touch_ws_fetchtimes(cache, now_ms=None):
 
 def ws_loop(client):
     """Subscribe to spot-only ownTrades and write every fill with zero lag.
-    Seed from unified Ledgers, including existing instant buys, and reconnect automatically.
-    Limitation: new off-orderbook instant buys do not appear on ownTrades. A WS deployment
-    therefore also needs periodic Ledgers polling, for example every 30 seconds."""
-    import websocket  # lazy so poll mode works without the dependency
+    Seed from unified Ledgers, including existing instant buys, reconcile Ledgers
+    periodically at POLL_INTERVAL, and reconnect/fall back to REST automatically."""
+    try:
+        import websocket  # lazy so poll mode works without the dependency
+    except ImportError as exc:
+        log(f"[kraken_cache][ws] websocket-client unavailable ({exc}); falling back to poll_loop")
+        return poll_loop(client)
 
     cache = _load_initial_cache(CACHE_FILE)
     last_flush_ms = [0]
+    last_rest_sync_ms = [0]
+    rest_sync_interval_ms = int(max(30.0, float(POLL_INTERVAL or 30.0)) * 1000)
+    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, force=True, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
     try:
         _merge_rest_into(client, cache)      # initial snapshot merged incrementally
         save_json_state(CACHE_FILE, cache, indent=1)
-        last_flush_ms[0] = int(time.time() * 1000)
+        now_init_ms = int(time.time() * 1000)
+        last_flush_ms[0] = now_init_ms
+        last_rest_sync_ms[0] = now_init_ms
     except Exception as e:
         log(f"[kraken_cache][ws] REST seed failed: {e}")
 
@@ -402,6 +410,10 @@ def ws_loop(client):
             log("[kraken_cache][ws] subscribed ownTrades")
         except Exception as e:
             log(f"[kraken_cache][ws] subscribe failed: {e}")
+            try:
+                ws.close()
+            except Exception:
+                pass
 
     def on_message(ws, msg):
         try:
@@ -413,9 +425,16 @@ def ws_loop(client):
         if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
             # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
             if isinstance(data, dict) and (now_ms - last_flush_ms[0]) >= 15_000:
+                if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+                    try:
+                        _merge_rest_into(client, cache)
+                        last_rest_sync_ms[0] = now_ms
+                    except Exception as e:
+                        log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {e}")
                 _touch_ws_fetchtimes(cache, now_ms)
                 save_json_state(CACHE_FILE, cache, indent=1)
                 last_flush_ms[0] = now_ms
+                touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
             return
         changed = False
         for entry in (data[0] if isinstance(data[0], list) else ()):
@@ -441,6 +460,7 @@ def ws_loop(client):
             _touch_ws_fetchtimes(cache, now_ms)
             save_json_state(CACHE_FILE, cache, indent=1)  # immediate fill write for zero lag
             last_flush_ms[0] = now_ms
+            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
 
     def on_error(ws, err):
         log(f"[kraken_cache][ws] error: {err}")
@@ -453,11 +473,14 @@ def ws_loop(client):
         except Exception as e:
             log(f"[kraken_cache][ws] run_forever: {e}")
         log("[kraken_cache][ws] disconnected; reconnect in 5s")
+        touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
         time.sleep(5)
         try:
             _merge_rest_into(client, cache)
             save_json_state(CACHE_FILE, cache, indent=1)
-            last_flush_ms[0] = int(time.time() * 1000)
+            now_resync_ms = int(time.time() * 1000)
+            last_flush_ms[0] = now_resync_ms
+            last_rest_sync_ms[0] = now_resync_ms
         except Exception as e:
             log(f"[kraken_cache][ws] REST resync after disconnect failed: {e}")
 
@@ -475,10 +498,10 @@ def main():
     client = KrakenClient(credentials.key, credentials.secret)
     log(f"[kraken_cache] start: mode={MODE} credentials={credentials.profile} "
         f"pairs={PAIRS} poll={POLL_INTERVAL}s -> {CACHE_FILE}")
-    if MODE == "ws":
-        ws_loop(client)        # real-time; requires websocket-client
+    if MODE in ("ws", "auto"):
+        ws_loop(client)        # real-time WS-first + periodic REST Ledgers fallback
     else:
-        poll_loop(client)      # REST (default)
+        poll_loop(client)      # REST only
 
 
 if __name__ == "__main__":

@@ -265,6 +265,70 @@ class TestFetchDeadline(unittest.TestCase):
         self.assertGreaterEqual(api.calls, 1, "REST poller must fall back when WebSocket stream goes stale")
         self.assertEqual(set(api.provider_names), {"hyperliquid"})
 
+    def test_hyperliquid_ws_user_fills_updates_ssot_trade_cache(self):
+        import json
+        import tempfile
+        from providers.hyperliquid_provider import HyperliquidProvider
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_file = os.path.join(tmpdir, "cache_trade_hyperliquid.json")
+            hl_ws = cm.HyperliquidPriceStream(
+                ["HYPEUSDC"],
+                user_address="0x1234567890abcdef1234567890abcdef12345678",
+                fills_cache_path=cache_file,
+            )
+            extra = hl_ws._build_extra_subscribe_payloads()
+            self.assertEqual(len(extra), 1)
+            self.assertEqual(
+                json.loads(extra[0]),
+                {
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "userFills",
+                        "user": "0x1234567890abcdef1234567890abcdef12345678",
+                    },
+                },
+            )
+            now_ms = int(time.time() * 1000)
+            hl_ws._process_message(
+                json.dumps(
+                    {
+                        "channel": "userFills",
+                        "data": {
+                            "isSnapshot": True,
+                            "user": "0x1234567890abcdef1234567890abcdef12345678",
+                            "fills": [
+                                {"coin": "@107", "oid": 101, "tid": 1, "side": "B", "px": "42.0", "sz": "2.0", "time": now_ms - 5000},
+                                {"coin": "HYPE", "oid": 999, "tid": 2, "side": "A", "px": "99.0", "sz": "10.0", "time": now_ms - 4000},
+                            ],
+                        },
+                    }
+                ),
+                now_ms=now_ms,
+            )
+            hl_ws._process_message(
+                json.dumps(
+                    {
+                        "channel": "userFills",
+                        "data": {
+                            "isSnapshot": False,
+                            "user": "0x1234567890abcdef1234567890abcdef12345678",
+                            "fills": [
+                                {"coin": "@107", "oid": 102, "tid": 3, "side": "A", "px": "44.5", "sz": "2.0", "time": now_ms - 1000},
+                            ],
+                        },
+                    }
+                ),
+                now_ms=now_ms + 100,
+            )
+            prov = HyperliquidProvider(token="HYPE")
+            prov._ssot_fills_cache_path = cache_file
+            prov._force_ssot_cache = True
+            orders = prov.get_orders("HYPEUSDC", None, 3600)
+            self.assertEqual(len(orders), 2)
+            self.assertEqual([o["orderId"] for o in orders], ["101", "102"])
+            self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
+
 
 if __name__ == "__main__":
     unittest.main()

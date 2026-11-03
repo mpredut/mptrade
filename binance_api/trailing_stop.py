@@ -155,18 +155,6 @@ class TrailingStop(TrailingAdapterBase):
             max_age_seconds=180,
         )
 
-    @staticmethod
-    def _lookup_symbol_entry(mapping: dict, symbol: str):
-        sym_norm = str(symbol).strip().upper()
-        canon = canonical_symbol_key(sym_norm)
-        for cand in (sym_norm, canon, symbol):
-            if not cand:
-                continue
-            val = casefold_get(mapping, cand)
-            if val is not None:
-                return val
-        return None
-
     def trail_pct_for(self, symbol: str) -> float:
         if isinstance(symbol, bool) or symbol is None:
             raise KeyError(symbol)

@@ -177,31 +177,23 @@ class KrakenTrailing(TrailingAdapterBase):
     def trail_pct_for(self, asset: str) -> float:
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
             return DEFAULT_TRAIL_PCT
-        asset_norm = asset.strip().upper()
-        canon = canonical_base_asset(asset_norm)
-        for cand in (asset, asset_norm, canon):
-            if not cand:
-                continue
-            val = casefold_get(TRAIL_PCT, cand)
-            if val is not None:
-                return val
-        return DEFAULT_TRAIL_PCT
+        val = self._lookup_symbol_entry(TRAIL_PCT, asset)
+        return val if val is not None else DEFAULT_TRAIL_PCT
 
     def rebuy_enabled_for(self, asset: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy): on/off, falling back to REBUY_ENABLED."""
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
             return False
-        asset_norm = asset.strip().upper()
-        canon = canonical_base_asset(asset_norm)
-        for cand in (asset, asset_norm, canon):
-            if not cand:
-                continue
-            mode = casefold_get(REBUY_MODE_BY_ASSET, cand)
-            if mode == "on":
-                return True
-            if mode == "off":
-                return False
+        mode = self._lookup_symbol_entry(REBUY_MODE_BY_ASSET, asset)
+        if mode == "on":
+            return True
+        if mode == "off":
+            return False
         return bool(REBUY_ENABLED)
+
+    def rebuy_configured_for(self, asset: str) -> bool:
+        """Return configured re-buy intent for asset/pair."""
+        return self.rebuy_enabled_for(asset)
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:

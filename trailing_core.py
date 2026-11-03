@@ -714,6 +714,28 @@ class TrailingAdapterBase:
     def _save(self, state: dict) -> None:
         self.core.save(state)
 
+    @classmethod
+    def _lookup_symbol_entry(cls, mapping: dict, symbol: str):
+        if isinstance(symbol, bool) or symbol is None or not isinstance(mapping, dict):
+            return None
+        from cachepaths import canonical_base_asset, canonical_symbol_key
+        from instrument_registry import casefold_get
+
+        sym_norm = str(symbol).strip().upper()
+        canon_sym = canonical_symbol_key(sym_norm) if sym_norm else ""
+        cands = (
+            (symbol, sym_norm, canon_sym, canonical_base_asset(sym_norm))
+            if cls._VENUE_SLUG == "kraken"
+            else (sym_norm, canon_sym, symbol)
+        )
+        for cand in cands:
+            if not cand:
+                continue
+            val = casefold_get(mapping, cand)
+            if val is not None:
+                return val
+        return None
+
     def _trend_value(self, pair: str) -> float:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""

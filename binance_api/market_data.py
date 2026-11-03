@@ -13,30 +13,16 @@ import time
 import urllib.parse
 
 from botcore import _parse_bool_flag, exact_pos_int, fetch_public_json, safe_float, safe_pos_float
+from providers.base import (
+    OHLC_INTERVALS_MIN_TO_STR,
+    OHLC_INTERVALS_STR_TO_MIN,
+    validate_ohlc_candle_bar,
+)
 
 API_URL = "https://api.binance.com/api/v3/klines"
 
-INTERVALS_MIN_TO_STR: dict[int, str] = {
-    1: "1m",
-    3: "3m",
-    5: "5m",
-    15: "15m",
-    30: "30m",
-    60: "1h",
-    120: "2h",
-    240: "4h",
-    360: "6h",
-    480: "8h",
-    720: "12h",
-    1440: "1d",
-    4320: "3d",
-    10080: "1w",
-    43200: "1M",
-}
-
-INTERVALS_STR_TO_MIN: dict[str, int] = {
-    v: k for k, v in INTERVALS_MIN_TO_STR.items()
-}
+INTERVALS_MIN_TO_STR: dict[int, str] = dict(OHLC_INTERVALS_MIN_TO_STR)
+INTERVALS_STR_TO_MIN: dict[str, int] = dict(OHLC_INTERVALS_STR_TO_MIN)
 
 _CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
     "1H": "1h",
@@ -181,44 +167,22 @@ def fetch_ohlc_candles(
             # 11: Ignore
             if not isinstance(item, (list, tuple)) or len(item) < 7:
                 continue
-            ot_f = safe_pos_float(item[0], default=None)
-            ct_f = safe_pos_float(item[6], default=None)
-            o_v = safe_pos_float(item[1], default=None)
-            h_v = safe_pos_float(item[2], default=None)
-            l_v = safe_pos_float(item[3], default=None)
-            c_v = safe_pos_float(item[4], default=None)
-            if (
-                ot_f is None
-                or ct_f is None
-                or o_v is None
-                or h_v is None
-                or l_v is None
-                or c_v is None
-            ):
+            bar = validate_ohlc_candle_bar(
+                item[0],
+                item[1],
+                item[2],
+                item[3],
+                item[4],
+                close_ts=item[6],
+                now_ms=now_ms,
+                drop_incomplete=should_drop_incomplete,
+                close_inclusive=False,
+                ts_in_ms=True,
+            )
+            if bar is None or bar["timestamp"] in seen_timestamps:
                 continue
-            open_time_ms = int(ot_f)
-            close_time_ms = int(ct_f)
-            if open_time_ms <= 0 or close_time_ms < open_time_ms:
-                continue
-            if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
-                continue
-            ts_sec = open_time_ms // 1000
-
-            # If drop_incomplete is True and the candle has not closed yet, skip it
-            if should_drop_incomplete and close_time_ms > now_ms:
-                continue
-
-            if ts_sec in seen_timestamps:
-                continue
-            seen_timestamps.add(ts_sec)
-
-            records.append({
-                "timestamp": ts_sec,
-                "open": o_v,
-                "high": h_v,
-                "low": l_v,
-                "close": c_v,
-            })
+            seen_timestamps.add(bar["timestamp"])
+            records.append(bar)
 
         last_open_time = None
         for item in reversed(raw):

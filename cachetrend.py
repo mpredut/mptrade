@@ -1765,6 +1765,9 @@ class _VenuePriceStreamBase(BinanceWSBase):
             sub_msg = self._build_subscribe_payload()
             if sub_msg:
                 await ws.send(sub_msg)
+            for extra_msg in self._build_extra_subscribe_payloads():
+                if extra_msg:
+                    await ws.send(extra_msg)
             while not self._stop_event.is_set():
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
@@ -1779,20 +1782,40 @@ class _VenuePriceStreamBase(BinanceWSBase):
     def _build_subscribe_payload(self) -> Optional[str]:
         raise NotImplementedError
 
+    def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
+        return ()
+
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         raise NotImplementedError
 
 
 class HyperliquidPriceStream(_VenuePriceStreamBase):
-    """Real-time Hyperliquid public WebSocket stream (`allMids`) feeding CacheCurrentPriceManager."""
+    """Real-time Hyperliquid WebSocket stream (`allMids` + optional `userFills`) feeding CacheCurrentPriceManager and SSOT trade cache."""
 
     DEFAULT_WS_URL = "wss://api.hyperliquid.xyz/ws"
     _KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
 
-    def __init__(self, symbols=None, *, market_api=None, ws_url: str = DEFAULT_WS_URL):
+    def __init__(
+        self,
+        symbols=None,
+        *,
+        market_api=None,
+        ws_url: str = DEFAULT_WS_URL,
+        user_address: Optional[str] = None,
+        fills_cache_path: Optional[str] = None,
+    ):
         super().__init__(symbols=symbols, ws_url=ws_url)
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
+        self._fills_cache_path = fills_cache_path
+        self._fills_ws_seeded = False
+        self._last_fills_touch_ms = 0
+        if user_address is None and "pytest" not in sys.modules:
+            from providers.base import env_value
+
+            hl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperliquid")
+            user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(hl_dir, "HL_ACCOUNT_ADDRESS")
+        self._user_address = str(user_address or "").strip() or None
 
     def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
         cached = self._resolved_spot_keys.get(symbol)
@@ -1824,16 +1847,96 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
     def _build_subscribe_payload(self) -> str:
         return _json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
 
+    def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
+        if not self._user_address:
+            return ()
+        return (
+            _json.dumps({
+                "method": "subscribe",
+                "subscription": {"type": "userFills", "user": self._user_address},
+            }),
+        )
+
+    def _resolve_fills_cache_file(self) -> str:
+        return str(self._fills_cache_path) if self._fills_cache_path else cache_path("cache_trade_hyperliquid.json")
+
+    def _handle_user_fills(self, data: object, *, ts_ms: int) -> None:
+        raw_fills = (
+            data.get("fills")
+            if isinstance(data, dict)
+            else (data if isinstance(data, list) else None)
+        )
+        if not isinstance(raw_fills, list):
+            return
+        is_snapshot = bool(data.get("isSnapshot")) if isinstance(data, dict) else False
+        cache_file = self._resolve_fills_cache_file()
+        loaded = read_json_dict(cache_file, default=None, recover_previous=True)
+        cache_obj = (
+            loaded
+            if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict) and isinstance(loaded.get("fetchtime"), dict)
+            else {"items": {}, "fetchtime": {}}
+        )
+        for sym in self._symbols:
+            spot_coins = {
+                k.upper()
+                for k in self._candidate_mids_keys(sym)
+                if isinstance(k, str) and (k.startswith("@") or "/" in k)
+            }
+            sym_fills = [
+                dict(f)
+                for f in raw_fills
+                if isinstance(f, dict) and str(f.get("coin") or "").strip().upper() in spot_coins
+            ]
+            if is_snapshot:
+                cache_obj["items"][sym] = sym_fills
+            elif sym_fills:
+                bucket = list(cache_obj["items"].get(sym) or [])
+                seen_keys = {
+                    (f.get("tid"), f.get("oid"), f.get("time"))
+                    for f in bucket
+                    if isinstance(f, dict)
+                }
+                for f in sym_fills:
+                    fk = (f.get("tid"), f.get("oid"), f.get("time"))
+                    if fk not in seen_keys:
+                        bucket.append(f)
+                        seen_keys.add(fk)
+                cache_obj["items"][sym] = bucket
+            cache_obj["fetchtime"][sym] = ts_ms
+        save_json_state(cache_file, cache_obj)
+        self._fills_ws_seeded = True
+        self._last_fills_touch_ms = ts_ms
+
+    def _touch_fills_cache_if_needed(self, ts_ms: int) -> None:
+        if not self._fills_ws_seeded or (ts_ms - self._last_fills_touch_ms) < 15_000:
+            return
+        try:
+            cache_file = self._resolve_fills_cache_file()
+            loaded = read_json_dict(cache_file, default=None, recover_previous=True)
+            if isinstance(loaded, dict) and isinstance(loaded.get("fetchtime"), dict):
+                for sym in self._symbols:
+                    loaded["fetchtime"][sym] = ts_ms
+                save_json_state(cache_file, loaded)
+                self._last_fills_touch_ms = ts_ms
+        except Exception:
+            pass
+
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
             envelope = _json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(envelope, dict) or envelope.get("channel") != "allMids":
+            if not isinstance(envelope, dict):
+                return
+            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            channel = envelope.get("channel")
+            if channel == "userFills":
+                self._handle_user_fills(envelope.get("data"), ts_ms=ts_ms)
+                return
+            if channel != "allMids":
                 return
             data = envelope.get("data")
             mids = data.get("mids") if isinstance(data, dict) else None
             if not isinstance(mids, dict):
                 return
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
             for sym in self._symbols:
                 px = None
                 for k in self._candidate_mids_keys(sym):
@@ -1846,6 +1949,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
                     with self._lock:
                         self._prices[sym] = px
                     self._notify_subscribers(sym, [[ts_ms, px]])
+            self._touch_fills_cache_if_needed(ts_ms)
         except Exception:
             return
 
