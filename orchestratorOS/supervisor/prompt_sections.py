@@ -1102,7 +1102,7 @@ def _format_portfolio_section(
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
     shown_open_oids = {
         str(oo.get("order_id") or oo.get("orderId"))
-        for oo in (ps.get("open_limit_orders") or ())
+        for oo in open_lim
         if isinstance(oo, dict) and (oo.get("order_id") or oo.get("orderId"))
     }
     if ps.get("last_cycle_execution_status"):
@@ -1137,23 +1137,26 @@ def _format_portfolio_section(
             st_val = ps[st_key]
             if st_key == "recent_ai_intents" and isinstance(st_val, list):
                 fmt_intents = []
+                last_norm_intent = None
                 for it in st_val:
                     if not isinstance(it, dict):
                         fmt_intents.append(it)
+                        last_norm_intent = it
                         continue
                     v_st = str(it.get("venue_status") or "").upper()
                     oid_s = str(it.get("order_id") or "")
+                    it_copy = dict(it)
+                    if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
+                        it_copy["status"] = "RESTING_IN_BOOK"
+                    last_norm_intent = it_copy
                     if (
                         v_st in ("OPEN", "NEW", "RESTING")
                         and oid_s in shown_open_oids
                         and _parse_finite_float(it.get("age_h"), 0.0) > 0.5
                     ):
                         continue
-                    it_copy = dict(it)
-                    if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
-                        it_copy["status"] = "RESTING_IN_BOOK"
                     fmt_intents.append(it_copy)
-                st_val = fmt_intents if fmt_intents else st_val[-1:]
+                st_val = fmt_intents if fmt_intents else ([last_norm_intent] if last_norm_intent is not None else st_val[-1:])
             lines.append(f"  * {st_label}: {st_val}")
     return lines
 

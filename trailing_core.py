@@ -758,7 +758,11 @@ class TrailingAdapterBase:
         rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
         default_rebuy = bool(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled))
         has_auto_trend = callable(getattr(self, "_long_trend_up", None))
-        predicate = None if has_auto_trend else (lambda v: v in ("on", "off"))
+        predicate = (
+            (lambda v: v in ("on", "off", "auto"))
+            if has_auto_trend
+            else (lambda v: v in ("on", "off"))
+        )
         mode = self._lookup_symbol_entry(rebuy_map, symbol, predicate=predicate)
         if mode is None:
             return default_rebuy
@@ -766,13 +770,14 @@ class TrailingAdapterBase:
             return True
         if mode == "off":
             return False
-        if has_auto_trend:
+        if mode == "auto" and has_auto_trend:
             from cachepaths import canonical_symbol_key
+            from instrument_registry import casefold_get
 
             canon = canonical_symbol_key(sym_norm)
             resolved_sym = (
                 canon
-                if (isinstance(rebuy_map, dict) and canon in rebuy_map)
+                if (isinstance(rebuy_map, dict) and canon and casefold_get(rebuy_map, canon) is not None)
                 else (sym_norm or symbol)
             )
             return bool(self._long_trend_up(resolved_sym))
@@ -785,7 +790,9 @@ class TrailingAdapterBase:
         sym_norm = symbol.strip().upper()
         if callable(getattr(self, "_long_trend_up", None)):
             rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
-            mode = self._lookup_symbol_entry(rebuy_map, symbol)
+            mode = self._lookup_symbol_entry(
+                rebuy_map, symbol, predicate=lambda v: v in ("on", "off", "auto")
+            )
             if mode == "auto":
                 return True
         return self.rebuy_enabled_for(sym_norm or symbol)

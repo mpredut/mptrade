@@ -2517,5 +2517,30 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     assert "'age_min': 500.0" not in sec_3c_lines
     assert "'order_id': '202'" in sec_3c_lines
 
+    # 12. Short-series Kalman warm-seed alignment and prompt fallback RESTING_IN_BOOK normalization
+    import os
+    import shadow_signals as ss
+
+    tracker = ss.KalmanStateTracker(journal=ss.KalmanJournal(fixed_path=os.devnull), compute_vol=False)
+    # 122 samples at 1s with KALMAN_SAMPLE_SEC=60: last sample is at ts=1000, prior 60s steps at idx 61 and idx 1
+    big_p = [100.0 + i * 0.1 for i in range(121)] + [100.0 + 120 * 0.1]  # zero 1s tick between idx 120 and 121
+    k_fields = tracker.update("TESTUSDC", 1000.0, big_p[-1], 0.05, big_p, 1.0)
+    assert k_fields["kalman_vel"] > 0.0
+
+    sec_3c_fallback = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_orders": [{"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "101", "price": 75000.0, "qty": 0.01}],
+                "recent_ai_intents": [
+                    {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "NEW", "order_id": "101", "age_h": 8.3},
+                ],
+            },
+            asset_scope="crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "RESTING_IN_BOOK" in sec_3c_fallback
+
+
 
 
