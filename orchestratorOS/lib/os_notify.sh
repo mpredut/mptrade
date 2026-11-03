@@ -48,36 +48,49 @@ send_os_ntfy() {
     local title="${1:-OS Alert}" body="${2:-}" priority="${3:-default}" topic="${4:-}"
     [ -n "$topic" ] || topic="$(ntfy_error_topic)"
 
-    # Holistic 5-minute common gate + similarity elimination + bulk synthesis
-    local stamp_file="" gate_file="" bulk_file="" now_ts="" used_bulk=0
+    # Per-topic batching + central single-gate dispatcher + similarity elimination
+    local stamp_file="" gate_file="" topic_gate_file="" bulk_file="" now_ts="" used_bulk=0
     local dedup_sec="${OS_NOTIFY_DEDUP_SECONDS:-900}"
-    local gate_sec="${OS_NOTIFY_GATE_SECONDS:-300}"
+    local gate_sec="${OS_NOTIFY_GATE_SECONDS:-$(env_get NOTIFICATION_GATE_SECONDS 600)}"
+    local topic_bulk_sec="${OS_NOTIFY_TOPIC_BULK_SECONDS:-$(env_get NOTIFICATION_TOPIC_BULK_SECONDS 300)}"
     if [ "$dedup_sec" -gt 0 ] 2>/dev/null; then
         local dedup_dir="$ROOT/logs/.os_notify_dedup"
         mkdir -p "$dedup_dir" 2>/dev/null || true
         chmod 0777 "$dedup_dir" 2>/dev/null || true
-        local norm_title norm_body key_hash
+        local norm_title norm_body key_hash safe_topic
         norm_title="$(printf '%s' "$title" | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
         norm_body="$(printf '%s' "$body" | head -n 1 | sed -E 's/[0-9]+([.][0-9]+)?/<N>/g')"
         key_hash="$(printf '%s|%s|%s' "$topic" "$norm_title" "$norm_body" | md5sum 2>/dev/null | awk '{print $1}')"
+        safe_topic="$(printf '%s' "$topic" | tr -c 'A-Za-z0-9_-' '_')"
         if [ -n "$key_hash" ] && [ -d "$dedup_dir" ]; then
             stamp_file="$dedup_dir/$key_hash"
             gate_file="$dedup_dir/.global_gate_ts"
-            bulk_file="$dedup_dir/.pending_bulk"
+            topic_gate_file="$dedup_dir/.topic_gate_${safe_topic}"
+            bulk_file="$dedup_dir/.pending_bulk_${safe_topic}"
             now_ts="$(date +%s)"
             if [ -f "$stamp_file" ]; then
                 local last_ts; last_ts="$(cat "$stamp_file" 2>/dev/null || echo 0)"
                 [ -n "$last_ts" ] && [ $((now_ts - last_ts)) -lt "$dedup_sec" ] 2>/dev/null && return 0
             fi
+            local should_buffer=0
             if [ "$gate_sec" -gt 0 ] 2>/dev/null && [ -f "$gate_file" ]; then
                 local gate_ts; gate_ts="$(cat "$gate_file" 2>/dev/null || echo 0)"
                 if [ -n "$gate_ts" ] && [ $((now_ts - gate_ts)) -lt "$gate_sec" ] 2>/dev/null; then
-                    printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
-                    chmod 0666 "$stamp_file" 2>/dev/null || true
-                    printf '%s: %s\n' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-160)" >> "$bulk_file" 2>/dev/null || true
-                    chmod 0666 "$bulk_file" 2>/dev/null || true
-                    return 0
+                    should_buffer=1
                 fi
+            fi
+            if [ "$topic_bulk_sec" -gt 0 ] 2>/dev/null && [ -f "$topic_gate_file" ]; then
+                local t_gate_ts; t_gate_ts="$(cat "$topic_gate_file" 2>/dev/null || echo 0)"
+                if [ -n "$t_gate_ts" ] && [ $((now_ts - t_gate_ts)) -lt "$topic_bulk_sec" ] 2>/dev/null; then
+                    should_buffer=1
+                fi
+            fi
+            if [ "$should_buffer" -eq 1 ]; then
+                printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
+                chmod 0666 "$stamp_file" 2>/dev/null || true
+                printf '%s: %s\n' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-300)" >> "$bulk_file" 2>/dev/null || true
+                chmod 0666 "$bulk_file" 2>/dev/null || true
+                return 0
             fi
             if [ -s "$bulk_file" ]; then
                 local bulk_count=$(( $(wc -l < "$bulk_file" 2>/dev/null || echo 0) + 1 ))
@@ -97,7 +110,8 @@ send_os_ntfy() {
         if [ -n "$stamp_file" ]; then
             printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
             printf '%s\n' "$now_ts" > "$gate_file" 2>/dev/null || true
-            chmod 0666 "$stamp_file" "$gate_file" 2>/dev/null || true
+            [ -n "$topic_gate_file" ] && printf '%s\n' "$now_ts" > "$topic_gate_file" 2>/dev/null || true
+            chmod 0666 "$stamp_file" "$gate_file" ${topic_gate_file:+"$topic_gate_file"} 2>/dev/null || true
             [ "$used_bulk" -eq 1 ] && rm -f "$bulk_file" 2>/dev/null || true
             if [ "$(id -u)" = "0" ]; then
                 rm -rf "$ROOT/logs/.os_notify_dedup.root_old" 2>/dev/null || true

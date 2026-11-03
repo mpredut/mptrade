@@ -117,11 +117,13 @@ def _log_dotenv_loaded_once(path: str, *, override: bool = False) -> None:
 
 
 def _is_unmodified_root_key(key: str) -> bool:
-    return (
-        key in _ROOT_CONFIG_KEYS
-        and key in os.environ
-        and os.environ.get(key) == _ROOT_CONFIG_VALUES.get(key)
-    )
+    if key not in _ROOT_CONFIG_KEYS:
+        return False
+    if key not in os.environ or os.environ.get(key) != _ROOT_CONFIG_VALUES.get(key):
+        _ROOT_CONFIG_KEYS.discard(key)
+        _ROOT_CONFIG_VALUES.pop(key, None)
+        return False
+    return True
 
 
 def _parse_bool_flag(val, default: bool | None = False):
@@ -197,17 +199,22 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
     cfg_path = os.path.join(os.path.dirname(env_path), config_name)
 
     # Process keys are those in os.environ that were NOT set (or were modified since being set) by root config.env
-    unmodified_root_keys = {k for k in _ROOT_CONFIG_KEYS if _is_unmodified_root_key(k)}
+    unmodified_root_keys = {k for k in tuple(_ROOT_CONFIG_KEYS) if _is_unmodified_root_key(k)}
     protected = set() if override else (set(os.environ.keys()) - unmodified_root_keys)
 
     # 1. Load adjacent versioned configuration (venue defaults)
     cfg_pairs, cfg_loaded = _dotenv_pairs(cfg_path)
     if cfg_loaded:
+        is_root_cfg = os.path.abspath(cfg_path) == _ROOT_CONFIG_PATH
         for key, value in cfg_pairs:
             if key and key not in protected:
                 os.environ[key] = value
-                _ROOT_CONFIG_KEYS.discard(key)
-                _ROOT_CONFIG_VALUES.pop(key, None)
+                if is_root_cfg:
+                    _ROOT_CONFIG_KEYS.add(key)
+                    _ROOT_CONFIG_VALUES[key] = value
+                else:
+                    _ROOT_CONFIG_KEYS.discard(key)
+                    _ROOT_CONFIG_VALUES.pop(key, None)
         _log_dotenv_loaded_once(cfg_path, override=bool(override))
 
     # 2. Load secrets/profile configuration (precedence over venue config, but below process env)

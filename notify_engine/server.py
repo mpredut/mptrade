@@ -209,8 +209,10 @@ class NotificationServer:
         )
         if not allowed:
             logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
-            if (
-                reason not in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+            if reason == "buffered_for_bulk":
+                self.flush_pending_bulk()
+            elif (
+                reason not in ("duplicate", "similar_eliminated")
                 and is_email_mirrored(topic)
             ):
                 self._send_email(title, body)

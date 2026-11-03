@@ -36,6 +36,8 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             "NOTIFICATION_STARTUP_DEDUP_SECONDS": "0",
             "NOTIFICATION_URGENT_DEDUP_SECONDS": "0",
             "NOTIFICATION_GUARD_DEDUP_SECONDS": "0",
+            "NOTIFICATION_GATE_SECONDS": "0",
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "0",
             "DISABLE_EXTERNAL_NOTIFICATIONS": "0",  # Ensure server methods test dispatch
         })
         self.patcher.start()
@@ -606,8 +608,16 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 self.server.dispatch_alerts([diff_2], bot_name="rtrade")
                 self.assertEqual(len(self.dispatched), 1)
 
-            # 6. 90 seconds later: DIFFERENT alert #3 arrives via process_line -> buffered
+            # 6. 90 seconds later: DIFFERENT alert #3 on same topic as diff_1 (ntfy-trades-test) + alert #4 on ntfy-error-test
             with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 90):
+                diff_3_trade = {
+                    "type": "bot_event",
+                    "name": "🎉 Order Executed: SELL BTCUSDC @ $68000.00",
+                    "body": "Filled 0.01 BTCUSDC",
+                    "source": "monitortrades",
+                    "symbol": "BTCUSDC",
+                }
+                self.server.dispatch_alerts([diff_3_trade], bot_name="monitortrades")
                 self.server.process_line(
                     "2026-10-19 12:05:00 [ERROR] Kraken websocket connection reset by peer\n",
                     "kraken_bot",
@@ -618,18 +628,38 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertFalse(self.server.flush_pending_bulk(now=t0 + 200))
             self.assertEqual(len(self.dispatched), 1)
 
-            # 8. After 5 minutes (at t0 + 305s), flush_pending_bulk synthesizes all 3 distinct buffered
-            # alerts into ONE single concatenated bulk message!
+            # 8. After central gate opens (at t0 + 305s), flush_pending_bulk synthesizes ONLY the
+            # same-topic alerts for ntfy-trades-test (diff_1 + diff_3_trade) into a thematic bulk message,
+            # while keeping diff_2 (ntfy-macro-test) and kraken_bot (ntfy-error-test) queued for subsequent gate openings!
             self.assertTrue(self.server.flush_pending_bulk(now=t0 + 305))
             self.assertEqual(len(self.dispatched), 2)
             bulk_msg = self.dispatched[1]
-            self.assertTrue(bulk_msg["title"].startswith("📦 Bulk (3):"), bulk_msg["title"])
+            self.assertTrue(bulk_msg["title"].startswith("📦 Bulk (2):"), bulk_msg["title"])
             self.assertIn("1. [Binance] ⏰ Order Expired & Canceled: BUY TAOUSDC @ 284.50 [rtrade] (×2)", bulk_msg["message"])
-            self.assertIn("2. [rtrade] 🛡 [VETO] Would Block BUY ETHUSDC", bulk_msg["message"])
-            self.assertIn("3. [kraken_bot] Critical Errors", bulk_msg["message"])
-            self.assertIn("Kraken websocket connection reset by peer", bulk_msg["message"])
+            self.assertIn("2. [Binance] 🎉 Order Executed: SELL BTCUSDC @ $68000.00", bulk_msg["message"])
+            self.assertNotIn("Would Block BUY ETHUSDC", bulk_msg["message"])
+            self.assertNotIn("Kraken websocket connection reset", bulk_msg["message"])
             self.assertEqual(bulk_msg["priority"], "urgent")
-            self.assertEqual(bulk_msg["topic"], "ntfy-error-test")
+            self.assertEqual(bulk_msg["topic"], "ntfy-trades-test")
+
+            # 9. Before the next central gate window (t0 + 450s), remaining topics stay deferred
+            self.assertFalse(self.server.flush_pending_bulk(now=t0 + 450))
+            self.assertEqual(len(self.dispatched), 2)
+
+            # 10. Next central gate opening (t0 + 610s) dispatches ntfy-macro-test
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 610))
+            self.assertEqual(len(self.dispatched), 3)
+            macro_msg = self.dispatched[2]
+            self.assertEqual(macro_msg["title"], "[rtrade] 🛡 [VETO] Would Block BUY ETHUSDC")
+            self.assertEqual(macro_msg["topic"], "ntfy-macro-test")
+
+            # 11. Next central gate opening (t0 + 915s) dispatches ntfy-error-test
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 915))
+            self.assertEqual(len(self.dispatched), 4)
+            err_msg = self.dispatched[3]
+            self.assertEqual(err_msg["title"], "[kraken_bot] Critical Errors")
+            self.assertIn("Kraken websocket connection reset by peer", err_msg["message"])
+            self.assertEqual(err_msg["topic"], "ntfy-error-test")
 
     def test_queue_retry_count_persistence_and_edge_cases(self):
         import asyncio
@@ -821,6 +851,63 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         ])
         self.assertEqual(b_prio, "urgent")
         self.assertEqual(b_topic, "ntfy-error-1978")
+
+        # Verify 5-min per-topic batching + 10-min central single-gate dispatcher isolation
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+            "NOTIFICATION_GATE_SECONDS": "600",
+        }):
+            self.dispatched.clear()
+            t0 = 1_750_000_000.0
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
+                    "body": "Risk: HIGH\nMacro sentiment bearish.",
+                    "source": "macro_shadow",
+                    "symbol": "GLOBAL",
+                }])
+                self.assertEqual(len(self.dispatched), 1)
+                self.assertEqual(self.dispatched[0]["topic"], "ntfy-macro-test")
+
+            # At t0 + 120s (within 5m topic window AND within 10m central gate): 2nd macro alert arrives -> batched on macro topic
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 120):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🌍 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)",
+                    "body": "Risk: 0.55 · Headlines: 12\nGeopolitical risk elevated.",
+                    "source": "macro_shadow",
+                    "symbol": "GLOBAL",
+                }])
+                self.assertEqual(len(self.dispatched), 1)
+
+            # At t0 + 180s: server alert arrives -> queued separately under ntfy-server-test
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 180):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🛠 [auto_technical_repair] Issues: 1 | Actions: 0",
+                    "body": "All 19/19 fleet processes healthy.",
+                    "source": "ai_supervisor",
+                    "symbol": "SYSTEM",
+                }])
+                self.assertEqual(len(self.dispatched), 1)
+
+            # At t0 + 400s (after 5m topic window, but before 10m central gate): deferred by central gate
+            self.assertFalse(self.server.flush_pending_bulk(now=t0 + 400))
+            self.assertEqual(len(self.dispatched), 1)
+
+            # At t0 + 605s (10m central gate opens): only ntfy-macro-test exits first; ntfy-server-test waits
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 605))
+            self.assertEqual(len(self.dispatched), 2)
+            self.assertEqual(self.dispatched[1]["topic"], "ntfy-macro-test")
+            self.assertIn("auto_macro_geopolitical", self.dispatched[1]["title"])
+            self.assertNotIn("auto_technical_repair", self.dispatched[1]["message"])
+
+            # At t0 + 1210s (next 10m central gate opens): ntfy-server-test exits on its own topic
+            self.assertTrue(self.server.flush_pending_bulk(now=t0 + 1210))
+            self.assertEqual(len(self.dispatched), 3)
+            self.assertEqual(self.dispatched[2]["topic"], "ntfy-server-test")
+            self.assertIn("auto_technical_repair", self.dispatched[2]["title"])
 
 
 
