@@ -162,34 +162,6 @@ class TrailingStop(TrailingAdapterBase):
             return val
         raise KeyError(symbol)
 
-    def rebuy_enabled_for(self, symbol: str) -> bool:
-        """Per-coin re-buy switch (registry trailing.rebuy): on/off, or 'auto' to follow
-        the long-term trend. A symbol not in the trailing registry uses the global
-        default (TRAILING_REBUY_ENABLED)."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            return False
-        sym_norm = symbol.strip().upper()
-        canon = canonical_symbol_key(sym_norm)
-        mode = self._lookup_symbol_entry(REBUY_MODE_BY_SYMBOL, symbol)
-        if mode is None:
-            return REBUY_ENABLED
-        if mode == "on":
-            return True
-        if mode == "off":
-            return False
-        resolved_sym = canon if canon in REBUY_MODE_BY_SYMBOL else (sym_norm or symbol)
-        return self._long_trend_up(resolved_sym)                    # auto
-
-    def rebuy_configured_for(self, symbol: str) -> bool:
-        """Auto keeps a sold-position recovery intent even while its trend is down."""
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            return False
-        sym_norm = symbol.strip().upper()
-        mode = self._lookup_symbol_entry(REBUY_MODE_BY_SYMBOL, symbol)
-        if mode == "auto":
-            return True
-        return self.rebuy_enabled_for(sym_norm or symbol)
-
     def _long_trend_up(self, symbol: str) -> bool:
         """Compare a fresh price with a complete, contiguous closed-day SMA.
 
@@ -389,29 +361,7 @@ def main() -> int:
     from providers.market_api import api as po   # single guarded .place() proxy; formerly bapi_placeorder
     import symbols as sym
     ts = TrailingStop(api, po, sym)
-
-    if args.status:
-        state = ts._load()
-        for s, _asset, _pair, tr in ts.assets():
-            st = casefold_get(state, s, {}) if isinstance(state, dict) else {}
-            if not isinstance(st, dict):
-                st = {}
-            peak = safe_pos_float(st.get("peak"), default=None)
-            mode = ("pending order" if st.get("pending_order") else
-                    "warming up" if "warmup_at" in st else
-                    "waiting for rebuy" if st.get("rebuy") else
-                    "tracking" if peak else "uninitialized")
-            stop = peak * (1 - tr / 100) if peak else None
-            print(f"{s}: state={mode} peak={peak} trailing={tr}% threshold={stop} "
-                  f"warmup_at={st.get('warmup_at')}")
-        print("Persisted state only; this does not confirm a running bot or a fresh price.")
-        print(f"ENABLED={ts.enabled} (a dry run if False)")
-        return 0
-    if args.once:
-        ts.check_once()
-        return 0
-    ts.run()
-    return 0
+    return ts.dispatch_cli(args)
 
 
 if __name__ == "__main__":

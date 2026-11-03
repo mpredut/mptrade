@@ -671,6 +671,7 @@ class TrailingAdapterBase:
     _VENUE_LABEL: str = ""
     _LOG_TAG: str = "[TRAIL]"
     _ENABLED_ENV_VAR: str = "TRAILING_ENABLED"
+    _REBUY_MODE_MAP_ATTR: str = "REBUY_MODE_BY_SYMBOL"
 
     _safe_float = staticmethod(safe_float)
 
@@ -739,21 +740,63 @@ class TrailingAdapterBase:
                 return val
         return None
 
+    def _module_attr(self, name: str, default=None):
+        for cls in type(self).__mro__:
+            if cls is TrailingAdapterBase or cls is object:
+                continue
+            mod = sys.modules.get(getattr(cls, "__module__", ""))
+            if mod is not None and hasattr(mod, name):
+                return getattr(mod, name)
+        mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
+        return mod_globals.get(name, default)
+
+    def rebuy_enabled_for(self, symbol: str) -> bool:
+        """Per-coin re-buy switch (registry trailing.rebuy: on/off/auto), falling back to REBUY_ENABLED."""
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        sym_norm = symbol.strip().upper()
+        rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
+        default_rebuy = bool(self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled))
+        has_auto_trend = callable(getattr(self, "_long_trend_up", None))
+        predicate = None if has_auto_trend else (lambda v: v in ("on", "off"))
+        mode = self._lookup_symbol_entry(rebuy_map, symbol, predicate=predicate)
+        if mode is None:
+            return default_rebuy
+        if mode == "on":
+            return True
+        if mode == "off":
+            return False
+        if has_auto_trend:
+            from cachepaths import canonical_symbol_key
+
+            canon = canonical_symbol_key(sym_norm)
+            resolved_sym = (
+                canon
+                if (isinstance(rebuy_map, dict) and canon in rebuy_map)
+                else (sym_norm or symbol)
+            )
+            return bool(self._long_trend_up(resolved_sym))
+        return default_rebuy
+
+    def rebuy_configured_for(self, symbol: str) -> bool:
+        """Return configured re-buy intent for symbol/asset (including auto while trend is down)."""
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return False
+        sym_norm = symbol.strip().upper()
+        if callable(getattr(self, "_long_trend_up", None)):
+            rebuy_map = self._module_attr(self._REBUY_MODE_MAP_ATTR)
+            mode = self._lookup_symbol_entry(rebuy_map, symbol)
+            if mode == "auto":
+                return True
+        return self.rebuy_enabled_for(sym_norm or symbol)
+
     def _trend_value(self, pair: str) -> float:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
             from cachepaths import cache_symbol_variants
 
-            cache_trend_path = None
-            for cls in type(self).__mro__:
-                mod = sys.modules.get(getattr(cls, "__module__", ""))
-                if mod is not None and getattr(mod, "CACHE_TREND", None):
-                    cache_trend_path = getattr(mod, "CACHE_TREND")
-                    break
-            if cache_trend_path is None:
-                mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
-                cache_trend_path = mod_globals.get("CACHE_TREND")
+            cache_trend_path = self._module_attr("CACHE_TREND")
             cands = [pair] + cache_symbol_variants(pair)
             if cache_trend_path:
                 from instrument_registry import casefold_get
@@ -951,6 +994,62 @@ class TrailingAdapterBase:
 
     def check_once(self) -> None:
         self.core.check_once()
+
+    def print_status(self) -> None:
+        from instrument_registry import casefold_get
+
+        state = self._load()
+        if self._VENUE_SLUG == "kraken":
+            trail_map = self._module_attr("TRAIL_PCT")
+            rows = (
+                list(trail_map.items())
+                if isinstance(trail_map, dict)
+                else [(s, tr) for s, _a, _p, tr in self.assets()]
+            )
+            for a, t in rows:
+                e = casefold_get(state, a, {}) if isinstance(state, dict) else {}
+                if not isinstance(e, dict):
+                    e = {}
+                peak = safe_pos_float(e.get("peak"), default=None)
+                rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
+                print(
+                    f"{a}: varf={peak} trailing={t}% "
+                    + (f"sells below {peak * (1 - t / 100):.4f}" if peak else "(no peak yet)")
+                    + (f"  | re-buy ARMAT (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
+                )
+            rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
+            rebuy_bounce = self._module_attr("REBUY_BOUNCE_PCT", self.core.rebuy_bounce_pct)
+            print(f"ENABLED={self.enabled}  REBUY={rebuy_en} (bounce {rebuy_bounce}%)")
+            return
+
+        for s, _asset, _pair, tr in self.assets():
+            st = casefold_get(state, s, {}) if isinstance(state, dict) else {}
+            if not isinstance(st, dict):
+                st = {}
+            peak = safe_pos_float(st.get("peak"), default=None)
+            mode = (
+                "pending order" if st.get("pending_order") else
+                "warming up" if "warmup_at" in st else
+                "waiting for rebuy" if st.get("rebuy") else
+                "tracking" if peak else "uninitialized"
+            )
+            stop = peak * (1 - tr / 100) if peak else None
+            print(
+                f"{s}: state={mode} peak={peak} trailing={tr}% threshold={stop} "
+                f"warmup_at={st.get('warmup_at')}"
+            )
+        print("Persisted state only; this does not confirm a running bot or a fresh price.")
+        print(f"ENABLED={self.enabled} (a dry run if False)")
+
+    def dispatch_cli(self, args) -> int:
+        if getattr(args, "status", False):
+            self.print_status()
+            return 0
+        if getattr(args, "once", False):
+            self.check_once()
+            return 0
+        self.run()
+        return 0
 
     def _run_trailing_loop(self, check_seconds: float, banner_lines: list[str] | tuple[str, ...]) -> None:
         for line in banner_lines:

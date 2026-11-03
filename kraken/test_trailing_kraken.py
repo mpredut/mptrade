@@ -520,6 +520,97 @@ class TestRebuyGuardsKraken(Base):
             ts2.check_once()
         self.assertEqual([o for o in c2.orders if o["side"] == "buy"], [])
 
+    def test_cross_venue_shared_cost_basis_cli_dispatch_and_strategy_dry_run_gates(self):
+        import io
+        import json
+        import time
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from providers.base import MarketDataProvider
+        from providers.hyperliquid_provider import HyperliquidProvider, hl_strategy_dry_run
+        from providers.kraken_provider import KrakenProvider, kraken_strategy_dry_run
+
+        # 1. KrakenTrailing.cost_basis delegates to KrakenProvider.position_cost_basis / compute_fills_cost_basis
+        fd, cache_path = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        now_ms = int(time.time() * 1000)
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "items": {
+                            "HYPEUSD": [
+                                {
+                                    "id": "T1",
+                                    "ordertxid": "O1",
+                                    "symbol": "HYPEUSD",
+                                    "side": "BUY",
+                                    "price": 40.0,
+                                    "qty": 10.0,
+                                    "fee": 0.0,
+                                    "feeAsset": "USD",
+                                    "time": now_ms - 5000,
+                                },
+                                {
+                                    "id": "T2",
+                                    "ordertxid": "O2",
+                                    "symbol": "HYPEUSD",
+                                    "side": "BUY",
+                                    "price": 50.0,
+                                    "qty": 15.0,
+                                    "fee": 0.0,
+                                    "feeAsset": "USD",
+                                    "time": now_ms - 2000,
+                                },
+                            ]
+                        },
+                        "fetchtime": {"HYPEUSD": now_ms},
+                    },
+                    f,
+                )
+            with patch("providers.kraken_provider._KRAKEN_CACHE_FILE", cache_path):
+                c = FakeK(60.0, total=25.0, held=5.0)  # total balance = 25.0 (20 free + 5 held)
+                ts = self.ts(c)
+                basis = ts.cost_basis("HYPEUSD")
+                # 10 @ 40 + 15 @ 50 = 400 + 750 = 1150 / 25 = 46.0
+                self.assertAlmostEqual(basis, 46.0)
+        finally:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+
+        # 2. Shared TrailingAdapterBase print_status and dispatch_cli
+        c = FakeK(60.0, total=25.0, held=0.0)
+        ts = self.ts(c)
+        ts.check_once()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = ts.dispatch_cli(SimpleNamespace(status=True, once=False))
+        self.assertEqual(rc, 0)
+        self.assertIn("HYPE: varf=60.0", buf.getvalue())
+        self.assertIn("ENABLED=True", buf.getvalue())
+
+        # 3. Shared MarketDataProvider.resolve_strategy_dry_run & strategy_dry_run
+        self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(True, True, True))
+        self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(False, False, True))
+        self.assertTrue(MarketDataProvider.resolve_strategy_dry_run(False, True, False))
+        self.assertFalse(MarketDataProvider.resolve_strategy_dry_run(False, True, True))
+
+        hl_live = HyperliquidProvider(token="HYPE", live_enabled=True)
+        hl_dry = HyperliquidProvider(token="HYPE", live_enabled=False)
+        self.assertFalse(hl_live.strategy_dry_run(False, True))
+        self.assertTrue(hl_live.strategy_dry_run(True, True))
+        self.assertTrue(hl_dry.strategy_dry_run(False, True))
+
+        with patch.dict(os.environ, {"HL_LIVE_ORDERS": "true", "KRAKEN_LIVE_ORDERS": "true"}):
+            self.assertFalse(hl_strategy_dry_run(False, True))
+            self.assertFalse(kraken_strategy_dry_run(False, True))
+            self.assertFalse(KrakenProvider(client=c).strategy_dry_run(False, True))
+        with patch.dict(os.environ, {"HL_LIVE_ORDERS": "false", "KRAKEN_LIVE_ORDERS": "false"}):
+            self.assertTrue(hl_strategy_dry_run(False, True))
+            self.assertTrue(kraken_strategy_dry_run(False, True))
+            self.assertTrue(KrakenProvider(client=c).strategy_dry_run(False, True))
+
 
 
 

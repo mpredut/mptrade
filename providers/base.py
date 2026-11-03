@@ -1218,6 +1218,23 @@ class MarketDataProvider(ABC):
         """
         return True
 
+    @staticmethod
+    def resolve_strategy_dry_run(
+        force_paper: bool, strategy_execute: bool, venue_live_enabled: bool
+    ) -> bool:
+        """Combine CLI `--paper`, strategy gate (`STRAT_EXECUTE`), and venue live gate (`*_LIVE_ORDERS`)."""
+        return bool(
+            _parse_bool_flag(force_paper, True)
+            or not _parse_bool_flag(strategy_execute, False)
+            or not _parse_bool_flag(venue_live_enabled, False)
+        )
+
+    def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
+        """Return whether a spot strategy should run in paper mode for this provider."""
+        return self.resolve_strategy_dry_run(
+            force_paper, strategy_execute, self.execution_enabled()
+        )
+
     def prepare_order_state(self) -> Any:
         """Synchronize provider state used by shared pre-submit policy checks."""
         return None

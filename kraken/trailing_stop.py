@@ -143,6 +143,7 @@ class KrakenTrailing(TrailingAdapterBase):
     _VENUE_LABEL = "Kraken"
     _LOG_TAG = "[TRAIL-K]"
     _ENABLED_ENV_VAR = "KRAKEN_TRAILING_ENABLED"
+    _REBUY_MODE_MAP_ATTR = "REBUY_MODE_BY_ASSET"
 
     def __init__(self, client: KrakenClient, log=log, enabled=None, state_file=STATE_FILE,
                  min_profit_pct=MIN_PROFIT_PCT, trailing_market: bool | None = None):
@@ -181,23 +182,6 @@ class KrakenTrailing(TrailingAdapterBase):
             return DEFAULT_TRAIL_PCT
         val = self._lookup_symbol_entry(TRAIL_PCT, asset)
         return val if val is not None else DEFAULT_TRAIL_PCT
-
-    def rebuy_enabled_for(self, asset: str) -> bool:
-        """Per-coin re-buy switch (registry trailing.rebuy): on/off, falling back to REBUY_ENABLED."""
-        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
-            return False
-        mode = self._lookup_symbol_entry(
-            REBUY_MODE_BY_ASSET, asset, predicate=lambda v: v in ("on", "off")
-        )
-        if mode == "on":
-            return True
-        if mode == "off":
-            return False
-        return bool(REBUY_ENABLED)
-
-    def rebuy_configured_for(self, asset: str) -> bool:
-        """Return configured re-buy intent for asset/pair."""
-        return self.rebuy_enabled_for(asset)
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:
@@ -429,24 +413,7 @@ def main() -> int:
     credentials = kraken_credentials("trail")
     client = KrakenClient(credentials.key, credentials.secret)
     ts = KrakenTrailing(client)
-    if args.status:
-        st = ts._load()
-        for a, t in TRAIL_PCT.items():
-            e = casefold_get(st, a, {}) if isinstance(st, dict) else {}
-            if not isinstance(e, dict):
-                e = {}
-            peak = safe_pos_float(e.get("peak"), default=None)
-            rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
-            print(f"{a}: varf={peak} trailing={t}% " +
-                  (f"sells below {peak*(1-t/100):.4f}" if peak else "(no peak yet)") +
-                  (f"  | re-buy ARMAT (qty {rb.get('qty')}, min {rb.get('low')})" if rb else ""))
-        print(f"ENABLED={ts.enabled}  REBUY={REBUY_ENABLED} (bounce {REBUY_BOUNCE_PCT}%)")
-        return 0
-    if args.once:
-        ts.check_once()
-        return 0
-    ts.run()
-    return 0
+    return ts.dispatch_cli(args)
 
 
 if __name__ == "__main__":

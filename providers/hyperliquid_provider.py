@@ -122,6 +122,13 @@ def _cloid_for_client_order_id(client_order_id: str) -> str:
     )
 
 
+def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
+    """Combine the strategy and provider gates for Hyperliquid orchestration."""
+    return MarketDataProvider.resolve_strategy_dry_run(
+        force_paper, strategy_execute, bool_env(_LIVE_ENV, _HL_DIR)
+    )
+
+
 class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 

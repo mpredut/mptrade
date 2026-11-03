@@ -181,10 +181,8 @@ def _live() -> bool:
 
 def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
     """Combine the strategy and provider gates for Kraken orchestration."""
-    return bool(
-        _parse_bool_flag(force_paper, True)
-        or not _parse_bool_flag(strategy_execute, False)
-        or not _live()
+    return MarketDataProvider.resolve_strategy_dry_run(
+        force_paper, strategy_execute, _live()
     )
 
 
