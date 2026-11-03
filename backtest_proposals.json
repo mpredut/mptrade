@@ -1,6 +1,20 @@
 [
   {
-    "ts": "2026-11-02T14:08:10",
+    "ts": "2026-11-03T02:08:38",
+    "full_key": "BINANCE_BTC.mt.lost",
+    "section": "BINANCE_BTC",
+    "key": "mt.lost",
+    "symbol": "BTCUSDC",
+    "current_on_dev": 2.9562,
+    "winner_value": 2.3,
+    "margin_vs_current": {
+      "half1": 108.2,
+      "half2": 780.86
+    },
+    "dev_commit": "e731adca"
+  },
+  {
+    "ts": "2026-11-03T02:08:38",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -9,12 +23,12 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 51.76,
-      "half2": 400.87
+      "half2": 404.39
     },
-    "dev_commit": "06010302"
+    "dev_commit": "e731adca"
   },
   {
-    "ts": "2026-11-02T14:08:10",
+    "ts": "2026-11-03T02:08:38",
     "full_key": "BINANCE_TAO.mt.maxage_days",
     "section": "BINANCE_TAO",
     "key": "mt.maxage_days",
@@ -22,23 +36,9 @@
     "current_on_dev": 13.5,
     "winner_value": 10.0,
     "margin_vs_current": {
-      "half1": 146.13,
-      "half2": 642.81
+      "half1": 142.98,
+      "half2": 671.34
     },
-    "dev_commit": "06010302"
-  },
-  {
-    "ts": "2026-11-02T14:08:10",
-    "full_key": "BINANCE_ARB.mt.maxage_days",
-    "section": "BINANCE_ARB",
-    "key": "mt.maxage_days",
-    "symbol": "ARBUSDC",
-    "current_on_dev": 13.25,
-    "winner_value": 17.0,
-    "margin_vs_current": {
-      "half1": 243.6,
-      "half2": 19.56
-    },
-    "dev_commit": "06010302"
+    "dev_commit": "e731adca"
   }
 ]
