@@ -1647,10 +1647,14 @@ import websockets as _websockets
 class _VenuePriceStreamBase(BinanceWSBase):
     """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
 
+    MIN_SAME_PRICE_EMIT_MS = 1000
+
     def __init__(self, symbols=None, *, ws_url: str):
         super().__init__()
         self.ws_url = ws_url
         self._prices: dict[str, float] = {}
+        self._last_emit_ts_ms: dict[str, int] = {}
+        self._last_emit_price: dict[str, float] = {}
         self._lock = threading.Lock()
         self._subscribers = []
         raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
@@ -1669,8 +1673,29 @@ class _VenuePriceStreamBase(BinanceWSBase):
                 self._subscribers.remove(subscriber)
 
     def _notify_subscribers(self, symbol: str, items) -> None:
+        ts_ms = None
+        px = None
+        if isinstance(items, list) and items and isinstance(items[-1], (list, tuple)) and len(items[-1]) >= 2:
+            ts_ms = safe_pos_int(items[-1][0], default=None)
+            px = safe_pos_float(items[-1][1], default=None)
         with self._lock:
             subscribers = list(self._subscribers)
+            if ts_ms is not None and px is not None:
+                prev_ts = self._last_emit_ts_ms.get(symbol)
+                prev_px = self._last_emit_price.get(symbol)
+                if (
+                    prev_ts is not None
+                    and prev_px == px
+                    and 0 <= (ts_ms - prev_ts) < self.MIN_SAME_PRICE_EMIT_MS
+                ):
+                    now_s = time.time()
+                    for sub in subscribers:
+                        ws_map = getattr(sub, "_ws_stream_event_ts_per_symbol", None)
+                        if isinstance(ws_map, dict):
+                            ws_map[symbol] = now_s
+                    return
+                self._last_emit_ts_ms[symbol] = ts_ms
+                self._last_emit_price[symbol] = px
         for sub in subscribers:
             try:
                 sub.on_items_update(symbol, items)
