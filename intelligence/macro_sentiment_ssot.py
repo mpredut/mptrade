@@ -168,9 +168,11 @@ def detect_active_binance_symbols(
         try:
             krk_cfg = os.path.join(_ROOT_DIR, "kraken", "config.env")
             if os.path.exists(krk_cfg):
-                val = parse_dotenv(krk_cfg).get("KRAKEN_CACHE_PAIRS", "")
-                for item in (val.split(",") if val else ()):
-                    _add_sym(item, skip_eq=True)
+                env_map = parse_dotenv(krk_cfg)
+                for cfg_k in ("KRAKEN_TRADABLE_PAIRS", "KRAKEN_CACHE_PAIRS"):
+                    val = env_map.get(cfg_k, "")
+                    for item in (val.split(",") if val else ()):
+                        _add_sym(item, skip_eq=True, unique_base=False)
         except Exception:
             pass
     return out if out else list(default)
@@ -959,6 +961,31 @@ _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
     "stabbing", "suspect", "teenager", "volunteer",
 })
 
+_PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "campaign", "congressional", "democrat", "democrats", "desantis", "election",
+    "elections", "gop", "midterm", "midterms", "poll", "polling", "polls",
+    "primary", "republican", "republicans", "voter", "voters",
+})
+
+_KINETIC_OR_MACRO_WAR_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "airstrike", "airstrikes", "attack", "attacks", "blockade", "bomb", "bombing",
+    "casualties", "ceasefire", "crude", "drone", "drones", "embargo", "escalation",
+    "hormuz", "idf", "invasion", "missile", "missiles", "military", "nuclear",
+    "oil", "pentagon", "retaliation", "sanction", "sanctions", "strike", "strikes",
+    "tanker", "tehran", "troops", "warhead", "warship",
+})
+
+_SINGLE_STOCK_EARNINGS_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "apparel", "earnings", "eps", "guidance", "merchandise", "pinterest",
+    "quarterly", "retailer", "revenue", "shopify", "subscriber", "subscribers",
+})
+
+_BROAD_MARKET_INDEX_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "bitcoin", "crypto", "dax", "dow", "equities", "ftse", "futures", "global",
+    "index", "indices", "market", "markets", "nasdaq", "nikkei", "sp500", "stocks",
+    "treasury", "wall",
+})
+
 _TRACKING_QUERY_PARAMS: frozenset[str] = frozenset({
     "at_campaign", "at_medium", "mod", "oc", "rss", "traffic_source",
     "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term",
@@ -1083,9 +1110,15 @@ def _is_excluded_non_crisis_attack_keyword(
     text_words: Set[str],
     crisis_stems: Set[str],
 ) -> bool:
-    """Return True if an 'attack'-based keyword appears solely in a local crime/medical/animal attack context."""
+    """Return True if a keyword appears solely in a non-crisis local crime, partisan election, or single-stock earnings context."""
     kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
     combined_words = text_words | kw_words
+    if kw_words and kw_words <= {"war", "wars", "conflict"}:
+        if (combined_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (combined_words & _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS):
+            return True
+    if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):
+        if (combined_words & _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS) and not (combined_words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
+            return True
     if not (combined_words & _NON_CRISIS_ATTACK_CONTEXT_WORDS):
         return False
     other_stems = crisis_stems - {"attack"}
@@ -1898,14 +1931,22 @@ def resolve_macro_economic_calendar(
     if breaking_news and macro_kws:
         for item in breaking_news:
             title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
-            if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
-                detected_macro_headlines.append(title)
-    macro_release_confirmed = bool(detected_macro_headlines)
+            if not title:
+                continue
+            low_t = title.lower()
+            matched_kws = [kw for kw in macro_kws if re.search(r"\b" + re.escape(kw) + r"\b", low_t)]
+            if not matched_kws:
+                continue
+            t_words = set(re.findall(r"[a-zA-Z]{3,}", low_t))
+            if matched_kws == ["inflation"] and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not re.search(r"\b(?:cpi|pce|ppi|fed|fomc|rate|bls)\b|\d+(?:\.\d+)?%", low_t):
+                continue
+            detected_macro_headlines.append(title)
+    live_macro_prints = parse_live_macro_release_surprises(breaking_news)
+    macro_release_confirmed = bool(detected_macro_headlines) or bool(live_macro_prints)
     has_fomc_headline = any(
         any(k in h.lower() for k in ("fomc", "fed rate", "interest rate decision", "fed minutes", "powell"))
         for h in detected_macro_headlines
     )
-    live_macro_prints = parse_live_macro_release_surprises(breaking_news)
 
     active_window: Optional[str] = None
     upcoming: List[Tuple[float, str, str, str]] = []
@@ -1916,9 +1957,9 @@ def resolve_macro_economic_calendar(
         cand_is_fomc = cand_date.isoformat() in fomc_dates or (day_offset == 0 and has_fomc_headline)
         for hh, mm, code, desc in windows:
             if code == "US_FOMC_FED_WINDOW":
-                is_confirmed_win = cand_is_fomc or macro_release_confirmed
+                is_confirmed_win = cand_is_fomc
             else:
-                is_confirmed_win = macro_release_confirmed
+                is_confirmed_win = (day_offset == 0) and macro_release_confirmed
             eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0

@@ -21,6 +21,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _clean_snapshot_symbol,
     _effective_now_ts,
     _extract_base_asset,
+    _has_hyperliquid_instrument,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
     is_cache_fresh,
@@ -344,7 +345,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         cached: Any,
     ) -> Optional[WhalePositioningSnapshot]:
         """Fallback to Hyperliquid L1 recentTrades and metaAndAssetCtxs for HYPE/HL symbols."""
-        if canonical_symbol_key(symbol) not in ("HYPEUSDC", "HYPEUSD"):
+        if not _has_hyperliquid_instrument(symbol):
             return None
         base_coin = _extract_base_asset(symbol)
         if not base_coin:

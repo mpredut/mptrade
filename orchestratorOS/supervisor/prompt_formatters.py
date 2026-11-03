@@ -126,6 +126,8 @@ def _fmt_liq_usd(val: Any) -> str:
 
 def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     if px_f >= 1.0:
+        if px_f < 1000.0 and abs(px_f - round(px_f, 2)) >= 5e-4:
+            return f"${px_f:,.4f}".rstrip("0").rstrip(".")
         return f"${px_f:,.2f}"
     if px_f > 0:
         return f"${px_f:.6g}"
@@ -366,7 +368,14 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                         if pinfo.get(sk) is None and sv is not None:
                             pinfo[sk] = sv
                 if s_px > 0:
-                    diff_s = f" [{(s_px - px_f) / px_f * 100.0:+.2f}%]" if px_f > 0 and abs(s_px - px_f) > 1e-9 else ""
+                    diff_s = ""
+                    if px_f > 0 and abs(s_px - px_f) > 1e-9:
+                        diff_pct = (s_px - px_f) / px_f * 100.0
+                        diff_s = (
+                            f" [{diff_pct * 100.0:+.1f}bps]"
+                            if abs(diff_pct) < 0.005
+                            else f" [{diff_pct:+.2f}%]"
+                        )
                     sib_parts.append(f"{sib_sym}={_fmt_px(s_px)}{diff_s}")
                 else:
                     sib_parts.append(sib_sym)
@@ -849,12 +858,14 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         lb_u_s = f" (${lb_u:.2f} USD)" if lb_u is not None and lb_u > 0.0 else ""
         fb_str += f", locked_base_qty={lb_q:g}{lb_u_s}"
     fq_val = pos.get("free_quote")
-    fq_str = f"${fq_val}{_format_quote_breakdown(pos.get('free_quote_breakdown'), pos.get('quote'))}" if fq_val is not None else "N/A"
+    base_lbl = pos.get("base") or canonical_base_asset(str(pos.get("symbol") or "")) or "BASE"
+    quote_lbl = pos.get("quote") or "USD"
+    fq_str = f"${fq_val}{_format_quote_breakdown(pos.get('free_quote_breakdown'), quote_lbl)}" if fq_val is not None else "N/A"
     if (lq_u := _parse_finite_float(eff_pos.get("locked_quote_usd"), None)) is not None and lq_u > 0.0:
         fq_str += f", locked_quote_usd=${lq_u:.2f}"
     return (
-        f"    - [{venue}] {pos['symbol']}: free_{pos['base']}={fb_str}, "
-        f"free_{pos['quote']}={fq_str}, "
+        f"    - [{venue}] {pos.get('symbol')}: free_{base_lbl}={fb_str}, "
+        f"free_{quote_lbl}={fq_str}, "
         f"px={pos.get('price')}{t_extra}"
     )
 
@@ -920,11 +931,15 @@ def _format_portfolio_section(
             f"unified_nav=${_parse_finite_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
             f"invested=${_parse_finite_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
             f"free_cash=${_parse_finite_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
+        ]
+        if (lq_pre := _parse_finite_float(pre.get("locked_quote_usd"), 0.0)) > 0.0:
+            pre_parts.append(f"locked_quote=${lq_pre:,.2f} ({pre.get('locked_quote_pct')}%)")
+        pre_parts.extend([
             f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
             f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
             f"intraday_var_95=${_parse_finite_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
             f"regime={pre.get('concentration_regime')}",
-        ]
+        ])
         if pre.get("intraday_cvar_975_usd") is not None:
             pre_parts.append(
                 f"cvar_975=${_parse_finite_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"

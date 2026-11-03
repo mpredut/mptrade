@@ -1841,6 +1841,98 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
     assert "None%" not in line_without_px
 
 
+def test_telemetry_deep_bug_hunt_fixes_a_through_g():
+    """Verify fixes for Bugs A-G discovered in live supervisor prompt telemetry audit."""
+    from datetime import datetime, timezone
+    from intelligence.macro_sentiment_ssot import (
+        detect_active_binance_symbols,
+        match_high_severity_keywords,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_market_prices_section,
+        _format_portfolio_section,
+    )
 
+    # Bug A: detect_active_binance_symbols includes TAOUSD alongside TAOUSDC when configured on Kraken
+    active_syms = detect_active_binance_symbols(include_kraken_cache=True)
+    assert "TAOUSD" in active_syms
+    assert "HYPEUSD" in active_syms
 
+    # Bug B: Midterm election 'inflation' liveblog does not trigger tomorrow's CPI/NFP release confirmation
+    now_tue = float(datetime(2026, 11, 3, 20, 26, 0, tzinfo=timezone.utc).timestamp())
+    cal = resolve_macro_economic_calendar(
+        now_ts=now_tue,
+        breaking_news=["Midterm elections 2026 live updates: Economy, inflation and other voter concerns"],
+    )
+    assert cal["macro_release_confirmed"] is False
+    assert all("CPI / PPI / NFP" not in u for u in cal["upcoming_windows"])
+
+    # Even when today has a legitimate macro headline, tomorrow's 15:30 EET window remains routine
+    cal_with_today_print = resolve_macro_economic_calendar(
+        now_ts=now_tue,
+        breaking_news=["Job openings posted big September gain in positive sign for labor market ahead of payrolls report"],
+    )
+    assert cal_with_today_print["macro_release_confirmed"] is True
+    assert any("Pre-Market Macro & Treasury Liquidity Window (08:30 EST) at Wed 15:30" in u for u in cal_with_today_print["upcoming_windows"])
+    assert all("CPI / PPI / NFP" not in u for u in cal_with_today_print["upcoming_windows"])
+
+    # Bug C: Partisan election war opinion & single-stock merchandise plunge are excluded from [HIGH-SEV]
+    assert match_high_severity_keywords("DeSantis: War in Iran 'big, big drag' on Republicans - The Hill") == ()
+    assert match_high_severity_keywords("Shopify Stock Plunges. Slowing Merchandise Sales Flash a Warning Sign.") == ()
+    assert "war" in match_high_severity_keywords("Iran launches missile strike as war escalates in Middle East")
+
+    # Bug D: enrich_open_limit_orders_tca ignores top-of-book touch walls (<10bps) and never recommends crossing best_bid/ask
+    hype_orders = [{"symbol": "HYPEUSDC", "side": "SELL", "price": 88.0}]
+    enrich_open_limit_orders_tca(
+        hype_orders,
+        {"HYPEUSDC": {"price": 85.1165, "vol_1h_pct": 0.89}},
+        {"HYPEUSDC": {"ob_mid_price": 85.1165, "spread_bps": 0.12, "ask_wall_px": 85.122, "ask_wall_usd": 160919.0}},
+    )
+    assert "wall_queue_pos" not in hype_orders[0]
+    assert "recommended_front_run_px" not in hype_orders[0]
+
+    btc_orders = [{"symbol": "BTCUSDC", "side": "SELL", "price": 78950.0}]
+    enrich_open_limit_orders_tca(
+        btc_orders,
+        {"BTCUSDC": {"price": 77536.43, "vol_1h_pct": 0.23}},
+        {"BTCUSDC": {"ob_mid_price": 77536.435, "spread_bps": 0.01, "ask_wall_px": 78000.0, "ask_wall_usd": 175985.0}},
+    )
+    assert btc_orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert btc_orders[0]["recommended_front_run_px"] == 77995.0
+
+    # Bug E: compute_enterprise_portfolio_risk_metrics separates free_cash_usd from locked_quote_usd
+    ps_mock = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "value_usd": 10000.0, "locked_base_usd": 0.0},
+        ],
+        "venue_quote_cash": {
+            "binance:USDC": {"venue": "binance", "asset": "USDC", "free": 1000.0, "locked_quote_usd": 4000.0},
+        },
+        "recent_orders": {},
+    }
+    risk = compute_enterprise_portfolio_risk_metrics(ps_mock, {"BTCUSDC": {"price": 77500.0}}, {})
+    assert risk["unified_nav_usd"] == 15000.0
+    assert risk["global_free_cash_usd"] == 1000.0
+    assert risk["global_free_cash_pct"] == 6.7
+    assert risk["locked_quote_usd"] == 4000.0
+    assert risk["locked_quote_pct"] == 26.7
+    ps_mock["portfolio_risk_engine"] = risk
+    port_lines = "\n".join(_format_portfolio_section(ps_mock, "crypto"))
+    assert "free_cash=$1,000.00 (6.7%), locked_quote=$4,000.00 (26.7%)" in port_lines
+
+    # Bug G: Sub-cent mid price and sub-0.5bps sibling delta formatting in Section 3A
+    lines_3a = "\n".join(
+        _format_market_prices_section(
+            {
+                "HYPEUSDC": {"price": 85.1165, "chg_15m_pct": 0.08},
+                "HYPEUSD": {"price": 85.12, "chg_15m_pct": 0.08},
+            }
+        )
+    )
+    assert "HYPEUSDC (sibling venue: HYPEUSD=$85.12 [+0.4bps]): Price=$85.1165" in lines_3a
 

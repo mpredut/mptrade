@@ -17,6 +17,7 @@ from intelligence.external.collectors.orderbook_depth import (
     _clean_snapshot_symbol,
     _extract_base_asset,
     _resolve_binance_lookup_symbol,
+    _resolve_configured_venue,
 )
 
 logger = logging.getLogger("intelligence.external.derivatives_telemetry")
@@ -140,7 +141,8 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
-        if canonical_symbol_key(symbol) == "HYPEUSDC":
+        is_hl_primary = _resolve_configured_venue(symbol) == "hyperliquid"
+        if is_hl_primary:
             try:
                 if (hl_tel := self._fetch_hyperliquid_derivatives(symbol, now)) is not None:
                     return hl_tel
@@ -181,7 +183,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             )
             return self._commit_snapshot(symbol, now, telemetry)
         except Exception as e:
-            if canonical_symbol_key(symbol) != "HYPEUSDC":
+            if not is_hl_primary:
                 try:
                     if (hl_tel := self._fetch_hyperliquid_derivatives(symbol, now)) is not None:
                         return hl_tel

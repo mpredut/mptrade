@@ -189,16 +189,17 @@ def compute_volume_profile_metrics(
                     hvn2_px = round(hvn2_raw, eff_dec_tmp)
                     lvn_px = round(lvn_raw, eff_dec_tmp)
                     if (
-                        smoothed_vols[hvn2_idx] >= 0.72 * smoothed_vols[poc_idx]
-                        and smoothed_vols[lvn_idx] <= 0.78 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
+                        smoothed_vols[hvn2_idx] >= 0.68 * smoothed_vols[poc_idx]
+                        and smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
                     ):
                         profile_shape = "BIMODAL"
-                        # On a bimodal double-distribution where the two peaks are within 12% volume of each other,
-                        # anchor POC to the node closer to the Value Area center / current price to prevent flipping
-                        if smoothed_vols[hvn2_idx] >= 0.88 * smoothed_vols[poc_idx]:
-                            if abs(cur_px - hvn2_raw) < abs(cur_px - poc_raw) * 0.85:
-                                poc_raw, hvn2_raw = hvn2_raw, poc_raw
-                                hvn2_px = round(hvn2_raw, eff_dec_tmp)
+                    # On a bimodal double-distribution where the two peaks are within 15% volume of each other,
+                    # anchor POC to the node closer to the sample median / current price to prevent cycle-to-cycle flipping
+                    if smoothed_vols[hvn2_idx] >= 0.85 * smoothed_vols[poc_idx]:
+                        ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
+                        if abs(ref_center - hvn2_raw) < abs(ref_center - poc_raw):
+                            poc_raw, hvn2_raw = hvn2_raw, poc_raw
+                            hvn2_px = round(hvn2_raw, eff_dec_tmp)
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 

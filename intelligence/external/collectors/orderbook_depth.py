@@ -37,6 +37,68 @@ _resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
 _symbol_variants = cache_symbol_variants
 
 
+def _resolve_configured_venue(symbol: str) -> str:
+    """Return the SSOT configured provider ('hyperliquid', 'kraken', or 'binance') for symbol."""
+    canon_sym = canonical_symbol_key(symbol)
+    if not canon_sym:
+        return "binance"
+    try:
+        from instrument_registry import load_registry
+
+        reg = load_registry()
+        for enabled_only in (True, False):
+            for inst in reg.all(enabled_only=enabled_only):
+                if inst.symbol.upper() == canon_sym and inst.provider:
+                    return str(inst.provider).strip().lower()
+    except Exception:
+        pass
+    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+        return "kraken"
+    if canon_sym == "HYPEUSDC":
+        return "hyperliquid"
+    return "binance"
+
+
+def _is_multi_venue_base(symbol: str) -> bool:
+    """Return True when the symbol's base asset is tracked across multiple venues/quotes."""
+    base = _extract_base_asset(symbol)
+    if not base:
+        return False
+    try:
+        from instrument_registry import load_registry
+
+        reg = load_registry()
+        venues = {
+            str(inst.provider).strip().lower()
+            for inst in reg.all(enabled_only=False)
+            if inst.base.upper() == base and inst.provider
+        }
+        if base in ("HYPE", "TAO", "ADA"):
+            venues.add("kraken")
+        return len(venues) > 1
+    except Exception:
+        return base in ("HYPE", "TAO", "ADA")
+
+
+def _has_hyperliquid_instrument(symbol: str) -> bool:
+    """Return True when the symbol or its base asset is configured on Hyperliquid in SSOT."""
+    if _resolve_configured_venue(symbol) == "hyperliquid":
+        return True
+    base = _extract_base_asset(symbol)
+    if not base:
+        return False
+    try:
+        from instrument_registry import load_registry
+
+        reg = load_registry()
+        return any(
+            inst.base.upper() == base and str(inst.provider).strip().lower() == "hyperliquid"
+            for inst in reg.all(enabled_only=False)
+        )
+    except Exception:
+        return base == "HYPE"
+
+
 def _clean_dict_float(
     data: Dict[str, Any],
     key: str,
@@ -175,13 +237,14 @@ class _DiskBackedSymbolCollector:
             return None, 0.0, None, None, False
         now_f = _effective_now_ts(now)
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
+        venue = _resolve_configured_venue(sym_clean)
         require_exact_venue_sym = bool(
             allow_net_bool
             and (
-                sym_clean == "HYPEUSDC"
+                venue == "hyperliquid"
                 or (
                     self._QUOTE_ISOLATED
-                    and sym_clean in ("HYPEUSD", "TAOUSD", "TAOUSDC", "ADAUSD", "ADAUSDC")
+                    and (venue != "binance" or _is_multi_venue_base(sym_clean))
                 )
             )
         )
@@ -376,14 +439,15 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 )
                 hl_coin = _extract_base_asset(canon_sym)
                 hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
-                if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+                venue = _resolve_configured_venue(canon_sym)
+                if venue == "kraken":
                     base_urls = (
                         f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
                         *spot_urls,
                         f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
                         *((hl_book_url,) if hl_book_url else ()),
                     )
-                elif canon_sym == "HYPEUSDC" and hl_book_url:
+                elif venue == "hyperliquid" and hl_book_url:
                     base_urls = (
                         hl_book_url,
                         *spot_urls,
