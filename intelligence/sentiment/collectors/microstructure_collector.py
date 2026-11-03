@@ -1,9 +1,11 @@
 """Spot/perpetual microstructure, 24h/7d price series loader, and liquidation cluster collector."""
 from __future__ import annotations
 
+import glob as _glob
 import logging
 import os
-from typing import Any, Dict, Optional, Tuple
+import time as _time
+from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import extract_current_price_item
 from cachepaths import (
@@ -11,6 +13,7 @@ from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
     legacy_filenames_for,
+    normalize_venue_name,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
@@ -20,7 +23,10 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from intelligence.sentiment.collectors.portfolio_risk_tca import extract_symbol_recent_fills
+from intelligence.sentiment.collectors.portfolio_risk_tca import (
+    _VENUE_DEFAULT_FEE_SPECS,
+    extract_symbol_recent_fills,
+)
 from intelligence.sentiment.collectors.quant_price_evaluators import (
     _WINDOW_TREND_SPECS,
     _auto_px_decimals,
@@ -42,8 +48,10 @@ from intelligence.sentiment.collectors.quant_price_evaluators import (
 from instrument_registry import casefold_get
 from state_io import (
     read_json_dict_recovering as read_json_cached,
+    read_json_file,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
+    save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
@@ -103,6 +111,17 @@ def load_symbol_price_series(
             for p in (full_p, *legacy_filenames_for(full_p))
         ]
 
+    def _prepend_older_non_diverged_points(cur_ser: list, cand_ser: list) -> list:
+        if not cur_ser or not cand_ser:
+            return cur_ser
+        cur_p0 = _parse_ts_px_row(cur_ser[0])
+        sib_p0, sib_p1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
+        if cur_p0 and sib_p0 and sib_p1 and sib_p0[0] < cur_p0[0] and not _prices_diverged(sib_p1[1], cur_p0[1]):
+            older_pts = [r for r in cand_ser if (pt := _parse_ts_px_row(r)) is not None and pt[0] < cur_p0[0]]
+            if older_pts:
+                return older_pts + cur_ser
+        return cur_ser
+
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
     p0: Optional[Tuple[float, float]] = None
     p1: Optional[Tuple[float, float]] = None
@@ -113,21 +132,9 @@ def load_symbol_price_series(
                 continue
             ser = _extract_cached_items_series(read_json_cached(p24_path), cands)
             if len(ser) >= 2:
-                if not series_24h:
-                    series_24h = list(ser)
-                    p0 = _parse_ts_px_row(series_24h[0])
-                    p1 = _parse_ts_px_row(series_24h[-1])
-                    span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
-                elif p0 is not None:
-                    sib_p0 = _parse_ts_px_row(ser[0])
-                    sib_p1 = _parse_ts_px_row(ser[-1])
-                    if sib_p0 and sib_p1 and sib_p0[0] < p0[0] and not _prices_diverged(sib_p1[1], p0[1]):
-                        older_pts = [r for r in ser if (pt := _parse_ts_px_row(r)) is not None and pt[0] < p0[0]]
-                        if older_pts:
-                            series_24h = older_pts + series_24h
-                            p0 = _parse_ts_px_row(series_24h[0])
-                            p1 = _parse_ts_px_row(series_24h[-1])
-                            span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
+                series_24h = list(ser) if not series_24h else _prepend_older_non_diverged_points(series_24h, ser)
+                p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
+                span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
                 break
         if series_24h and span_24h_ms >= 3600000.0 * 18:
             break
@@ -172,15 +179,7 @@ def load_symbol_price_series(
                 cand_arch = rows
                 break
         if cand_arch:
-            if not archive_pts:
-                archive_pts = cand_arch
-            else:
-                cur_a0 = _parse_ts_px_row(archive_pts[0])
-                sib_a0, sib_a1 = _parse_ts_px_row(cand_arch[0]), _parse_ts_px_row(cand_arch[-1])
-                if cur_a0 and sib_a0 and sib_a1 and sib_a0[0] < cur_a0[0] and not _prices_diverged(sib_a1[1], cur_a0[1]):
-                    older_arch = [r for r in cand_arch if (pt := _parse_ts_px_row(r)) is not None and pt[0] < cur_a0[0]]
-                    if older_arch:
-                        archive_pts = older_arch + archive_pts
+            archive_pts = cand_arch if not archive_pts else _prepend_older_non_diverged_points(archive_pts, cand_arch)
             a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
             arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
             if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
@@ -354,6 +353,9 @@ def load_symbol_microstructure(
             m_info["funding_rate"] = w_fr
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
         m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
+    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_1h_usd", "cvd_4h_usd"):
+        if (uv := safe_float(m_info.get(usd_k), default=None)) is not None:
+            m_info[usd_k] = round(uv, 2)
     enrich_microstructure_cvd(m_info)
     return m_info
 
@@ -416,10 +418,12 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     # Compute Spot vs Perp CVD divergence & Perp-Spot Basis Regime (Layer II.1)
     b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
     a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
-    if minfo.get("spot_cvd_15m_usd") is None and (b_depth + a_depth) > 0.0:
+    tot_depth = b_depth + a_depth
+    if (minfo.get("spot_cvd_15m_usd") is None or pinfo is not None) and tot_depth > 0.0:
         ob_net_depth = b_depth - a_depth
-        vel_adj = (b_depth + a_depth) * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
-        minfo["spot_cvd_15m_usd"] = round(ob_net_depth * 0.35 + vel_adj, 0)
+        vel_adj = tot_depth * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
+        max_spot_cvd = tot_depth * 0.85
+        minfo["spot_cvd_15m_usd"] = round(max(-max_spot_cvd, min(max_spot_cvd, ob_net_depth * 0.35 + vel_adj)), 0)
     spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
     funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
@@ -576,6 +580,269 @@ def compute_liquidation_clusters(
     }
 
 
+def ensure_fresh_symbol_microstructure(
+    cache_dir: str,
+    symbol: str,
+    *,
+    now_ts: Optional[float] = None,
+    max_age_ob_sec: Optional[float] = None,
+    max_age_whale_sec: Optional[float] = None,
+    include_derivatives: bool = False,
+) -> None:
+    """Trigger on-demand orderbook, derivatives, or whale collector fetches when cached files are missing or stale."""
+    if "PYTEST_CURRENT_TEST" in os.environ or not cache_dir or not os.path.isdir(cache_dir):
+        return
+    sym_u = str(symbol or "").strip().upper()
+    if not sym_u:
+        return
+    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+
+    def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
+        fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{prefix}{sym_u}.json")))
+        if not os.path.exists(fpath):
+            return True
+        return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
+
+    if _needs_fetch("orderbook_depth_", max_age_ob_sec):
+        try:
+            from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+
+            OrderbookDepthCollector(cache_dir=cache_dir).fetch(sym_u)
+        except Exception:
+            pass
+    if include_derivatives and _needs_fetch("derivatives_telemetry_", None):
+        try:
+            from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+
+            DerivativesTelemetryCollector(cache_dir=cache_dir).fetch(sym_u)
+        except Exception:
+            pass
+    if _needs_fetch("whale_snapshot_", max_age_whale_sec):
+        try:
+            from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+            WhalePositioningCollector(cache_dir=cache_dir).fetch(sym_u)
+        except Exception:
+            pass
+
+
+def discover_reference_microstructure_symbols(
+    cache_dir: str,
+    microstructure: Dict[str, Any],
+    read_json_fn: Any = None,
+) -> List[str]:
+    """Discover additional microstructure symbols on disk not yet represented in `microstructure`."""
+    if not cache_dir or not os.path.isdir(cache_dir):
+        return []
+    _rj = read_json_cached if read_json_fn is None else read_json_fn
+    covered_micro_bases = {canonical_base_asset(k) for k in microstructure}
+    ref_micro_syms: List[str] = []
+    for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
+        for search_dir in (cache_dir, os.path.join(cache_dir, "telemetry")):
+            for mpath in sorted(_glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
+                msym = os.path.basename(mpath)[len(pfx) : -len(".json")].upper()
+                if msym and msym.isalnum() and msym not in microstructure and msym not in ref_micro_syms:
+                    mbase = canonical_base_asset(msym)
+                    if mbase not in covered_micro_bases:
+                        ref_micro_syms.append(msym)
+                        covered_micro_bases.add(mbase)
+                    elif pfx == "orderbook_depth_" and isinstance(ob_d := _rj(mpath), dict):
+                        cand_bd = safe_nonneg_float(ob_d.get("bid_depth_usd"), default=None)
+                        existing_bds = [
+                            safe_nonneg_float(mv.get("bid_depth_usd"), default=None)
+                            for mk, mv in microstructure.items()
+                            if canonical_base_asset(mk) == mbase and isinstance(mv, dict)
+                        ]
+                        if cand_bd is not None and cand_bd > 0 and all(ebd is None or abs(cand_bd - ebd) > 1.0 for ebd in existing_bds):
+                            ref_micro_syms.append(msym)
+    return ref_micro_syms
+
+
+def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
+    """Infer canonical venue name, maker/taker fee bps, and half-spread bps from SSOT `_VENUE_DEFAULT_FEE_SPECS`."""
+    sym_u = str(sym or "").strip().upper()
+    if sym_u.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:", "T212:")):
+        venue = normalize_venue_name(sym_u.split(":", 1)[0])
+    elif sym_u == "HYPEUSDC":
+        venue = "hyperliquid"
+    elif sym_u.endswith(("USDC", "USDT")):
+        venue = "binance"
+    elif sym_u.endswith(("USD", "EUR")) or sym_u.startswith(("XX", "XZ")):
+        venue = "kraken"
+    else:
+        venue = "t212"
+    _, maker_bps, taker_bps, _ = _VENUE_DEFAULT_FEE_SPECS.get(venue, _VENUE_DEFAULT_FEE_SPECS["t212"])
+    half_sp = 0.5 * (safe_nonneg_float((m_dict or {}).get("spread_bps"), default=0.0) or 0.0)
+    return venue, maker_bps, taker_bps, half_sp
+
+
+def compute_cross_venue_arb_metrics(
+    msym: str,
+    minfo: Dict[str, Any],
+    p_match: Optional[Dict[str, Any]],
+    microstructure: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+) -> None:
+    """Populate Cross-Venue Relative Value / Arbitrage Spread (`cross_venue_arb_bps`, `net_buy_edge_vs_peer_bps`, etc.) on `minfo`."""
+    msym_quotes = compatible_quote_suffixes(msym)
+    own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price"), default=None)
+    if not (own_px and own_px > 0.0 and "USD" in msym_quotes):
+        return
+    mbase = canonical_base_asset(msym)
+    own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
+    peer_candidates = [
+        (peer_sym, peer_m)
+        for peer_sym, peer_m in microstructure.items()
+        if peer_sym != msym
+        and isinstance(peer_m, dict)
+        and canonical_base_asset(peer_sym) == mbase
+        and "USD" in compatible_quote_suffixes(peer_sym)
+    ]
+    peer_candidates.sort(
+        key=lambda kv: (0 if str(kv[0]).upper().endswith(("USDC", "USD")) else 1, str(kv[0]).upper())
+    )
+    for peer_sym, peer_m in peer_candidates:
+        peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
+        if peer_v == own_v:
+            continue
+        peer_px = (
+            safe_pos_float(peer_m.get("ob_mid_price"), default=None)
+            or safe_pos_float((prices_and_trends.get(peer_sym) or {}).get("price"), default=None)
+        )
+        if peer_px and peer_px > 0.0 and not _prices_diverged(own_px, peer_px):
+            arb_bps = round(((own_px - peer_px) / peer_px) * 10000.0, 1)
+            minfo["cross_venue_peer"] = peer_sym
+            minfo["cross_venue_peer_px"] = peer_px
+            minfo["cross_venue_arb_bps"] = arb_bps
+            own_buy_cost = arb_bps + own_taker + own_hsp
+            peer_buy_cost = peer_taker + peer_hsp
+            net_buy_edge = round(peer_buy_cost - own_buy_cost, 1)
+            own_sell_net = arb_bps - own_taker - own_hsp
+            peer_sell_net = -peer_taker - peer_hsp
+            net_sell_edge = round(own_sell_net - peer_sell_net, 1)
+            minfo["net_buy_edge_vs_peer_bps"] = net_buy_edge
+            minfo["net_sell_edge_vs_peer_bps"] = net_sell_edge
+            minfo["best_buy_venue"] = f"{own_v}:{msym}" if net_buy_edge >= 0.0 else f"{peer_v}:{peer_sym}"
+            minfo["best_sell_venue"] = f"{own_v}:{msym}" if net_sell_edge >= 0.0 else f"{peer_v}:{peer_sym}"
+            break
+
+
+def _resolve_non_static_prev_metric(
+    h_list: List[Dict[str, Any]],
+    eff_now: float,
+    key: str,
+    cur_val: Optional[float],
+    ref_val: Optional[float],
+    *,
+    static_tol: float,
+    min_diff: float,
+) -> Optional[float]:
+    """When `ref_val` is nearly identical to `cur_val`, scan recent history (3m-60m) for the last distinct value."""
+    if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
+        for cand in reversed(h_list):
+            if 180.0 <= (eff_now - float(cand["ts"])) <= 3600.0:
+                cand_v = safe_float(cand.get(key), None)
+                if cand_v is not None and abs(cur_val - cand_v) >= min_diff:
+                    return cand_v
+    return ref_val
+
+
+def update_microstructure_cycle_deltas(
+    cache_dir: Optional[str],
+    microstructure: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+) -> None:
+    """Compute and persist rolling microstructure `cycle_delta` metrics in `microstructure_cycle_history.json`."""
+    if not cache_dir or not microstructure:
+        return
+    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+    mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
+    repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
+    is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
+    raw_mh = (
+        read_json_file(mhist_path, default={})
+        if os.path.exists(mhist_path) and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb)
+        else None
+    )
+    mhist: Dict[str, Any] = dict(raw_mh) if isinstance(raw_mh, dict) else {}
+    mhist_dirty = False
+    for msym, minfo in list(microstructure.items()):
+        if not isinstance(minfo, dict):
+            continue
+        cur_ob = safe_float(minfo.get("ob_imbalance"), None)
+        cur_cvd = safe_float(minfo.get("cvd_15m_usd"), None)
+        cur_wl = safe_float(minfo.get("whale_long_pct"), None)
+        cur_oi = safe_pos_float(minfo.get("oi_usd"), default=None)
+        cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
+        if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
+            continue
+        h_list = [x for x in (mhist.get(msym) or []) if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
+        if not h_list:
+            for ck in cache_symbol_variants(msym, include_base=True):
+                if ck in mhist and isinstance(mhist[ck], list):
+                    h_list = [x for x in mhist[ck] if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
+                    if h_list:
+                        break
+        ref_snap: Optional[Dict[str, Any]] = next(
+            (s for s in reversed(h_list) if 330.0 <= (eff_now - float(s["ts"])) <= 7200.0),
+            None,
+        ) or next(
+            (s for s in reversed(h_list) if 180.0 <= (eff_now - float(s["ts"])) <= 7200.0),
+            None,
+        )
+        if ref_snap is None and h_list and 20.0 <= (eff_now - float(h_list[0]["ts"])) <= 7200.0:
+            ref_snap = h_list[0]
+        if isinstance(ref_snap, dict):
+            delta_d: Dict[str, Any] = {"dt_min": round((eff_now - float(ref_snap["ts"])) / 60.0, 1)}
+            if cur_ob is not None and (p_ob := safe_float(ref_snap.get("ob_imbalance"), None)) is not None:
+                delta_d["ob_imbalance_delta"] = round(cur_ob - p_ob, 4)
+                delta_d["prev_ob_imbalance"] = round(p_ob, 4)
+            p_cvd = _resolve_non_static_prev_metric(
+                h_list, eff_now, "cvd_15m_usd", cur_cvd, safe_float(ref_snap.get("cvd_15m_usd"), None),
+                static_tol=0.5, min_diff=0.5,
+            )
+            if cur_cvd is not None and p_cvd is not None:
+                delta_d["cvd_15m_delta_usd"] = round(cur_cvd - p_cvd, 2)
+                delta_d["prev_cvd_15m_usd"] = round(p_cvd, 2)
+            p_wl = _resolve_non_static_prev_metric(
+                h_list, eff_now, "whale_long_pct", cur_wl, safe_float(ref_snap.get("whale_long_pct"), None),
+                static_tol=1e-5, min_diff=1e-4,
+            )
+            if cur_wl is not None and p_wl is not None:
+                delta_d["whale_long_delta_pct"] = round(cur_wl - p_wl, 2)
+                delta_d["prev_whale_long_pct"] = round(p_wl, 2)
+            if cur_oi is not None and (p_oi := safe_pos_float(ref_snap.get("oi_usd"), default=None)) is not None and p_oi > 0.0:
+                oi_d_pct = round(((cur_oi - p_oi) / p_oi) * 100.0, 2)
+                if abs(oi_d_pct) <= 80.0:
+                    delta_d["oi_delta_pct"] = oi_d_pct
+                    delta_d["prev_oi_usd"] = round(p_oi, 2)
+            if cur_tr is not None and (p_tr := safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)) is not None:
+                delta_d["taker_ratio_delta"] = round(cur_tr - p_tr, 4)
+                delta_d["prev_taker_ratio"] = round(p_tr, 4)
+            if len(delta_d) > 1:
+                minfo["cycle_delta"] = delta_d
+        if not h_list or (eff_now - float(h_list[-1]["ts"])) >= 60.0:
+            new_rec: Dict[str, Any] = {"ts": round(eff_now, 2)}
+            for k_rec, v_rec, dec_r in (
+                ("ob_imbalance", cur_ob, 4),
+                ("cvd_15m_usd", cur_cvd, 2),
+                ("whale_long_pct", cur_wl, 2),
+                ("oi_usd", cur_oi, 2),
+                ("taker_buy_sell_ratio", cur_tr, 4),
+            ):
+                if v_rec is not None:
+                    new_rec[k_rec] = round(v_rec, dec_r)
+            mhist[msym] = [x for x in h_list if eff_now - float(x["ts"]) <= 14400.0][-11:] + [new_rec]
+            mhist_dirty = True
+    if mhist_dirty and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb):
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
+            save_json_state(mhist_path, mhist, indent=2)
+        except Exception:
+            pass
+
+
 __all__ = [
     "_MICRO_PRICE_ANCHOR_KEYS",
     "_WINDOW_TREND_SPECS",
@@ -583,6 +850,7 @@ __all__ = [
     "_build_vp_position_dict",
     "_compute_horizon_range_dict",
     "_first_variant_dict",
+    "_infer_symbol_venue_and_fees_bps",
     "_parse_ts_px_row",
     "_prices_diverged",
     "apply_live_24trend_windows",
@@ -590,14 +858,18 @@ __all__ = [
     "compute_24h_price_metrics",
     "compute_7d_range_metrics",
     "compute_cross_btc_metrics",
+    "compute_cross_venue_arb_metrics",
     "compute_liquidation_clusters",
     "compute_swing_wave_metrics",
     "compute_volume_profile_metrics",
+    "discover_reference_microstructure_symbols",
     "enrich_microstructure_cvd",
+    "ensure_fresh_symbol_microstructure",
     "extract_symbol_recent_fills",
     "load_symbol_microstructure",
     "load_symbol_price_series",
     "pct_delta",
     "range_position_pct",
     "round_opt_px",
+    "update_microstructure_cycle_deltas",
 ]

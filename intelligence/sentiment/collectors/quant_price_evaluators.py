@@ -48,14 +48,15 @@ def _build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px:
     """Compute symmetric % distances from POC/VAL/VAH, Value Area position %, and VA regime."""
     if min(cur_px, poc_px, val_px, vah_px) <= 0.0:
         return {}
+    va_pos = range_position_pct(cur_px, val_px, vah_px)
     return {
         "poc_dist_pct": pct_delta(cur_px, poc_px),
         "vah_dist_pct": pct_delta(cur_px, vah_px),
         "val_dist_pct": pct_delta(cur_px, val_px),
-        "va_pos_pct": range_position_pct(cur_px, val_px, vah_px),
+        "va_pos_pct": va_pos,
         "va_regime": (
             "ABOVE_VAH" if cur_px > vah_px
-            else ("BELOW_VAL" if cur_px < val_px else ("INSIDE_VA_UPPER" if cur_px >= poc_px else "INSIDE_VA_LOWER"))
+            else ("BELOW_VAL" if cur_px < val_px else ("INSIDE_VA_UPPER" if va_pos >= 50.0 else "INSIDE_VA_LOWER"))
         ),
     }
 
@@ -180,6 +181,7 @@ def compute_volume_profile_metrics(
                         ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
                         if abs(ref_center - hvn2_raw) < abs(ref_center - poc_raw):
                             poc_raw, hvn2_raw = hvn2_raw, poc_raw
+                            poc_idx, hvn2_idx = hvn2_idx, poc_idx
                             hvn2_px = round(hvn2_raw, eff_dec_tmp)
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
@@ -199,6 +201,10 @@ def compute_volume_profile_metrics(
         poc_px = round(poc_raw, eff_dec)
         val_px = round(min(poc_raw, low_px + val_idx * bin_w), eff_dec)
         vah_px = round(max(poc_raw, low_px + (vah_idx + 1) * bin_w), eff_dec)
+        if val_px >= poc_px and poc_raw > low_px:
+            val_px = round(max(low_px, poc_raw - max(0.5 * bin_w, 10.0 ** (-eff_dec))), eff_dec)
+        if vah_px <= poc_px and poc_raw < high_px:
+            vah_px = round(min(high_px, poc_raw + max(0.5 * bin_w, 10.0 ** (-eff_dec))), eff_dec)
         if vah_px <= val_px:
             vah_px, val_px = round(high_px, eff_dec), round(low_px, eff_dec)
         out_vp: Dict[str, Any] = {
@@ -617,6 +623,84 @@ def _extract_ohlc_series_points(
     return pts
 
 
+def _load_stitched_24h_ohlc_points(
+    ohlc_fn: Any,
+    sym: str,
+    cutoff_24h: float,
+    *,
+    require_positive_volume: bool = False,
+) -> List[List[Any]]:
+    """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
+    pts = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=require_positive_volume)
+    if not pts or (pts[-1][0] - pts[0][0]) < 18 * 3600 * 1000:
+        first_s5_ts = (pts[0][0] / 1000.0 - 300.0) if pts else float("inf")
+        pts = _extract_ohlc_series_points(
+            ohlc_fn(sym, 15), min_ts=cutoff_24h, max_ts=first_s5_ts, require_positive_volume=require_positive_volume
+        ) + pts
+    return pts
+
+
+def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
+    """Recalculate VP position, 24h/7d/15m range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
+    if not isinstance(pinfo, dict) or p_cur <= 0.0:
+        return
+    poc_v, val_v, vah_v = (safe_pos_float(pinfo.get(k), default=0.0) or 0.0 for k in ("poc_px", "val_px", "vah_px"))
+    if poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
+        pinfo.update(_build_vp_position_dict(p_cur, poc_v, val_v, vah_v))
+    l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
+    h24 = safe_pos_float(pinfo.get("high_24h"), default=None)
+    if l24 is not None and h24 is not None:
+        l24, h24 = round(min(l24, p_cur), 6), round(max(h24, p_cur), 6)
+        pinfo.update(_compute_horizon_range_dict(p_cur, l24, h24, "24h"))
+    l7d = safe_pos_float(pinfo.get("low_7d"), default=None)
+    h7d = safe_pos_float(pinfo.get("high_7d"), default=None)
+    if l7d is not None and h7d is not None:
+        eff_l7d = min(l7d, p_cur, *([l24] if l24 is not None else []))
+        eff_h7d = max(h7d, p_cur, *([h24] if h24 is not None else []))
+        pinfo.update(_compute_horizon_range_dict(p_cur, round(eff_l7d, 6), round(eff_h7d, 6), "7d"))
+    sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
+    sw_hi = safe_pos_float(pinfo.get("swing_high_px"), default=None)
+    if sw_lo is not None and sw_hi is not None:
+        sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur), 6), round(max(sw_hi, p_cur), 6)
+        pinfo["swing_low_px"], pinfo["swing_high_px"] = sw_lo_new, sw_hi_new
+        if sw_lo_new > 0.0:
+            pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, sw_lo_new)
+        if sw_hi_new > 0.0:
+            pinfo["pullback_from_swing_high_pct"] = pct_delta(p_cur, sw_hi_new)
+    if (maj_lo := safe_pos_float(pinfo.get("major_swing_low_px"), default=None)) is not None and maj_lo > 0.0:
+        maj_lo_new = round(min(maj_lo, p_cur), 6)
+        pinfo["major_swing_low_px"] = maj_lo_new
+        pinfo["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
+    r1h_lo = safe_pos_float(pinfo.get("recent_1h_low_px"), default=None)
+    p6h_lo = safe_pos_float(pinfo.get("prior_6h_low_px"), default=None)
+    if r1h_lo is not None and p6h_lo is not None and p6h_lo > 0.0:
+        eff_dec_b = _auto_px_decimals(p_cur)
+        r1h_new = min(r1h_lo, p_cur)
+        pinfo["recent_1h_low_px"] = round(r1h_new, eff_dec_b)
+        b_struct = pinfo.get("bottom_structure_6h")
+        if b_struct == "HIGHER_LOW_DOUBLE_BOTTOM":
+            if r1h_new < p6h_lo and p_cur > p6h_lo:
+                pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
+                pinfo.pop("higher_low_vs_prior_pct", None)
+                pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
+            else:
+                pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
+        elif b_struct == "LIQUIDITY_SWEEP_RECLAIM":
+            pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
+    if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
+        tape_copy = list(tape_15m)
+        if isinstance(tape_copy[-1], str) and tape_copy[-1].startswith("now:"):
+            tape_copy[-1] = f"now:{p_cur:.6g}"
+            pinfo["recent_tape_15m"] = tape_copy
+        l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
+        h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
+        if l15 is not None and h15 is not None:
+            l15_new, h15_new = min(l15, p_cur), max(h15, p_cur)
+            pinfo["low_15m"], pinfo["high_15m"] = round(l15_new, 6), round(h15_new, 6)
+            if h15_new > l15_new > 0:
+                pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
+
+
 def _apply_24h_series_enrichment(
     sym: str,
     entry: Dict[str, Any],
@@ -628,6 +712,13 @@ def _apply_24h_series_enrichment(
     entry.update(m24)
     if series_24h and safe_float(entry.get("price"), 0.0) <= 0.0:
         entry["price"] = series_24h[-1][1]
+    cur_e_px = safe_pos_float(entry.get("price"), default=None)
+    l24_e, h24_e = safe_pos_float(entry.get("low_24h"), default=None), safe_pos_float(entry.get("high_24h"), default=None)
+    l7d_e, h7d_e = safe_pos_float(entry.get("low_7d"), default=None), safe_pos_float(entry.get("high_7d"), default=None)
+    if cur_e_px is not None and l24_e is not None and h24_e is not None and l7d_e is not None and h7d_e is not None:
+        if l24_e < l7d_e or h24_e > h7d_e:
+            eff_dec_7d = _auto_px_decimals(cur_e_px)
+            entry.update(_compute_horizon_range_dict(cur_e_px, round(min(l7d_e, l24_e, cur_e_px), eff_dec_7d), round(max(h7d_e, h24_e, cur_e_px), eff_dec_7d), "7d"))
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:

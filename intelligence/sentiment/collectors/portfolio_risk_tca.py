@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import sys as _sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,11 +33,17 @@ from providers.base import (
     extract_orig_qty,
     extract_timestamp_ms,
     format_actor_tag,
+    normalize_open_order,
     normalize_timestamp_ms,
     resolve_order_origin,
 )
 from providers.execution_audit import extract_intent_order_type, extract_intent_side
 from providers.quantity import venue_fee_cap_quantity
+from state_io import (
+    read_json_dict_recovering as read_json_cached,
+    read_tail_jsonl_dicts,
+    resolve_cachedb_filepath,
+)
 
 
 _VENUE_DEFAULT_FEE_SPECS: Dict[str, tuple[str, float, float, float]] = {
@@ -599,11 +606,26 @@ def enrich_open_limit_orders_tca(
             or safe_pos_float((p_entry or {}).get("price"), default=None)
             or resolve_symbol_price(sym, prices_and_trends)
         )
-        if spot_px and spot_px > 0.0 and o.get("dist_from_spot_pct") is None:
+        if spot_px and spot_px > 0.0:
             o["dist_from_spot_pct"] = pct_delta(lim_px, spot_px)
+        for _stale_tca_k in (
+            "wall_queue_pos",
+            "recommended_front_run_px",
+            "ask_wall_ahead_px",
+            "ask_wall_ahead_usd",
+            "bid_wall_ahead_px",
+            "bid_wall_ahead_usd",
+        ):
+            o.pop(_stale_tca_k, None)
         dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
         vol_1h = max(0.35, safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=1.1) or 1.1)
-        dec = 2 if lim_px >= 100.0 else (4 if lim_px >= 1.0 else 6)
+        v_norm = normalize_venue_name(o.get("venue"))
+        if v_norm == "t212":
+            dec = 2
+        elif v_norm == "hyperliquid":
+            dec = 2 if lim_px >= 100.0 else (3 if lim_px >= 1.0 else 4)
+        else:
+            dec = 2 if lim_px >= 10.0 else (3 if lim_px >= 1.0 else (4 if lim_px >= 0.1 else 6))
         queue_penalty = 1.0
         if isinstance(m_entry, dict):
             sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0) or 2.0
@@ -812,3 +834,395 @@ def compute_enterprise_portfolio_risk_metrics(
     if abs(lifo_pnl_total) >= 0.01:
         out_risk["subcycle_lifo_realized_pnl_usd"] = round(lifo_pnl_total, 2)
     return out_risk
+
+
+def _iter_audit_dir_file_batches(
+    cache_dir: Optional[str], *, max_files: int = 2, newest_first: bool = True
+) -> List[List[str]]:
+    """Yield sorted batches of `execution_audit_*.jsonl` file paths from candidate logger/cache directories."""
+    if not cache_dir:
+        return []
+    abs_cache = os.path.abspath(cache_dir)
+    batches: List[List[str]] = []
+    for d in (
+        os.path.join(os.path.dirname(abs_cache), "logger", "execution_audit"),
+        os.path.join(os.path.dirname(os.path.dirname(abs_cache)), "logger", "execution_audit"),
+        cache_dir,
+    ):
+        if not os.path.isdir(d):
+            continue
+        try:
+            files = sorted(
+                (os.path.join(d, f) for f in os.listdir(d) if f.startswith("execution_audit") and f.endswith(".jsonl")),
+                reverse=newest_first,
+            )
+            batch = files[:max_files] if newest_first else files[-max_files:]
+            if batch:
+                batches.append(batch)
+        except Exception:
+            continue
+    return batches
+
+
+def _normalize_open_orders_list(
+    raw_orders: Any,
+    venue: str,
+    symbol: str,
+    known_ai_order_ids: Optional[set[str]] = None,
+    *,
+    now_ts: Optional[float] = None,
+    order_ts_map: Optional[Dict[str, float]] = None,
+) -> List[Dict[str, Any]]:
+    if not isinstance(raw_orders, list):
+        return []
+    return [
+        oo_norm
+        for oo in raw_orders
+        if isinstance(oo, dict)
+        and isinstance(
+            (oo_norm := normalize_open_order(
+                oo,
+                venue=venue,
+                symbol=symbol,
+                known_ai_order_ids=known_ai_order_ids,
+                now_ts=now_ts,
+                order_ts_map=order_ts_map,
+            )),
+            dict,
+        )
+    ]
+
+
+def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str, Any]) -> Dict[str, float]:
+    """Build order_id / client_order_id -> created_ts (epoch seconds) lookup for resting open orders."""
+    out: Dict[str, float] = {}
+    for k, v in (cached_bals or {}).items():
+        if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
+            for oo_prev in v:
+                if isinstance(oo_prev, dict):
+                    c_ts = safe_pos_float(oo_prev.get("created_ts"), default=None)
+                    if c_ts is None and (ms_v := normalize_timestamp_ms(oo_prev.get("time") or oo_prev.get("timestamp"), default=None)) is not None:
+                        c_ts = float(ms_v) / 1000.0
+                    if c_ts is not None and c_ts > 0.0:
+                        for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
+                            if kv := str(oo_prev.get(id_k) or "").strip():
+                                out.setdefault(kv, c_ts)
+    if not cache_dir:
+        return out
+    intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
+    if os.path.exists(intents_path) and isinstance(raw_int := read_json_cached(intents_path), dict):
+        for it in raw_int.get("intents") or ():
+            if isinstance(it, dict) and (it_ts := safe_pos_float(it.get("timestamp"), default=None)) is not None:
+                exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
+                for src_d in (it, exec_pay):
+                    for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
+                        if kv := str(src_d.get(id_k) or "").strip():
+                            out.setdefault(kv, it_ts)
+    for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
+        for fpath in files:
+            for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=512 * 1024):
+                if (rec_ts := safe_pos_float(rec.get("ts"), default=None)) is not None:
+                    for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
+                        if kv := str(rec.get(id_k) or "").strip():
+                            out.setdefault(kv, rec_ts)
+        if out:
+            break
+    return out
+
+
+def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
+    """Load recent orderId/clientOrderId -> (module, rule) mappings from execution_audit jsonl logs."""
+    out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
+        for fpath in files:
+            for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=1024 * 1024):
+                _, mod, rule = resolve_order_origin(rec)
+                if mod or rule:
+                    for k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
+                        if kv := str(rec.get(k) or "").strip():
+                            out.setdefault(kv, (mod, rule))
+        if out:
+            break
+    return out
+
+
+def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Synthesize deduplicated per-symbol filled order lists from execution_audit_*.jsonl for venues lacking a disk order cache."""
+    by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    if not cache_dir:
+        return by_sym
+    v_target = normalize_venue_name(venue)
+    for audit_files in _iter_audit_dir_file_batches(cache_dir, max_files=10, newest_first=False):
+        try:
+            submit_ts_by_oid: Dict[str, float] = {}
+            idx_by_oid: Dict[tuple[str, str], int] = {}
+            for af in audit_files:
+                for rec in read_tail_jsonl_dicts(af, limit=None, max_bytes=1024 * 1024):
+                    if normalize_venue_name(rec.get("venue")) != v_target:
+                        continue
+                    ev_name = str(rec.get("event") or "")
+                    oid_s = str(rec.get("order_id") or "").strip()
+                    ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                    if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
+                        submit_ts_by_oid.setdefault(oid_s, ts_s)
+                        continue
+                    if ev_name not in ("order_terminal", "order_terminal_retry"):
+                        continue
+                    sym_t = str(rec.get("symbol") or "").strip().upper()
+                    f_q = safe_pos_float(rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"), default=0.0) or 0.0
+                    cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
+                    px_f = safe_pos_float(rec.get("price"), default=None) or (round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None)
+                    eff_ts_s = submit_ts_by_oid.get(oid_s, ts_s) if oid_s else ts_s
+                    side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
+                    if sym_t and f_q > 0 and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
+                        row_d = {
+                            "symbol": sym_t,
+                            "orderId": rec.get("order_id"),
+                            "clientOrderId": rec.get("client_order_id"),
+                            "side": side_t,
+                            "price": px_f,
+                            "qty": f_q,
+                            "executedQty": f_q,
+                            "timestamp": int(round(eff_ts_s * 1000.0)),
+                            "status": "FILLED",
+                        }
+                        dedup_k = oid_s or str(rec.get("client_order_id") or "").strip()
+                        sym_list = by_sym.setdefault(sym_t, [])
+                        if dedup_k and (sym_t, dedup_k) in idx_by_oid:
+                            existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
+                            new_q = max(float(existing.get("qty") or 0.0), f_q)
+                            existing["qty"] = new_q
+                            existing["executedQty"] = new_q
+                            existing["price"] = px_f
+                            if rec.get("client_order_id") and not existing.get("clientOrderId"):
+                                existing["clientOrderId"] = rec.get("client_order_id")
+                        else:
+                            if dedup_k:
+                                idx_by_oid[(sym_t, dedup_k)] = len(sym_list)
+                            sym_list.append(row_d)
+            if by_sym:
+                break
+        except Exception:
+            pass
+    return by_sym
+
+
+def _sync_cycle_wallet_qty_and_avg(
+    cyc: Dict[str, Any],
+    *,
+    qty: float,
+    avg_px: Optional[float],
+    spot_px: float,
+    avg_dec: int,
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Update a venue cycle dict's `qty`, `cost_usd`, `avg_cost_px`, and `dd_pct`/`pnl_vs_avg_pct` in-place."""
+    if qty <= 0.0:
+        cyc.update({"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
+        return
+    avg_r = round(avg_px, avg_dec) if avg_px and avg_px > 0 else None
+    dd_v = round(((spot_px - avg_r) / avg_r) * 100.0, 2) if (spot_px > 0 and avg_r and avg_r > 0) else None
+    cyc.update({
+        "qty": round(qty, 6),
+        "cost_usd": round(qty * avg_r, 2) if avg_r else 0.0,
+        "avg_cost_px": avg_r,
+        "dd_pct": dd_v,
+        "pnl_vs_avg_pct": dd_v,
+        **(extra_fields or {}),
+    })
+
+
+def _populate_cycle_fallback_recent_order(
+    p_venue: str,
+    p_sym: str,
+    cyc: Dict[str, Any],
+    cyc_has_open_qty: bool,
+    ro: Optional[Dict[str, Any]],
+    recent_orders: Dict[str, Any],
+    v_ro_map: Dict[str, Any],
+    cyc_sell_ts_map: Dict[tuple[str, str], int],
+) -> Optional[Dict[str, Any]]:
+    """Synthesize or enrich a fallback `recent_orders` entry from `.state_*.json` cycle anchors when trade cache is absent."""
+    if p_venue not in ("t212", "kraken", "hyperliquid"):
+        return ro
+    cyc_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=0.0) or 0.0
+    cyc_lb = safe_pos_float(cyc.get("last_buy_price") or cyc.get("entry_price"), default=None)
+    cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
+    cyc_ls_ts = cyc_sell_ts_map.get((p_venue, p_sym))
+    created_ro = False
+    if (
+        not isinstance(ro, dict)
+        and (p_venue == "t212" or p_sym not in recent_orders)
+        and (cyc_lb is not None or cyc_ls is not None or cyc_avg > 0)
+    ):
+        ro = {
+            "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY"),
+            "last_action_actor": "BOT",
+            "last_action_actor_tag": "BOT",
+            "last_buy": None,
+            "last_sell": None,
+            "active_avg_buy_px": None,
+            "recent_buys": [],
+        }
+        recent_orders[p_sym] = v_ro_map[p_sym] = ro
+        created_ro = True
+    if isinstance(ro, dict) and (p_venue == "t212" or created_ro):
+        if cyc_avg > 0:
+            ro["active_avg_buy_px"] = round(cyc_avg, 6)
+        if ro.get("last_buy") is None and cyc_lb is not None:
+            lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
+            if not ro.get("recent_buys"):
+                lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
+            ro["last_buy"] = lb_d
+        if ro.get("last_sell") is None and cyc_ls is not None and (p_venue == "t212" or cyc_ls_ts is not None or not cyc_has_open_qty):
+            ro["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
+    return ro
+
+
+def reconcile_venue_cycles_with_recent_orders(
+    kraken_cycles: Dict[str, Dict[str, Any]],
+    hyperliquid_cycles: Dict[str, Dict[str, Any]],
+    t212_cycles: Dict[str, Dict[str, Any]],
+    venue_recent_orders: Dict[str, Dict[str, Any]],
+    live_held_by_venue_sym: Dict[tuple[str, str], float],
+    prices_and_trends: Dict[str, Any],
+) -> Dict[tuple[str, str], int]:
+    """Reconcile `.state_*.json` DCA cycles against recent fills and live wallet balances; return `(venue, sym) -> sell_ts_ms`."""
+    cyc_sell_ts_map: Dict[tuple[str, str], int] = {}
+    for c_venue, cyc_map, avg_dec in (("kraken", kraken_cycles, 6), ("hyperliquid", hyperliquid_cycles, 6), ("t212", t212_cycles, 4)):
+        if not isinstance(cyc_map, dict):
+            continue
+        v_ro_c = venue_recent_orders.get(c_venue, {})
+        for c_sym, cyc in cyc_map.items():
+            if not isinstance(cyc, dict):
+                continue
+            entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
+            if sell_ts_ms:
+                cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = int(sell_ts_ms)
+            if not entry_ts_ms or cyc.get("resting_orders"):
+                continue
+            c_quotes = compatible_quote_suffixes(c_sym)
+            ro_c = next(
+                (
+                    val
+                    for cand in (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes))
+                    if isinstance((val := casefold_get(v_ro_c, cand)), dict)
+                ),
+                None,
+            )
+            if not isinstance(ro_c, dict):
+                continue
+            ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
+            ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
+            ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
+            ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
+            cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
+            r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
+            buys_after = [
+                b for b in r_buys_c
+                if isinstance(b, dict)
+                and (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
+                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+            ]
+            reconciled_external_buy = bool(
+                buys_after
+                and cyc_qty_cur > 1e-8
+                and float(entry_ts_ms) > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
+                and abs(sum(float(b["qty"]) for b in buys_after) - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
+            )
+            rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
+            live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
+            already_deducted_partial = bool(
+                not buys_after
+                and cyc_qty_cur > 1e-8
+                and (
+                    (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0)
+                    or (rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
+                    or (live_held is not None and live_held > 1e-8 and abs(live_held - cyc_qty_cur) <= max(1e-4, max(live_held, cyc_qty_cur) * 0.05))
+                )
+            )
+
+            def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
+                if sell_p <= 0.0:
+                    return
+                ref_avg = (
+                    safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
+                    or safe_pos_float(c_dict.get("avg_cost_px"), default=None)
+                    or safe_pos_float(c_dict.get("entry_price"), default=None)
+                    or safe_pos_float(c_dict.get("last_buy_price"), default=None)
+                )
+                if ref_avg is not None and ref_avg > 0.0:
+                    if sell_p < ref_avg * 0.995 and str(c_dict.get("last_exit_kind") or "").strip().upper() == "TP":
+                        c_dict["last_exit_kind"] = "REDUCE"
+                    elif sell_p >= ref_avg * 1.001 and not c_dict.get("last_exit_kind"):
+                        c_dict["last_exit_kind"] = "TP"
+
+            if already_deducted_partial:
+                if ls_px > 0:
+                    cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
+            elif (
+                not buys_after
+                and ls_ts_ms > float(entry_ts_ms)
+                and cyc_qty_cur > 1e-8
+                and 0.0 < ls_qty < cyc_qty_cur - 1e-8
+                and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                and (
+                    (live_held is not None and abs(live_held - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(live_held, cyc_qty_cur - ls_qty) * 0.05))
+                    or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - (cyc_qty_cur - ls_qty)) <= max(1e-4, max(rem_q_ro, cyc_qty_cur - ls_qty) * 0.05))
+                )
+            ):
+                rem_after_sell = cyc_qty_cur - ls_qty
+                avg_c = safe_pos_float(cyc.get("avg_cost_px"), default=None) or (
+                    (safe_pos_float(cyc.get("cost_usd"), default=0.0) or 0.0) / cyc_qty_cur
+                )
+                cyc["qty"] = round(rem_after_sell, 6)
+                if avg_c and avg_c > 0:
+                    cyc["cost_usd"] = round(rem_after_sell * avg_c, 2)
+                if ls_px > 0:
+                    cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    _sync_exit_kind(cyc, ls_px, rem_after_sell)
+            elif (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
+                px_c = resolve_symbol_price(c_sym, prices_and_trends)
+                eff_rem_wallet = (
+                    live_held
+                    if (live_held is not None and live_held > 1e-6)
+                    else (rem_q_ro if (live_held is None and rem_q_ro > 1e-6) else 0.0)
+                )
+                has_non_dust_wallet = eff_rem_wallet > 1e-6 and (px_c <= 0.0 or eff_rem_wallet * px_c >= 5.0)
+                if buys_after:
+                    new_qty = sum(float(b["qty"]) for b in buys_after)
+                    new_cost = sum(float(b["qty"]) * float(b["price"]) for b in buys_after)
+                    _sync_cycle_wallet_qty_and_avg(
+                        cyc,
+                        qty=new_qty,
+                        avg_px=new_cost / new_qty,
+                        spot_px=px_c,
+                        avg_dec=avg_dec,
+                        extra_fields={
+                            "cost_usd": round(new_cost, 2),
+                            "entry_price": round(float(buys_after[0]["price"]), avg_dec),
+                            "last_buy_price": round(float(buys_after[-1]["price"]), avg_dec),
+                            "dca_buys": max(0, len(buys_after) - 1),
+                        },
+                    )
+                elif has_non_dust_wallet:
+                    eff_avg_w = (
+                        safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
+                        or safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                        or safe_pos_float(cyc.get("entry_price"), default=None)
+                        or safe_pos_float(cyc.get("last_buy_price"), default=None)
+                    )
+                    _sync_cycle_wallet_qty_and_avg(cyc, qty=eff_rem_wallet, avg_px=eff_avg_w, spot_px=px_c, avg_dec=avg_dec)
+                    if cyc.get("avg_cost_px") and not cyc.get("entry_price"):
+                        cyc["entry_price"] = cyc["avg_cost_px"]
+                else:
+                    _sync_cycle_wallet_qty_and_avg(cyc, qty=0.0, avg_px=None, spot_px=px_c, avg_dec=avg_dec)
+                if ls_px > 0:
+                    cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    _sync_exit_kind(cyc, ls_px, safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0)
+                if not has_non_dust_wallet and not buys_after:
+                    cyc.pop("pos_peak", None)
+                    cyc.pop("dd_from_peak_pct", None)
+    return cyc_sell_ts_map
