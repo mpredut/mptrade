@@ -17,6 +17,7 @@ from botcore import (
     _parse_bool_flag, are_close, exact_nonneg_int, exact_pos_int, log, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
+    touch_module_heartbeat,
 )
 from intelligence.internal.state.volatility import (
     adaptive_thresholds, resolve_cached_volatility_1h,
@@ -896,6 +897,26 @@ class BaseSpotMixin:
             self._restore_reentry_state()
         return placed
 
+    def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
+        if getattr(self, "replay_mode", False):
+            return
+        venue = str(getattr(self, "venue_label", "") or "").strip().lower()
+        sym = str(self._symbol_id or "").strip().upper()
+        if venue == "hyperliquid":
+            hb_name = "HL-bot"
+        elif venue == "kraken":
+            hb_name = "Kraken-HYPE" if ("HYPE" in sym or not sym) else f"Kraken-{sym}"
+        else:
+            hb_name = "T212-bot"
+        touch_module_heartbeat(
+            hb_name,
+            interval_sec=30.0,
+            force=force,
+            status={"price": price, "symbol": sym},
+            symbols=[sym] if sym else None,
+            intervals={"check_sec": sleep_sec},
+        )
+
     def _run_strategy_loop(
         self,
         *,
@@ -908,8 +929,11 @@ class BaseSpotMixin:
         check_min = safe_pos_float(self.p.check_minutes, default=None)
         sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
         sleep_fn = self._mod_global("time", time).sleep
+        last_price: list[float | None] = [None]
+        self._touch_strategy_heartbeat(None, sleep_sec, force=True)
 
         def _delay() -> None:
+            self._touch_strategy_heartbeat(last_price[0], sleep_sec)
             if stop is not None:
                 stop.wait(sleep_sec)
             else:
@@ -918,6 +942,7 @@ class BaseSpotMixin:
         try:
             while not (stop is not None and stop.is_set()):
                 price = safe_pos_float(price_fn(), default=None)
+                last_price[0] = price
                 if price is None:
                     self._log_msg("  [STRAT] price unavailable — retrying")
                     _delay()

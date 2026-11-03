@@ -35,6 +35,7 @@ from botcore import (
     required_int_env,
     safe_nonneg_float,
     safe_pos_float,
+    touch_module_heartbeat,
 )
 
 _safe_pos_float = safe_pos_float
@@ -641,6 +642,11 @@ def monitor_orders():
 
     monitor_open_orders_lasttime = time.time() - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
     monitor_close_orders_by_age_lasttime = time.time() - MONITOR_CLOSE_ORDER_INTERVAL - TIME_SLEEP_ERROR
+    hb_intervals = {
+        "open_order": MONITOR_OPEN_ORDER_INTERVAL,
+        "close_order": MONITOR_CLOSE_ORDER_INTERVAL,
+    }
+    touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=list(sym.symbols), intervals=hb_intervals)
 
     while not getattr(api, "stop", False):
         try:
@@ -657,13 +663,16 @@ def monitor_orders():
             if currenttime - monitor_close_orders_by_age_lasttime > MONITOR_CLOSE_ORDER_INTERVAL:
                 monitor_close_orders_by_age_lasttime = currenttime
 
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(min(MONITOR_OPEN_ORDER_INTERVAL, MONITOR_CLOSE_ORDER_INTERVAL))
 
         except BinanceAPIException as e:
             print(f"Binance API error: {e}")
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
         except Exception as e:
             print(f"Error: {e}")
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
 
 

@@ -46,6 +46,7 @@ except ImportError:
     from notify import notify
     from kraken_client import KrakenClient, KrakenError
     from market_data import is_pair_status_tradable
+from botcore import touch_module_heartbeat
 from state_io import load_json_state, read_text_lines, save_json_state
 from credentials import kraken_credentials
 from instrument_registry import casefold_get
@@ -526,6 +527,9 @@ def main() -> int:
     log(f"    alerte     : +{tp_pct}% / -{sl_pct}%  (price: Kraken or Yahoo {yahoo_sym})")
     log(f"    interval   : {args.interval} min")
     beats = 0
+    sleep_sec = max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0)
+    if not args.once:
+        touch_module_heartbeat("xStock-watch", interval_sec=30.0, force=True, intervals={"check_sec": sleep_sec})
     while True:
         try:
             check_balance(client, st, rx, args.desktop)
@@ -540,9 +544,10 @@ def main() -> int:
         if args.once:
             return 0
         beats += 1                       # keep-alive pulse: one tail-visible dot per cycle
+        touch_module_heartbeat("xStock-watch", interval_sec=30.0, status={"beats": beats}, intervals={"check_sec": sleep_sec})
         sys.stdout.write("." if beats % 60 else ".\n")
         sys.stdout.flush()
-        time.sleep(max(1.0, safe_pos_float(args.interval, default=1.0) * 60.0))
+        time.sleep(sleep_sec)
 
 
 if __name__ == "__main__":

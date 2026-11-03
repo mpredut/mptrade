@@ -46,6 +46,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
     single_instance,
+    touch_module_heartbeat,
 )
 from providers.execution_audit import intent_client_order_id
 from state_io import load_json_state, save_json_state
@@ -885,6 +886,8 @@ class TrailingAdapterBase:
     def _run_trailing_loop(self, check_seconds: float, banner_lines: list[str] | tuple[str, ...]) -> None:
         for line in banner_lines:
             self.log(line)
+        hb_name = "Kraken-trailing" if self._VENUE_SLUG == "kraken" else "Binance-trailing"
+        touch_module_heartbeat(hb_name, interval_sec=30.0, force=True, intervals={"check_seconds": check_seconds})
         while True:
             try:
                 self.check_once()
@@ -892,4 +895,9 @@ class TrailingAdapterBase:
                 return
             except Exception as e:  # noqa: BLE001
                 self.log_tick_error(e)
+            touch_module_heartbeat(
+                hb_name,
+                interval_sec=30.0,
+                intervals={"check_seconds": check_seconds},
+            )
             time.sleep(check_seconds)

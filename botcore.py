@@ -896,6 +896,57 @@ def touch_heartbeat_file(
     return now_m
 
 
+_MODULE_HEARTBEAT_LOCK = threading.Lock()
+_MODULE_HEARTBEAT_LAST_TS: dict[str, float] = {}
+
+
+def touch_module_heartbeat(
+    module_name: str,
+    *,
+    interval_sec: float = 30.0,
+    force: object = False,
+    now: float | None = None,
+    status: object = None,
+    symbols: list[str] | tuple[str, ...] | None = None,
+    intervals: dict | None = None,
+    extra: dict | None = None,
+    path: str | os.PathLike | None = None,
+) -> float:
+    """Thread-safe shared heartbeat writer for any bot or fleet daemon.
+
+    Resolves ``cachedb/system/heartbeat/<module_name>.heartbeat`` via ``cachepaths.cache_path``
+    (unless ``path`` is explicitly provided), throttles writes to ``interval_sec``, and persists
+    the canonical heartbeat JSON schema via ``touch_heartbeat_file``.
+    """
+    clean_name = str(module_name or "").strip() if not isinstance(module_name, bool) else ""
+    if not clean_name and path is None:
+        return float("-inf")
+    if path is not None:
+        hb_path = str(path)
+    else:
+        fname = clean_name if clean_name.endswith(".heartbeat") else f"{clean_name}.heartbeat"
+        try:
+            from cachepaths import cache_path as _cache_path, resolve_cachedb_filepath as _resolve_hb
+            hb_path = str(_resolve_hb(_cache_path(fname)))
+        except Exception:
+            hb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cachedb", "system", "heartbeat", fname)
+    with _MODULE_HEARTBEAT_LOCK:
+        prev_ts = _MODULE_HEARTBEAT_LAST_TS.get(hb_path, float("-inf"))
+        updated_ts = touch_heartbeat_file(
+            hb_path,
+            last_ts=prev_ts,
+            interval_sec=interval_sec,
+            force=force,
+            now=now,
+            status=status,
+            symbols=symbols,
+            intervals=intervals,
+            extra=extra,
+        )
+        _MODULE_HEARTBEAT_LAST_TS[hb_path] = updated_ts
+        return updated_ts
+
+
 def evaluate_heartbeat_files_freshness(
     hb_paths: list[str] | tuple[str, ...],
     stale_threshold_s: float,

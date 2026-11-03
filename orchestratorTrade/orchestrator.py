@@ -82,7 +82,7 @@ class BotManager:
             ROOT_DIR,
             venv=self.venv,
             roles=("bot", "fleet"),
-            include_stdout_with_heartbeat_file=True,
+            include_stdout_with_heartbeat_file=False,
             require_cmd=True,
         )
 

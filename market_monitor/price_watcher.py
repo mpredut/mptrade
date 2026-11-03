@@ -26,7 +26,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier, format_ntfy_url
-from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
+from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float, touch_module_heartbeat
 from cachepaths import cache_path
 from market_monitor.alerts_config import load_config
 
@@ -290,9 +290,13 @@ def main():
     cleanup_thread.start()
 
     try:
+        hb_syms = list(cfg.get("watch") or ())
+        hb_itv = {"price_scan": cfg["price_scan_seconds"]}
+        touch_module_heartbeat("price_watcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
         while True:
-            time.sleep(160)
-            print("\n👉 Waiting for alerts... (Ctrl+C to stop)\n")
+            time.sleep(30)
+            touch_module_heartbeat("price_watcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
+            print("\n👉 Waiting for alerts... (Ctrl+C to stop)\n", flush=True)
     except KeyboardInterrupt:
         print("\n🛑 Stopping system...")
         if new_coins_checker is not None:

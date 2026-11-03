@@ -28,6 +28,7 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     single_instance,
+    touch_module_heartbeat,
 )
 from cachepaths import split_symbol_assets
 from lock import FileLock
@@ -1104,7 +1105,9 @@ def main():
 
     if not oq.RETRY_ENABLED:
         print("[order_retry] RETRY_ENABLED=false — worker ALIVE but inactive (idle).")
+        touch_module_heartbeat("order_retry", interval_sec=30.0, force=True, status={"retry_enabled": False}, intervals={"poll": 60.0})
         while True:
+            touch_module_heartbeat("order_retry", interval_sec=30.0, status={"retry_enabled": False}, intervals={"poll": 60.0})
             time.sleep(60)
 
     from providers.market_api import api as mkt
@@ -1121,9 +1124,12 @@ def main():
         print(f"[order_retry] startup consolidation aborted: {exc}")
 
     print(f"[order_retry] start (poll={WORKER_POLL_SEC:.0f}s, interval={oq.RETRY_INTERVAL_SEC:.0f}s, TTL={oq.RETRY_TTL_SEC:.0f}s)")
+    touch_module_heartbeat("order_retry", interval_sec=30.0, force=True, status={"retry_enabled": True}, intervals={"poll": WORKER_POLL_SEC})
     while True:
+        last_stats = None
         try:
             stats = process_once(mkt)
+            last_stats = stats
             if stats["attempted"] or stats["expired"]:
                 print(f"[order_retry] {stats}")
         except oq.RetryQueueCorruptionError as exc:
@@ -1131,6 +1137,12 @@ def main():
             print(f"[order_retry] queue corruption; pass aborted: {exc}")
         except Exception as exc:
             print(f"[order_retry] pass error (continuing): {exc}")
+        touch_module_heartbeat(
+            "order_retry",
+            interval_sec=30.0,
+            status=last_stats if isinstance(last_stats, dict) else {"retry_enabled": True},
+            intervals={"poll": WORKER_POLL_SEC},
+        )
         time.sleep(WORKER_POLL_SEC)
     return 0
 

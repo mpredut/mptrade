@@ -41,6 +41,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    touch_module_heartbeat,
     validate_required_env_keys,
 )
 from cachepaths import cache_path
@@ -1688,12 +1689,25 @@ def run_forever():
         f"minutes_back={ASSET_REFERENCE_MINUTES_BACK_DEFAULT}m, "
         f"symbols={TRACKED_SYMBOLS}"
     )
+    touch_module_heartbeat(
+        "assetguardian",
+        interval_sec=30.0,
+        force=True,
+        symbols=list(TRACKED_SYMBOLS),
+        intervals={"check_interval": CHECK_INTERVAL_SECONDS},
+    )
     while True:
         try:
             evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
         except Exception as e:
             print(f" Runtime ERROR: {e}")
         sleep_seconds = _next_check_seconds()
+        touch_module_heartbeat(
+            "assetguardian",
+            interval_sec=30.0,
+            symbols=list(TRACKED_SYMBOLS),
+            intervals={"check_interval": sleep_seconds},
+        )
         # Flushing at the cycle boundary publishes all preceding lines when stdout
         # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
         print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)

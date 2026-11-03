@@ -23,6 +23,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    touch_module_heartbeat,
 )
 from cachepaths import cache_path, canonical_base_asset, canonical_symbol_key
 from intelligence.internal.state.persistence import (
@@ -1018,6 +1019,13 @@ if __name__ == "__main__":
     from instrument_registry import tracked_price_instruments
     symbols, _nb_syms, _nb_providers = tracked_price_instruments()
     build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
+    touch_module_heartbeat(
+        "priceAnalysis",
+        interval_sec=30.0,
+        force=True,
+        symbols=list(symbols),
+        intervals={"refresh_trend": UPDATE_AND_REFRESH_TREND},
+    )
     try:
         while True:
             process = psutil.Process(os.getpid())
@@ -1033,6 +1041,13 @@ if __name__ == "__main__":
                                             lookback_days=30,
                                             draw=True)
             write_all_trends(all_trends);
+            touch_module_heartbeat(
+                "priceAnalysis",
+                interval_sec=30.0,
+                status={"trends": all_trends},
+                symbols=list(symbols),
+                intervals={"refresh_trend": UPDATE_AND_REFRESH_TREND},
+            )
 
             print(f"write : {all_trends}")
             time.sleep(UPDATE_AND_REFRESH_TREND)

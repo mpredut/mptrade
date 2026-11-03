@@ -39,7 +39,7 @@ sys.path.insert(0, ROOT)
 
 import cacheManager as cm
 from binance_api import bapi_ws
-from botcore import safe_pos_float, single_instance
+from botcore import safe_pos_float, single_instance, touch_module_heartbeat
 from cachepaths import cache_path, get_cachedb_dir
 from instrument_registry import tracked_price_instruments
 
@@ -177,7 +177,20 @@ def main():
     print("[tradeall_price_archiver] Ctrl+C stops the process.")
 
     try:
+        touch_module_heartbeat(
+            "tradeall_price_archiver",
+            interval_sec=30.0,
+            force=True,
+            symbols=list(symbols),
+            intervals={"save_every": save_every, "heartbeat": 60.0},
+        )
         while not stop_event.wait(60):
+            touch_module_heartbeat(
+                "tradeall_price_archiver",
+                interval_sec=30.0,
+                symbols=list(symbols),
+                intervals={"save_every": save_every, "heartbeat": 60.0},
+            )
             print("[tradeall_price_archiver] heartbeat", flush=True)
     except KeyboardInterrupt:
         stop_event.set()

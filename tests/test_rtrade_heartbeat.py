@@ -138,6 +138,58 @@ class RTradeHeartbeatTest(unittest.TestCase):
             mock_pair_store.checkpoint.assert_any_call("test_pair_1", record["state"], terminal=True)
             mock_venue._set_pair_recovery_blocked.assert_called_with("test_pair_1", False)
 
+    def test_all_procs_conf_entries_have_dedicated_heartbeat_and_stale_threshold(self):
+        rows = [
+            row.strip()
+            for row in (ROOT / "procs.conf").read_text(encoding="utf-8").splitlines()
+            if row.strip() and not row.strip().startswith("#")
+        ]
+        self.assertGreaterEqual(len(rows), 17)
+        for row in rows:
+            parts = row.split("|")
+            self.assertEqual(len(parts), 7, f"Malformed procs.conf row: {row}")
+            label = parts[3].strip()
+            hb_targets = [f.strip() for f in parts[4].split(",") if f.strip()]
+            stale_s = float(parts[5].strip() or 0)
+            self.assertTrue(
+                any(t.endswith(".heartbeat") for t in hb_targets),
+                f"Process {label} must have a dedicated .heartbeat target in procs.conf: {row}",
+            )
+            self.assertGreater(stale_s, 0.0, f"Process {label} must have a positive hb_stale_s in procs.conf")
+
+    def test_touch_module_heartbeat_and_harvest_fleet_heartbeats(self):
+        import json
+        import botcore
+        from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+            with patch.dict(os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
+                ts1 = botcore.touch_module_heartbeat(
+                    "cacheManager",
+                    interval_sec=30.0,
+                    force=True,
+                    now=500.0,
+                    status={"ts": 1700000500.0},
+                    symbols=["BTCUSDC", "TAOUSDC"],
+                )
+                self.assertEqual(ts1, 500.0)
+                hb_file = Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
+                self.assertTrue(hb_file.exists())
+                data = json.loads(hb_file.read_text(encoding="utf-8"))
+                self.assertEqual(data["status"], "alive")
+                self.assertEqual(data["symbols"], ["BTCUSDC", "TAOUSDC"])
+
+                # Throttled within 30s
+                ts2 = botcore.touch_module_heartbeat("cacheManager", interval_sec=30.0, now=510.0)
+                self.assertEqual(ts2, 500.0)
+
+                # Harvest includes cacheManager.heartbeat
+                mtime = os.path.getmtime(str(hb_file))
+                active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 5.0)
+                self.assertIn("cacheManager.heartbeat", active_hb)
+                self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
+
 
 if __name__ == "__main__":
     unittest.main()

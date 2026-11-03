@@ -35,6 +35,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 if _HERE not in sys.path:
     sys.path.append(_HERE)
+from botcore import touch_module_heartbeat
 from kraken_common import (
     _parse_bool_flag, load_env_stack, log, required_env,
     required_float_env, safe_float, safe_nonneg_float, safe_pos_float,
@@ -322,6 +323,7 @@ def poll_loop(client):
     Exponential backoff on rate-limit/nonce errors avoids repeatedly hammering Kraken."""
     cache = _load_initial_cache(CACHE_FILE)
     backoff = POLL_BACKOFF_INIT
+    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, force=True, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
     while True:
         try:
             _fetch_rest_into(client, cache)
@@ -329,9 +331,11 @@ def poll_loop(client):
             log(f"[kraken_cache][poll] {sum(len(v) for v in cache['items'].values())} fills "
                 f"for {list(cache['items'].keys())}")
             backoff = POLL_BACKOFF_INIT   # reset after success
+            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
             time.sleep(POLL_INTERVAL)
         except Exception as e:
             log(f"[kraken_cache][poll] error (backoff {backoff:.0f}s): {e}")
+            touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
             time.sleep(backoff)
             backoff = min(backoff * 2, POLL_BACKOFF_MAX)
 

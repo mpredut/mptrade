@@ -1041,6 +1041,35 @@ def harvest_heartbeats_and_state_files(
                         )
                 except OSError:
                     pass
+    if read_json_fn is None or read_json_fn is read_json_recovering:
+        for scan_dir in (os.path.join(cache_dir, "system", "heartbeat"), cache_dir):
+            if not os.path.isdir(scan_dir):
+                continue
+            try:
+                for entry in sorted(os.listdir(scan_dir)):
+                    if not entry.endswith(".heartbeat") or entry in active_heartbeats or entry in (
+                        "macro_analyzer.heartbeat",
+                        "globaltelemetry_collector.heartbeat",
+                        "rtrade.heartbeat",
+                    ):
+                        continue
+                    hb_full = os.path.join(scan_dir, entry)
+                    if not os.path.isfile(hb_full):
+                        continue
+                    mtime = os.path.getmtime(hb_full)
+                    age_sec = max(0.0, now_ts - mtime)
+                    if age_sec > 900.0:
+                        continue
+                    data = _rj(hb_full)
+                    if isinstance(data, dict) and data:
+                        active_heartbeats[entry] = {**data, "age_seconds": round(age_sec, 1)}
+                    else:
+                        active_heartbeats[entry] = build_heartbeat_payload(
+                            {"ts": mtime},
+                            extra={"age_seconds": round(age_sec, 1)},
+                        )
+            except OSError:
+                pass
     state_files: Dict[str, Any] = {}
     for s_file in (".resource_watchdog_state.json", ".watchdog_state.json", ".anomaly_watchdog_state.json"):
         s_path = os.path.join(workspace_dir, s_file)

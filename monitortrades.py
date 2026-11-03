@@ -18,6 +18,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    touch_module_heartbeat,
 )
 import cacheManager as cm
 import cachepaths
@@ -1608,6 +1609,12 @@ def main():
     check_and_notify_executed_trades(maxage_trade_s)
 
     d = MT_GUARD_WINDOW_DAYS
+    touch_module_heartbeat(
+        "monitortrades",
+        interval_sec=30.0,
+        force=True,
+        intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
+    )
     while True:
         try:
             print_number_of_orders(maxage_trade_s)
@@ -1634,6 +1641,11 @@ def main():
             except Exception as _e:
                 print(f"flush_smart_stop_loss_alerts error: {_e}")
 
+        touch_module_heartbeat(
+            "monitortrades",
+            interval_sec=30.0,
+            intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
+        )
         time.sleep(MT_MAIN_LOOP_SLEEP_SEC)
 
 

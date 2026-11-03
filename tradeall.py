@@ -35,7 +35,7 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (exact_nonneg_int, exact_pos_int, load_dotenv as _load_dotenv,
                      required_bool_env, required_float_env, required_int_env,
-                     safe_nonneg_float, safe_pos_float)
+                     safe_nonneg_float, safe_pos_float, touch_module_heartbeat)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -915,11 +915,24 @@ class TrendCoordinator:
 
     # Main event-driven loop and heartbeat.
     def run(self):
+        touch_module_heartbeat(
+            "tradeall",
+            interval_sec=30.0,
+            force=True,
+            symbols=list(self.symbols),
+            intervals={"max_interval": self.max_interval},
+        )
         while not self._stop.is_set():
             self._event.wait(timeout=self.max_interval)
             self._event.clear()
             if self._stop.is_set():
                 break
+            touch_module_heartbeat(
+                "tradeall",
+                interval_sec=30.0,
+                symbols=list(self.symbols),
+                intervals={"max_interval": self.max_interval},
+            )
             now = time.time()
             due = [s for s in self.symbols if self._is_due(s, now)]
             if not due:

@@ -31,7 +31,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
-from botcore import ensure_local_module_priority  # noqa: E402
+from botcore import ensure_local_module_priority, touch_module_heartbeat  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "listing_watcher", "strategy", "t212_client")
 try:
     from .ipo_common import (  # noqa: E402
@@ -170,8 +170,11 @@ def main() -> int:
         threads.append(t)
         time.sleep(0.5)  # stagger startup to avoid simultaneous API calls
 
+    asset_names = [name for name, _ in assets]
     try:
+        touch_module_heartbeat("T212-bot", interval_sec=30.0, force=True, symbols=asset_names)
         while not STOP.is_set() and any(t.is_alive() for t in threads):
+            touch_module_heartbeat("T212-bot", interval_sec=30.0, symbols=asset_names)
             time.sleep(1)
     except KeyboardInterrupt:
         log("Shutdown requested (Ctrl+C)...")

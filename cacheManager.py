@@ -74,6 +74,7 @@ from botcore import (
     safe_pos_float,
     safe_pos_int,
     single_instance,
+    touch_module_heartbeat,
 )
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
 _load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
@@ -4185,8 +4186,10 @@ if __name__ == "__main__":
         print(f"[cacheManager] Cannot start the trend computation: {e}")
 
     try:
-        for t in threads:
-            t.join()
+        touch_module_heartbeat("cacheManager", interval_sec=30.0, force=True, symbols=list(_trend_syms or ()))
+        while any(t.is_alive() for t in threads):
+            touch_module_heartbeat("cacheManager", interval_sec=30.0, symbols=list(_trend_syms or ()))
+            time.sleep(5.0)
     except KeyboardInterrupt:
         print("Stopped manually.")
     finally:
