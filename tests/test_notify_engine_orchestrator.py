@@ -1093,6 +1093,31 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 self.assertEqual(mock_post.call_count, 1)
                 self.assertEqual(len(mirrored_emails), 1)
 
+                # 6. Midnight UTC rollover preserves pending_bulk while resetting daily sent counter
+                midnight_before = 1_780_012_740.0  # 23:59:00 UTC
+                midnight_after = 1_780_013_160.0   # 00:06:00 UTC (next day)
+                ok_m1, _, _, _ = pass_common_gate("ntfy", "Pre-midnight Alpha", "body alpha", "default", "ntfy-macro-test", now=midnight_before)
+                self.assertTrue(ok_m1)
+                ok_m2, r_m2, _, _ = pass_common_gate("ntfy", "Pre-midnight Beta", "body beta", "default", "ntfy-macro-test", now=midnight_before + 30)
+                self.assertFalse(ok_m2)
+                self.assertEqual(r_m2, "buffered_for_bulk")
+                # After midnight + 6m (when gate opens), buffered item from 23:59:30 UTC is still preserved and popped!
+                popped_after_midnight = pop_due_bulk_batch("ntfy", now=midnight_after + 300)
+                self.assertIsNotNone(popped_after_midnight)
+                self.assertIn("Pre-midnight Beta", popped_after_midnight[0])
+
+                # 7. When a second error arrives after the gate opens and synthesizes a bulk with a buffered error,
+                #    _send_email receives only the single new error (not the synthesized '📦 Bulk')
+                mirrored_emails.clear()
+                t_err = midnight_after + 1000.0
+                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err):
+                    self.server._gate_and_send_ntfy("Error One", "detail alpha", "urgent", "ntfy-error-test", urgent=True)
+                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 30):
+                    self.server._gate_and_send_ntfy("Error Two", "detail beta", "urgent", "ntfy-error-test", urgent=True)
+                with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t_err + 610):
+                    self.server._gate_and_send_ntfy("Error Three", "detail gamma", "urgent", "ntfy-error-test", urgent=True)
+                self.assertEqual([e[0] for e in mirrored_emails], ["Error One", "Error Two", "Error Three"])
+
 
 
 

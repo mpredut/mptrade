@@ -264,11 +264,14 @@ class NotificationServer:
             return self._ntfy_gate_accepted()
         out_title, out_body, out_prio, out_topic = gated
         prev = getattr(_GATED_DISPATCH_TLS, "active", False)
+        prev_orig = getattr(_GATED_DISPATCH_TLS, "orig_email", None)
         _GATED_DISPATCH_TLS.active = True
+        _GATED_DISPATCH_TLS.orig_email = (title, body)
         try:
             return self._send_ntfy(out_title, out_body, out_prio, out_topic)
         finally:
             _GATED_DISPATCH_TLS.active = prev
+            _GATED_DISPATCH_TLS.orig_email = prev_orig
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
         """Consumer: flush and synthesize the next due per-topic batch once the central gate opens."""
@@ -304,6 +307,7 @@ class NotificationServer:
             return True
         title = _clean_str(title, "Alert", strip=True)
         message = _clean_str(message)
+        raw_title, raw_message = title, message
         priority = _clean_str(priority, "default", strip=True)
         if _external_notifications_disabled():
             logging.debug(f"External notifications disabled: would send to {topic_str}: {title}")
@@ -333,7 +337,8 @@ class NotificationServer:
             and not getattr(_GATED_DISPATCH_TLS, "skip_email", False)
             and is_email_mirrored(topic_str)
         ):
-            self._send_email(title, message)
+            em_title, em_body = getattr(_GATED_DISPATCH_TLS, "orig_email", None) or (raw_title, raw_message)
+            self._send_email(em_title, em_body)
         
         url = format_ntfy_url(topic_str)
         if not url:

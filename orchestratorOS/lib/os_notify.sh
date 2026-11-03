@@ -51,8 +51,9 @@ send_os_ntfy() {
     # Per-topic batching + central single-gate dispatcher + similarity elimination
     local stamp_file="" gate_file="" topic_gate_file="" bulk_file="" now_ts="" used_bulk=0
     local dedup_sec="${OS_NOTIFY_DEDUP_SECONDS:-900}"
-    local gate_sec="${OS_NOTIFY_GATE_SECONDS:-$(env_get NOTIFICATION_GATE_SECONDS 600)}"
+    local gate_sec="${OS_NOTIFY_GATE_SECONDS:-$(env_get NOTIFICATION_GATE_SECONDS 180)}"
     local topic_bulk_sec="${OS_NOTIFY_TOPIC_BULK_SECONDS:-$(env_get NOTIFICATION_TOPIC_BULK_SECONDS 300)}"
+    local topic_max_items="${OS_NOTIFY_TOPIC_MAX_ITEMS:-$(env_get NOTIFICATION_TOPIC_BULK_MAX_ITEMS 10)}"
     if [ "$dedup_sec" -gt 0 ] 2>/dev/null; then
         local dedup_dir="$ROOT/logs/.os_notify_dedup"
         mkdir -p "$dedup_dir" 2>/dev/null || true
@@ -88,8 +89,11 @@ send_os_ntfy() {
             if [ "$should_buffer" -eq 1 ]; then
                 printf '%s\n' "$now_ts" > "$stamp_file" 2>/dev/null || true
                 chmod 0666 "$stamp_file" 2>/dev/null || true
-                printf '%s: %s\n' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-300)" >> "$bulk_file" 2>/dev/null || true
-                chmod 0666 "$bulk_file" 2>/dev/null || true
+                local cur_lines; cur_lines="$(wc -l < "$bulk_file" 2>/dev/null || echo 0)"
+                if [ "${cur_lines:-0}" -lt "${topic_max_items:-10}" ] 2>/dev/null; then
+                    printf '%s: %s\n' "$title" "$(printf '%s' "$body" | tr '\n' ' ' | cut -c1-300)" >> "$bulk_file" 2>/dev/null || true
+                    chmod 0666 "$bulk_file" 2>/dev/null || true
+                fi
                 return 0
             fi
             if [ -s "$bulk_file" ]; then

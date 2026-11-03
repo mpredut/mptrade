@@ -124,10 +124,15 @@ def _delivery_state_path() -> Path:
 
 def _load_delivery_state(path: Path, today: str) -> dict:
     state = read_json_dict(path, default={}, recover_previous=True)
-    if not isinstance(state, dict) or state.get("date_utc") != today:
-        state = {"schema_version": 1, "date_utc": today, "channels": {}}
-    if not isinstance(state.get("channels"), dict):
-        state["channels"] = {}
+    if not isinstance(state, dict) or not isinstance(state.get("channels"), dict):
+        return {"schema_version": 1, "date_utc": today, "channels": {}}
+    if state.get("date_utc") != today:
+        state["schema_version"] = 1
+        state["date_utc"] = today
+        for ch in state["channels"].values():
+            if isinstance(ch, dict):
+                ch["sent"] = 0
+                ch["budget_warning_sent"] = False
     return state
 
 
@@ -361,7 +366,11 @@ def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
     }
     raw_bulk = raw_ch.get("pending_bulk")
     raw_ch["pending_bulk"] = (
-        [it for it in raw_bulk if isinstance(it, dict)]
+        [
+            it
+            for it in raw_bulk
+            if isinstance(it, dict) and cutoff <= safe_float(it.get("ts"), now_ts) <= now_ts
+        ]
         if isinstance(raw_bulk, list)
         else []
     )
@@ -649,10 +658,12 @@ def pass_common_gate(
         }
         last_gate_ts = channel_state["last_gate_ts"]
         last_topic_ts = safe_float(topic_last.get(t_key, 0.0), 0.0)
+        new_rank = _PRIO_RANK.get(str(priority or "default"), 1)
         central_gate_closed = gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec
         topic_window_closed = topic_bulk_sec > 0 and last_topic_ts > 0 and (now_ts - last_topic_ts) < topic_bulk_sec
         has_due_other_topic = any(
             (other_tk := _canonical_topic_key(it.get("topic"))) != t_key
+            and _PRIO_RANK.get(str(it.get("priority") or "default"), 1) >= new_rank
             and (topic_bulk_sec <= 0 or (now_ts - safe_float(topic_last.get(other_tk, 0.0), 0.0)) >= topic_bulk_sec)
             for it in pending_bulk
         )
