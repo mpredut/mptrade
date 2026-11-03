@@ -65,6 +65,7 @@ class T212Client:
         self._last_order = 0.0
         self._backoff_until = 0.0
         self._fetch_fail: dict[str, float] = {}
+        self._last_attr_fetch: dict[str, float] = {}
         self._min_gap = safe_nonneg_float(
             required_float_env("T212_MIN_GAP_SEC") if min_gap_sec is None else min_gap_sec, default=0.0
         )
@@ -463,11 +464,11 @@ class T212Client:
             return                                  # Same recent reason; do not log again.
         cache[what] = (status, now)
         if status == 429:
-            log(f"  ! T212 {what}: rate limit (429) — indisponibil temporar")
+            log(f"  ! T212 {what}: rate limit (429) - temporarily unavailable")
         elif status in (401, 403):
-            log(f"  ! T212 {what}: auth failed ({status}) — check the key")
+            log(f"  ! T212 {what}: auth failed ({status}) - check the key")
         elif status == 0:
-            log(f"  ! T212 {what}: timeout/retea (status 0)")
+            log(f"  ! T212 {what}: timeout/network error (status 0)")
         else:
             log(f"  ! T212 {what}: HTTP {status}")
 
@@ -502,7 +503,18 @@ class T212Client:
                     setattr(self, attr, (time.monotonic() - s_age, s_val))
                     self._fetch_fail.pop(attr, None)
                 return s_val
-            status, body = http_get(f"{self.base}{path}", headers=self._headers())
+            last_attr_map = getattr(self, "_last_attr_fetch", None)
+            min_endpoint_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)
+            if isinstance(last_attr_map, dict) and min_endpoint_gap > 0.0:
+                last_ts = last_attr_map.get(attr)
+                if last_ts is not None:
+                    since_last = time.monotonic() - last_ts
+                    if 0.0 <= since_last < min_endpoint_gap:
+                        time.sleep(min_endpoint_gap - since_last)
+            headers = self._headers()
+            if isinstance(last_attr_map, dict):
+                last_attr_map[attr] = time.monotonic()
+            status, body = http_get(f"{self.base}{path}", headers=headers)
             if status != 200 or not body:
                 s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, 60.0)
                 if s_fb_hit and s_fb_val is not None:
@@ -522,7 +534,7 @@ class T212Client:
             try:
                 data = json.loads(body)
             except ValueError:
-                self._log_read_fail(f"{what} (JSON invalid)", status)
+                self._log_read_fail(f"{what} (invalid JSON)", status)
                 with self._lock:
                     self._fetch_fail[attr] = time.monotonic()
                 return None
@@ -537,7 +549,7 @@ class T212Client:
 
         A brief shared TTL coalesces all asset-thread requests into one call.
         """
-        res = self._read_cached("_pf_cache", "/equity/portfolio", "portofoliu")
+        res = self._read_cached("_pf_cache", "/equity/portfolio", "portfolio")
         return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def list_active_orders(self) -> list[dict] | None:

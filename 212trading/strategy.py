@@ -414,7 +414,7 @@ class Strategy(BaseSpotMixin):
         rate = _clean_pos_float(get_price_usd(f"{ccy}USD=X"))
         if rate:
             return rate
-        log(f"  ! curs {ccy}/USD indisponibil — tratez sumele ca USD (1:1). Check STRAT_CURRENCY!")
+        log(f"  ! {ccy}/USD rate unavailable - treating amounts as USD (1:1). Check STRAT_CURRENCY!")
         return 1.0
 
     def _qty_for_amount(self, amount: float, price: float) -> float:
@@ -975,8 +975,8 @@ class Strategy(BaseSpotMixin):
         tolerance = max(0.011, abs(position_delta) * 1e-6)
         if not rows or abs(total_qty - position_delta) > tolerance or total_cost <= 0:
             if rows:
-                log(f"  ! [STRAT] fill-uri T212 {side} ({total_qty:.4f}) != delta portfolio "
-                    f"({position_delta:.4f}) — folosesc fallback-ul de portofoliu")
+                log(f"  ! [STRAT] T212 {side} fills ({total_qty:.4f}) != portfolio delta "
+                    f"({position_delta:.4f}) - using portfolio fallback")
             return None
 
         for order, cq, cc, cf in rows:
@@ -990,7 +990,7 @@ class Strategy(BaseSpotMixin):
         if real is None:
             now = self._now()
             if now - getattr(self, "_pf_unavail_logged", 0) > 600:
-                log("  [STRAT] portofoliu indisponibil — sar reconcilierea (suprima repetatele 10 min)")
+                log("  [STRAT] portfolio unavailable - skipping reconciliation (suppressing repeats for 10 min)")
                 self._pf_unavail_logged = now
             return False
         real_qty, real_avg = real

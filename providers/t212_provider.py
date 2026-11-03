@@ -67,7 +67,7 @@ def _definitive_submit_failure(status: int, payload) -> bool:
 
 
 def _live() -> bool:
-    return bool_env("T212_LIVE_ORDERS")
+    return bool_env("T212_LIVE_ORDERS", _T212_DIR)
 
 
 def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
@@ -95,7 +95,7 @@ class T212Provider(MarketDataProvider):
         self._order_validity = order_validity
 
     def _orders_live(self) -> bool:
-        return self._is_live_order_enabled("T212_LIVE_ORDERS")
+        return self._is_live_order_enabled("T212_LIVE_ORDERS", _T212_DIR)
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real T212 order."""
@@ -318,7 +318,11 @@ class T212Provider(MarketDataProvider):
         configured = (
             self._order_validity
             if self._order_validity is not None
-            else os.environ.get("T212_ORDER_VALIDITY")
+            else (
+                os.environ.get("T212_ORDER_VALIDITY")
+                if "T212_ORDER_VALIDITY" in os.environ
+                else env_value(_T212_DIR, "T212_ORDER_VALIDITY")
+            )
         )
         if not isinstance(configured, str) or not configured.strip():
             raise ProviderError("T212_ORDER_VALIDITY is mandatory for limit orders")

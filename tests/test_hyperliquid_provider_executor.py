@@ -207,6 +207,14 @@ class HLExecutorContractTest(unittest.TestCase):
             with self.assertRaises(ProviderError):
                 self.p.submit_order("HYPE", "buy", 1.0, price=60.0)
 
+        with self.subTest(msg="execution_enabled lazily loads hyperliquid env when untried"):
+            fresh_p = HyperliquidProvider(token="HYPE")
+            with patch.object(fresh_p, "_load_env", side_effect=lambda: os.environ.__setitem__("HL_LIVE_ORDERS", "true")) as load_mock:
+                os.environ.pop("HL_LIVE_ORDERS", None)
+                self.assertTrue(fresh_p.execution_enabled())
+                load_mock.assert_called_once()
+            os.environ.pop("HL_LIVE_ORDERS", None)
+
         with self.subTest(msg="live submit returns order id"):
             os.environ["HL_LIVE_ORDERS"] = "true"
             oid = self.p.submit_order("HYPE", "buy", 1.0, price=60.0)

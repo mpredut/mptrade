@@ -394,6 +394,41 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertIsNotNone(client._ord_cache)
             self.assertEqual(client._ord_cache[1], cached_orders)
 
+    def test_runtime_env_fallback_and_post_order_endpoint_pacing(self):
+        import tempfile
+        import providers.t212_provider as t212_prov_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "runtime.env"), "w", encoding="utf-8") as fh:
+                fh.write("T212_LIVE_ORDERS=true\nT212_ORDER_VALIDITY=DAY\n")
+            fake = FakeT212Client()
+            prov = T212Provider(client=fake)
+            with mock.patch.object(t212_prov_mod, "_T212_DIR", tmpdir), \
+                 mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("T212_LIVE_ORDERS", None)
+                os.environ.pop("T212_ORDER_VALIDITY", None)
+                self.assertTrue(prov.execution_enabled())
+                oid = prov.submit_order("SPCX_US_EQ", "buy", 1.0, price=140.0)
+                self.assertEqual(oid, "712")
+                self.assertEqual(fake.calls[-1], ("limit", "SPCX_US_EQ", 1.0, 140.0, "DAY"))
+
+        client = t212_client.T212Client(
+            "dummy", "dummy", env="demo", min_gap_sec=0.0,
+            portfolio_ttl_sec=6.0, order_min_gap_sec=2.1,
+        )
+        sleep_calls = []
+        with mock.patch("time.sleep", side_effect=sleep_calls.append), \
+             mock.patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
+             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
+            self.assertEqual(client.get_cash(), {"free": 500.0})
+            self.assertEqual(len(sleep_calls), 0)
+            client.place_market_order("RGNT_US_EQ", 10.0)
+            self.assertIsNone(client._cash_cache)
+            # Immediate second get_cash() after cache invalidation must respect _order_min_gap
+            self.assertEqual(client.get_cash(), {"free": 500.0})
+            self.assertEqual(len(sleep_calls), 1)
+            self.assertAlmostEqual(sleep_calls[0], 2.1, delta=0.2)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

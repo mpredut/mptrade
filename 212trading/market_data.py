@@ -244,7 +244,7 @@ def get_usd_ron() -> float:
     rate = safe_pos_float(get_price_usd("USDRON=X"), default=None)
     if rate is not None and rate > 1:
         return rate
-    log("  ! curs USD/RON indisponibil, folosesc fallback 4.65")
+    log("  ! USD/RON rate unavailable, using fallback 4.65")
     return 4.65
 
 
@@ -253,7 +253,7 @@ def get_eur_usd() -> float:
     rate = safe_pos_float(get_price_usd("EURUSD=X"), default=None)
     if rate is not None and rate > 0.5:
         return rate
-    log("  ! curs EUR/USD indisponibil, folosesc fallback 1.08")
+    log("  ! EUR/USD rate unavailable, using fallback 1.08")
     return 1.08
 
 

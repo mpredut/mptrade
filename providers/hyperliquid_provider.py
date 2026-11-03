@@ -146,6 +146,13 @@ class HyperliquidProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return whether the generic pipeline may create a real spot order."""
+        if (
+            getattr(self, "_live_enabled", None) is None
+            and _LIVE_ENV not in os.environ
+            and not getattr(self, "_client_tried", False)
+            and not getattr(self, "_env_loaded", False)
+        ):
+            self._load_env()
         return self._is_live_order_enabled(_LIVE_ENV)
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:
