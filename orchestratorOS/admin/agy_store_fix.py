@@ -656,7 +656,7 @@ def mode_ui_sync_check(idle_sec: int, min_interval_sec: float = 0.0) -> int:
     if min_itv_f > 0.0:
         started_ts = daemon_started_at()
         uptime_for = now - started_ts if started_ts > 0.0 else min_itv_f
-        if 0.0 <= uptime_for < max(0.0, min_itv_f - 30.0):
+        if 0.0 <= uptime_for < max(0.0, min_itv_f - 60.0):
             log.info("ui-sync-check: %d pending, daemon uptime %.0fs (< %gs cadence); waiting", len(entries), uptime_for, min_itv_f)
             return UI_SYNC_BUSY
     last_act = last_store_activity()
