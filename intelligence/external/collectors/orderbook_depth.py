@@ -143,6 +143,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         try:
             data = None
             last_err: Optional[Exception] = None
+            hl_book_url = ""
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
             if canon_sym.endswith("EUR"):
                 base_asset = _extract_base_asset(canon_sym)
@@ -224,11 +225,32 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             if mid is None:
                 return None
 
+            # Hyperliquid's default l2Book returns 20 fine tick levels (~0.02% around mid).
+            # Extend deeper levels within the ±1.5% band via aggregated nSigFigs=4 while preserving top-of-book spread.
+            if (
+                hl_book_url
+                and self._preferred_url.get(symbol) == hl_book_url
+                and (bids[-1][0] > mid * 0.992 or asks[-1][0] < mid * 1.008)
+            ):
+                try:
+                    deep_raw = self._fetch_json_dict(
+                        f"{hl_book_url}&nSigFigs=4", "depth_agg", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
+                    )
+                    deep_book = MarketDataProvider.normalize_orderbook_payload(deep_raw)
+                    if isinstance(deep_book, dict):
+                        min_b_px = bids[-1][0]
+                        max_a_px = asks[-1][0]
+                        bids = list(bids) + [lv for lv in (deep_book.get("bids") or ()) if lv[0] < min_b_px]
+                        asks = list(asks) + [lv for lv in (deep_book.get("asks") or ()) if lv[0] > max_a_px]
+                except Exception:
+                    pass
+
             def _accumulate_side(
                 levels: List[Tuple[float, float]], bound: float, bound_1pct: float, is_bid: bool
             ) -> Tuple[float, float, float, float]:
-                depth_usd = depth_1pct = max_usd = max_px = 0.0
+                depth_usd = depth_1pct = max_usd = max_px = wall_nt_usd = wall_nt_px = 0.0
                 limit_px = min(bound, bound_1pct) if is_bid else max(bound, bound_1pct)
+                min_wall_dist = mid * 0.0002  # Prefer structural walls at least 2 bps away from mid over 1-tick touch
                 for p, q in levels:
                     if (p < limit_px) if is_bid else (p > limit_px):
                         break
@@ -237,8 +259,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         depth_usd += val
                         if val > max_usd:
                             max_usd, max_px = val, p
+                        if abs(p - mid) >= min_wall_dist and val > wall_nt_usd:
+                            wall_nt_usd, wall_nt_px = val, p
                     if (p >= bound_1pct) if is_bid else (p <= bound_1pct):
                         depth_1pct += val
+                if wall_nt_usd > 0.0:
+                    return depth_usd, depth_1pct, wall_nt_usd, wall_nt_px
                 return depth_usd, depth_1pct, max_usd, max_px
 
             bid_depth_usd, depth_1pct_bid_usd, max_bid_usd, max_bid_px = _accumulate_side(
