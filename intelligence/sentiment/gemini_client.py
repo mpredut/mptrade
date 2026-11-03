@@ -255,8 +255,22 @@ class GeminiClient:
                     continue
                 rem = max(0.0, safe_float(b.get("remainingFraction"), 0.0))
                 buckets[mid] = rem
-            if "gemini-3.8-flash-tiered" in buckets and "gemini-3.8-flash-low" not in buckets:
-                buckets["gemini-3.8-flash-low"] = buckets["gemini-3.8-flash-tiered"]
+            # Cloud Code retrieveUserQuota reports the shared Google Gemini/Argon quota pool
+            # under gemini-3.8-flash-tiered / gemini-2.5-pro / gemini-3-flash.
+            gemini_pool_rem = max(
+                safe_float(buckets.get("gemini-3.8-flash-tiered"), 0.0),
+                safe_float(buckets.get("gemini-2.5-pro"), 0.0),
+                safe_float(buckets.get("gemini-3-flash"), 0.0),
+            )
+            if gemini_pool_rem > 0.0:
+                for gemini_alias in (
+                    "gemini-4-argon-high",
+                    "gemini-4-argon-medium",
+                    "gemini-4-argon-low",
+                    "gemini-3.8-flash-medium",
+                    "gemini-3.8-flash-low",
+                ):
+                    buckets.setdefault(gemini_alias, gemini_pool_rem)
         except Exception as exc:
             logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
             return None
@@ -284,7 +298,7 @@ class GeminiClient:
             if isinstance(prev_exhausted, dict) and available_credits <= 0.0:
                 for m_name, exp_val in prev_exhausted.items():
                     exp_ts = safe_float(exp_val, 0.0)
-                    if exp_ts > now and safe_float(buckets.get(m_name), 0.0) <= 0.0:
+                    if exp_ts > now:
                         runtime_exhausted[str(m_name)] = exp_ts
 
             snapshot: Dict[str, Any] = {
@@ -331,7 +345,7 @@ class GeminiClient:
         confirmed: list[str] = []
         for m in candidates:
             exp_ts = safe_float(runtime_exhausted.get(m), 0.0)
-            if exp_ts > now and available_credits <= 0.0 and safe_float(buckets.get(m), 0.0) <= 0.0:
+            if exp_ts > now and available_credits <= 0.0:
                 continue
             if available_credits > 0.0 or safe_float(buckets.get(m), 0.0) > 0.0:
                 confirmed.append(m)
