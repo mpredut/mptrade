@@ -4,179 +4,99 @@ from __future__ import annotations
 import glob as _glob
 import logging
 import os
-import re
 import time as _time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 import urllib.parse as _urlparse
 
 from botcore import extract_current_price_item, fetch_public_json
 from cachepaths import (
-    cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes,
-    get_cachedb_dir, normalize_venue_name,
+    cache_symbol_variants,
+    canonical_base_asset,
+    compatible_quote_suffixes,
+    get_cachedb_dir,
+    normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
-    _strip_headline_publisher_suffix, filter_valid_severity_keywords,
-    get_binance_btc_ticker_url, get_coinbase_btc_ticker_url, get_deribit_dvol_url,
-    get_deribit_hist_vol_url, get_deribit_options_book_url,
-    headlines_are_semantic_duplicates, is_excluded_reference_news_item, obj_attr,
-    read_first_cached_dict, resolve_macro_economic_calendar, safe_float,
-    safe_nonneg_ts, safe_pos_float,
+    _strip_headline_publisher_suffix,
+    filter_valid_severity_keywords,
+    get_binance_btc_ticker_url,
+    get_coinbase_btc_ticker_url,
+    get_deribit_dvol_url,
+    get_deribit_hist_vol_url,
+    get_deribit_options_book_url,
+    headlines_are_semantic_duplicates,
+    is_excluded_reference_news_item,
+    obj_attr,
+    read_first_cached_dict,
+    resolve_macro_economic_calendar,
+    safe_float,
+    safe_nonneg_ts,
+    safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
-    _MICRO_PRICE_ANCHOR_KEYS, _first_variant_dict, _prices_diverged,
-    apply_live_24trend_windows, apply_short_trend_item, compute_24h_price_metrics,
-    compute_cross_btc_metrics, compute_liquidation_clusters, enrich_microstructure_cvd,
-    extract_symbol_recent_fills, load_symbol_microstructure, load_symbol_price_series,
+    load_symbol_microstructure,
+    load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    _load_audit_terminal_orders, _load_recent_audit_origins, build_cross_market_context,
-    compute_enterprise_portfolio_risk_metrics, enrich_24h_and_microstructure,
-    enrich_cross_venue_trends, enrich_open_limit_orders_tca, harvest_bot_runtime_states,
-    harvest_kraken_xstocks, harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders, harvest_venue_cycles, load_venue_trailing_maps,
+    _load_audit_terminal_orders,
+    _load_recent_audit_origins,
+    enrich_24h_and_microstructure,
+    harvest_bot_runtime_states,
+    harvest_kraken_xstocks,
+    harvest_recent_orders_and_enrich_positions,
+    harvest_tradable_positions_and_orders,
+    harvest_venue_cycles,
+    load_venue_trailing_maps,
+)
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    MACRO_BENCHMARK_SPECS,
+    _MACRO_EXTRA_TELEMETRY_KEYS,
+    apply_asset_scope_filter,
+    build_cycle_fallback_prices,
+    compute_deribit_options_surface,
+    enrich_sentiment_advisor_live_flow_divergence,
+    format_bottom_structure_6h_parts,
+    format_macro_benchmarks_summary_line,
+    reconcile_live_venue_equity_summary,
+)
+from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    _MICRO_PRICE_ANCHOR_KEYS,
+    _first_variant_dict,
+    compute_liquidation_clusters,
+    enrich_cross_venue_trends,
+    enrich_microstructure_cvd,
     sync_sibling_symbol_telemetry,
+)
+from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    build_cross_market_context,
+    compute_enterprise_portfolio_risk_metrics,
+    enrich_open_limit_orders_tca,
+    extract_symbol_recent_fills,
+)
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    _prices_diverged,
+    apply_live_24trend_windows,
+    apply_short_trend_item,
+    compute_24h_price_metrics,
+    compute_cross_btc_metrics,
 )
 from instrument_registry import casefold_get
 from providers.base import extract_timestamp_s, resolve_ssot_price_from_cache
 from providers.execution_audit import (
-    build_last_cycle_execution_status, collect_known_ai_order_ids,
-    extract_intent_notional, summarize_recent_ai_intents,
+    build_last_cycle_execution_status,
+    collect_known_ai_order_ids,
+    extract_intent_notional,
+    summarize_recent_ai_intents,
 )
 from state_io import (
-    read_json_dict_recovering as read_json_cached, read_json_recovering,
-    read_last_jsonl_dict, resolve_cachedb_filepath, save_json_state,
+    read_json_dict_recovering as read_json_cached,
+    read_json_recovering,
+    read_last_jsonl_dict,
+    resolve_cachedb_filepath,
+    save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.macro_telemetry_collector")
-
-
-MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("SPY", "SPY", "usd"),
-    ("QQQ", "QQQ", "usd"),
-    ("ES=F", "ES=F", "usd"),
-    ("NQ=F", "NQ=F", "usd"),
-    ("DXY", "DX-Y.NYB", "index"),
-    ("US10Y", "^TNX", "yield_pct"),
-    ("IBIT", "IBIT", "usd"),
-)
-
-_MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
-    "coinbase_premium_bps",
-    "coinbase_premium_regime",
-    "btc_dvol",
-    "eth_dvol",
-    "options_vol_regime",
-    "btc_rv_pct",
-    "btc_vrp_pct",
-    "btc_pc_oi_ratio",
-    "btc_skew_25d_pct",
-})
-
-
-def compute_deribit_options_surface(
-    books: Any,
-    *,
-    btc_dvol: Optional[float] = None,
-    btc_rv: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Compute BTC options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy)."""
-    out: Dict[str, Any] = {}
-    rv_f = safe_pos_float(btc_rv, default=None)
-    dvol_f = safe_pos_float(btc_dvol, default=None)
-    if rv_f is not None:
-        out["btc_rv_pct"] = round(rv_f, 2)
-    if dvol_f is not None and rv_f is not None:
-        out["btc_vrp_pct"] = round(dvol_f - rv_f, 2)
-
-    spot = 0.0
-    if isinstance(books, list) and books:
-        for b in books:
-            if isinstance(b, dict):
-                u_px = safe_pos_float(b.get("estimated_delivery_price") or b.get("underlying_price"), default=0.0) or 0.0
-                if u_px > 0.0:
-                    spot = u_px
-                    break
-        call_oi = put_oi = 0.0
-        put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
-        for b in books:
-            if not isinstance(b, dict):
-                continue
-            parts = str(b.get("instrument_name") or "").split("-")
-            if len(parts) < 4:
-                continue
-            strike = safe_pos_float(parts[2], default=None)
-            opt_type = parts[3].strip().upper()
-            oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
-            iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
-            if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
-                continue
-            if opt_type == "C":
-                call_oi += oi
-                if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
-                    call_iv_num += iv * oi
-                    call_iv_den += oi
-            else:
-                put_oi += oi
-                if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
-                    put_iv_num += iv * oi
-                    put_iv_den += oi
-
-        if call_oi > 0.0 and put_oi > 0.0:
-            out["btc_pc_oi_ratio"] = round(put_oi / call_oi, 2)
-        if put_iv_den > 0.0 and call_iv_den > 0.0:
-            out["btc_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
-    return out
-
-
-def format_macro_benchmarks_summary_line(data: Any) -> str:
-    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
-    if not isinstance(data, dict):
-        return ""
-    items = data.get("items") if isinstance(data.get("items"), dict) else data
-    if not isinstance(items, dict):
-        return ""
-    meta_skip = {"ts", "age_min", "summary_line", "items"} | _MACRO_EXTRA_TELEMETRY_KEYS
-    ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items] + [
-        k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
-    ]
-    parts: List[str] = []
-    for sym in ordered_keys:
-        entry = items.get(sym)
-        if not isinstance(entry, dict) or (px := safe_pos_float(entry.get("price"), default=None)) is None:
-            continue
-        unit_kind = str(entry.get("unit") or "").lower()
-        px_s = f"{px:.2f}%" if (sym == "US10Y" or unit_kind == "yield_pct") else (f"{px:.2f}" if (sym == "DXY" or unit_kind == "index") else f"${px:,.2f}")
-        d_parts = [
-            f"{val:+.2f}% {h_lbl}"
-            for h_lbl, h_key in (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
-            if (val := safe_float(entry.get(h_key), default=None)) is not None
-        ]
-        if (m_state := str(entry.get("market_state") or "").strip().upper()) and m_state != "REGULAR":
-            d_parts.append(m_state.lower())
-        delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
-        parts.append(f"{sym}={px_s}{delta_s}")
-    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
-    if cb_bps is not None:
-        cb_reg = str(data.get("coinbase_premium_regime") or items.get("coinbase_premium_regime") or "").strip()
-        parts.append(f"CB_Premium={cb_bps:+.1f}bps" + (f" ({cb_reg})" if cb_reg else ""))
-    btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
-    if btc_dvol is not None:
-        eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
-        dvol_s = f"BTC_DVOL={btc_dvol:.1f}%" + (f"/ETH_DVOL={eth_dvol:.1f}%" if eth_dvol is not None else "")
-        opt_reg = str(data.get("options_vol_regime") or items.get("options_vol_regime") or "").strip()
-        parts.append(dvol_s + (f" ({opt_reg})" if opt_reg else ""))
-    opt_parts: List[str] = []
-    if (rv_v := safe_pos_float(data.get("btc_rv_pct", items.get("btc_rv_pct")), default=None)) is not None:
-        opt_parts.append(f"RV={rv_v:.1f}%")
-    if (vrp_v := safe_float(data.get("btc_vrp_pct", items.get("btc_vrp_pct")), default=None)) is not None:
-        opt_parts.append(f"VRP={vrp_v:+.1f}%")
-    if (pc_v := safe_pos_float(data.get("btc_pc_oi_ratio", items.get("btc_pc_oi_ratio")), default=None)) is not None:
-        opt_parts.append(f"PC_OI={pc_v:.2f}")
-    if (sk_v := safe_float(data.get("btc_skew_25d_pct", items.get("btc_skew_25d_pct")), default=None)) is not None:
-        opt_parts.append(f"Skew_25d={sk_v:+.2f}%")
-    if opt_parts:
-        parts.append(f"Options_Surface({', '.join(opt_parts)})")
-    return " | ".join(parts)
 
 
 def collect_macro_benchmarks_snapshot(
@@ -315,69 +235,6 @@ def collect_macro_benchmarks_snapshot(
     return payload
 
 
-def apply_asset_scope_filter(
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    portfolio_summary: Dict[str, Any],
-    scope: str,
-    inst_by_sym: Dict[str, Any],
-    t212_cycles: Dict[str, Any],
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Filter prices_and_trends, microstructure, and portfolio_summary by asset_scope ('equities' | 'crypto')."""
-    if scope not in ("equities", "crypto"):
-        return prices_and_trends, microstructure
-    want_t212 = scope == "equities"
-    t212_sym_set = {str(s).upper() for s in t212_cycles} | {
-        str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
-    }
-
-    def _set_or_pop(key: str, val: Any) -> None:
-        if val:
-            portfolio_summary[key] = val
-        else:
-            portfolio_summary.pop(key, None)
-
-    def _is_t212_venue(item: Any) -> bool:
-        return isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
-
-    if want_t212:
-        prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
-        microstructure = {}
-        for crypto_key in (
-            "total_value_usdc", "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
-            "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
-        ):
-            portfolio_summary.pop(crypto_key, None)
-    else:
-        prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
-        portfolio_summary.pop("t212_cycles", None)
-    if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
-        _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_venue(cv)})
-    if isinstance(portfolio_summary.get("recent_orders"), dict):
-        def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
-            if isinstance(rv, dict) and rv.get("venue"):
-                return normalize_venue_name(rv.get("venue")) == "t212"
-            rk_up = str(rk).upper()
-            if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
-                return True
-            return False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
-
-        _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
-    for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):
-        if isinstance(portfolio_summary.get(list_key), list):
-            _set_or_pop(list_key, [item for item in portfolio_summary[list_key] if _is_t212_venue(item)])
-    if isinstance(portfolio_summary.get("open_limit_orders"), list):
-        portfolio_summary["open_limit_orders"] = [item for item in portfolio_summary["open_limit_orders"] if _is_t212_venue(item)]
-    last_exec = portfolio_summary.get("last_cycle_execution_status")
-    if isinstance(last_exec, dict):
-        if not _is_t212_venue(last_exec):
-            portfolio_summary.pop("last_cycle_execution_status", None)
-    elif isinstance(last_exec, list):
-        filtered_exec = [item for item in last_exec if _is_t212_venue(item)]
-        _set_or_pop("last_cycle_execution_status", (filtered_exec[0] if len(filtered_exec) == 1 else filtered_exec) if filtered_exec else None)
-    return prices_and_trends, microstructure
-
-
 def _read_first_cached_dict(
     cache_dir: str, group_key: str, default_file: str, read_json_fn: Any = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
@@ -492,10 +349,12 @@ def harvest_macro_and_news_sensors(
                 continue
             raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
+            item_seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
+            is_stale_sev = item_seen_ts > 0.0 and now_ts > item_seen_ts and (now_ts - item_seen_ts) > 5400.0
             cand_entry = {
                 **item,
                 "matched_keywords": clean_kws,
-                "is_high_severity": False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity")),
+                "is_high_severity": False if (is_stale_sev or (raw_kws and not clean_kws)) else bool(item.get("is_high_severity")),
             }
             merged_dup = False
             for exist_entry in valid_news:
@@ -560,26 +419,6 @@ def harvest_initial_prices_and_trends(
     return prices_and_trends
 
 
-def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_items: Any) -> Dict[str, float]:
-    """Build fallback price map from orderbook mid-prices and watcher_all_price series for cycle state parsing."""
-    cycle_fallback_prices: Dict[str, float] = {}
-    for m_sym, m_dict in microstructure.items():
-        if isinstance(m_dict, dict):
-            ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0
-            if ob_mid_v <= 0:
-                bb_v, ba_v = safe_pos_float(m_dict.get("best_bid"), default=0.0) or 0.0, safe_pos_float(m_dict.get("best_ask"), default=0.0) or 0.0
-                if bb_v > 0 and ba_v >= bb_v:
-                    ob_mid_v = (bb_v + ba_v) / 2.0
-            if ob_mid_v > 0:
-                cycle_fallback_prices[m_sym] = ob_mid_v
-    if isinstance(watcher_price_items, dict):
-        for m_sym, m_ser in watcher_price_items.items():
-            if isinstance(m_ser, list) and m_ser and isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
-                if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
-                    cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
-    return cycle_fallback_prices
-
-
 def harvest_portfolio_and_venue_cycles(
     cache_dir: str,
     workspace_dir: str,
@@ -611,7 +450,10 @@ def harvest_portfolio_and_venue_cycles(
     if hyperliquid_cycles:
         portfolio_summary["hyperliquid_cycles"] = hyperliquid_cycles
 
-    has_active_t212 = any(normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in inst_by_sym.values())
+    has_active_t212 = any(normalize_venue_name(getattr(inst, "provider_name", "")) == "t212" for inst in inst_by_sym.values()) or any(
+        isinstance(p, dict) and normalize_venue_name(p.get("venue")) == "t212"
+        for p in (portfolio_summary.get("tradable_positions") or ())
+    )
     t212_cycles = all_t212_cycles
     if has_active_t212 and t212_cycles:
         portfolio_summary["t212_cycles"] = t212_cycles
@@ -666,8 +508,6 @@ def populate_market_and_portfolio_snapshot(
 
     intents_data = None
     if callable(load_intents_fn := getattr(intent_gateway, "load_all_intents", None)):
-        # Locked load + audit reconciliation (persisted under the cross-process intents lock) instead of
-        # re-saving a stale snapshot that could drop intents appended concurrently by the other executor.
         try:
             loaded = load_intents_fn()
             intents_data = loaded if isinstance(loaded, list) else None
@@ -782,73 +622,8 @@ def populate_market_and_portfolio_snapshot(
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends, snapshot.microstructure, snapshot.portfolio_summary, scope, inst_by_sym, t212_cycles
     )
-    t_pos_list = snapshot.portfolio_summary.get("tradable_positions") if isinstance(snapshot.portfolio_summary.get("tradable_positions"), list) else []
-    vq_cash_map = snapshot.portfolio_summary.get("venue_quote_cash") if isinstance(snapshot.portfolio_summary.get("venue_quote_cash"), dict) else {}
-    if t_pos_list or vq_cash_map:
-        for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
-            v_pos_sum = sum(
-                (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
-                for p in t_pos_list
-                if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
-            )
-            v_cash_sum = sum(
-                (safe_pos_float(c.get("free"), default=0.0) or 0.0) + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
-                for c in vq_cash_map.values()
-                if isinstance(c, dict) and normalize_venue_name(c.get("venue")) == v_target
-            )
-            tot_v = round(v_pos_sum + v_cash_sum, 2)
-            if tot_v > 0.0:
-                if v_target == "binance":
-                    snapshot.portfolio_summary[eq_key] = tot_v
-                elif isinstance(hl_ro_d := snapshot.portfolio_summary.get("hyperliquid_readonly"), dict):
-                    hl_ro_d["live_reconciled_spot_usd"] = tot_v
-    if isinstance(sa_cur := getattr(snapshot, "sentiment_advisor", None), dict):
-        sa_age = safe_float(sa_cur.get("age_min"), 0.0) or 0.0
-        btc_m = (
-            snapshot.microstructure.get("BTCUSDC")
-            or snapshot.microstructure.get("BTCUSDT")
-            or snapshot.microstructure.get("XBTUSD")
-            or {}
-        )
-        if sa_age >= 10.0 and isinstance(btc_m, dict):
-            live_tr = safe_pos_float(btc_m.get("taker_buy_sell_ratio"), default=None)
-            live_cvd = safe_float(btc_m.get("cvd_15m_usd"), None)
-            sa_act = str(sa_cur.get("recommended_action") or "").upper()
-            sa_bias = str(sa_cur.get("directional_bias") or sa_cur.get("market_bias") or "").upper()
-            cited_tr: Optional[float] = None
-            if sa_age >= 15.0 and isinstance(sa_cur.get("summary"), str):
-                m_tr = re.search(
-                    r"(?:([0-9]+\.[0-9]+)\s*taker\s+buy/sell\s+ratio|taker\s+buy/sell\s+ratio(?:\s*(?:of|at|=|:|is))?\s*([0-9]+\.[0-9]+)(?!%))",
-                    sa_cur["summary"],
-                    re.IGNORECASE,
-                )
-                if m_tr:
-                    cited_tr = safe_pos_float(m_tr.group(1) or m_tr.group(2), default=None)
-            tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else ""
-            cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else ""
-            flow_lbl = ", ".join(x for x in (tr_s, cvd_s) if x)
-            if (
-                sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
-                or sa_bias == "BEARISH"
-                or (cited_tr is not None and cited_tr <= 0.65)
-            ) and ((live_tr is not None and live_tr >= 1.25) or (live_cvd is not None and live_cvd >= 5_000_000.0)):
-                ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr <= 0.65 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-                sa_cur["live_flow_divergence"] = f"LIVE_BUY_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
-            elif (
-                sa_act == "ACCUMULATE"
-                or sa_bias == "BULLISH"
-                or (cited_tr is not None and cited_tr >= 1.35)
-            ) and ((live_tr is not None and live_tr <= 0.75) or (live_cvd is not None and live_cvd <= -5_000_000.0)):
-                ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-                sa_cur["live_flow_divergence"] = f"LIVE_SELL_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
-            elif (
-                sa_age >= 15.0
-                and cited_tr is not None
-                and live_tr is not None
-                and abs(live_tr - cited_tr) >= 0.35
-            ):
-                shift_dir = "LIVE_FLOW_RECOVERY" if live_tr > cited_tr else "LIVE_FLOW_FADE"
-                sa_cur["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
+    reconcile_live_venue_equity_summary(snapshot.portfolio_summary)
+    enrich_sentiment_advisor_live_flow_divergence(getattr(snapshot, "sentiment_advisor", None), snapshot.microstructure)
     if isinstance(mb_snap := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap and snapshot.portfolio_summary:
         snapshot.portfolio_summary["macro_benchmarks"] = mb_snap
         if isinstance(cmc := snapshot.portfolio_summary.get("cross_market_context"), dict):
@@ -866,34 +641,6 @@ def populate_market_and_portfolio_snapshot(
         ):
             snapshot.portfolio_summary["portfolio_risk_engine"] = risk_eng
     return snapshot
-
-
-def format_bottom_structure_6h_parts(
-    m24: Dict[str, Any],
-    btc_m24: Optional[Dict[str, Any]] = None,
-    *,
-    prior_label: str = "prior_6h_low",
-    px_prefix: str = "$",
-    check_smt: bool = True,
-) -> Tuple[Optional[str], List[str]]:
-    """Build 6h intraday bottom structure label and formatted metric parts (including SMT vs BTC)."""
-    b_struct = m24.get("bottom_structure_6h") if isinstance(m24, dict) else None
-    if not b_struct:
-        return None, []
-    b_parts = [
-        f"{prior_label}={px_prefix}{m24.get('prior_6h_low_px')}",
-        f"1h_low={px_prefix}{m24.get('recent_1h_low_px')}",
-    ]
-    if m24.get("higher_low_vs_prior_pct") is not None:
-        b_parts.append(f"hl_diff={safe_float(m24.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
-    if m24.get("reclaim_above_prior_low_pct") is not None:
-        b_parts.append(f"reclaim={safe_float(m24.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
-    if check_smt and b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" and isinstance(btc_m24, dict) and btc_m24:
-        btc_b = btc_m24.get("bottom_structure_6h")
-        btc_pos24 = safe_float(btc_m24.get("pos_24h_pct"), 100.0)
-        if btc_b in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos24 <= 35.0:
-            b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
-    return str(b_struct), b_parts
 
 
 def collect_pretrade_telemetry(
@@ -1237,3 +984,21 @@ def collect_pretrade_telemetry(
 
     return telemetry
 
+
+__all__ = [
+    "MACRO_BENCHMARK_SPECS",
+    "_MACRO_EXTRA_TELEMETRY_KEYS",
+    "apply_asset_scope_filter",
+    "build_cycle_fallback_prices",
+    "collect_macro_benchmarks_snapshot",
+    "collect_pretrade_telemetry",
+    "compute_deribit_options_surface",
+    "enrich_sentiment_advisor_live_flow_divergence",
+    "format_bottom_structure_6h_parts",
+    "format_macro_benchmarks_summary_line",
+    "harvest_initial_prices_and_trends",
+    "harvest_macro_and_news_sensors",
+    "harvest_portfolio_and_venue_cycles",
+    "populate_market_and_portfolio_snapshot",
+    "reconcile_live_venue_equity_summary",
+]

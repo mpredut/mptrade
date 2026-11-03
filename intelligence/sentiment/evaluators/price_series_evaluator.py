@@ -263,13 +263,14 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
 
         recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
         if len(recent_15m) >= 3:
-            l15, h15 = min(recent_15m), max(recent_15m)
+            eff_dec_15m = _auto_px_decimals(cur_px)
+            l15, h15 = round(min(recent_15m), eff_dec_15m), round(max(recent_15m), eff_dec_15m)
             out["low_15m"], out["high_15m"] = l15, h15
             if h15 > l15 > 0:
                 out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
                 out["span_15m_pct"] = pct_delta(h15, l15)
             tape_pts = [
-                f"{lbl}:{(cur_px if m_off == 0.0 else _sample_at(m_off)[1]):.6g}"
+                f"{lbl}:{f'{round(cur_px if m_off == 0.0 else _sample_at(m_off)[1], eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}"
                 for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now"))
                 if m_off == 0.0 or (span_ms >= m_off * 60000.0 and _has_sample_near(m_off, max(3.0, m_off * 0.5)))
             ]
@@ -694,17 +695,22 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
             pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
     if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
+        eff_dec_15m = _auto_px_decimals(p_cur)
+        p_cur_15m = round(p_cur, eff_dec_15m)
         tape_copy = list(tape_15m)
         if isinstance(tape_copy[-1], str) and tape_copy[-1].startswith("now:"):
-            tape_copy[-1] = f"now:{p_cur:.6g}"
+            now_s = f"{p_cur_15m:.{eff_dec_15m}f}".rstrip("0").rstrip(".")
+            tape_copy[-1] = f"now:{now_s}"
             pinfo["recent_tape_15m"] = tape_copy
     l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
     h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
     if l15 is not None and h15 is not None:
-        l15_new, h15_new = min(l15, p_cur), max(h15, p_cur)
-        pinfo["low_15m"], pinfo["high_15m"] = round(l15_new, 6), round(h15_new, 6)
+        eff_dec_15m = _auto_px_decimals(p_cur)
+        p_cur_15m = round(p_cur, eff_dec_15m)
+        l15_new, h15_new = round(min(l15, p_cur_15m), eff_dec_15m), round(max(h15, p_cur_15m), eff_dec_15m)
+        pinfo["low_15m"], pinfo["high_15m"] = l15_new, h15_new
         if h15_new > l15_new > 0:
-            pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
+            pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur_15m - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
             pinfo["span_15m_pct"] = pct_delta(h15_new, l15_new)
 
 
@@ -736,9 +742,12 @@ def _apply_24h_series_enrichment(
         for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
             if cross_btc.get(ck) is not None:
                 entry[ck] = cross_btc[ck]
-    if entry.get("kalman_vel") is None and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
+    k_cur_vel = safe_float(entry.get("kalman_vel"), default=None)
+    k_cur_std = safe_float(entry.get("kalman_vel_std"), default=None)
+    unseeded_kalman = k_cur_vel is None or (abs(k_cur_vel) < 1e-12 and (k_cur_std is None or k_cur_std >= 5.99))
+    if unseeded_kalman and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
         for kk, kv in k_fb.items():
-            if kv is not None and entry.get(kk) is None:
+            if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                 entry[kk] = kv
     if not is_eq and series_24h:
         stale_short_cache = (
