@@ -8,18 +8,19 @@ Separated cleanly from internal price mechanics and exchange flow telemetry:
 
 from __future__ import annotations
 
-from intelligence.macro.news_feed_collector import (
-    NewsFeedCollector,
-    NewsFeedSnapshot,
-    NewsHeadline,
-)
-from intelligence.macro.geopolitical_analyzer import (
-    GeopoliticalThreatAnalyzer,
-    GeopoliticalThreatAssessment,
-)
-from intelligence.macro.geopolitical_guard import (
-    GeopoliticalShockGuard,
-)
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from intelligence.macro.geopolitical_analyzer import (
+        GeopoliticalThreatAnalyzer,
+        GeopoliticalThreatAssessment,
+    )
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro.news_feed_collector import (
+        NewsFeedCollector,
+        NewsFeedSnapshot,
+        NewsHeadline,
+    )
 
 __all__ = [
     "NewsFeedCollector",
@@ -29,3 +30,19 @@ __all__ = [
     "GeopoliticalThreatAssessment",
     "GeopoliticalShockGuard",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("NewsFeedCollector", "NewsFeedSnapshot", "NewsHeadline"):
+        from intelligence.macro import news_feed_collector as _nfc
+
+        return getattr(_nfc, name)
+    if name in ("GeopoliticalThreatAnalyzer", "GeopoliticalThreatAssessment"):
+        from intelligence.macro import geopolitical_analyzer as _ga
+
+        return getattr(_ga, name)
+    if name == "GeopoliticalShockGuard":
+        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+
+        return GeopoliticalShockGuard
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

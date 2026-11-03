@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from botcore import obj_attr, safe_float, safe_pos_float
 from cachepaths import canonical_symbol_key, telemetry_cache_file_path
-from intelligence.external.collectors.orderbook_depth import (
+from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
@@ -26,7 +26,8 @@ from intelligence.external.collectors.orderbook_depth import (
     _symbol_variants,
     is_cache_fresh,
 )
-from state_io import read_json_dict
+from intelligence.macro_sentiment_ssot import fetch_public_json
+from state_io import read_json_dict, save_json_state
 
 logger = logging.getLogger("intelligence.external.whale_positioning")
 
@@ -381,25 +382,13 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         oi_usd = 0.0
         funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
         try:
-            meta_raw = self._fetch_json_dict(
-                "https://api.hyperliquid.xyz/info?type=metaAndAssetCtxs",
-                "metaAndAssetCtxs",
-                base_coin,
-                timeout=4.0,
-            )
-            res_list = meta_raw.get("result_list") if isinstance(meta_raw, dict) else None
-            if isinstance(res_list, list) and len(res_list) >= 2:
-                universe = (res_list[0].get("universe") if isinstance(res_list[0], dict) else None) or []
-                ctxs = res_list[1] if isinstance(res_list[1], list) else []
-                for idx, a_info in enumerate(universe):
-                    if isinstance(a_info, dict) and str(a_info.get("name") or "").casefold() == base_coin.casefold() and idx < len(ctxs) and isinstance(ctxs[idx], dict):
-                        ctx = ctxs[idx]
-                        oi_c = max(0.0, _clean_dict_float(ctx, "openInterest", 0.0))
-                        m_px = max(0.0, _clean_dict_float(ctx, "markPx", 0.0, "oraclePx"))
-                        oi_usd = round(oi_c * m_px, 2)
-                        if funding_rate is None:
-                            funding_rate = _clean_dict_float(ctx, "funding", 0.0)
-                        break
+            ctx = self._fetch_hyperliquid_asset_ctx(symbol, timeout=4.0)
+            if isinstance(ctx, dict):
+                oi_c = max(0.0, _clean_dict_float(ctx, "openInterest", 0.0))
+                m_px = max(0.0, _clean_dict_float(ctx, "markPx", 0.0, "oraclePx"))
+                oi_usd = round(oi_c * m_px, 2)
+                if funding_rate is None:
+                    funding_rate = _clean_dict_float(ctx, "funding", 0.0)
         except Exception:
             pass
         prev_snap = (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached) if cached else self._load_from_disk(symbol, now, ignore_ttl=True)

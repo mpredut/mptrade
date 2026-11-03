@@ -1,0 +1,456 @@
+"""Shared base class and SSOT helpers for external microstructure collectors.
+
+Unifies:
+- In-memory + disk snapshot caching (`_DiskBackedSymbolCollector`)
+- SSOT venue/symbol resolution (`_resolve_configured_venue`, `_is_multi_venue_base`, `_has_hyperliquid_instrument`)
+- Hyperliquid L1 `metaAndAssetCtxs` lookup (`_fetch_hyperliquid_asset_ctx`)
+- Numeric and spread normalization (`_clean_dict_float`, `_clean_snapshot_symbol`, `round_spread_bps`)
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_symbol_key,
+    compatible_quote_suffixes,
+    normalize_cache_base_asset,
+    resolve_binance_lookup_symbol,
+    resolve_cache_dir_path,
+    resolve_kraken_lookup_symbol,
+    telemetry_cache_file_path,
+)
+from intelligence.macro_sentiment_ssot import (
+    fetch_public_json,
+    is_cache_fresh,
+    resolve_now_ts as _effective_now_ts,
+)
+from providers.base import resolve_ssot_price_from_cache
+from state_io import read_json_dict, read_json_dict_recovering, save_json_state
+
+logger = logging.getLogger("intelligence.external.base_collector")
+
+_extract_base_asset = normalize_cache_base_asset
+_resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
+_symbol_variants = cache_symbol_variants
+
+_REGISTRY_SPECS_CACHE: Tuple[float, Tuple[Any, ...]] = (0.0, ())
+
+
+def _cached_registry_specs() -> Tuple[Any, ...]:
+    """Return InstrumentSpec items from ``instrument_registry.load_registry()``, cached by file mtime."""
+    global _REGISTRY_SPECS_CACHE
+    import instrument_registry as _ir
+
+    load_fn = getattr(_ir, "load_registry", None)
+    if not callable(load_fn):
+        return ()
+    def_path = getattr(_ir, "DEFAULT_PATH", None)
+    mtime = 0.0
+    if getattr(load_fn, "__module__", "") == "instrument_registry" and def_path is not None:
+        try:
+            mtime = os.path.getmtime(str(def_path))
+        except OSError:
+            mtime = -1.0
+        if mtime > 0.0 and _REGISTRY_SPECS_CACHE[0] == mtime and _REGISTRY_SPECS_CACHE[1]:
+            return _REGISTRY_SPECS_CACHE[1]
+    reg = load_fn()
+    if isinstance(reg, dict):
+        specs = tuple(reg.values())
+    elif hasattr(reg, "all") and callable(reg.all):
+        specs = tuple(reg.all(enabled_only=False))
+    else:
+        specs = ()
+    if mtime > 0.0:
+        _REGISTRY_SPECS_CACHE = (mtime, specs)
+    return specs
+
+
+def _resolve_configured_venue(symbol: str) -> str:
+    """Return the SSOT configured provider ('hyperliquid', 'kraken', or 'binance') for symbol."""
+    canon_sym = canonical_symbol_key(symbol)
+    if not canon_sym:
+        return "binance"
+    try:
+        specs = _cached_registry_specs()
+        for enabled_only in (True, False):
+            for inst in specs:
+                if enabled_only and not getattr(inst, "enabled", True):
+                    continue
+                if str(getattr(inst, "symbol", "")).upper() == canon_sym and getattr(inst, "provider", None):
+                    return str(inst.provider).strip().lower()
+    except Exception:
+        pass
+    if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+        return "kraken"
+    if canon_sym == "HYPEUSDC":
+        return "hyperliquid"
+    return "binance"
+
+
+def _is_multi_venue_base(symbol: str) -> bool:
+    """Return True when the symbol's base asset is tracked across multiple venues/quotes."""
+    base = _extract_base_asset(symbol)
+    if not base:
+        return False
+    try:
+        specs = _cached_registry_specs()
+        venues = {
+            str(inst.provider).strip().lower()
+            for inst in specs
+            if str(getattr(inst, "base", "")).upper() == base and getattr(inst, "provider", None)
+        }
+        if base in ("HYPE", "TAO", "ADA"):
+            venues.add("kraken")
+        return len(venues) > 1
+    except Exception:
+        return base in ("HYPE", "TAO", "ADA")
+
+
+def _has_hyperliquid_instrument(symbol: str) -> bool:
+    """Return True when the symbol or its base asset is configured on Hyperliquid in SSOT."""
+    if _resolve_configured_venue(symbol) == "hyperliquid":
+        return True
+    base = _extract_base_asset(symbol)
+    if not base:
+        return False
+    try:
+        specs = _cached_registry_specs()
+        return any(
+            str(getattr(inst, "base", "")).upper() == base
+            and str(getattr(inst, "provider", "")).strip().lower() == "hyperliquid"
+            for inst in specs
+        )
+    except Exception:
+        return base == "HYPE"
+
+
+def _clean_dict_float(
+    data: Dict[str, Any],
+    key: str,
+    default: float = 0.0,
+    alt_key: Optional[str] = None,
+    *,
+    nonneg: bool = False,
+) -> float:
+    if not isinstance(data, dict):
+        return max(0.0, default) if nonneg else default
+    fb = _clean_dict_float(data, alt_key, default) if alt_key else default
+    val = safe_float(data.get(key), fb)
+    return max(0.0, val) if nonneg else val
+
+
+def _clean_snapshot_symbol(data: Dict[str, Any], fallback: str = "") -> str:
+    raw = (data.get("symbol") if isinstance(data, dict) else None) or fallback
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def round_spread_bps(
+    spread_bps: Any = None,
+    *,
+    best_bid: Any = None,
+    best_ask: Any = None,
+    mid_price: Any = None,
+) -> Optional[float]:
+    """Return bid-ask spread in bps rounded to 4 decimals when < 0.1 bps else 2 decimals."""
+    sp = safe_pos_float(spread_bps, default=None)
+    if sp is None:
+        b_bid, b_ask = safe_pos_float(best_bid, default=None), safe_pos_float(best_ask, default=None)
+        if b_bid is not None and b_ask is not None and b_ask >= b_bid:
+            eff_mid = safe_pos_float(mid_price, default=None) or ((b_bid + b_ask) / 2.0)
+            if eff_mid > 0.0:
+                sp = ((b_ask - b_bid) / eff_mid) * 10000.0
+    return round(sp, 4 if sp < 0.1 else 2) if sp is not None else None
+
+
+def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Resolve a helper function from the concrete collector's module or `orderbook_depth` if monkeypatched."""
+    cls = cls_or_self if isinstance(cls_or_self, type) else type(cls_or_self)
+    for mod_name in (getattr(cls, "__module__", ""), "intelligence.external.collectors.orderbook_depth"):
+        if mod_name and (mod := sys.modules.get(mod_name)) is not None:
+            cand = getattr(mod, attr_name, None)
+            if callable(cand) and cand is not default_fn:
+                return cand
+    return default_fn
+
+
+class _DiskBackedSymbolCollector:
+    """Shared in-memory and disk snapshot caching base for external symbol telemetry collectors."""
+
+    _DISK_FILE_PREFIX: str = ""
+    _SNAPSHOT_CLS: Any = None
+    _QUOTE_ISOLATED: bool = False
+
+    def __init__(
+        self,
+        cache_ttl_sec: float,
+        default_cache_ttl: float,
+        cache_dir: Optional[str],
+        disk_ttl_sec: float,
+        default_disk_ttl: float,
+    ) -> None:
+        self.cache_ttl_sec = safe_nonneg_float(cache_ttl_sec, default=default_cache_ttl)
+        self.cache_dir = cache_dir
+        self.disk_ttl_sec = safe_nonneg_float(disk_ttl_sec, default=default_disk_ttl)
+        self._cache: Dict[str, tuple[float, Any]] = {}
+
+    def _effective_cache_dir(self) -> Optional[str]:
+        return resolve_cache_dir_path(self.cache_dir)
+
+    def _disk_path(self, symbol: str) -> Optional[str]:
+        return telemetry_cache_file_path(self.cache_dir, self._DISK_FILE_PREFIX, symbol)
+
+    _as_bool_flag = staticmethod(_parse_bool_flag)
+
+    def _candidate_variants(self, symbol: str) -> List[Any]:
+        if self._QUOTE_ISOLATED:
+            quotes = compatible_quote_suffixes(symbol, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+            return _symbol_variants(symbol, quotes=quotes)
+        return _symbol_variants(symbol)
+
+    def _lookup_cached(self, symbol: str, now: float) -> Tuple[Any, Any]:
+        cached = next((self._cache[c] for c in self._candidate_variants(symbol) if c in self._cache), None)
+        if cached:
+            c_ts = cached[0] if isinstance(cached, tuple) and len(cached) >= 2 else getattr(cached, "ts", None)
+            if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
+                return cached, (cached[1] if isinstance(cached, tuple) else cached)
+        return cached, None
+
+    def _read_disk_json(self, path: str) -> Optional[Dict[str, Any]]:
+        read_fn = _resolve_module_fn(self, "read_json_dict", read_json_dict)
+        if read_fn is not read_json_dict:
+            return read_fn(path, default=None, recover_previous=True)
+        rec_fn = _resolve_module_fn(self, "read_json_dict_recovering", read_json_dict_recovering)
+        return rec_fn(path, default=None)
+
+    def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[Any]:
+        ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
+        max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
+        for cand in self._candidate_variants(symbol):
+            p = self._disk_path(cand)
+            if not p:
+                continue
+            try:
+                data = self._read_disk_json(p)
+                if not isinstance(data, dict):
+                    continue
+                try:
+                    snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
+                except TypeError:
+                    snapshot = self._SNAPSHOT_CLS.from_dict(data)
+                if is_cache_fresh(snapshot.ts, now, max_age):
+                    self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
+                    return snapshot
+                if ignore_ttl_b:
+                    return snapshot
+            except Exception as e:
+                logger.debug("Failed loading %s snapshot from %s: %s", self._DISK_FILE_PREFIX, p, e)
+        return None
+
+    def _save_to_disk(self, snapshot: Any) -> None:
+        if p := self._disk_path(snapshot.symbol):
+            try:
+                save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
+                save_fn(p, snapshot.to_dict(), indent=2)
+            except Exception as e:
+                logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
+
+    def _fallback_stale(self, symbol: str, cached: Any) -> Optional[Any]:
+        if isinstance(cached, tuple) and len(cached) >= 2:
+            return cached[1]
+        if cached and self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
+            return cached
+        return self._load_from_disk(symbol, 0.0, ignore_ttl=True)
+
+    def _record_item(self, item: Any, save_to_disk: bool = False) -> None:
+        if isinstance(item, dict):
+            item = self._SNAPSHOT_CLS.from_dict(item)
+        if item is None or not isinstance(getattr(item, "symbol", None), str) or not item.symbol.strip():
+            return
+        ts_val = safe_pos_float(getattr(item, "ts", None), default=None) or time.time()
+        self._cache[item.symbol.strip().upper()] = (ts_val, item)
+        if self._as_bool_flag(save_to_disk, default=False):
+            self._save_to_disk(item)
+
+    def _sync_existing_sibling_disk_file(self, sym_clean: str, snapshot: Any) -> None:
+        if not (p_exact := self._disk_path(sym_clean)):
+            return
+        try:
+            import os as _os
+
+            if not _os.path.isfile(p_exact):
+                return
+            cur_d = self._read_disk_json(p_exact)
+            cur_ts = safe_pos_float(cur_d.get("ts") if isinstance(cur_d, dict) else None, default=0.0) or 0.0
+            snap_ts = safe_pos_float(getattr(snapshot, "ts", None), default=0.0) or 0.0
+            if snap_ts > cur_ts + 5.0 and hasattr(snapshot, "to_dict"):
+                d_copy = dict(snapshot.to_dict())
+                d_copy["symbol"] = sym_clean
+                save_fn = _resolve_module_fn(self, "save_json_state", save_json_state)
+                save_fn(p_exact, d_copy, indent=2)
+        except Exception:
+            pass
+
+    def _prepare_fetch(
+        self,
+        symbol: Any,
+        allow_network: Any,
+        now: Optional[float],
+    ) -> Tuple[Optional[str], float, Any, Optional[Any], bool]:
+        if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
+            return None, 0.0, None, None, False
+        now_f = _effective_now_ts(now)
+        allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
+        venue = _resolve_configured_venue(sym_clean)
+        require_exact_venue_sym = bool(
+            allow_net_bool
+            and (
+                venue == "hyperliquid"
+                or (
+                    self._QUOTE_ISOLATED
+                    and (venue != "binance" or _is_multi_venue_base(sym_clean))
+                )
+            )
+        )
+        cached, fresh = self._lookup_cached(sym_clean, now_f)
+        if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean:
+                self._sync_existing_sibling_disk_file(sym_clean, fresh)
+            return sym_clean, now_f, cached, fresh, False
+        disk_snap = self._load_from_disk(sym_clean, now_f)
+        if disk_snap is not None and (not require_exact_venue_sym or str(getattr(disk_snap, "symbol", "") or "").strip().upper() == sym_clean):
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean:
+                self._sync_existing_sibling_disk_file(sym_clean, disk_snap)
+            return sym_clean, now_f, cached, disk_snap, False
+        return sym_clean, now_f, cached, None, allow_net_bool
+
+    def _commit_snapshot(self, symbol: str, now: float, snapshot: Any) -> Any:
+        self._cache[symbol] = (now, snapshot)
+        self._save_to_disk(snapshot)
+        return snapshot
+
+    def _resolve_ssot_price(
+        self,
+        symbol: str,
+        *,
+        max_age_sec: float = 60.0,
+        now: Optional[float] = None,
+    ) -> Optional[float]:
+        """Resolve spot price for ``symbol`` from cacheManager SSOT stores (`cache_current_price.json` / `cache_24_price`)."""
+        return resolve_ssot_price_from_cache(
+            symbol,
+            cache_dir=self.cache_dir,
+            max_age_sec=max_age_sec,
+            quote_isolated=bool(self._QUOTE_ISOLATED),
+            now_ts=now,
+        )
+
+    @staticmethod
+    def _post_hyperliquid_info(
+        payload: Dict[str, Any],
+        *,
+        timeout: float = 4.0,
+        user_agent: str = "mptrade-intelligence/1.0",
+    ) -> Any:
+        import json as _json
+        import urllib.request as _urlreq
+
+        body = _json.dumps(payload).encode("utf-8")
+        req = _urlreq.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": user_agent},
+            method="POST",
+        )
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return _json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+    @classmethod
+    def _fetch_json_dict(
+        cls,
+        url: str,
+        label: str,
+        lookup_sym: str,
+        *,
+        timeout: float = 5.0,
+        user_agent: str = "mptrade-intelligence/1.0",
+    ) -> Dict[str, Any]:
+        fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
+        if (
+            fetch_fn is fetch_public_json
+            and isinstance(url, str)
+            and url.startswith("https://api.hyperliquid.xyz/info?")
+        ):
+            import urllib.parse as _urlparse
+
+            q_params = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
+            raw_data = cls._post_hyperliquid_info(
+                q_params, timeout=timeout, user_agent=user_agent
+            )
+            if isinstance(raw_data, list):
+                return {"result_list": raw_data}
+        else:
+            raw_data = fetch_fn(url, timeout=timeout, user_agent=user_agent)
+        if not isinstance(raw_data, dict):
+            raise ValueError(f"Unexpected {label} payload for {lookup_sym}: {type(raw_data).__name__}")
+        return raw_data
+
+    @classmethod
+    def _fetch_latest_json_row(
+        cls,
+        url: str,
+        label: str,
+        lookup_sym: str,
+        *,
+        timeout: float = 5.0,
+        user_agent: str = "mptrade-whale/1.0",
+    ) -> Tuple[Dict[str, Any], List[Any]]:
+        fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
+        rows = fetch_fn(url, timeout=timeout, user_agent=user_agent)
+        if not isinstance(rows, list) or not rows or not isinstance(rows[-1], dict):
+            raise ValueError(f"Empty {label} response for {lookup_sym}")
+        return rows[-1], rows
+
+    def _fetch_hyperliquid_asset_ctx(
+        self,
+        symbol: str,
+        *,
+        timeout: float = 4.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch the Hyperliquid `metaAndAssetCtxs` context dict for `symbol`'s base coin."""
+        base_coin = _extract_base_asset(symbol)
+        if not base_coin:
+            return None
+        raw = self._fetch_json_dict(
+            "https://api.hyperliquid.xyz/info?type=metaAndAssetCtxs",
+            "metaAndAssetCtxs",
+            base_coin,
+            timeout=timeout,
+        )
+        res_list = raw.get("result_list") if isinstance(raw, dict) else None
+        if not isinstance(res_list, list) or len(res_list) < 2:
+            return None
+        meta, ctxs = res_list[0], res_list[1]
+        universe = (meta.get("universe") if isinstance(meta, dict) else None) or []
+        if not isinstance(universe, list) or not isinstance(ctxs, list):
+            return None
+        base_cf = base_coin.casefold()
+        for idx, asset_info in enumerate(universe):
+            if (
+                isinstance(asset_info, dict)
+                and str(asset_info.get("name") or "").casefold() == base_cf
+                and idx < len(ctxs)
+                and isinstance(ctxs[idx], dict)
+            ):
+                return ctxs[idx]
+        return None
+
+
+_fetch_hyperliquid_asset_ctx = _DiskBackedSymbolCollector._fetch_hyperliquid_asset_ctx

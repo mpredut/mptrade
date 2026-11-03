@@ -803,6 +803,29 @@ def test_position_exit_manager_evaluate_hard_tp_cooldown_does_not_double_initiat
     assert dec.metadata.get("state") == "initiated"
 
 
+def test_external_collectors_and_ssot_prompt_modularization():
+    from intelligence.external.collectors import base_collector as bc
+    from intelligence.external.collectors import derivatives_telemetry as dt
+    from intelligence.external.collectors import orderbook_depth as ob
+    from intelligence.external.collectors import whale_positioning as wp
+    from intelligence.macro import calendar_ssot as cal_ssot
+    from intelligence.macro import lexicon_ssot as lex_ssot
+    import intelligence.macro_sentiment_ssot as ssot
+    from orchestratorOS.supervisor import prompt_formatters as pf
+    from orchestratorOS.supervisor import prompt_sections as ps
+
+    for cls in (ob.OrderbookDepthCollector, dt.DerivativesTelemetryCollector, wp.WhalePositioningCollector):
+        assert issubclass(cls, bc._DiskBackedSymbolCollector)
+        assert hasattr(cls, "_fetch_hyperliquid_asset_ctx")
+
+    assert ob._DiskBackedSymbolCollector is bc._DiskBackedSymbolCollector
+    assert ssot.match_high_severity_keywords is lex_ssot.match_high_severity_keywords
+    assert ssot.resolve_macro_economic_calendar is cal_ssot.resolve_macro_economic_calendar
+    assert pf._format_macro_and_news_section is ps._format_macro_and_news_section
+    assert pf._format_microstructure_section is ps._format_microstructure_section
+    assert pf._format_portfolio_section is ps._format_portfolio_section
+
+
 if __name__ == "__main__":
     unittest.main()
 
