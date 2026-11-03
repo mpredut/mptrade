@@ -424,21 +424,31 @@ def ws_loop(client):
         # ownTrades: [ [ {txid: {...}}, ... ], "ownTrades", {"sequence": N} ]
         if not (isinstance(data, list) and len(data) >= 2 and data[1] == "ownTrades"):
             # Refresh liveness on WS heartbeats/status frames before KrakenProvider's 30s stale cutoff
-            if isinstance(data, dict) and (now_ms - last_flush_ms[0]) >= 15_000:
-                if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+            if isinstance(data, dict):
+                ev = str(data.get("event") or "").strip().lower()
+                if ev == "subscriptionstatus" and str(data.get("status") or "").strip().lower() == "error":
+                    log(f"[kraken_cache][ws] ownTrades subscription error: {data.get('errorMessage') or data}")
                     try:
-                        _merge_rest_into(client, cache)
-                        last_rest_sync_ms[0] = now_ms
-                        log(
-                            f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
-                            f"for {list(cache['items'].keys())}"
-                        )
-                    except Exception as e:
-                        log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {e}")
-                _touch_ws_fetchtimes(cache, now_ms)
-                save_json_state(CACHE_FILE, cache, indent=1)
-                last_flush_ms[0] = now_ms
-                touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
+                        ws.close()
+                    except Exception:
+                        pass
+                    return
+                if ev in ("heartbeat", "systemstatus", "subscriptionstatus") and (now_ms - last_flush_ms[0]) >= 15_000:
+                    if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms:
+                        try:
+                            _merge_rest_into(client, cache)
+                            last_rest_sync_ms[0] = now_ms
+                            log(
+                                f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
+                                f"for {list(cache['items'].keys())}"
+                            )
+                        except Exception as e:
+                            log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {e}")
+                    if last_rest_sync_ms[0] > 0:
+                        _touch_ws_fetchtimes(cache, now_ms)
+                        save_json_state(CACHE_FILE, cache, indent=1)
+                        last_flush_ms[0] = now_ms
+                    touch_module_heartbeat("Kraken-cache", interval_sec=30.0, symbols=list(PAIRS or ()), intervals={"poll": POLL_INTERVAL})
             return
         changed = False
         for entry in (data[0] if isinstance(data[0], list) else ()):

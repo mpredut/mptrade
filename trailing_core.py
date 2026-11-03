@@ -715,7 +715,7 @@ class TrailingAdapterBase:
         self.core.save(state)
 
     @classmethod
-    def _lookup_symbol_entry(cls, mapping: dict, symbol: str):
+    def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
         if isinstance(symbol, bool) or symbol is None or not isinstance(mapping, dict):
             return None
         from cachepaths import canonical_base_asset, canonical_symbol_key
@@ -732,7 +732,7 @@ class TrailingAdapterBase:
             if not cand:
                 continue
             val = casefold_get(mapping, cand)
-            if val is not None:
+            if val is not None and (predicate is None or predicate(val)):
                 return val
         return None
 

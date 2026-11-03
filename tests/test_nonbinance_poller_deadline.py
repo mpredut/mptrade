@@ -329,6 +329,76 @@ class TestFetchDeadline(unittest.TestCase):
             self.assertEqual([o["orderId"] for o in orders], ["101", "102"])
             self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
 
+            # Invalidating SSOT fills cache must not be resurrected by an allMids tick before a new fill arrives
+            prov.invalidate_ssot_fills_cache("HYPEUSDC", cache_file)
+            self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
+            hl_ws._last_fills_cache_touch_ms = 0
+            hl_ws._touch_fills_cache_if_needed(now_ms + 70_000)
+            self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
+
+            # Reconnect resets _fills_ws_seeded until a new isSnapshot=True message arrives
+            _ = hl_ws._build_extra_subscribe_payloads()
+            self.assertFalse(hl_ws._fills_ws_seeded)
+
+    def test_validate_ohlc_close_ts_sentinel_and_duplicate_ai_order_and_trailing_lookup(self):
+        from providers.base import validate_ohlc_candle_bar
+        from providers.execution_audit import find_duplicate_ai_open_limit_order
+        from trailing_core import TrailingAdapterBase
+
+        # 1. Explicit close_ts=None must be rejected, whereas omitted close_ts is accepted
+        self.assertIsNone(
+            validate_ohlc_candle_bar(
+                1700000000, 100.0, 105.0, 99.0, 102.0, close_ts=None
+            )
+        )
+        self.assertIsNotNone(
+            validate_ohlc_candle_bar(
+                1700000000, 100.0, 105.0, 99.0, 102.0
+            )
+        )
+
+        # 2. find_duplicate_ai_open_limit_order normalizes lowercase side and case-insensitive clientOrderId
+        class _DummyInst:
+            @staticmethod
+            def open_orders():
+                return [
+                    {
+                        "orderId": "9001",
+                        "side": "SELL",
+                        "type": "LIMIT",
+                        "price": "50.0",
+                        "origQty": "1.6",
+                        "executedQty": "0.0",
+                        "clientOrderId": "AI_ABC123DEF",
+                    }
+                ]
+
+        dup_oid = find_duplicate_ai_open_limit_order(
+            _DummyInst(),
+            side="sell",
+            limit_price=50.0,
+            notional_usd=100.0,
+            intents=[
+                {
+                    "intent_id": "abc123def",
+                    "suggested_notional_usd": 100.0,
+                    "clamped_notional_usd": 80.0,
+                }
+            ],
+        )
+        self.assertEqual(dup_oid, "9001")
+
+        # 3. TrailingAdapterBase._lookup_symbol_entry with predicate skips non-matching pair entry
+        class _DummyTrailing(TrailingAdapterBase):
+            _VENUE_SLUG = "kraken"
+
+        val = _DummyTrailing._lookup_symbol_entry(
+            {"BTCUSD": "invalid", "BTC": "on"},
+            "BTCUSD",
+            predicate=lambda v: v in ("on", "off"),
+        )
+        self.assertEqual(val, "on")
+
     def test_ws_stream_dynamic_add_remove_and_provider_ssot_cache_helpers(self):
         import json
         import tempfile

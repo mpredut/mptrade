@@ -1858,6 +1858,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         return _json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
 
     def _build_extra_subscribe_payloads(self) -> tuple[str, ...]:
+        self._fills_ws_seeded = False
         if not self._user_address:
             return ()
         return (
@@ -1899,6 +1900,7 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             ]
             if is_snapshot:
                 cache_obj["items"][sym] = sym_fills
+                cache_obj["fetchtime"][sym] = ts_ms
             elif sym_fills:
                 bucket = list(cache_obj["items"].get(sym) or [])
                 seen_keys = {
@@ -1912,9 +1914,12 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
                         bucket.append(f)
                         seen_keys.add(fk)
                 cache_obj["items"][sym] = bucket
-            cache_obj["fetchtime"][sym] = ts_ms
+                cache_obj["fetchtime"][sym] = ts_ms
+            elif sym in cache_obj["items"] and sym in cache_obj["fetchtime"]:
+                cache_obj["fetchtime"][sym] = ts_ms
         save_json_state(cache_file, cache_obj)
-        self._fills_ws_seeded = True
+        if is_snapshot:
+            self._fills_ws_seeded = True
         self._last_fills_touch_ms = ts_ms
 
     def _touch_fills_cache_if_needed(self, ts_ms: int) -> None:
@@ -1923,10 +1928,14 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         try:
             cache_file = self._resolve_fills_cache_file()
             loaded = read_json_dict(cache_file, default=None, recover_previous=True)
-            if isinstance(loaded, dict) and isinstance(loaded.get("fetchtime"), dict):
+            if isinstance(loaded, dict) and isinstance(loaded.get("fetchtime"), dict) and isinstance(loaded.get("items"), dict):
+                changed = False
                 for sym in self._symbols:
-                    loaded["fetchtime"][sym] = ts_ms
-                save_json_state(cache_file, loaded)
+                    if sym in loaded["fetchtime"] and sym in loaded["items"]:
+                        loaded["fetchtime"][sym] = ts_ms
+                        changed = True
+                if changed:
+                    save_json_state(cache_file, loaded)
                 self._last_fills_touch_ms = ts_ms
         except Exception:
             pass

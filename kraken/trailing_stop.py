@@ -184,7 +184,9 @@ class KrakenTrailing(TrailingAdapterBase):
         """Per-coin re-buy switch (registry trailing.rebuy): on/off, falling back to REBUY_ENABLED."""
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
             return False
-        mode = self._lookup_symbol_entry(REBUY_MODE_BY_ASSET, asset)
+        mode = self._lookup_symbol_entry(
+            REBUY_MODE_BY_ASSET, asset, predicate=lambda v: v in ("on", "off")
+        )
         if mode == "on":
             return True
         if mode == "off":

@@ -866,6 +866,9 @@ OHLC_INTERVALS_STR_TO_MIN: dict[str, int] = {
 }
 
 
+_MISSING = object()
+
+
 def validate_ohlc_candle_bar(
     open_ts: Any,
     open_px: Any,
@@ -873,7 +876,7 @@ def validate_ohlc_candle_bar(
     low_px: Any,
     close_px: Any,
     *,
-    close_ts: Any = None,
+    close_ts: Any = _MISSING,
     now_ms: Optional[int] = None,
     drop_incomplete: bool = True,
     close_inclusive: bool = False,
@@ -890,7 +893,7 @@ def validate_ohlc_candle_bar(
     open_i = int(ot_f)
     if open_i <= 0:
         return None
-    if close_ts is not None:
+    if close_ts is not _MISSING:
         ct_f = safe_pos_float(close_ts, default=None)
         if ct_f is None:
             return None

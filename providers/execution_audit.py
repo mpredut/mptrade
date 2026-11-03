@@ -1802,7 +1802,8 @@ def cancel_existing_ai_open_orders(
     canceled_ids: list[str] = []
     open_fn = getattr(inst, "open_orders", None)
     cancel_fn = getattr(inst, "cancel_order", None)
-    if not callable(open_fn) or not callable(cancel_fn):
+    want_side = normalize_side(side)
+    if not callable(open_fn) or not callable(cancel_fn) or (not any_side and not want_side):
         return canceled_ids
     excluded = {str(x) for x in (exclude_order_ids or ()) if x}
     try:
@@ -1814,7 +1815,7 @@ def cancel_existing_ai_open_orders(
             if not isinstance(oo, dict):
                 continue
             oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
-            if not any_side and oo_side != side:
+            if not any_side and oo_side != want_side:
                 continue
             oid = extract_order_id(oo, default="")
             if oid and str(oid) in excluded:
@@ -1861,7 +1862,8 @@ def find_duplicate_ai_open_limit_order(
 ) -> Optional[str]:
     """Return the venue order ID of an unfilled AI open limit order at the same side, price (<= 1 bps), and (when required) notional (<= 5%)."""
     open_fn = getattr(inst, "open_orders", None)
-    if not callable(open_fn) or not (limit_price and limit_price > 0) or not (notional_usd and notional_usd > 0):
+    want_side = normalize_side(side)
+    if not callable(open_fn) or not want_side or not (limit_price and limit_price > 0) or not (notional_usd and notional_usd > 0):
         return None
     try:
         raw_open = open_fn()
@@ -1895,11 +1897,12 @@ def find_duplicate_ai_open_limit_order(
                 for k in item_ids:
                     if k:
                         intent_notional_by_id[k] = (p_sug, p_clamp)
+                        intent_notional_by_id[k.lower()] = (p_sug, p_clamp)
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
             oo_side = extract_order_side(oo) or normalize_side(oo.get("side") or oo.get("type"))
-            if oo_side != side:
+            if oo_side != want_side:
                 continue
             if resolve_order_actor(oo, ai_oids) != "AI":
                 continue
@@ -1917,9 +1920,15 @@ def find_duplicate_ai_open_limit_order(
                 notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
                 if not notional_ok and intent_notional_by_id:
                     cid = extract_client_order_id(oo, default="")
-                    prior_pair = intent_notional_by_id.get(str(oid)) if oid else None
+                    prior_pair = (
+                        intent_notional_by_id.get(str(oid))
+                        or intent_notional_by_id.get(str(oid).lower())
+                    ) if oid else None
                     if prior_pair is None and cid:
-                        prior_pair = intent_notional_by_id.get(str(cid))
+                        prior_pair = (
+                            intent_notional_by_id.get(str(cid))
+                            or intent_notional_by_id.get(str(cid).lower())
+                        )
                     if prior_pair is not None:
                         p_sug, p_clamp = prior_pair
                         if (
