@@ -680,5 +680,85 @@ def test_shared_intelligence_and_agent_primitives_promoted_to_core():
     assert botcore.resolve_order_notional(800.0, 250.0, 3.0) == pytest.approx(800.0)
 
 
+def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
+    import json
+    from intelligence.macro_sentiment_ssot import CachedHttpJsonCollector, run_scheduled_step
+
+    hb_path = tmp_path / "rtrade_BTCUSDC.heartbeat"
+    ts = botcore.touch_heartbeat_file(
+        str(hb_path),
+        last_ts=0.0,
+        force=True,
+        now=1700000100.0,
+        status={"ts": 1700000100.0, "cycle": 1},
+        symbols=["BTCUSDC"],
+        intervals={"loop": 5},
+    )
+    assert ts == pytest.approx(1700000100.0)
+    payload = json.loads(hb_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "alive"
+    assert payload["ts"] == pytest.approx(1700000100.0)
+    assert payload["last_run"] == {"ts": 1700000100.0, "cycle": 1}
+    assert payload["symbols"] == ["BTCUSDC"]
+    assert payload["intervals"] == {"loop": 5}
+    assert isinstance(payload["pid"], int)
+
+    mtime = os.path.getmtime(str(hb_path))
+    is_fresh, age_sec, max_stale_duration, stale_file = botcore.evaluate_heartbeat_files_freshness(
+        [str(hb_path)], stale_threshold_s=60.0, now_ts=mtime + 20.0
+    )
+    assert is_fresh is True
+    assert age_sec == pytest.approx(20.0)
+    assert max_stale_duration == pytest.approx(0.0)
+    assert stale_file == ""
+
+    class DummyRunner:
+        last_step_ts = 0.0
+        calls = 0
+        def _step(self, x):
+            self.calls += x
+            return {"count": self.calls}
+
+    runner = DummyRunner()
+    res = {}
+    ran = run_scheduled_step(
+        runner,
+        current_ts=100.0,
+        ts_attr="last_step_ts",
+        interval_sec=30.0,
+        fn=runner._step,
+        fn_args=(2,),
+        results=res,
+        result_key="step",
+    )
+    assert ran is True
+    assert runner.last_step_ts == pytest.approx(100.0)
+    assert runner.calls == 2
+    assert res["step"] is True
+    assert run_scheduled_step(
+        runner,
+        current_ts=110.0,
+        ts_attr="last_step_ts",
+        interval_sec=30.0,
+        fn=runner._step,
+        fn_args=(2,),
+        results=res,
+        result_key="step",
+    ) is False
+
+    class SampleCollector(CachedHttpJsonCollector):
+        def _parse_fetched_payload(self, data, now):
+            return {"value": data.get("v", 0), "ts": now} if isinstance(data, dict) else None
+
+    import intelligence.macro_sentiment_ssot as mss
+    collector = SampleCollector(60.0, 60.0, "https://example.test/api", lambda: "https://example.test/api")
+    with patch.object(mss, "fetch_public_json", return_value={"v": 42}) as mock_fetch:
+        first = collector.fetch(now_ts=1000.0)
+        second = collector.fetch(now_ts=1020.0)
+        assert first == {"value": 42, "ts": 1000.0}
+        assert second == {"value": 42, "ts": 1000.0}
+        assert mock_fetch.call_count == 1
+
+
 if __name__ == "__main__":
     unittest.main()
