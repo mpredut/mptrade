@@ -459,13 +459,26 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         if final > 0 else None
     )
     if refusal:
-        if wallet_constrained and (
-            final == wallet_final
-            or (
-                wallet_final > 0
-                and check_order_filter_refusal(
-                    provider, symbol, side, price, wallet_final,
-                    market=market, enforce_business_minimum=enforce_business_minimum,
+        if (
+            wallet_constrained
+            and (
+                requested == float("inf")
+                or (
+                    _round_qty(requested) > 0
+                    and not check_order_filter_refusal(
+                        provider, symbol, side, price, _round_qty(requested),
+                        market=market, enforce_business_minimum=enforce_business_minimum,
+                    )
+                )
+            )
+            and (
+                final == wallet_final
+                or (
+                    wallet_final > 0
+                    and check_order_filter_refusal(
+                        provider, symbol, side, price, wallet_final,
+                        market=market, enforce_business_minimum=enforce_business_minimum,
+                    )
                 )
             )
         ):

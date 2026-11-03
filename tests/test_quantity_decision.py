@@ -144,6 +144,11 @@ class QuantityDecisionTest(unittest.TestCase):
         self.assertEqual(decision_sub.final_qty, 0.0)
         self.assertEqual(decision_sub.refuse_reason, "insufficient_funds")
 
+        # When requested_qty itself is below min_notional, keep below_min_notional rather than insufficient_funds
+        decision_dust_req = decide_quantity(provider, "TAOUSDC", "BUY", 100.0, 0.03)
+        self.assertEqual(decision_dust_req.final_qty, 0.0)
+        self.assertEqual(decision_dust_req.refuse_reason, "below_min_notional")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -619,7 +619,15 @@ def pass_common_gate(
 
         central_gate_closed = gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec
         topic_window_closed = topic_bulk_sec > 0 and last_topic_ts > 0 and (now_ts - last_topic_ts) < topic_bulk_sec
-        has_earlier_other_topic = any(_canonical_topic_key(it.get("topic")) != t_key for it in pending_bulk)
+        has_earlier_other_topic = any(
+            (other_tk := _canonical_topic_key(it.get("topic"))) != t_key
+            and (
+                topic_bulk_sec <= 0
+                or (other_last := safe_float(cleaned_topic_last.get(other_tk, 0.0), 0.0)) <= 0
+                or (now_ts - other_last) >= topic_bulk_sec
+            )
+            for it in pending_bulk
+        )
 
         if central_gate_closed or topic_window_closed or has_earlier_other_topic:
             # Defer in persistent queue: batch with same-topic items until both topic window and central gate open

@@ -4,8 +4,11 @@ import os
 import json
 import logging
 import re
+import threading
 import time
 import requests
+
+_GATED_DISPATCH_TLS = threading.local()
 from collections import defaultdict
 from typing import Dict, Any, List
 
@@ -218,12 +221,12 @@ class NotificationServer:
                 self._send_email(title, body)
             return False
         out_title, out_body, out_prio, out_topic = out_payload or (title, body, priority, topic)
-        prev = getattr(self, "_in_gated_dispatch", False)
-        self._in_gated_dispatch = True
+        prev = getattr(_GATED_DISPATCH_TLS, "active", False)
+        _GATED_DISPATCH_TLS.active = True
         try:
             return self._send_ntfy(out_title, out_body, out_prio, out_topic)
         finally:
-            self._in_gated_dispatch = prev
+            _GATED_DISPATCH_TLS.active = prev
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
         """Flush and synthesize any buffered notifications once the 5-minute common gate opens."""
@@ -236,13 +239,13 @@ class NotificationServer:
                     bulk_topic = self._resolve_topic("ERROR")
                 except Exception:
                     bulk_topic = "ntfy-error-1978"
-            prev = getattr(self, "_in_gated_dispatch", False)
-            self._in_gated_dispatch = True
+            prev = getattr(_GATED_DISPATCH_TLS, "active", False)
+            _GATED_DISPATCH_TLS.active = True
             try:
                 if self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic):
                     flushed = True
             finally:
-                self._in_gated_dispatch = prev
+                _GATED_DISPATCH_TLS.active = prev
         email_batch = pop_due_bulk_batch("email", now=now, force=force)
         if email_batch:
             email_subj, email_body, _, _ = email_batch
@@ -265,7 +268,11 @@ class NotificationServer:
             logging.info(f"Skipping test/fake alert in _send_ntfy: {title}")
             return True
 
-        if not is_retry and not getattr(self, "_in_gated_dispatch", False):
+        if (
+            not is_retry
+            and not getattr(_GATED_DISPATCH_TLS, "active", False)
+            and not getattr(self, "_in_gated_dispatch", False)
+        ):
             allowed, reason, _, out_payload = pass_common_gate(
                 "ntfy",
                 title,
@@ -276,8 +283,10 @@ class NotificationServer:
             )
             if not allowed:
                 logging.info(f"Direct ntfy gated by common policy ({reason}): {title}")
-                if (
-                    reason not in ("duplicate", "similar_eliminated", "buffered_for_bulk")
+                if reason == "buffered_for_bulk":
+                    self.flush_pending_bulk()
+                elif (
+                    reason not in ("duplicate", "similar_eliminated")
                     and not skip_email
                     and is_email_mirrored(topic_str)
                 ):
@@ -319,7 +328,7 @@ class NotificationServer:
                 resp.raise_for_status()
             elif getattr(resp, "status_code", 200) >= 400:
                 raise requests.HTTPError(f"HTTP {getattr(resp, 'status_code', 0)}")
-            logging.info(f"Dispatched ntfy alert to [{topic}] (priority={priority}): {title}")
+            logging.info(f"Dispatched ntfy alert to [{topic_str}] (priority={priority}): {title}")
             return True
         except Exception as e:
             if not is_retry:
@@ -328,7 +337,7 @@ class NotificationServer:
                     "title": title,
                     "message": message,
                     "priority": priority,
-                    "topic": topic
+                    "topic": topic_str
                 })
             return False
             

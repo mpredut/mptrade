@@ -909,6 +909,45 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
             self.assertEqual(self.dispatched[2]["topic"], "ntfy-server-test")
             self.assertIn("auto_technical_repair", self.dispatched[2]["title"])
 
+        # Verify that when central gate is open (NOTIFICATION_GATE_SECONDS=0) and Topic A is still inside its
+        # 5-min per-topic window, an alert on Topic B (whose topic window IS open) dispatches immediately
+        # without being blocked by Topic A's non-due pending_bulk entry.
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+            "NOTIFICATION_GATE_SECONDS": "0",
+        }):
+            self.dispatched.clear()
+            t1 = 1_760_000_000.0
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t1):
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
+                    "body": "Macro 1",
+                    "source": "macro_shadow",
+                    "symbol": "GLOBAL",
+                }])
+                self.assertEqual(len(self.dispatched), 1)
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t1 + 60):
+                # Buffered in pending_bulk because ntfy-macro-test topic window (300s) is still closed
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🌍 [auto_macro_geopolitical] DOWNSCALE_50 (ELEVATED)",
+                    "body": "Macro 2",
+                    "source": "macro_shadow",
+                    "symbol": "GLOBAL",
+                }])
+                self.assertEqual(len(self.dispatched), 1)
+                # Topic B (ntfy-server-test) has open topic window and central gate is open -> dispatches now!
+                self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🛠 [auto_technical_repair] Issues: 2 | Actions: 1",
+                    "body": "Server repair executed.",
+                    "source": "ai_supervisor",
+                    "symbol": "SYSTEM",
+                }])
+                self.assertEqual(len(self.dispatched), 2)
+                self.assertEqual(self.dispatched[1]["topic"], "ntfy-server-test")
+
 
 
 

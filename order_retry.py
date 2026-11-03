@@ -616,7 +616,11 @@ def enqueue(
                         e.pop("ttl_sec", None)
                         e.pop("expires_at_ts", None)
                     e.pop("order_id", None)
-                    _set_safe_to_discard(e, is_non_failure_deferral(e.get("last_failure_reason")))
+                    _set_safe_to_discard(
+                        e,
+                        is_non_failure_deferral(e.get("last_failure_reason"))
+                        or e.get("last_failure_reason") in _CONSOLIDATED_DEFERRAL_REASONS,
+                    )
                     e["revision"] = revision
                     _write_nolock(existing)
                     return e.get("id")

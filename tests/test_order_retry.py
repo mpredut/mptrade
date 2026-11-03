@@ -786,6 +786,27 @@ class OrderRetryStoreTest(unittest.TestCase):
             by_venue = {r["provider_name"]: r["qty"] for r in queued}
             self.assertEqual(by_venue, {"binance": 1.0, "hyperliquid": 2.5})
 
+        with self.subTest(msg="dedup_preserves_safe_to_discard_for_consolidated_deferrals_across_3plus_enqueues"):
+            self._reset_env()
+            id1 = oq.enqueue(
+                "BTCUSDC", "BUY", 1.0, {}, requested_price=100.0,
+                now=1000.0, failure_reason="insufficient_funds", provider_name="binance",
+            )
+            id2 = oq.enqueue(
+                "BTCUSDC", "BUY", 1.5, {}, requested_price=101.0,
+                now=1010.0, failure_reason="insufficient_funds", provider_name="binance",
+            )
+            id3 = oq.enqueue(
+                "BTCUSDC", "BUY", 2.0, {}, requested_price=102.0,
+                now=1020.0, failure_reason="insufficient_funds", provider_name="binance",
+            )
+            self.assertEqual(id1, id2)
+            self.assertEqual(id2, id3)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 1)
+            self.assertEqual(queued[0]["qty"], 2.0)
+            self.assertTrue(queued[0].get("safe_to_discard"))
+
     def test_claim_leasing_and_recovery_semantics(self):
         self._reset_env()
         with self.subTest(msg="claim_leases_and_returns_without_removing"):
