@@ -718,8 +718,13 @@ def populate_market_and_portfolio_snapshot(
             sa_bias = str(sa_cur.get("directional_bias") or sa_cur.get("market_bias") or "").upper()
             cited_tr: Optional[float] = None
             if sa_age >= 15.0 and isinstance(sa_cur.get("summary"), str):
-                if m_tr := re.search(r"taker\s+buy/sell\s+ratio[^0-9]*([0-9]+\.[0-9]+)", sa_cur["summary"], re.IGNORECASE):
-                    cited_tr = safe_pos_float(m_tr.group(1), default=None)
+                m_tr = re.search(
+                    r"(?:([0-9]+\.[0-9]+)\s*taker\s+buy/sell\s+ratio|taker\s+buy/sell\s+ratio(?:\s*(?:of|at|=|:|is))?\s*([0-9]+\.[0-9]+)(?!%))",
+                    sa_cur["summary"],
+                    re.IGNORECASE,
+                )
+                if m_tr:
+                    cited_tr = safe_pos_float(m_tr.group(1) or m_tr.group(2), default=None)
             tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else ""
             cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else ""
             flow_lbl = ", ".join(x for x in (tr_s, cvd_s) if x)

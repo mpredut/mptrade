@@ -1586,8 +1586,10 @@ def sync_sibling_symbol_telemetry(
                     delta_d["whale_long_delta_pct"] = round(cur_wl - p_wl, 2)
                     delta_d["prev_whale_long_pct"] = round(p_wl, 2)
                 if cur_oi is not None and (p_oi := safe_pos_float(ref_snap.get("oi_usd"), default=None)) is not None and p_oi > 0.0:
-                    delta_d["oi_delta_pct"] = round(((cur_oi - p_oi) / p_oi) * 100.0, 2)
-                    delta_d["prev_oi_usd"] = round(p_oi, 2)
+                    oi_d_pct = round(((cur_oi - p_oi) / p_oi) * 100.0, 2)
+                    if abs(oi_d_pct) <= 80.0:
+                        delta_d["oi_delta_pct"] = oi_d_pct
+                        delta_d["prev_oi_usd"] = round(p_oi, 2)
                 if cur_tr is not None and (p_tr := safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)) is not None:
                     delta_d["taker_ratio_delta"] = round(cur_tr - p_tr, 4)
                     delta_d["prev_taker_ratio"] = round(p_tr, 4)
@@ -2229,19 +2231,26 @@ def enrich_open_limit_orders_tca(
         dec = 2 if lim_px >= 100.0 else (4 if lim_px >= 1.0 else 6)
         queue_penalty = 1.0
         if isinstance(m_entry, dict):
+            best_bid_px = safe_pos_float(m_entry.get("best_bid"), default=None)
+            best_ask_px = safe_pos_float(m_entry.get("best_ask"), default=None)
+            tick_step = 10.0 ** (-dec)
             if side == "SELL":
                 aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
                 aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
                 if aw_px is not None and aw_px > 0.0 and aw_usd >= 5000.0:
+                    raw_fr_ask = min(aw_px - tick_step, aw_px * 0.9998)
+                    if best_ask_px is not None and best_ask_px > 0.0:
+                        raw_fr_ask = max(best_ask_px, raw_fr_ask)
+                    fr_ask_px = round(min(aw_px, raw_fr_ask), dec)
                     if lim_px > aw_px * 1.0003:
                         o["wall_queue_pos"] = "BEHIND_ASK_WALL"
                         o["ask_wall_ahead_px"] = aw_px
                         o["ask_wall_ahead_usd"] = round(aw_usd, 0)
-                        o["recommended_front_run_px"] = round(aw_px * 0.9998, dec)
+                        o["recommended_front_run_px"] = fr_ask_px
                         queue_penalty = 0.60
                     elif abs(lim_px - aw_px) / aw_px <= 0.0003:
                         o["wall_queue_pos"] = "AT_ASK_WALL"
-                        o["recommended_front_run_px"] = round(aw_px * 0.9998, dec)
+                        o["recommended_front_run_px"] = fr_ask_px
                         queue_penalty = 0.78
                     else:
                         o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
@@ -2249,15 +2258,19 @@ def enrich_open_limit_orders_tca(
                 bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
                 bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
                 if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0:
+                    raw_fr_bid = max(bw_px + tick_step, bw_px * 1.0002)
+                    if best_bid_px is not None and best_bid_px > 0.0:
+                        raw_fr_bid = min(best_bid_px, raw_fr_bid)
+                    fr_bid_px = round(max(bw_px, raw_fr_bid), dec)
                     if lim_px < bw_px * 0.9997:
                         o["wall_queue_pos"] = "BEHIND_BID_WALL"
                         o["bid_wall_ahead_px"] = bw_px
                         o["bid_wall_ahead_usd"] = round(bw_usd, 0)
-                        o["recommended_front_run_px"] = round(bw_px * 1.0002, dec)
+                        o["recommended_front_run_px"] = fr_bid_px
                         queue_penalty = 0.60
                     elif abs(lim_px - bw_px) / bw_px <= 0.0003:
                         o["wall_queue_pos"] = "AT_BID_WALL"
-                        o["recommended_front_run_px"] = round(bw_px * 1.0002, dec)
+                        o["recommended_front_run_px"] = fr_bid_px
                         queue_penalty = 0.78
                     else:
                         o["wall_queue_pos"] = "FRONT_OF_BID_WALL"

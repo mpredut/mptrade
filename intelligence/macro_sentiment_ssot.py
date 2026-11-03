@@ -1995,8 +1995,13 @@ def compute_dynamic_sentiment_interval(
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
     if prev_tr is None and cached_assessment is not None:
         summary_s = str(obj_attr(cached_assessment, "summary", "") or "")
-        if m_tr := re.search(r"taker\s+buy/sell\s+ratio[^0-9]*([0-9]+\.[0-9]+)", summary_s, re.IGNORECASE):
-            prev_tr = safe_pos_float(m_tr.group(1), default=None)
+        m_tr = re.search(
+            r"(?:([0-9]+\.[0-9]+)\s*taker\s+buy/sell\s+ratio|taker\s+buy/sell\s+ratio(?:\s*(?:of|at|=|:|is))?\s*([0-9]+\.[0-9]+)(?!%))",
+            summary_s,
+            re.IGNORECASE,
+        )
+        if m_tr:
+            prev_tr = safe_pos_float(m_tr.group(1) or m_tr.group(2), default=None)
     if cur_tr is not None:
         if prev_tr is not None and (
             (prev_tr <= 0.75 and cur_tr >= 1.25)
