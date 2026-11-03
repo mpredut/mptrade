@@ -12,9 +12,10 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
-from botcore import _parse_bool_flag, load_dotenv, required_env
+from botcore import _parse_bool_flag, load_dotenv, required_env, safe_float
+from cachepaths import cache_path
 from intelligence.macro_sentiment_ssot import is_cache_fresh, safe_pos_float
-from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base
+from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base, resolve_ui_cli_base
 from orchestratorOS.agy.summary_store import (
     delete_threads,
     restore_conversation_state,
@@ -29,6 +30,7 @@ from orchestratorOS.agy.topics import (
     record_topic_turn,
     topic_spec,
 )
+from state_io import read_json_dict, save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
@@ -41,6 +43,9 @@ DEFAULT_FALLBACK_MODELS = tuple(
     m.strip() for m in FALLBACK_MODELS_RAW.split(",") if m.strip()
 )
 AGY_CLI_PATH = resolve_agy_bot_bin()
+QUOTA_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
+LOAD_ASSIST_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+AGY_QUOTA_USER_AGENT = "antigravity/1.4.12"
 
 
 def canonical_rest_model(model_name: str) -> str:
@@ -64,6 +69,8 @@ class GeminiClient:
     _TOPIC_LOCKS: Dict[str, threading.Lock] = {}
     _TOPIC_LOCKS_GUARD = threading.Lock()
     _JSON_MODE_LOCAL = threading.local()
+    _QUOTA_LOCK = threading.Lock()
+    _QUOTA_MEM_CACHE: Dict[str, Any] = {}
 
     @classmethod
     def _get_topic_lock(cls, topic_key: str) -> threading.Lock:
@@ -87,6 +94,7 @@ class GeminiClient:
         cleaned_model = model.strip() if isinstance(model, str) and model.strip() else ""
         self._explicit_model = bool(cleaned_model)
         self.model = cleaned_model or DEFAULT_MODEL
+        self._custom_fallbacks = fallback_models is not None
         if fallback_models is not None:
             self.fallback_models = tuple(
                 m.strip() for m in fallback_models if isinstance(m, str) and m.strip()
@@ -113,10 +121,340 @@ class GeminiClient:
         """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
         selected = (primary_model.strip() if isinstance(primary_model, str) and primary_model.strip() else None) or self.model
         candidates = [selected]
+        if selected.endswith("-low") and not getattr(self, "_custom_fallbacks", False):
+            for fb in self.fallback_models:
+                if fb and fb not in candidates and (fb.endswith("-low") or fb == "gpt-oss-120b-medium"):
+                    candidates.append(fb)
         for fb in self.fallback_models:
             if fb and fb not in candidates:
                 candidates.append(fb)
         return candidates
+
+    @staticmethod
+    def _get_quota_state_path() -> str:
+        """Return shared SSOT cache path for live LLM model quota & credit status."""
+        return cache_path("llm_quota_status.json")
+
+    @staticmethod
+    def _extract_available_credits(load_assist_payload: Any) -> float:
+        """Extract total available paid credits from loadCodeAssist response payload."""
+        if not isinstance(load_assist_payload, dict):
+            return 0.0
+        total = 0.0
+        for tier_key in ("paidTier", "currentTier"):
+            tier = load_assist_payload.get(tier_key)
+            if not isinstance(tier, dict):
+                continue
+            credits_list = tier.get("availableCredits")
+            if not isinstance(credits_list, list):
+                continue
+            for item in credits_list:
+                if isinstance(item, dict):
+                    val = safe_float(
+                        item.get("creditAmount")
+                        or item.get("amount")
+                        or item.get("remainingCredits")
+                        or item.get("credits"),
+                        0.0,
+                    )
+                    if val > 0:
+                        total += val
+                elif isinstance(item, (int, float, str)):
+                    val = safe_float(item, 0.0)
+                    if val > 0:
+                        total += val
+        return total
+
+    @classmethod
+    def probe_live_model_quota(
+        cls,
+        bot_cli_base: Optional[str] = None,
+        *,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Query Cloud Code internal quota & credits endpoints (~200ms) with short TTL cache.
+
+        Ensures a model is only invoked when we know it has remaining subscription quota
+        (``remainingFraction > 0``) or paid top-up credits (``available_credits > 0``),
+        and dynamically restores primary paid models immediately after a top-up or window reset.
+        """
+        now = time.time()
+        ttl_sec = max(5.0, safe_float(os.environ.get("LLM_QUOTA_CACHE_TTL_SEC"), 30.0))
+        state_path = cls._get_quota_state_path()
+
+        with cls._QUOTA_LOCK:
+            mem = cls._QUOTA_MEM_CACHE
+            if (
+                not force_refresh
+                and isinstance(mem, dict)
+                and isinstance(mem.get("buckets"), dict)
+                and (now - safe_float(mem.get("checked_ts"), 0.0)) < ttl_sec
+            ):
+                return dict(mem)
+
+            disk = read_json_dict(state_path, default={})
+            if (
+                not force_refresh
+                and isinstance(disk, dict)
+                and isinstance(disk.get("buckets"), dict)
+                and (now - safe_float(disk.get("checked_ts"), 0.0)) < ttl_sec
+            ):
+                cls._QUOTA_MEM_CACHE = dict(disk)
+                return dict(disk)
+
+        cli_bases = []
+        if bot_cli_base and isinstance(bot_cli_base, str):
+            cli_bases.append(bot_cli_base)
+        for resolved_base in (resolve_bot_cli_base(), resolve_ui_cli_base()):
+            if resolved_base and resolved_base not in cli_bases:
+                cli_bases.append(resolved_base)
+
+        access_token = ""
+        for base_dir in cli_bases:
+            tok_path = os.path.join(base_dir, "antigravity-oauth-token")
+            if not os.path.isfile(tok_path):
+                continue
+            try:
+                tok_data = read_json_dict(tok_path, default={})
+                tok = str(tok_data.get("access_token") or "").strip()
+                exp_ts = safe_float(tok_data.get("expiry_timestamp"), 0.0)
+                if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
+                    access_token = tok
+                    break
+            except Exception:
+                continue
+
+        if not access_token:
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": AGY_QUOTA_USER_AGENT,
+        }
+
+        buckets: Dict[str, float] = {}
+        try:
+            req = urllib.request.Request(QUOTA_API_URL, data=b"{}", headers=headers)
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                quota_payload = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(quota_payload, dict) or not isinstance(quota_payload.get("buckets"), list):
+                return None
+            for b in quota_payload.get("buckets", []):
+                if not isinstance(b, dict):
+                    continue
+                mid = str(b.get("modelId") or "").strip()
+                if not mid:
+                    continue
+                rem = max(0.0, safe_float(b.get("remainingFraction"), 0.0))
+                buckets[mid] = rem
+            if "gemini-3.8-flash-tiered" in buckets and "gemini-3.8-flash-low" not in buckets:
+                buckets["gemini-3.8-flash-low"] = buckets["gemini-3.8-flash-tiered"]
+        except Exception as exc:
+            logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
+            return None
+
+        available_credits = 0.0
+        tier_id = ""
+        try:
+            req_assist = urllib.request.Request(LOAD_ASSIST_API_URL, data=b"{}", headers=headers)
+            with urllib.request.urlopen(req_assist, timeout=2.0) as resp_assist:
+                assist_payload = json.loads(resp_assist.read().decode("utf-8"))
+            if isinstance(assist_payload, dict):
+                available_credits = cls._extract_available_credits(assist_payload)
+                paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
+                curr_tier = assist_payload.get("currentTier") if isinstance(assist_payload.get("currentTier"), dict) else {}
+                tier_id = str(paid_tier.get("id") or curr_tier.get("id") or "").strip()
+        except Exception as exc:
+            logger.debug("Live LLM loadCodeAssist credit check failed (non-fatal): %s", exc)
+
+        with cls._QUOTA_LOCK:
+            prev = read_json_dict(state_path, default={})
+            if not isinstance(prev, dict):
+                prev = {}
+            runtime_exhausted: Dict[str, float] = {}
+            prev_exhausted = prev.get("runtime_exhausted")
+            if isinstance(prev_exhausted, dict) and available_credits <= 0.0:
+                for m_name, exp_val in prev_exhausted.items():
+                    exp_ts = safe_float(exp_val, 0.0)
+                    if exp_ts > now and safe_float(buckets.get(m_name), 0.0) <= 0.0:
+                        runtime_exhausted[str(m_name)] = exp_ts
+
+            snapshot: Dict[str, Any] = {
+                "checked_ts": now,
+                "tier_id": tier_id,
+                "available_credits": available_credits,
+                "buckets": buckets,
+                "runtime_exhausted": runtime_exhausted,
+                "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0),
+                "last_alert_tier": str(prev.get("last_alert_tier") or "ok"),
+            }
+            cls._QUOTA_MEM_CACHE = dict(snapshot)
+            try:
+                save_json_state(state_path, snapshot)
+            except Exception:
+                pass
+
+        cls._maybe_notify_low_quota(snapshot)
+        return snapshot
+
+    @classmethod
+    def filter_models_with_confirmed_credits(
+        cls,
+        candidates: list[str],
+        quota_snapshot: Optional[Dict[str, Any]],
+    ) -> list[str]:
+        """Filter candidate models so only models with confirmed quota or top-up credits are called."""
+        if not candidates or not isinstance(quota_snapshot, dict):
+            return list(candidates)
+        buckets = quota_snapshot.get("buckets")
+        if not isinstance(buckets, dict):
+            return list(candidates)
+        available_credits = safe_float(quota_snapshot.get("available_credits"), 0.0)
+        if not buckets and available_credits <= 0.0:
+            return list(candidates)
+
+        now = time.time()
+        runtime_exhausted = (
+            quota_snapshot.get("runtime_exhausted")
+            if isinstance(quota_snapshot.get("runtime_exhausted"), dict)
+            else {}
+        )
+
+        confirmed: list[str] = []
+        for m in candidates:
+            exp_ts = safe_float(runtime_exhausted.get(m), 0.0)
+            if exp_ts > now and available_credits <= 0.0 and safe_float(buckets.get(m), 0.0) <= 0.0:
+                continue
+            if available_credits > 0.0 or safe_float(buckets.get(m), 0.0) > 0.0:
+                confirmed.append(m)
+        return confirmed
+
+    @classmethod
+    def _record_model_quota_exhausted(cls, model_name: str, ttl_sec: float = 120.0) -> None:
+        """Record a runtime quota/credit error for a model and trigger low-quota alert check."""
+        cleaned = str(model_name or "").strip()
+        if not cleaned:
+            return
+        now = time.time()
+        state_path = cls._get_quota_state_path()
+        snapshot: Optional[Dict[str, Any]] = None
+        with cls._QUOTA_LOCK:
+            data = read_json_dict(state_path, default={})
+            if not isinstance(data, dict):
+                data = {}
+            buckets = data.get("buckets") if isinstance(data.get("buckets"), dict) else {}
+            buckets[cleaned] = 0.0
+            runtime_exhausted = (
+                data.get("runtime_exhausted")
+                if isinstance(data.get("runtime_exhausted"), dict)
+                else {}
+            )
+            runtime_exhausted[cleaned] = now + max(15.0, float(ttl_sec))
+            data["buckets"] = buckets
+            data["runtime_exhausted"] = runtime_exhausted
+            data.setdefault("checked_ts", now)
+            data.setdefault("available_credits", 0.0)
+            cls._QUOTA_MEM_CACHE = dict(data)
+            try:
+                save_json_state(state_path, data)
+            except Exception:
+                pass
+            snapshot = dict(data)
+        if snapshot is not None:
+            cls._maybe_notify_low_quota(snapshot)
+
+    @classmethod
+    def _maybe_notify_low_quota(cls, snapshot: Dict[str, Any]) -> None:
+        """Send an alert on NTFY_TOPIC_ERROR when primary paid model quota/credits are near zero."""
+        if not isinstance(snapshot, dict):
+            return
+        buckets = snapshot.get("buckets")
+        if not isinstance(buckets, dict) or not buckets:
+            return
+        available_credits = safe_float(snapshot.get("available_credits"), 0.0)
+        warn_threshold = max(0.0, min(0.5, safe_float(os.environ.get("LLM_QUOTA_LOW_WARN_FRACTION"), 0.10)))
+        cooldown_sec = max(300.0, safe_float(os.environ.get("LLM_QUOTA_ALERT_COOLDOWN_SEC"), 14400.0))
+
+        argon_rem = max(
+            safe_float(buckets.get("gemini-4-argon-medium"), 0.0),
+            safe_float(buckets.get("gemini-4-argon-low"), 0.0),
+            safe_float(buckets.get("gemini-4-argon-high"), 0.0),
+        )
+        claude_rem = max(
+            safe_float(buckets.get("claude-sonnet-5-5-medium"), 0.0),
+            safe_float(buckets.get("claude-sonnet-5-5-low"), 0.0),
+        )
+        free_rem = safe_float(buckets.get("gpt-oss-120b-medium"), 0.0)
+
+        if available_credits > 0.0 or argon_rem > warn_threshold:
+            if snapshot.get("last_alert_tier") not in (None, "", "ok"):
+                state_path = cls._get_quota_state_path()
+                with cls._QUOTA_LOCK:
+                    snapshot["last_alert_tier"] = "ok"
+                    cls._QUOTA_MEM_CACHE = dict(snapshot)
+                    try:
+                        save_json_state(state_path, snapshot)
+                    except Exception:
+                        pass
+            return
+
+        if claude_rem <= warn_threshold and free_rem <= warn_threshold:
+            alert_tier = "all_exhausted"
+            severity_rank = 3
+        elif claude_rem <= warn_threshold:
+            alert_tier = "all_paid_low"
+            severity_rank = 2
+        else:
+            alert_tier = "argon_low"
+            severity_rank = 1
+
+        rank_map = {"ok": 0, "argon_low": 1, "all_paid_low": 2, "all_exhausted": 3}
+        prev_tier = str(snapshot.get("last_alert_tier") or "ok")
+        prev_rank = rank_map.get(prev_tier, 0)
+        now = time.time()
+        last_alert_ts = safe_float(snapshot.get("last_alert_ts"), 0.0)
+
+        if severity_rank <= prev_rank and (now - last_alert_ts) < cooldown_sec:
+            return
+
+        try:
+            from orchestratorOS.lib import watchdog_common
+        except Exception:
+            return
+
+        if (
+            "PYTEST_CURRENT_TEST" in os.environ
+            and not hasattr(watchdog_common.send_ntfy, "_mock_name")
+            and not _parse_bool_flag(os.environ.get("LLM_FORCE_QUOTA_ALERT_TEST"))
+        ):
+            return
+
+        title = "AI LLM Quota Near Zero" if argon_rem > 0.0 else "AI LLM Paid Argon Quota Exhausted (0%)"
+        msg = (
+            f"Credite suplimentare: {available_credits:.0f} | "
+            f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
+            f"claude-sonnet-5-5 (paid fallback): {claude_rem * 100:.0f}% | "
+            f"gpt-oss-120b (free): {free_rem * 100:.0f}%. "
+            f"Routing activat automat pe primul model cu credite confirmate; "
+            f"revenire dinamica imediata pe Argon dupa reincarcare/reset."
+        )
+        sent = False
+        try:
+            sent = bool(watchdog_common.send_ntfy(title, msg))
+        except Exception as exc:
+            logger.debug("Failed sending low-quota NTFY alert: %s", exc)
+
+        if sent:
+            state_path = cls._get_quota_state_path()
+            with cls._QUOTA_LOCK:
+                snapshot["last_alert_ts"] = now
+                snapshot["last_alert_tier"] = alert_tier
+                cls._QUOTA_MEM_CACHE = dict(snapshot)
+                try:
+                    save_json_state(state_path, snapshot)
+                except Exception:
+                    pass
 
     def _execute_cli(
         self,
@@ -300,7 +638,13 @@ class GeminiClient:
                 run_env["AGY_BOT_HOME"] = os.path.dirname(os.path.dirname(bot_cli_base))
 
                 # Attempt primary model followed by fallback models if CLI call fails
-                models_to_try = self.get_model_candidates(selected_model)
+                raw_candidates = self.get_model_candidates(selected_model)
+                enable_pre_quota = not is_mocked or hasattr(self.probe_live_model_quota, "_mock_name")
+                if enable_pre_quota:
+                    quota_snapshot = self.probe_live_model_quota(bot_cli_base=bot_cli_base)
+                    models_to_try = self.filter_models_with_confirmed_credits(raw_candidates, quota_snapshot)
+                else:
+                    models_to_try = raw_candidates
                 conv_snapshot = (
                     snapshot_conversation_state(bot_cli_base, session.conversation_id)
                     if (session.conversation_id and not is_mocked)
@@ -437,9 +781,9 @@ class GeminiClient:
                             turn_cid = None
 
                     if output:
-                        if attempt_idx > 0:
+                        if attempt_idx > 0 or model_candidate != selected_model:
                             logger.warning(
-                                "LLM query succeeded using fallback model '%s' (primary '%s' failed).",
+                                "LLM query succeeded using fallback model '%s' (primary '%s' unavailable/failed).",
                                 model_candidate,
                                 selected_model,
                             )
@@ -508,6 +852,8 @@ class GeminiClient:
                                 _finalize_topic_turn(False)
                         return output
                     else:
+                        if enable_pre_quota and self._is_quota_or_credit_error(proc):
+                            self._record_model_quota_exhausted(model_candidate)
                         logger.warning(
                             "agy CLI with model '%s' failed (code %s): %s",
                             model_candidate,

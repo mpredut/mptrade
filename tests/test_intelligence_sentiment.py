@@ -1090,6 +1090,139 @@ def test_conversation_state_snapshot_and_rollback_and_cache_empty_dict_skip(tmp_
     assert w_snap == {"long_ratio": 0.64}
 
 
+def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_path, monkeypatch):
+    """Verify low-latency pre-call quota check skips 0-credit models and dynamically restores primary on top-up."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    cli_bin = tmp_path / "agy-bot"
+    cli_bin.write_text("#!/bin/sh\n")
+    bot_cli_base = tmp_path / "bot_cli"
+    bot_cli_base.mkdir(parents=True, exist_ok=True)
+    quota_state_file = tmp_path / "llm_quota_status.json"
+
+    (bot_cli_base / "antigravity-oauth-token").write_text(
+        json.dumps({"access_token": "tok-live-123", "expiry_timestamp": int(time.time()) + 3600})
+    )
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
+    GeminiClient._QUOTA_MEM_CACHE = {}
+
+    # Phase 1: Argon models exhausted (absent from buckets, 0 availableCredits), Claude & GPT-OSS have 100% quota
+    api_state = {
+        "buckets": [
+            {"modelId": "claude-sonnet-5-5-medium", "remainingFraction": 1.0},
+            {"modelId": "claude-sonnet-5-5-low", "remainingFraction": 1.0},
+            {"modelId": "gpt-oss-120b-medium", "remainingFraction": 1.0},
+        ],
+        "availableCredits": [],
+    }
+
+    class _FakeResp:
+        def __init__(self, payload: dict):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _fake_urlopen(req, timeout=2.5):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        assert req.headers.get("User-agent") == "antigravity/1.4.12"
+        if "retrieveUserQuota" in url:
+            return _FakeResp({"buckets": api_state["buckets"]})
+        if "loadCodeAssist" in url:
+            return _FakeResp({"paidTier": {"id": "g1-ultra-tier", "availableCredits": api_state["availableCredits"]}})
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    snap1 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
+    assert snap1 is not None
+    assert snap1["available_credits"] == 0.0
+
+    client = GeminiClient(cli_path=str(cli_bin))
+    med_candidates = client.get_model_candidates("gemini-4-argon-medium")
+    filtered_med = GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap1)
+    # Argon models (0% quota) are skipped immediately; paid claude-sonnet-5-5-medium is first!
+    assert filtered_med == [
+        "claude-sonnet-5-5-medium",
+        "claude-sonnet-5-5-low",
+        "gpt-oss-120b-medium",
+    ]
+
+    low_candidates = client.get_model_candidates("gemini-4-argon-low")
+    filtered_low = GeminiClient.filter_models_with_confirmed_credits(low_candidates, snap1)
+    assert filtered_low[0] == "claude-sonnet-5-5-low"
+
+    # Phase 2: User tops up paid credits (or 5h window resets) -> Argon dynamically restored on next probe!
+    api_state["availableCredits"] = [{"creditAmount": 25.0}]
+    snap2 = GeminiClient.probe_live_model_quota(bot_cli_base=str(bot_cli_base), force_refresh=True)
+    assert snap2 is not None
+    assert snap2["available_credits"] == 25.0
+    restored_med = GeminiClient.filter_models_with_confirmed_credits(med_candidates, snap2)
+    assert restored_med[0] == "gemini-4-argon-medium"
+
+
+def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeypatch):
+    """Verify NTFY_TOPIC_ERROR alert fires when Argon quota is near zero (<=10%) and resets on top-up."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    quota_state_file = tmp_path / "llm_quota_alert.json"
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
+    GeminiClient._QUOTA_MEM_CACHE = {}
+
+    alerts = []
+
+    def _mock_ntfy(title, message):
+        alerts.append({"title": title, "message": message})
+        return True
+
+    _mock_ntfy._mock_name = "send_ntfy"
+    monkeypatch.setattr(
+        "orchestratorOS.lib.watchdog_common.send_ntfy",
+        _mock_ntfy,
+    )
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-error-1978")
+    monkeypatch.setenv("LLM_QUOTA_LOW_WARN_FRACTION", "0.10")
+    monkeypatch.setenv("LLM_QUOTA_ALERT_COOLDOWN_SEC", "14400")
+
+    # 1. Argon at 0%, Claude at 100% -> triggers argon_low alert on ntfy-error-1978
+    snap_low = {
+        "checked_ts": time.time(),
+        "available_credits": 0.0,
+        "buckets": {
+            "claude-sonnet-5-5-medium": 1.0,
+            "gpt-oss-120b-medium": 1.0,
+        },
+        "last_alert_ts": 0.0,
+        "last_alert_tier": "ok",
+    }
+    GeminiClient._maybe_notify_low_quota(snap_low)
+    assert len(alerts) == 1
+    assert "0%" in alerts[0]["title"]
+    assert snap_low["last_alert_tier"] == "argon_low"
+
+    # 2. Repeated check within 4h cooldown at same severity does NOT spam
+    GeminiClient._maybe_notify_low_quota(snap_low)
+    assert len(alerts) == 1
+
+    # 3. Escalation: Claude also drops to 5% (<= 10%) -> alerts immediately despite cooldown
+    snap_low["buckets"]["claude-sonnet-5-5-medium"] = 0.05
+    GeminiClient._maybe_notify_low_quota(snap_low)
+    assert len(alerts) == 2
+    assert snap_low["last_alert_tier"] == "all_paid_low"
+
+    # 4. User tops up credits -> alert tier resets to "ok"
+    snap_low["available_credits"] = 50.0
+    GeminiClient._maybe_notify_low_quota(snap_low)
+    assert snap_low["last_alert_tier"] == "ok"
+
+
+
 
 
 

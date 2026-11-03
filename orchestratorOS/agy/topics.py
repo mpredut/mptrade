@@ -80,12 +80,13 @@ class TopicSpec:
 
 HIGH_STAKE_MODEL = os.environ.get("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high").strip() or "gemini-4-argon-high"
 EXECUTOR_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "gemini-4-argon-medium").strip() or "gemini-4-argon-medium"
+LOW_STAKE_MODEL = os.environ.get("LLM_LOW_STAKE_MODEL", "gemini-4-argon-low").strip() or "gemini-4-argon-low"
 
 TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
         "🛠 [auto_technical_repair] System Audit & Code Self-Heal (03:35)",
         can_self_heal=True,
-        preferred_model=HIGH_STAKE_MODEL,
+        preferred_model=EXECUTOR_MODEL,
         default_timeout_sec=120.0,
     ),
     "auto_cryptotrade_executor": TopicSpec(
@@ -104,12 +105,12 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
     ),
     "macro_geopolitical": TopicSpec(
         "🌍 [auto_macro_geopolitical] Geopolitical Crisis & Breaking News Brake",
-        preferred_model=HIGH_STAKE_MODEL,
+        preferred_model=LOW_STAKE_MODEL,
         default_timeout_sec=120.0,
     ),
     "macro_sentiment": TopicSpec(
         "🧭 [auto_macro_sentiment] Fear & Greed, Breadth & Market Bias (3h)",
-        preferred_model=HIGH_STAKE_MODEL,
+        preferred_model=EXECUTOR_MODEL,
         default_timeout_sec=120.0,
     ),
     "guard_high_stake": TopicSpec(
@@ -119,7 +120,7 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
     ),
     "guard_post_stop": TopicSpec(
         "🛡 [auto_guard_post_stop] Pre-Trade Veto for Post-Stop Re-Buy Bounce",
-        preferred_model=HIGH_STAKE_MODEL,
+        preferred_model=EXECUTOR_MODEL,
         default_timeout_sec=120.0,
     ),
 }

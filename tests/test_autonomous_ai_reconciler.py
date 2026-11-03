@@ -5894,25 +5894,33 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
     from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
     from orchestratorOS.agy.topics import topic_spec
 
-    # 1. High-stake / rare topics use gemini-4-argon-high and 120.0s timeout
-    for high_topic in (
+    # 1. ONLY guard_high_stake (>= 700 EUR BUY) uses gemini-4-argon-high
+    hs_spec = topic_spec("guard_high_stake")
+    assert hs_spec.preferred_model == "gemini-4-argon-high"
+    assert hs_spec.default_timeout_sec == 120.0
+
+    # 2. Critical reasoning / post-stop / repair topics use gemini-4-argon-medium and 120.0s timeout
+    for med_120_topic in (
         "auto_technical_repair",
-        "macro_geopolitical",
         "macro_sentiment",
-        "guard_high_stake",
         "guard_post_stop",
     ):
-        spec = topic_spec(high_topic)
-        assert spec.preferred_model == "gemini-4-argon-high"
+        spec = topic_spec(med_120_topic)
+        assert spec.preferred_model == "gemini-4-argon-medium"
         assert spec.default_timeout_sec == 120.0
 
-    # 2. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
+    # 3. RSS news triage (macro_geopolitical) uses gemini-4-argon-low and 120.0s timeout
+    geo_spec = topic_spec("macro_geopolitical")
+    assert geo_spec.preferred_model == "gemini-4-argon-low"
+    assert geo_spec.default_timeout_sec == 120.0
+
+    # 4. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
     for exec_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
         spec = topic_spec(exec_topic)
         assert spec.preferred_model == "gemini-4-argon-medium"
         assert spec.default_timeout_sec == 90.0
 
-    # 3. GeminiClient fallback chain deduplicates primary model cleanly
+    # 5. GeminiClient fallback chain deduplicates primary model and orders paid fallbacks ahead of free
     observed = {}
 
     def _runner(prompt, model, timeout):
@@ -5926,23 +5934,35 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
         "gemini-4-argon-high",
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
-        "gemini-3.8-flash-medium",
-        "gpt-oss-120b-medium",
         "claude-sonnet-5-5-medium",
+        "claude-sonnet-5-5-low",
+        "gemini-3.8-flash-medium",
     ]
-    assert "claude-sonnet-5-5-low" in high_chain
+    assert "gpt-oss-120b-medium" in high_chain
 
     med_chain = client.get_model_candidates("gemini-4-argon-medium")
     assert med_chain[:5] == [
         "gemini-4-argon-medium",
         "gemini-4-argon-low",
-        "gemini-3.8-flash-medium",
-        "gpt-oss-120b-medium",
         "claude-sonnet-5-5-medium",
+        "claude-sonnet-5-5-low",
+        "gemini-3.8-flash-medium",
+    ]
+
+    low_chain = client.get_model_candidates("gemini-4-argon-low")
+    assert low_chain[:4] == [
+        "gemini-4-argon-low",
+        "claude-sonnet-5-5-low",
+        "gemini-3.8-flash-low",
+        "gpt-oss-120b-medium",
     ]
 
     client.query_json("test guard", topic_key="guard_high_stake", timeout_sec=120.0)
     assert observed["model"] == "gemini-4-argon-high"
+    assert observed["timeout"] == 120.0
+
+    client.query_json("test geo", topic_key="macro_geopolitical", timeout_sec=120.0)
+    assert observed["model"] == "gemini-4-argon-low"
     assert observed["timeout"] == 120.0
 
     client.query_json("test exec", topic_key="auto_cryptotrade_executor", timeout_sec=90.0)
