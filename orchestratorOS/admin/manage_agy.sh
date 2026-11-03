@@ -151,7 +151,7 @@ do_ui_sync() {
     exec 200>"$LOCK_FILE"
     flock -w 10 200 || exit 0
     local ssot_vals idle_sec="" min_interval_sec="" rc=0
-    ssot_vals="$(/usr/bin/python3 -c "import sys; sys.path.insert(0, '$ROOT'); from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null || true)"
+    ssot_vals="$(/usr/bin/python3 -c "import sys; sys.path[:0] = ['$ROOT/intelligence', '$ROOT']; from macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null || true)"
     read -r idle_sec min_interval_sec <<< "$ssot_vals"
     [ -z "$idle_sec" ] && idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
     [ -z "$min_interval_sec" ] && min_interval_sec=720
