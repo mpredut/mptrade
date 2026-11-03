@@ -40,6 +40,7 @@ from intelligence.macro_sentiment_ssot import (
     run_daemon_loop,
     safe_pos_float,
     sanitize_heartbeat_status,
+    write_daemon_heartbeat,
     write_daemon_heartbeat_files,
 )
 
@@ -231,10 +232,10 @@ class MacroAnalyzer:
                     self._last_fg_value = int(fg_snap.value)
                 if mb_snap is not None:
                     self._last_advance_ratio = float(mb_snap.advance_ratio)
-                btc_w = (whale_data or {}).get("BTCUSDC") or (whale_data or {}).get("BTCUSDT") if isinstance(whale_data, dict) else None
-                btc_tr = safe_pos_float(getattr(btc_w, "taker_buy_sell_ratio", None) if btc_w is not None else None, None)
-                if btc_tr is not None:
-                    self._last_btc_taker_ratio = float(btc_tr)
+                if isinstance(whale_data, dict):
+                    tr_val = safe_pos_float(whale_data.get("taker_buy_sell_ratio"), default=None)
+                    if tr_val is not None:
+                        self._last_btc_taker_ratio = tr_val
                 logger.info(
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,
@@ -326,9 +327,8 @@ class MacroAnalyzer:
 
         fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=current_ts)
         mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=current_ts)
-        whale_btc = load_cached_whale_telemetry(self.cache_dir, symbols=["BTCUSDC"])
-        btc_w_snap = (whale_btc or {}).get("BTCUSDC") if isinstance(whale_btc, dict) else None
-        cur_btc_tr = safe_pos_float(getattr(btc_w_snap, "taker_buy_sell_ratio", None) if btc_w_snap is not None else None, None)
+        whale_snap = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
+        cur_btc_tr = safe_pos_float(whale_snap.get("taker_buy_sell_ratio"), default=None) if isinstance(whale_snap, dict) else None
         cached_adv = getattr(self.sentiment_advisor, "_cached_assessment", None)
         latest_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", cached_geo)
         geo_threat_str = str(getattr(latest_geo, "threat_level", "NORMAL") or "NORMAL")
@@ -344,7 +344,7 @@ class MacroAnalyzer:
             prev_advance_ratio=self._last_advance_ratio,
             geopolitical_threat_level=geo_threat_str,
             btc_taker_ratio=cur_btc_tr,
-            prev_btc_taker_ratio=self._last_btc_taker_ratio,
+            prev_btc_taker_ratio=getattr(self, "_last_btc_taker_ratio", None),
         )
         self._effective_advisor_interval_sec = adv_interval
         self._effective_advisor_reason = adv_reason
@@ -388,12 +388,10 @@ class MacroAnalyzer:
         """Write heartbeat metadata atomically to cachedb/ with fallback."""
         hb_ts, safe_status = sanitize_heartbeat_status(status)
         session_ctx = resolve_global_trading_session(hb_ts)
-        payload = {
-            "pid": os.getpid(),
-            "status": "alive",
-            "ts": hb_ts,
-            "global_session": session_ctx.session_key,
-            "intervals": {
+        write_daemon_heartbeat(
+            self.heartbeat_path,
+            safe_status,
+            intervals={
                 "geopolitical_llm": self.macro_llm_interval_sec,
                 "market_advisor": self.advisor_interval_sec,
                 "effective_geopolitical_llm": getattr(self, "_effective_geo_interval_sec", self.macro_llm_interval_sec),
@@ -402,9 +400,9 @@ class MacroAnalyzer:
                 "market_advisor_reason": getattr(self, "_effective_advisor_reason", "init"),
                 "thread_prune": self.thread_prune_interval_sec,
             },
-            "last_run": safe_status,
-        }
-        write_daemon_heartbeat_files((self.heartbeat_path,), payload, logger_inst=logger)
+            extra={"global_session": session_ctx.session_key},
+            logger_inst=logger,
+        )
 
     def start(self, poll_interval_sec: float = 5.0) -> None:
         """Run the main analysis loop continuously."""

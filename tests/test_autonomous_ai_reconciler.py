@@ -8499,6 +8499,136 @@ def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_
     assert xst["holdings"] == {"SPCXX.T": 2.5}
 
 
+def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_cost(tmp_path):
+    from datetime import datetime, timezone
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.macro_sentiment_ssot import (
+        headlines_are_semantic_duplicates,
+        is_excluded_reference_news_item,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        compute_liquidation_clusters,
+        compute_volume_profile_metrics,
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        harvest_recent_orders_and_enrich_positions,
+        parse_venue_cycle_state,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_recent_order_line,
+        _format_tradable_position_line,
+    )
+
+    # 1. Macro calendar uses routine session description when no macro release headlines are detected
+    cal_routine = resolve_macro_economic_calendar(
+        now_ts=datetime(2026, 11, 3, 18, 45, tzinfo=timezone.utc).timestamp(),  # 20:45 EET (15m before 21:00 EET)
+        breaking_news=[{"title": "Bitcoin holds $77,600 as spot volume stabilizes"}],
+    )
+    assert cal_routine["macro_release_confirmed"] is False
+    assert "Afternoon Treasury Auction & Liquidity Window" in cal_routine["next_high_impact_event"]
+    assert "FOMC Rate Decision" not in cal_routine["next_high_impact_event"]
+
+    # 2. Reference sources (Britannica/Wikipedia) are filtered and syndicated wire rewrites deduplicate
+    assert is_excluded_reference_news_item("Declaration of Independence | Summary", "Britannica") is True
+    assert headlines_are_semantic_duplicates(
+        "Core Scientific stock gains on Q1 revenue beat as shift to AI, HPC gathers steam",
+        "Core Scientific stock climbs after Q1 revenue beat as AI and HPC pivot gathers steam",
+    ) is True
+    rss_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item>
+    <title>Declaration of Independence | Summary, Definition, Date, &amp; Text</title>
+    <pubDate>Tue, 03 Nov 2026 18:00:00 GMT</pubDate>
+    <source>Britannica</source>
+  </item>
+  <item>
+    <title>Core Scientific stock gains on Q1 revenue beat as shift to AI, HPC gathers steam</title>
+    <pubDate>Tue, 03 Nov 2026 18:01:00 GMT</pubDate>
+    <source>Yahoo Finance</source>
+  </item>
+  <item>
+    <title>Core Scientific stock climbs after Q1 revenue beat as AI and HPC pivot gathers steam</title>
+    <pubDate>Tue, 03 Nov 2026 18:05:00 GMT</pubDate>
+    <source>Seeking Alpha</source>
+  </item>
+</channel></rss>"""
+    snap = NewsFeedCollector.parse_rss_xml(rss_xml, now_ts=1_793_729_400.0, cache_dir=str(tmp_path))
+    assert snap is not None
+    assert len(snap.headlines) == 1
+    assert "Core Scientific" in snap.headlines[0].title
+
+    # 3. Liquidation gravity uses inverse-square distance so a nearby +1.2% short cluster beats a distant -2.34% long cluster
+    tao_liq = compute_liquidation_clusters(
+        {"price": 225.30, "low_24h": 220.40, "high_24h": 227.60, "vol_1h_pct": 0.45},
+        {"whale_long_pct": 0.6591, "funding_rate": 0.00005, "oi_usd": 31_765_430.0},
+    )
+    assert tao_liq["liq_magnet_bias"] == "SHORT_SQUEEZE_MAGNET_UP"
+
+    # Bimodal volume profile exposes sec_poc_px
+    bimodal_prices = [0.1605] * 40 + [0.1620] * 10 + [0.1642] * 38
+    vp = compute_volume_profile_metrics(bimodal_prices)
+    assert vp.get("poc_px") is not None
+    assert vp.get("sec_poc_px") is not None
+
+    # 4. Tactical sub-cycle avg buy price & Kraken partial-sell remainder cycle preservation
+    fills = extract_symbol_recent_fills(
+        [
+            {"symbol": "TAOUSDC", "orderId": "1", "side": "BUY", "price": 244.40, "qty": 12.198, "time": 1000, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "2", "side": "SELL", "price": 226.40, "qty": 4.3077, "time": 2000, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "3", "side": "BUY", "price": 223.00, "qty": 4.4843, "time": 3000, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "4", "side": "BUY", "price": 224.00, "qty": 4.1983, "time": 4000, "status": "FILLED"},
+        ],
+        symbol="TAOUSDC",
+    )
+    assert fills is not None
+    assert fills["active_avg_buy_px"] == pytest.approx(234.675, rel=1e-2)
+    assert fills["tactical_avg_buy_px"] == pytest.approx(223.4837, rel=1e-3)
+    line_ro = _format_recent_order_line("TAOUSDC", fills, now_ms=5000)
+    assert "Tactical Sub-Cycle Avg BUY=" in line_ro
+
+    # Loss-making exit normalizes last_exit_kind from TP to REDUCE and preserves live wallet remainder
+    (tmp_path / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    {"symbol": "HYPEUSD", "orderId": "B1", "price": 91.21, "qty": 4.9358, "time": 1793365875456, "side": "BUY"},
+                    {"symbol": "HYPEUSD", "orderId": "S1", "price": 87.12, "qty": 2.2952, "time": 1793721326834, "side": "SELL"},
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hype_cyc = parse_venue_cycle_state(
+        {
+            "qty": 0.540276,
+            "cost": 49.27857,
+            "entry_price": 91.209992,
+            "last_buy_price": 91.209992,
+            "last_sell_price": 87.12,
+            "last_exit_kind": "TP",
+            "realized_net": -189.93,
+            "entry_ts": 1793369007.4793,
+        },
+        "HYPEUSD",
+        {"HYPEUSD": {"price": 85.37}},
+        include_meta=True,
+    )
+    assert hype_cyc["last_exit_kind"] == "REDUCE"
+    krk_cycles = {"HYPEUSD": hype_cyc}
+    tradable = [{"venue": "kraken", "symbol": "HYPEUSD", "base": "HYPE", "quote": "USD", "price": 85.37, "free_base": 0.540276, "free_quote": 387.66}]
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path), {}, tradable, {"HYPEUSD": {"price": 85.37}}, krk_cycles, {}, {}
+    )
+    assert krk_cycles["HYPEUSD"]["qty"] == pytest.approx(0.540276)
+    assert krk_cycles["HYPEUSD"]["avg_cost_px"] == pytest.approx(91.209992)
+    assert krk_cycles["HYPEUSD"]["last_exit_kind"] == "REDUCE"
+    pos_line = _format_tradable_position_line(
+        {**tradable[0], "active_avg_buy_px": 234.67, "pnl_vs_avg_pct": -4.0, "tactical_avg_buy_px": 223.48, "pnl_vs_tactical_avg_pct": 0.8}
+    )
+    assert "tactical_avg_px=223.48 (pnl_vs_tactical=0.8%)" in pos_line
+
 
 
 

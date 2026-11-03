@@ -1630,8 +1630,108 @@ def test_harvest_recent_orders_recomputes_flat_after_exit_when_free_base_populat
     assert pos["free_base"] == 0.02
     assert "trailing_peak" not in pos
     assert "active_avg_buy_px" not in pos
+    assert "tactical_avg_buy_px" not in pos
+    assert "pnl_vs_tactical_avg_pct" not in pos
     assert kraken_cycles["SOLUSD"]["avg_cost_px"] is None
     assert kraken_cycles["SOLUSD"]["cost_usd"] == 0.0
+
+
+def test_flat_cycle_clears_tactical_avg_and_semantic_stem_and_macro_analyzer_whale_flip(tmp_path):
+    """Verify tactical_avg_buy_px cleanup on cyc_flat, silent-e/comma stem normalization, str obj_attr safety, and MacroAnalyzer whale flip interval wiring."""
+    import json
+    import os
+    from types import SimpleNamespace
+    from botcore import obj_attr
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.macro_sentiment_ssot import (
+        _normalize_semantic_stem,
+        headlines_are_semantic_duplicates,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+
+    # 1. obj_attr on str returns default instead of bound str method; resolve_macro_economic_calendar accepts str headlines
+    assert obj_attr("US CPI print", "title", "") == ""
+    cal = resolve_macro_economic_calendar(now_ts=1762196700.0, breaking_news=["US CPI inflation print rises"])
+    assert cal["macro_release_confirmed"] is True
+    assert cal["detected_macro_headlines"] == ["US CPI inflation print rises"]
+
+    # 2. Semantic stemmer aligns silent-e verbs, preserves -is/-us/-as nouns, and normalizes comma numbers
+    assert _normalize_semantic_stem("surges") == _normalize_semantic_stem("surged") == _normalize_semantic_stem("surging")
+    assert _normalize_semantic_stem("crashes") == _normalize_semantic_stem("crashed") == _normalize_semantic_stem("crashing")
+    assert _normalize_semantic_stem("plunging") == _normalize_semantic_stem("plunges")
+    assert _normalize_semantic_stem("crisis") == "crisis"
+    assert _normalize_semantic_stem("texas") == "texas"
+    assert headlines_are_semantic_duplicates(
+        "Bitcoin surges past $70,000 after Fed announces rate cut",
+        "Bitcoin surged past $70000 after Fed announced rate cuts",
+    ) is True
+
+    # 3. cyc_flat clears tactical_avg_buy_px and pnl_vs_tactical_avg_pct from pos and ro
+    pos = {
+        "venue": "kraken",
+        "symbol": "TAOUSD",
+        "quote": "USD",
+        "free_base": 0.0,
+        "free_quote": 500.0,
+        "price": 225.0,
+        "exchange_min_notional_usd": 10.0,
+    }
+    krk_cycles = {"TAOUSD": {"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None}}
+    fake_files = {
+        "cache_trade_kraken.json": {
+            "items": {
+                "TAOUSD": [
+                    {"side": "BUY", "price": 244.40, "qty": 10.0, "executedQty": 10.0, "timestamp": 1000, "status": "FILLED"},
+                    {"side": "SELL", "price": 226.40, "qty": 4.0, "executedQty": 4.0, "timestamp": 2000, "status": "FILLED"},
+                    {"side": "BUY", "price": 223.00, "qty": 4.0, "executedQty": 4.0, "timestamp": 3000, "status": "FILLED"},
+                ]
+            }
+        }
+    }
+    ro_out = harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        [pos],
+        {"TAOUSD": {"price": 225.0}},
+        krk_cycles,
+        {},
+        {},
+        read_json_fn=lambda p: fake_files.get(os.path.basename(p), {}),
+    )
+    assert "tactical_avg_buy_px" not in pos
+    assert "pnl_vs_tactical_avg_pct" not in pos
+    assert "tactical_avg_buy_px" not in ro_out.get("TAOUSD", {})
+
+    # 4. MacroAnalyzer wires btc_taker_ratio and prev_btc_taker_ratio into compute_dynamic_sentiment_interval
+    (tmp_path / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({"symbol": "BTCUSDC", "taker_buy_sell_ratio": 1.42, "ts": 1000.0}),
+        encoding="utf-8",
+    )
+    analyzer = MacroAnalyzer(cache_dir=str(tmp_path), symbols=["BTCUSDC"])
+    analyzer._last_btc_taker_ratio = 0.68
+    analyzer._last_advisor_ts = 900.0
+    analyzer.sentiment_advisor._cached_assessment = SimpleNamespace(
+        market_bias="BEARISH",
+        risk_level="HIGH",
+        recommended_action="HALT_BUYS",
+        is_fallback=False,
+        ts=900.0,
+    )
+    analyzer.geopolitical_analyzer._cached_assessment = SimpleNamespace(
+        threat_level="NORMAL",
+        risk_score=0.1,
+        recommended_brake="NONE",
+        headlines_analyzed=0,
+        is_fallback=False,
+        ts=900.0,
+    )
+    analyzer.assess_geopolitical_threat = lambda **kw: False
+    analyzer.assess_market_advisor = lambda **kw: True
+    res = analyzer.run_cycle(force=False, now=1000.0)
+    assert res["effective_advisor_interval_sec"] <= 300.0
+    assert "btc_whale_flow_regime_flip" in res["advisor_interval_reason"]
+
 
 
 

@@ -199,7 +199,6 @@ def compute_volume_profile_metrics(
                             if abs(cur_px - hvn2_raw) < abs(cur_px - poc_raw) * 0.85:
                                 poc_raw, hvn2_raw = hvn2_raw, poc_raw
                                 hvn2_px = round(hvn2_raw, eff_dec_tmp)
-
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 
@@ -230,8 +229,15 @@ def compute_volume_profile_metrics(
         }
         if hvn2_px is not None:
             out_vp["hvn2_px"] = hvn2_px
+            out_vp["sec_poc_px"] = hvn2_px
         if lvn_px is not None:
             out_vp["lvn_px"] = lvn_px
+        if "sec_poc_px" not in out_vp:
+            sec_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and smoothed_vols[i] >= smoothed_vols[poc_idx] * 0.70 and bin_vols[i] > 0.0]
+            if sec_cands:
+                sec_idx = max(sec_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
+                sec_raw = bin_px_sums[sec_idx] / bin_vols[sec_idx] if bin_vols[sec_idx] > 0 else (low_px + (sec_idx + 0.5) * bin_w)
+                out_vp["sec_poc_px"] = round(sec_raw, eff_dec)
         return out_vp
     except Exception:
         return {}
@@ -688,6 +694,7 @@ def extract_symbol_recent_fills(
     chron = [o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))]
     last_any = chron[-1]
     cost_qty, active_avg = 0.0, 0.0
+    tactical_qty, tactical_avg = 0.0, 0.0
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
     open_lots: list[Dict[str, Any]] = []
@@ -712,6 +719,9 @@ def extract_symbol_recent_fills(
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
+                new_tac_qty = tactical_qty + q_f
+                tactical_avg = ((tactical_qty * tactical_avg) + (q_f * p_f)) / new_tac_qty if new_tac_qty > 0 else 0.0
+                tactical_qty = new_tac_qty
                 lot_seq += 1
                 open_lots.append({
                     "lot_id": f"L{lot_seq}",
@@ -722,6 +732,7 @@ def extract_symbol_recent_fills(
                 })
         elif side_o == "SELL":
             sells_fmt.append(item_d)
+            tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None and q_f > 0.0:
                 cost_qty, active_avg = (0.0, 0.0) if (q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12) else (cost_qty - q_f, active_avg)
                 rem_to_close = q_f
@@ -774,10 +785,12 @@ def extract_symbol_recent_fills(
                 swing_subcycle_qty = round(sw_qty, 6)
 
     last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
+    active_avg_r = round(active_avg, 6) if active_avg > 0 else None
+    tactical_avg_r = round(tactical_avg, 6) if tactical_avg > 0 else None
     out_fills: Dict[str, Any] = {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
         "last_action_actor": last_act,
-        "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
+        "active_avg_buy_px": active_avg_r,
         "swing_subcycle_avg_px": swing_subcycle_avg_px,
         "swing_subcycle_qty": swing_subcycle_qty if swing_subcycle_qty > 0 else None,
         "open_lots": open_lots[-6:],
@@ -789,6 +802,8 @@ def extract_symbol_recent_fills(
     }
     if cost_qty > 1e-12:
         out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)
+    if tactical_avg_r is not None and active_avg_r is not None and abs(tactical_avg_r - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
+        out_fills["tactical_avg_buy_px"] = tactical_avg_r
     if last_mod:
         out_fills["last_action_module"] = last_mod
     if last_rule:

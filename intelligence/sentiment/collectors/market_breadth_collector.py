@@ -7,6 +7,7 @@ import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
 from intelligence.macro_sentiment_ssot import (
+    CachedHttpJsonCollector,
     fetch_public_json,
     get_breadth_excluded_bases,
     get_breadth_min_volume_usd,
@@ -49,8 +50,11 @@ class MarketBreadthSnapshot:
     rotation_regime: Optional[str] = None
 
 
-class MarketBreadthCollector:
+class MarketBreadthCollector(CachedHttpJsonCollector):
     """Computes real-time market-wide breadth and sentiment dispersion from liquid pairs."""
+
+    _COLLECTOR_LABEL = "market breadth"
+    _LOGGER = logger
 
     def __init__(
         self,
@@ -58,11 +62,8 @@ class MarketBreadthCollector:
         min_volume_usd: float = 5_000_000.0,
         endpoint_url: Optional[str] = None,
     ) -> None:
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 60.0)
+        super().__init__(cache_ttl_sec, 60.0, endpoint_url, get_market_breadth_endpoint_url)
         self.min_volume_usd = safe_nonneg_ts(min_volume_usd, 5_000_000.0)
-        self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or get_market_breadth_endpoint_url()
-        self._cached_snapshot: Optional[MarketBreadthSnapshot] = None
-        self._last_fetch_ts: float = 0.0
 
     @staticmethod
     def parse_tickers(
@@ -199,18 +200,7 @@ class MarketBreadthCollector:
             rotation_regime=rotation_regime,
         )
 
-    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[MarketBreadthSnapshot]:
-        """Fetch latest 24hr tickers from public Binance API and return market breadth snapshot."""
-        now = resolve_now_ts(now_ts)
-        if self._cached_snapshot and is_cache_fresh(self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh):
-            return self._cached_snapshot
-        try:
-            data = fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0")
-            if isinstance(data, list):
-                snapshot = self.parse_tickers(data, min_volume_usd=self.min_volume_usd, now_ts=now)
-                if snapshot:
-                    self._cached_snapshot, self._last_fetch_ts = snapshot, now
-                    return snapshot
-        except Exception as e:
-            logger.warning("Failed to fetch market breadth: %s. Using cached fallback if available.", e)
-        return self._cached_snapshot
+    def _parse_fetched_payload(self, data: Any, now: float) -> Optional[MarketBreadthSnapshot]:
+        if isinstance(data, list):
+            return self.parse_tickers(data, min_volume_usd=self.min_volume_usd, now_ts=now)
+        return None

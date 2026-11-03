@@ -262,18 +262,16 @@ def parse_venue_cycle_state(
     )
     if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
         cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    # Prevent mechanical (TP) mislabeling when last_sell_price is below cost basis or realized_pnl is negative
-    ls_px_init = safe_pos_float(cyc_entry.get("last_sell_price"), default=None)
-    ref_cost_init = (
-        safe_pos_float(avg_cost, default=None)
-        or safe_pos_float(cyc_entry.get("entry_price"), default=None)
-        or safe_pos_float(cyc_entry.get("last_buy_price"), default=None)
-    )
-    if str(cyc_entry.get("last_exit_kind") or "").upper() == "TP" and ls_px_init is not None:
-        if ref_cost_init is not None and ls_px_init < ref_cost_init * 0.999:
-            cyc_entry["last_exit_kind"] = "LOSS_TRIM" if qty > 1e-8 else "SL"
-        elif ref_cost_init is None and realized_pnl < -0.50:
-            cyc_entry["last_exit_kind"] = "LOSS_TRIM" if qty > 1e-8 else "SL"
+    ref_entry_px = safe_pos_float(avg_cost or cyc_entry.get("entry_price") or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+    last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
+    if (
+        str(cyc_entry.get("last_exit_kind") or "").strip().upper() == "TP"
+        and ref_entry_px > 0.0
+        and last_sell_px_f > 0.0
+        and last_sell_px_f < ref_entry_px * 0.995
+        and realized_pnl < 0.0
+    ):
+        cyc_entry["last_exit_kind"] = "REDUCE"
     tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
     if isinstance(tp_sold, list) and tp_sold:
         cyc_entry["tp_sold_levels"] = tp_sold
@@ -1314,8 +1312,9 @@ def enrich_24h_and_microstructure(
             ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
             src_cand_u = str(m_info.get("_source_cand") or sym).strip().upper()
             is_exact_ob_sym = src_cand_u == str(sym).strip().upper()
-            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None:
-                if sym_px_m <= 0.0 or (is_exact_ob_sym and (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01)):
+            cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_by_sym) and (sym in inst_by_sym)
+            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
+                if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
             elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, ob_mid_m)):
@@ -1442,7 +1441,7 @@ def sync_sibling_symbol_telemetry(
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
-        "poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+        "poc_px", "sec_poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }
     for sym, pinfo in list(prices_and_trends.items()):
@@ -1456,7 +1455,15 @@ def sync_sibling_symbol_telemetry(
             sib_pinfo = casefold_get(prices_and_trends, cand)
             if isinstance(sib_pinfo, dict):
                 p_px, s_px = safe_float(pinfo.get("price"), 0.0), safe_float(sib_pinfo.get("price"), 0.0)
-                if cand_same_quote_family and p_px <= 0.0 and s_px > 0.0:
+                cand_has_ob = (
+                    isinstance(casefold_get(microstructure, cand), dict)
+                    and casefold_get(microstructure, cand).get("ob_mid_price") is not None
+                )
+                sym_has_ob = (
+                    isinstance(casefold_get(microstructure, sym), dict)
+                    and casefold_get(microstructure, sym).get("ob_mid_price") is not None
+                )
+                if cand_same_quote_family and s_px > 0.0 and (p_px <= 0.0 or (cand_has_ob and not sym_has_ob and not _prices_diverged(p_px, s_px))):
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
                 px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px, s_px)
@@ -1826,8 +1833,8 @@ def harvest_recent_orders_and_enrich_positions(
                     or safe_pos_float(c_dict.get("last_buy_price"), default=None)
                 )
                 if ref_avg is not None and ref_avg > 0.0:
-                    if sell_p < ref_avg * 0.999:
-                        c_dict["last_exit_kind"] = "LOSS_TRIM" if rem_q > 1e-6 else "SL"
+                    if sell_p < ref_avg * 0.995 and str(c_dict.get("last_exit_kind") or "").strip().upper() == "TP":
+                        c_dict["last_exit_kind"] = "REDUCE"
                     elif sell_p >= ref_avg * 1.001 and not c_dict.get("last_exit_kind"):
                         c_dict["last_exit_kind"] = "TP"
 
@@ -1876,7 +1883,6 @@ def harvest_recent_orders_and_enrich_positions(
                         "dca_buys": max(0, len(buys_after) - 1), "dd_pct": new_dd, "pnl_vs_avg_pct": new_dd,
                     })
                 elif has_non_dust_wallet:
-                    # Reconcile stale .state_*.json qty with actual remaining wallet balance & active BUY cost
                     eff_avg_w = (
                         safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
                         or safe_pos_float(cyc.get("avg_cost_px"), default=None)
@@ -1940,10 +1946,12 @@ def harvest_recent_orders_and_enrich_positions(
                 pos["last_action_side"] = str(ro.get("last_action_side")).upper()
             if is_flat_after_exit:
                 ro.pop("active_avg_buy_px", None)
+                ro.pop("tactical_avg_buy_px", None)
                 pos.pop("trailing_peak", None)
                 pos.pop("dd_from_peak_pct", None)
             else:
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+                set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
@@ -1982,7 +1990,17 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None})
                 if isinstance(ro, dict):
                     ro.pop("active_avg_buy_px", None)
-                for _stale_k in ("active_avg_buy_px", "pnl_vs_avg_pct", "lowest_buy_px", "pnl_vs_lowest_buy_pct", "trailing_peak", "dd_from_peak_pct"):
+                    ro.pop("tactical_avg_buy_px", None)
+                for _stale_k in (
+                    "active_avg_buy_px",
+                    "pnl_vs_avg_pct",
+                    "tactical_avg_buy_px",
+                    "pnl_vs_tactical_avg_pct",
+                    "lowest_buy_px",
+                    "pnl_vs_lowest_buy_pct",
+                    "trailing_peak",
+                    "dd_from_peak_pct",
+                ):
                     pos.pop(_stale_k, None)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]

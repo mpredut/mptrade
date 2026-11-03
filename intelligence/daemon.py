@@ -35,6 +35,7 @@ from intelligence.macro_sentiment_ssot import (
     run_daemon_loop,
     safe_pos_float,
     sanitize_heartbeat_status,
+    write_daemon_heartbeat,
     write_daemon_heartbeat_files,
 )
 
@@ -161,22 +162,20 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb."""
-        hb_ts, safe_status = sanitize_heartbeat_status(status)
-        payload = {
-            "pid": os.getpid(),
-            "status": "alive",
-            "ts": hb_ts,
-            "symbols": self.symbols,
-            "intervals": {
+        write_daemon_heartbeat(
+            self.heartbeat_path,
+            status,
+            symbols=self.symbols,
+            intervals={
                 "orderbook": self.orderbook_interval_sec,
                 "derivatives": self.derivatives_interval_sec,
                 "whale": self.whale_interval_sec,
                 "macro": self.macro_interval_sec,
                 "macro_llm": self.macro_llm_interval_sec,
             },
-            "last_run": safe_status,
-        }
-        write_daemon_heartbeat_files((self.heartbeat_path,), payload, use_save_json_state=True, logger_inst=logger)
+            use_save_json_state=True,
+            logger_inst=logger,
+        )
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main daemon loop continuously."""

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import urllib.parse
@@ -45,8 +46,10 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
+    build_heartbeat_payload,
     check_cooldown_gate,
     clean_scale,
+    evaluate_heartbeat_files_freshness,
     exact_pos_int,
     fetch_public_json as _fetch_public_json,
     is_cache_fresh,
@@ -64,6 +67,7 @@ from botcore import (
     safe_nonneg_float as safe_nonneg_ts,
     safe_pos_float,
     safe_thresh,
+    sanitize_heartbeat_status,
     split_csv as _split_csv,
 )
 
@@ -108,27 +112,13 @@ def extract_high_severity_headlines_and_digest(
     news_snapshot: Any,
     max_digest_items: int = 12,
 ) -> Tuple[List[Any], str]:
-    """Extract semantically deduplicated high-severity headlines list and canonical digest string from a NewsFeedSnapshot."""
+    """Extract high-severity headlines list and canonical digest string from a NewsFeedSnapshot."""
     raw_hl = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
-    raw_high = (
-        [
-            h for h in raw_hl
-            if _parse_bool_flag(obj_attr(h, "is_high_severity", False), False)
-            and not is_encyclopedic_or_reference_headline(
-                obj_attr(h, "title", ""),
-                obj_attr(h, "source", ""),
-                obj_attr(h, "url", ""),
-            )
-        ]
+    high_sev = (
+        [h for h in raw_hl if _parse_bool_flag(obj_attr(h, "is_high_severity", False), False)]
         if isinstance(raw_hl, (list, tuple))
         else []
     )
-    high_sev: List[Any] = []
-    for cand in raw_high:
-        c_title = str(obj_attr(cand, "title", None) or "")
-        if any(are_headlines_semantically_duplicate(c_title, str(obj_attr(prev, "title", None) or "")) for prev in high_sev):
-            continue
-        high_sev.append(cand)
     digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
     return high_sev, digest
 
@@ -180,7 +170,7 @@ def detect_active_binance_symbols(
             if os.path.exists(krk_cfg):
                 val = parse_dotenv(krk_cfg).get("KRAKEN_CACHE_PAIRS", "")
                 for item in (val.split(",") if val else ()):
-                    _add_sym(item, unique_base=False)
+                    _add_sym(item, unique_base=True)
         except Exception:
             pass
     return out if out else list(default)
@@ -240,17 +230,6 @@ def run_step_bounded(
         log.warning("Step '%s' raised error: %s", label, err_holder[0])
         return False
     return outcome[0]
-
-
-def sanitize_heartbeat_status(status: Any) -> Tuple[float, Dict[str, Any]]:
-    """Sanitize a daemon cycle status dict, replacing non-finite floats with None."""
-    raw = status if isinstance(status, dict) else {}
-    hb_ts = safe_pos_float(raw.get("ts"), time.time())
-    safe_status = {
-        k: (hb_ts if k == "ts" else (None if isinstance(v, float) and safe_float(v, default=None) is None else v))
-        for k, v in raw.items()
-    }
-    return hb_ts, safe_status
 
 
 def inspect_daemon_heartbeat(
@@ -334,6 +313,69 @@ def write_daemon_heartbeat_files(
                 atomic_write_json(hb_target, payload, indent=2)
             except Exception as fallback_err:
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
+
+
+def write_daemon_heartbeat(
+    heartbeat_path: str,
+    status: Any,
+    *,
+    symbols: Optional[Sequence[str]] = None,
+    intervals: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+    use_save_json_state: bool = False,
+    logger_inst: Optional[logging.Logger] = None,
+) -> Dict[str, Any]:
+    """Build canonical heartbeat payload via ``botcore.build_heartbeat_payload`` and persist atomically."""
+    payload = build_heartbeat_payload(
+        status,
+        symbols=list(symbols) if symbols is not None else None,
+        intervals=intervals,
+        extra=extra,
+    )
+    write_daemon_heartbeat_files(
+        (heartbeat_path,),
+        payload,
+        use_save_json_state=use_save_json_state,
+        logger_inst=logger_inst,
+    )
+    return payload
+
+
+def run_scheduled_step(
+    obj: Any,
+    *,
+    current_ts: float,
+    ts_attr: str,
+    interval_sec: float,
+    fn: Callable[..., Any],
+    fn_args: Tuple[Any, ...] = (),
+    force: bool = False,
+    bounded: bool = False,
+    timeout_sec: float = 15.0,
+    label: str = "telemetry_step",
+    results: Optional[Dict[str, Any]] = None,
+    result_key: Optional[str] = None,
+    on_done: Optional[Callable[[], None]] = None,
+) -> bool:
+    """Execute ``fn(*fn_args)`` when ``interval_sec`` has elapsed since ``getattr(obj, ts_attr)``, updating timestamp or retry backoff."""
+    last_ts = safe_nonneg_ts(getattr(obj, ts_attr, 0.0), 0.0)
+    if not is_interval_due(current_ts, last_ts, interval_sec, force=force):
+        return False
+    runner = getattr(obj, "_run_step_bounded", None)
+    ok = (
+        runner(fn, *fn_args, timeout_sec=timeout_sec, label=label)
+        if (bounded and callable(runner))
+        else bool(fn(*fn_args))
+    )
+    if ok:
+        if isinstance(results, dict) and result_key:
+            results[result_key] = True
+        setattr(obj, ts_attr, current_ts)
+    else:
+        setattr(obj, ts_attr, compute_step_retry_ts(last_ts, current_ts, interval_sec))
+    if on_done is not None:
+        on_done()
+    return ok
 
 
 def run_daemon_loop(
@@ -535,6 +577,57 @@ class ExternalTelemetryMixin:
             "[%s] Whale positioning updated: top_ratio=%.2f, taker_ratio=%.2f, regime=%s",
             "top_traders_long_ratio", "taker_buy_sell_ratio", ("divergence_regime", "NEUTRAL"),
         )
+
+
+class CachedHttpJsonCollector:
+    """Shared base class for HTTP JSON collectors with in-memory TTL caching and stale fallback."""
+
+    _USER_AGENT: str = "mptrade-sentiment/1.0"
+    _DEFAULT_TIMEOUT_SEC: float = 5.0
+    _COLLECTOR_LABEL: str = "HTTP JSON snapshot"
+    _LOGGER: logging.Logger = logger
+
+    def __init__(
+        self,
+        cache_ttl_sec: float,
+        default_ttl_sec: float,
+        endpoint_url: Optional[str],
+        default_endpoint_fn: Callable[[], str],
+    ) -> None:
+        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, default_ttl_sec)
+        self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or default_endpoint_fn()
+        self._cached_snapshot: Any = None
+        self._last_fetch_ts: float = 0.0
+
+    def _parse_fetched_payload(self, data: Any, now: float) -> Any:
+        raise NotImplementedError
+
+    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Any:
+        """Fetch the latest snapshot from ``self.endpoint_url``, respecting cache TTL with stale fallback."""
+        now = resolve_now_ts(now_ts)
+        if self._cached_snapshot and is_cache_fresh(
+            self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh
+        ):
+            return self._cached_snapshot
+        try:
+            mod = sys.modules.get(self.__class__.__module__)
+            fetch_fn = getattr(mod, "fetch_public_json", fetch_public_json) if mod is not None else fetch_public_json
+            data = fetch_fn(
+                self.endpoint_url,
+                timeout=self._DEFAULT_TIMEOUT_SEC,
+                user_agent=self._USER_AGENT,
+            )
+            snapshot = self._parse_fetched_payload(data, now)
+            if snapshot:
+                self._cached_snapshot, self._last_fetch_ts = snapshot, now
+                return snapshot
+        except Exception as exc:
+            self._LOGGER.warning(
+                "Failed to fetch %s: %s. Using cached fallback if available.",
+                self._COLLECTOR_LABEL,
+                exc,
+            )
+        return self._cached_snapshot
 
 
 # ============================================================================
@@ -981,186 +1074,14 @@ def _is_excluded_non_crisis_attack_keyword(
     return any(w.startswith("attack") for w in kw_words)
 
 
-_ENCYCLOPEDIC_REFERENCE_DOMAINS: Tuple[str, ...] = (
-    "britannica.com",
-    "wikipedia.org",
-    "investopedia.com",
-    "history.com",
-    "merriam-webster.com",
-    "oxfordreference.com",
-    "scholarpedia.org",
-    "wikisource.org",
-)
-
-_ENCYCLOPEDIC_PUBLISHER_NAMES: frozenset[str] = frozenset({
-    "britannica",
-    "encyclopedia britannica",
-    "wikipedia",
-    "investopedia",
-    "history.com",
-    "merriam-webster",
-    "oxford reference",
-})
-
-_SEMANTIC_HEADLINE_NOISE_WORDS: frozenset[str] = frozenset({
-    "about", "after", "against", "amid", "bloomberg", "breaking", "cnbc", "coindesk",
-    "cointelegraph", "could", "crypto", "daily", "from", "have", "here", "into",
-    "live", "market", "markets", "more", "news", "over", "reuters", "says", "said",
-    "that", "their", "them", "they", "this", "today", "update", "updates", "what",
-    "when", "where", "which", "while", "with", "would", "yahoo",
-})
-
-
-def is_encyclopedic_or_reference_headline(
-    title: Any,
-    source: Any = None,
-    url: Any = None,
-) -> bool:
-    """Return True if a headline comes from a static encyclopedia/reference page (e.g. Britannica, Wikipedia)."""
-    t_str = str(title or "").strip()
-    t_low = t_str.lower()
-    s_low = str(source or "").strip().lower()
-    u_low = str(url or "").strip().lower()
-    if s_low and any(pub in s_low for pub in _ENCYCLOPEDIC_PUBLISHER_NAMES):
-        return True
-    if u_low and any(dom in u_low for dom in _ENCYCLOPEDIC_REFERENCE_DOMAINS):
-        return True
-    if not t_low:
-        return False
-    if re.search(r"(?:[-–—|]\s*)(?:encyclop(?:ae|e)dia\s+)?(?:britannica|wikipedia|investopedia|history\.com)\s*$", t_low):
-        return True
-    if "|" in t_low and re.search(r"\b(?:explained|definition|overview|history\s+&\s+facts|timeline)\b", t_low):
-        if re.search(r"\b(?:britannica|wikipedia|investopedia|encyclopedia)\b", t_low) or re.match(r"^\d{4}\s+[a-z]+\s+war\s*\|", t_low):
-            return True
-    return False
-
-
-def _stem_semantic_token(tok: str) -> str:
-    w = tok.lower()
-    for pfx in ("hack", "interview", "sanction", "tariff", "strike", "attack", "missile", "arrest", "exploit", "heist", "billion", "million"):
-        if w.startswith(pfx):
-            return pfx
-    if len(w) > 5 and w.endswith("ing"):
-        return w[:-3]
-    if len(w) > 4 and w.endswith("ed"):
-        return w[:-2]
-    if len(w) > 4 and w.endswith("es"):
-        return w[:-2]
-    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
-        return w[:-1]
-    return w
-
-
-def headline_semantic_signature(title: Any) -> Tuple[frozenset[str], frozenset[str]]:
-    """Extract ``(content_stems, numeric_entities)`` for semantic story clustering across news outlets."""
-    if not isinstance(title, str) or not title.strip():
-        return frozenset(), frozenset()
-    core = _strip_headline_publisher_suffix(title).lower()
-    core = re.sub(r"\$(\d+(?:\.\d+)?)\s*(?:billion|bn|b)\b", r" \1b ", core)
-    core = re.sub(r"\$(\d+(?:\.\d+)?)\s*(?:million|mn|m)\b", r" \1m ", core)
-    core = re.sub(r"\b(\d+(?:\.\d+)?)\s*(?:billion|bn)\b", r" \1b ", core)
-    nums = frozenset(re.findall(r"\b\d+(?:\.\d+)?[bm%]?\b", core))
-    sw = _get_stopwords_set() | _SEMANTIC_HEADLINE_NOISE_WORDS
-    raw_words = re.findall(r"[a-z]{3,}", core)
-    stems = frozenset(
-        _stem_semantic_token(w)
-        for w in raw_words
-        if w not in sw
-    )
-    return stems, nums
-
-
-def are_headlines_semantically_duplicate(title_a: Any, title_b: Any) -> bool:
-    """Return True if two headlines represent the same underlying news event (e.g. syndicated across Reuters/Bloomberg)."""
-    if not isinstance(title_a, str) or not isinstance(title_b, str):
-        return False
-    na = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(title_a).strip().lower())
-    nb = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(title_b).strip().lower())
-    if not na or not nb:
-        return False
-    if na == nb:
-        return True
-    stems_a, nums_a = headline_semantic_signature(title_a)
-    stems_b, nums_b = headline_semantic_signature(title_b)
-    if len(stems_a) < 4 or len(stems_b) < 4:
-        return False
-    shared_stems = stems_a & stems_b
-    shared_nums = nums_a & nums_b
-    if nums_a and nums_b and not shared_nums:
-        return False
-    if shared_nums and len(shared_stems) >= 2:
-        return True
-    if len(shared_stems) < 3:
-        return False
-    union_sz = len(stems_a | stems_b)
-    min_sz = min(len(stems_a), len(stems_b))
-    jaccard = (len(shared_stems) / union_sz) if union_sz > 0 else 0.0
-    overlap = (len(shared_stems) / min_sz) if min_sz > 0 else 0.0
-    return jaccard >= 0.42 or overlap >= 0.60
-
-
-def deduplicate_semantic_headlines(
-    items: Sequence[Dict[str, Any]],
-    *,
-    now_ts: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """Cluster semantically identical news items, filtering encyclopedic pages and preserving earliest first_seen_ts."""
-    eff_now = resolve_now_ts(now_ts)
-    clusters: List[Dict[str, Any]] = []
-    for raw in items:
-        if not isinstance(raw, dict):
-            continue
-        title = str(raw.get("title") or "").strip()
-        source = str(raw.get("source") or "").strip()
-        url = str(raw.get("url") or "").strip()
-        if not title or is_encyclopedic_or_reference_headline(title, source, url):
-            continue
-        seen_ts = safe_pos_float(raw.get("first_seen_ts"), default=0.0) or 0.0
-        matched_cluster: Optional[Dict[str, Any]] = None
-        for cl in clusters:
-            if are_headlines_semantically_duplicate(title, cl.get("title")):
-                matched_cluster = cl
-                break
-        if matched_cluster is None:
-            entry = dict(raw)
-            entry["syndication_count"] = int(raw.get("syndication_count") or 1)
-            entry["syndicated_sources"] = [source] if source else []
-            clusters.append(entry)
-        else:
-            prev_ts = safe_pos_float(matched_cluster.get("first_seen_ts"), default=0.0) or 0.0
-            earliest_ts = min(prev_ts, seen_ts) if (prev_ts > 0.0 and seen_ts > 0.0) else (prev_ts or seen_ts)
-            if earliest_ts > 0.0:
-                matched_cluster["first_seen_ts"] = earliest_ts
-                matched_cluster["age_min"] = round(max(0.0, eff_now - earliest_ts) / 60.0, 1)
-            matched_cluster["syndication_count"] = int(matched_cluster.get("syndication_count") or 1) + 1
-            srcs = matched_cluster.setdefault("syndicated_sources", [])
-            if source and source not in srcs:
-                srcs.append(source)
-            prev_kws = list(matched_cluster.get("matched_keywords") or matched_cluster.get("keywords") or [])
-            for kw in (raw.get("matched_keywords") or raw.get("keywords") or []):
-                if kw not in prev_kws:
-                    prev_kws.append(kw)
-            if "matched_keywords" in matched_cluster:
-                matched_cluster["matched_keywords"] = prev_kws
-            if "keywords" in matched_cluster:
-                matched_cluster["keywords"] = prev_kws
-            if raw.get("is_high_severity"):
-                matched_cluster["is_high_severity"] = True
-    return clusters
-
-
 def filter_valid_severity_keywords(
     raw_keywords: Any,
     *,
     title: Optional[str] = None,
-    source: Optional[str] = None,
-    url: Optional[str] = None,
     cache_dir: Optional[str] = None,
     now_ts: Optional[float] = None,
 ) -> Tuple[str, ...]:
-    """Filter a headline's matched keywords, stripping generic stopword/publisher/encyclopedic noise while keeping seed terms."""
-    if is_encyclopedic_or_reference_headline(title, source, url):
-        return ()
+    """Filter a headline's matched keywords, stripping generic stopword/publisher noise while keeping seed terms."""
     seed_set = _get_seed_terms_set()
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
@@ -1499,6 +1420,107 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
     return tuple(dict.fromkeys((*_split_csv(_cfg_str("feeds", "specialized_rss_urls")), *([dyn_url] if dyn_url else []))))
 
 
+def get_excluded_reference_sources() -> Tuple[str, ...]:
+    """Load static encyclopedia/dictionary reference sources excluded from live breaking news."""
+    return _split_csv(_cfg_str("feeds", "excluded_reference_sources"), lower=True)
+
+
+def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:
+    """Return True if a headline originates from a static reference/encyclopedia domain (e.g. Britannica, Wikipedia)."""
+    excluded = get_excluded_reference_sources()
+    if not excluded:
+        return False
+    src_l = str(source or "").strip().lower()
+    url_l = str(url or "").strip().lower()
+    title_s = str(title or "").strip()
+    pub_sfx = ""
+    if " - " in title_s:
+        pub_sfx = title_s.rsplit(" - ", 1)[-1].strip().lower()
+    return any(
+        ref in src_l or ref in url_l or (pub_sfx and ref in pub_sfx)
+        for ref in excluded
+    )
+
+
+def _normalize_semantic_stem(token: str) -> str:
+    """Normalize common plural/verb/inflection suffixes into a canonical stem for story deduplication."""
+    t = token.lower().strip()
+    for sfx, repl in (
+        ("interviews", "interview"),
+        ("hackers", "hack"),
+        ("hacked", "hack"),
+        ("hacking", "hack"),
+        ("attacks", "attack"),
+        ("attacked", "attack"),
+        ("attacking", "attack"),
+        ("strikes", "strike"),
+        ("striking", "strike"),
+        ("sanctions", "sanction"),
+        ("tariffs", "tariff"),
+        ("plunges", "plunge"),
+        ("plunged", "plunge"),
+        ("plunging", "plunge"),
+        ("collapses", "collapse"),
+        ("collapsed", "collapse"),
+        ("collapsing", "collapse"),
+    ):
+        if t == sfx:
+            t = repl
+            break
+    else:
+        if len(t) > 5 and t.endswith("ies"):
+            t = t[:-3] + "y"
+        elif len(t) > 5 and t.endswith(("ches", "shes", "xes", "zes", "sses")):
+            t = t[:-2]
+        elif len(t) > 5 and t.endswith("ing"):
+            t = t[:-3]
+            if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
+                t = t[:-1]
+        elif len(t) > 4 and t.endswith("ed"):
+            t = t[:-2]
+            if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
+                t = t[:-1]
+        elif len(t) > 4 and t.endswith("s") and not t.endswith(("ss", "is", "us", "as", "os")):
+            t = t[:-1]
+    if len(t) > 4 and t.endswith("e") and not t.endswith("ee"):
+        t = t[:-1]
+    return t
+
+
+def headline_content_stems(title: Any) -> Set[str]:
+    """Extract normalized content stem tokens (excluding stopwords and publisher suffixes) from a headline."""
+    if not isinstance(title, str) or not title.strip():
+        return set()
+    clean = _strip_headline_publisher_suffix(title).strip().lower()
+    stopwords = _get_stopwords_set()
+    stems: Set[str] = set()
+    for m in re.finditer(r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}", clean):
+        num_grp = m.group(1)
+        if num_grp:
+            stems.add(num_grp.replace(",", ""))
+            continue
+        tok = m.group(0)
+        if tok in stopwords:
+            continue
+        stem = _normalize_semantic_stem(tok)
+        if len(stem) >= 3 and stem not in stopwords:
+            stems.add(stem)
+    return stems
+
+
+def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
+    """Return True if two headlines represent syndicated rewrites of the same underlying news story."""
+    stems_a = headline_content_stems(title_a)
+    stems_b = headline_content_stems(title_b)
+    if len(stems_a) < 4 or len(stems_b) < 4:
+        return False
+    shared = stems_a & stems_b
+    if len(shared) < 4:
+        return False
+    overlap = len(shared) / float(min(len(stems_a), len(stems_b)))
+    return overlap >= 0.60
+
+
 HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = get_active_severity_keywords()
 ACUTE_SHOCK_PHRASES: Tuple[str, ...] = get_active_acute_shock_phrases()
 DEFAULT_RSS_URL: str = build_dynamic_rss_url()
@@ -1511,7 +1533,7 @@ def match_high_severity_keywords(
 ) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
     lower = (text or "").lower()
-    if not lower or is_encyclopedic_or_reference_headline(text):
+    if not lower:
         return ()
     seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
     text_words = set(re.findall(r"[a-zA-Z]{3,}", lower))
@@ -1732,6 +1754,16 @@ def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
     return tuple(parsed)
 
 
+def get_macro_calendar_routine_labels() -> Dict[str, str]:
+    """Load optional routine session fallback labels (4th pipe field) keyed by event code from ``macro_intelligence.conf``."""
+    labels: Dict[str, str] = {}
+    for item in _split_csv(_cfg_str("sessions", "macro_calendar_windows_eet")):
+        parts = [p.strip() for p in item.split("|")]
+        if len(parts) >= 4 and parts[1] and parts[3]:
+            labels[parts[1]] = parts[3]
+    return labels
+
+
 def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
     """Load macro economic calendar keywords from ``macro_intelligence.conf``."""
     return _split_csv(_cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
@@ -1745,150 +1777,26 @@ def _fmt_countdown_min(delta_min: float) -> str:
     return f"{h}h{rem:02d}m" if rem else f"{h}h"
 
 
-# Official 2025-2027 FOMC Rate Decision Dates (8 meetings/year, Wednesday 14:00 EST / 21:00 EET)
-_FOMC_DECISION_DATES: FrozenSet[str] = frozenset({
-    # 2025
-    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
-    "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-10",
-    # 2026
-    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
-    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-09",
-    # 2027
-    "2027-01-27", "2027-03-17", "2027-04-28", "2027-06-09",
-    "2027-07-28", "2027-09-15", "2027-10-27", "2027-12-08",
-})
-
-# Official FOMC Minutes Release Dates (3 weeks after each FOMC decision, Wednesday 14:00 EST / 21:00 EET)
-_FOMC_MINUTES_DATES: FrozenSet[str] = frozenset({
-    "2026-01-07", "2026-02-18", "2026-04-08", "2026-05-20",
-    "2026-07-08", "2026-08-19", "2026-10-07", "2026-11-18",
-    "2027-01-06", "2027-02-17", "2027-04-07", "2027-05-19",
-})
-
-# Official BLS US CPI Release Dates (2026-2027, 08:30 EST / 15:30 EET)
-_US_CPI_RELEASE_DATES: FrozenSet[str] = frozenset({
-    "2026-01-13", "2026-02-11", "2026-03-11", "2026-04-10",
-    "2026-05-12", "2026-06-10", "2026-07-14", "2026-08-12",
-    "2026-09-11", "2026-10-13", "2026-11-12", "2026-12-10",
-    "2027-01-12", "2027-02-10", "2027-03-10", "2027-04-13",
-    "2027-05-12", "2027-06-10", "2027-07-13", "2027-08-11",
-    "2027-09-14", "2027-10-13", "2027-11-10", "2027-12-14",
-})
-
-
-def _is_fomc_or_fed_minutes_date(cand_date: Any) -> Optional[str]:
-    """Return exact FOMC event label if ``cand_date`` has an actual FOMC Rate Decision or Minutes release."""
-    iso_d = cand_date.strftime("%Y-%m-%d")
-    if iso_d in _FOMC_DECISION_DATES:
-        return "[HIGH-IMPACT] FOMC Rate Decision & Powell Press Conference (14:00 EST)"
-    if iso_d in _FOMC_MINUTES_DATES:
-        return "[HIGH-IMPACT] FOMC Meeting Minutes Release (14:00 EST)"
-    return None
-
-
-def _scheduled_830_macro_releases_for_date(cand_date: Any) -> List[str]:
-    """Return concrete 08:30 EST (15:30 EET) US macro data releases scheduled on ``cand_date``."""
-    releases: List[str] = []
-    iso_d = cand_date.strftime("%Y-%m-%d")
-    wd = cand_date.weekday()  # 0=Mon .. 4=Fri
-    if wd >= 5:
-        return releases
-    # 1. Exact CPI date
-    if iso_d in _US_CPI_RELEASE_DATES:
-        releases.append("US CPI Inflation Report")
-    # 2. PPI is typically the day after CPI (or Thursday of CPI week)
-    prev_iso = (cand_date - timedelta(days=1)).strftime("%Y-%m-%d")
-    if prev_iso in _US_CPI_RELEASE_DATES:
-        releases.append("US PPI Producer Price Index")
-    # 3. NFP (Non-Farm Payrolls) is the First Friday of each month (day 1..7)
-    if wd == 4 and 1 <= cand_date.day <= 7:
-        releases.append("US Non-Farm Payrolls (NFP) & Unemployment Rate")
-    # 4. Initial Jobless Claims is every Thursday
-    if wd == 3:
-        releases.append("US Initial Jobless Claims")
-    # 5. Core PCE / GDP typically last Thursday or Friday of the month (day >= 25)
-    if wd in (3, 4) and cand_date.day >= 25:
-        releases.append("US Core PCE / GDP Print")
-    return releases
-
-
-def _parse_macro_surprise_from_headlines(headlines: Sequence[Any]) -> List[Dict[str, Any]]:
-    """Extract event-driven Actual vs Consensus/Forecast/Prior prints and Surprise Z-Score from headlines."""
-    surprises: List[Dict[str, Any]] = []
-    # Pattern e.g. "US CPI YoY Actual 2.9% vs Consensus 3.1% (Prior 3.2%)" or "CPI 2.9% vs 3.1% expected"
-    pat_vs = re.compile(
-        r"\b(cpi|core cpi|ppi|core pce|pce|nfp|nonfarm payrolls|jobless claims|gdp|ism|retail sales|fomc rate)\b"
-        r"[^0-9\-]{0,35}?(?:actual\s*[:=]?\s*)?(-?\d+(?:\.\d+)?)\s*(%|k|m|bps)?"
-        r"[^0-9\-]{1,25}?(?:vs\.?|versus|est\.?|exp\.?|consensus|forecast)\s*[:=]?\s*(-?\d+(?:\.\d+)?)\s*(%|k|m|bps)?",
-        re.IGNORECASE,
-    )
-    for item in headlines or ():
-        title = str(obj_attr(item, "title", "") or (item if isinstance(item, str) else "")).strip()
-        if not title:
-            continue
-        m = pat_vs.search(title)
-        if not m:
-            continue
-        metric = m.group(1).upper()
-        try:
-            actual_val = float(m.group(2))
-            unit = (m.group(3) or m.group(5) or "").strip()
-            cons_val = float(m.group(4))
-        except (ValueError, TypeError):
-            continue
-        diff = actual_val - cons_val
-        # Typical macro print standard deviations for surprise Z-score estimation
-        scale_map = {
-            "CPI": 0.10, "CORE CPI": 0.10, "PPI": 0.15, "CORE PCE": 0.10, "PCE": 0.10,
-            "GDP": 0.25, "ISM": 1.0, "RETAIL SALES": 0.20, "NFP": 35.0, "NONFARM PAYROLLS": 35.0,
-            "JOBLESS CLAIMS": 8.0, "FOMC RATE": 0.25,
-        }
-        sigma = scale_map.get(metric, max(0.10, abs(cons_val) * 0.05))
-        z_score = round(diff / sigma, 2) if sigma > 0 else 0.0
-        # For inflation/rates, lower actual vs consensus is DOVISH; for growth/NFP, higher is HAWKISH
-        if metric in ("CPI", "CORE CPI", "PPI", "CORE PCE", "PCE", "FOMC RATE"):
-            bias = "DOVISH_BULLISH_RISK" if z_score <= -0.5 else ("HAWKISH_BEARISH_RISK" if z_score >= 0.5 else "IN_LINE")
-        elif metric in ("JOBLESS CLAIMS",):
-            bias = "DOVISH_SOFT_LABOR" if z_score >= 0.5 else ("HAWKISH_TIGHT_LABOR" if z_score <= -0.5 else "IN_LINE")
-        else:
-            bias = "HAWKISH_STRONG_GROWTH" if z_score >= 0.5 else ("DOVISH_WEAK_GROWTH" if z_score <= -0.5 else "IN_LINE")
-        surprises.append({
-            "metric": metric,
-            "actual": f"{actual_val}{unit}",
-            "consensus": f"{cons_val}{unit}",
-            "surprise_z": z_score,
-            "regime_impulse": bias,
-            "headline": title[:140],
-        })
-    return surprises
-
-
 def resolve_macro_economic_calendar(
     now_ts: Optional[float] = None,
     breaking_news: Optional[Sequence[Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve current trading session, real event-driven macro/liquidity calendar, and Actual vs Consensus prints."""
+    """Resolve current trading session, next high-impact macro/liquidity window, and live macro headlines."""
     ts = resolve_now_ts(now_ts)
     session_ctx = resolve_global_trading_session(ts)
     dt_eet = _primary_eet_dt(ts)
     tz_abbr = dt_eet.strftime("%Z") or "EET"
     windows = get_macro_calendar_windows_eet()
+    routine_labels = get_macro_calendar_routine_labels()
 
     macro_kws = get_macro_calendar_headline_keywords()
     detected_macro_headlines: List[str] = []
-    has_headline_830_preview = False
     if breaking_news and macro_kws:
         for item in breaking_news:
-            title = str(obj_attr(item, "title", "") or "").strip()
-            if not title:
-                continue
-            tl = title.lower()
-            if any(re.search(r"\b" + re.escape(kw) + r"\b", tl) for kw in macro_kws):
+            title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
+            if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
                 detected_macro_headlines.append(title)
-            if any(k in tl for k in ("cpi", "ppi", "nfp", "nonfarm", "jobless claims", "retail sales", "pce")):
-                has_headline_830_preview = True
-
-    live_surprises = _parse_macro_surprise_from_headlines(breaking_news or ())
+    macro_release_confirmed = bool(detected_macro_headlines)
 
     active_window: Optional[str] = None
     upcoming: List[Tuple[float, str, str, str]] = []
@@ -1896,36 +1804,14 @@ def resolve_macro_economic_calendar(
         cand_date = (dt_eet + timedelta(days=day_offset)).date()
         if cand_date.weekday() >= 5:
             continue
-        fomc_lbl = _is_fomc_or_fed_minutes_date(cand_date)
-        releases_830 = _scheduled_830_macro_releases_for_date(cand_date)
-
         for hh, mm, code, desc in windows:
-            eff_desc = desc
-            # Filter static template false alarms: only emit FOMC/Fed window on real FOMC / Minutes dates
-            if code == "US_FOMC_FED_WINDOW":
-                if fomc_lbl is not None:
-                    eff_desc = fomc_lbl
-                else:
-                    # Skip false daily FOMC alarm on non-FOMC days
-                    continue
-            elif code == "US_MACRO_830_PRINT":
-                if day_offset == 0 and has_headline_830_preview:
-                    eff_desc = desc
-                elif releases_830:
-                    eff_desc = f"[HIGH-IMPACT] {' / '.join(releases_830)} (08:30 EST Release)"
-                else:
-                    # No 08:30 macro release scheduled on this weekday
-                    continue
-            elif code == "US_ISM_CONF_1000":
-                # ISM Manufacturing/Services PMI is released on the 1st-3rd business day of the month
-                if cand_date.day > 5 and not (day_offset == 0 and any("ism" in h.lower() for h in detected_macro_headlines)):
-                    continue
-
+            eff_desc = desc if macro_release_confirmed else routine_labels.get(code, desc)
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0
             time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
             if -20.0 <= delta_min <= 0.0 and active_window is None:
-                active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — ACTIVE VOLATILITY WINDOW)"
+                win_tag = "ACTIVE VOLATILITY WINDOW" if (macro_release_confirmed or code not in routine_labels) else "ACTIVE SESSION WINDOW"
+                active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
             elif delta_min > 0.0:
                 upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
 
@@ -1934,18 +1820,13 @@ def resolve_macro_economic_calendar(
     next_code = upcoming[0][1] if upcoming else "NONE"
     next_in_min = round(upcoming[0][0], 1) if upcoming else None
 
-    # Find next actual FOMC date for explicit visibility
-    today_iso = dt_eet.date().strftime("%Y-%m-%d")
-    future_fomc = sorted(d for d in _FOMC_DECISION_DATES if d >= today_iso)
-    next_fomc_date = future_fomc[0] if future_fomc else "TBD"
-    fomc_today = today_iso in _FOMC_DECISION_DATES or today_iso in _FOMC_MINUTES_DATES
-
     return {
         "session_key": session_ctx.session_key,
         "session_label": session_ctx.session_label,
         "eet_time": session_ctx.eet_time_str,
         "ny_time": session_ctx.ny_time_str,
         "is_weekend": session_ctx.is_weekend,
+        "macro_release_confirmed": macro_release_confirmed,
         "active_release_window": active_window,
         "next_high_impact_event": active_window or next_event,
         "next_scheduled_event": next_event,
@@ -1953,10 +1834,6 @@ def resolve_macro_economic_calendar(
         "next_event_in_min": next_in_min,
         "upcoming_windows": [x[3] for x in upcoming[:3]],
         "detected_macro_headlines": detected_macro_headlines[:3],
-        "live_macro_prints": live_surprises[:3],
-        "fomc_today": fomc_today,
-        "next_fomc_date": next_fomc_date,
-        "scheduled_macro_releases_today": _scheduled_830_macro_releases_for_date(dt_eet.date()),
         "ts": ts,
     }
 

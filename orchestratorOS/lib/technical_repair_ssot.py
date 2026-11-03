@@ -21,12 +21,15 @@ import urllib.request
 
 from botcore import (
     _parse_bool_flag,
+    build_heartbeat_payload,
     clean_json_value,
+    evaluate_heartbeat_files_freshness,
     obj_attr,
     parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    sanitize_heartbeat_status,
 )
 from cachepaths import normalize_venue_name, resolve_cachedb_filepath
 from providers.base import extract_order_id
@@ -998,6 +1001,17 @@ def harvest_heartbeats_and_state_files(
         hb_raw_path = os.path.join(cache_dir, hb_name)
         data = _rj(hb_raw_path)
         if isinstance(data, dict) and data:
+            if hb_name == "rtrade.heartbeat" and (read_json_fn is None or read_json_fn is read_json_recovering):
+                hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
+                if os.path.exists(hb_resolved):
+                    try:
+                        mtime = os.path.getmtime(hb_resolved)
+                        age_sec = max(0.0, now_ts - mtime)
+                        if age_sec > 300.0:
+                            continue
+                        data = {**data, "age_seconds": round(age_sec, 1)}
+                    except OSError:
+                        pass
             active_heartbeats[hb_name] = data
             continue
         if hb_name == "rtrade.heartbeat" and (read_json_fn is None or read_json_fn is read_json_recovering):
@@ -1007,7 +1021,10 @@ def harvest_heartbeats_and_state_files(
                     mtime = os.path.getmtime(hb_resolved)
                     age_sec = max(0.0, now_ts - mtime)
                     if age_sec <= 300.0:
-                        active_heartbeats[hb_name] = {"status": "alive", "ts": mtime, "age_seconds": round(age_sec, 1)}
+                        active_heartbeats[hb_name] = build_heartbeat_payload(
+                            {"ts": mtime},
+                            extra={"age_seconds": round(age_sec, 1)},
+                        )
                 except OSError:
                     pass
     state_files: Dict[str, Any] = {}
@@ -1093,16 +1110,17 @@ def persist_supervisor_audit_artifact(
     try:
         os.makedirs(cache_dir, exist_ok=True)
         save_json_state(state_file, clean_json_value(report_dict), indent=2)
-        hb = clean_json_value({
-            "status": "alive",
-            "ts": report_dict.get("ts"),
-            "mode": report_dict.get("mode"),
-            "summary": report_dict.get("summary"),
-            "diagnosed_issues_count": len(report_dict.get("diagnosed_issues") or []),
-            "venue_actions_count": len(report_dict.get("venue_actions") or []),
-            "market_trading_decision": report_dict.get("market_trading_decision") or {},
-            "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
-        })
+        hb = build_heartbeat_payload(
+            {"ts": report_dict.get("ts")},
+            extra={
+                "mode": report_dict.get("mode"),
+                "summary": report_dict.get("summary"),
+                "diagnosed_issues_count": len(report_dict.get("diagnosed_issues") or []),
+                "venue_actions_count": len(report_dict.get("venue_actions") or []),
+                "market_trading_decision": report_dict.get("market_trading_decision") or {},
+                "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
+            },
+        )
         save_json_state(heartbeat_file, hb, indent=2)
     except Exception as e:
         if log:
@@ -1334,45 +1352,6 @@ def build_sensor_health_summary(sensors: Any) -> Dict[str, Any]:
         **{f"{k}_present": getattr(sensors, k, None) is not None for k in ("fear_greed", "market_breadth", "sentiment_advisor", "geopolitical_threat", "macro_benchmarks")},
         **{f"{k}_count": len(getattr(sensors, k, None) or {}) for k in ("prices_and_trends", "microstructure", "active_heartbeats")},
     }
-
-
-def evaluate_heartbeat_files_freshness(
-    hb_paths: List[str],
-    stale_threshold_s: float,
-    now_ts: float,
-    *,
-    fallback_start_ts: Optional[float] = None,
-) -> Tuple[bool, float, float, str]:
-    """Evaluate heartbeat freshness across ``hb_paths``.
-
-    Returns ``(is_fresh, max_existing_age_sec, max_stale_duration_sec, stale_or_missing_path)``.
-    """
-    if not hb_paths:
-        return True, 0.0, 0.0, ""
-    mtimes: List[float] = []
-    missing_any, stale_file, max_stale_duration = False, "", 0.0
-    start_ts = fallback_start_ts if fallback_start_ts is not None else now_ts
-
-    for raw_hbp in hb_paths:
-        hbp = str(resolve_cachedb_filepath(raw_hbp))
-        if os.path.exists(hbp):
-            try:
-                mt = os.path.getmtime(hbp)
-                mtimes.append(mt)
-                dur = now_ts - mt
-                if stale_threshold_s > 0 and dur > stale_threshold_s and dur > max_stale_duration:
-                    max_stale_duration, stale_file = dur, hbp
-            except Exception:
-                missing_any = True
-        else:
-            missing_any = True
-            dur = max(0.0, now_ts - start_ts)
-            if stale_threshold_s > 0 and dur >= max_stale_duration:
-                max_stale_duration, stale_file = dur, hbp
-
-    age_sec = max(0.0, now_ts - min(mtimes)) if mtimes else 0.0
-    fresh = not (stale_threshold_s > 0 and (missing_any or not mtimes or age_sec > stale_threshold_s))
-    return fresh, age_sec, max_stale_duration, stale_file
 
 
 def summarize_fleet_sensor_status(

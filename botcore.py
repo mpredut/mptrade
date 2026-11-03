@@ -345,7 +345,7 @@ def bounded_float(
 
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
-    if obj is None:
+    if obj is None or isinstance(obj, (str, bytes, bytearray)):
         return default
     val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
     return default if val is None else val
@@ -824,6 +824,43 @@ def load_local_module(
                 sys.modules[amb_name] = saved_mod
 
 
+def sanitize_heartbeat_status(status: object) -> tuple[float, dict]:
+    """Sanitize a daemon/module cycle status dict, replacing non-finite floats with None."""
+    raw = status if isinstance(status, dict) else {}
+    hb_ts = safe_pos_float(raw.get("ts"), _time.time())
+    safe_status = {
+        k: (hb_ts if k == "ts" else (None if isinstance(v, float) and safe_float(v, default=None) is None else v))
+        for k, v in raw.items()
+    }
+    return hb_ts, safe_status
+
+
+def build_heartbeat_payload(
+    status: object = None,
+    *,
+    symbols: list[str] | tuple[str, ...] | None = None,
+    intervals: dict | None = None,
+    extra: dict | None = None,
+    pid: int | None = None,
+) -> dict[str, object]:
+    """Build the canonical module heartbeat payload used across all bots, daemons, and supervisors."""
+    hb_ts, safe_status = sanitize_heartbeat_status(status)
+    payload: dict[str, object] = {
+        "pid": os.getpid() if pid is None else int(pid),
+        "status": "alive",
+        "ts": hb_ts,
+    }
+    if symbols is not None:
+        payload["symbols"] = list(symbols)
+    payload["intervals"] = clean_json_value(intervals) if isinstance(intervals, dict) else {}
+    payload["last_run"] = safe_status
+    if isinstance(extra, dict):
+        cleaned_extra = clean_json_value(extra)
+        if isinstance(cleaned_extra, dict):
+            payload.update(cleaned_extra)
+    return payload
+
+
 def touch_heartbeat_file(
     path: str | os.PathLike,
     *,
@@ -831,8 +868,12 @@ def touch_heartbeat_file(
     interval_sec: float = 30.0,
     force: object = False,
     now: float | None = None,
+    status: object = None,
+    symbols: list[str] | tuple[str, ...] | None = None,
+    intervals: dict | None = None,
+    extra: dict | None = None,
 ) -> float:
-    """Touch a heartbeat file if ``force`` is truthy or ``interval_sec`` has elapsed; return updated ``last_ts``."""
+    """Write canonical heartbeat JSON and touch ``path`` if ``force`` is truthy or ``interval_sec`` has elapsed; return updated ``last_ts``."""
     force_flag = _parse_bool_flag(force, default=False)
     now_val = safe_float(now, default=None)
     now_m = _time.monotonic() if now_val is None else now_val
@@ -841,12 +882,61 @@ def touch_heartbeat_file(
     try:
         hb_path = str(path)
         os.makedirs(os.path.dirname(hb_path), exist_ok=True)
-        with open(hb_path, "a", encoding="utf-8"):
-            pass
+        payload = build_heartbeat_payload(
+            status,
+            symbols=symbols,
+            intervals=intervals if intervals is not None else {"heartbeat": interval_sec},
+            extra=extra,
+        )
+        with open(hb_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
         os.utime(hb_path, None)
     except OSError:
         return last_ts
     return now_m
+
+
+def evaluate_heartbeat_files_freshness(
+    hb_paths: list[str] | tuple[str, ...],
+    stale_threshold_s: float,
+    now_ts: float,
+    *,
+    fallback_start_ts: float | None = None,
+) -> tuple[bool, float, float, str]:
+    """Evaluate heartbeat freshness across ``hb_paths``.
+
+    Returns ``(is_fresh, max_existing_age_sec, max_stale_duration_sec, stale_or_missing_path)``.
+    """
+    if not hb_paths:
+        return True, 0.0, 0.0, ""
+    try:
+        from cachepaths import resolve_cachedb_filepath as _resolve_path
+    except Exception:
+        _resolve_path = str  # type: ignore[assignment]
+    mtimes: list[float] = []
+    missing_any, stale_file, max_stale_duration = False, "", 0.0
+    start_ts = fallback_start_ts if fallback_start_ts is not None else now_ts
+
+    for raw_hbp in hb_paths:
+        hbp = str(_resolve_path(raw_hbp))
+        if os.path.exists(hbp):
+            try:
+                mt = os.path.getmtime(hbp)
+                mtimes.append(mt)
+                dur = now_ts - mt
+                if stale_threshold_s > 0 and dur > stale_threshold_s and dur > max_stale_duration:
+                    max_stale_duration, stale_file = dur, hbp
+            except Exception:
+                missing_any = True
+        else:
+            missing_any = True
+            dur = max(0.0, now_ts - start_ts)
+            if stale_threshold_s > 0 and dur >= max_stale_duration:
+                max_stale_duration, stale_file = dur, hbp
+
+    age_sec = max(0.0, now_ts - min(mtimes)) if mtimes else 0.0
+    fresh = not (stale_threshold_s > 0 and (missing_any or not mtimes or age_sec > stale_threshold_s))
+    return fresh, age_sec, max_stale_duration, stale_file
 
 
 def clamp_float(

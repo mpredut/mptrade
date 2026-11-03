@@ -14,12 +14,12 @@ from botcore import (
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    clean_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
 )
 from instrument_registry import casefold_get, load_registry, select_instruments, symbols_for
-from intelligence.macro_sentiment_ssot import clean_symbol_key
 from state_io import read_json_dict_recovering
 
 

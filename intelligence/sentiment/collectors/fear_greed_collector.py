@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from intelligence.macro_sentiment_ssot import (
+    CachedHttpJsonCollector,
     fetch_public_json,
     get_fear_greed_endpoint_url,
     is_cache_fresh,
@@ -32,18 +33,18 @@ class FearGreedSnapshot:
     is_extreme_greed: bool               # True if value >= 75
 
 
-class FearGreedCollector:
+class FearGreedCollector(CachedHttpJsonCollector):
     """Fetches and caches the Alternative.me Crypto Fear & Greed Index."""
+
+    _COLLECTOR_LABEL = "Fear & Greed Index"
+    _LOGGER = logger
 
     def __init__(
         self,
         cache_ttl_sec: float = 900.0,
         endpoint_url: Optional[str] = None,
     ) -> None:
-        self.cache_ttl_sec = safe_nonneg_ts(cache_ttl_sec, 900.0)
-        self.endpoint_url = (endpoint_url.strip() if isinstance(endpoint_url, str) else "") or get_fear_greed_endpoint_url()
-        self._cached_snapshot: Optional[FearGreedSnapshot] = None
-        self._last_fetch_ts: float = 0.0
+        super().__init__(cache_ttl_sec, 900.0, endpoint_url, get_fear_greed_endpoint_url)
 
     @staticmethod
     def parse_payload(payload: Dict[str, Any]) -> Optional[FearGreedSnapshot]:
@@ -77,16 +78,5 @@ class FearGreedCollector:
             is_extreme_greed=val >= 75,
         )
 
-    def fetch(self, force_refresh: bool = False, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
-        """Fetch the latest Fear & Greed Index snapshot, respecting cache TTL."""
-        now = resolve_now_ts(now_ts)
-        if self._cached_snapshot and is_cache_fresh(self._last_fetch_ts, now, self.cache_ttl_sec, force_refresh=force_refresh):
-            return self._cached_snapshot
-        try:
-            snapshot = self.parse_payload(fetch_public_json(self.endpoint_url, timeout=5, user_agent="mptrade-sentiment/1.0"))
-            if snapshot:
-                self._cached_snapshot, self._last_fetch_ts = snapshot, now
-                return snapshot
-        except Exception as e:
-            logger.warning("Failed to fetch Fear & Greed Index: %s. Using cached fallback if available.", e)
-        return self._cached_snapshot
+    def _parse_fetched_payload(self, data: Any, now: float) -> Optional[FearGreedSnapshot]:
+        return self.parse_payload(data)

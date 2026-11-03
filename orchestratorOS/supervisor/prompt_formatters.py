@@ -407,9 +407,10 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             )
             va_pos = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
             va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
+            sec_poc_sfx = f", sec_POC={pinfo.get('sec_poc_px')}" if pinfo.get("sec_poc_px") is not None else ""
             vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
             extras.append(
-                f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%], "
+                f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%]{sec_poc_sfx}, "
                 f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
                 f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
                 f"va_pos={va_pos}%, regime={va_reg}{vp_src_sfx})"
@@ -731,6 +732,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     t_extra = ""
     for px_k, lbl, pct_lbl, pct_k, dedup_k in (
         ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", None),
+        ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", "active_avg_buy_px"),
         ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", "active_avg_buy_px"),
         ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", None),
         ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", "last_buy_px"),
@@ -823,6 +825,8 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
 
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
+    tac_b_px = _round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
+    tac_b_str = f" | Tactical Sub-Cycle Avg BUY={tac_b_px}" if tac_b_px and tac_b_px != avg_b_px else ""
     r_buys = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
     tranches_str = f" | Recent BUY Tranches=[{', '.join(r_buys)}]" if len(r_buys) > 1 else ""
     r_sells = [f"{s.get('qty')}@{_round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
@@ -837,7 +841,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={_side_summary('last_buy')} | "
         f"Last SELL={_side_summary('last_sell')}"
-        f"{avg_b_str}{tranches_str}{sell_tranches_str}"
+        f"{avg_b_str}{tac_b_str}{tranches_str}{sell_tranches_str}"
     )
 
 

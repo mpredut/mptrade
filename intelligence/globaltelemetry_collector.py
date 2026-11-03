@@ -29,8 +29,10 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
     resolve_now_ts,
     run_daemon_loop,
+    run_scheduled_step,
     safe_pos_float,
     sanitize_heartbeat_status,
+    write_daemon_heartbeat,
     write_daemon_heartbeat_files,
 )
 from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
@@ -212,41 +214,28 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
         )
 
-        if not self.skip_news and is_interval_due(current_ts, self._last_news_ts, self.news_interval_sec, force=force):
-            if self._run_step_bounded(self.update_news, force, timeout_sec=15.0, label="news"):
-                results["news_updated"] = True
-                self._last_news_ts = current_ts
-            else:
-                self._last_news_ts = compute_step_retry_ts(self._last_news_ts, current_ts, self.news_interval_sec)
-            self.write_heartbeat(results)
-
-        if is_interval_due(current_ts, self._last_fear_greed_ts, self.fear_greed_interval_sec, force=force):
-            if self._run_step_bounded(self.update_fear_greed, force, timeout_sec=12.0, label="fear_greed"):
-                results["fear_greed_updated"] = True
-                self._last_fear_greed_ts = current_ts
-            else:
-                self._last_fear_greed_ts = compute_step_retry_ts(
-                    self._last_fear_greed_ts, current_ts, self.fear_greed_interval_sec
-                )
-
-        if is_interval_due(current_ts, self._last_breadth_ts, self.breadth_interval_sec, force=force):
-            if self._run_step_bounded(self.update_market_breadth, force, timeout_sec=15.0, label="breadth"):
-                results["breadth_updated"] = True
-                self._last_breadth_ts = current_ts
-            else:
-                self._last_breadth_ts = compute_step_retry_ts(
-                    self._last_breadth_ts, current_ts, self.breadth_interval_sec
-                )
-
-        if not self.skip_external and is_interval_due(
-            current_ts, self._last_macro_benchmarks_ts, self.macro_benchmarks_interval_sec, force=force
-        ):
-            if self._run_step_bounded(self.update_macro_benchmarks, force, timeout_sec=15.0, label="macro_benchmarks"):
-                results["macro_benchmarks_updated"] = True
-                self._last_macro_benchmarks_ts = current_ts
-            else:
-                self._last_macro_benchmarks_ts = compute_step_retry_ts(
-                    self._last_macro_benchmarks_ts, current_ts, self.macro_benchmarks_interval_sec
+        scheduled_tasks = (
+            (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
+            (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
+            (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
+            (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+        )
+        for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
+            if enabled:
+                run_scheduled_step(
+                    self,
+                    current_ts=current_ts,
+                    ts_attr=ts_attr,
+                    interval_sec=itv_sec,
+                    fn=fn,
+                    fn_args=fn_args,
+                    force=force,
+                    bounded=True,
+                    timeout_sec=timeout_s,
+                    label=lbl,
+                    results=results,
+                    result_key=res_key,
+                    on_done=on_done_cb,
                 )
 
         if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
@@ -258,13 +247,11 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb, with fallback to direct touch/write."""
-        hb_ts, safe_status = sanitize_heartbeat_status(status)
-        payload = {
-            "pid": os.getpid(),
-            "status": "alive",
-            "ts": hb_ts,
-            "symbols": self.symbols,
-            "intervals": {
+        write_daemon_heartbeat(
+            self.heartbeat_path,
+            status,
+            symbols=self.symbols,
+            intervals={
                 "orderbook": self.orderbook_interval_sec,
                 "derivatives": self.derivatives_interval_sec,
                 "whale": self.whale_interval_sec,
@@ -272,9 +259,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "fear_greed": self.fear_greed_interval_sec,
                 "breadth": self.breadth_interval_sec,
             },
-            "last_run": safe_status,
-        }
-        write_daemon_heartbeat_files((self.heartbeat_path,), payload, logger_inst=logger)
+            logger_inst=logger,
+        )
 
     def start(self, poll_interval_sec: float = 1.0) -> None:
         """Run the main telemetry collection loop continuously."""
