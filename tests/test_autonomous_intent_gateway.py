@@ -1939,6 +1939,61 @@ def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_se
     assert cached_pos["locked_base_qty"] == pytest.approx(1.5)
     assert cached_pos["trailing_peak"] == pytest.approx(440.0)
 
+    # Verify harvest_bot_runtime_states does NOT classify a 100%-locked SELL position (value_usd=0, locked_base_usd=600) as dust
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
+    ag_path = tmp_path / "assetguardian_state.json"
+    ag_path.write_text(
+        json.dumps({"symbols": {"TAOUSDC": {"sell": {"pending": False, "reason": "guard_watch"}}}}),
+        encoding="utf-8",
+    )
+    runtime_states = harvest_bot_runtime_states(
+        str(tmp_path),
+        lambda p: json.loads(open(p, encoding="utf-8").read()) if os.path.exists(p) else None,
+        tradable_positions=positions,
+    )
+    assert "sell" in runtime_states["assetguardian_state"]["TAOUSDC"]
+
+    # Verify allow_empty_inst_recovery preserves step_size/exchange_min_notional_usd when open orders remain,
+    # and strips stale locked_* / ghost trailing_peak when open_orders in cached_bals becomes empty
+    cached_pos["step_size"] = 0.001
+    cached_pos["exchange_min_notional_usd"] = 5.0
+    bcache_file.write_text(json.dumps(saved_bcache), encoding="utf-8")
+
+    rec_positions_with_oo, rec_oo, _, _ = harvest_tradable_positions_and_orders(
+        {},
+        {"TAOUSDC": {"price": 410.0, "trend": 1, "growth_coefficient": 0.1}},
+        {},
+        {},
+        known_ai_order_ids=set(),
+        gateway_max_usd=250.0,
+        cache_dir=str(tmp_path),
+        allow_empty_inst_recovery=True,
+    )
+    assert len(rec_positions_with_oo) == 1
+    assert rec_positions_with_oo[0]["locked_base_qty"] == pytest.approx(1.5)
+    assert rec_positions_with_oo[0]["step_size"] == pytest.approx(0.001)
+    assert rec_positions_with_oo[0]["trailing_peak"] == pytest.approx(440.0)
+
+    # Now clear open_orders in bcache and recover again -> stale locked_* and ghost trailing_peak (since free_base=0) are stripped
+    saved_bcache["open_orders:binance:TAOUSDC"] = []
+    bcache_file.write_text(json.dumps(saved_bcache), encoding="utf-8")
+    rec_positions_no_oo, _, _, _ = harvest_tradable_positions_and_orders(
+        {},
+        {"TAOUSDC": {"price": 410.0, "trend": 1, "growth_coefficient": 0.1}},
+        {},
+        {},
+        known_ai_order_ids=set(),
+        gateway_max_usd=250.0,
+        cache_dir=str(tmp_path),
+        allow_empty_inst_recovery=True,
+    )
+    assert len(rec_positions_no_oo) == 1
+    assert "locked_base_qty" not in rec_positions_no_oo[0]
+    assert "locked_base_usd" not in rec_positions_no_oo[0]
+    assert "replace_max_sell_usd" not in rec_positions_no_oo[0]
+    assert "trailing_peak" not in rec_positions_no_oo[0]
+
+
 
 
 

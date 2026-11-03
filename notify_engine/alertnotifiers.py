@@ -701,6 +701,12 @@ def pop_due_bulk_batch(
         if channel not in state["channels"]:
             return None
         channel_state = _normalize_channel_state(state, channel, now_ts)
+        if channel == "ntfy" and channel_state.get("blocked"):
+            blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
+            if blocked_until > 0 and now_ts >= blocked_until:
+                channel_state["blocked"] = False
+            else:
+                return None
         pending_bulk: list[dict] = channel_state["pending_bulk"]
         if not pending_bulk:
             return None

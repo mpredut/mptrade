@@ -1024,6 +1024,76 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 q_titles = [json.loads(ln)["title"] for ln in f if ln.strip()]
             self.assertEqual(q_titles, ["Q2", "Q3", "Q4"])
 
+    def test_gated_ntfy_accepted_status_email_mirror_and_blocked_pop(self):
+        from notify_engine.alertnotifiers import _mark_provider_daily_limit, pass_common_gate, pop_due_bulk_batch
+
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+            "NOTIFICATION_GATE_SECONDS": "600",
+            "NOTIFICATION_ERROR_DEDUP_SECONDS": "1800",
+        }):
+            self.dispatched.clear()
+            mirrored_emails = []
+            self.server._send_email = lambda subj, body, is_retry=False, dedup=True: mirrored_emails.append((subj, body, is_retry, dedup)) or True
+            t0 = 1_780_000_000.0
+
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0):
+                # 1. First trade alert opens and closes the 10-minute central gate
+                ok1 = self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "🎉 Order Executed: BUY BTCUSDC @ $80000.00",
+                    "body": "Filled 0.01 BTCUSDC",
+                    "source": "monitortrades",
+                    "symbol": "BTCUSDC",
+                }], bot_name="monitortrades")
+                self.assertTrue(ok1)
+                self.assertEqual(len(self.dispatched), 1)
+                self.assertEqual(mirrored_emails, [])
+
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 30):
+                # 2. ERROR alert arrives while ntfy central gate is closed -> buffered for bulk on ntfy,
+                #    returns True (accepted by gate so callers/flush_queue_loop do not treat as transport failure),
+                #    and immediately mirrors to email!
+                ok_err = self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "ORDER FAILED: BUY ETHUSDC",
+                    "body": "Insufficient balance",
+                    "source": "rtrade",
+                    "symbol": "ETHUSDC",
+                }], bot_name="rtrade")
+                self.assertTrue(ok_err)
+                self.assertEqual(len(self.dispatched), 1)
+                self.assertEqual(len(mirrored_emails), 1)
+                self.assertIn("ORDER FAILED: BUY ETHUSDC", mirrored_emails[0][0])
+
+                # 3. Duplicate of the ERROR alert within dedup window -> returns True without re-emailing
+                ok_dup = self.server.dispatch_alerts([{
+                    "type": "bot_event",
+                    "name": "ORDER FAILED: BUY ETHUSDC",
+                    "body": "Insufficient balance",
+                    "source": "rtrade",
+                    "symbol": "ETHUSDC",
+                }], bot_name="rtrade")
+                self.assertTrue(ok_dup)
+                self.assertEqual(len(mirrored_emails), 1)
+
+            # 4. If ntfy hits provider_daily_limit while pending_bulk has items, pop_due_bulk_batch must not pop and lose the batch
+            with mock.patch("notify_engine.alertnotifiers.time.time", return_value=t0 + 605):
+                _mark_provider_daily_limit("ntfy", cooldown_seconds=300.0)
+                self.assertIsNone(pop_due_bulk_batch("ntfy", now=t0 + 605))
+
+            # 5. Once the provider daily limit cooldown expires (t0 + 910s), flush_pending_bulk dispatches the buffered ERROR
+            #    to ntfy WITHOUT double-mirroring it to email
+            real_send_ntfy = NotificationServer._send_ntfy.__get__(self.server, NotificationServer)
+            self.server._send_ntfy = real_send_ntfy
+            with mock.patch("requests.post") as mock_post:
+                mock_resp = mock.MagicMock(status_code=200, text="", headers={})
+                mock_post.return_value = mock_resp
+                self.assertTrue(self.server.flush_pending_bulk(now=t0 + 910))
+                self.assertEqual(mock_post.call_count, 1)
+                self.assertEqual(len(mirrored_emails), 1)
+
+
 
 
 

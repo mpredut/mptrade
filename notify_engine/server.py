@@ -201,6 +201,16 @@ class NotificationServer:
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
 
+    @staticmethod
+    def _ntfy_gate_accepted() -> bool:
+        return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in (
+            "buffered_for_bulk",
+            "duplicate",
+            "similar_eliminated",
+            "topic_queue_full_dropped",
+            "queue_full_dropped",
+        )
+
     def _apply_ntfy_gate(
         self,
         title: str,
@@ -212,9 +222,11 @@ class NotificationServer:
         urgent: bool = False,
         skip_email: bool = False,
     ) -> tuple[str, str, str, str] | None:
+        _GATED_DISPATCH_TLS.last_gate_reason = ""
         allowed, reason, _, out_payload = pass_common_gate(
             "ntfy", title, body, priority, topic, alerts, urgent=urgent,
         )
+        _GATED_DISPATCH_TLS.last_gate_reason = reason
         if allowed:
             return out_payload or (title, body, priority, topic)
         logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
@@ -224,11 +236,13 @@ class NotificationServer:
                 allowed_retry, reason_retry, _, out_retry = pass_common_gate(
                     "ntfy", title, body, priority, topic, alerts, urgent=urgent,
                 )
+                _GATED_DISPATCH_TLS.last_gate_reason = reason_retry
                 if allowed_retry:
                     return out_retry or (title, body, priority, topic)
                 logging.info(f"ntfy delivery gated after due-batch flush ({reason_retry}): {title}")
-        elif (
-            reason not in ("duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped")
+        if (
+            getattr(_GATED_DISPATCH_TLS, "last_gate_reason", reason)
+            not in ("duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped")
             and not skip_email
             and is_email_mirrored(topic)
         ):
@@ -247,7 +261,7 @@ class NotificationServer:
     ) -> bool:
         gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent)
         if gated is None:
-            return False
+            return self._ntfy_gate_accepted()
         out_title, out_body, out_prio, out_topic = gated
         prev = getattr(_GATED_DISPATCH_TLS, "active", False)
         _GATED_DISPATCH_TLS.active = True
@@ -268,12 +282,15 @@ class NotificationServer:
                 except Exception:
                     bulk_topic = "ntfy-error-1978"
             prev = getattr(_GATED_DISPATCH_TLS, "active", False)
+            prev_skip_email = getattr(_GATED_DISPATCH_TLS, "skip_email", False)
             _GATED_DISPATCH_TLS.active = True
+            _GATED_DISPATCH_TLS.skip_email = True
             try:
                 if self._send_ntfy(bulk_title, bulk_body, bulk_prio, bulk_topic):
                     flushed = True
             finally:
                 _GATED_DISPATCH_TLS.active = prev
+                _GATED_DISPATCH_TLS.skip_email = prev_skip_email
         email_batch = pop_due_bulk_batch("email", now=now, force=force)
         if email_batch:
             email_subj, email_body, _, _ = email_batch
@@ -305,12 +322,17 @@ class NotificationServer:
                 title, message, priority, topic_str, urgent=(priority == "urgent"), skip_email=skip_email
             )
             if gated is None:
-                return False
+                return self._ntfy_gate_accepted()
             title, message, priority, topic_str = gated
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
-        if not is_retry and not skip_email and is_email_mirrored(topic_str):
+        if (
+            not is_retry
+            and not skip_email
+            and not getattr(_GATED_DISPATCH_TLS, "skip_email", False)
+            and is_email_mirrored(topic_str)
+        ):
             self._send_email(title, message)
         
         url = format_ntfy_url(topic_str)

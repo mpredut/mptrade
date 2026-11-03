@@ -655,23 +655,49 @@ def harvest_tradable_positions_and_orders(
                     failed_open_venues.add(v_norm)
                     open_orders_list.extend(_normalize_open_orders_list(cached_bals.get(oo_key), venue, sym, known_ai_order_ids))
     elif allow_empty_inst_recovery and cached_bals:
+        gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
+                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd"):
+                    rec_pos.pop(stale_k, None)
                 p_sym = str(rec_pos.get("symbol") or "").strip().upper()
                 p_quote = str(rec_pos.get("quote") or "USD").strip().upper()
+                v_rec_norm = normalize_venue_name(rec_pos.get("venue"))
+                fb_val = safe_nonneg_float(rec_pos.get("free_base"), default=None)
+                px_rec = 0.0
                 if p_sym:
                     px_rec = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=p_quote)
                     if px_rec > 0:
                         rec_pos["price"] = round_opt_px(px_rec, 6)
-                        if (fb_val := safe_nonneg_float(rec_pos.get("free_base"), default=None)) is not None:
+                        if fb_val is not None:
                             rec_pos["value_usd"] = round(fb_val * px_rec, 2)
+                            rec_pos["effective_max_sell_usd"] = round(
+                                min(gw_max_rec, venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val) * px_rec), 2
+                            )
                         prices_and_trends.setdefault(p_sym, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
+                    else:
+                        px_rec = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
+                if (rec_peak := safe_pos_float(rec_pos.get("trailing_peak"), default=None)) is not None:
+                    eff_rec_peak = max(rec_peak, px_rec) if px_rec > 0 else rec_peak
+                    rec_dd = round(((px_rec - eff_rec_peak) / eff_rec_peak) * 100.0, 2) if px_rec > 0 and eff_rec_peak > 0 else rec_pos.get("dd_from_peak_pct")
+                    min_not_rec = max(1.0, safe_float(rec_pos.get("exchange_min_notional_usd") or rec_pos.get("min_notional_usd"), 1.0))
+                    has_held_rec = fb_val is None or (fb_val > 1e-8 and (px_rec <= 0.0 or fb_val * px_rec >= min_not_rec))
+                    if has_held_rec:
+                        rec_pos["trailing_peak"] = round(eff_rec_peak, 6)
+                        rec_pos["dd_from_peak_pct"] = rec_dd
+                    else:
+                        rec_pos.pop("trailing_peak", None)
+                        rec_pos.pop("dd_from_peak_pct", None)
+                        if v_rec_norm and p_sym:
+                            pending_peaks_by_vs[(v_rec_norm, p_sym)] = (round(eff_rec_peak, 6), rec_dd)
                 tradable_positions.append(rec_pos)
             elif k.startswith("cash:") and isinstance(v, dict):
                 c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
                 if c_venue and c_asset:
-                    venue_quote_cash[f"{c_venue}:{c_asset}"] = dict(v)
+                    rec_cash = dict(v)
+                    rec_cash.pop("locked_quote_usd", None)
+                    venue_quote_cash[f"{c_venue}:{c_asset}"] = rec_cash
             elif k.startswith("open_orders:") and isinstance(v, list):
                 parts = k.split(":", 2)
                 open_orders_list.extend(_normalize_open_orders_list(v, parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "", known_ai_order_ids))
@@ -718,6 +744,11 @@ def harvest_tradable_positions_and_orders(
                 inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
                 px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
                 fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
+                prev_inst_limits = (
+                    {k: pos_entry[k] for k in ("exchange_min_notional_usd", "min_qty", "step_size", "tick_size", "spread_bps") if pos_entry.get(k) is not None}
+                    if inst_obj is None
+                    else {}
+                )
                 pos_entry.update(
                     resolve_venue_fee_and_limits(
                         str(pos_entry.get("venue") or ""),
@@ -731,6 +762,8 @@ def harvest_tradable_positions_and_orders(
                         gateway_max_usd=gateway_max_usd,
                     )
                 )
+                if prev_inst_limits:
+                    pos_entry.update(prev_inst_limits)
                 if lb_pos > 1e-8 and "trailing_peak" not in pos_entry and (pend_peak := pending_peaks_by_vs.get((p_v_norm, p_sym_u))) is not None:
                     min_not_pos = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
                     held_total = (fb_pos or 0.0) + lb_pos
@@ -1638,7 +1671,9 @@ def harvest_bot_runtime_states(
             str(pos.get("symbol") or "").upper()
             for pos in (tradable_positions or ())
             if isinstance(pos, dict) and normalize_venue_name(pos.get("venue")) == "binance"
-            and 0.0 <= safe_float(pos.get("value_usd"), -1.0) < max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
+            and 0.0 <= safe_float(pos.get("value_usd"), -1.0)
+            and (safe_float(pos.get("value_usd"), 0.0) + max(0.0, safe_float(pos.get("locked_base_usd"), 0.0)))
+            < max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
         }
         cleaned_ag_syms: Dict[str, Any] = {}
         for ag_sym, ag_val in ag_state["symbols"].items():
