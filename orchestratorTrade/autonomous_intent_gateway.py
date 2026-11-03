@@ -290,6 +290,7 @@ class AutonomousIntentGateway:
                 price,
                 effective_usd,
                 intents=self.load_all_intents(),
+                require_notional_match=replace_open,
             )
         if mode == "enforce" and (replace_open or cancel_bot_open):
             canceled_ids = self._cancel_existing_ai_open_orders(

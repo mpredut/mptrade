@@ -1857,8 +1857,9 @@ def find_duplicate_ai_open_limit_order(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     intents: Optional[list[dict[str, Any]]] = None,
+    require_notional_match: bool = True,
 ) -> Optional[str]:
-    """Return the venue order ID of an unfilled AI open limit order at the same side, price (<= 1 bps), and notional (<= 5%)."""
+    """Return the venue order ID of an unfilled AI open limit order at the same side, price (<= 1 bps), and (when required) notional (<= 5%)."""
     open_fn = getattr(inst, "open_orders", None)
     if not callable(open_fn) or not (limit_price and limit_price > 0) or not (notional_usd and notional_usd > 0):
         return None
@@ -1868,7 +1869,7 @@ def find_duplicate_ai_open_limit_order(
             return None
         ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
         intent_notional_by_id: dict[str, tuple[float, float]] = {}
-        if isinstance(intents, list):
+        if require_notional_match and isinstance(intents, list):
             for item in intents:
                 if not isinstance(item, dict):
                     continue
@@ -1912,21 +1913,22 @@ def find_duplicate_ai_open_limit_order(
             if oo_notional <= 0:
                 continue
             oid = extract_order_id(oo, default="")
-            notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
-            if not notional_ok and intent_notional_by_id:
-                cid = extract_client_order_id(oo, default="")
-                prior_pair = intent_notional_by_id.get(str(oid)) if oid else None
-                if prior_pair is None and cid:
-                    prior_pair = intent_notional_by_id.get(str(cid))
-                if prior_pair is not None:
-                    p_sug, p_clamp = prior_pair
-                    if (
-                        abs(p_sug - notional_usd) <= max(1.0, 0.05 * max(notional_usd, p_sug))
-                        and abs(oo_notional - p_clamp) <= max(1.0, 0.05 * max(p_clamp, oo_notional))
-                    ):
-                        notional_ok = True
-            if not notional_ok:
-                continue
+            if require_notional_match:
+                notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
+                if not notional_ok and intent_notional_by_id:
+                    cid = extract_client_order_id(oo, default="")
+                    prior_pair = intent_notional_by_id.get(str(oid)) if oid else None
+                    if prior_pair is None and cid:
+                        prior_pair = intent_notional_by_id.get(str(cid))
+                    if prior_pair is not None:
+                        p_sug, p_clamp = prior_pair
+                        if (
+                            abs(p_sug - notional_usd) <= max(1.0, 0.05 * max(notional_usd, p_sug))
+                            and abs(oo_notional - p_clamp) <= max(1.0, 0.05 * max(p_clamp, oo_notional))
+                        ):
+                            notional_ok = True
+                if not notional_ok:
+                    continue
             if oid:
                 return str(oid)
     except Exception:

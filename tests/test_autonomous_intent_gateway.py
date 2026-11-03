@@ -1420,6 +1420,24 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
         assert dup_rec["duplicate_of_order_id"] == "592714535208"
         hl_inst.place.assert_not_called()
 
+        # When replace_open_orders=False, a restated AI LIMIT order at the exact same price (<= 1 bps)
+        # but different notional (e.g. $200 vs $350 as free balance shrinks) is ALSO skipped rather than stacked
+        dup_same_px_diff_notional = gw.submit({
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 88.45,
+            "replace_open_orders": False,
+            "confidence": 0.90,
+            "suggested_notional_usd": 200.0,
+            "thesis": "Fallback LLM restating same price level with smaller notional and replace_open_orders=False.",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"HYPEUSDC": hl_inst})
+
+        assert dup_same_px_diff_notional["status"] == "SKIPPED_DUPLICATE_OPEN_ORDER"
+        assert dup_same_px_diff_notional["duplicate_of_order_id"] == "592714535208"
+        hl_inst.place.assert_not_called()
+
         # Even when replace_open_orders=True is passed, an identical resting AI limit order is preserved
         # while any stale AI open order at a different price is still canceled
         from providers.hyperliquid_provider import _cloid_for_client_order_id
