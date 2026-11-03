@@ -136,6 +136,23 @@ class PreTradeLLMGuardBase:
             cache_ttl_sec, self._explicit_client, self.gemini_client, self.DEFAULT_CACHE_TTL_SEC
         )
 
+    def _wrap_shadow_decision(
+        self,
+        dec: GuardDecision,
+        notional: float,
+        valid_resp: Optional[Dict[str, Any]] = None,
+    ) -> GuardDecision:
+        if isinstance(getattr(dec, "shadow_decision", None), GuardDecision):
+            return dec
+        if valid_resp is not None and isinstance(valid_resp, dict):
+            raw_dec, raw_reason = valid_resp.get("decision"), valid_resp.get("reason")
+            decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
+            reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
+            shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
+        else:
+            shadow_msg = f"shadow_mode ({dec.reason})"
+        return GuardDecision.allow(self.GUARD_NAME, shadow_msg, notional_eur=notional, shadow_decision=dec)
+
     def _execute_pretrade_guard_eval(
         self,
         *,
@@ -161,9 +178,16 @@ class PreTradeLLMGuardBase:
             if (
                 isinstance(cached, (tuple, list))
                 and len(cached) >= 2
+                and isinstance(cached[1], GuardDecision)
                 and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec)
             ):
-                return cached[1]
+                cached_dec: GuardDecision = cached[1]
+                base_dec = (
+                    cached_dec.shadow_decision
+                    if isinstance(getattr(cached_dec, "shadow_decision", None), GuardDecision)
+                    else cached_dec
+                )
+                return self._wrap_shadow_decision(base_dec, notional) if self.mode == "shadow" else base_dec
 
         effective_telemetry = (
             telemetry
@@ -206,17 +230,7 @@ class PreTradeLLMGuardBase:
         if on_decision is not None:
             on_decision(dec)
 
-        if self.mode == "shadow":
-            if valid_resp is None:
-                shadow_msg = f"shadow_mode ({dec.reason})"
-            else:
-                raw_dec, raw_reason = valid_resp.get("decision"), valid_resp.get("reason")
-                decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
-                reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
-                shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
-            final_dec = GuardDecision.allow(self.GUARD_NAME, shadow_msg, notional_eur=notional, shadow_decision=dec)
-        else:
-            final_dec = dec
+        final_dec = self._wrap_shadow_decision(dec, notional, valid_resp) if self.mode == "shadow" else dec
 
         if self.cache_ttl_sec > 0:
             decision_cache[cache_key] = (now_ts, final_dec)
@@ -237,12 +251,16 @@ class HighStakeGuard(PreTradeLLMGuardBase):
         min_notional_usd: Optional[float] = None,
         timeout_sec: float = 120.0,
         fallback_action: str = "allow",
+        mode: str = "enforce",
+        notify_enabled: bool = True,
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
         super().__init__(
             gemini_client=gemini_client,
             timeout_sec=timeout_sec,
             fallback_action=fallback_action,
+            mode=mode,
+            notify_enabled=notify_enabled,
             cache_ttl_sec=cache_ttl_sec,
         )
         resolved_min = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_notional_eur, DEFAULT_MIN_NOTIONAL_USD)
@@ -305,6 +323,8 @@ class HighStakeGuard(PreTradeLLMGuardBase):
                 "HighStakeGuard", f"below_high_stake_threshold ({notional:.2f} < {self.min_notional_eur:.2f} EUR)", notional_eur=notional
             )
 
+        if self.mode in ("off", "0", "0.0", "disabled", "false", "no"):
+            return GuardDecision.allow("HighStakeGuard", "high_stake_guard_disabled", notional_eur=notional)
         if is_llm_guard_exempt(self._explicit_client):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 

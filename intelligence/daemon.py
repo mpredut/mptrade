@@ -24,6 +24,7 @@ from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
+    compute_step_retry_ts,
     detect_active_binance_symbols,
     is_interval_due,
     obj_attr,
@@ -142,6 +143,10 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
             if macro_ok:
                 results["macro_updated"] = True
                 self._last_macro_ts = current_ts
+            else:
+                self._last_macro_ts = compute_step_retry_ts(
+                    self._last_macro_ts, current_ts, self.macro_interval_sec
+                )
 
         if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
             prune_automated_cli_threads(logger)

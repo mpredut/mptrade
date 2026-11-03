@@ -1378,13 +1378,13 @@ def _evaluate_mt_reentry(
     if current_trend_up is None:
         current_trend_up = bool(is_trend_up(symbol))
 
+    prev_reentry_state = _update_mt_reentry_state(
+        symbol, sell_price, current_price, current_time_s, sell_time, _REENTRY_STATE, _LAST_EXIT_KIND
+    )
     last_exit_kind = _infer_mt_exit_kind(
         symbol, trade_orders_sell, position_closed_by_sell,
         buy_price, sell_price, buy_time, sell_time, position, tp_ref, lost_threshold,
         _LAST_EXIT_KIND,
-    )
-    prev_reentry_state = _update_mt_reentry_state(
-        symbol, sell_price, current_price, current_time_s, sell_time, _REENTRY_STATE
     )
 
     reentry_snap = ReentrySnapshot(

@@ -1301,6 +1301,172 @@ def test_unified_ai_agent_base_classes_and_query_topic_json():
     assert query_topic_json(None, "guard_high_stake", "noop") is None
 
 
+def test_pretrade_guard_cross_mode_cache_isolation_and_high_stake_mode():
+    """Verify PostStopReentryGuard and HighStakeGuard adapt cached decisions across enforce <-> shadow modes."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.guards import HighStakeGuard, PostStopReentryGuard
+    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+    from intelligence.sentiment.guards import post_stop_reentry_guard as psg_mod
+
+    psg_mod._POST_STOP_DECISION_CACHE.clear()
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+
+    class _VetoClient(GeminiClient):
+        def __init__(self):
+            self.calls = 0
+
+        def query_json(self, prompt, **kwargs):
+            self.calls += 1
+            return {
+                "decision": "REJECTED",
+                "suggested_scale": 0.0,
+                "reason": "Momentum downward",
+            }
+
+    client = _VetoClient()
+    sell_ts = time.time() - 60.0
+
+    # 1. Enforce guard caches VETO; subsequent shadow guard on same stop must NOT block
+    g_enforce = PostStopReentryGuard(gemini_client=client, mode="enforce", notify_enabled=False, cache_ttl_sec=60.0)
+    d_enf = g_enforce.check(
+        "ETHUSDC",
+        current_price=2010.0,
+        last_sell_price=2000.0,
+        trough=1950.0,
+        bounce_pct=0.03,
+        qty=1.0,
+        notional_eur=300.0,
+        last_sell_time_s=sell_ts,
+        telemetry={},
+    )
+    assert d_enf.allowed is False
+    assert client.calls == 1
+
+    g_shadow = PostStopReentryGuard(gemini_client=client, mode="shadow", notify_enabled=False, cache_ttl_sec=60.0)
+    d_shd = g_shadow.check(
+        "ETHUSDC",
+        current_price=2010.0,
+        last_sell_price=2000.0,
+        trough=1950.0,
+        bounce_pct=0.03,
+        qty=1.0,
+        notional_eur=300.0,
+        last_sell_time_s=sell_ts,
+        telemetry={},
+    )
+    assert client.calls == 1  # Served from cache
+    assert d_shd.allowed is True
+    assert d_shd.reason.startswith("shadow_mode")
+    assert d_shd.shadow_decision is not None
+    assert d_shd.shadow_decision.allowed is False
+
+    # 2. Reverse: Shadow guard populates cache first; subsequent enforce guard must enforce the underlying VETO
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    hs_shadow = HighStakeGuard(
+        min_notional_eur=500.0, gemini_client=client, mode="shadow", notify_enabled=False, cache_ttl_sec=60.0
+    )
+    hs_d_shd = hs_shadow.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
+    assert client.calls == 2
+    assert hs_d_shd.allowed is True
+    assert hs_d_shd.shadow_decision is not None and hs_d_shd.shadow_decision.allowed is False
+
+    hs_enforce = HighStakeGuard(
+        min_notional_eur=500.0, gemini_client=client, mode="enforce", notify_enabled=False, cache_ttl_sec=60.0
+    )
+    hs_d_enf = hs_enforce.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
+    assert client.calls == 2  # Served from cache
+    assert hs_d_enf.allowed is False
+    assert "Momentum downward" in hs_d_enf.reason
+
+    # 3. HighStakeGuard(mode="off") immediately allows without calling Gemini
+    hs_off = HighStakeGuard(min_notional_eur=500.0, gemini_client=client, mode="off", notify_enabled=False)
+    hs_d_off = hs_off.check("BTCUSDC", "BUY", 85000.0, 0.02, notional_eur=1200.0, telemetry={})
+    assert hs_d_off.allowed is True
+    assert hs_d_off.reason == "high_stake_guard_disabled"
+    assert client.calls == 2
+
+
+def test_macro_analyzer_and_daemon_apply_retry_backoff_on_llm_failure(monkeypatch, tmp_path):
+    """Verify MacroAnalyzer.run_cycle and IntelligenceTelemetryDaemon.run_cycle back off via compute_step_retry_ts."""
+    from intelligence.daemon import IntelligenceTelemetryDaemon
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisorAssessment
+
+    analyzer = MacroAnalyzer(
+        cache_dir=str(tmp_path),
+        macro_llm_interval_sec=1800.0,
+        advisor_interval_sec=10800.0,
+    )
+    analyzer._last_macro_llm_ts = 0.0
+    analyzer._last_advisor_ts = 0.0
+
+    monkeypatch.setattr(analyzer, "write_heartbeat", lambda *a, **k: None)
+    monkeypatch.setattr(analyzer, "prune_cli_threads", lambda *a, **k: 0)
+    monkeypatch.setattr(analyzer, "assess_geopolitical_threat", lambda **kw: False)
+    monkeypatch.setattr(analyzer, "assess_market_advisor", lambda **kw: False)
+
+    now_ts = time.time()
+    res = analyzer.run_cycle(now=now_ts)
+    assert res["geopolitical_updated"] is False
+    assert res["advisor_updated"] is False
+    # Instead of staying at 0.0 (hammering every 5s), both timestamps advance so next retry is ~300s away
+    assert analyzer._last_macro_llm_ts > now_ts - 1800.0
+    assert analyzer._last_advisor_ts > now_ts - 10800.0
+
+    # Also test when SentimentAdvisor falls back to a stale cached assessment on LLM failure
+    stale_ts = now_ts - 12000.0
+    analyzer.sentiment_advisor._last_eval_ts = stale_ts
+    analyzer.sentiment_advisor._cached_assessment = SentimentAdvisorAssessment(
+        market_bias="NEUTRAL",
+        risk_level="LOW",
+        confidence=0.5,
+        summary="stale",
+        key_risks=[],
+        recommended_action="HOLD",
+        ts=stale_ts,
+    )
+    analyzer._last_advisor_ts = stale_ts
+    monkeypatch.setattr(analyzer, "assess_market_advisor", lambda **kw: True)
+    res2 = analyzer.run_cycle(now=now_ts)
+    assert res2["advisor_updated"] is False
+    # Backed off by 25% of eff_adv_int rather than locking out for the full interval
+    eff_adv_int = res2["effective_advisor_interval_sec"]
+    assert abs((analyzer._last_advisor_ts + eff_adv_int) - (now_ts + eff_adv_int * 0.25)) < 5.0
+
+    # IntelligenceTelemetryDaemon.run_cycle also backs off when update_macro() returns False
+    daemon = IntelligenceTelemetryDaemon(cache_dir=str(tmp_path), symbols=[])
+    daemon._last_macro_ts = 0.0
+    monkeypatch.setattr(daemon, "_step_external_symbols", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "write_heartbeat", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "update_macro", lambda **kw: False)
+    d_res = daemon.run_cycle(now=now_ts)
+    assert d_res["macro_updated"] is False
+    assert daemon._last_macro_ts > 0.0
+
+
+def test_orderbook_depth_collector_uses_eur_endpoints_for_eur_pairs(monkeypatch, tmp_path):
+    """Verify OrderbookDepthCollector.fetch queries EUR orderbook endpoints for EUR-quoted symbols."""
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+
+    collector = OrderbookDepthCollector(cache_dir=str(tmp_path))
+    requested_urls = []
+
+    def _fake_fetch_json_dict(url, *args, **kwargs):
+        requested_urls.append(url)
+        return {
+            "bids": [["60000.0", "1.5"], ["59990.0", "2.0"]],
+            "asks": [["60010.0", "1.2"], ["60020.0", "1.8"]],
+        }
+
+    monkeypatch.setattr(collector, "_fetch_json_dict", _fake_fetch_json_dict)
+    snap = collector.fetch("XBTEUR", allow_network=True)
+    assert snap is not None
+    assert snap.mid_price == 60005.0
+    assert requested_urls
+    assert "symbol=BTCEUR" in requested_urls[0]
+    assert "BTCUSDT" not in requested_urls[0]
+
+
 
 
 

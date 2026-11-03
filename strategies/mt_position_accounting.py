@@ -392,6 +392,9 @@ def _infer_mt_exit_kind(
     latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
     latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
     is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
+    if is_ai_sell and latest_sell_kind not in ("STOP", "SL", "AI_STOP_LOSS"):
+        last_exit_kind_map.pop(symbol, None)
+        return "SELL"
     explicit_exit_kind = last_exit_kind_map.get(symbol) or (latest_sell_kind or None)
     if (
         not explicit_exit_kind
@@ -421,6 +424,7 @@ def _update_mt_reentry_state(
     current_time_s: int,
     sell_time: float,
     reentry_state_map: dict,
+    last_exit_kind_map: Optional[dict] = None,
 ) -> dict:
     sell_time_clean = safe_pos_float(sell_time, default=None)
     prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
@@ -433,6 +437,8 @@ def _update_mt_reentry_state(
         ):
             prev_reentry_state = {}
             reentry_state_map.pop(symbol, None)
+            if isinstance(last_exit_kind_map, dict):
+                last_exit_kind_map.pop(symbol, None)
     if not prev_reentry_state:
         prev_reentry_state = {
             "trough": min(sell_price, current_price),

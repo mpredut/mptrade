@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
+    compute_step_retry_ts,
     extract_high_severity_headlines_and_digest,
     is_interval_due,
     load_cached_fear_greed_snapshot,
@@ -312,6 +313,10 @@ class MacroAnalyzer:
             if geo_ok:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
+            else:
+                self._last_macro_llm_ts = compute_step_retry_ts(
+                    self._last_macro_llm_ts, current_ts, geo_interval or self.macro_llm_interval_sec
+                )
             self.write_heartbeat(results)
 
         fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=current_ts)
@@ -342,9 +347,17 @@ class MacroAnalyzer:
                 adv_ok = self.assess_market_advisor(force=force, now=current_ts)
             except TypeError:
                 adv_ok = self.assess_market_advisor(force=force)
-            if adv_ok:
+            adv_last_eval = safe_pos_float(getattr(self.sentiment_advisor, "_last_eval_ts", None), 0.0)
+            adv_cached_ts = safe_pos_float(
+                getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", None), 0.0
+            )
+            if adv_ok and (adv_last_eval <= 0.0 or adv_last_eval >= current_ts or adv_cached_ts >= current_ts):
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
+            else:
+                self._last_advisor_ts = compute_step_retry_ts(
+                    self._last_advisor_ts, current_ts, adv_interval or self.advisor_interval_sec
+                )
             self.write_heartbeat(results)
 
         if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):

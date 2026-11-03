@@ -178,6 +178,58 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             self.assertTrue(ok)
             self.assertAlmostEqual(mock_place.call_args.args[3], 0.8, places=6)
 
+    def test_update_mt_reentry_state_and_infer_exit_kind_clear_stale_stop_on_newer_sell(self):
+        from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
+
+        reentry_state = {"BTCUSDC": {"sell_time": 1000.0, "trough": 78000.0}}
+        last_exit_kind = {"BTCUSDC": "STOP"}
+
+        # A newer sell at t=2000.0 resets reentry_state and clears stale last_exit_kind["BTCUSDC"] = "STOP"
+        st = _update_mt_reentry_state(
+            "BTCUSDC",
+            81000.0,
+            81100.0,
+            2005,
+            2000.0,
+            reentry_state,
+            last_exit_kind,
+        )
+        self.assertEqual(st["sell_time"], 2000.0)
+        self.assertNotIn("BTCUSDC", last_exit_kind)
+
+        exit_kind = _infer_mt_exit_kind(
+            "BTCUSDC",
+            [{"side": "SELL", "time": 2000000, "price": 81000.0}],
+            True,
+            80000.0,
+            81000.0,
+            1500.0,
+            2000.0,
+            {},
+            "average",
+            0.02,
+            last_exit_kind,
+        )
+        self.assertEqual(exit_kind, "SELL")
+
+        # Even if last_exit_kind still had "STOP", an explicit AI_SELL (non-stop) must return "SELL" and clear "STOP"
+        last_exit_kind["BTCUSDC"] = "STOP"
+        exit_kind_ai = _infer_mt_exit_kind(
+            "BTCUSDC",
+            [{"side": "SELL", "time": 2500000, "price": 82000.0, "by": "AI", "kind": "AI_SELL"}],
+            True,
+            80000.0,
+            82000.0,
+            1500.0,
+            2500.0,
+            {},
+            "average",
+            0.02,
+            last_exit_kind,
+        )
+        self.assertEqual(exit_kind_ai, "SELL")
+        self.assertNotIn("BTCUSDC", last_exit_kind)
+
 
 if __name__ == "__main__":
     unittest.main()

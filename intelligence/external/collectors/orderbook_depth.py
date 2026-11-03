@@ -310,20 +310,33 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             data = None
             last_err: Optional[Exception] = None
             kraken_pair = resolve_kraken_lookup_symbol(symbol)
-            usdc_sym = f"{_extract_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
-            spot_urls = (
-                (
-                    f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
-                    f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+            if canon_sym.endswith("EUR"):
+                base_asset = _extract_base_asset(canon_sym)
+                bin_eur_sym = f"{base_asset}EUR" if base_asset else canon_sym
+                krk_eur_pair = (
+                    "XBTEUR"
+                    if base_asset == "BTC"
+                    else ("XDGEUR" if base_asset == "DOGE" else bin_eur_sym)
                 )
-                if (usdc_sym and usdc_sym != lookup_sym)
-                else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
-            )
-            base_urls = (
-                *spot_urls,
-                f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-            )
+                base_urls: Tuple[str, ...] = (
+                    f"https://api.binance.com/api/v3/depth?symbol={bin_eur_sym}&limit=500",
+                    f"https://api.kraken.com/0/public/Depth?pair={krk_eur_pair}&count=200",
+                )
+            else:
+                usdc_sym = f"{_extract_base_asset(canon_sym)}USDC" if canon_sym.endswith(("USD", "USDC")) else ""
+                spot_urls = (
+                    (
+                        f"https://api.binance.com/api/v3/depth?symbol={usdc_sym}&limit=500",
+                        f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",
+                    )
+                    if (usdc_sym and usdc_sym != lookup_sym)
+                    else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
+                )
+                base_urls = (
+                    *spot_urls,
+                    f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                    f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                )
             pref_url = self._preferred_url.get(symbol)
             urls = (
                 (pref_url, *(u for u in base_urls if u != pref_url))

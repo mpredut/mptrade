@@ -110,6 +110,11 @@ class GuardDecision:
     suggested_scale: float = 1.0       # Range 0.0 - 1.0 (used if brake_action is DOWNSCALE_QTY)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def shadow_decision(self) -> Optional["GuardDecision"]:
+        sd = self.metadata.get("shadow_decision") if isinstance(self.metadata, dict) else None
+        return sd if isinstance(sd, GuardDecision) else None
+
     @classmethod
     def allow(cls, guard_name: str, reason: str = "ok", **meta) -> "GuardDecision":
         return cls(
