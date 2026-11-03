@@ -1853,6 +1853,33 @@ def find_duplicate_ai_open_limit_order(
         if not isinstance(raw_open, list):
             return None
         ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
+        intent_notional_by_id: dict[str, tuple[float, float]] = {}
+        if isinstance(intents, list):
+            for item in intents:
+                if not isinstance(item, dict):
+                    continue
+                p_sug = safe_pos_float(item.get("suggested_notional_usd"), default=None)
+                p_clamp = safe_pos_float(item.get("clamped_notional_usd"), default=None)
+                if p_clamp is None and isinstance(item.get("history"), list):
+                    for h_entry in reversed(item["history"]):
+                        if isinstance(h_entry, dict) and str(h_entry.get("action") or "").upper() in ("EXECUTED", "PLACED"):
+                            p_clamp = safe_pos_float(h_entry.get("notional_usd"), default=None)
+                            if p_clamp is not None:
+                                break
+                if p_sug is None or p_clamp is None:
+                    continue
+                item_ids: set[str] = set(intent_venue_client_order_ids(item))
+                oid_rec = extract_order_id(item.get("execution_payload"), default="")
+                if oid_rec:
+                    item_ids.add(str(oid_rec))
+                for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
+                    if isinstance(h_entry, dict):
+                        h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
+                        if h_oid:
+                            item_ids.add(str(h_oid))
+                for k in item_ids:
+                    if k:
+                        intent_notional_by_id[k] = (p_sug, p_clamp)
         for oo in raw_open:
             if not isinstance(oo, dict):
                 continue
@@ -1868,9 +1895,24 @@ def find_duplicate_ai_open_limit_order(
                 continue
             oo_qty = extract_orig_qty(oo)
             oo_notional = oo_px * oo_qty
-            if oo_notional <= 0 or abs(oo_notional - notional_usd) > max(1.0, 0.05 * max(notional_usd, oo_notional)):
+            if oo_notional <= 0:
                 continue
             oid = extract_order_id(oo, default="")
+            notional_ok = abs(oo_notional - notional_usd) <= max(1.0, 0.05 * max(notional_usd, oo_notional))
+            if not notional_ok and intent_notional_by_id:
+                cid = extract_client_order_id(oo, default="")
+                prior_pair = intent_notional_by_id.get(str(oid)) if oid else None
+                if prior_pair is None and cid:
+                    prior_pair = intent_notional_by_id.get(str(cid))
+                if prior_pair is not None:
+                    p_sug, p_clamp = prior_pair
+                    if (
+                        abs(p_sug - notional_usd) <= max(1.0, 0.05 * max(notional_usd, p_sug))
+                        and abs(oo_notional - p_clamp) <= max(1.0, 0.05 * max(p_clamp, oo_notional))
+                    ):
+                        notional_ok = True
+            if not notional_ok:
+                continue
             if oid:
                 return str(oid)
     except Exception:

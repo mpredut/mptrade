@@ -130,12 +130,18 @@ class GeminiClient:
                 candidates.append(fb)
         return candidates
 
-    def get_compact_model_candidates(self, models_to_try: list[str], attempt_idx: int = 0) -> list[str]:
+    def get_compact_model_candidates(
+        self,
+        models_to_try: list[str],
+        attempt_idx: int = 0,
+        quota_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> list[str]:
         """Return ordered models for in-place /compact summarization (free/low-cost language model first)."""
+        remaining = [m for m in models_to_try[attempt_idx:] if m]
         if getattr(self, "_custom_fallbacks", False):
-            return list(models_to_try[attempt_idx:])
+            return remaining
         preferred_compact = (os.environ.get("LLM_COMPACT_MODEL") or "gpt-oss-120b-medium").strip()
-        allowed = set(models_to_try)
+        allowed = set(remaining)
         compact_chain: list[str] = []
         for low_m in (
             preferred_compact,
@@ -146,10 +152,21 @@ class GeminiClient:
         ):
             if low_m and low_m not in compact_chain and (not allowed or low_m in allowed):
                 compact_chain.append(low_m)
-        for rem_m in models_to_try[attempt_idx:]:
+        for rem_m in remaining:
             if rem_m and rem_m not in compact_chain:
                 compact_chain.append(rem_m)
-        return compact_chain or list(models_to_try[attempt_idx:])
+        snap = quota_snapshot
+        if snap is None and attempt_idx > 0 and isinstance(getattr(self, "_QUOTA_MEM_CACHE", None), dict):
+            snap = self._QUOTA_MEM_CACHE
+        if isinstance(snap, dict) and compact_chain:
+            now = time.time()
+            avail_cred = safe_float(snap.get("available_credits"), 0.0)
+            rt_ex = snap.get("runtime_exhausted") if isinstance(snap.get("runtime_exhausted"), dict) else None
+            if isinstance(rt_ex, dict) and rt_ex and avail_cred <= 0.0:
+                non_exhausted = [m for m in compact_chain if safe_float(rt_ex.get(m), 0.0) <= now]
+                if non_exhausted:
+                    compact_chain = non_exhausted
+        return compact_chain or remaining
 
     @staticmethod
     def _get_quota_state_path() -> str:
@@ -880,7 +897,11 @@ class GeminiClient:
                                             if not is_mocked
                                             else None
                                         )
-                                        for compact_model in self.get_compact_model_candidates(models_to_try, attempt_idx):
+                                        for compact_model in self.get_compact_model_candidates(
+                                            models_to_try,
+                                            attempt_idx,
+                                            quota_snapshot=self._QUOTA_MEM_CACHE if enable_pre_quota else None,
+                                        ):
                                             try:
                                                 c_proc = self._execute_cli(
                                                     turn_cid,
@@ -895,6 +916,8 @@ class GeminiClient:
                                                 compacted_ok = bool(c_out or c_cid)
                                                 if compacted_ok:
                                                     break
+                                                if enable_pre_quota and self._is_quota_or_credit_error(c_proc):
+                                                    self._record_model_quota_exhausted(compact_model)
                                                 if not is_mocked and compact_snap is not None:
                                                     restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
                                             except Exception as exc:

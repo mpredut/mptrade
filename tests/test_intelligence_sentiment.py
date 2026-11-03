@@ -1467,10 +1467,118 @@ def test_orderbook_depth_collector_uses_eur_endpoints_for_eur_pairs(monkeypatch,
     assert "BTCUSDT" not in requested_urls[0]
 
 
+def test_compact_model_candidates_skips_failed_attempts_and_runtime_exhausted(monkeypatch):
+    """Verify get_compact_model_candidates excludes models from earlier failed attempts and runtime-exhausted pools."""
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    client = GeminiClient()
+    models_to_try = [
+        "gpt-oss-120b-medium",
+        "gemini-4-argon-low",
+        "claude-sonnet-5-5-low",
+        "gemini-3.8-flash-low",
+    ]
+    # Suppose attempt_idx=2 (gpt-oss-120b-medium failed at idx 0, gemini-4-argon-low quota-exhausted at idx 1)
+    monkeypatch.setattr(
+        GeminiClient,
+        "_QUOTA_MEM_CACHE",
+        {
+            "runtime_exhausted": {
+                "gemini-4-argon-low": 9999999999.0,
+                "gemini-3.8-flash-low": 9999999999.0,
+            }
+        },
+    )
+    cands = client.get_compact_model_candidates(models_to_try, attempt_idx=2)
+    assert "gpt-oss-120b-medium" not in cands
+    assert "gemini-4-argon-low" not in cands
+    assert "gemini-3.8-flash-low" not in cands
+    assert cands == ["claude-sonnet-5-5-low"]
 
 
+def test_find_duplicate_ai_open_limit_order_matches_wallet_clamped_intent():
+    """Verify find_duplicate_ai_open_limit_order recognizes a resting AI limit order clamped by wallet balance."""
+    from providers.execution_audit import find_duplicate_ai_open_limit_order
+
+    class _StubInst:
+        symbol = "TAOUSD"
+
+        def open_orders(self):
+            return [
+                {
+                    "orderId": "O-CLAMPED-1",
+                    "side": "BUY",
+                    "price": "100.0",
+                    "origQty": "3.2",
+                    "executedQty": "0.0",
+                }
+            ]
+
+    prior_intents = [
+        {
+            "intent_id": "intent_1700000000_buy_taousd",
+            "decision": "BUY",
+            "symbol": "TAOUSD",
+            "venue": "binance",
+            "suggested_notional_usd": 500.0,
+            "clamped_notional_usd": 320.0,
+            "order_type": "LIMIT",
+            "limit_price": 100.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "O-CLAMPED-1"},
+            "history": [{"action": "EXECUTED", "order_id": "O-CLAMPED-1", "notional_usd": 320.0}],
+        }
+    ]
+
+    # Same unclamped target notional ($500) -> matches existing $320 wallet-clamped order
+    dup = find_duplicate_ai_open_limit_order(
+        _StubInst(),
+        "BUY",
+        100.0,
+        500.0,
+        intents=prior_intents,
+    )
+    assert dup == "O-CLAMPED-1"
+
+    # Intentionally changed target notional ($200) -> does NOT match the $500->$320 order
+    dup_changed = find_duplicate_ai_open_limit_order(
+        _StubInst(),
+        "BUY",
+        100.0,
+        200.0,
+        intents=prior_intents,
+    )
+    assert dup_changed is None
 
 
+def test_equity_symbol_normalization_and_pretrade_telemetry_cache_isolation(tmp_path):
+    """Verify delimiter-stripped USEQ/_EQ symbol normalization and custom cachedb_dir isolation in collect_pretrade_telemetry."""
+    import json
+    from cachepaths import (
+        cache_symbol_variants,
+        canonical_symbol_key,
+        normalize_cache_base_asset,
+        split_symbol_assets,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
 
+    assert normalize_cache_base_asset("SPCXUSEQ") == "SPCX"
+    assert split_symbol_assets("SPCXUSEQ") == ("SPCX", "USD")
+    assert canonical_symbol_key("SPCXUSEQ") == "SPCXUSD"
+    assert split_symbol_assets("RGNT_EQ") == ("RGNT", "USD")
+    assert canonical_symbol_key("RGNT_EQ") == "RGNTUSD"
+    assert "SPCXUSEQUSD" not in cache_symbol_variants("SPCX_US_EQ")
+
+    # Write a USD orderbook file and an EUR orderbook file in tmp_path
+    (tmp_path / "orderbook_depth_BTCUSD.json").write_text(
+        json.dumps({"symbol": "BTCUSD", "imbalance_ratio": 0.90, "mid_price": 70000.0}),
+        encoding="utf-8",
+    )
+    (tmp_path / "orderbook_depth_BTCEUR.json").write_text(
+        json.dumps({"symbol": "BTCEUR", "imbalance_ratio": 0.25, "mid_price": 64000.0}),
+        encoding="utf-8",
+    )
+    telem = collect_pretrade_telemetry("BTCEUR", cachedb_dir=str(tmp_path))
+    assert "25% bids vs 75% asks" in telem.get("Orderbook Depth Imbalance", "")
 
 

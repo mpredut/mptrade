@@ -575,10 +575,13 @@ def normalize_cache_base_asset(symbol: object) -> str:
     if raw_base.endswith("x") and len(raw_base) > 2 and raw_base[:-1].isalnum() and raw_base[:-1].isupper():
         raw_base = raw_base[:-1]
     s = _strip_kraken_asset_suffixes(raw_base.upper())
-    for quote in CACHE_QUOTE_SUFFIXES:
-        if s.endswith(quote) and len(s) > len(quote):
-            s = s[: -len(quote)]
-            break
+    if s.endswith("USEQ") and len(s) > 4:
+        s = s[:-4]
+    else:
+        for quote in CACHE_QUOTE_SUFFIXES:
+            if s.endswith(quote) and len(s) > len(quote):
+                s = s[: -len(quote)]
+                break
     s = _strip_kraken_asset_suffixes(s)
     if (len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES) or s in {"XBTZ", "XDGZ"}:
         s = s[:-1]
@@ -660,7 +663,7 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     sym_u = raw.upper().replace("/", "").replace("-", "").replace("_", "")
     if not sym_u:
         return None
-    if sym_u.endswith("USEQ") and len(sym_u) > 4:
+    if (sym_u.endswith("USEQ") and len(sym_u) > 4) or (raw.upper().endswith("_EQ") and len(sym_u) > 2):
         return normalize_cache_base_asset(raw), "USD"
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
         if sym_u.endswith(quote) and len(sym_u) > len(quote):

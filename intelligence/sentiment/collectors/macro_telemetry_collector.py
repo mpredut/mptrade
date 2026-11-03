@@ -632,7 +632,8 @@ def collect_pretrade_telemetry(
     quote_variants = cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes)
 
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
-        for cand in sym_variants:
+        variants = quote_variants if prefix == "orderbook_depth_" else sym_variants
+        for cand in variants:
             d = read_json_cached(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
             if isinstance(d, dict):
                 return d if d.get("symbol") else {**d, "symbol": cand}
@@ -642,6 +643,12 @@ def collect_pretrade_telemetry(
         try:
             col = getter_fn()
             col_cdir = getattr(col, "_cache_dir", None)
+            if not isinstance(col_cdir, str) and hasattr(type(col), "_effective_cache_dir"):
+                col_cdir = col._effective_cache_dir()
+            if not isinstance(col_cdir, str):
+                raw_cdir = getattr(col, "cache_dir", None)
+                if isinstance(raw_cdir, str):
+                    col_cdir = raw_cdir
             if not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
                 snap = col.fetch(symbol, allow_network=False)
                 if snap is not None:
