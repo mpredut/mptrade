@@ -437,7 +437,11 @@ class GeminiClient:
         ):
             return
 
-        title = "AI LLM Quota Near Zero" if argon_rem > 0.0 else "AI LLM Paid Argon Quota Exhausted (0%)"
+        title = (
+            "🛑 ERROR: AI LLM Quota Near Zero"
+            if argon_rem > 0.0
+            else "🛑 ERROR: AI LLM Paid Argon Quota Exhausted (0%)"
+        )
         msg = (
             f"Credite suplimentare: {available_credits:.0f} | "
             f"gemini-4-argon (med/low/high): {argon_rem * 100:.0f}% | "
@@ -446,13 +450,14 @@ class GeminiClient:
             f"Routing activat automat pe primul model cu credite confirmate; "
             f"revenire dinamica imediata pe Argon dupa reincarcare/reset."
         )
-        sent = False
+        dispatched = False
         try:
-            sent = bool(watchdog_common.send_ntfy(title, msg))
+            watchdog_common.send_ntfy(title, msg)
+            dispatched = True
         except Exception as exc:
             logger.debug("Failed sending low-quota NTFY alert: %s", exc)
 
-        if sent:
+        if dispatched:
             state_path = cls._get_quota_state_path()
             with cls._QUOTA_LOCK:
                 snapshot["last_alert_ts"] = now
