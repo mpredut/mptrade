@@ -653,9 +653,20 @@ class KrakenProvider(MarketDataProvider):
         try:
             self._ensure_usd_funding_from_usdc(symbol, s_norm, qty, submit_price or price)
             print(f"[Kraken][LIVE] {side} {symbol} qty={qty} @ {price}")
-            return self._client().add_order(
+            res = self._client().add_order(
                 symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
                 cl_ord_id=cl_ord_id)
+            if res and (
+                self._allow_ssot_price_cache()
+                or getattr(self, "_ssot_fills_cache_path", None)
+                or _KRAKEN_CACHE_FILE != cache_path("cache_trade_kraken.json")
+            ):
+                self.invalidate_ssot_fills_cache(
+                    symbol,
+                    str(getattr(self, "_ssot_fills_cache_path", None) or _KRAKEN_CACHE_FILE),
+                    match_fn=_kraken_pair_matches,
+                )
+            return res
         except SubmissionRefused:
             raise
         except Exception as e:  # noqa: BLE001
@@ -710,6 +721,16 @@ class KrakenProvider(MarketDataProvider):
         order_id = extract_order_id(res)
         if order_id is None:
             raise ProviderError(f"submit_order {symbol}: a response without a txid ({res})")
+        if (
+            self._allow_ssot_price_cache()
+            or getattr(self, "_ssot_fills_cache_path", None)
+            or _KRAKEN_CACHE_FILE != cache_path("cache_trade_kraken.json")
+        ):
+            self.invalidate_ssot_fills_cache(
+                symbol,
+                str(getattr(self, "_ssot_fills_cache_path", None) or _KRAKEN_CACHE_FILE),
+                match_fn=_kraken_pair_matches,
+            )
         return order_id
 
     def preflight_order(self, symbol: str, side: str, qty: float,

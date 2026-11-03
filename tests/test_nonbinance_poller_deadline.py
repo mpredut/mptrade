@@ -329,6 +329,77 @@ class TestFetchDeadline(unittest.TestCase):
             self.assertEqual([o["orderId"] for o in orders], ["101", "102"])
             self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
 
+    def test_ws_stream_dynamic_add_remove_and_provider_ssot_cache_helpers(self):
+        import json
+        import tempfile
+        from providers.base import MarketDataProvider
+
+        # 1. Dynamic add_symbol / remove_symbol on KrakenPriceStream and HyperliquidPriceStream
+        krk_stream = cm.KrakenPriceStream(["HYPEUSD"])
+        self.assertTrue(krk_stream.add_symbol("BTC/USD"))
+        self.assertIn("BTC/USD", json.loads(krk_stream._build_subscribe_payload())["pair"])
+        now_ms = int(time.time() * 1000)
+        krk_stream._process_message(
+            json.dumps([99, {"c": ["95000.0", "0.1"], "b": ["94990.0", "1"], "a": ["95010.0", "1"]}, "ticker", "XBT/USD"]),
+            now_ms=now_ms,
+        )
+        self.assertAlmostEqual(krk_stream.get_price("BTCUSD"), 95000.0)
+        self.assertTrue(krk_stream.remove_symbol("BTCUSD"))
+        self.assertIsNone(krk_stream.get_price("BTCUSD"))
+        self.assertIsNone(krk_stream._resolve_symbol("XBT/USD"))
+
+        hl_stream = cm.HyperliquidPriceStream(["HYPEUSDC"])
+        _ = hl_stream._candidate_mids_keys("HYPEUSDC")
+        self.assertIn("HYPEUSDC", hl_stream._resolved_spot_keys)
+        self.assertTrue(hl_stream.remove_symbol("HYPEUSDC"))
+        self.assertNotIn("HYPEUSDC", hl_stream._resolved_spot_keys)
+
+        # 2. clamp_price_to_bbo_mid must not fabricate mid from wide (>5%) spread when price is None
+        self.assertIsNone(MarketDataProvider.clamp_price_to_bbo_mid(None, "10.0", "20.0"))
+        self.assertAlmostEqual(MarketDataProvider.clamp_price_to_bbo_mid(None, "100.0", "101.0"), 100.5)
+
+        # 3. _real_ws_is_healthy must not fall through to _ws_default_event_ts when symbol ts is 0.0
+        tmp_dir = tempfile.mkdtemp()
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=9999,
+            symbols=["HYPEUSD"],
+            filename=os.path.join(tmp_dir, "cache_current_price.json"),
+            ws_manager=None,
+            api_client=_FakeApi(),
+            market_api=_FakeApi(),
+            provider_names={"HYPEUSD": "kraken"},
+            read_only=True,
+        )
+        cpm._ws_last_event_ts = time.time()
+        cpm._ws_stream_event_ts_per_symbol["HYPEUSD"] = 0.0
+        self.assertFalse(cpm._real_ws_is_healthy("HYPEUSD"))
+
+        # 4. read_ssot_fills_cache skips stale alias key and returns fresh matching key
+        from providers.kraken_provider import KrakenProvider
+
+        kp = KrakenProvider(client=object())
+        fills_file = os.path.join(tmp_dir, "cache_trade_kraken.json")
+        with open(fills_file, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "XBTUSD": [{"ordertxid": "O1", "type": "buy", "price": 90000.0, "vol": 0.1, "time": now_ms / 1000.0}],
+                        "BTCUSD": [{"ordertxid": "O2", "type": "buy", "price": 95000.0, "vol": 0.2, "time": now_ms / 1000.0}],
+                    },
+                    "fetchtime": {
+                        "XBTUSD": now_ms - 600_000,
+                        "BTCUSD": now_ms,
+                    },
+                },
+                fh,
+            )
+        rows = kp.read_ssot_fills_cache("BTCUSD", fills_file, max_stale_sec=90.0)
+        self.assertIsNotNone(rows)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ordertxid"], "O2")
+        kp.invalidate_ssot_fills_cache("BTCUSD", fills_file)
+        self.assertIsNone(kp.read_ssot_fills_cache("BTCUSD", fills_file, max_stale_sec=90.0))
+
 
 if __name__ == "__main__":
     unittest.main()

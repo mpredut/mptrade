@@ -3334,31 +3334,28 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             or (casefold_get(self._provider_names, ck) if ck else None)
         )
 
+    def _resolve_symbol_ws_ts(self, ts_map: dict, symbol: str) -> float:
+        sym_u = str(symbol or "").strip().upper()
+        sym_clean = sym_u.replace("/", "").replace("-", "").replace("_", "")
+        for cand in (symbol, sym_u, sym_clean):
+            if cand and (val := ts_map.get(cand)) is not None:
+                return val
+        return self._ws_default_event_ts
+
     def _ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         now = time.time()
         if symbol is not None:
-            last_ts = self._ws_last_event_ts_per_symbol.get(
-                symbol, self._ws_default_event_ts
-            )
+            last_ts = self._resolve_symbol_ws_ts(self._ws_last_event_ts_per_symbol, symbol)
             return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
         if not self.symbols:
             return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
-        return all(
-            -5.0 <= (now - self._ws_last_event_ts_per_symbol.get(s, self._ws_default_event_ts))
-            < self.WS_TIMEOUT_SEC
-            for s in self.symbols
-        )
+        return all(self._ws_is_healthy(s) for s in self.symbols)
 
     def _real_ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
         """Return True when a live WebSocket stream (not a REST fallback poll) updated ``symbol`` within WS_TIMEOUT_SEC."""
         now = time.time()
         if symbol is not None:
-            sym_u = str(symbol or "").strip().upper()
-            last_ts = (
-                self._ws_stream_event_ts_per_symbol.get(symbol)
-                or self._ws_stream_event_ts_per_symbol.get(sym_u)
-                or self._ws_default_event_ts
-            )
+            last_ts = self._resolve_symbol_ws_ts(self._ws_stream_event_ts_per_symbol, symbol)
             return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
         if not self.symbols:
             return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC

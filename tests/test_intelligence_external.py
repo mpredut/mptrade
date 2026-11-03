@@ -321,12 +321,13 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
         orig_collector = order_guard._whale_collector
         orig_margins = order_guard._MARGINS
+        base_margins = dict(orig_margins or order_guard._load_margins())
         try:
             order_guard._whale_collector = collector
 
             # Test SHADOW mode: logs warning but allows trade
             order_guard._MARGINS = {
-                **orig_margins,
+                **base_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "shadow",
                 "orderbook_wall_guard_mode": "off",
@@ -342,7 +343,7 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
             # Test ENFORCE mode: hard veto
             order_guard._MARGINS = {
-                **orig_margins,
+                **base_margins,
                 "intelligence_guards_mode": "enforce",
                 "whale_guard_mode": "enforce",
                 "orderbook_wall_guard_mode": "off",
@@ -382,12 +383,13 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
         orig_collector = order_guard._orderbook_collector
         orig_margins = order_guard._MARGINS
+        base_margins = dict(orig_margins or order_guard._load_margins())
         try:
             order_guard._orderbook_collector = collector
 
             # Test SHADOW mode
             order_guard._MARGINS = {
-                **orig_margins,
+                **base_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "off",
                 "orderbook_wall_guard_mode": "shadow",
@@ -432,12 +434,13 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
 
         orig_collector = order_guard._derivatives_collector
         orig_margins = order_guard._MARGINS
+        base_margins = dict(orig_margins or order_guard._load_margins())
         try:
             order_guard._derivatives_collector = collector
 
             # Test SHADOW mode
             order_guard._MARGINS = {
-                **orig_margins,
+                **base_margins,
                 "intelligence_guards_mode": "shadow",
                 "whale_guard_mode": "off",
                 "orderbook_wall_guard_mode": "off",
@@ -472,10 +475,11 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         collector = WhalePositioningCollector(cache_ttl_sec=60.0, cache_dir=None)
         orig_collector = order_guard._whale_collector
         orig_margins = order_guard._MARGINS
+        base_margins = dict(orig_margins or order_guard._load_margins())
         try:
             order_guard._whale_collector = collector
             order_guard._MARGINS = {
-                **orig_margins,
+                **base_margins,
                 "intelligence_guards_mode": "enforce",
                 "whale_guard_mode": "enforce",
                 "min_taker_ratio": 0.75,

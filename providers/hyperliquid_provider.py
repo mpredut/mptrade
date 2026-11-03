@@ -721,6 +721,9 @@ class HyperliquidProvider(MarketDataProvider):
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
             raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
+        cache_file = self._fills_cache_file()
+        if cache_file:
+            self.invalidate_ssot_fills_cache(symbol, cache_file)
         return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,

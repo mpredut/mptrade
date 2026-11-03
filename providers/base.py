@@ -1045,8 +1045,8 @@ class MarketDataProvider(ABC):
         avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
         if avail_f is None:
             raise ProviderError(f"preflight_order {symbol}: {base_asset} balance is unavailable")
-        decimals = precision.volume_decimals if precision else 8
-        tolerance = 0.5 * (10.0 ** -max(0, decimals))
+        decimals = exact_nonneg_int(getattr(precision, "volume_decimals", None), default=8)
+        tolerance = 0.5 * (10.0 ** -min(decimals, 18))
         if requested > avail_f + tolerance:
             raise ProviderError(
                 f"preflight_order {symbol}: insufficient funds SELL "
@@ -1304,11 +1304,14 @@ class MarketDataProvider(ABC):
         px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
         bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
         ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
-        if bid_f is not None and ask_f is not None and bid_f <= ask_f:
-            if px_f is None:
-                return round((bid_f + ask_f) * 0.5, 8)
-            if (ask_f - bid_f) / bid_f <= max_spread_ratio and (px_f < bid_f or px_f > ask_f):
-                return round((bid_f + ask_f) * 0.5, 8)
+        if (
+            bid_f is not None
+            and ask_f is not None
+            and bid_f <= ask_f
+            and (ask_f - bid_f) / bid_f <= max_spread_ratio
+            and (px_f is None or px_f < bid_f or px_f > ask_f)
+        ):
+            return round((bid_f + ask_f) * 0.5, 8)
         return px_f
 
     def _allow_ssot_price_cache(self) -> bool:
@@ -1648,24 +1651,29 @@ class MarketDataProvider(ABC):
         if not isinstance(items, dict) or not isinstance(ft, dict):
             return None
         if callable(match_fn):
-            key = next((k for k in items if match_fn(symbol, k)), None)
+            keys = [k for k in items if match_fn(symbol, k)]
         else:
             cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
-            key = next((k for k in items if isinstance(k, str) and clean_symbol_key(k) in cands), None)
-        if key is None or not isinstance(items.get(key), list):
+            keys = [k for k in items if isinstance(k, str) and clean_symbol_key(k) in cands]
+        if not keys:
             return None
-        ft_val = safe_pos_float(casefold_get(ft, key), default=None)
-        if ft_val is None:
-            return None
-        if ft_val < 1e11:
-            ft_val *= 1000.0
-        age_ms = time.time() * 1000.0 - ft_val
-        max_stale = safe_pos_float(max_stale_sec, default=90.0) or 90.0
-        if age_ms < -5000.0 or age_ms > max_stale * 1000.0:
-            return None
-        if callable(normalize_fn):
-            return [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
-        return [dict(t) for t in items[key] if isinstance(t, dict)]
+        now_ms = time.time() * 1000.0
+        max_stale_ms = (safe_pos_float(max_stale_sec, default=90.0) or 90.0) * 1000.0
+        for key in keys:
+            if not isinstance(items.get(key), list):
+                continue
+            ft_val = safe_pos_float(casefold_get(ft, key), default=None)
+            if ft_val is None:
+                continue
+            if ft_val < 1e11:
+                ft_val *= 1000.0
+            age_ms = now_ms - ft_val
+            if age_ms < -5000.0 or age_ms > max_stale_ms:
+                continue
+            if callable(normalize_fn):
+                return [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
+            return [dict(t) for t in items[key] if isinstance(t, dict)]
+        return None
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
@@ -1687,7 +1695,9 @@ class MarketDataProvider(ABC):
         except Exception:
             return False
 
-    def invalidate_ssot_fills_cache(self, symbol: str, cache_file: str) -> None:
+    def invalidate_ssot_fills_cache(
+        self, symbol: str, cache_file: str, *, match_fn: Any = None
+    ) -> None:
         """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
         if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
             return
@@ -1700,7 +1710,14 @@ class MarketDataProvider(ABC):
             cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
             changed = False
             for k in list(data["fetchtime"].keys()):
-                if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands):
+                if not isinstance(k, str):
+                    continue
+                matched = (
+                    bool(match_fn(symbol, k))
+                    if callable(match_fn)
+                    else (k.upper() in cands or clean_symbol_key(k) in cands)
+                )
+                if matched:
                     data["fetchtime"].pop(k, None)
                     changed = True
             if changed:

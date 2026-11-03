@@ -1695,6 +1695,8 @@ class _VenuePriceStreamBase(BinanceWSBase):
             self._subscribed.discard(norm_s)
             self._symbols = tuple(s for s in self._symbols if s != norm_s)
             self._prices.pop(norm_s, None)
+            self._last_emit_ts_ms.pop(norm_s, None)
+            self._last_emit_price.pop(norm_s, None)
         return True
 
     def get_price(self, symbol: str) -> Optional[float]:
@@ -1816,6 +1818,14 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             hl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyperliquid")
             user_address = os.environ.get("HL_ACCOUNT_ADDRESS") or env_value(hl_dir, "HL_ACCOUNT_ADDRESS")
         self._user_address = str(user_address or "").strip() or None
+
+    def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        removed = super().remove_symbol(symbol)
+        if removed and norm_s:
+            with self._lock:
+                self._resolved_spot_keys.pop(norm_s, None)
+        return removed
 
     def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
         cached = self._resolved_spot_keys.get(symbol)
@@ -1964,25 +1974,60 @@ class KrakenPriceStream(_VenuePriceStreamBase):
         self._ws_pairs: list[str] = []
         self._pair_to_symbol: dict[str, str] = {}
         for sym in self._symbols:
-            split = split_symbol_assets(sym)
-            ws_pair = f"{split[0]}/{split[1]}" if split else sym
-            if ws_pair not in self._ws_pairs:
-                self._ws_pairs.append(ws_pair)
-            self._pair_to_symbol[ws_pair.upper()] = sym
-            self._pair_to_symbol[clean_symbol_key(sym)] = sym
-            if split and split[0] in ("BTC", "XBT"):
-                for b_alias in ("BTC", "XBT"):
-                    self._pair_to_symbol[f"{b_alias}/{split[1]}"] = sym
-                    self._pair_to_symbol[f"{b_alias}{split[1]}"] = sym
-            elif split and split[0] in ("DOGE", "XDG"):
-                for d_alias in ("DOGE", "XDG"):
-                    self._pair_to_symbol[f"{d_alias}/{split[1]}"] = sym
-                    self._pair_to_symbol[f"{d_alias}{split[1]}"] = sym
+            self._register_symbol_pair(sym)
+
+    def _register_symbol_pair(self, sym: str) -> None:
+        split = split_symbol_assets(sym)
+        ws_pair = f"{split[0]}/{split[1]}" if split else sym
+        if ws_pair not in self._ws_pairs:
+            self._ws_pairs.append(ws_pair)
+        self._pair_to_symbol[ws_pair.upper()] = sym
+        self._pair_to_symbol[clean_symbol_key(sym)] = sym
+        if split and split[0] in ("BTC", "XBT"):
+            for b_alias in ("BTC", "XBT"):
+                self._pair_to_symbol[f"{b_alias}/{split[1]}"] = sym
+                self._pair_to_symbol[f"{b_alias}{split[1]}"] = sym
+        elif split and split[0] in ("DOGE", "XDG"):
+            for d_alias in ("DOGE", "XDG"):
+                self._pair_to_symbol[f"{d_alias}/{split[1]}"] = sym
+                self._pair_to_symbol[f"{d_alias}{split[1]}"] = sym
+
+    def add_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s in self._subscribed:
+                return False
+            self._subscribed.add(norm_s)
+            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
+            self._register_symbol_pair(norm_s)
+        return True
+
+    def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s not in self._subscribed:
+                return False
+            self._subscribed.discard(norm_s)
+            self._symbols = tuple(s for s in self._symbols if s != norm_s)
+            self._prices.pop(norm_s, None)
+            self._last_emit_ts_ms.pop(norm_s, None)
+            self._last_emit_price.pop(norm_s, None)
+            self._ws_pairs.clear()
+            self._pair_to_symbol.clear()
+            for sym in self._symbols:
+                self._register_symbol_pair(sym)
+        return True
 
     def _build_subscribe_payload(self) -> str:
+        with self._lock:
+            pairs = list(self._ws_pairs)
         return _json.dumps({
             "event": "subscribe",
-            "pair": list(self._ws_pairs),
+            "pair": pairs,
             "subscription": {"name": "ticker"},
         })
 
@@ -1990,10 +2035,11 @@ class KrakenPriceStream(_VenuePriceStreamBase):
         raw_u = str(pair_label or "").strip().upper()
         if not raw_u:
             return None
-        return (
-            self._pair_to_symbol.get(raw_u)
-            or self._pair_to_symbol.get(clean_symbol_key(raw_u))
-        )
+        with self._lock:
+            return (
+                self._pair_to_symbol.get(raw_u)
+                or self._pair_to_symbol.get(clean_symbol_key(raw_u))
+            )
 
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
