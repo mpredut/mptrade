@@ -476,6 +476,36 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "get_ssot_cached_price", None)
         return reader(symbol, max_age_sec=max_age_sec) if callable(reader) else None
 
+    def round_quantity(self, symbol: str, qty: float) -> float:
+        fn = getattr(self._executor, "round_quantity", None)
+        if callable(fn):
+            return fn(symbol, qty)
+        return safe_pos_float(qty, default=0.0) or 0.0
+
+    round_amount = round_quantity
+
+    def round_price(self, symbol: str, price: float) -> float:
+        fn = getattr(self._executor, "round_price", None)
+        if callable(fn):
+            return fn(symbol, price)
+        return safe_pos_float(price, default=0.0) or 0.0
+
+    def min_order_qty(self, symbol: str) -> float:
+        fn = getattr(self._executor, "min_order_qty", None)
+        if callable(fn):
+            return safe_nonneg_float(fn(symbol), default=0.0) or 0.0
+        return 0.0
+
+    def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
+        fn = getattr(self._executor, "strategy_dry_run", None)
+        if callable(fn):
+            return bool(fn(force_paper, strategy_execute))
+        from .base import MarketDataProvider
+
+        return MarketDataProvider.resolve_strategy_dry_run(
+            force_paper, strategy_execute, self.execution_enabled()
+        )
+
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)

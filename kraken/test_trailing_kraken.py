@@ -515,7 +515,7 @@ class TestRebuyGuardsKraken(Base):
         c2.total = 0.0
         ts2.check_once()  # rebuy armed with sell_price=48.0
         c2.price = 49.0   # +2.08% > 1.2%, above sell_price=48.0
-        ts2.executor._executor.get_orders = lambda *_a, **_k: []
+        ts2.executor.get_orders = lambda *_a, **_k: []
         with patch("kraken.trailing_stop.order_guard.daily_limit_guard", return_value=(False, "daily_limit_exceeded")):
             ts2.check_once()
         self.assertEqual([o for o in c2.orders if o["side"] == "buy"], [])
@@ -606,10 +606,23 @@ class TestRebuyGuardsKraken(Base):
             self.assertFalse(hl_strategy_dry_run(False, True))
             self.assertFalse(kraken_strategy_dry_run(False, True))
             self.assertFalse(KrakenProvider(client=c).strategy_dry_run(False, True))
+            self.assertFalse(ts.executor.strategy_dry_run(False, True))
         with patch.dict(os.environ, {"HL_LIVE_ORDERS": "false", "KRAKEN_LIVE_ORDERS": "false"}):
             self.assertTrue(hl_strategy_dry_run(False, True))
             self.assertTrue(kraken_strategy_dry_run(False, True))
             self.assertTrue(KrakenProvider(client=c).strategy_dry_run(False, True))
+            self.assertTrue(ts.executor.strategy_dry_run(False, True))
+
+        # 4. AuditedStrategyExecutor passthroughs & SSOT cache_path resolution
+        c.pair_info = lambda _p: {"pair_decimals": 2, "lot_decimals": 4, "ordermin": "0.01", "base": "HYPE"}
+        self.assertAlmostEqual(ts.executor.min_order_qty("HYPEUSD"), 0.01)
+        self.assertAlmostEqual(ts.executor.round_quantity("HYPEUSD", 1.23459), 1.2345)
+        self.assertAlmostEqual(ts.executor.round_price("HYPEUSD", 48.129), 48.13)
+        from cachepaths import cache_path
+        hl_Live_ssot = HyperliquidProvider(token="HYPE", live_enabled=True)
+        hl_Live_ssot._force_ssot_cache = True
+        hl_cache_file = hl_Live_ssot._fills_cache_file()
+        self.assertEqual(hl_cache_file, cache_path("cache_trade_hyperliquid.json"))
 
 
 

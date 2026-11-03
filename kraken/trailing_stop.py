@@ -329,9 +329,9 @@ class KrakenTrailing(TrailingAdapterBase):
 
         normalized_bypass = normalize_bypassed_guards(bypass_guards=bypass_guards)
         if "all" not in normalized_bypass:
-            if callable(getattr(self.executor._executor, "get_orders", None)):
+            if callable(getattr(self.executor, "get_orders", None)):
                 dl_res = order_guard.daily_limit_guard(
-                    self.executor._executor, pair, side.upper(), bypass_guards=bypass_guards,
+                    self.executor, pair, side.upper(), bypass_guards=bypass_guards,
                 )
                 dl_ok = dl_res[0] if isinstance(dl_res, tuple) else bool(dl_res)
                 dl_reason = dl_res[1] if isinstance(dl_res, tuple) and len(dl_res) > 1 else "daily_limit"
@@ -340,7 +340,7 @@ class KrakenTrailing(TrailingAdapterBase):
                     persist(None)
                     return TrackedOrderResult(outcome="refused", intent=intent, status=None)
             allowed, reason, suggested_scale = order_guard.check_intelligence_guards(
-                self.executor._executor, pair, side.upper(), price,
+                self.executor, pair, side.upper(), price,
                 qty=qty,
                 bypass_guards=bypass_guards,
             )
@@ -351,7 +351,7 @@ class KrakenTrailing(TrailingAdapterBase):
             scale_f = safe_pos_float(suggested_scale, default=None)
             if side.upper() == "BUY" and scale_f is not None and scale_f < 1.0:
                 scaled_qty = float(qty) * scale_f
-                round_fn = getattr(self.executor._executor, "round_quantity", None)
+                round_fn = getattr(self.executor, "round_quantity", None)
                 if callable(round_fn):
                     try:
                         rq = safe_float(round_fn(pair, scaled_qty), default=None)
@@ -359,7 +359,7 @@ class KrakenTrailing(TrailingAdapterBase):
                             scaled_qty = rq
                     except Exception:
                         pass
-                min_qty_fn = getattr(self.executor._executor, "min_order_qty", None)
+                min_qty_fn = getattr(self.executor, "min_order_qty", None)
                 raw_min_q = min_qty_fn(pair) if callable(min_qty_fn) else 0.0
                 min_q = safe_nonneg_float(raw_min_q, default=0.0)
                 sq_pos = safe_pos_float(scaled_qty, default=None)

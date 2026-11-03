@@ -25,9 +25,11 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    cache_path,
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    get_cachedb_dir,
     normalize_venue_name,
     resolve_cachedb_filepath,
     resolve_kraken_lookup_symbol,
@@ -1108,7 +1110,7 @@ class MarketDataProvider(ABC):
             if mod_path:
                 return str(mod_path)
             if self._DEFAULT_FILLS_CACHE_FILENAME:
-                return str(resolve_cachedb_filepath(self._DEFAULT_FILLS_CACHE_FILENAME))
+                return cache_path(self._DEFAULT_FILLS_CACHE_FILENAME)
         return None
 
     def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
@@ -1592,16 +1594,17 @@ class MarketDataProvider(ABC):
                 return ts_ms, px_f
         return None
 
-    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
-        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
-        if not self._allow_ssot_price_cache():
-            return None
+    @staticmethod
+    def _read_ssot_current_price_candidates(
+        candidates: tuple[str, ...] | List[str],
+        price_path: str,
+        max_age_sec: float,
+        *,
+        now_s: Optional[float] = None,
+        use_memory_manager: bool = True,
+    ) -> Optional[float]:
         max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
-        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
-        if not candidates:
-            return None
-        custom_path = getattr(self, "_ssot_price_cache_path", None)
-        if custom_path is None:
+        if use_memory_manager:
             cm = sys.modules.get("cacheManager")
             cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
             if cpm is not None and hasattr(cpm, "get_cached_price_observation"):
@@ -1614,8 +1617,7 @@ class MarketDataProvider(ABC):
                                 return px
                     except Exception:
                         continue
-        price_path = str(custom_path) if custom_path else str(resolve_cachedb_filepath("cache_current_price.json"))
-        if not os.path.exists(price_path):
+        if not price_path or not os.path.exists(price_path):
             return None
         try:
             data = read_json_dict_recovering(price_path)
@@ -1624,7 +1626,7 @@ class MarketDataProvider(ABC):
             items = data.get("items") if isinstance(data.get("items"), dict) else data
             fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
             file_ts = extract_timestamp_s(data, default=None)
-            now_s = time.time()
+            eff_now = safe_pos_float(now_s, default=None) or time.time()
             for cand in candidates:
                 raw_entry = casefold_get(items, cand)
                 if raw_entry is None:
@@ -1637,11 +1639,28 @@ class MarketDataProvider(ABC):
                     continue
                 ts_ms, px = parsed
                 obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-                if -5.0 <= (now_s - obs_s) <= max_age:
+                if -5.0 <= (eff_now - obs_s) <= max_age:
                     return px
         except Exception:
             pass
         return None
+
+    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
+        if not self._allow_ssot_price_cache():
+            return None
+        max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
+        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        if not candidates:
+            return None
+        custom_path = getattr(self, "_ssot_price_cache_path", None)
+        price_path = str(custom_path) if custom_path else cache_path("cache_current_price.json")
+        return self._read_ssot_current_price_candidates(
+            candidates,
+            price_path,
+            max_age,
+            use_memory_manager=(custom_path is None),
+        )
 
     def get_ssot_price_history(
         self,
@@ -1665,7 +1684,7 @@ class MarketDataProvider(ABC):
             c24_path = (
                 os.path.join(str(custom_dir), f"cache_24_price_{cand}.json")
                 if custom_dir
-                else str(resolve_cachedb_filepath(f"cache_24_price_{cand}.json"))
+                else cache_path(f"cache_24_price_{cand}.json")
             )
             if not os.path.exists(c24_path):
                 continue
@@ -1699,6 +1718,37 @@ class MarketDataProvider(ABC):
                 return out
             except Exception:
                 continue
+        return None
+
+    @staticmethod
+    def read_ssot_short_trend_file(
+        trend_path: str,
+        candidates: tuple[str, ...] | List[str],
+        max_age_sec: float = 15.0,
+        *,
+        now_s: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Read a fresh short-trend snapshot for ``candidates`` from ``trend_path``."""
+        if not trend_path:
+            return None
+        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        try:
+            data = read_json_dict_recovering(trend_path)
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            eff_now = safe_pos_float(now_s, default=None) or time.time()
+            for cand in candidates:
+                if not cand:
+                    continue
+                snap = casefold_get(items, cand)
+                if not isinstance(snap, dict):
+                    continue
+                raw_ts = extract_timestamp_s(snap, default=None)
+                if raw_ts is not None and raw_ts > 0 and -5.0 <= (eff_now - raw_ts) <= max_age:
+                    return dict(snap)
+        except Exception:
+            pass
         return None
 
     def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0) -> Optional[dict]:
@@ -1739,25 +1789,8 @@ class MarketDataProvider(ABC):
                                     return dict(snap)
                         except Exception:
                             continue
-        trend_path = str(custom_path) if custom_path else str(resolve_cachedb_filepath("cache_short_trend.json"))
-        if not os.path.exists(trend_path):
-            return None
-        try:
-            data = read_json_dict_recovering(trend_path)
-            if not isinstance(data, dict):
-                return None
-            items = data.get("items") if isinstance(data.get("items"), dict) else data
-            now_s = time.time()
-            for cand in candidates:
-                snap = casefold_get(items, cand)
-                if not isinstance(snap, dict):
-                    continue
-                raw_ts = extract_timestamp_s(snap, default=None)
-                if raw_ts is not None and -5.0 <= (now_s - raw_ts) <= max_age:
-                    return dict(snap)
-        except Exception:
-            pass
-        return None
+        trend_path = str(custom_path) if custom_path else cache_path("cache_short_trend.json")
+        return self.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=now_s)
 
     def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
         """Return instant-trend slope (>0 up, <0 down, 0.0 neutral/unknown) from cacheManager SSOT."""
@@ -1987,45 +2020,17 @@ def resolve_ssot_price_from_cache(
         )
 
     is_default_dir = not cache_dir or str(cache_dir).strip() in ("", "cachedb")
-    if is_default_dir and "pytest" not in sys.modules:
-        cm = sys.modules.get("cacheManager")
-        cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
-        if cpm is not None and hasattr(cpm, "get_cached_price_observation"):
-            for cand in cands:
-                try:
-                    obs = cpm.get_cached_price_observation(cand, max_age)
-                    if obs is not None:
-                        px = safe_pos_float(obs[1], default=None)
-                        if px is not None:
-                            return px
-                except Exception:
-                    continue
-
-    eff_dir = str(cache_dir).strip() if (cache_dir and str(cache_dir).strip()) else "cachedb"
+    eff_dir = get_cachedb_dir() if is_default_dir else str(cache_dir).strip()
     price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, "cache_current_price.json")))
-    if os.path.exists(price_path):
-        try:
-            data = read_json_dict_recovering(price_path)
-            if isinstance(data, dict):
-                items = data.get("items") if isinstance(data.get("items"), dict) else data
-                fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
-                file_ts = extract_timestamp_s(data, default=None)
-                for cand in cands:
-                    raw_entry = casefold_get(items, cand)
-                    if raw_entry is None:
-                        continue
-                    fb_ts = casefold_get(fetchtime_map, cand)
-                    if fb_ts is None:
-                        fb_ts = file_ts
-                    parsed = MarketDataProvider._parse_ssot_price_point(raw_entry, fallback_ts=fb_ts)
-                    if parsed is None:
-                        continue
-                    ts_ms, px = parsed
-                    obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-                    if -5.0 <= (now_s - obs_s) <= max_age:
-                        return px
-        except Exception:
-            pass
+    px = MarketDataProvider._read_ssot_current_price_candidates(
+        cands,
+        price_path,
+        max_age,
+        now_s=now_s,
+        use_memory_manager=(is_default_dir and "pytest" not in sys.modules),
+    )
+    if px is not None:
+        return px
 
     for cand in cands:
         c24_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, f"cache_24_price_{cand}.json")))

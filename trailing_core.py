@@ -799,24 +799,12 @@ class TrailingAdapterBase:
             cache_trend_path = self._module_attr("CACHE_TREND")
             cands = [pair] + cache_symbol_variants(pair)
             if cache_trend_path:
-                from instrument_registry import casefold_get
-                from providers.base import extract_timestamp_s
-                from state_io import read_json_dict
+                from providers.base import MarketDataProvider
 
-                data = read_json_dict(cache_trend_path, default=None, recover_previous=True)
-                if isinstance(data, dict):
-                    items_map = data.get("items") if isinstance(data.get("items"), dict) else data
-                    now_s = time.time()
-                    for cand in cands:
-                        if not cand:
-                            continue
-                        cand_val = casefold_get(items_map, cand)
-                        if not isinstance(cand_val, dict):
-                            continue
-                        raw_ts = extract_timestamp_s(cand_val, default=None)
-                        if raw_ts is not None and raw_ts > 0 and -5.0 <= (now_s - raw_ts) <= 15.0:
-                            return extract_short_trend_slope(cand_val, pair)
-                return 0.0
+                snap = MarketDataProvider.read_ssot_short_trend_file(
+                    str(cache_trend_path), cands, max_age_sec=15.0
+                )
+                return extract_short_trend_slope(snap, pair) if snap else 0.0
             import cacheManager as cm
 
             snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
