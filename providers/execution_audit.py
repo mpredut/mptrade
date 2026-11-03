@@ -1506,6 +1506,26 @@ def execute_enforce_intent_order(
         intent_cid = ai_intent_client_order_id(intent_id)
         outcome_ctx: dict[str, Any] = {}
         order_res = None
+
+        def _cleanup_refused_retry_records() -> None:
+            if not intent_id:
+                return
+            try:
+                import order_retry
+
+                rm_ids = [
+                    str(r["id"])
+                    for r in order_retry.load_all()
+                    if isinstance(r, dict)
+                    and str(r.get("intent_id") or "") == str(intent_id)
+                    and str(r.get("submission_state") or "").lower() == "refused"
+                    and r.get("id") is not None
+                ]
+                if rm_ids:
+                    order_retry.discard(rm_ids)
+            except Exception:
+                pass
+
         for attempt in range(2):
             outcome_ctx.clear()
             place_kwargs: dict[str, Any] = {
@@ -1534,8 +1554,10 @@ def execute_enforce_intent_order(
                 or outcome_ctx.get("reason") not in ("account_cache_not_fresh", "account_cache_snapshot_changed")
             ):
                 break
+            _cleanup_refused_retry_records()
             time.sleep(0.25)
         if order_res:
+            _cleanup_refused_retry_records()
             if log:
                 log.info(
                     "[LLM TRADER · ENFORCE] Successfully placed %s %s: %s",
@@ -1617,22 +1639,8 @@ def execute_enforce_intent_order(
 
             extra_cat = {"category": refusal_cat} if refusal_cat else {}
             _record_intent_state(intent, "FAILED", now_ts, reason=refusal_reason, **extra_cat)
-            if outcome_ctx.get("state") == "refused" and intent_id:
-                try:
-                    import order_retry
-
-                    rm_ids = [
-                        str(r["id"])
-                        for r in order_retry.load_queue()
-                        if isinstance(r, dict)
-                        and str(r.get("intent_id") or "") == str(intent_id)
-                        and str(r.get("submission_state") or "").lower() == "refused"
-                        and r.get("id") is not None
-                    ]
-                    if rm_ids:
-                        order_retry.remove_ids(rm_ids)
-                except Exception:
-                    pass
+            if outcome_ctx.get("state") == "refused":
+                _cleanup_refused_retry_records()
     except Exception as e:
         if log:
             log.error("[LLM TRADER · ENFORCE] Exception executing %s %s: %s", decision, inst.symbol, e)

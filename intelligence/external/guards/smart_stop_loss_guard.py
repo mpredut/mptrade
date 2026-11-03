@@ -33,7 +33,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_path
+from cachepaths import cache_path, resolve_cachedb_filepath
 from intelligence.internal.guards.guard_decision import (
     clean_guard_symbol_key,
     fetch_guard_snapshot,
@@ -107,7 +107,9 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     data = read_json_dict_cached(state_file, _GRACE_FILE_MEMO)
     if not isinstance(data, dict):
         return _GRACE_TRACKER
-    file_sig = next(iter(_GRACE_FILE_MEMO.values()))[0] if _GRACE_FILE_MEMO else None
+    resolved_state_file = str(resolve_cachedb_filepath(state_file))
+    memo_entry = _GRACE_FILE_MEMO.get(resolved_state_file)
+    file_sig = memo_entry[0] if memo_entry else None
     file_key = (state_file, file_sig, id(data))
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
@@ -132,9 +134,14 @@ def _save_grace_state() -> None:
     global _LOADED_STATE_FILE_KEY
     state_file = _effective_smart_sl_state_file()
     try:
-        save_json_state(state_file, _GRACE_TRACKER, indent=2)
+        persisted = {
+            k: v
+            for k, v in _GRACE_TRACKER.items()
+            if isinstance(v, dict) and not _is_simulated_provider(v.get("provider"))
+        }
+        save_json_state(state_file, persisted, indent=2)
         _GRACE_FILE_MEMO.clear()
-        _LOADED_STATE_FILE_KEY = (state_file, None) if not _GRACE_TRACKER else None
+        _LOADED_STATE_FILE_KEY = (state_file, None) if not persisted else None
     except Exception as e:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 

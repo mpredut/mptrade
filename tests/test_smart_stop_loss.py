@@ -456,3 +456,41 @@ def test_smart_sl_on_recovered_ignores_stale_grace_when_buy_price_changed():
         assert len(alerts_sent) == 0
         assert "BTCUSDC" not in ssl_guard._LAST_RECOVERY_ALERT_TS
 
+
+def test_smart_sl_save_grace_state_filters_simulated_entries_and_uses_exact_memo_key(tmp_path, monkeypatch):
+    import json
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_guard
+
+    state_file = tmp_path / "smart_stop_loss_state.json"
+    monkeypatch.setattr(ssl_guard, "_SMART_SL_STATE_FILE", str(state_file))
+
+    now_ts = time.time()
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._GRACE_TRACKER["SIMBTC"] = {
+        "start_ts": now_ts - 5.0,
+        "provider": "replay",
+        "buy_price": 70000.0,
+    }
+    ssl_guard._GRACE_TRACKER["ETHUSDC"] = {
+        "start_ts": now_ts - 5.0,
+        "provider": "binance",
+        "buy_price": 2500.0,
+    }
+    ssl_guard._save_grace_state()
+
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert "SIMBTC" not in saved
+    assert "ETHUSDC" in saved
+
+    # Populate _GRACE_FILE_MEMO with an unrelated first entry and verify _load_grace_state uses state_file's own signature
+    ssl_guard._GRACE_TRACKER.clear()
+    ssl_guard._GRACE_FILE_MEMO.clear()
+    ssl_guard._GRACE_FILE_MEMO["/tmp/unrelated_first_entry.json"] = (("unrelated_sig",), {})
+    ssl_guard._LOADED_STATE_FILE_KEY = None
+
+    loaded = ssl_guard._load_grace_state(is_sim=False)
+    assert "ETHUSDC" in loaded
+    assert ssl_guard._LOADED_STATE_FILE_KEY is not None
+    assert ssl_guard._LOADED_STATE_FILE_KEY[1] != ("unrelated_sig",)
+
+

@@ -1564,9 +1564,20 @@ def harvest_bot_runtime_states(
         intents_raw = read_json_file(intents_path, default=[], recover_previous=True) if os.path.exists(intents_path) else []
         if isinstance(intents_raw, list):
             for it in intents_raw:
-                if isinstance(it, dict) and str(it.get("status") or "").upper() in {
-                    "FAILED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "BLOCKED_BY_GUARD",
-                }:
+                if not isinstance(it, dict):
+                    continue
+                st_u = str(it.get("status") or "").strip().upper()
+                if st_u in {
+                    "EXECUTED",
+                    "FAILED",
+                    "CANCELED",
+                    "CANCELLED",
+                    "EXPIRED",
+                    "REJECTED",
+                    "BLOCKED_BY_GUARD",
+                    "SKIPPED_DUPLICATE_OPEN_ORDER",
+                    "OBSERVED_SHADOW",
+                } or st_u.startswith("REJECTED_"):
                     if iid := str(it.get("intent_id") or "").strip():
                         terminal_ai_intent_ids.add(iid)
         active_retries: List[Dict[str, Any]] = []

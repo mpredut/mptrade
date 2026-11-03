@@ -1678,4 +1678,143 @@ def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(
     assert intents[3]["execution_payload"]["reconciled_terminal"] is True
 
 
+def test_enforce_intent_order_cleans_up_refused_retry_record_when_second_attempt_succeeds(tmp_path, monkeypatch):
+    import json
+    import order_retry
+    from providers.execution_audit import execute_enforce_intent_order
+
+    monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    l_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(l_file))
+
+    q_file.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {"id": "refused_attempt0_rec", "intent_id": "intent_1793650000_buy_btcusdc", "submission_state": "refused"},
+                {"id": "other_rec", "intent_id": "intent_other", "submission_state": "refused"},
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    class _DummyInst:
+        symbol = "BTCUSDC"
+        provider_name = "binance"
+
+        def place(self, **kwargs):
+            calls.append(kwargs)
+            ctx = kwargs.get("_outcome_context")
+            if len(calls) == 1:
+                if isinstance(ctx, dict):
+                    ctx.update({"state": "refused", "reason": "account_cache_not_fresh"})
+                return None
+            if isinstance(ctx, dict):
+                ctx.update({"state": "accepted", "accepted": True})
+            return {"orderId": "99887766", "status": "FILLED"}
+
+    intent = {
+        "intent_id": "intent_1793650000_buy_btcusdc",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "status": "PENDING",
+    }
+    execute_enforce_intent_order(
+        _DummyInst(),
+        intent,
+        intent_id="intent_1793650000_buy_btcusdc",
+        decision="BUY",
+        target_qty=0.01,
+        price=70000.0,
+        effective_usd=700.0,
+        guard_allowed=True,
+        guard_reason="",
+        thesis="Retest support",
+        trade_tag="[AI]",
+        now_ts=1793650000.0,
+        bypass_guards=set(),
+        is_limit=False,
+        dispatch_notify_fn=None,
+        log=None,
+    )
+
+    assert len(calls) == 2
+    assert intent["status"] == "EXECUTED"
+    remaining = order_retry.load_all()
+    assert [r["id"] for r in remaining] == ["other_rec"]
+
+
+def test_harvest_bot_runtime_states_excludes_executed_and_rejected_ai_intents(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
+
+    now_ts = time.time()
+    intents_file = tmp_path / "autonomous_trade_intents_state.json"
+    intents_file.write_text(
+        json.dumps([
+            {"intent_id": "intent_done_1", "status": "EXECUTED"},
+            {"intent_id": "intent_rej_2", "status": "REJECTED_LOW_CONFIDENCE"},
+            {"intent_id": "intent_dup_3", "status": "SKIPPED_DUPLICATE_OPEN_ORDER"},
+            {"intent_id": "intent_pending_4", "status": "PENDING"},
+        ]),
+        encoding="utf-8",
+    )
+    retry_q = tmp_path / "order_retry_queue.jsonl"
+    retry_q.write_text(
+        "\n".join(
+            json.dumps(r)
+            for r in [
+                {
+                    "id": "r1",
+                    "intent_id": "intent_done_1",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "qty": 0.01,
+                    "lifecycle": "submit_pending",
+                    "created_ts": now_ts - 10,
+                },
+                {
+                    "id": "r2",
+                    "intent_id": "intent_rej_2",
+                    "symbol": "ETHUSDC",
+                    "side": "BUY",
+                    "qty": 0.1,
+                    "lifecycle": "submit_pending",
+                    "created_ts": now_ts - 10,
+                },
+                {
+                    "id": "r3",
+                    "intent_id": "intent_dup_3",
+                    "symbol": "SOLUSDC",
+                    "side": "SELL",
+                    "qty": 1.0,
+                    "lifecycle": "submit_pending",
+                    "created_ts": now_ts - 10,
+                },
+                {
+                    "id": "r4",
+                    "intent_id": "intent_pending_4",
+                    "symbol": "TAOUSDC",
+                    "side": "BUY",
+                    "qty": 0.5,
+                    "lifecycle": "submit_pending",
+                    "created_ts": now_ts - 10,
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    res = harvest_bot_runtime_states(str(tmp_path), now_ts=now_ts)
+    active_q = res.get("active_retry_queue") or []
+    assert [x.get("symbol") for x in active_q] == ["TAOUSDC"]
+
+
+
 

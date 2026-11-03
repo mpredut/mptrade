@@ -1425,6 +1425,10 @@ def discard(ids):
         return removed
 
 
+load_queue = load_all
+remove_ids = discard
+
+
 def resolve(symbol, side):
     """Legacy helper: remove only unaccepted pending records by symbol and side."""
     if isinstance(symbol, bool) or isinstance(side, bool):
