@@ -1584,7 +1584,17 @@ def harvest_recent_orders_and_enrich_positions(
                 cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None})
                 if isinstance(ro, dict):
                     ro.pop("active_avg_buy_px", None)
-                for _stale_k in ("active_avg_buy_px", "pnl_vs_avg_pct", "lowest_buy_px", "pnl_vs_lowest_buy_pct", "trailing_peak", "dd_from_peak_pct"):
+                    ro.pop("tactical_avg_buy_px", None)
+                for _stale_k in (
+                    "active_avg_buy_px",
+                    "pnl_vs_avg_pct",
+                    "tactical_avg_buy_px",
+                    "pnl_vs_tactical_avg_pct",
+                    "lowest_buy_px",
+                    "pnl_vs_lowest_buy_pct",
+                    "trailing_peak",
+                    "dd_from_peak_pct",
+                ):
                     pos.pop(_stale_k, None)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]

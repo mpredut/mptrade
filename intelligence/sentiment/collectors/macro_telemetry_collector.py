@@ -320,8 +320,8 @@ def harvest_macro_and_news_sensors(
                 macro_sensors["macro_benchmarks"] = _with_age_min(live_mb, os.path.join(cache_dir, "macro_benchmarks_collect.json"))
 
     breaking_news: List[Dict[str, Any]] = []
+    valid_news: List[Dict[str, Any]] = []
     if isinstance(news_data := _rj(os.path.join(cache_dir, "news_feed_collect.json")), list) and news_data:
-        valid_news: List[Dict[str, Any]] = []
         for item in news_data:
             if not isinstance(item, dict) or not item.get("title"):
                 continue
@@ -362,7 +362,9 @@ def harvest_macro_and_news_sensors(
                 "keywords": item.get("matched_keywords") or [],
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
             })
-    macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(now_ts=now_ts, breaking_news=breaking_news)
+    macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
+        now_ts=now_ts, breaking_news=valid_news or breaking_news
+    )
     return macro_sensors, breaking_news
 
 

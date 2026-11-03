@@ -345,7 +345,7 @@ def bounded_float(
 
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
-    if obj is None:
+    if obj is None or isinstance(obj, (str, bytes, bytearray)):
         return default
     val = obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
     return default if val is None else val

@@ -1352,19 +1352,31 @@ def _normalize_semantic_stem(token: str) -> str:
         ("tariffs", "tariff"),
         ("plunges", "plunge"),
         ("plunged", "plunge"),
+        ("plunging", "plunge"),
         ("collapses", "collapse"),
         ("collapsed", "collapse"),
+        ("collapsing", "collapse"),
     ):
         if t == sfx:
-            return repl
-    if len(t) > 5 and t.endswith("ies"):
-        return t[:-3] + "y"
-    if len(t) > 5 and t.endswith("ing"):
-        return t[:-3]
-    if len(t) > 4 and t.endswith("ed"):
-        return t[:-2]
-    if len(t) > 4 and t.endswith("s") and not t.endswith("ss"):
-        return t[:-1]
+            t = repl
+            break
+    else:
+        if len(t) > 5 and t.endswith("ies"):
+            t = t[:-3] + "y"
+        elif len(t) > 5 and t.endswith(("ches", "shes", "xes", "zes", "sses")):
+            t = t[:-2]
+        elif len(t) > 5 and t.endswith("ing"):
+            t = t[:-3]
+            if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
+                t = t[:-1]
+        elif len(t) > 4 and t.endswith("ed"):
+            t = t[:-2]
+            if len(t) >= 4 and t[-1] == t[-2] and t[-1] not in "lsz":
+                t = t[:-1]
+        elif len(t) > 4 and t.endswith("s") and not t.endswith(("ss", "is", "us", "as", "os")):
+            t = t[:-1]
+    if len(t) > 4 and t.endswith("e") and not t.endswith("ee"):
+        t = t[:-1]
     return t
 
 
@@ -1375,10 +1387,10 @@ def headline_content_stems(title: Any) -> Set[str]:
     clean = _strip_headline_publisher_suffix(title).strip().lower()
     stopwords = _get_stopwords_set()
     stems: Set[str] = set()
-    for m in re.finditer(r"\$?(\d+(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}", clean):
+    for m in re.finditer(r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}", clean):
         num_grp = m.group(1)
         if num_grp:
-            stems.add(num_grp)
+            stems.add(num_grp.replace(",", ""))
             continue
         tok = m.group(0)
         if tok in stopwords:
@@ -1674,7 +1686,7 @@ def resolve_macro_economic_calendar(
     detected_macro_headlines: List[str] = []
     if breaking_news and macro_kws:
         for item in breaking_news:
-            title = str(obj_attr(item, "title", "") or "").strip()
+            title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
             if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
                 detected_macro_headlines.append(title)
     macro_release_confirmed = bool(detected_macro_headlines)
