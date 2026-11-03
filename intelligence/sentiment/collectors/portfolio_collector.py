@@ -2453,11 +2453,13 @@ def enrich_open_limit_orders_tca(
                         o["wall_queue_pos"] = "BEHIND_ASK_WALL"
                         o["ask_wall_ahead_px"] = aw_px
                         o["ask_wall_ahead_usd"] = round(aw_usd, 0)
-                        o["recommended_front_run_px"] = fr_ask_px
+                        if fr_ask_px < aw_px and fr_ask_px < lim_px:
+                            o["recommended_front_run_px"] = fr_ask_px
                         queue_penalty = 0.60
                     elif abs(lim_px - aw_px) / aw_px <= 0.0003:
                         o["wall_queue_pos"] = "AT_ASK_WALL"
-                        o["recommended_front_run_px"] = fr_ask_px
+                        if fr_ask_px < aw_px and fr_ask_px < lim_px:
+                            o["recommended_front_run_px"] = fr_ask_px
                         queue_penalty = 0.78
                     else:
                         o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
@@ -2478,11 +2480,13 @@ def enrich_open_limit_orders_tca(
                         o["wall_queue_pos"] = "BEHIND_BID_WALL"
                         o["bid_wall_ahead_px"] = bw_px
                         o["bid_wall_ahead_usd"] = round(bw_usd, 0)
-                        o["recommended_front_run_px"] = fr_bid_px
+                        if fr_bid_px > bw_px and fr_bid_px > lim_px:
+                            o["recommended_front_run_px"] = fr_bid_px
                         queue_penalty = 0.60
                     elif abs(lim_px - bw_px) / bw_px <= 0.0003:
                         o["wall_queue_pos"] = "AT_BID_WALL"
-                        o["recommended_front_run_px"] = fr_bid_px
+                        if fr_bid_px > bw_px and fr_bid_px > lim_px:
+                            o["recommended_front_run_px"] = fr_bid_px
                         queue_penalty = 0.78
                     else:
                         o["wall_queue_pos"] = "FRONT_OF_BID_WALL"

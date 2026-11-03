@@ -558,6 +558,33 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     hl_prov.invalidate_ssot_fills_cache("HYPEUSDC", str(hl_fills_cache))
     assert hl_prov._fills_from_cache("HYPEUSDC") is None
 
+    # _parse_ssot_price_point must never treat timestamp element [0] as price when [1] is None/0
+    assert MarketDataProvider._parse_ssot_price_point([1700000000000, None], fallback_ts=1700000000000) is None
+    assert MarketDataProvider._parse_ssot_price_point([1700000000000, 0.0], fallback_ts=1700000000000) is None
+    assert MarketDataProvider._parse_ssot_price_point([[1700000000000, 42.5]], fallback_ts=1700000000000) == (1700000000000, 42.5)
+
+    # _ssot_symbol_candidates rejects bool and maps Kraken XXBTZUSD -> BTCUSD / XBTUSD
+    assert kr_prov._ssot_symbol_candidates(True) == ()  # type: ignore[arg-type]
+    assert "BTCUSD" in kr_prov._ssot_symbol_candidates("XXBTZUSD")
+    assert "XBTUSD" in kr_prov._ssot_symbol_candidates("XXBTZUSD")
+
+    # _resolve_configured_venue & _is_multi_venue_base inspect dict-based load_registry() without AttributeError
+    from types import SimpleNamespace
+    import intelligence.external.collectors.orderbook_depth as obd_mod
+    import instrument_registry as ir_mod
+    orig_load = ir_mod.load_registry
+    try:
+        ir_mod.load_registry = lambda path=None: {
+            "KRAKEN_SOL": SimpleNamespace(symbol="SOLUSD", base="SOL", quote="USD", provider="kraken", enabled=True),
+            "HL_SOL": SimpleNamespace(symbol="SOLUSDC", base="SOL", quote="USDC", provider="hyperliquid", enabled=False),
+        }
+        assert obd_mod._resolve_configured_venue("SOLUSD") == "kraken"
+        assert obd_mod._resolve_configured_venue("SOLUSDC") == "hyperliquid"
+        assert obd_mod._is_multi_venue_base("SOLUSD") is True
+        assert obd_mod._has_hyperliquid_instrument("SOLUSD") is True
+    finally:
+        ir_mod.load_registry = orig_load
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,20 +38,50 @@ _resolve_binance_lookup_symbol = resolve_binance_lookup_symbol
 _symbol_variants = cache_symbol_variants
 
 
+_REGISTRY_SPECS_CACHE: Tuple[float, Tuple[Any, ...]] = (0.0, ())
+
+
+def _cached_registry_specs() -> Tuple[Any, ...]:
+    """Return InstrumentSpec items from ``instrument_registry.load_registry()``, cached by file mtime."""
+    global _REGISTRY_SPECS_CACHE
+    import instrument_registry as _ir
+
+    load_fn = getattr(_ir, "load_registry", None)
+    if not callable(load_fn):
+        return ()
+    def_path = getattr(_ir, "DEFAULT_PATH", None)
+    mtime = 0.0
+    if getattr(load_fn, "__module__", "") == "instrument_registry" and def_path is not None:
+        try:
+            mtime = os.path.getmtime(str(def_path))
+        except OSError:
+            mtime = -1.0
+        if mtime > 0.0 and _REGISTRY_SPECS_CACHE[0] == mtime and _REGISTRY_SPECS_CACHE[1]:
+            return _REGISTRY_SPECS_CACHE[1]
+    reg = load_fn()
+    if isinstance(reg, dict):
+        specs = tuple(reg.values())
+    elif hasattr(reg, "all") and callable(reg.all):
+        specs = tuple(reg.all(enabled_only=False))
+    else:
+        specs = ()
+    if mtime > 0.0:
+        _REGISTRY_SPECS_CACHE = (mtime, specs)
+    return specs
+
+
 def _resolve_configured_venue(symbol: str) -> str:
     """Return the SSOT configured provider ('hyperliquid', 'kraken', or 'binance') for symbol."""
     canon_sym = canonical_symbol_key(symbol)
     if not canon_sym:
         return "binance"
     try:
-        from instrument_registry import load_registry
-
-        reg_specs = list(load_registry().values())
+        specs = _cached_registry_specs()
         for enabled_only in (True, False):
-            for inst in reg_specs:
-                if enabled_only and not getattr(inst, "enabled", False):
+            for inst in specs:
+                if enabled_only and not getattr(inst, "enabled", True):
                     continue
-                if inst.symbol.upper() == canon_sym and inst.provider:
+                if str(getattr(inst, "symbol", "")).upper() == canon_sym and getattr(inst, "provider", None):
                     return str(inst.provider).strip().lower()
     except Exception:
         pass
@@ -68,13 +98,11 @@ def _is_multi_venue_base(symbol: str) -> bool:
     if not base:
         return False
     try:
-        from instrument_registry import load_registry
-
-        reg_specs = list(load_registry().values())
+        specs = _cached_registry_specs()
         venues = {
             str(inst.provider).strip().lower()
-            for inst in reg_specs
-            if inst.base.upper() == base and inst.provider
+            for inst in specs
+            if str(getattr(inst, "base", "")).upper() == base and getattr(inst, "provider", None)
         }
         if base in ("HYPE", "TAO", "ADA"):
             venues.add("kraken")
@@ -91,11 +119,11 @@ def _has_hyperliquid_instrument(symbol: str) -> bool:
     if not base:
         return False
     try:
-        from instrument_registry import load_registry
-
+        specs = _cached_registry_specs()
         return any(
-            inst.base.upper() == base and str(inst.provider).strip().lower() == "hyperliquid"
-            for inst in load_registry().values()
+            str(getattr(inst, "base", "")).upper() == base
+            and str(getattr(inst, "provider", "")).strip().lower() == "hyperliquid"
+            for inst in specs
         )
     except Exception:
         return base == "HYPE"

@@ -425,10 +425,14 @@ class TestRebuyGuardsKraken(Base):
             with open(trend_path, "w", encoding="utf-8") as f:
                 json.dump(
                     {
+                        "TAOUSD": {
+                            "ts": time.time() - 3600.0,  # stale exact entry must not shadow fresh variant
+                            "gradient_recent": 0.99,
+                        },
                         "TAOUSDC": {
                             "ts": time.time(),
                             "gradient_recent": -0.42,
-                        }
+                        },
                     },
                     f,
                 )

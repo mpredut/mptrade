@@ -320,8 +320,13 @@ class MacroAnalyzer:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
             else:
+                retry_geo_itv = (
+                    min(geo_interval or self.macro_llm_interval_sec, self.macro_llm_interval_sec)
+                    if self._last_macro_llm_ts <= 0.0 and cached_geo is None
+                    else (geo_interval or self.macro_llm_interval_sec)
+                )
                 self._last_macro_llm_ts = compute_step_retry_ts(
-                    self._last_macro_llm_ts, current_ts, geo_interval or self.macro_llm_interval_sec
+                    self._last_macro_llm_ts, current_ts, retry_geo_itv
                 )
             self.write_heartbeat(results)
 
@@ -365,8 +370,13 @@ class MacroAnalyzer:
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
             else:
+                retry_adv_itv = (
+                    min(adv_interval or self.advisor_interval_sec, self.advisor_interval_sec)
+                    if self._last_advisor_ts <= 0.0 and cached_adv is None
+                    else (adv_interval or self.advisor_interval_sec)
+                )
                 self._last_advisor_ts = compute_step_retry_ts(
-                    self._last_advisor_ts, current_ts, adv_interval or self.advisor_interval_sec
+                    self._last_advisor_ts, current_ts, retry_adv_itv
                 )
             self.write_heartbeat(results)
 

@@ -23,7 +23,14 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import clean_symbol_key, normalize_venue_name, resolve_cachedb_filepath
+from cachepaths import (
+    canonical_symbol_key,
+    clean_symbol_key,
+    normalize_venue_name,
+    resolve_cachedb_filepath,
+    resolve_kraken_lookup_symbol,
+    split_symbol_assets,
+)
 from instrument_registry import casefold_get
 from state_io import read_json_dict_recovering, save_json_state
 
@@ -872,11 +879,12 @@ def read_client_ohlc_series(
                 closes = client.ohlc_closes(symbol, interval_i)
                 observed_at = None
             timestamps = ()
-        vols = (
-            getattr(client, "_last_ohlc_volumes", {}).get((symbol, interval_i), ())
-            if isinstance(getattr(client, "_last_ohlc_volumes", None), dict)
-            else ()
-        )
+        vols_map = getattr(client, "_last_ohlc_volumes", None)
+        if isinstance(vols_map, dict):
+            sym_strip = str(symbol).strip() if isinstance(symbol, str) else symbol
+            vols = vols_map.get((symbol, interval_i)) or vols_map.get((sym_strip, interval_i)) or ()
+        else:
+            vols = ()
         return ClosedPriceSeries(
             tuple(closes) if closes is not None else (),
             interval_i,
@@ -1180,9 +1188,14 @@ class MarketDataProvider(ABC):
 
     def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
         """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
-        raw_u = str(symbol or "").strip().upper()
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return ()
+        raw_u = symbol.strip().upper()
         cleaned = clean_symbol_key(raw_u)
-        return tuple(dict.fromkeys(c for c in (cleaned, raw_u) if c))
+        parts = split_symbol_assets(raw_u)
+        canon = canonical_symbol_key(raw_u) if parts is not None else ""
+        kr_lookup = resolve_kraken_lookup_symbol(raw_u) if (parts is not None and parts[1] == "USD") else ""
+        return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon, kr_lookup) if c))
 
     def _allow_ssot_price_cache(self) -> bool:
         """Return True when this provider should consult cacheManager SSOT before venue HTTP."""
@@ -1219,10 +1232,14 @@ class MarketDataProvider(ABC):
                 px_f = safe_pos_float(entry[1], default=None)
                 if ts_ms is not None and ts_ms > 0 and px_f is not None:
                     return ts_ms, px_f
+                return None
             for sub in reversed(entry):
+                if not isinstance(sub, (list, tuple, dict)):
+                    continue
                 parsed = MarketDataProvider._parse_ssot_price_point(sub, fallback_ts=fallback_ts)
                 if parsed is not None:
                     return parsed
+            return None
         px_f = extract_current_price_item(entry)
         if px_f is not None and fallback_ts is not None:
             ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
@@ -1329,11 +1346,12 @@ class MarketDataProvider(ABC):
                 latest_age_s = now_s - (valid[-1][0] / 1000.0)
                 if latest_age_s < -5.0 or latest_age_s > max_latest_age_sec:
                     continue
-                if custom_dir is None and lh_f > 0.25 and (valid[-1][0] - valid[0][0]) < (lh_f * 3600.0 * 1000.0 * 0.75):
-                    continue
                 out = [{"timestamp": ts, "price": px} for ts, px in valid if ts >= cutoff_ms]
-                if out:
-                    return out
+                if len(out) < 2:
+                    continue
+                if custom_dir is None and lh_f > 0.25 and (out[-1]["timestamp"] - out[0]["timestamp"]) < (lh_f * 3600.0 * 1000.0 * 0.75):
+                    continue
+                return out
             except Exception:
                 continue
         return None
@@ -1347,17 +1365,35 @@ class MarketDataProvider(ABC):
         if not candidates:
             return None
         custom_path = getattr(self, "_ssot_trend_cache_path", None)
+        now_s = time.time()
         if custom_path is None:
             cm = sys.modules.get("cacheManager")
             stm = getattr(cm, "_short_trend_instance", None) if cm is not None else None
-            if stm is not None and hasattr(stm, "get_fresh_snapshot"):
-                for cand in candidates:
+            if stm is not None:
+                stm_mem = getattr(stm, "_mem", None)
+                if isinstance(stm_mem, dict):
+                    lock_ctx = getattr(stm, "_lock", None) or getattr(stm, "lock", None) or contextlib.nullcontext()
                     try:
-                        snap = stm.get_fresh_snapshot(cand)
-                        if isinstance(snap, dict):
-                            return dict(snap)
+                        with lock_ctx:
+                            for cand in candidates:
+                                snap = casefold_get(stm_mem, cand)
+                                if not isinstance(snap, dict):
+                                    continue
+                                raw_ts = extract_timestamp_s(snap, default=None)
+                                if raw_ts is not None and -5.0 <= (now_s - raw_ts) <= max_age:
+                                    return dict(snap)
                     except Exception:
-                        continue
+                        pass
+                elif hasattr(stm, "get_fresh_snapshot"):
+                    for cand in candidates:
+                        try:
+                            snap = stm.get_fresh_snapshot(cand)
+                            if isinstance(snap, dict):
+                                raw_ts = extract_timestamp_s(snap, default=None)
+                                if raw_ts is None or -5.0 <= (now_s - raw_ts) <= max_age:
+                                    return dict(snap)
+                        except Exception:
+                            continue
         trend_path = str(custom_path) if custom_path else str(resolve_cachedb_filepath("cache_short_trend.json"))
         if not os.path.exists(trend_path):
             return None

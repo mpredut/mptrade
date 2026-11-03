@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 
 import pricewindow as pw
@@ -717,10 +718,19 @@ class TrailingAdapterBase:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
-            mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
-            cache_trend_path = mod_globals.get("CACHE_TREND")
+            from cachepaths import cache_symbol_variants
+
+            cache_trend_path = None
+            for cls in type(self).__mro__:
+                mod = sys.modules.get(getattr(cls, "__module__", ""))
+                if mod is not None and getattr(mod, "CACHE_TREND", None):
+                    cache_trend_path = getattr(mod, "CACHE_TREND")
+                    break
+            if cache_trend_path is None:
+                mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
+                cache_trend_path = mod_globals.get("CACHE_TREND")
+            cands = [pair] + cache_symbol_variants(pair)
             if cache_trend_path:
-                from cachepaths import cache_symbol_variants
                 from instrument_registry import casefold_get
                 from providers.base import extract_timestamp_s
                 from state_io import read_json_dict
@@ -728,26 +738,21 @@ class TrailingAdapterBase:
                 data = read_json_dict(cache_trend_path, default=None, recover_previous=True)
                 if isinstance(data, dict):
                     items_map = data.get("items") if isinstance(data.get("items"), dict) else data
-                    snap = None
-                    for cand in [pair] + cache_symbol_variants(pair):
+                    now_s = time.time()
+                    for cand in cands:
                         if not cand:
                             continue
                         cand_val = casefold_get(items_map, cand)
-                        if isinstance(cand_val, dict):
-                            snap = cand_val
-                            break
-                    if isinstance(snap, dict):
-                        raw_ts = extract_timestamp_s(snap, default=None)
-                        if raw_ts is not None and raw_ts > 0:
-                            age = time.time() - raw_ts
-                            if -5.0 <= age <= 15.0:
-                                return extract_short_trend_slope(snap, pair)
+                        if not isinstance(cand_val, dict):
+                            continue
+                        raw_ts = extract_timestamp_s(cand_val, default=None)
+                        if raw_ts is not None and raw_ts > 0 and -5.0 <= (now_s - raw_ts) <= 15.0:
+                            return extract_short_trend_slope(cand_val, pair)
                 return 0.0
             import cacheManager as cm
 
             snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
-            if snap:
-                return extract_short_trend_slope(snap, pair)
+            return extract_short_trend_slope(snap, pair) if snap else 0.0
         except Exception:
             pass
         return 0.0
