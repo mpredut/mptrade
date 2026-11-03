@@ -196,7 +196,8 @@ def get_topic_canonical_titles(registry_path: Optional[str] = None) -> Dict[str,
         if not isinstance(raw_cid, str) or not raw_cid.strip():
             continue
         cid = raw_cid.strip()
-        spec_title = TOPIC_SPECS[key].title if key in TOPIC_SPECS else ""
+        resolved_key = canonical_topic_key(key)
+        spec_title = TOPIC_SPECS[resolved_key].title if resolved_key in TOPIC_SPECS else ""
         raw_title = entry.get("title")
         title = spec_title or (raw_title.strip() if isinstance(raw_title, str) else "")
         if title:
@@ -502,7 +503,9 @@ def record_topic_turn(
     clean_cid = conversation_id.strip() if isinstance(conversation_id, str) and conversation_id.strip() else None
     raw_existing = entry.get("conversation_id")
     existing_cid = raw_existing.strip() if isinstance(raw_existing, str) and raw_existing.strip() else None
-    if replace_conv and clean_cid and existing_cid and clean_cid != existing_cid:
+    if clean_cid and existing_cid and clean_cid != existing_cid and (
+        replace_conv or (not get_thread_step_count(existing_cid, base)[0] and get_thread_step_count(clean_cid, base)[0])
+    ):
         _delete_topic_thread_everywhere(base, existing_cid)
         entry["conversation_id"] = clean_cid
         entry["compacted_at_step"] = 0

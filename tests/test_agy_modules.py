@@ -600,6 +600,101 @@ class TestMirrorTopicThreadToUi:
         assert os.path.samefile(str(d1 / "cid-in-d2.db"), str(d2 / "cid-in-d2.db"))
         assert os.path.samefile(str(d1 / "cid-mirrored-gap.db"), str(d2 / "cid-mirrored-gap.db"))
 
+    def test_prune_ui_store_protects_interactive_and_record_topic_turn_adopts_when_existing_missing(
+        self, tmp_path, monkeypatch
+    ):
+        from orchestratorOS.admin import agy_store_fix as asf
+        from orchestratorOS.admin.prune_llm_threads import prune_old_cli_threads
+        from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn, save_topic_registry
+
+        bot_base = str(tmp_path / "bot_cli")
+        ui_base = str(tmp_path / "ui_cli")
+        for b in (bot_base, ui_base):
+            os.makedirs(os.path.join(b, "conversations"), exist_ok=True)
+        monkeypatch.setenv("AGY_PROJECT", "autonommptrade")
+        monkeypatch.setenv("AGY_BOT_HOME", str(tmp_path))
+
+        # Bot store has one old automated thread
+        bot_db = os.path.join(bot_base, "conversation_summaries.db")
+        con = sqlite3.connect(bot_db)
+        con.execute(
+            "CREATE TABLE conversation_summaries ("
+            "conversation_id text primary key, project_id text, step_count integer, "
+            "title text, preview text, last_modified_time text)"
+        )
+        con.execute(
+            "INSERT INTO conversation_summaries VALUES "
+            "('bot-auto-old', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2020-01-01T00:00:00Z')"
+        )
+        con.commit()
+        con.close()
+        _make_conv_db(os.path.join(bot_base, "conversations", "bot-auto-old.db"))
+
+        # UI store has an old multi-turn human interactive conversation (>6 steps) and 2 recent automated threads
+        ui_db = os.path.join(ui_base, "conversation_summaries.db")
+        ucon = sqlite3.connect(ui_db)
+        ucon.execute(
+            "CREATE TABLE conversation_summaries ("
+            "conversation_id text primary key, project_id text, step_count integer, "
+            "title text, preview text, last_modified_time text)"
+        )
+        ucon.execute(
+            "INSERT INTO conversation_summaries VALUES "
+            "('ui-human-interactive', 'autonommptrade', 25, 'Debugging strategy', 'Let us inspect logs', '2020-01-01T00:00:00Z'),"
+            "('ui-auto-1', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2099-01-01T00:00:00Z'),"
+            "('ui-auto-2', 'autonommptrade', 2, '🤖 Crypto Trading', 'json', '2099-01-02T00:00:00Z')"
+        )
+        ucon.commit()
+        ucon.close()
+        for ucid in ("ui-human-interactive", "ui-auto-1", "ui-auto-2"):
+            _make_conv_db(os.path.join(ui_base, "conversations", f"{ucid}.db"))
+
+        monkeypatch.setattr("orchestratorOS.admin.prune_llm_threads.resolve_bot_cli_base", lambda cb=None: bot_base)
+        monkeypatch.setattr("orchestratorOS.admin.prune_llm_threads.resolve_ui_cli_base", lambda: ui_base)
+        count, _ = prune_old_cli_threads(cli_base=None, retention_days=1.0, max_threads=1)
+        assert count == 2  # bot-auto-old + ui-auto-1 (capped by max_threads=1)
+        assert os.path.exists(os.path.join(ui_base, "conversations", "ui-human-interactive.db"))
+        assert not os.path.exists(os.path.join(ui_base, "conversations", "ui-auto-1.db"))
+        assert os.path.exists(os.path.join(ui_base, "conversations", "ui-auto-2.db"))
+
+        # Dynamic LLM_TOPIC_REGISTRY_PATH resolution in agy_store_fix + dead-cid replacement in record_topic_turn
+        reg_path = str(tmp_path / "custom_topic_registry.json")
+        monkeypatch.setenv("LLM_TOPIC_REGISTRY_PATH", reg_path)
+        save_topic_registry(
+            {
+                "auto_cryptotrade_executor": {
+                    "topic_key": "auto_cryptotrade_executor",
+                    "conversation_id": "dead-missing-cid",
+                    "turn_count": 3,
+                    "rolling_history": [],
+                }
+            },
+            reg_path,
+        )
+        assert asf.mirrored_topic_cids() == {"dead-missing-cid"}
+        assert "dead-missing-cid" in asf.topic_canonical_titles()
+
+        _make_conv_db(os.path.join(bot_base, "conversations", "fresh-adopted-cid.db"))
+        con2 = sqlite3.connect(bot_db)
+        con2.execute(
+            "INSERT INTO conversation_summaries VALUES "
+            "('fresh-adopted-cid', 'autonommptrade', 5, '🤖 Crypto Trading', 'json', '2026-01-01T00:00:00Z')"
+        )
+        con2.commit()
+        con2.close()
+        record_topic_turn(
+            "auto_cryptotrade_executor",
+            "fresh-adopted-cid",
+            '{"decision": "HOLD"}',
+            cli_base=bot_base,
+            registry_path=reg_path,
+            replace_conversation=False,
+        )
+        reg = load_topic_registry(reg_path)
+        assert reg["auto_cryptotrade_executor"]["conversation_id"] == "fresh-adopted-cid"
+        assert reg["auto_cryptotrade_executor"]["step_count"] == 5
+
+
 
 
 

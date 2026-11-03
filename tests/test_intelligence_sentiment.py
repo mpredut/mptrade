@@ -1582,3 +1582,56 @@ def test_equity_symbol_normalization_and_pretrade_telemetry_cache_isolation(tmp_
     assert "25% bids vs 75% asks" in telem.get("Orderbook Depth Imbalance", "")
 
 
+def test_harvest_recent_orders_recomputes_flat_after_exit_when_free_base_populated_from_cycle(tmp_path):
+    """When pos['free_base'] is None and populated from a dust cycle qty (< min_notional) after a SELL exit, stale anchors must be cleared."""
+    import os
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+
+    pos = {
+        "venue": "kraken",
+        "symbol": "SOLUSD",
+        "quote": "USD",
+        "free_base": None,
+        "free_quote": 500.0,
+        "price": 100.0,
+        "exchange_min_notional_usd": 10.0,
+        "trailing_peak": 125.0,
+        "dd_from_peak_pct": -20.0,
+    }
+    kraken_cycles = {
+        "SOLUSD": {
+            "qty": 0.02,  # $2.00 notional < $10.00 exchange_min_notional_usd (dust after SELL exit)
+            "cost_usd": 2.40,
+            "avg_cost_px": 120.0,
+            "pos_peak": 125.0,
+            "dd_pct": -16.67,
+        }
+    }
+    fake_files = {
+        "cache_trade_kraken.json": {
+            "items": {
+                "SOLUSD": [
+                    {"side": "BUY", "price": 120.0, "qty": 1.0, "executedQty": 1.0, "timestamp": 1700000000000, "status": "FILLED"},
+                    {"side": "SELL", "price": 115.0, "qty": 0.98, "executedQty": 0.98, "timestamp": 1700000100000, "status": "FILLED"},
+                ]
+            }
+        }
+    }
+    harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        [pos],
+        {"SOLUSD": {"price": 100.0}},
+        kraken_cycles,
+        {},
+        {},
+        read_json_fn=lambda p: fake_files.get(os.path.basename(p), {}),
+    )
+    assert pos["free_base"] == 0.02
+    assert "trailing_peak" not in pos
+    assert "active_avg_buy_px" not in pos
+    assert kraken_cycles["SOLUSD"]["avg_cost_px"] is None
+    assert kraken_cycles["SOLUSD"]["cost_usd"] == 0.0
+
+
+

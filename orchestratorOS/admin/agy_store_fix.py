@@ -521,17 +521,22 @@ def pending_ui_sync() -> list[str]:
     return sorted(entries)
 
 
-TOPIC_REGISTRY = get_topic_registry_path()
+_DEFAULT_TOPIC_REGISTRY = get_topic_registry_path()
+TOPIC_REGISTRY = _DEFAULT_TOPIC_REGISTRY
+
+
+def _effective_topic_registry() -> str:
+    return TOPIC_REGISTRY if TOPIC_REGISTRY != _DEFAULT_TOPIC_REGISTRY else get_topic_registry_path()
 
 
 def mirrored_topic_cids() -> set[str]:
     """Conversation IDs owned by mirrored background topic threads (excluded from interactive idle detection)."""
-    return get_active_topic_cids(TOPIC_REGISTRY)
+    return get_active_topic_cids(_effective_topic_registry())
 
 
 def topic_canonical_titles() -> dict[str, str]:
     """Canonical permanent titles for topic threads from cachedb/llm_topic_threads.json."""
-    return get_topic_canonical_titles(TOPIC_REGISTRY)
+    return get_topic_canonical_titles(_effective_topic_registry())
 
 
 def last_store_activity() -> float:

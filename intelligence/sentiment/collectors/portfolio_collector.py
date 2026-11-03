@@ -1525,7 +1525,11 @@ def harvest_recent_orders_and_enrich_positions(
                 pos["free_base"] = round(cyc_qty, 6)
                 fb_cur = cyc_qty
                 held_cur = fb_cur + lb_cur
-                is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < 1.0)
+                is_flat_balance = held_cur <= 1e-8 or (pos_px_f > 0.0 and held_cur * pos_px_f < min_notional_f)
+                is_flat_after_exit = is_flat_balance and last_side_ro == "SELL"
+                if is_flat_balance:
+                    pos.pop("trailing_peak", None)
+                    pos.pop("dd_from_peak_pct", None)
                 if pos_px_f > 0:
                     pos["value_usd"] = round(cyc_qty * pos_px_f, 2)
             cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)

@@ -173,7 +173,7 @@ def prune_old_cli_threads(
             list(targets),
         ).fetchall()
         all_summary_cids = {
-            str(r[0]) for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall() if r[0]
+            str(r[0]).strip() for r in conn.execute("SELECT conversation_id FROM conversation_summaries").fetchall() if r[0] and str(r[0]).strip()
         }
     finally:
         conn.close()
@@ -188,8 +188,9 @@ def prune_old_cli_threads(
     kept: List[Tuple[datetime, str]] = []
     for row in rows:
         row_keys = set(row.keys())
-        cid, proj = row["conversation_id"], row["project_id"]
-        if cid in protected:
+        cid = str(row["conversation_id"] or "").strip()
+        proj = row["project_id"]
+        if not cid or cid in protected:
             continue
         raw_steps = row["step_count"] if "step_count" in row_keys else 0
         steps = safe_nonneg_int(raw_steps, default=0)
@@ -214,7 +215,7 @@ def prune_old_cli_threads(
             for fname in os.listdir(conv_dir):
                 if not fname.endswith(".db"):
                     continue
-                fcid = fname[:-3]
+                fcid = fname[:-3].strip()
                 if not fcid or fcid in protected or fcid in all_summary_cids:
                     continue
                 try:
@@ -235,6 +236,7 @@ def prune_old_cli_threads(
         candidates.update(cid for _, cid in kept[max_threads_i:])
 
     ui_candidates: Set[str] = set()
+    ui_kept: List[Tuple[datetime, str]] = []
     ui_base = resolve_ui_cli_base() if cli_base is None else ""
     if ui_base and os.path.abspath(ui_base) != os.path.abspath(base) and autonomous_projects:
         ui_db_path = os.path.join(ui_base, "conversation_summaries.db")
@@ -251,12 +253,23 @@ def prune_old_cli_threads(
                     uconn.close()
                 for urow in urows:
                     ukeys = set(urow.keys())
-                    ucid = urow["conversation_id"]
+                    ucid = str(urow["conversation_id"] or "").strip()
                     if not ucid or ucid in protected:
+                        continue
+                    usteps = safe_nonneg_int(urow["step_count"] if "step_count" in ukeys else 0, default=0)
+                    utitle = (urow["title"] if "title" in ukeys else None) or ""
+                    upreview = (urow["preview"] if "preview" in ukeys else None) or ""
+                    uautomated = is_automated_thread(utitle, upreview)
+                    if not uautomated and usteps > INTERACTIVE_MIN_STEPS:
                         continue
                     udt = parse_db_timestamp(urow["last_modified_time"] if "last_modified_time" in ukeys else None)
                     if udt is None or udt < cutoff:
                         ui_candidates.add(ucid)
+                    else:
+                        ui_kept.append((udt, ucid))
+                if max_threads_i is not None and 0 <= max_threads_i < len(ui_kept):
+                    ui_kept.sort(reverse=True)
+                    ui_candidates.update(ucid for _, ucid in ui_kept[max_threads_i:])
             except sqlite3.Error:
                 pass
 
