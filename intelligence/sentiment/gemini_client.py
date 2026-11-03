@@ -121,7 +121,7 @@ class GeminiClient:
         """Return an ordered, deduplicated sequence of models to attempt (primary -> fallbacks)."""
         selected = (primary_model.strip() if isinstance(primary_model, str) and primary_model.strip() else None) or self.model
         candidates = [selected]
-        if selected.endswith("-low") and not getattr(self, "_custom_fallbacks", False):
+        if (selected == "gpt-oss-120b-medium" or selected.endswith("-low")) and not getattr(self, "_custom_fallbacks", False):
             for fb in self.fallback_models:
                 if fb and fb not in candidates and (fb.endswith("-low") or fb == "gpt-oss-120b-medium"):
                     candidates.append(fb)
@@ -129,6 +129,27 @@ class GeminiClient:
             if fb and fb not in candidates:
                 candidates.append(fb)
         return candidates
+
+    def get_compact_model_candidates(self, models_to_try: list[str], attempt_idx: int = 0) -> list[str]:
+        """Return ordered models for in-place /compact summarization (free/low-cost language model first)."""
+        if getattr(self, "_custom_fallbacks", False):
+            return list(models_to_try[attempt_idx:])
+        preferred_compact = (os.environ.get("LLM_COMPACT_MODEL") or "gpt-oss-120b-medium").strip()
+        allowed = set(models_to_try)
+        compact_chain: list[str] = []
+        for low_m in (
+            preferred_compact,
+            "gpt-oss-120b-medium",
+            "gemini-4-argon-low",
+            "claude-sonnet-5-5-low",
+            "gemini-3.8-flash-low",
+        ):
+            if low_m and low_m not in compact_chain and (not allowed or low_m in allowed):
+                compact_chain.append(low_m)
+        for rem_m in models_to_try[attempt_idx:]:
+            if rem_m and rem_m not in compact_chain:
+                compact_chain.append(rem_m)
+        return compact_chain or list(models_to_try[attempt_idx:])
 
     @staticmethod
     def _get_quota_state_path() -> str:
@@ -859,7 +880,7 @@ class GeminiClient:
                                             if not is_mocked
                                             else None
                                         )
-                                        for compact_model in models_to_try[attempt_idx:]:
+                                        for compact_model in self.get_compact_model_candidates(models_to_try, attempt_idx):
                                             try:
                                                 c_proc = self._execute_cli(
                                                     turn_cid,

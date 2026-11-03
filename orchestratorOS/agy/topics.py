@@ -83,7 +83,7 @@ class TopicSpec:
 
 HIGH_STAKE_MODEL = os.environ.get("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high").strip() or "gemini-4-argon-high"
 EXECUTOR_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "gemini-4-argon-medium").strip() or "gemini-4-argon-medium"
-LOW_STAKE_MODEL = os.environ.get("LLM_LOW_STAKE_MODEL", "gemini-4-argon-low").strip() or "gemini-4-argon-low"
+LOW_STAKE_MODEL = os.environ.get("LLM_LOW_STAKE_MODEL", "gpt-oss-120b-medium").strip() or "gpt-oss-120b-medium"
 
 TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(

@@ -5909,9 +5909,9 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
         assert spec.preferred_model == "gemini-4-argon-medium"
         assert spec.default_timeout_sec == 120.0
 
-    # 3. RSS news triage (macro_geopolitical) uses gemini-4-argon-low and 120.0s timeout
+    # 3. RSS news triage (macro_geopolitical) uses gpt-oss-120b-medium and 120.0s timeout
     geo_spec = topic_spec("macro_geopolitical")
-    assert geo_spec.preferred_model == "gemini-4-argon-low"
+    assert geo_spec.preferred_model == "gpt-oss-120b-medium"
     assert geo_spec.default_timeout_sec == 120.0
 
     # 4. 10-minute executors use gemini-4-argon-medium and 90.0s timeout
@@ -5949,12 +5949,19 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
         "gemini-3.8-flash-medium",
     ]
 
-    low_chain = client.get_model_candidates("gemini-4-argon-low")
+    low_chain = client.get_model_candidates("gpt-oss-120b-medium")
     assert low_chain[:4] == [
+        "gpt-oss-120b-medium",
         "gemini-4-argon-low",
         "claude-sonnet-5-5-low",
         "gemini-3.8-flash-low",
+    ]
+
+    compact_chain = client.get_compact_model_candidates(med_chain, 0)
+    assert compact_chain[:3] == [
         "gpt-oss-120b-medium",
+        "gemini-4-argon-low",
+        "claude-sonnet-5-5-low",
     ]
 
     client.query_json("test guard", topic_key="guard_high_stake", timeout_sec=120.0)
@@ -5962,7 +5969,7 @@ def test_per_topic_argon_high_vs_medium_routing_and_120s_timeouts():
     assert observed["timeout"] == 120.0
 
     client.query_json("test geo", topic_key="macro_geopolitical", timeout_sec=120.0)
-    assert observed["model"] == "gemini-4-argon-low"
+    assert observed["model"] == "gpt-oss-120b-medium"
     assert observed["timeout"] == 120.0
 
     client.query_json("test exec", topic_key="auto_cryptotrade_executor", timeout_sec=90.0)
