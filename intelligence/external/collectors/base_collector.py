@@ -214,13 +214,23 @@ class _DiskBackedSymbolCollector:
             return _symbol_variants(symbol, quotes=quotes)
         return _symbol_variants(symbol)
 
-    def _lookup_cached(self, symbol: str, now: float) -> Tuple[Any, Any]:
-        cached = next((self._cache[c] for c in self._candidate_variants(symbol) if c in self._cache), None)
-        if cached:
-            c_ts = cached[0] if isinstance(cached, tuple) and len(cached) >= 2 else getattr(cached, "ts", None)
+    def _lookup_cached(self, symbol: str, now: float, *, exact_only: bool = False) -> Tuple[Any, Any]:
+        sym_clean = symbol.strip().upper()
+        cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
+        first_cached = None
+        for c in cands:
+            if c not in self._cache:
+                continue
+            entry = self._cache[c]
+            snap_obj = entry[1] if isinstance(entry, tuple) and len(entry) >= 2 else entry
+            if exact_only and str(getattr(snap_obj, "symbol", "") or "").strip().upper() != sym_clean:
+                continue
+            if first_cached is None:
+                first_cached = entry
+            c_ts = entry[0] if isinstance(entry, tuple) and len(entry) >= 2 else getattr(entry, "ts", None)
             if is_cache_fresh(c_ts, now, self.cache_ttl_sec):
-                return cached, (cached[1] if isinstance(cached, tuple) else cached)
-        return cached, None
+                return entry, snap_obj
+        return first_cached, None
 
     def _read_disk_json(self, path: str) -> Optional[Dict[str, Any]]:
         read_fn = _resolve_module_fn(self, "read_json_dict", read_json_dict)
@@ -229,10 +239,12 @@ class _DiskBackedSymbolCollector:
         rec_fn = _resolve_module_fn(self, "read_json_dict_recovering", read_json_dict_recovering)
         return rec_fn(path, default=None)
 
-    def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False) -> Optional[Any]:
+    def _load_from_disk(self, symbol: str, now: float, *, ignore_ttl: bool = False, exact_only: bool = False) -> Optional[Any]:
         ignore_ttl_b = self._as_bool_flag(ignore_ttl, default=False)
         max_age = max(self.cache_ttl_sec, self.disk_ttl_sec)
-        for cand in self._candidate_variants(symbol):
+        sym_clean = symbol.strip().upper()
+        cands = [sym_clean] if exact_only else self._candidate_variants(symbol)
+        for cand in cands:
             p = self._disk_path(cand)
             if not p:
                 continue
@@ -244,8 +256,14 @@ class _DiskBackedSymbolCollector:
                     snapshot = self._SNAPSHOT_CLS.from_dict(data, cand)
                 except TypeError:
                     snapshot = self._SNAPSHOT_CLS.from_dict(data)
+                snap_sym = str(getattr(snapshot, "symbol", "") or cand).strip().upper()
+                if exact_only and snap_sym != sym_clean:
+                    continue
                 if is_cache_fresh(snapshot.ts, now, max_age):
-                    self._cache[symbol.strip().upper()] = (snapshot.ts, snapshot)
+                    if snap_sym:
+                        self._cache[snap_sym] = (snapshot.ts, snapshot)
+                    if not exact_only or snap_sym == sym_clean:
+                        self._cache[sym_clean] = (snapshot.ts, snapshot)
                     return snapshot
                 if ignore_ttl_b:
                     return snapshot
@@ -261,12 +279,23 @@ class _DiskBackedSymbolCollector:
             except Exception as e:
                 logger.debug("Failed writing %s snapshot to %s: %s", self._DISK_FILE_PREFIX, p, e)
 
+    def _is_exact_venue_symbol(self, sym_clean: str) -> bool:
+        venue = _resolve_configured_venue(sym_clean)
+        return bool(
+            venue == "hyperliquid"
+            or (
+                self._QUOTE_ISOLATED
+                and (venue != "binance" or _is_multi_venue_base(sym_clean))
+            )
+        )
+
     def _fallback_stale(self, symbol: str, cached: Any) -> Optional[Any]:
         if isinstance(cached, tuple) and len(cached) >= 2:
             return cached[1]
         if cached and self._SNAPSHOT_CLS is not None and isinstance(cached, self._SNAPSHOT_CLS):
             return cached
-        return self._load_from_disk(symbol, 0.0, ignore_ttl=True)
+        sym_clean = symbol.strip().upper() if isinstance(symbol, str) else ""
+        return self._load_from_disk(symbol, 0.0, ignore_ttl=True, exact_only=self._is_exact_venue_symbol(sym_clean))
 
     def _record_item(self, item: Any, save_to_disk: bool = False) -> None:
         if isinstance(item, dict):
@@ -307,23 +336,13 @@ class _DiskBackedSymbolCollector:
             return None, 0.0, None, None, False
         now_f = _effective_now_ts(now)
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
-        venue = _resolve_configured_venue(sym_clean)
-        require_exact_venue_sym = bool(
-            allow_net_bool
-            and (
-                venue == "hyperliquid"
-                or (
-                    self._QUOTE_ISOLATED
-                    and (venue != "binance" or _is_multi_venue_base(sym_clean))
-                )
-            )
-        )
-        cached, fresh = self._lookup_cached(sym_clean, now_f)
+        require_exact_venue_sym = bool(allow_net_bool and self._is_exact_venue_symbol(sym_clean))
+        cached, fresh = self._lookup_cached(sym_clean, now_f, exact_only=require_exact_venue_sym)
         if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
             if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean:
                 self._sync_existing_sibling_disk_file(sym_clean, fresh)
             return sym_clean, now_f, cached, fresh, False
-        disk_snap = self._load_from_disk(sym_clean, now_f)
+        disk_snap = self._load_from_disk(sym_clean, now_f, exact_only=require_exact_venue_sym)
         if disk_snap is not None and (not require_exact_venue_sym or str(getattr(disk_snap, "symbol", "") or "").strip().upper() == sym_clean):
             if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean:
                 self._sync_existing_sibling_disk_file(sym_clean, disk_snap)

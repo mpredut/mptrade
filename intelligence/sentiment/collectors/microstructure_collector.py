@@ -1158,7 +1158,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     )
     if m_px is not None and m_px > 0.0:
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1))
-    ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+    ob_imb = safe_nonneg_float(minfo.get("ob_imbalance"), default=0.5)
     has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
     chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
@@ -1314,8 +1314,8 @@ def compute_liquidation_clusters(
         default=0.0,
     ) or 0.0
     chg_15m_v = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
-    taker_r = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=1.0) or 1.0
-    ob_imb_v = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+    taker_r = safe_nonneg_float(minfo.get("taker_buy_sell_ratio"), default=1.0)
+    ob_imb_v = safe_nonneg_float(minfo.get("ob_imbalance"), default=0.5)
     vel_sign = 1.0 if kalman_vel > 0.0 else (-1.0 if kalman_vel < 0.0 else 0.0)
     vel_tilt = max(
         -0.35,

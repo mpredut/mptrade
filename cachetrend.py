@@ -1753,10 +1753,11 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         if self.market_api is not None and hasattr(self.market_api, "provider_by_name"):
             try:
                 prov = self.market_api.provider_by_name("hyperliquid")
-                pair_fn = getattr(prov, "_pair", None)
-                spot_pair = pair_fn() if callable(pair_fn) else getattr(prov, "_spot_pair", None)
-                if isinstance(spot_pair, str) and spot_pair.strip():
-                    keys.append(spot_pair.strip())
+                if prov is not None and (not hasattr(prov, "supports_symbol") or prov.supports_symbol(symbol)):
+                    pair_fn = getattr(prov, "_pair", None)
+                    spot_pair = pair_fn() if callable(pair_fn) else getattr(prov, "_spot_pair", None)
+                    if isinstance(spot_pair, str) and spot_pair.strip():
+                        keys.append(spot_pair.strip())
             except Exception:
                 pass
         known_spot = self._KNOWN_SPOT_PAIRS.get(base.upper())
@@ -1814,9 +1815,14 @@ class KrakenPriceStream(_VenuePriceStreamBase):
                 self._ws_pairs.append(ws_pair)
             self._pair_to_symbol[ws_pair.upper()] = sym
             self._pair_to_symbol[clean_symbol_key(sym)] = sym
-            if split and split[0] == "BTC":
-                self._pair_to_symbol[f"XBT/{split[1]}"] = sym
-                self._pair_to_symbol[f"XBT{split[1]}"] = sym
+            if split and split[0] in ("BTC", "XBT"):
+                for b_alias in ("BTC", "XBT"):
+                    self._pair_to_symbol[f"{b_alias}/{split[1]}"] = sym
+                    self._pair_to_symbol[f"{b_alias}{split[1]}"] = sym
+            elif split and split[0] in ("DOGE", "XDG"):
+                for d_alias in ("DOGE", "XDG"):
+                    self._pair_to_symbol[f"{d_alias}/{split[1]}"] = sym
+                    self._pair_to_symbol[f"{d_alias}{split[1]}"] = sym
 
     def _build_subscribe_payload(self) -> str:
         return _json.dumps({

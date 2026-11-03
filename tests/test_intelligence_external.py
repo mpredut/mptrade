@@ -848,6 +848,139 @@ class TestOrderGuardPillar2Integration(unittest.TestCase):
         self.assertEqual(_clean_non_neg_int(0, default=3), 0)
         self.assertEqual(_clean_non_neg_int(-1, default=3), 3)
 
+    def test_collector_exact_venue_cache_isolation_and_stale_first_skip(self):
+        import json
+        import os
+        import tempfile
+        from unittest.mock import MagicMock, patch
+        from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector, OrderbookSnapshot
+        from intelligence.external.collectors.whale_positioning import WhalePositioningCollector, WhalePositioningSnapshot
+        from intelligence.sentiment.collectors.microstructure_collector import (
+            compute_liquidation_clusters,
+            enrich_microstructure_cvd,
+        )
+        from intelligence.sentiment.collectors.portfolio_collector import compute_enterprise_portfolio_risk_metrics
+        import cachetrend as ct
+
+        now = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ob_col = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+            # 1. Stale exact entry in memory must not shadow a fresh compatible variant when allow_network=False
+            ob_col.record_snapshot(
+                OrderbookSnapshot(
+                    symbol="TAOUSD",
+                    mid_price=400.0,
+                    bid_depth_usd=50_000.0,
+                    ask_depth_usd=50_000.0,
+                    imbalance_ratio=0.5,
+                    largest_bid_wall_usd=10_000.0,
+                    largest_bid_wall_price=399.0,
+                    largest_ask_wall_usd=10_000.0,
+                    largest_ask_wall_price=401.0,
+                    ts=now - 120.0,
+                )
+            )
+            ob_col.record_snapshot(
+                OrderbookSnapshot(
+                    symbol="TAOUSDC",
+                    mid_price=455.0,
+                    bid_depth_usd=80_000.0,
+                    ask_depth_usd=80_000.0,
+                    imbalance_ratio=0.5,
+                    largest_bid_wall_usd=15_000.0,
+                    largest_bid_wall_price=454.0,
+                    largest_ask_wall_usd=15_000.0,
+                    largest_ask_wall_price=456.0,
+                    ts=now - 5.0,
+                ),
+                save_to_disk=True,
+            )
+            hit_ro = ob_col.fetch("TAOUSD", allow_network=False, now=now)
+            self.assertIsNotNone(hit_ro)
+            self.assertAlmostEqual(hit_ro.mid_price, 455.0)
+
+            # 2. When allow_network=True on a multi-venue symbol (TAOUSD on Kraken), fresh disk TAOUSDC
+            # must NOT pollute _cache['TAOUSD'] or be returned on Kraken network error.
+            ob_col2 = OrderbookDepthCollector(cache_ttl_sec=30.0, disk_ttl_sec=60.0, cache_dir=tmpdir)
+            with patch.object(ob_col2, "_fetch_json_dict", side_effect=RuntimeError("network down")):
+                res_fail = ob_col2.fetch("TAOUSD", allow_network=True, now=now)
+            self.assertIsNone(res_fail)
+            self.assertNotIn("TAOUSD", ob_col2._cache)
+
+            # 3. Hyperliquid whale fallback preserves 1h OI change on sub-15m unchanged OI and handles 0 buy volume
+            w_col = WhalePositioningCollector(cache_ttl_sec=60.0, disk_ttl_sec=180.0, cache_dir=tmpdir)
+            w_col.record_snapshot(
+                WhalePositioningSnapshot(
+                    symbol="HYPEUSDC",
+                    top_traders_long_ratio=1.0,
+                    top_traders_long_pct=0.5,
+                    taker_buy_sell_ratio=1.1,
+                    taker_buy_vol_usd=10_000.0,
+                    taker_sell_vol_usd=9_000.0,
+                    open_interest_usd=100_000_000.0,
+                    open_interest_1h_change_pct=4.5,
+                    divergence_regime="accumulation",
+                    ts=now - 60.0,
+                ),
+                save_to_disk=True,
+            )
+            with patch.object(
+                w_col,
+                "_fetch_json_dict",
+                return_value={"result_list": [{"px": "25.0", "sz": "100.0", "side": "A"}]},
+            ), patch.object(
+                w_col,
+                "_fetch_hyperliquid_asset_ctx",
+                return_value={"openInterest": "4000000.0", "markPx": "25.0", "funding": "0.0001"},
+            ):
+                hl_w = w_col._fetch_hyperliquid_whale_fallback("HYPEUSDC", -1.2, now, None)
+            self.assertIsNotNone(hl_w)
+            self.assertAlmostEqual(hl_w.taker_buy_sell_ratio, 0.0)
+            self.assertAlmostEqual(hl_w.open_interest_1h_change_pct, 4.5)
+            self.assertEqual(hl_w.divergence_regime, "aggressive_shorting")
+            self.assertAlmostEqual(hl_w.cvd_5m_usd, -2500.0)
+
+        # 4. Zero ob_imbalance and zero taker_buy_sell_ratio are preserved in microstructure CVD & liq clusters
+        minfo = {"ob_imbalance": 0.0, "taker_buy_vol_usd": 1000.0, "taker_sell_vol_usd": 500.0}
+        enrich_microstructure_cvd(minfo, pinfo={})
+        self.assertEqual(minfo["cvd_regime"], "ask_absorbing")
+
+        # 5. Enterprise portfolio VaR treats same-base holdings across venues as rho=1.0 and preserves 0.0 beta/corr
+        risk_single = compute_enterprise_portfolio_risk_metrics(
+            {
+                "tradable_positions": [
+                    {"venue": "binance", "symbol": "TAOUSDC", "value_usd": 1000.0},
+                ],
+                "venue_quote_cash": {"binance": {"venue": "binance", "free": 1000.0}},
+            },
+            {"TAOUSDC": {"beta_btc_24h": 0.0, "corr_btc_24h": 0.0, "vol_1h_pct": 2.0}},
+            {},
+        )
+        risk_split = compute_enterprise_portfolio_risk_metrics(
+            {
+                "tradable_positions": [
+                    {"venue": "binance", "symbol": "TAOUSDC", "value_usd": 600.0},
+                    {"venue": "kraken", "symbol": "TAOUSD", "value_usd": 400.0},
+                ],
+                "venue_quote_cash": {"binance": {"venue": "binance", "free": 1000.0}},
+            },
+            {"TAOUSDC": {"beta_btc_24h": 0.0, "corr_btc_24h": 0.0, "vol_1h_pct": 2.0}},
+            {},
+        )
+        self.assertEqual(risk_single["portfolio_btc_beta"], 0.0)
+        self.assertEqual(risk_single["avg_corr_vs_btc_24h"], 0.0)
+        self.assertAlmostEqual(risk_single["intraday_var_95_usd"], risk_split["intraday_var_95_usd"], places=2)
+
+        # 6. HyperliquidPriceStream scopes provider _pair() to supported symbol only
+        fake_prov = MagicMock()
+        fake_prov.supports_symbol.side_effect = lambda s: s == "HYPEUSDC"
+        fake_prov._pair.return_value = "@107"
+        fake_api = MagicMock()
+        fake_api.provider_by_name.return_value = fake_prov
+        hl_stream = ct.HyperliquidPriceStream(["HYPEUSDC", "PURRUSDC"], market_api=fake_api)
+        self.assertIn("@107", hl_stream._candidate_mids_keys("HYPEUSDC"))
+        self.assertNotIn("@107", hl_stream._candidate_mids_keys("PURRUSDC"))
+
 
 if __name__ == "__main__":
     unittest.main()

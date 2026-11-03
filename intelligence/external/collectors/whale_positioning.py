@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from botcore import obj_attr, safe_float, safe_pos_float
+from botcore import obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_symbol_key, telemetry_cache_file_path
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
@@ -160,7 +160,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         """
         price_1h_change_pct = safe_float(price_1h_change_pct, default=0.0)
         oi_change_pct = safe_float(oi_change_pct, default=0.0)
-        taker_ratio = safe_pos_float(taker_ratio, default=1.0) or 1.0
+        taker_ratio = safe_nonneg_float(taker_ratio, default=1.0)
         funding_rate = safe_float(funding_rate, default=None)
         top_long_pct = safe_float(top_long_pct, default=None)
         prev_reg_norm = prev_regime.strip().lower() if isinstance(prev_regime, str) else ""
@@ -378,7 +378,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     taker_sell += px * sz
         taker_buy = round(taker_buy, 2)
         taker_sell = round(taker_sell, 2)
-        taker_ratio = round(taker_buy / taker_sell, 4) if taker_buy > 0.0 and taker_sell > 0.0 else 1.0
+        taker_ratio = (
+            round(taker_buy / taker_sell, 4)
+            if taker_buy > 0.0 and taker_sell > 0.0
+            else (0.0 if taker_sell > 0.0 else 1.0)
+        )
         oi_usd = 0.0
         funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
         try:
@@ -391,9 +395,17 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                     funding_rate = _clean_dict_float(ctx, "funding", 0.0)
         except Exception:
             pass
-        prev_snap = (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached) if cached else self._load_from_disk(symbol, now, ignore_ttl=True)
+        prev_snap = (
+            (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached)
+            if cached
+            else self._load_from_disk(symbol, now, ignore_ttl=True, exact_only=True)
+        )
         prev_oi = safe_pos_float(obj_attr(prev_snap, "open_interest_usd", None), default=0.0) or 0.0
         oi_chg_pct = round(((oi_usd - prev_oi) / prev_oi) * 100.0, 2) if (oi_usd > 0.0 and prev_oi > 0.0) else 0.0
+        if oi_chg_pct == 0.0 and prev_snap is not None:
+            prev_ts = safe_pos_float(obj_attr(prev_snap, "ts", None), default=0.0) or 0.0
+            if 0.0 <= (now - prev_ts) < 900.0:
+                oi_chg_pct = safe_float(obj_attr(prev_snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
         prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
         regime = self.classify_regime(
             price_1h_change_pct=price_1h_change_pct,
@@ -415,6 +427,8 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             divergence_regime=regime,
             ts=now,
             funding_rate=funding_rate,
+            taker_ratio_5m=taker_ratio if (taker_buy + taker_sell) > 0.0 and taker_ratio > 0.0 else None,
+            cvd_5m_usd=round(taker_buy - taker_sell, 0) if (taker_buy + taker_sell) > 0.0 else None,
         )
         return self._commit_snapshot(symbol, now, snapshot)
 

@@ -2519,12 +2519,17 @@ def compute_enterprise_portfolio_risk_metrics(
         if val_u >= 1.0:
             sym = str(p.get("symbol") or "").strip().upper()
             base = canonical_base_asset(sym)
-            p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else {}
-            if not isinstance(p_info, dict):
+            p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
+            if not isinstance(p_info, dict) and isinstance(prices_and_trends, dict):
+                p_info = next(
+                    (v for c in cache_symbol_variants(sym) if isinstance((v := casefold_get(prices_and_trends, c)), dict)),
+                    {},
+                )
+            elif not isinstance(p_info, dict):
                 p_info = {}
             is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
-            beta_v = 1.0 if base == "BTC" else (safe_float(p_info.get("beta_btc_24h"), default=(0.35 if is_eq else 1.15)) or (0.35 if is_eq else 1.15))
-            corr_v = 1.0 if base == "BTC" else (safe_float(p_info.get("corr_btc_24h"), default=(0.30 if is_eq else 0.78)) or (0.30 if is_eq else 0.78))
+            beta_v = 1.0 if base == "BTC" else safe_float(p_info.get("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
+            corr_v = 1.0 if base == "BTC" else safe_float(p_info.get("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
             vol_1h = safe_pos_float(p_info.get("vol_1h_pct"), default=1.0) or 1.0
             daily_vol_pct = min(25.0, max(0.8, vol_1h * _math.sqrt(24.0)))
             pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
@@ -2578,11 +2583,11 @@ def compute_enterprise_portfolio_risk_metrics(
     avg_corr_24h = round(sum(non_btc_corrs) / len(non_btc_corrs), 2) if non_btc_corrs else (1.0 if pos_exposures else 0.0)
 
     var_cov_sum = 0.0
-    for i, (_, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
+    for i, (base_i, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
         sig_i = val_i * (dvol_i / 100.0)
-        for j, (_, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
+        for j, (base_j, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
             sig_j = val_j * (dvol_j / 100.0)
-            rho_ij = 1.0 if i == j else max(-0.5, min(0.98, corr_i * corr_j))
+            rho_ij = 1.0 if (i == j or (base_i and base_i == base_j)) else max(-0.5, min(0.98, corr_i * corr_j))
             var_cov_sum += sig_i * sig_j * rho_ij
     port_sigma_usd = _math.sqrt(max(0.0, var_cov_sum))
     var_95_usd = round(1.645 * port_sigma_usd, 2)
