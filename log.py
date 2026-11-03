@@ -455,15 +455,30 @@ def _patched_print(*args, **kwargs) -> None:
         _file_logger.info(clean)
         return
 
+    has_leading_ts = (
+        len(clean) >= 10
+        and clean[0] == "["
+        and clean[9] == "]"
+        and clean[3] == ":"
+        and clean[6] == ":"
+        and clean[1:3].isdigit()
+        and clean[4:6].isdigit()
+        and clean[7:9].isdigit()
+    )
+    clean_body = clean[10:].lstrip(" ") if has_leading_ts else clean
+
     if _needs_caller_info(clean):
         caller = _get_caller_info()
         with _print_lock:
-            _original_print(f"{current_time} {caller} {message}", **kwargs)
-        _file_logger.info(f"{caller} {clean}")
+            _original_print(
+                f"{caller} {message}" if has_leading_ts else f"{current_time} {caller} {message}",
+                **kwargs,
+            )
+        _file_logger.info(f"{caller} {clean_body}")
     else:
         with _print_lock:
-            _original_print(f"{current_time} {message}", **kwargs)
-        _file_logger.info(clean)
+            _original_print(message if has_leading_ts else f"{current_time} {message}", **kwargs)
+        _file_logger.info(clean_body)
 
 
 def _dummy_print(*args, **kwargs) -> None:

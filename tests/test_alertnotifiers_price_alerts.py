@@ -169,6 +169,38 @@ class PriceCheckerTests(unittest.TestCase):
         self.assertEqual(default_alerts[0].threshold, 4.1)
         self.assertEqual(dynamic_alerts, [])
 
+    def test_price_checker_persists_cooldown_across_restarts_and_log_avoids_double_timestamp(self):
+        import io
+        import log as mp_log
+
+        now_ms = int(time.time() * 1000)
+        history = [
+            {"timestamp": now_ms - 2 * 60 * 60 * 1000, "price": 141.7350, "timestamp_readable": "2026-11-03T06:00:00"},
+            {"timestamp": now_ms - 1 * 60 * 60 * 1000, "price": 136.3700, "timestamp_readable": "2026-11-03T07:00:00"},
+        ]
+        manager = DummyPriceManager(latest_price=136.3700, history=history)
+        cfg = {"per_coin": {"SPCX": {"up_percent": 4.7, "down_percent": 3.0}}, "cooldown_minutes": 180}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = os.path.join(tmp, "cache_watcher_all_price.cooldowns.json")
+            checker1 = PriceChecker(manager, config=cfg, state_file=sf)
+            alerts1 = checker1.check_symbol("SPCX")
+            self.assertEqual(len(alerts1), 1)
+            self.assertEqual(alerts1[0].alert_type, "down")
+            self.assertTrue(os.path.exists(sf))
+
+            # Simulated process restart: new PriceChecker instance loads sf and suppresses duplicate alert
+            checker2 = PriceChecker(manager, config=cfg, state_file=sf)
+            alerts2 = checker2.check_symbol("SPCX")
+            self.assertEqual(alerts2, [])
+
+        # Verify log._patched_print does not prepend a duplicate HH:MM:SS when message starts with [HH:MM:SS]
+        buf = io.StringIO()
+        with patch.object(mp_log, "_original_print", side_effect=lambda *a, **kw: buf.write(" ".join(map(str, a)) + "\n")):
+            mp_log._patched_print("[08:54:02]   .env loaded from /home/predut/mptrade/.env")
+        out_line = buf.getvalue().strip()
+        self.assertEqual(out_line, "[08:54:02]   .env loaded from /home/predut/mptrade/.env")
+
     def test_price_platforms_fallback_and_error_handling(self):
         with patch("requests.get", side_effect=Exception("offline")), \
              patch("requests.post", side_effect=Exception("offline")):

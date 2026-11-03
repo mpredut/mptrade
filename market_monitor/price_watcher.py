@@ -27,6 +27,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
 from alertnotifiers import AlertNotifier, format_ntfy_url
 from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float
+from cachepaths import cache_path
 from market_monitor.alerts_config import load_config
 
 load_env_stack(os.path.join(_ROOT, ".env"))
@@ -266,8 +267,12 @@ def main():
 
     print("⏳ Starting the price-threshold checker...")
     price_checker = start_price_alert_checker(
-        cachePriceAll=cachePriceAll, alert_callback=alert_handler,
-        check_interval_seconds=cfg["price_scan_seconds"], config=ac)
+        cachePriceAll=cachePriceAll,
+        alert_callback=alert_handler,
+        check_interval_seconds=cfg["price_scan_seconds"],
+        config=ac,
+        state_file=cache_path("cache_watcher_all_price.cooldowns.json"),
+    )
 
     new_coins_checker = None
     if not cfg["discover_new_coins"]:

@@ -19,6 +19,7 @@ from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from market_monitor.alerts_config import resolve as resolve_alert_threshold
 from market_monitor.pricefetcher import get_base_symbol
+from state_io import load_json_state, save_json_state
 
 # Canonical CoinMarketCap slugs for major symbols. _all_listings is keyed by
 # symbol, so when several coins share one (for example, real Bitcoin and a scam
@@ -107,7 +108,7 @@ class PriceChecker:
     """
 
     def __init__(self, cachePriceAll, alert_callback: Optional[Callable] = None,
-                 config: Optional[dict] = None):
+                 config: Optional[dict] = None, state_file: Optional[str] = None):
         self.cachePriceAll = cachePriceAll
         self.alert_callback = alert_callback or self._default_alert_handler
         # Use market_alerts.conf configuration, including per_coin, when supplied;
@@ -121,12 +122,44 @@ class PriceChecker:
                 else:
                     self.config[key] = copy.deepcopy(value)
 
+        raw_sf = state_file if state_file is not None else (self.config.get("state_file") if isinstance(self.config, dict) else None)
+        self.state_file = (
+            str(raw_sf).strip()
+            if isinstance(raw_sf, (str, os.PathLike)) and not isinstance(raw_sf, bool) and str(raw_sf).strip()
+            else None
+        )
+
         # Prevent spam: remember the last alert per symbol and alert type
         self._last_alert_time = defaultdict(float)
+        self._load_cooldown_state()
 
         # Thread for continuous analysis
         self._thread = None
         self._running = False
+
+    def _load_cooldown_state(self) -> None:
+        if not self.state_file or not os.path.exists(self.state_file):
+            return
+        try:
+            raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
+            if isinstance(raw, dict):
+                now = time.time()
+                for k, v in raw.items():
+                    if isinstance(k, str) and k.strip():
+                        ts = safe_nonneg_float(v, default=None)
+                        if ts is not None and 0.0 < ts <= now + 60.0:
+                            self._last_alert_time[k.strip()] = min(ts, now)
+        except Exception:
+            pass
+
+    def _save_cooldown_state(self) -> None:
+        if not self.state_file:
+            return
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
+            save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
+        except Exception:
+            pass
 
     def _default_alert_handler(self, alert):
         """Default handler that prints the alert(s) to the console."""
@@ -283,6 +316,7 @@ class PriceChecker:
     def _record_alert_sent(self, symbol: str, alert_type: str):
         """Record that an alert was sent."""
         self._last_alert_time[self._alert_key(symbol, alert_type)] = time.time()
+        self._save_cooldown_state()
 
     def check_symbol(self, symbol: str) -> List[PriceAlert]:
         """Check a symbol and return a list of alerts (0, 1, or 2)."""
@@ -411,7 +445,7 @@ class PriceChecker:
         }
 
 
-def start_price_alert_checker(cachePriceAll, alert_callback=None, check_interval_seconds=60, config=None):
-    checker = PriceChecker(cachePriceAll, alert_callback=alert_callback, config=config)
+def start_price_alert_checker(cachePriceAll, alert_callback=None, check_interval_seconds=60, config=None, state_file: Optional[str] = None):
+    checker = PriceChecker(cachePriceAll, alert_callback=alert_callback, config=config, state_file=state_file)
     checker.start_monitoring(check_interval_seconds)
     return checker
