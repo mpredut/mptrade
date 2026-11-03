@@ -375,6 +375,11 @@ class _DailyFileHandler(logging.Handler):
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
                 with _config_lock:
                     folder = _log_folder
+                if folder == os.path.normpath(os.path.abspath(_DEFAULT_LOG_FOLDER)) and (
+                    self._app_name.lower() in {"pytest", "__main__", "py.test", "c"}
+                    or "PYTEST_CURRENT_TEST" in os.environ
+                ):
+                    return
 
                 if (
                     today != self._current_date

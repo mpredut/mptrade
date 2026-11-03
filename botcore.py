@@ -103,6 +103,14 @@ _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _ROOT_CONFIG_PATH = os.path.abspath(os.path.join(_REPO_ROOT, "config.env"))
 _ROOT_CONFIG_KEYS: set[str] = set()
 _ROOT_CONFIG_VALUES: dict[str, str] = {}
+_LOADED_DOTENV_PATHS: set[str] = set()
+
+
+def _log_dotenv_loaded_once(path: str, *, override: bool = False) -> None:
+    abs_path = os.path.abspath(path)
+    if override or abs_path not in _LOADED_DOTENV_PATHS:
+        _LOADED_DOTENV_PATHS.add(abs_path)
+        log(f"  .env loaded from {path}")
 
 
 def _is_unmodified_root_key(key: str) -> bool:
@@ -168,7 +176,7 @@ def load_dotenv(path: str = ".env", override: bool = False) -> None:
                 os.environ[key] = value
                 _ROOT_CONFIG_KEYS.discard(key)
                 _ROOT_CONFIG_VALUES.pop(key, None)
-    log(f"  .env loaded from {path}")
+    _log_dotenv_loaded_once(path, override=bool(override))
 
 
 def load_env_stack(env_file: str, config_name: str = "config.env", override: bool = False) -> None:
@@ -197,7 +205,7 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
                 os.environ[key] = value
                 _ROOT_CONFIG_KEYS.discard(key)
                 _ROOT_CONFIG_VALUES.pop(key, None)
-        log(f"  .env loaded from {cfg_path}")
+        _log_dotenv_loaded_once(cfg_path, override=bool(override))
 
     # 2. Load secrets/profile configuration (precedence over venue config, but below process env)
     env_pairs, env_loaded = _dotenv_pairs(env_path)
@@ -207,7 +215,7 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
                 os.environ[key] = value
                 _ROOT_CONFIG_KEYS.discard(key)
                 _ROOT_CONFIG_VALUES.pop(key, None)
-        log(f"  .env loaded from {env_path}")
+        _log_dotenv_loaded_once(env_path, override=bool(override))
 
 
 def parse_dotenv(path: str) -> dict[str, str]:

@@ -685,6 +685,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         re.IGNORECASE,
     )
     guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
+    ignored_test_prefixes = ("pytest_", "__main___", "py.test_", "c_")
 
     for l_dir in logs_dirs:
         if not os.path.isdir(l_dir):
@@ -692,6 +693,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         try:
             for fname in os.listdir(l_dir):
                 if not (fname.endswith(".log") or fname.endswith(".txt")):
+                    continue
+                if fname.lower().startswith(ignored_test_prefixes):
                     continue
                 fpath = os.path.join(l_dir, fname)
                 try:

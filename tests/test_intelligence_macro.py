@@ -1388,6 +1388,127 @@ def test_binance_account_stream_dynamic_recv_timeout_and_response_health(monkeyp
     assert healthy_count >= 2
 
 
+def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp_path, monkeypatch):
+    """Verify contiguous token run extraction in dynamic lexicon discovery, test-log isolation in
+    harvest_log_anomalies_from_dirs / log.py, and duplicate load_dotenv log suppression in botcore.
+    """
+    import logging
+    import botcore
+    import log as log_mod
+    from intelligence.macro_sentiment_ssot import (
+        discover_dynamic_terms_from_headlines,
+        record_dynamic_crisis_terms_from_assessment,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Cross-punctuation and cross-stopword synthetic bigrams are never discovered
+    headlines = [
+        {
+            "title": "North Korea denies role in record Binance hack, calls US charge 'provocation' - DW.com",
+            "source": "DW.com",
+            "url": "https://dw.com/a1",
+        },
+        {
+            "title": "North Korea denies involvement in $6.3bn Binance hack and calls FBI accusation 'political provocation' - AOL.com",
+            "source": "AOL.com",
+            "url": "https://aol.com/a2",
+        },
+        {
+            "title": "US strikes Iran's Qeshm Island on eve of midterms - FT",
+            "source": "FT",
+            "url": "https://ft.com/b1",
+        },
+        {
+            "title": "U.S. reportedly strikes Iran's Qeshm Island on eve of election - Guardian",
+            "source": "Guardian",
+            "url": "https://theguardian.com/b2",
+        },
+        {
+            "title": "Stocks mostly down as AI concerns top plunge in oil prices - Yahoo",
+            "source": "Yahoo",
+            "url": "https://yahoo.com/c1",
+        },
+        {
+            "title": "Markets slide after sudden plunge in oil prices - CNBC",
+            "source": "CNBC",
+            "url": "https://cnbc.com/c2",
+        },
+    ]
+    discovered = discover_dynamic_terms_from_headlines(
+        headlines,
+        cache_dir=str(tmp_path),
+        now_ts=1_793_686_000.0,
+        persist=True,
+    )
+    assert "binance hack" in discovered
+    assert "strikes iran" in discovered
+    for noise_bg in ("hack calls", "iran eve", "iran qeshm", "qeshm island", "oil prices"):
+        assert noise_bg not in discovered
+
+    rec = record_dynamic_crisis_terms_from_assessment(
+        "Exchange was hacked. Emergency measures followed; hacks in Uganda and shock. Emergency sanction discussed.",
+        ["Binance hack", "hacks, Ukraine"],
+        cache_dir=str(tmp_path),
+        now_ts=1_793_686_010.0,
+    )
+    assert "binance hack" in rec
+    for cross_punct in ("hacked emergency", "hacks uganda", "shock emergency", "emergency sanction", "hacks ukraine"):
+        assert cross_punct not in rec
+
+    # 2. harvest_log_anomalies_from_dirs ignores pytest_*, __main___*, py.test_*, and c_* logs
+    log_dir = tmp_path / "logger"
+    log_dir.mkdir()
+    (log_dir / "pytest_2026-11-03.log").write_text(
+        "08:00:00 [GUARD] BUY BTCUSDC vetoed by unit test\n08:00:01 CRITICAL simulated test failure\n",
+        encoding="utf-8",
+    )
+    (log_dir / "__main___2026-11-03.log").write_text(
+        "08:00:02 [LLM GUARD] SELL ETHUSDC vetoed in test\n08:00:03 ERROR simulated main test\n",
+        encoding="utf-8",
+    )
+    (log_dir / "c_2026-11-03.log").write_text(
+        "08:00:04 Traceback (most recent call last): ad-hoc python -c\n",
+        encoding="utf-8",
+    )
+    (log_dir / "rtrade_2026-11-03.log").write_text(
+        "08:00:05 [GUARD] BUY TAOUSDC: real guard intervention\n",
+        encoding="utf-8",
+    )
+    summary = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=24.0)
+    assert summary.total_scanned_files == 1
+    assert summary.error_count == 0
+    assert summary.warning_count == 1
+    assert len(summary.guard_interventions) == 1
+    assert "TAOUSDC" in summary.guard_interventions[0]
+
+    # Verify _DailyFileHandler suppresses writes to default _DEFAULT_LOG_FOLDER under pytest
+    handler = log_mod._DailyFileHandler("pytest")
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "unit test msg", (), None)
+    old_folder = log_mod._log_folder
+    try:
+        log_mod._log_folder = os.path.normpath(os.path.abspath(log_mod._DEFAULT_LOG_FOLDER))
+        handler.emit(record)
+        assert handler._stream is None
+    finally:
+        log_mod._log_folder = old_folder
+        handler.close()
+
+    # 3. botcore.load_dotenv logs '.env loaded from ...' only once per resolved path unless override=True
+    env_file = tmp_path / "dedup_test.env"
+    env_file.write_text("DEDUP_TEST_KEY=1\n", encoding="utf-8")
+    logged_msgs = []
+    monkeypatch.setattr(botcore, "log", lambda m: logged_msgs.append(m))
+    monkeypatch.delenv("DEDUP_TEST_KEY", raising=False)
+    botcore._LOADED_DOTENV_PATHS.discard(os.path.abspath(str(env_file)))
+
+    botcore.load_dotenv(str(env_file))
+    botcore.load_dotenv(str(env_file))
+    assert len(logged_msgs) == 1
+    botcore.load_dotenv(str(env_file), override=True)
+    assert len(logged_msgs) == 2
+
+
+
 
 
 

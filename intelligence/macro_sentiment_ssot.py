@@ -935,7 +935,8 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "middle east", "according pentagon", "pentagon estimate", "cuba wins",
     "shocks however", "profit thanks", "thanks gold", "insane plan", "focus live",
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
-    "gillibrand presses", "civilian schools",
+    "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
+    "emergency sanction",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -1019,19 +1020,35 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "ahead", "allegedly", "already", "answered", "apps", "arrested", "article",
-    "articles", "baseball", "bat", "boy", "brake", "briefing", "bus", "car",
-    "carried", "carries", "chip", "commentary", "conduct", "conducted",
+    "articles", "baseball", "bat", "boy", "brake", "briefing", "bus", "calls",
+    "car", "carried", "carries", "chip", "commentary", "conduct", "conducted",
     "conducts", "continue", "continues", "criticize", "criticized", "criticizes",
-    "debunked", "digested", "downscale", "eight", "elevated", "exceptionally",
-    "explained", "exposes", "false", "features", "five", "four", "history",
-    "horrific", "introduces", "involvement", "jet", "join", "keyword", "links",
-    "localized", "media", "moderate", "nine", "non", "normal", "noting",
-    "official", "officials", "one", "orderly", "plane", "potential", "processed",
-    "progress", "questions", "readiness", "record", "reported", "reportedly",
-    "researchers", "retaining", "say", "seven", "six", "suspected", "targets",
-    "ten", "three", "timeline", "trace", "traced", "train", "trains", "truck",
-    "two", "unpriced", "veto", "volunteer", "worse", "wrap",
+    "debunked", "defensive", "digested", "downscale", "eight", "elevated", "eve",
+    "exceptionally", "explained", "exposes", "false", "features", "five", "four",
+    "history", "horrific", "introduces", "involvement", "island", "jet", "join",
+    "keyword", "landing", "limited", "links", "localized", "media", "moderate",
+    "nine", "non", "normal", "noting", "official", "officials", "one", "orderly",
+    "plane", "potential", "prices", "processed", "progress", "qeshm", "questions",
+    "readiness", "record", "reported", "reportedly", "researchers", "retaining",
+    "say", "seven", "six", "somalia", "suspected", "targets", "ten", "three",
+    "timeline", "trace", "traced", "train", "trains", "truck", "two", "uganda",
+    "unpriced", "veto", "volunteer", "withdrawing", "worse", "wrap",
 })
+
+
+def _extract_contiguous_token_runs(text: str, stopwords: Set[str]) -> List[List[str]]:
+    """Split ``text`` into contiguous runs of >=3-char non-stopword/non-noise alphabetic tokens."""
+    runs: List[List[str]] = []
+    cur: List[str] = []
+    for raw_tok in re.findall(r"[a-z]+|[^\s\w]+|\d+", (text or "").lower()):
+        if raw_tok.isalpha() and len(raw_tok) >= 3 and raw_tok not in stopwords and raw_tok not in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS:
+            cur.append(raw_tok)
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return runs
 
 
 def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -> bool:
@@ -1329,27 +1346,27 @@ def discover_dynamic_terms_from_headlines(
             eff_stems.discard("strike")
         if word_set & _NON_CRISIS_ATTACK_CONTEXT_WORDS:
             eff_stems.discard("attack")
-        tokens = [tok for tok in all_words if tok not in stopwords]
-        if len(tokens) < 2:
-            continue
-        stem_flags = [_token_matches_crisis_stem(tok, eff_stems) for tok in tokens]
-        if not any(stem_flags):
-            continue
         src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
         article_key = canon_url or norm_title
-        for i in range(len(tokens) - 1):
-            if not any(stem_flags[max(0, i - 1) : min(len(tokens), i + 3)]):
+        for tokens in _extract_contiguous_token_runs(norm_title, stopwords):
+            if len(tokens) < 2:
                 continue
-            bigram = f"{tokens[i]} {tokens[i + 1]}"
-            if _is_noise_dynamic_keyword(bigram, stopwords):
+            stem_flags = [_token_matches_crisis_stem(tok, eff_stems) for tok in tokens]
+            if not any(stem_flags):
                 continue
-            if stem_flags[i] or stem_flags[i + 1]:
-                phrase_has_direct_stem[bigram] = True
-            seen_articles = phrase_headlines.setdefault(bigram, set())
-            if article_key not in seen_articles:
-                seen_articles.add(article_key)
-                phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
-            phrase_sources.setdefault(bigram, set()).add(src_key)
+            for i in range(len(tokens) - 1):
+                if not any(stem_flags[max(0, i - 1) : min(len(tokens), i + 3)]):
+                    continue
+                bigram = f"{tokens[i]} {tokens[i + 1]}"
+                if _is_noise_dynamic_keyword(bigram, stopwords):
+                    continue
+                if stem_flags[i] or stem_flags[i + 1]:
+                    phrase_has_direct_stem[bigram] = True
+                seen_articles = phrase_headlines.setdefault(bigram, set())
+                if article_key not in seen_articles:
+                    seen_articles.add(article_key)
+                    phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
+                phrase_sources.setdefault(bigram, set()).add(src_key)
 
     discovered = [
         phrase
@@ -1377,12 +1394,12 @@ def record_dynamic_crisis_terms_from_assessment(
     crisis_stems, stopwords = _get_crisis_stems_set(), _get_stopwords_set()
     extracted: List[str] = []
     for text in (str(summary or ""), *(str(r or "") for r in (key_risks or ()))):
-        tokens = [tok for tok in re.findall(r"[a-zA-Z]{3,}", text.lower()) if tok not in stopwords]
-        for w1, w2 in zip(tokens, tokens[1:]):
-            if any(_token_matches_crisis_stem(w, crisis_stems) for w in (w1, w2)):
-                bg = f"{w1} {w2}"
-                if not _is_noise_dynamic_keyword(bg, stopwords) and bg not in extracted:
-                    extracted.append(bg)
+        for tokens in _extract_contiguous_token_runs(text, stopwords):
+            for w1, w2 in zip(tokens, tokens[1:]):
+                if any(_token_matches_crisis_stem(w, crisis_stems) for w in (w1, w2)):
+                    bg = f"{w1} {w2}"
+                    if not _is_noise_dynamic_keyword(bg, stopwords) and bg not in extracted:
+                        extracted.append(bg)
     if extracted:
         update_dynamic_lexicon(
             extracted,
