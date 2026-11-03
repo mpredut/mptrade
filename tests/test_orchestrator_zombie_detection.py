@@ -302,6 +302,29 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("iran qeshm", saved["entries"])
             self.assertIn("iran war", saved["entries"])
 
+    async def test_reload_runtime_modules_and_manifest_refreshes_bots_and_removes_stale_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = os.path.join(tmp, "procs.conf")
+            with open(conf, "w", encoding="utf-8") as f:
+                f.write(
+                    "order_retry_worker.py|$ROOT|source $ROOT/$VENV/bin/activate && python order_retry_worker.py >> logs/order_retry.log 2>&1|order_retry|cachedb/system/heartbeat/order_retry.heartbeat|300|fleet\n"
+                )
+            self.manager.bots = [
+                {"name": "order_retry", "hb_files": ["cachedb/system/heartbeat/order_retry.heartbeat", "logs/order_retry.log"]},
+                {"name": "removed_bot", "hb_files": []},
+            ]
+            self.manager.processes["removed_bot"] = MagicMock()
+            self.manager.stop_bot = AsyncMock()
+            with patch("orchestratorTrade.orchestrator.ROOT_DIR", tmp):
+                await self.manager._reload_runtime_modules_and_manifest()
+            self.manager.stop_bot.assert_awaited_once_with("removed_bot")
+            self.assertNotIn("removed_bot", self.manager.processes)
+            self.assertEqual(len(self.manager.bots), 1)
+            self.assertEqual(
+                self.manager.bots[0]["hb_files"],
+                [os.path.join(tmp, "cachedb/system/heartbeat/order_retry.heartbeat")],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

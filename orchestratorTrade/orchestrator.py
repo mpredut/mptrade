@@ -311,19 +311,47 @@ class BotManager:
                 return hashlib.md5(head_bytes + b"\n" + packed_bytes).hexdigest()
         return head_str
 
+    async def _reload_runtime_modules_and_manifest(self) -> None:
+        global evaluate_heartbeat_files_freshness, parse_procs_manifest
+        try:
+            import importlib
+            import orchestratorOS.lib.technical_repair_ssot as _trs
+            importlib.reload(botcore)
+            importlib.reload(_trs)
+            evaluate_heartbeat_files_freshness = _trs.evaluate_heartbeat_files_freshness
+            parse_procs_manifest = _trs.parse_procs_manifest
+        except Exception as exc:
+            logging.warning(f"Could not reload runtime heartbeat modules: {exc}")
+        new_bots = self.parse_procs_conf()
+        if new_bots:
+            old_names = {b["name"] for b in self.bots}
+            self.bots = new_bots
+            new_names = {b["name"] for b in self.bots}
+            # Cleanly terminate bots removed from manifest
+            for removed in (old_names - new_names):
+                logging.info(f"Bot {removed} was removed from manifest. Stopping...")
+                await self.stop_bot(removed)
+                self.processes.pop(removed, None)
+
     async def _hot_reload_loop(self):
-        """Watches config files and git HEAD for changes to trigger restarts."""
+        """Watches config files, core supervisor modules, and git HEAD for changes to trigger restarts."""
         config_path = os.path.join(ROOT_DIR, "config.env")
         procs_path = os.path.join(ROOT_DIR, "procs.conf")
         instruments_path = os.path.join(ROOT_DIR, "instruments.conf")
         order_guard_path = os.path.join(ROOT_DIR, "order_guard.conf")
         macro_conf_path = os.path.join(ROOT_DIR, "macro_intelligence.conf")
+        self_path = os.path.abspath(__file__)
+        botcore_path = os.path.join(ROOT_DIR, "botcore.py")
+        trs_path = os.path.join(ROOT_DIR, "orchestratorOS", "lib", "technical_repair_ssot.py")
         hashes = {
             config_path: self._hash_file(config_path),
             procs_path: self._hash_file(procs_path),
             instruments_path: self._hash_file(instruments_path),
             order_guard_path: self._hash_file(order_guard_path),
             macro_conf_path: self._hash_file(macro_conf_path),
+            self_path: self._hash_file(self_path),
+            botcore_path: self._hash_file(botcore_path),
+            trs_path: self._hash_file(trs_path),
         }
         last_git_head = self._git_head_signature()
 
@@ -333,7 +361,7 @@ class BotManager:
             for path in list(hashes.keys()):
                 curr = self._hash_file(path)
                 if curr and curr != hashes[path]:
-                    logging.warning(f"Config {path} changed! Applying reload...")
+                    logging.warning(f"Config/module {path} changed! Applying reload...")
                     hashes[path] = curr
                     changed_paths.append(path)
 
@@ -348,17 +376,12 @@ class BotManager:
             if not changed_paths:
                 continue
 
-            if procs_path in changed_paths:
-                new_bots = self.parse_procs_conf()
-                if new_bots:
-                    old_names = {b["name"] for b in self.bots}
-                    self.bots = new_bots
-                    new_names = {b["name"] for b in self.bots}
-                    # Cleanly terminate bots removed from manifest
-                    for removed in (old_names - new_names):
-                        logging.info(f"Bot {removed} was removed from manifest. Stopping...")
-                        await self.stop_bot(removed)
-                        self.processes.pop(removed, None)
+            if self_path in changed_paths and os.environ.get("INVOCATION_ID"):
+                logging.warning("Orchestrator source changed under systemd; shutting down for clean service restart...")
+                await self.shutdown()
+                return
+
+            await self._reload_runtime_modules_and_manifest()
 
             for name in list(self.processes.keys()):
                 await self.restart_bot(name)
