@@ -429,6 +429,10 @@ def ws_loop(client):
                     try:
                         _merge_rest_into(client, cache)
                         last_rest_sync_ms[0] = now_ms
+                        log(
+                            f"[kraken_cache][ws] {sum(len(v) for v in cache['items'].values())} fills "
+                            f"for {list(cache['items'].keys())}"
+                        )
                     except Exception as e:
                         log(f"[kraken_cache][ws] periodic REST Ledgers sync failed: {e}")
                 _touch_ws_fetchtimes(cache, now_ms)
