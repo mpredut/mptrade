@@ -529,9 +529,14 @@ class Instrument:
                         cm.get_short_trend_manager(), side_u, self.symbol,
                         short_trend_cls=cm.CacheShortTrendManager
                     ):
+                        retry_note = (
+                            "caller owns retry"
+                            if caller_owns_retry
+                            else "the intent stays queued for retry"
+                        )
                         print(
                             f"[{self.symbol}] {side_u} deferred by trend; "
-                            "placement does not wait, the intent stays queued for retry")
+                            f"placement does not wait, {retry_note}")
                         reason = "trend_deferred"
                         return None
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.

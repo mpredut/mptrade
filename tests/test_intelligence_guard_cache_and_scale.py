@@ -15538,6 +15538,7 @@ def test_iteration158_monitortrades_tradeall_rtrade_hygiene(monkeypatch, tmp_pat
 
 
 def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
+    from types import SimpleNamespace
     import monitororder as mo
     from binance_api import bapi, bapi_placeorder, bapi_allorders, order_id_context as rc
 
@@ -15558,21 +15559,23 @@ def test_iteration159_monitororder_and_binance_api_hygiene(monkeypatch):
     assert mo._safe_pos_float(True) == 0.0
 
     # 3. bapi: cancel_order, check_order_filled, and get_open_orders reject "0"/negative orderIds and parse bool flags
-    monkeypatch.setattr(bapi.client, "cancel_order", lambda **kw: (_ for _ in ()).throw(AssertionError("should not call cancel")))
+    monkeypatch.setattr(
+        bapi,
+        "client",
+        SimpleNamespace(
+            cancel_order=lambda **kw: (_ for _ in ()).throw(AssertionError("should not call cancel")),
+            get_open_orders=lambda symbol: [
+                {"orderId": 0, "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+                {"orderId": "0.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
+                {"orderId": "777.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000, "clientOrderId": "None"},
+            ],
+        ),
+    )
     assert bapi.cancel_order("BTCUSDC", 0) is False
     assert bapi.cancel_order("BTCUSDC", "0.0") is False
     assert bapi.cancel_order("BTCUSDC", -5) is False
     assert bapi.check_order_filled("0", "BTCUSDC") is False
 
-    monkeypatch.setattr(
-        bapi.client,
-        "get_open_orders",
-        lambda symbol: [
-            {"orderId": 0, "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
-            {"orderId": "0.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000},
-            {"orderId": "777.0", "side": "BUY", "price": "60000", "origQty": "0.01", "executedQty": "0", "time": 1000, "clientOrderId": "None"},
-        ],
-    )
     open_map = bapi.get_open_orders("BUY", "BTCUSDC", strict="false")
     assert list(open_map.keys()) == ["777"]
     assert open_map["777"]["clientOrderId"] == ""

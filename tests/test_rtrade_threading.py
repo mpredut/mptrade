@@ -1352,6 +1352,64 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertEqual(venue_dispatches, [], "Surviving leg must abort before dispatching to venue")
         self.assertFalse(bot._round_placed_order)
 
+    def test_run_pair_aborts_surviving_leg_on_balance_or_filter_refusals(self):
+        for refusal in (
+            "balance_unavailable",
+            "insufficient_funds",
+            "binance_filter_refused:quantity 0.0001 violates [0.0010, 9000.0]",
+            "daily_limit",
+            "medium_trend_qty_zero",
+        ):
+            with self.subTest(refusal=refusal):
+                bot = _bot()
+                venue_dispatches = []
+                sell_reached_abort_check = threading.Event()
+
+                def fake_place(symbol, side, price, qty, **kwargs):
+                    ctx = kwargs.get("_outcome_context")
+                    abort_if = kwargs.get("abort_if")
+                    if side == "BUY":
+                        sell_reached_abort_check.wait(timeout=1.0)
+                        if isinstance(ctx, dict):
+                            ctx["reason"] = refusal
+                        return None
+                    sell_reached_abort_check.set()
+                    if callable(abort_if) and abort_if():
+                        if isinstance(ctx, dict):
+                            ctx["reason"] = "aborted_by_caller"
+                        return None
+                    venue_dispatches.append((side, price, qty))
+                    return {"orderId": 42, "price": str(price)}
+
+                with patch.object(rtrade.api, "get_current_price", return_value=100.0), \
+                     patch.object(rtrade.mkt, "place", side_effect=fake_place), \
+                     patch.object(rtrade.time, "sleep") as mock_sleep:
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        buy_res, sell_res = bot._run_pair(executor, 100.0)
+
+                self.assertIsNone(buy_res)
+                self.assertIsNone(sell_res)
+                self.assertEqual(venue_dispatches, [])
+                mock_sleep.assert_not_called()
+
+    def test_live_pair_adapter_marks_insufficient_funds_when_partial_balance_fails_min_filter(self):
+        executor = SimpleNamespace(free_balance=lambda _asset: 0.05)
+
+        def refuse_min(*_args, **kwargs):
+            kwargs["_outcome_context"].update(
+                accepted=False, reason="below_min_notional", state="refused"
+            )
+            return None
+
+        with patch.object(rtrade.mkt, "provider_name_for", return_value="Binance"), \
+             patch.object(rtrade.mkt, "provider_by_name", return_value=executor), \
+             patch.object(rtrade.mkt, "place", side_effect=refuse_min):
+            venue = rtrade._LivePairVenue("TAOUSDC")
+            ticket = venue.place_limit("BUY", 100.0, 1.0, "pair-buy")
+
+        self.assertIsNone(ticket)
+        self.assertEqual(venue.last_place_failure_reason("BUY"), "buy_insufficient_funds:USDC")
+
     def test_run_pair_exits_unfilled_trend_deferred_without_retry(self):
         bot = _bot()
         calls = {"BUY": 0, "SELL": 0}

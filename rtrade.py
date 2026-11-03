@@ -38,6 +38,7 @@ from market_regime import MarketRegimeDecision
 from order_retry import (
     StrategyExecutorLifecycleApi,
     TrackedOrderLifecycle,
+    is_terminal_filter_refusal,
     propagate_submission_refusal,
     resolve_accepted_order,
 )
@@ -575,7 +576,14 @@ class _LivePairVenue:
         ticket, _pending = self._submit_limit_intent(
             side, price, qty, pair_id, cache_permit=cache_permit, revision=revision
         )
-        if ticket is None and _pending.get("refusal_reason"):
+        refusal = _pending.get("refusal_reason")
+        if ticket is None and refusal:
+            if refusal in {"insufficient_funds", "balance_unavailable"} or (
+                (refusal == "below_min_notional" or is_terminal_filter_refusal(refusal))
+                and available_qty is not None
+                and float(available_qty) < float(qty)
+            ):
+                self._last_place_failures[side] = f"{side.lower()}_insufficient_funds:{required_asset or 'UNKNOWN'}"
             return None
         if ticket is None and self.pair_store is not None:
             self._mark_recovery_pending(pair_id, side)
@@ -879,15 +887,31 @@ def _followup_force(symbol, side):
     return True
 
 
-_TERMINAL_UNFILLED_REFUSALS = frozenset({
+_TERMINAL_QTY_OR_LIMIT_REFUSALS = frozenset({
     "qty_zero_after_weight",
     "qty_zero_after_policy",
     "below_min_notional",
+    "insufficient_funds",
+    "balance_unavailable",
+    "medium_trend_qty_zero",
+    "daily_limit",
+})
+
+_TERMINAL_UNFILLED_REFUSALS = _TERMINAL_QTY_OR_LIMIT_REFUSALS | frozenset({
     "profit_guard",
     "trend_deferred",
     "medium_trend_deferred",
     "aborted_by_caller",
 })
+
+
+def _is_terminal_unfilled_refusal(refusal_reason) -> bool:
+    if not refusal_reason:
+        return False
+    return (
+        refusal_reason in _TERMINAL_UNFILLED_REFUSALS
+        or is_terminal_filter_refusal(refusal_reason)
+    )
 
 
 def _validate_coordinator_config() -> None:
@@ -1039,7 +1063,7 @@ class TradingBot:
     def _should_exit_on_legacy_refusal(
         self, side: str, opp_side: str, is_buy: bool, is_opp_filled, refusal_reason
     ) -> bool:
-        if refusal_reason in {"qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional"}:
+        if refusal_reason in _TERMINAL_QTY_OR_LIMIT_REFUSALS or is_terminal_filter_refusal(refusal_reason):
             print(f"[{self.symbol}] 24h limit reached ({side}: {refusal_reason}) — exiting without retry")
             return True
         if refusal_reason == "profit_guard" and (is_buy or not is_opp_filled()):
@@ -1149,7 +1173,7 @@ class TradingBot:
                 if placed_order is None:
                     refusal_reason = outcome_context.get("reason")
                     self._finish_side_precheck(
-                        side, aborted=bool(refusal_reason in _TERMINAL_UNFILLED_REFUSALS and not is_opp_filled())
+                        side, aborted=bool(_is_terminal_unfilled_refusal(refusal_reason) and not is_opp_filled())
                     )
                     if self._should_exit_on_legacy_refusal(side, opp_side, is_buy, is_opp_filled, refusal_reason):
                         return _complete_followup()
