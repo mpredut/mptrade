@@ -1733,5 +1733,114 @@ def test_flat_cycle_clears_tactical_avg_and_semantic_stem_and_macro_analyzer_wha
     assert "btc_whale_flow_regime_flip" in res["advisor_interval_reason"]
 
 
+def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tmp_path):
+    from datetime import datetime, timezone
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsHeadline
+    from orchestratorOS.lib.technical_repair_ssot import apply_code_patch_safely, apply_reconciliation_plan
+    from orchestratorOS.supervisor.prompt_formatters import _format_tradable_position_line
+
+    # 1a. apply_reconciliation_plan must reject missing/None replace_block instead of coercing to ""
+    called_patches = []
+    plan_missing_replace = {
+        "code_remediation": {
+            "has_fix": True,
+            "target_file": "botcore.py",
+            "search_block": "OLD_CODE = 1",
+            "replace_block": None,
+            "rationale": "malformed patch without replace_block",
+        }
+    }
+    changed, passed = apply_reconciliation_plan(
+        plan_missing_replace,
+        str(tmp_path),
+        is_enforce=True,
+        execute_action_fn=lambda a: False,
+        apply_patch_fn=lambda **kw: (called_patches.append(kw) or True),
+    )
+    assert changed is False
+    assert passed is None
+    assert called_patches == []
+
+    # 1b. apply_code_patch_safely must refuse ambiguous non-unique search_block matches
+    target_py = tmp_path / "botcore.py"
+    orig_text = "x = 1\ny = 2\nx = 1\n"
+    target_py.write_text(orig_text, encoding="utf-8")
+    assert (
+        apply_code_patch_safely(
+            target_file=str(target_py),
+            search_block="x = 1",
+            replace_block="x = 99",
+            rationale="ambiguous block",
+            workspace_dir=str(tmp_path),
+        )
+        is False
+    )
+    assert target_py.read_text(encoding="utf-8") == orig_text
+
+    # 2. NewsFeedCollector._aggregate deduplicates pre-existing semantic duplicates in _aggregated_pool
+    collector = NewsFeedCollector(history_file=str(tmp_path / "news_feed_collect.json"))
+    now_ts = float(datetime(2026, 11, 3, 10, 10, 0, tzinfo=timezone.utc).timestamp())
+    h1 = NewsHeadline(
+        title="Iran launches massive missile attack on Israel",
+        source="Reuters",
+        pub_date="Tue, 03 Nov 2026 10:00:00 GMT",
+        url="https://example.com/reuters-1",
+        matched_keywords=("missile", "attack"),
+        is_high_severity=True,
+    )
+    h2 = NewsHeadline(
+        title="Iran launches massive missile attacks against Israel - Bloomberg",
+        source="Bloomberg",
+        pub_date="Tue, 03 Nov 2026 10:05:00 GMT",
+        url="https://example.com/bloomberg-2",
+        matched_keywords=("missile", "attack", "war"),
+        is_high_severity=True,
+    )
+    collector._aggregated_pool = {
+        "iran launches massive missile attack on israel": (now_ts - 300.0, h1),
+        "iran launches massive missile attacks against israel": (now_ts - 120.0, h2),
+    }
+    snap = collector._aggregate([], now=now_ts)
+    assert len(collector._aggregated_pool) == 1
+    assert len(snap.headlines) == 1
+    assert "war" in snap.headlines[0].matched_keywords
+
+    # 3. _format_tradable_position_line computes fallback pct or omits None% suffix
+    line_with_px = _format_tradable_position_line(
+        {
+            "venue": "kraken",
+            "symbol": "BTCUSD",
+            "base": "BTC",
+            "quote": "USD",
+            "price": 105.0,
+            "free_base": 1.0,
+            "value_usd": 105.0,
+            "free_quote": 500.0,
+            "active_avg_buy_px": 100.0,
+            "pnl_vs_avg_pct": None,
+        }
+    )
+    assert "avg_buy_px=100.0 (pnl_vs_avg=5.0%)" in line_with_px
+    assert "None%" not in line_with_px
+
+    line_without_px = _format_tradable_position_line(
+        {
+            "venue": "kraken",
+            "symbol": "BTCUSD",
+            "base": "BTC",
+            "quote": "USD",
+            "price": None,
+            "free_base": 1.0,
+            "value_usd": None,
+            "free_quote": 500.0,
+            "active_avg_buy_px": 100.0,
+            "pnl_vs_avg_pct": None,
+        }
+    )
+    assert "avg_buy_px=100.0" in line_without_px
+    assert "None%" not in line_without_px
+
+
+
 
 

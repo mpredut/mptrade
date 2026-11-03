@@ -730,6 +730,7 @@ def _format_microstructure_section(
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
     """Format a single tradable position line for Section 3C."""
     t_extra = ""
+    px_f = _parse_finite_float(pos.get("price"), 0.0)
     for px_k, lbl, pct_lbl, pct_k, dedup_k in (
         ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", None),
         ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", "active_avg_buy_px"),
@@ -740,7 +741,15 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", None),
     ):
         if pos.get(px_k) is not None and (dedup_k is None or pos.get(px_k) != pos.get(dedup_k)):
-            t_extra += f", {lbl}={pos.get(px_k)} ({pct_lbl}={pos.get(pct_k)}%)"
+            pct_val = pos.get(pct_k)
+            if pct_val is None and px_f > 0.0:
+                anchor_f = _parse_finite_float(pos.get(px_k), 0.0)
+                if anchor_f > 0.0:
+                    if px_k == "trailing_peak" and anchor_f < px_f:
+                        anchor_f = px_f
+                    pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2)
+            pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
+            t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
         t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
     venue = pos.get("venue")

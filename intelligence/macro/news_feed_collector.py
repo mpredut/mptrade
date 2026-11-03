@@ -472,6 +472,16 @@ class NewsFeedCollector:
                         cleaned_pool[prev_k] = (merged_ts, prev_h)
                         self._seen_first_ts[prev_k] = min(self._seen_first_ts.get(prev_k, merged_ts), merged_ts)
                     continue
+                sem_k = self._find_semantic_duplicate_key(getattr(h_item, "title", ""), cleaned_pool)
+                if sem_k is not None:
+                    prev_ts, prev_h = cleaned_pool[sem_k]
+                    merged_ts, merged_h = self._merge_same_norm_headlines(h_item, eff_ts, prev_h, prev_ts)
+                    cleaned_pool[sem_k] = (merged_ts, merged_h)
+                    self._seen_first_ts[sem_k] = min(self._seen_first_ts.get(sem_k, merged_ts), merged_ts)
+                    self._seen_first_ts[k] = min(self._seen_first_ts.get(k, merged_ts), merged_ts)
+                    if canon_url:
+                        url_to_key.setdefault(canon_url, sem_k)
+                    continue
                 if canon_url:
                     url_to_key[canon_url] = k
                 cleaned_pool[k] = (eff_ts, h_item)
@@ -583,6 +593,10 @@ class NewsFeedCollector:
                     and _strip_headline_publisher_suffix(prev_title) != prev_title.strip()
                 ):
                     deduped_candidates[dup_idx] = item
+                if norm_t:
+                    seen_norms.setdefault(norm_t, dup_idx)
+                if canon_u:
+                    seen_urls.setdefault(canon_u, dup_idx)
                 continue
             idx = len(deduped_candidates)
             deduped_candidates.append(item)

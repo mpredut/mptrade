@@ -856,7 +856,12 @@ def apply_code_patch_safely(
         if log:
             log.warning("%s", err_msg)
         return False
-    if not search_block or search_block == replace_block:
+    if (
+        not isinstance(search_block, str)
+        or not isinstance(replace_block, str)
+        or not search_block
+        or search_block == replace_block
+    ):
         if log:
             log.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
         return False
@@ -864,9 +869,18 @@ def apply_code_patch_safely(
     content: Optional[str] = None
     try:
         content = read_text_file(real_target)
-        if search_block not in content:
+        match_count = content.count(search_block)
+        if match_count == 0:
             if log:
                 log.warning("Search block not found in %s. Skipping patch.", target_file)
+            return False
+        if match_count > 1:
+            if log:
+                log.warning(
+                    "Search block matched %d locations in %s (must be unique). Skipping ambiguous patch.",
+                    match_count,
+                    target_file,
+                )
             return False
 
         atomic_write_text(real_target, content.replace(search_block, replace_block, 1))
@@ -1159,11 +1173,22 @@ def apply_reconciliation_plan(
 
     tests_passed: Optional[bool] = None
     has_fix = _parse_bool_flag(code_fix.get("has_fix"), False)
-    raw_target_file, raw_search_block = code_fix.get("target_file"), code_fix.get("search_block")
-    if has_fix and isinstance(raw_target_file, str) and raw_target_file.strip() and isinstance(raw_search_block, str) and raw_search_block:
+    raw_target_file, raw_search_block, raw_replace_block = (
+        code_fix.get("target_file"),
+        code_fix.get("search_block"),
+        code_fix.get("replace_block"),
+    )
+    if (
+        has_fix
+        and isinstance(raw_target_file, str)
+        and raw_target_file.strip()
+        and isinstance(raw_search_block, str)
+        and raw_search_block
+        and isinstance(raw_replace_block, str)
+    ):
         target_file = os.path.join(workspace_dir, raw_target_file.strip())
         rationale = _nonbool_str(code_fix.get("rationale")).strip() or "Autonomous self-heal patch"
-        replace_block = code_fix["replace_block"] if isinstance(code_fix.get("replace_block"), str) else ""
+        replace_block = raw_replace_block
         if not is_enforce:
             if log:
                 log.info("[SHADOW WOULD APPLY] Code patch on %s: %s", target_file, rationale)
