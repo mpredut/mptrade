@@ -433,7 +433,22 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         scale_applied = True
         applied_scale = eff_scale_f
 
-    reason = None if final > 0 else "qty_zero_after_policy"
+    wallet_cap = min(balance_cap, fee_cap)
+    wallet_final = _round_qty(wallet_cap)
+    wallet_constrained = wallet_cap < requested
+    reason = (
+        None
+        if final > 0
+        else (
+            "insufficient_funds"
+            if (
+                wallet_constrained
+                and wallet_final <= 0
+                and (requested == float("inf") or _round_qty(requested) > 0)
+            )
+            else "qty_zero_after_policy"
+        )
+    )
     # Reject a venue-invalid candidate before it can become a durable retry intent.
     # The provider owns exact step, tick, notional, and market-applicability rules.
     refusal = (
@@ -444,6 +459,17 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         if final > 0 else None
     )
     if refusal:
+        if wallet_constrained and (
+            final == wallet_final
+            or (
+                wallet_final > 0
+                and check_order_filter_refusal(
+                    provider, symbol, side, price, wallet_final,
+                    market=market, enforce_business_minimum=enforce_business_minimum,
+                )
+            )
+        ):
+            refusal = "insufficient_funds"
         return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
                                 0.0, refusal, asset,
                                 scale_applied=scale_applied, applied_scale=applied_scale)

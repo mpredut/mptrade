@@ -203,6 +203,7 @@ class TrackedOrderLifecycle:
         self.max_age_seconds = max_age_seconds
         self.audit = audit
         self.clock = clock
+        self._last_refusal_by_intent: dict[tuple[str, str, str, str], str] = {}
 
     def _now(self) -> float:
         now = _lifecycle_finite(self.clock(), positive=True)
@@ -329,15 +330,26 @@ class TrackedOrderLifecycle:
         pending = dict(intent)
         self._validate_identity(pending)
         persist(dict(pending))
-        self._audit("submit_requested", pending, qty=pending["requested_qty"], price=pending.get("requested_price"))
+        refusal_key = (
+            str(pending.get("intent_id") or ""),
+            str(pending.get("symbol") or ""),
+            str(pending.get("side") or ""),
+            str(pending.get("kind") or ""),
+        )
         outcome = capture_submission(submit)
         pending["submission_outcome"] = outcome.state
         if outcome.state == "refused":
             pending["refusal_reason"] = outcome.reason
             pending["submit_status"] = "refused_before_submit"
             persist(dict(pending))
-            self._audit("submit_refused", pending, reason=outcome.reason)
+            reason_str = str(outcome.reason or "")
+            if self._last_refusal_by_intent.get(refusal_key) != reason_str:
+                self._last_refusal_by_intent[refusal_key] = reason_str
+                self._audit("submit_requested", pending, qty=pending["requested_qty"], price=pending.get("requested_price"))
+                self._audit("submit_refused", pending, reason=outcome.reason)
             return TrackedOrderResult("refused", pending)
+        self._last_refusal_by_intent.pop(refusal_key, None)
+        self._audit("submit_requested", pending, qty=pending["requested_qty"], price=pending.get("requested_price"))
         if outcome.state == "unknown":
             pending["submit_error"] = outcome.reason
             persist(dict(pending))

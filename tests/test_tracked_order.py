@@ -303,6 +303,36 @@ class TrackedOrderLifecycleTest(unittest.TestCase):
         self.assertIsNone(self.store.value)
         self.assertEqual(self.api.lookup_calls, [])
 
+    def test_repeated_identical_pre_submit_refusals_suppress_duplicate_audit_events(self):
+        audited = []
+        audit = mock.Mock()
+        audit.record.side_effect = lambda ev, **kw: audited.append((ev, kw))
+        lifecycle = TrackedOrderLifecycle(
+            self.api, provider_name="binance", venue="Binance",
+            missing_confirmations=2, max_age_seconds=900,
+            audit=audit, clock=lambda: self.now,
+        )
+        intent = lifecycle.new_intent(
+            intent_id="AGB-tier-1", client_order_id="AGB-tier-1",
+            symbol="ARBUSDC", side="BUY", requested_qty=100.0,
+            requested_price=0.15, kind="ASSET_GUARDIAN_BUY_TIER",
+        )
+        for _ in range(3):
+            res = lifecycle.submit(
+                intent, persist=self.store.persist,
+                submit=lambda: (_ for _ in ()).throw(OrderSubmissionRefused("profit_guard")),
+            )
+            self.assertEqual(res.outcome, "refused")
+        self.assertEqual([e[0] for e in audited], ["submit_requested", "submit_refused"])
+
+        audited.clear()
+        res_ok = lifecycle.submit(
+            intent, persist=self.store.persist,
+            submit=lambda: {"orderId": "55", "status": "NEW", "origQty": "100"},
+        )
+        self.assertEqual(res_ok.outcome, "active")
+        self.assertEqual([e[0] for e in audited], ["submit_requested", "submit_accepted"])
+
 
 if __name__ == "__main__":
     unittest.main()

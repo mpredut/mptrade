@@ -558,6 +558,8 @@ def process_once(mkt, now=None):
             skipped_price += 1
             continue
 
+        prev_failure_reason = str(r.get("last_failure_reason") or "").strip()
+        prev_submission_state = str(r.get("submission_state") or "").strip().lower()
         side_u, age_sec, age_progress, retry_stage = _prepare_retry_placement_kwargs(r, kwargs, provider_name, now)
         outcome_context = {}
         kwargs["_outcome_context"] = outcome_context
@@ -569,12 +571,9 @@ def process_once(mkt, now=None):
         r = dispatch_claim
         kwargs["_retry_claim"] = dispatch_claim
         attempted += 1
+        next_attempt_num = _safe_int(r.get("attempts"), 0) + 1
+        req_qty_before_place = r.get("qty")
         try:
-            _audit_event(
-                r, "submit_requested", qty=r.get("qty"), price=price,
-                attempt=_safe_int(r.get("attempts"), 0) + 1,
-                retry_stage=retry_stage, age_progress=round(age_progress, 3),
-            )
             if retry_stage != "standard":
                 print(
                     f"[order_retry] {side_u} {symbol} retrying under Stage {retry_stage.upper()} "
@@ -600,6 +599,11 @@ def process_once(mkt, now=None):
         if accepted:
             succeeded += 1
             oq.complete_claim(r, "accepted", now, order=order, provider_name=provider_name)
+            _audit_event(
+                r, "submit_requested", qty=req_qty_before_place, price=price,
+                attempt=next_attempt_num,
+                retry_stage=retry_stage, age_progress=round(age_progress, 3),
+            )
             _audit_event(
                 r, "submit_accepted",
                 order_id=oq.order_id_from_response(order), qty=r.get("qty"), price=price,
@@ -627,11 +631,22 @@ def process_once(mkt, now=None):
                 oq.complete_claim(
                     r, "failure", now, failure_reason=refusal_reason, submission_state=submission_state
                 )
-            _audit_event(
-                r, "submit_refused" if submission_state == "refused" else "submit_unknown",
-                qty=r.get("qty"), price=price,
-                submission_state=submission_state, failure_reason=refusal_reason,
+            repeat_pre_submit_refusal = (
+                submission_state == "refused"
+                and prev_submission_state == "refused"
+                and str(refusal_reason) == prev_failure_reason
             )
+            if not repeat_pre_submit_refusal:
+                _audit_event(
+                    r, "submit_requested", qty=req_qty_before_place, price=price,
+                    attempt=next_attempt_num,
+                    retry_stage=retry_stage, age_progress=round(age_progress, 3),
+                )
+                _audit_event(
+                    r, "submit_refused" if submission_state == "refused" else "submit_unknown",
+                    qty=r.get("qty"), price=price,
+                    submission_state=submission_state, failure_reason=refusal_reason,
+                )
 
     return {
         "attempted": attempted,

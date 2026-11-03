@@ -129,6 +129,21 @@ class QuantityDecisionTest(unittest.TestCase):
                 available_qty=5.0)
         self.assertEqual(qty, 2.5)
 
+    def test_partial_wallet_balance_below_min_filter_reports_insufficient_funds(self):
+        provider = Provider({"USDC": 4.65})
+        provider.order_filter_refusal = (
+            lambda _s, _side, px, q, **_kw: "below_min_notional" if q * px < 5.0 else None
+        )
+        decision = decide_quantity(provider, "TAOUSDC", "BUY", 100.0, 3.0)
+        self.assertEqual(decision.final_qty, 0.0)
+        self.assertEqual(decision.refuse_reason, "insufficient_funds")
+
+        provider_sub_step = Provider({"USDC": 0.004})
+        provider_sub_step.round_amount = lambda _s, q: float(int(q * 100) / 100.0)
+        decision_sub = decide_quantity(provider_sub_step, "TAOUSDC", "BUY", 100.0, 1.0)
+        self.assertEqual(decision_sub.final_qty, 0.0)
+        self.assertEqual(decision_sub.refuse_reason, "insufficient_funds")
+
 
 if __name__ == "__main__":
     unittest.main()

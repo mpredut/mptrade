@@ -666,7 +666,7 @@ class Instrument:
                     prequeued_claim.get("place_kwargs") or {}).get("client_order_id")
                 prequeued_intent_id = prequeued_claim.get("intent_id")
 
-            if prequeued_intent_id:
+            if prequeued_intent_id and not caller_owns_retry:
                 _EXECUTION_AUDIT.record(
                     "submit_requested", intent_id=prequeued_intent_id,
                     venue=self.provider_name, symbol=self.symbol,

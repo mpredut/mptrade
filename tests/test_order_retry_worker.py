@@ -1512,6 +1512,61 @@ class ProcessOnceTest(unittest.TestCase):
             deferred_events = [e for e in audit_events if e[0] == "reconciliation_deferred"]
             self.assertEqual(len(deferred_events), 1)
 
+    def test_repeated_pre_submit_refusals_do_not_duplicate_audit_events_and_retain_until_ttl(self):
+        audit_events = []
+        with patch.object(worker._AUDIT, "record", side_effect=lambda ev, **kw: audit_events.append((ev, kw))):
+            rec_id = oq.enqueue(
+                "HYPEUSD",
+                "BUY",
+                5.0,
+                {"client_order_id": "22f77eb2dc47451cbd1d08098796b329"},
+                requested_price=80.0,
+                ref_price=80.0,
+                failure_reason="insufficient_funds",
+                provider_name="kraken",
+                intent_id="intent_wait_funds_1",
+                kind="LIMIT",
+                now=1000.0,
+                ttl_sec=3600.0,
+            )
+
+            class _InsufficientFundsMkt:
+                def get_current_price(self, _sym, **_kw):
+                    return 80.0
+
+                def place(self, _sym, _side, _px, _qty, **kwargs):
+                    ctx = kwargs.get("_outcome_context")
+                    if isinstance(ctx, dict):
+                        ctx.update(accepted=False, reason="insufficient_funds", state="refused")
+                    return None
+
+            mkt = _InsufficientFundsMkt()
+            # First retry transitions submission_state to "refused" with reason="insufficient_funds" -> audited once
+            res1 = worker.process_once(mkt, now=1400.0)
+            self.assertEqual(res1["remaining"], 1)
+            self.assertEqual([e[0] for e in audit_events], ["submit_requested", "submit_refused"])
+
+            # Subsequent retries with the same pre-submit refusal reason keep the record until TTL without audit spam
+            audit_events.clear()
+            res2 = worker.process_once(mkt, now=1800.0)
+            res3 = worker.process_once(mkt, now=2200.0)
+            self.assertEqual(res2["remaining"], 1)
+            self.assertEqual(res3["remaining"], 1)
+            self.assertEqual(audit_events, [])
+
+            # Once funds appear before TTL, order is accepted and audited
+            class _FundedMkt(_InsufficientFundsMkt):
+                def place(self, _sym, _side, _px, _qty, **kwargs):
+                    ctx = kwargs.get("_outcome_context")
+                    if isinstance(ctx, dict):
+                        ctx.update(accepted=True, reason=None, state="accepted")
+                    return {"orderId": "OOK-FUNDED-1"}
+
+            res4 = worker.process_once(_FundedMkt(), now=2600.0)
+            self.assertEqual(res4["succeeded"], 1)
+            self.assertEqual([e[0] for e in audit_events], ["submit_requested", "submit_accepted"])
+            self.assertIsNotNone(oq.get(rec_id))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
