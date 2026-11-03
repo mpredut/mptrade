@@ -1936,3 +1936,119 @@ def test_telemetry_deep_bug_hunt_fixes_a_through_g():
     )
     assert "HYPEUSDC (sibling venue: HYPEUSD=$85.12 [+0.4bps]): Price=$85.1165" in lines_3a
 
+
+def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_path):
+    import os
+    from datetime import datetime, timezone
+    from intelligence.macro_sentiment_ssot import (
+        parse_live_macro_release_surprises,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import compute_deribit_options_surface
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _infer_symbol_venue_and_fees_bps,
+        compute_enterprise_portfolio_risk_metrics,
+        harvest_recent_orders_and_enrich_positions,
+        sync_sibling_symbol_telemetry,
+    )
+
+    # 1. parse_live_macro_release_surprises ignores 'at 08:30' and 'flat 0.2%' while matching 'Est. 3.1%' / 'Prev. 3.2%'
+    surprises = parse_live_macro_release_surprises(
+        [
+            "US CPI released at 08:30 ET: Actual 3.4% vs Est. 3.1%, Prev. 3.2%",
+            "US PPI stays flat 0.2% vs Est. 0.3% in October report",
+        ]
+    )
+    assert len(surprises) == 1
+    assert surprises[0]["event"] == "US CPI"
+    assert surprises[0]["actual"] == "3.4%"
+    assert surprises[0]["consensus"] == "3.1%"
+    assert surprises[0]["prior"] == "3.2%"
+    assert surprises[0]["stance"] == "HAWKISH_HEADWIND"
+
+    # 2. Non-FOMC day with CPI headline does not mislabel 21:00 EET window as FOMC Rate Decision
+    # 2026-11-04 18:30 UTC = 20:30 EET (30m before 21:00 EET window, not an FOMC date)
+    non_fomc_ts = datetime(2026, 11, 4, 18, 30, 0, tzinfo=timezone.utc).timestamp()
+    cal = resolve_macro_economic_calendar(now_ts=non_fomc_ts, breaking_news=["US CPI inflation rises 3.4%"])
+    assert "FOMC Rate Decision" not in (cal.get("next_event") or "")
+
+    # 3. _infer_symbol_venue_and_fees_bps & sync_sibling_symbol_telemetry skip same-venue TAOUSDT and pair TAOUSDC with Kraken TAOUSD
+    assert _infer_symbol_venue_and_fees_bps("TAOUSDT", {})[0] == "binance"
+    assert _infer_symbol_venue_and_fees_bps("BTCEUR", {})[0] == "kraken"
+    prices_map = {
+        "TAOUSDC": {"price": 400.0},
+        "TAOUSDT": {"price": 400.1},
+        "TAOUSD": {"price": 402.0},
+    }
+    micro_map = {
+        "TAOUSDC": {"ob_mid_price": 400.0, "spread_bps": 2.0},
+        "TAOUSDT": {"ob_mid_price": 400.1, "spread_bps": 2.0},
+        "TAOUSD": {"ob_mid_price": 402.0, "spread_bps": 4.0},
+    }
+    sync_sibling_symbol_telemetry(prices_map, micro_map)
+    assert micro_map["TAOUSDC"]["cross_venue_peer"] == "TAOUSD"
+    assert micro_map["TAOUSDC"]["best_buy_venue"] == "binance:TAOUSDC"
+    assert micro_map["TAOUSDC"]["best_sell_venue"] == "kraken:TAOUSD"
+
+    # 4. cyc_flat clears swing_subcycle_avg_px, pnl_vs_swing_avg_pct, and open_lots
+    pos = {
+        "venue": "kraken",
+        "symbol": "TAOUSD",
+        "quote": "USD",
+        "free_base": 0.0,
+        "free_quote": 500.0,
+        "price": 225.0,
+        "exchange_min_notional_usd": 10.0,
+    }
+    krk_cycles = {"TAOUSD": {"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None}}
+    fake_files = {
+        "cache_trade_kraken.json": {
+            "items": {
+                "TAOUSD": [
+                    {"side": "BUY", "price": 240.0, "qty": 2.0, "executedQty": 2.0, "timestamp": 1000, "status": "FILLED"},
+                ]
+            }
+        }
+    }
+    ro_out = harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        [pos],
+        {"TAOUSD": {"price": 225.0}},
+        krk_cycles,
+        {},
+        {},
+        read_json_fn=lambda p: fake_files.get(os.path.basename(p), {}),
+    )
+    assert "swing_subcycle_avg_px" not in pos
+    assert "pnl_vs_swing_avg_pct" not in pos
+    assert "open_lots" not in pos
+    assert "swing_subcycle_avg_px" not in ro_out.get("TAOUSD", {})
+    assert "open_lots" not in ro_out.get("TAOUSD", {})
+
+    # 5. compute_enterprise_portfolio_risk_metrics falls back to last_buy/last_sell when recent_buys/recent_sells omitted
+    risk = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [{"venue": "kraken", "symbol": "BTCUSD", "value_usd": 500.0, "free_quote": 500.0, "quote": "USD"}],
+            "venue_quote_cash": {"kraken:USD": {"venue": "kraken", "free": 500.0}},
+            "recent_orders": {"BTCUSD": {"last_buy": {"price": 100000.0, "qty": 0.005}}},
+        },
+        {"BTCUSD": {"price": 101000.0, "volatility_1h_pct": 1.0}},
+        {"BTCUSD": {"spread_bps": 2.0}},
+    )
+    assert risk["avg_entry_markout_bps"] == 100.0
+    assert risk["post_trade_win_rate_pct"] == 100.0
+    assert risk["est_recent_fee_drag_usd"] == 1.3  # $500 notional * 26 bps Kraken taker fee = $1.30
+
+    # 6. compute_deribit_options_surface ignores non-C/P instruments when building strike_oi
+    surf = compute_deribit_options_surface(
+        [
+            {"instrument_name": "BTC-28NOV26-90000-C", "open_interest": 100.0, "mark_iv": 52.0, "underlying_price": 90000.0},
+            {"instrument_name": "BTC-28NOV26-90000-P", "open_interest": 80.0, "mark_iv": 54.0, "underlying_price": 90000.0},
+            {"instrument_name": "BTC-28NOV26-91000-F", "open_interest": 9999.0, "mark_iv": 0.0, "underlying_price": 90000.0},
+        ],
+        btc_dvol=50.0,
+        btc_rv=45.0,
+    )
+    assert surf["btc_gamma_pin_strike"] == 90000
+

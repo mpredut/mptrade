@@ -184,11 +184,43 @@ class RTradeHeartbeatTest(unittest.TestCase):
                 ts2 = botcore.touch_module_heartbeat("cacheManager", interval_sec=30.0, now=510.0)
                 self.assertEqual(ts2, 500.0)
 
-                # Harvest includes cacheManager.heartbeat
+                # Subsequent touch without symbols/status retains prior multi-symbol metadata
+                ts3 = botcore.touch_module_heartbeat(
+                    "cacheManager",
+                    interval_sec=30.0,
+                    now=535.0,
+                    symbols=["BTCUSDC"],
+                )
+                self.assertEqual(ts3, 535.0)
+                data_after = json.loads(hb_file.read_text(encoding="utf-8"))
+                self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
+                self.assertEqual(data_after["status"], "alive")
+
+                # Harvest includes cacheManager.heartbeat even up to 1700s age (for xStock-watch 1800s window)
                 mtime = os.path.getmtime(str(hb_file))
-                active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 5.0)
+                active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
                 self.assertIn("cacheManager.heartbeat", active_hb)
                 self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
+
+                # evaluate_heartbeat_files_freshness prioritizes dedicated .heartbeat over quiet .log
+                log_file = Path(tmp) / "Kraken-trailing.log"
+                log_file.write_text("quiet stdout\n", encoding="utf-8")
+                os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
+                fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(
+                    [str(hb_file), str(log_file)],
+                    900.0,
+                    mtime + 30.0,
+                )
+                self.assertTrue(fresh, f"Expected fresh=True when .heartbeat is fresh even if .log is quiet, got {stale_path}")
+                self.assertAlmostEqual(age_s, 30.0, delta=1.0)
+
+                stale_fresh, _, _, stale_reason = botcore.evaluate_heartbeat_files_freshness(
+                    [str(hb_file), str(log_file)],
+                    900.0,
+                    mtime + 950.0,
+                )
+                self.assertFalse(stale_fresh)
+                self.assertIn("cacheManager.heartbeat", stale_reason)
 
 
 if __name__ == "__main__":

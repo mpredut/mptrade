@@ -1862,15 +1862,15 @@ def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -
         if not ev_name:
             continue
         m_act = re.search(
-            r"(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            r"\b(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
             low,
         )
         m_cons = re.search(
-            r"(?:vs\.?|versus|est(?:imate)?|consensus|forecast|exp(?:ected)?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            r"\b(?:(?:vs\.?|versus)\s*(?:est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)?|est(?:imate)?\.?|consensus|forecast|exp(?:ected)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
             low,
         )
         m_prior = re.search(
-            r"(?:prior|prev(?:ious)?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            r"\b(?:prior|prev(?:ious)?\.?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)(?![\d:.])\s*(%|k\b)?",
             low,
         )
         if m_act and m_cons:

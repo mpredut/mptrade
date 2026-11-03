@@ -1461,9 +1461,9 @@ def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[
     sym_u = str(sym or "").strip().upper()
     if sym_u == "HYPEUSDC":
         venue, maker_bps, taker_bps = "hyperliquid", 4.0, 7.0
-    elif sym_u.endswith("USDC"):
+    elif sym_u.endswith(("USDC", "USDT")):
         venue, maker_bps, taker_bps = "binance", 10.0, 10.0
-    elif sym_u.endswith("USD"):
+    elif sym_u.endswith(("USD", "EUR")) or sym_u.startswith(("XX", "XZ")):
         venue, maker_bps, taker_bps = "kraken", 16.0, 26.0
     else:
         venue, maker_bps, taker_bps = "t212", 15.0, 15.0
@@ -1562,10 +1562,24 @@ def sync_sibling_symbol_telemetry(
         own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price"), default=None)
         if own_px and own_px > 0.0 and "USD" in msym_quotes:
             mbase = canonical_base_asset(msym)
-            for peer_sym, peer_m in microstructure.items():
-                if peer_sym == msym or not isinstance(peer_m, dict) or canonical_base_asset(peer_sym) != mbase:
-                    continue
-                if "USD" not in compatible_quote_suffixes(peer_sym):
+            own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
+            peer_candidates = [
+                (peer_sym, peer_m)
+                for peer_sym, peer_m in microstructure.items()
+                if peer_sym != msym
+                and isinstance(peer_m, dict)
+                and canonical_base_asset(peer_sym) == mbase
+                and "USD" in compatible_quote_suffixes(peer_sym)
+            ]
+            peer_candidates.sort(
+                key=lambda kv: (
+                    0 if str(kv[0]).upper().endswith(("USDC", "USD")) else 1,
+                    str(kv[0]).upper(),
+                )
+            )
+            for peer_sym, peer_m in peer_candidates:
+                peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
+                if peer_v == own_v:
                     continue
                 peer_px = (
                     safe_pos_float(peer_m.get("ob_mid_price"), default=None)
@@ -1576,8 +1590,6 @@ def sync_sibling_symbol_telemetry(
                     minfo["cross_venue_peer"] = peer_sym
                     minfo["cross_venue_peer_px"] = peer_px
                     minfo["cross_venue_arb_bps"] = arb_bps
-                    own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
-                    peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
                     own_buy_cost = arb_bps + own_taker + own_hsp
                     peer_buy_cost = peer_taker + peer_hsp
                     net_buy_edge = round(peer_buy_cost - own_buy_cost, 1)
@@ -2093,11 +2105,16 @@ def harvest_recent_orders_and_enrich_positions(
                 if isinstance(ro, dict):
                     ro.pop("active_avg_buy_px", None)
                     ro.pop("tactical_avg_buy_px", None)
+                    ro.pop("swing_subcycle_avg_px", None)
+                    ro.pop("open_lots", None)
                 for _stale_k in (
                     "active_avg_buy_px",
                     "pnl_vs_avg_pct",
                     "tactical_avg_buy_px",
                     "pnl_vs_tactical_avg_pct",
+                    "swing_subcycle_avg_px",
+                    "pnl_vs_swing_avg_pct",
+                    "open_lots",
                     "lowest_buy_px",
                     "pnl_vs_lowest_buy_pct",
                     "trailing_peak",
@@ -2539,14 +2556,26 @@ def compute_enterprise_portfolio_risk_metrics(
         if not isinstance(r_info, dict):
             continue
         lifo_pnl_total += safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
-        for side_list_k, is_buy_side in (("recent_buys", True), ("recent_sells", False)):
-            for tr in (r_info.get(side_list_k) or []):
+        _, _, sym_taker_bps, _ = _infer_symbol_venue_and_fees_bps(
+            r_sym,
+            (microstructure or {}).get(r_sym) if isinstance(microstructure, dict) else {},
+        )
+        fee_rate = (sym_taker_bps / 10000.0) if sym_taker_bps > 0.0 else 0.0010
+        for side_list_k, single_k, is_buy_side in (
+            ("recent_buys", "last_buy", True),
+            ("recent_sells", "last_sell", False),
+        ):
+            side_rows = r_info.get(side_list_k)
+            if not isinstance(side_rows, list) or not side_rows:
+                single_row = r_info.get(single_k)
+                side_rows = [single_row] if isinstance(single_row, dict) else []
+            for tr in side_rows:
                 if isinstance(tr, dict):
                     q_t = safe_pos_float(tr.get("qty"), default=0.0) or 0.0
                     p_t = safe_pos_float(tr.get("price"), default=0.0) or 0.0
                     notional_t = q_t * p_t if (q_t > 0.0 and p_t > 0.0) else 0.0
                     if notional_t > 0.0:
-                        est_fee_drag_usd += notional_t * 0.0010
+                        est_fee_drag_usd += notional_t * fee_rate
                     if (m_bps := safe_float(tr.get("markout_now_bps"), default=None)) is not None:
                         w_t = notional_t if notional_t > 0.0 else 1.0
                         if is_buy_side:

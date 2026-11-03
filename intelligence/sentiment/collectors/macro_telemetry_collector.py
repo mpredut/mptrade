@@ -97,7 +97,7 @@ def compute_deribit_options_surface(
             opt_type = parts[3].strip().upper()
             oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
             iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
-            if strike is None or oi <= 0.0:
+            if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
                 continue
             if opt_type == "C":
                 call_oi += oi

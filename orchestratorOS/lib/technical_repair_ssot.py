@@ -1058,7 +1058,7 @@ def harvest_heartbeats_and_state_files(
                         continue
                     mtime = os.path.getmtime(hb_full)
                     age_sec = max(0.0, now_ts - mtime)
-                    if age_sec > 900.0:
+                    if age_sec > 1800.0:
                         continue
                     data = _rj(hb_full)
                     if isinstance(data, dict) and data:

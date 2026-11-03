@@ -881,15 +881,28 @@ def touch_heartbeat_file(
         return last_ts
     try:
         hb_path = str(path)
-        os.makedirs(os.path.dirname(hb_path), exist_ok=True)
+        hb_dir = os.path.dirname(hb_path)
+        if hb_dir:
+            os.makedirs(hb_dir, exist_ok=True)
         payload = build_heartbeat_payload(
             status,
             symbols=symbols,
             intervals=intervals if intervals is not None else {"heartbeat": interval_sec},
             extra=extra,
         )
-        with open(hb_path, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
+        tmp_path = f"{hb_path}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp_path, hb_path)
+        except OSError:
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+            with open(hb_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
         os.utime(hb_path, None)
     except OSError:
         return last_ts
@@ -898,6 +911,7 @@ def touch_heartbeat_file(
 
 _MODULE_HEARTBEAT_LOCK = threading.Lock()
 _MODULE_HEARTBEAT_LAST_TS: dict[str, float] = {}
+_MODULE_HEARTBEAT_META: dict[str, dict[str, object]] = {}
 
 
 def touch_module_heartbeat(
@@ -931,6 +945,17 @@ def touch_module_heartbeat(
         except Exception:
             hb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cachedb", "system", "heartbeat", fname)
     with _MODULE_HEARTBEAT_LOCK:
+        meta = _MODULE_HEARTBEAT_META.setdefault(hb_path, {})
+        if status is not None:
+            meta["status"] = status
+        if symbols is not None:
+            prev_syms = meta.get("symbols")
+            if not (isinstance(prev_syms, (list, tuple)) and len(prev_syms) > 1 and len(symbols) == 1):
+                meta["symbols"] = list(symbols)
+        if intervals is not None:
+            meta["intervals"] = intervals
+        if extra is not None:
+            meta["extra"] = extra
         prev_ts = _MODULE_HEARTBEAT_LAST_TS.get(hb_path, float("-inf"))
         updated_ts = touch_heartbeat_file(
             hb_path,
@@ -938,10 +963,10 @@ def touch_module_heartbeat(
             interval_sec=interval_sec,
             force=force,
             now=now,
-            status=status,
-            symbols=symbols,
-            intervals=intervals,
-            extra=extra,
+            status=status if status is not None else meta.get("status"),
+            symbols=meta.get("symbols") if symbols is not None or "symbols" in meta else None,  # type: ignore[arg-type]
+            intervals=intervals if intervals is not None else meta.get("intervals"),  # type: ignore[arg-type]
+            extra=extra if extra is not None else meta.get("extra"),  # type: ignore[arg-type]
         )
         _MODULE_HEARTBEAT_LAST_TS[hb_path] = updated_ts
         return updated_ts
@@ -964,11 +989,13 @@ def evaluate_heartbeat_files_freshness(
         from cachepaths import resolve_cachedb_filepath as _resolve_path
     except Exception:
         _resolve_path = str  # type: ignore[assignment]
+    hb_only = [p for p in hb_paths if str(p).strip().endswith(".heartbeat")]
+    effective_paths = hb_only if hb_only else hb_paths
     mtimes: list[float] = []
     missing_any, stale_file, max_stale_duration = False, "", 0.0
     start_ts = fallback_start_ts if fallback_start_ts is not None else now_ts
 
-    for raw_hbp in hb_paths:
+    for raw_hbp in effective_paths:
         hbp = str(_resolve_path(raw_hbp))
         if os.path.exists(hbp):
             try:
