@@ -1094,6 +1094,60 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         analyzer.assess(snap_one_new, now_ts=1_700_017_000.0)
         assert len(calls) == 2
 
+    def test_news_feed_collector_no_resurrection_after_rolling_window_and_pubdate_filtering(self, tmp_path):
+        import email.utils
+        from intelligence.macro_sentiment_ssot import discover_dynamic_terms_from_headlines
+
+        history_file = str(tmp_path / "news_resurrect.json")
+        collector = NewsFeedCollector(
+            cache_ttl_sec=0.0,
+            history_file=history_file,
+            rolling_window_sec=21600.0,
+        )
+        t0 = 1_793_660_000.0
+        fresh_pub = email.utils.formatdate(t0 - 120.0, usegmt=True)
+        stale_25h_pub = email.utils.formatdate(t0 - 90_000.0, usegmt=True)
+        rss_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item>
+    <title>Breaking naval clash near shipping lane</title>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC</source>
+  </item>
+  <item>
+    <title>Yesterday war commentary from archives</title>
+    <pubDate>{stale_25h_pub}</pubDate>
+    <source>France 24</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+
+        snap = NewsFeedCollector.parse_rss_xml(rss_xml, now_ts=t0, cache_dir=str(tmp_path))
+        agg1 = collector._aggregate(snap, now=t0)
+        # Only the fresh headline (< 6h old) enters the rolling pool; the 25h-old pubDate item is excluded
+        assert agg1.total_fetched == 1
+        assert agg1.headlines[0].title == "Breaking naval clash near shipping lane"
+
+        # 6h + 5m later, the first headline ages out and must NOT be resurrected when the RSS feed still serves it
+        agg_expired = collector._aggregate(snap, now=t0 + 21900.0)
+        assert agg_expired.total_fetched == 0
+        agg_next_poll = collector._aggregate(snap, now=t0 + 22020.0)
+        assert agg_next_poll.total_fetched == 0
+
+        # Single-source revised headlines must not discover non-crisis neighbor bigrams like "worse chip"
+        single_source_revisions = [
+            {"title": "The Intel stock collapse is getting worse and the $3.5 trillion chip rout is spreading - Yahoo Finance", "source": "Yahoo Finance"},
+            {"title": "The Intel stock collapse is getting worse and the $3.7 trillion chip rout is spreading - Yahoo Finance", "source": "Yahoo Finance"},
+        ]
+        discovered_single = discover_dynamic_terms_from_headlines(
+            single_source_revisions,
+            cache_dir=str(tmp_path),
+            now_ts=t0,
+            persist=False,
+        )
+        assert "worse chip" not in discovered_single
+        assert "stock collapse" in discovered_single
+
+
 
 
 

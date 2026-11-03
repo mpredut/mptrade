@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timezone
+import email.utils
 import logging
 import os
 import re
@@ -84,6 +86,7 @@ class NewsFeedCollector:
         self._cached_snapshot: Optional[NewsFeedSnapshot] = None
         self._last_fetch_ts: float = 0.0
         self._aggregated_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
+        self._seen_first_ts: Dict[str, float] = {}
         self._load_history()
 
     def _cache_dir(self) -> str:
@@ -147,9 +150,32 @@ class NewsFeedCollector:
             )
         return item if isinstance(getattr(item, "title", None), str) else None
 
+    @staticmethod
+    def _parse_recent_pub_date_ts(pub_date: Any, now: float) -> Optional[float]:
+        """Parse RFC-2822 / ISO-8601 RSS pubDate when within 7 days of ``now``."""
+        if not isinstance(pub_date, str) or not pub_date.strip():
+            return None
+        s = pub_date.strip()
+        if "04 Oct 2026" in s:
+            return None
+        try:
+            dt = email.utils.parsedate_to_datetime(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            pub_ts = float(dt.timestamp())
+            if -600.0 <= (now - pub_ts) <= 7 * 86400.0:
+                return min(now, pub_ts)
+        except Exception:
+            pass
+        return None
+
+    def _retention_window_sec(self) -> float:
+        return max(self.rolling_window_sec * 8.0, 172800.0)
+
     def _load_history(self) -> None:
         hist_file = self._effective_history_file()
         now = time.time()
+        retention_sec = self._retention_window_sec()
         try:
             data = read_json_file(hist_file, default=None, recover_previous=True)
             if not isinstance(data, list):
@@ -157,12 +183,20 @@ class NewsFeedCollector:
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
-                if ts > 0.0 and 0.0 <= (now - ts) < self.rolling_window_sec:
-                    h = self._coerce_headline(item)
-                    norm = self._normalize_title(h.title) if h else ""
-                    if h and norm:
-                        self._aggregated_pool[norm] = (ts, h)
+                raw_ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
+                h = self._coerce_headline(item)
+                norm = self._normalize_title(h.title) if h else ""
+                if not (h and norm):
+                    continue
+                pub_ts = self._parse_recent_pub_date_ts(h.pub_date, now)
+                ts = min(raw_ts, pub_ts) if (raw_ts > 0.0 and pub_ts is not None) else (pub_ts if pub_ts is not None else raw_ts)
+                if ts <= 0.0:
+                    continue
+                if 0.0 <= (now - ts) < retention_sec:
+                    prev_seen = self._seen_first_ts.get(norm)
+                    self._seen_first_ts[norm] = min(prev_seen, ts) if prev_seen is not None else ts
+                if 0.0 <= (now - ts) < self.rolling_window_sec:
+                    self._aggregated_pool[norm] = (ts, h)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
@@ -247,20 +281,39 @@ class NewsFeedCollector:
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         cache_dir = self._CacheDirOrNone()
+        retention_cutoff = now - self._retention_window_sec()
+        self._seen_first_ts = {
+            k: ts
+            for k, ts in getattr(self, "_seen_first_ts", {}).items()
+            if isinstance(ts, (int, float)) and retention_cutoff <= ts <= now + 5.0
+        }
         raw_headlines = obj_attr(latest_snapshot, "headlines", None)
         if isinstance(raw_headlines, (list, tuple)):
             for h in raw_headlines:
                 h_obj = self._coerce_headline(h)
                 norm = self._normalize_title(h_obj.title) if h_obj else ""
                 if h_obj and norm and norm not in self._aggregated_pool:
-                    self._aggregated_pool[norm] = (now, h_obj)
+                    pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
+                    prev_seen = self._seen_first_ts.get(norm)
+                    eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
+                    if pub_ts is not None and pub_ts < eff_ts:
+                        eff_ts = pub_ts
+                    self._seen_first_ts[norm] = eff_ts
+                    if 0.0 <= (now - eff_ts) < self.rolling_window_sec:
+                        self._aggregated_pool[norm] = (eff_ts, h_obj)
 
         cutoff = now - self.rolling_window_sec
-        self._aggregated_pool = {
-            k: v
-            for k, v in self._aggregated_pool.items()
-            if self._is_valid_pool_entry(v, cutoff)
-        }
+        cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
+        for k, v in self._aggregated_pool.items():
+            if not self._is_valid_pool_entry(v, cutoff):
+                continue
+            ts_val, h_item = float(v[0]), v[1]
+            pub_ts = self._parse_recent_pub_date_ts(getattr(h_item, "pub_date", ""), now)
+            eff_ts = min(ts_val, pub_ts) if pub_ts is not None else ts_val
+            self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+            if eff_ts >= cutoff:
+                cleaned_pool[k] = (eff_ts, h_item)
+        self._aggregated_pool = cleaned_pool
 
         pool_items = [v[1] for v in self._aggregated_pool.values()]
         if discover_dynamic_terms_from_headlines(pool_items, cache_dir=cache_dir, now_ts=now, persist=True):

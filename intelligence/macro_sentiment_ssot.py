@@ -1226,6 +1226,8 @@ def discover_dynamic_terms_from_headlines(
     phrase_headlines: Dict[str, Set[str]] = {}
     phrase_counts: Dict[str, int] = {}
 
+    phrase_has_direct_stem: Dict[str, bool] = {}
+
     for h in headlines:
         raw_title = obj_attr(h, "title", "")
         if not isinstance(raw_title, str) or not raw_title.strip():
@@ -1246,6 +1248,8 @@ def discover_dynamic_terms_from_headlines(
             bigram = f"{tokens[i]} {tokens[i + 1]}"
             if _is_noise_dynamic_keyword(bigram, stopwords):
                 continue
+            if stem_flags[i] or stem_flags[i + 1]:
+                phrase_has_direct_stem[bigram] = True
             phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
             phrase_sources.setdefault(bigram, set()).add(src_key)
             phrase_headlines.setdefault(bigram, set()).add(norm_title)
@@ -1253,7 +1257,11 @@ def discover_dynamic_terms_from_headlines(
     discovered = [
         phrase
         for phrase, count in phrase_counts.items()
-        if len(phrase_headlines.get(phrase, set())) >= 2 and (count >= 2 or len(phrase_sources.get(phrase, set())) >= 2)
+        if len(phrase_headlines.get(phrase, set())) >= 2
+        and (
+            len(phrase_sources.get(phrase, set())) >= 2
+            or (count >= 2 and phrase_has_direct_stem.get(phrase, False))
+        )
     ]
     if discovered and persist:
         update_dynamic_lexicon(discovered, cache_dir=cache_dir, source="specialized_feed_salience", now_ts=now_ts)
