@@ -1051,9 +1051,21 @@ def _format_portfolio_section(
             for c_sym, c_data in sorted(ps[cyc_key].items()):
                 lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
     if ps.get("kraken_xstocks"):
-        xs = ps["kraken_xstocks"]
+        xs_raw = ps["kraken_xstocks"]
+        if isinstance(xs_raw, dict):
+            xs: Any = {k: v for k, v in xs_raw.items() if v is not None}
+            if isinstance(xs.get("holdings"), dict):
+                xs["holdings"] = {hk: hv for hk, hv in xs["holdings"].items() if _parse_finite_float(hv, 0.0) >= 1e-4}
+            if isinstance(xs.get("t212_sibling_cycle"), dict):
+                xs["t212_sibling_cycle"] = {
+                    ck: cv
+                    for ck, cv in xs["t212_sibling_cycle"].items()
+                    if cv is not None and not (ck == "pnl_vs_avg_pct" and xs["t212_sibling_cycle"].get("dd_pct") is not None)
+                }
+        else:
+            xs = xs_raw
         lines.append(
-            f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling')}): {xs}"
+            f"  * Kraken xStocks Pre-IPO Holdings (READ-ONLY on Kraken — NOT API-tradable; cross-venue SpaceX exposure for Trading212 {xs.get('t212_sibling') if isinstance(xs, dict) else None}): {xs}"
         )
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]
@@ -1088,10 +1100,25 @@ def _format_portfolio_section(
     for sym, oinfo in sorted((ps.get("recent_orders") or {}).items()):
         if isinstance(oinfo, dict):
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
+    shown_open_oids = {
+        str(oo.get("order_id") or oo.get("orderId"))
+        for oo in (ps.get("open_limit_orders") or ())
+        if isinstance(oo, dict) and (oo.get("order_id") or oo.get("orderId"))
+    }
     if ps.get("last_cycle_execution_status"):
         raw_lces = ps["last_cycle_execution_status"]
         if isinstance(raw_lces, list):
-            clean_lces: Any = [{k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item for item in raw_lces]
+            cleaned_list = [{k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item for item in raw_lces]
+            non_dup_lces = [
+                item for item in cleaned_list
+                if not (
+                    isinstance(item, dict)
+                    and item.get("status") == "OPEN_RESTING"
+                    and _parse_finite_float(item.get("age_min"), 0.0) > 30.0
+                    and str(item.get("order_id") or "") in shown_open_oids
+                )
+            ]
+            clean_lces: Any = non_dup_lces if non_dup_lces else cleaned_list[-1:]
         elif isinstance(raw_lces, dict):
             clean_lces = {k: v for k, v in raw_lces.items() if v is not None}
         else:
@@ -1107,7 +1134,27 @@ def _format_portfolio_section(
         ("recent_ai_intents", "Recent Autonomous Intents"),
     ):
         if ps.get(st_key):
-            lines.append(f"  * {st_label}: {ps[st_key]}")
+            st_val = ps[st_key]
+            if st_key == "recent_ai_intents" and isinstance(st_val, list):
+                fmt_intents = []
+                for it in st_val:
+                    if not isinstance(it, dict):
+                        fmt_intents.append(it)
+                        continue
+                    v_st = str(it.get("venue_status") or "").upper()
+                    oid_s = str(it.get("order_id") or "")
+                    if (
+                        v_st in ("OPEN", "NEW", "RESTING")
+                        and oid_s in shown_open_oids
+                        and _parse_finite_float(it.get("age_h"), 0.0) > 0.5
+                    ):
+                        continue
+                    it_copy = dict(it)
+                    if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
+                        it_copy["status"] = "RESTING_IN_BOOK"
+                    fmt_intents.append(it_copy)
+                st_val = fmt_intents if fmt_intents else st_val[-1:]
+            lines.append(f"  * {st_label}: {st_val}")
     return lines
 
 

@@ -135,7 +135,12 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             minfo["perp_spot_basis_bps"] = round(funding_r * 10000.0 * 1.5, 2)
 
     is_multi_horizon_selloff = cvd_usd < 0.0 and cvd_5m < 0.0 and cvd_1h < 0.0 and funding_r >= 0.0
-    if spot_cvd > 0.0 and cvd_usd < 0.0 and funding_r <= 0.0001 and (not is_multi_horizon_selloff or chg_15m >= 0.02):
+    strong_spot_absorption = (
+        spot_cvd >= max(abs(cvd_usd) * 0.45, 5000.0)
+        and (ob_imb >= 0.58 or funding_r < 0.0 or chg_15m >= 0.15)
+        and (not is_multi_horizon_selloff or chg_15m >= 0.05)
+    )
+    if spot_cvd > 0.0 and cvd_usd < 0.0 and funding_r <= 0.0001 and strong_spot_absorption:
         minfo["spot_perp_flow_regime"] = "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
     elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25:
         minfo["spot_perp_flow_regime"] = "RETAIL_PERP_LONG_TRAP"

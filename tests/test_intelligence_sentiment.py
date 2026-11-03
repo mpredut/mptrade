@@ -2466,4 +2466,56 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     assert synth_fills["last_buy"]["price"] == 207.93
     assert synth_fills["last_buy"]["actor"] == "AI"
 
+    # 11. 1-minute 1h bar vol_1h_pct override, weak ob_imbalance spot_cvd guard, and resting order / xStock prompt deduplication
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    inflated_vol_entry = {"price": 227.2, "vol_1h_pct": 1.3634, "adapt_reentry_pct": 2.727, "adapt_dca_pct": 1.363, "slope_3_7m": 0.001, "slope_15m": 0.001, "slope_2_5h": -0.0001}
+    one_hour_bars = [[(1700000000 + i * 60) * 1000, 227.0 + (i % 4) * 0.08] for i in range(60)]
+    _apply_24h_series_enrichment("TAOUSDC", inflated_vol_entry, {}, one_hour_bars, None)
+    assert inflated_vol_entry["vol_1h_pct"] < 0.8
+
+    weak_tao_m = {
+        "ob_imbalance": 0.545,
+        "bid_depth_usd": 622811.0,
+        "ask_depth_usd": 519042.0,
+        "taker_buy_vol_usd": 75293.84,
+        "taker_sell_vol_usd": 99147.6,
+        "cvd_15m_usd": -23900.0,
+        "cvd_5m_usd": 6200.0,
+        "cvd_1h_usd": 44100.0,
+        "funding_rate": 0.00005,
+    }
+    enrich_microstructure_cvd(weak_tao_m, {"price": 227.15, "chg_15m_pct": 0.04})
+    assert weak_tao_m["spot_perp_flow_regime"] == "BALANCED_CROSS_VENUE_FLOW"
+
+    sec_3c_lines = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [{"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "101", "price": 75000.0, "qty": 0.01, "filled_qty": 0.0, "status": "NEW"}],
+                "last_cycle_execution_status": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "status": "OPEN_RESTING", "order_id": "101", "age_min": 500.0},
+                    {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "status": "FILLED", "order_id": "202", "fill_px": 227.0, "age_min": 5.0},
+                ],
+                "recent_ai_intents": [
+                    {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "NEW", "order_id": "101", "age_h": 8.3},
+                    {"decision": "BUY", "symbol": "TAOUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "FILLED", "order_id": "202", "age_h": 0.1},
+                ],
+                "kraken_xstocks": {
+                    "underlying": "SPCX",
+                    "t212_sibling": "SPCX_US_EQ",
+                    "holdings": {"AAPLx.T": 2e-06, "SPCXx.T": 15.74655},
+                    "listed_pair": None,
+                    "t212_sibling_cycle": {"qty": 7.04, "dd_pct": -2.54, "pnl_vs_avg_pct": -2.54, "last_exit_kind": None},
+                },
+            },
+            asset_scope="crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "AAPLx.T" not in sec_3c_lines
+    assert "pnl_vs_avg_pct" not in sec_3c_lines
+    assert "'age_min': 500.0" not in sec_3c_lines
+    assert "'order_id': '202'" in sec_3c_lines
+
+
 
