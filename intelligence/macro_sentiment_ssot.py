@@ -845,6 +845,28 @@ def get_market_breadth_endpoint_url() -> str:
     return _cfg_str("feeds", "market_breadth_endpoint_url")
 
 
+def get_coinbase_btc_ticker_url() -> str:
+    return _cfg_str("feeds", "coinbase_btc_ticker_url")
+
+
+def get_binance_btc_ticker_url() -> str:
+    return _cfg_str("feeds", "binance_btc_ticker_url")
+
+
+def get_deribit_dvol_url(currency: str, start_ms: int, end_ms: int) -> str:
+    return _cfg_str("feeds", "deribit_dvol_url_template").format(
+        currency=currency, start_ms=start_ms, end_ms=end_ms
+    )
+
+
+def get_deribit_hist_vol_url(currency: str = "BTC") -> str:
+    return _cfg_str("feeds", "deribit_hist_vol_url_template").format(currency=currency)
+
+
+def get_deribit_options_book_url(currency: str = "BTC") -> str:
+    return _cfg_str("feeds", "deribit_options_book_url_template").format(currency=currency)
+
+
 def get_breadth_excluded_bases() -> Set[str]:
     return set(_tax_tuple("breadth_excluded_bases"))
 

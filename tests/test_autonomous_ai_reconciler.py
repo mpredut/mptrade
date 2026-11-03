@@ -8787,8 +8787,42 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert risk_eng["unified_nav_usd"] == pytest.approx(12038.66)
     assert risk_eng["concentration_regime"] == "HIGH_CORR_CONCENTRATED_BETA"
     assert risk_eng["intraday_var_95_usd"] > 0.0
+    assert risk_eng["intraday_cvar_975_usd"] > risk_eng["intraday_var_95_usd"]
+    assert risk_eng["vol_target_tranche_usd"] > 0.0
+    assert risk_eng["avg_entry_markout_bps"] == pytest.approx(89.3, abs=0.5)
+    assert risk_eng["post_trade_win_rate_pct"] == 100.0
+    assert risk_eng["cross_venue_routing"]["HYPE"]["best_buy"] == "hyperliquid:HYPEUSDC"
     ps["portfolio_risk_engine"] = risk_eng
     sec_3c_lines = "\n".join(_format_portfolio_section(ps, "crypto"))
     assert "Enterprise Global Portfolio Risk Engine:" in sec_3c_lines
     assert "HIGH_CORR_CONCENTRATED_BETA" in sec_3c_lines
+    assert "cvar_975=$" in sec_3c_lines
+    assert "vol_target_tranche=$" in sec_3c_lines
+    assert "post_trade_edge(entry=+89bps, win_rate=100.0%)" in sec_3c_lines
+    assert "smart_routing(HYPE:buy=hyperliquid:HYPEUSDC" in sec_3c_lines
+
+    # 6. Deribit Options Surface (RV, VRP, Put/Call OI, 25d Skew, Gamma Pin Strike, Dealer Gamma Regime)
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        compute_deribit_options_surface,
+        format_macro_benchmarks_summary_line,
+    )
+
+    opt_surf = compute_deribit_options_surface(
+        [
+            {"instrument_name": "BTC-13NOV26-80000-C", "open_interest": 1200.0, "mark_iv": 37.5, "underlying_price": 77700.0},
+            {"instrument_name": "BTC-13NOV26-74000-P", "open_interest": 900.0, "mark_iv": 40.5, "underlying_price": 77700.0},
+            {"instrument_name": "BTC-13NOV26-78000-C", "open_interest": 2500.0, "mark_iv": 38.0, "underlying_price": 77700.0},
+        ],
+        btc_dvol=39.9,
+        btc_rv=32.1,
+    )
+    assert opt_surf["btc_rv_pct"] == 32.1
+    assert opt_surf["btc_vrp_pct"] == pytest.approx(7.8)
+    assert opt_surf["btc_pc_oi_ratio"] == pytest.approx(900.0 / 3700.0, abs=0.01)
+    assert opt_surf["btc_skew_25d_pct"] == pytest.approx(3.0)
+    assert opt_surf["btc_gamma_pin_strike"] == 78000
+    assert opt_surf["dealer_gamma_regime"] == "LONG_GAMMA_PINNING"
+    mb_line = format_macro_benchmarks_summary_line({"items": {"SPY": {"price": 754.2, "chg_24h_pct": 0.28}}, "btc_dvol": 39.9, **opt_surf})
+    assert "Options_Surface(RV=32.1%, VRP=+7.8%, PC_OI=0.24, Skew_25d=+3.00%, GammaPin=$78,000, LONG_GAMMA_PINNING)" in mb_line
+
 

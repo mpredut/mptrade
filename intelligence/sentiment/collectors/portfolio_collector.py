@@ -1428,6 +1428,21 @@ def enrich_24h_and_microstructure(
                 microstructure[msym] = m_info_ref
 
 
+def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
+    """Infer canonical venue name, maker/taker fee bps, and half-spread bps for cross-venue smart routing."""
+    sym_u = str(sym or "").strip().upper()
+    if sym_u == "HYPEUSDC":
+        venue, maker_bps, taker_bps = "hyperliquid", 4.0, 7.0
+    elif sym_u.endswith("USDC"):
+        venue, maker_bps, taker_bps = "binance", 10.0, 10.0
+    elif sym_u.endswith("USD"):
+        venue, maker_bps, taker_bps = "kraken", 16.0, 26.0
+    else:
+        venue, maker_bps, taker_bps = "t212", 15.0, 15.0
+    half_sp = 0.5 * (safe_nonneg_float((m_dict or {}).get("spread_bps"), default=0.0) or 0.0)
+    return venue, maker_bps, taker_bps, half_sp
+
+
 def sync_sibling_symbol_telemetry(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
@@ -1533,6 +1548,18 @@ def sync_sibling_symbol_telemetry(
                     minfo["cross_venue_peer"] = peer_sym
                     minfo["cross_venue_peer_px"] = peer_px
                     minfo["cross_venue_arb_bps"] = arb_bps
+                    own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
+                    peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
+                    own_buy_cost = arb_bps + own_taker + own_hsp
+                    peer_buy_cost = peer_taker + peer_hsp
+                    net_buy_edge = round(peer_buy_cost - own_buy_cost, 1)
+                    own_sell_net = arb_bps - own_taker - own_hsp
+                    peer_sell_net = -peer_taker - peer_hsp
+                    net_sell_edge = round(own_sell_net - peer_sell_net, 1)
+                    minfo["net_buy_edge_vs_peer_bps"] = net_buy_edge
+                    minfo["net_sell_edge_vs_peer_bps"] = net_sell_edge
+                    minfo["best_buy_venue"] = f"{own_v}:{msym}" if net_buy_edge >= 0.0 else f"{peer_v}:{peer_sym}"
+                    minfo["best_sell_venue"] = f"{own_v}:{msym}" if net_sell_edge >= 0.0 else f"{peer_v}:{peer_sym}"
                     break
 
     if cache_dir and microstructure:
@@ -2093,7 +2120,52 @@ def harvest_recent_orders_and_enrich_positions(
                 gateway_max_usd=gateway_max_usd,
             )
         )
+    enrich_recent_orders_markout(recent_orders, prices_and_trends)
     return recent_orders
+
+
+def enrich_recent_orders_markout(
+    recent_orders: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+) -> None:
+    """Enrich recent BUY and SELL fills with post-trade markout in bps vs live spot price."""
+    if not isinstance(recent_orders, dict) or not isinstance(prices_and_trends, dict):
+        return
+    for r_sym, ro in recent_orders.items():
+        if not isinstance(ro, dict):
+            continue
+        sym_clean = str(r_sym).split(":", 1)[-1].strip().upper()
+        cur_px = resolve_symbol_price(sym_clean, prices_and_trends)
+        if cur_px <= 0.0:
+            continue
+        if isinstance(lb := ro.get("last_buy"), dict) and (lb_px := safe_pos_float(lb.get("price"), default=None)) is not None:
+            lb["markout_now_bps"] = round(((cur_px - lb_px) / lb_px) * 10000.0, 1)
+        if isinstance(ls := ro.get("last_sell"), dict) and (ls_px := safe_pos_float(ls.get("price"), default=None)) is not None:
+            ls["markout_now_bps"] = round(((ls_px - cur_px) / ls_px) * 10000.0, 1)
+        b_num = b_den = 0.0
+        for b in (ro.get("recent_buys") or []):
+            if isinstance(b, dict) and (b_px := safe_pos_float(b.get("price"), default=None)) is not None:
+                m_bps = round(((cur_px - b_px) / b_px) * 10000.0, 1)
+                b["markout_now_bps"] = m_bps
+                w = (safe_pos_float(b.get("qty"), default=1.0) or 1.0) * b_px
+                b_num += m_bps * w
+                b_den += w
+        if b_den > 0.0:
+            ro["buy_markout_bps"] = round(b_num / b_den, 1)
+        elif isinstance(ro.get("last_buy"), dict) and ro["last_buy"].get("markout_now_bps") is not None:
+            ro["buy_markout_bps"] = ro["last_buy"]["markout_now_bps"]
+        s_num = s_den = 0.0
+        for s in (ro.get("recent_sells") or []):
+            if isinstance(s, dict) and (s_px := safe_pos_float(s.get("price"), default=None)) is not None:
+                m_bps = round(((s_px - cur_px) / s_px) * 10000.0, 1)
+                s["markout_now_bps"] = m_bps
+                w = (safe_pos_float(s.get("qty"), default=1.0) or 1.0) * s_px
+                s_num += m_bps * w
+                s_den += w
+        if s_den > 0.0:
+            ro["sell_markout_bps"] = round(s_num / s_den, 1)
+        elif isinstance(ro.get("last_sell"), dict) and ro["last_sell"].get("markout_now_bps") is not None:
+            ro["sell_markout_bps"] = ro["last_sell"]["markout_now_bps"]
 
 
 def harvest_bot_runtime_states(
@@ -2367,6 +2439,13 @@ def compute_enterprise_portfolio_risk_metrics(
     port_sigma_usd = _math.sqrt(max(0.0, var_cov_sum))
     var_95_usd = round(1.645 * port_sigma_usd, 2)
     var_95_pct = round((var_95_usd / unified_nav) * 100.0, 2)
+    cvar_975_usd = round(2.34 * port_sigma_usd, 2)
+    cvar_975_pct = round((cvar_975_usd / unified_nav) * 100.0, 2)
+
+    base_tranche = min(2000.0, max(100.0, unified_nav * 0.035))
+    var_scale = min(1.4, max(0.5, 2.5 / max(0.8, var_95_pct))) if var_95_pct > 0.0 else 1.0
+    beta_scale = min(1.25, max(0.6, 0.85 / max(0.4, portfolio_btc_beta))) if portfolio_btc_beta > 0.0 else 1.0
+    vol_target_tranche_usd = round(min(2000.0, max(50.0, base_tranche * var_scale * beta_scale)), 0)
 
     concentration_regime = (
         "HIGH_CORR_CONCENTRATED_BETA"
@@ -2374,19 +2453,48 @@ def compute_enterprise_portfolio_risk_metrics(
         else ("DEFENSIVE_HIGH_CASH" if free_cash_pct >= 55.0 else "BALANCED_DIVERSIFIED")
     )
 
+    enrich_recent_orders_markout(rec_orders, prices_and_trends)
     lifo_pnl_total = 0.0
     est_fee_drag_usd = 0.0
+    entry_m_num = entry_m_den = exit_m_num = exit_m_den = 0.0
+    wins_cnt = total_fills_cnt = 0
     for r_sym, r_info in rec_orders.items():
         if not isinstance(r_info, dict):
             continue
         lifo_pnl_total += safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
-        for side_list_k in ("recent_buys", "recent_sells"):
+        for side_list_k, is_buy_side in (("recent_buys", True), ("recent_sells", False)):
             for tr in (r_info.get(side_list_k) or []):
                 if isinstance(tr, dict):
                     q_t = safe_pos_float(tr.get("qty"), default=0.0) or 0.0
                     p_t = safe_pos_float(tr.get("price"), default=0.0) or 0.0
-                    if q_t > 0.0 and p_t > 0.0:
-                        est_fee_drag_usd += (q_t * p_t) * 0.0010
+                    notional_t = q_t * p_t if (q_t > 0.0 and p_t > 0.0) else 0.0
+                    if notional_t > 0.0:
+                        est_fee_drag_usd += notional_t * 0.0010
+                    if (m_bps := safe_float(tr.get("markout_now_bps"), default=None)) is not None:
+                        w_t = notional_t if notional_t > 0.0 else 1.0
+                        if is_buy_side:
+                            entry_m_num += m_bps * w_t
+                            entry_m_den += w_t
+                        else:
+                            exit_m_num += m_bps * w_t
+                            exit_m_den += w_t
+                        total_fills_cnt += 1
+                        if m_bps > 0.0:
+                            wins_cnt += 1
+
+    cross_venue_routing: Dict[str, Any] = {}
+    if isinstance(microstructure, dict):
+        for m_sym, m_dict in sorted(microstructure.items()):
+            if not isinstance(m_dict, dict) or not m_dict.get("best_buy_venue"):
+                continue
+            b_asset = canonical_base_asset(m_sym)
+            if b_asset and b_asset not in cross_venue_routing:
+                cross_venue_routing[b_asset] = {
+                    "best_buy": m_dict.get("best_buy_venue"),
+                    "best_sell": m_dict.get("best_sell_venue"),
+                    "net_buy_edge_bps": abs(safe_float(m_dict.get("net_buy_edge_vs_peer_bps"), default=0.0) or 0.0),
+                    "net_sell_edge_bps": abs(safe_float(m_dict.get("net_sell_edge_vs_peer_bps"), default=0.0) or 0.0),
+                }
 
     out_risk: Dict[str, Any] = {
         "unified_nav_usd": unified_nav,
@@ -2401,10 +2509,21 @@ def compute_enterprise_portfolio_risk_metrics(
         "concentration_regime": concentration_regime,
         "intraday_var_95_usd": var_95_usd,
         "intraday_var_95_pct": var_95_pct,
+        "intraday_cvar_975_usd": cvar_975_usd,
+        "intraday_cvar_975_pct": cvar_975_pct,
+        "vol_target_tranche_usd": vol_target_tranche_usd,
     }
     if abs(lifo_pnl_total) >= 0.01:
         out_risk["subcycle_lifo_realized_pnl_usd"] = round(lifo_pnl_total, 2)
     if est_fee_drag_usd >= 0.01:
         out_risk["est_recent_fee_drag_usd"] = round(est_fee_drag_usd, 2)
+    if entry_m_den > 0.0:
+        out_risk["avg_entry_markout_bps"] = round(entry_m_num / entry_m_den, 1)
+    if exit_m_den > 0.0:
+        out_risk["avg_exit_markout_bps"] = round(exit_m_num / exit_m_den, 1)
+    if total_fills_cnt > 0:
+        out_risk["post_trade_win_rate_pct"] = round((wins_cnt / total_fills_cnt) * 100.0, 1)
+    if cross_venue_routing:
+        out_risk["cross_venue_routing"] = cross_venue_routing
     return out_risk
 

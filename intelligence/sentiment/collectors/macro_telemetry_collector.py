@@ -16,6 +16,8 @@ from cachepaths import (
 )
 from intelligence.macro_sentiment_ssot import (
     _strip_headline_publisher_suffix, filter_valid_severity_keywords,
+    get_binance_btc_ticker_url, get_coinbase_btc_ticker_url, get_deribit_dvol_url,
+    get_deribit_hist_vol_url, get_deribit_options_book_url,
     headlines_are_semantic_duplicates, is_excluded_reference_news_item, obj_attr,
     read_first_cached_dict, resolve_macro_economic_calendar, safe_float,
     safe_nonneg_ts, safe_pos_float,
@@ -59,8 +61,79 @@ MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def compute_deribit_options_surface(
+    books: Any,
+    *,
+    btc_dvol: Optional[float] = None,
+    btc_rv: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Compute institutional BTC options surface metrics (RV, VRP, Put/Call OI, 25d Skew, Gamma Pin Strike, Dealer Gamma Regime)."""
+    out: Dict[str, Any] = {}
+    rv_f = safe_pos_float(btc_rv, default=None)
+    dvol_f = safe_pos_float(btc_dvol, default=None)
+    if rv_f is not None:
+        out["btc_rv_pct"] = round(rv_f, 2)
+    if dvol_f is not None and rv_f is not None:
+        out["btc_vrp_pct"] = round(dvol_f - rv_f, 2)
+
+    spot = 0.0
+    if isinstance(books, list) and books:
+        for b in books:
+            if isinstance(b, dict):
+                u_px = safe_pos_float(b.get("estimated_delivery_price") or b.get("underlying_price"), default=0.0) or 0.0
+                if u_px > 0.0:
+                    spot = u_px
+                    break
+        call_oi = put_oi = 0.0
+        put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
+        strike_oi: Dict[int, float] = {}
+        for b in books:
+            if not isinstance(b, dict):
+                continue
+            parts = str(b.get("instrument_name") or "").split("-")
+            if len(parts) < 4:
+                continue
+            strike = safe_pos_float(parts[2], default=None)
+            opt_type = parts[3].strip().upper()
+            oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
+            iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
+            if strike is None or oi <= 0.0:
+                continue
+            if opt_type == "C":
+                call_oi += oi
+                if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
+                    call_iv_num += iv * oi
+                    call_iv_den += oi
+            elif opt_type == "P":
+                put_oi += oi
+                if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
+                    put_iv_num += iv * oi
+                    put_iv_den += oi
+            if spot > 0.0 and 0.90 * spot <= strike <= 1.10 * spot:
+                strike_k = int(round(strike))
+                strike_oi[strike_k] = strike_oi.get(strike_k, 0.0) + oi
+
+        if call_oi > 0.0 and put_oi > 0.0:
+            out["btc_pc_oi_ratio"] = round(put_oi / call_oi, 2)
+        if put_iv_den > 0.0 and call_iv_den > 0.0:
+            out["btc_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
+        if strike_oi:
+            out["btc_gamma_pin_strike"] = max(strike_oi.items(), key=lambda kv: kv[1])[0]
+
+    skew_v = safe_float(out.get("btc_skew_25d_pct"), default=None)
+    vrp_v = safe_float(out.get("btc_vrp_pct"), default=None)
+    pin_v = safe_pos_float(out.get("btc_gamma_pin_strike"), default=None)
+    if (skew_v is not None and skew_v >= 4.0) or (vrp_v is not None and vrp_v <= -3.0) or (dvol_f is not None and dvol_f >= 62.0):
+        out["dealer_gamma_regime"] = "SHORT_GAMMA_EXPANSION"
+    elif pin_v is not None and spot > 0.0 and abs(spot - pin_v) / spot <= 0.035 and (vrp_v is None or vrp_v >= 0.0):
+        out["dealer_gamma_regime"] = "LONG_GAMMA_PINNING"
+    elif out:
+        out["dealer_gamma_regime"] = "BALANCED_GAMMA"
+    return out
+
+
 def format_macro_benchmarks_summary_line(data: Any) -> str:
-    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL)."""
+    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     if not isinstance(data, dict):
         return ""
     items = data.get("items") if isinstance(data.get("items"), dict) else data
@@ -70,6 +143,8 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
         "ts", "age_min", "summary_line", "items",
         "coinbase_premium_bps", "coinbase_premium_regime",
         "btc_dvol", "eth_dvol", "options_vol_regime",
+        "btc_rv_pct", "btc_vrp_pct", "btc_pc_oi_ratio",
+        "btc_skew_25d_pct", "btc_gamma_pin_strike", "dealer_gamma_regime",
     }
     ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items] + [
         k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
@@ -100,6 +175,21 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
         dvol_s = f"BTC_DVOL={btc_dvol:.1f}%" + (f"/ETH_DVOL={eth_dvol:.1f}%" if eth_dvol is not None else "")
         opt_reg = str(data.get("options_vol_regime") or items.get("options_vol_regime") or "").strip()
         parts.append(dvol_s + (f" ({opt_reg})" if opt_reg else ""))
+    opt_parts: List[str] = []
+    if (rv_v := safe_pos_float(data.get("btc_rv_pct", items.get("btc_rv_pct")), default=None)) is not None:
+        opt_parts.append(f"RV={rv_v:.1f}%")
+    if (vrp_v := safe_float(data.get("btc_vrp_pct", items.get("btc_vrp_pct")), default=None)) is not None:
+        opt_parts.append(f"VRP={vrp_v:+.1f}%")
+    if (pc_v := safe_pos_float(data.get("btc_pc_oi_ratio", items.get("btc_pc_oi_ratio")), default=None)) is not None:
+        opt_parts.append(f"PC_OI={pc_v:.2f}")
+    if (sk_v := safe_float(data.get("btc_skew_25d_pct", items.get("btc_skew_25d_pct")), default=None)) is not None:
+        opt_parts.append(f"Skew_25d={sk_v:+.2f}%")
+    if (pin_v := safe_pos_float(data.get("btc_gamma_pin_strike", items.get("btc_gamma_pin_strike")), default=None)) is not None:
+        opt_parts.append(f"GammaPin=${int(round(pin_v)):,}")
+    if (g_reg := str(data.get("dealer_gamma_regime") or items.get("dealer_gamma_regime") or "").strip()):
+        opt_parts.append(g_reg)
+    if opt_parts:
+        parts.append(f"Options_Surface({', '.join(opt_parts)})")
     return " | ".join(parts)
 
 
@@ -173,8 +263,8 @@ def collect_macro_benchmarks_snapshot(
     if fetch_fn is None:
         # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs Binance BTCUSDT)
         try:
-            cb_raw = _fetch("https://api.exchange.coinbase.com/products/BTC-USD/ticker", timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-            bn_raw = _fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            cb_raw = _fetch(get_coinbase_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            bn_raw = _fetch(get_binance_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
             cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
             bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
             if cb_px and bn_px and bn_px > 0:
@@ -185,12 +275,12 @@ def collect_macro_benchmarks_snapshot(
                 )
         except Exception:
             pass
-        # 2. Deribit BTC / ETH Implied Volatility Index (DVOL)
+        # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
         try:
             end_ms = int(eff_now * 1000)
             start_ms = end_ms - 3600 * 1000
             for ccy, d_key in (("BTC", "btc_dvol"), ("ETH", "eth_dvol")):
-                d_url = f"https://www.deribit.com/api/v2/public/get_volatility_index_data?currency={ccy}&start_timestamp={start_ms}&end_timestamp={end_ms}&resolution=3600"
+                d_url = get_deribit_dvol_url(ccy, start_ms, end_ms)
                 d_raw = _fetch(d_url, timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                 d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
                 if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
@@ -199,6 +289,27 @@ def collect_macro_benchmarks_snapshot(
             if "btc_dvol" in extra_macro:
                 bv = extra_macro["btc_dvol"]
                 extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
+            btc_rv_val: Optional[float] = None
+            try:
+                hv_raw = _fetch(get_deribit_hist_vol_url("BTC"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
+                if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
+                    btc_rv_val = safe_pos_float(hv_res[-1][1], default=None)
+            except Exception:
+                pass
+            opt_books_list: Any = None
+            try:
+                ob_raw = _fetch(get_deribit_options_book_url("BTC"), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+                opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
+            except Exception:
+                pass
+            extra_macro.update(
+                compute_deribit_options_surface(
+                    opt_books_list,
+                    btc_dvol=extra_macro.get("btc_dvol"),
+                    btc_rv=btc_rv_val,
+                )
+            )
         except Exception:
             pass
 
