@@ -903,6 +903,12 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     )
     lifo_v = _parse_finite_float(oinfo.get("lifo_realized_pnl_usd"), None)
     lifo_str = f" | Sub-Cycle LIFO Realized PnL=${lifo_v:+.2f}" if lifo_v is not None and abs(lifo_v) >= 0.01 else ""
+    markout_parts: List[str] = []
+    if (bm_v := _parse_finite_float(oinfo.get("buy_markout_bps"), None)) is not None:
+        markout_parts.append(f"buy={bm_v:+.0f}bps")
+    if (sm_v := _parse_finite_float(oinfo.get("sell_markout_bps"), None)) is not None:
+        markout_parts.append(f"sell={sm_v:+.0f}bps")
+    markout_str = f" | Post-Trade Markout({', '.join(markout_parts)})" if markout_parts else ""
     r_buys = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
     tranches_str = f" | Recent BUY Tranches=[{', '.join(r_buys)}]" if len(r_buys) > 1 else ""
     r_sells = [f"{s.get('qty')}@{_round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
@@ -917,7 +923,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={_side_summary('last_buy')} | "
         f"Last SELL={_side_summary('last_sell')}"
-        f"{avg_b_str}{tac_b_str}{sw_b_str}{lifo_str}{tranches_str}{sell_tranches_str}"
+        f"{avg_b_str}{tac_b_str}{sw_b_str}{lifo_str}{markout_str}{tranches_str}{sell_tranches_str}"
     )
 
 
@@ -943,8 +949,33 @@ def _format_portfolio_section(
             f"intraday_var_95=${_parse_finite_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
             f"regime={pre.get('concentration_regime')}",
         ])
+        if pre.get("intraday_cvar_975_usd") is not None:
+            pre_parts.append(
+                f"cvar_975=${_parse_finite_float(pre.get('intraday_cvar_975_usd'), 0.0):,.2f} ({pre.get('intraday_cvar_975_pct')}%)"
+            )
+        if pre.get("vol_target_tranche_usd") is not None:
+            pre_parts.append(f"vol_target_tranche=${_parse_finite_float(pre.get('vol_target_tranche_usd'), 0.0):,.0f}")
         if pre.get("subcycle_lifo_realized_pnl_usd") is not None:
             pre_parts.append(f"subcycle_lifo_pnl=${_parse_finite_float(pre.get('subcycle_lifo_realized_pnl_usd'), 0.0):+.2f}")
+        if pre.get("est_recent_fee_drag_usd") is not None:
+            pre_parts.append(f"est_fee_drag=${_parse_finite_float(pre.get('est_recent_fee_drag_usd'), 0.0):.2f}")
+        pt_parts: List[str] = []
+        if (em_v := _parse_finite_float(pre.get("avg_entry_markout_bps"), None)) is not None:
+            pt_parts.append(f"entry={em_v:+.0f}bps")
+        if (xm_v := _parse_finite_float(pre.get("avg_exit_markout_bps"), None)) is not None:
+            pt_parts.append(f"exit={xm_v:+.0f}bps")
+        if pre.get("post_trade_win_rate_pct") is not None:
+            pt_parts.append(f"win_rate={pre.get('post_trade_win_rate_pct')}%")
+        if pt_parts:
+            pre_parts.append(f"post_trade_edge({', '.join(pt_parts)})")
+        if isinstance(cv_map := pre.get("cross_venue_routing"), dict) and cv_map:
+            cv_s = ", ".join(
+                f"{b_k}:buy={v_d.get('best_buy')}[+{v_d.get('net_buy_edge_bps')}bps]/sell={v_d.get('best_sell')}[+{v_d.get('net_sell_edge_bps')}bps]"
+                for b_k, v_d in sorted(cv_map.items())
+                if isinstance(v_d, dict)
+            )
+            if cv_s:
+                pre_parts.append(f"smart_routing({cv_s})")
         lines.append(f"  * Enterprise Global Portfolio Risk Engine: {', '.join(pre_parts)}")
     if ps.get("total_value_usdc") is not None:
         tv_extras: List[str] = []

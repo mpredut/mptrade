@@ -53,6 +53,7 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_sre_and_fleet_section,
     _format_tradable_position_line,
     _format_venue_cycle_line,
+    _same_anchor_px,
 )
 from providers.base import format_actor_tag, normalize_timestamp_ms
 
