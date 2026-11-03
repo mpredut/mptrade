@@ -303,8 +303,8 @@ def _config_notification_int(key: str, default: int) -> int:
 
 
 def _common_gate_seconds() -> int:
-    """Return the central single-gate dispatcher minimum interval in seconds (default 600s = 10 min)."""
-    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 600)
+    """Return the central single-gate dispatcher minimum interval in seconds (default 180s = 3 min)."""
+    return _config_notification_int("NOTIFICATION_GATE_SECONDS", 180)
 
 
 def _topic_bulk_seconds() -> int:
