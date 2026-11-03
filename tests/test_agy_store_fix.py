@@ -245,6 +245,8 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
     recent_log = log_dir / f"cli-{recent_stamp}.log"
     recent_log.write_text("I1102 23:00:00.000000 1 remote_control_v2.go:2056] Connection status: Connected\n")
     assert asf.mode_ui_sync_check(120, min_interval_sec=720.0) == asf.UI_SYNC_BUSY
+    # Calling main(["agy_store_fix.py", "ui-sync-check"]) without explicit flags uses SSOT defaults (120s idle, 720s cadence)
+    assert asf.main(["agy_store_fix.py", "ui-sync-check"]) == asf.UI_SYNC_BUSY
     os.remove(recent_log)
     # One-shot non-daemon CLI logs (without remote_control_v2 / reconciliation markers) do not reset daemon uptime
     oneshot_stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(time.time() - 60))

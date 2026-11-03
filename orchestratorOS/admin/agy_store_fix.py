@@ -703,12 +703,15 @@ def main(argv) -> int:
             if mode == "check":
                 return mode_check()
             if mode == "ui-sync-check":
-                if "--idle-sec" not in argv or argv.index("--idle-sec") + 1 >= len(argv):
-                    raise ValueError("ui-sync-check requires --idle-sec <seconds>")
-                min_itv = 0.0
+                from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
+                ssot_itvs = resolve_derived_telemetry_intervals()
+                idle_sec = float(ssot_itvs.get("ui_sync_idle_sec", 120.0))
+                if "--idle-sec" in argv and argv.index("--idle-sec") + 1 < len(argv):
+                    idle_sec = float(argv[argv.index("--idle-sec") + 1])
+                min_itv = float(ssot_itvs.get("ui_sync_interval_sec", 720.0))
                 if "--min-interval-sec" in argv and argv.index("--min-interval-sec") + 1 < len(argv):
                     min_itv = safe_pos_float(argv[argv.index("--min-interval-sec") + 1], default=0.0) or 0.0
-                return mode_ui_sync_check(float(argv[argv.index("--idle-sec") + 1]), min_interval_sec=min_itv)
+                return mode_ui_sync_check(idle_sec, min_interval_sec=min_itv)
             print(__doc__)
             return 1
         except Exception:
