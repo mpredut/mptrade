@@ -260,6 +260,16 @@ def parse_venue_cycle_state(
     )
     if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
         cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
+    ref_entry_px = safe_pos_float(avg_cost or cyc_entry.get("entry_price") or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+    last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
+    if (
+        str(cyc_entry.get("last_exit_kind") or "").strip().upper() == "TP"
+        and ref_entry_px > 0.0
+        and last_sell_px_f > 0.0
+        and last_sell_px_f < ref_entry_px * 0.995
+        and realized_pnl < 0.0
+    ):
+        cyc_entry["last_exit_kind"] = "REDUCE"
     tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
     if isinstance(tp_sold, list) and tp_sold:
         cyc_entry["tp_sold_levels"] = tp_sold
@@ -1186,7 +1196,7 @@ def sync_sibling_symbol_telemetry(
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
-        "poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime",
+        "poc_px", "sec_poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }
     for sym, pinfo in list(prices_and_trends.items()):
@@ -1439,8 +1449,38 @@ def harvest_recent_orders_and_enrich_positions(
                 and float(entry_ts_ms) > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
                 and abs(sum(float(b["qty"]) for b in buys_after) - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
             )
+            pos_match_c = next(
+                (
+                    p for p in tradable_positions
+                    if isinstance(p, dict)
+                    and normalize_venue_name(p.get("venue")) == c_venue
+                    and str(p.get("symbol") or "").upper() in (str(c_sym).upper(), *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes))
+                ),
+                None,
+            )
+            held_match_c = -1.0
+            if isinstance(pos_match_c, dict):
+                fb_m = safe_float(pos_match_c.get("free_base"), -1.0)
+                lb_m = safe_pos_float(pos_match_c.get("locked_base_qty"), default=0.0) or 0.0
+                held_match_c = (fb_m + lb_m) if fb_m >= 0.0 else (lb_m if lb_m > 0.0 else -1.0)
+            cyc_matches_live_wallet = (
+                held_match_c > 1e-8
+                and cyc_qty_cur > 1e-8
+                and abs(cyc_qty_cur - held_match_c) <= max(1e-4, held_match_c * 0.05)
+                and not buys_after
+            )
             if (ls_ts_ms > float(entry_ts_ms) and cyc_qty_cur > 1e-8 and ls_qty >= cyc_qty_cur * 0.95) or reconciled_external_buy:
-                if buys_after:
+                if cyc_matches_live_wallet:
+                    if ls_px > 0:
+                        cyc["last_sell_price"] = round(ls_px, avg_dec)
+                        c_ref_px = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=0.0) or 0.0
+                        if (
+                            str(cyc.get("last_exit_kind") or "").strip().upper() == "TP"
+                            and c_ref_px > 0.0
+                            and ls_px < c_ref_px * 0.995
+                        ):
+                            cyc["last_exit_kind"] = "REDUCE"
+                elif buys_after:
                     new_qty = sum(float(b["qty"]) for b in buys_after)
                     new_cost = sum(float(b["qty"]) * float(b["price"]) for b in buys_after)
                     new_avg = round(new_cost / new_qty, avg_dec)
@@ -1452,12 +1492,16 @@ def harvest_recent_orders_and_enrich_positions(
                         "last_buy_price": round(float(buys_after[-1]["price"]), avg_dec),
                         "dca_buys": max(0, len(buys_after) - 1), "dd_pct": new_dd, "pnl_vs_avg_pct": new_dd,
                     })
+                    if ls_px > 0:
+                        cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    cyc.pop("pos_peak", None)
+                    cyc.pop("dd_from_peak_pct", None)
                 else:
                     cyc.update({"qty": 0.0, "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
-                if ls_px > 0:
-                    cyc["last_sell_price"] = round(ls_px, avg_dec)
-                cyc.pop("pos_peak", None)
-                cyc.pop("dd_from_peak_pct", None)
+                    if ls_px > 0:
+                        cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    cyc.pop("pos_peak", None)
+                    cyc.pop("dd_from_peak_pct", None)
     for pos in tradable_positions:
         if not isinstance(pos, dict):
             continue
@@ -1496,10 +1540,12 @@ def harvest_recent_orders_and_enrich_positions(
                 pos["last_action_side"] = str(ro.get("last_action_side")).upper()
             if is_flat_after_exit:
                 ro.pop("active_avg_buy_px", None)
+                ro.pop("tactical_avg_buy_px", None)
                 pos.pop("trailing_peak", None)
                 pos.pop("dd_from_peak_pct", None)
             else:
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
+                set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []

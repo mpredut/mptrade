@@ -25,7 +25,9 @@ from intelligence.macro_sentiment_ssot import (
     get_cache_filenames,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
+    headlines_are_semantic_duplicates,
     is_cache_fresh,
+    is_excluded_reference_news_item,
     match_high_severity_keywords,
     obj_attr,
     resolve_now_ts,
@@ -151,10 +153,22 @@ class NewsFeedCollector:
             ),
         )
 
+    def _find_semantic_duplicate_key(self, cand_title: str, pool: Dict[str, Tuple[float, NewsHeadline]]) -> Optional[str]:
+        """Find an existing pool key whose headline is a syndicated semantic rewrite of ``cand_title``."""
+        if not cand_title:
+            return None
+        for exist_norm, (_, exist_h) in pool.items():
+            if headlines_are_semantic_duplicates(cand_title, getattr(exist_h, "title", "")):
+                return exist_norm
+        return None
+
     def _coerce_headline(self, item: Any, default_sev: bool = False) -> Optional[NewsHeadline]:
         if isinstance(item, dict):
             raw_title = item.get("title")
             if not isinstance(raw_title, str) or not raw_title.strip():
+                return None
+            raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
+            if is_excluded_reference_news_item(raw_title, raw_src, raw_url):
                 return None
             kws = item.get("matched_keywords")
             raw_str_kws = (
@@ -177,7 +191,6 @@ class NewsFeedCollector:
                 if had_only_noise_kws
                 else self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0))
             )
-            raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
             return NewsHeadline(
                 title=raw_title.strip(),
                 source=raw_src.strip() if isinstance(raw_src, str) else "",
@@ -186,7 +199,11 @@ class NewsFeedCollector:
                 matched_keywords=matched_kws,
                 is_high_severity=is_sev,
             )
-        return item if isinstance(getattr(item, "title", None), str) else None
+        if isinstance(getattr(item, "title", None), str):
+            if is_excluded_reference_news_item(getattr(item, "title", ""), getattr(item, "source", ""), getattr(item, "url", "")):
+                return None
+            return item
+        return None
 
     @staticmethod
     def _parse_recent_pub_date_ts(pub_date: Any, now: float) -> Optional[float]:
@@ -252,10 +269,12 @@ class NewsFeedCollector:
                                     keep_new = False
                                 break
                     if keep_new:
-                        if norm in self._aggregated_pool:
-                            old_ts, old_h = self._aggregated_pool[norm]
+                        sem_key = norm if norm in self._aggregated_pool else self._find_semantic_duplicate_key(h.title, self._aggregated_pool)
+                        if sem_key is not None:
+                            old_ts, old_h = self._aggregated_pool[sem_key]
                             merged_ts, merged_h = self._merge_same_norm_headlines(h, ts, old_h, old_ts)
-                            self._aggregated_pool[norm] = (merged_ts, merged_h)
+                            self._aggregated_pool[sem_key] = (merged_ts, merged_h)
+                            self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
                             self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
                         else:
                             self._aggregated_pool[norm] = (ts, h)
@@ -417,7 +436,15 @@ class NewsFeedCollector:
                             break
                 self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
                 if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
-                    self._aggregated_pool[norm] = (eff_ts, h_obj)
+                    sem_key = self._find_semantic_duplicate_key(h_obj.title, self._aggregated_pool)
+                    if sem_key is not None:
+                        old_ts, old_h = self._aggregated_pool[sem_key]
+                        merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
+                        self._aggregated_pool[sem_key] = (merged_ts, merged_h)
+                        self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
+                        self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
+                    else:
+                        self._aggregated_pool[norm] = (eff_ts, h_obj)
 
         cutoff = now - self.rolling_window_sec
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
@@ -513,12 +540,17 @@ class NewsFeedCollector:
         raw_items = [
             {
                 "title": title,
-                "source": _xml_text(it, "source", channel_source),
+                "source": src,
                 "pub_date": _xml_text(it, "pubDate"),
-                "url": _xml_text(it, "link"),
+                "url": link_url,
             }
             for it in items
             if (title := _xml_text(it, "title"))
+            and not is_excluded_reference_news_item(
+                title,
+                src := _xml_text(it, "source", channel_source),
+                link_url := _xml_text(it, "link"),
+            )
         ]
         if not raw_items:
             return None
@@ -539,6 +571,11 @@ class NewsFeedCollector:
             dup_idx = seen_norms.get(norm_t) if norm_t else None
             if dup_idx is None and canon_u:
                 dup_idx = seen_urls.get(canon_u)
+            if dup_idx is None:
+                for prev_idx, prev_item in enumerate(deduped_candidates):
+                    if headlines_are_semantic_duplicates(item["title"], prev_item["title"]):
+                        dup_idx = prev_idx
+                        break
             if dup_idx is not None:
                 prev_title = deduped_candidates[dup_idx]["title"]
                 if (

@@ -14,8 +14,10 @@ from cachepaths import (
     get_cachedb_dir, normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
-    filter_valid_severity_keywords, obj_attr, read_first_cached_dict,
-    resolve_macro_economic_calendar, safe_float, safe_nonneg_ts, safe_pos_float,
+    _strip_headline_publisher_suffix, filter_valid_severity_keywords,
+    headlines_are_semantic_duplicates, is_excluded_reference_news_item, obj_attr,
+    read_first_cached_dict, resolve_macro_economic_calendar, safe_float,
+    safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     _MICRO_PRICE_ANCHOR_KEYS, _first_variant_dict, _prices_diverged,
@@ -323,9 +325,34 @@ def harvest_macro_and_news_sensors(
         for item in news_data:
             if not isinstance(item, dict) or not item.get("title"):
                 continue
+            if is_excluded_reference_news_item(item.get("title"), item.get("source"), item.get("url")):
+                continue
             raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
-            valid_news.append({**item, "matched_keywords": clean_kws, "is_high_severity": False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity"))})
+            cand_entry = {
+                **item,
+                "matched_keywords": clean_kws,
+                "is_high_severity": False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity")),
+            }
+            merged_dup = False
+            for exist_entry in valid_news:
+                if headlines_are_semantic_duplicates(cand_entry.get("title"), exist_entry.get("title")):
+                    c_ts = safe_pos_float(cand_entry.get("first_seen_ts"), default=0.0) or 0.0
+                    e_ts = safe_pos_float(exist_entry.get("first_seen_ts"), default=0.0) or 0.0
+                    if c_ts > 0.0 and (e_ts <= 0.0 or c_ts < e_ts):
+                        exist_entry["first_seen_ts"] = c_ts
+                    c_title = str(cand_entry.get("title") or "")
+                    e_title = str(exist_entry.get("title") or "")
+                    if _strip_headline_publisher_suffix(c_title) == c_title.strip() and _strip_headline_publisher_suffix(e_title) != e_title.strip():
+                        exist_entry["title"] = c_title
+                    exist_entry["matched_keywords"] = list(
+                        dict.fromkeys([*(exist_entry.get("matched_keywords") or []), *(cand_entry.get("matched_keywords") or [])])
+                    )
+                    exist_entry["is_high_severity"] = bool(exist_entry.get("is_high_severity") or cand_entry.get("is_high_severity"))
+                    merged_dup = True
+                    break
+            if not merged_dup:
+                valid_news.append(cand_entry)
         valid_news.sort(key=lambda x: (1 if x.get("is_high_severity") else 0, safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0), reverse=True)
         for item in valid_news[:6]:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0

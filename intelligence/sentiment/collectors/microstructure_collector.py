@@ -135,8 +135,19 @@ def compute_volume_profile_metrics(
         if total_vol <= 0.0:
             return {}
 
-        poc_idx = max(range(n_bins), key=lambda i: bin_vols[i])
-        poc_raw = bin_px_sums[poc_idx] / bin_vols[poc_idx] if bin_vols[poc_idx] > 0.0 else (low_px + (poc_idx + 0.5) * bin_w)
+        smoothed_vols = [
+            0.50 * bin_vols[i]
+            + 0.25 * (bin_vols[i - 1] if i > 0 else bin_vols[i])
+            + 0.25 * (bin_vols[i + 1] if i < n_bins - 1 else bin_vols[i])
+            for i in range(n_bins)
+        ]
+        poc_idx = max(range(n_bins), key=lambda i: (smoothed_vols[i], bin_vols[i]))
+        k_num, k_den = 0.0, 0.0
+        for nb_idx, nb_w in ((poc_idx - 1, 0.25), (poc_idx, 1.0), (poc_idx + 1, 0.25)):
+            if 0 <= nb_idx < n_bins and bin_vols[nb_idx] > 0.0:
+                k_num += nb_w * bin_px_sums[nb_idx]
+                k_den += nb_w * bin_vols[nb_idx]
+        poc_raw = k_num / k_den if k_den > 0.0 else (low_px + (poc_idx + 0.5) * bin_w)
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 
@@ -157,7 +168,13 @@ def compute_volume_profile_metrics(
         vah_px = round(max(poc_raw, low_px + (vah_idx + 1) * bin_w), eff_dec)
         if vah_px <= val_px:
             vah_px, val_px = round(high_px, eff_dec), round(low_px, eff_dec)
-        return {"poc_px": poc_px, "vah_px": vah_px, "val_px": val_px, **_build_vp_position_dict(cur_px, poc_px, val_px, vah_px)}
+        vp_out: Dict[str, Any] = {"poc_px": poc_px, "vah_px": vah_px, "val_px": val_px, **_build_vp_position_dict(cur_px, poc_px, val_px, vah_px)}
+        sec_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 3 and smoothed_vols[i] >= smoothed_vols[poc_idx] * 0.75 and bin_vols[i] > 0.0]
+        if sec_cands:
+            sec_idx = max(sec_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
+            sec_raw = bin_px_sums[sec_idx] / bin_vols[sec_idx]
+            vp_out["sec_poc_px"] = round(sec_raw, eff_dec)
+        return vp_out
     except Exception:
         return {}
 
@@ -606,6 +623,7 @@ def extract_symbol_recent_fills(
     chron = [o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))]
     last_any = chron[-1]
     cost_qty, active_avg = 0.0, 0.0
+    tactical_qty, tactical_avg = 0.0, 0.0
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
     for o in chron:
@@ -627,21 +645,29 @@ def extract_symbol_recent_fills(
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
+                new_tac_qty = tactical_qty + q_f
+                tactical_avg = ((tactical_qty * tactical_avg) + (q_f * p_f)) / new_tac_qty if new_tac_qty > 0 else 0.0
+                tactical_qty = new_tac_qty
         elif side_o == "SELL":
             sells_fmt.append(item_d)
+            tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None:
                 cost_qty, active_avg = (0.0, 0.0) if (q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12) else (cost_qty - q_f, active_avg)
 
     last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
+    active_avg_r = round(active_avg, 6) if active_avg > 0 else None
+    tactical_avg_r = round(tactical_avg, 6) if tactical_avg > 0 else None
     out_fills: Dict[str, Any] = {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
         "last_action_actor": last_act,
-        "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
+        "active_avg_buy_px": active_avg_r,
         "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
         "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
         "recent_buys": buys_fmt[-4:],
         "recent_sells": sells_fmt[-3:],
     }
+    if tactical_avg_r is not None and active_avg_r is not None and abs(tactical_avg_r - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
+        out_fills["tactical_avg_buy_px"] = tactical_avg_r
     if last_mod:
         out_fills["last_action_module"] = last_mod
     if last_rule:
@@ -1021,8 +1047,9 @@ def compute_liquidation_clusters(
 
     raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=0.50, allow_percentage=True)
     long_share = min(0.85, max(0.15, float(raw_long_pct if raw_long_pct is not None else 0.50)))
+    centered_long = 0.50 + (long_share - 0.50) * 0.55
     funding = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
-    eff_long_share = min(0.88, max(0.12, long_share + max(-0.30, min(0.30, funding * 1500.0)) * 0.5))
+    eff_long_share = min(0.85, max(0.15, centered_long + max(-0.20, min(0.20, funding * 800.0)) * 0.5))
     eff_short_share = 1.0 - eff_long_share
 
     vol_1h = max(0.35, min(6.0, safe_pos_float(p_dict.get("vol_1h_pct"), default=1.2) or 1.2))
@@ -1066,8 +1093,8 @@ def compute_liquidation_clusters(
         round(((px_v - cur_px) / cur_px) * 100.0, 2)
         for px_v in (long_liq_px, short_liq_px, long_liq_deep_px, short_liq_deep_px)
     )
-    short_gravity = short_liq_usd / max(0.35, abs(short_liq_dist_pct))
-    long_gravity = long_liq_usd / max(0.35, abs(long_liq_dist_pct))
+    short_gravity = short_liq_usd / (max(0.35, abs(short_liq_dist_pct)) ** 2)
+    long_gravity = long_liq_usd / (max(0.35, abs(long_liq_dist_pct)) ** 2)
     liq_magnet_bias = (
         "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.18
         else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.18 else "BALANCED_LIQ_MAGNET")

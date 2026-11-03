@@ -1313,6 +1313,95 @@ def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[f
     return tuple(dict.fromkeys((*_split_csv(_cfg_str("feeds", "specialized_rss_urls")), *([dyn_url] if dyn_url else []))))
 
 
+def get_excluded_reference_sources() -> Tuple[str, ...]:
+    """Load static encyclopedia/dictionary reference sources excluded from live breaking news."""
+    return _split_csv(_cfg_str("feeds", "excluded_reference_sources"), lower=True)
+
+
+def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:
+    """Return True if a headline originates from a static reference/encyclopedia domain (e.g. Britannica, Wikipedia)."""
+    excluded = get_excluded_reference_sources()
+    if not excluded:
+        return False
+    src_l = str(source or "").strip().lower()
+    url_l = str(url or "").strip().lower()
+    title_s = str(title or "").strip()
+    pub_sfx = ""
+    if " - " in title_s:
+        pub_sfx = title_s.rsplit(" - ", 1)[-1].strip().lower()
+    return any(
+        ref in src_l or ref in url_l or (pub_sfx and ref in pub_sfx)
+        for ref in excluded
+    )
+
+
+def _normalize_semantic_stem(token: str) -> str:
+    """Normalize common plural/verb/inflection suffixes into a canonical stem for story deduplication."""
+    t = token.lower().strip()
+    for sfx, repl in (
+        ("interviews", "interview"),
+        ("hackers", "hack"),
+        ("hacked", "hack"),
+        ("hacking", "hack"),
+        ("attacks", "attack"),
+        ("attacked", "attack"),
+        ("attacking", "attack"),
+        ("strikes", "strike"),
+        ("striking", "strike"),
+        ("sanctions", "sanction"),
+        ("tariffs", "tariff"),
+        ("plunges", "plunge"),
+        ("plunged", "plunge"),
+        ("collapses", "collapse"),
+        ("collapsed", "collapse"),
+    ):
+        if t == sfx:
+            return repl
+    if len(t) > 5 and t.endswith("ies"):
+        return t[:-3] + "y"
+    if len(t) > 5 and t.endswith("ing"):
+        return t[:-3]
+    if len(t) > 4 and t.endswith("ed"):
+        return t[:-2]
+    if len(t) > 4 and t.endswith("s") and not t.endswith("ss"):
+        return t[:-1]
+    return t
+
+
+def headline_content_stems(title: Any) -> Set[str]:
+    """Extract normalized content stem tokens (excluding stopwords and publisher suffixes) from a headline."""
+    if not isinstance(title, str) or not title.strip():
+        return set()
+    clean = _strip_headline_publisher_suffix(title).strip().lower()
+    stopwords = _get_stopwords_set()
+    stems: Set[str] = set()
+    for m in re.finditer(r"\$?(\d+(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}", clean):
+        num_grp = m.group(1)
+        if num_grp:
+            stems.add(num_grp)
+            continue
+        tok = m.group(0)
+        if tok in stopwords:
+            continue
+        stem = _normalize_semantic_stem(tok)
+        if len(stem) >= 3 and stem not in stopwords:
+            stems.add(stem)
+    return stems
+
+
+def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
+    """Return True if two headlines represent syndicated rewrites of the same underlying news story."""
+    stems_a = headline_content_stems(title_a)
+    stems_b = headline_content_stems(title_b)
+    if len(stems_a) < 4 or len(stems_b) < 4:
+        return False
+    shared = stems_a & stems_b
+    if len(shared) < 4:
+        return False
+    overlap = len(shared) / float(min(len(stems_a), len(stems_b)))
+    return overlap >= 0.60
+
+
 HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = get_active_severity_keywords()
 ACUTE_SHOCK_PHRASES: Tuple[str, ...] = get_active_acute_shock_phrases()
 DEFAULT_RSS_URL: str = build_dynamic_rss_url()
@@ -1546,6 +1635,16 @@ def get_macro_calendar_windows_eet() -> Tuple[Tuple[int, int, str, str], ...]:
     return tuple(parsed)
 
 
+def get_macro_calendar_routine_labels() -> Dict[str, str]:
+    """Load optional routine session fallback labels (4th pipe field) keyed by event code from ``macro_intelligence.conf``."""
+    labels: Dict[str, str] = {}
+    for item in _split_csv(_cfg_str("sessions", "macro_calendar_windows_eet")):
+        parts = [p.strip() for p in item.split("|")]
+        if len(parts) >= 4 and parts[1] and parts[3]:
+            labels[parts[1]] = parts[3]
+    return labels
+
+
 def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
     """Load macro economic calendar keywords from ``macro_intelligence.conf``."""
     return _split_csv(_cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
@@ -1569,26 +1668,7 @@ def resolve_macro_economic_calendar(
     dt_eet = _primary_eet_dt(ts)
     tz_abbr = dt_eet.strftime("%Z") or "EET"
     windows = get_macro_calendar_windows_eet()
-
-    active_window: Optional[str] = None
-    upcoming: List[Tuple[float, str, str, str]] = []
-    for day_offset in range(0, 4):
-        cand_date = (dt_eet + timedelta(days=day_offset)).date()
-        if cand_date.weekday() >= 5:
-            continue
-        for hh, mm, code, desc in windows:
-            ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
-            delta_min = (ev_dt.timestamp() - ts) / 60.0
-            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
-            if -20.0 <= delta_min <= 0.0 and active_window is None:
-                active_window = f"{desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — ACTIVE VOLATILITY WINDOW)"
-            elif delta_min > 0.0:
-                upcoming.append((delta_min, code, desc, f"{desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
-
-    upcoming.sort(key=lambda x: x[0])
-    next_event = upcoming[0][3] if upcoming else "None scheduled"
-    next_code = upcoming[0][1] if upcoming else "NONE"
-    next_in_min = round(upcoming[0][0], 1) if upcoming else None
+    routine_labels = get_macro_calendar_routine_labels()
 
     macro_kws = get_macro_calendar_headline_keywords()
     detected_macro_headlines: List[str] = []
@@ -1597,6 +1677,29 @@ def resolve_macro_economic_calendar(
             title = str(obj_attr(item, "title", "") or "").strip()
             if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
                 detected_macro_headlines.append(title)
+    macro_release_confirmed = bool(detected_macro_headlines)
+
+    active_window: Optional[str] = None
+    upcoming: List[Tuple[float, str, str, str]] = []
+    for day_offset in range(0, 4):
+        cand_date = (dt_eet + timedelta(days=day_offset)).date()
+        if cand_date.weekday() >= 5:
+            continue
+        for hh, mm, code, desc in windows:
+            eff_desc = desc if macro_release_confirmed else routine_labels.get(code, desc)
+            ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
+            delta_min = (ev_dt.timestamp() - ts) / 60.0
+            time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
+            if -20.0 <= delta_min <= 0.0 and active_window is None:
+                win_tag = "ACTIVE VOLATILITY WINDOW" if (macro_release_confirmed or code not in routine_labels) else "ACTIVE SESSION WINDOW"
+                active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
+            elif delta_min > 0.0:
+                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
+
+    upcoming.sort(key=lambda x: x[0])
+    next_event = upcoming[0][3] if upcoming else "None scheduled"
+    next_code = upcoming[0][1] if upcoming else "NONE"
+    next_in_min = round(upcoming[0][0], 1) if upcoming else None
 
     return {
         "session_key": session_ctx.session_key,
@@ -1604,6 +1707,7 @@ def resolve_macro_economic_calendar(
         "eet_time": session_ctx.eet_time_str,
         "ny_time": session_ctx.ny_time_str,
         "is_weekend": session_ctx.is_weekend,
+        "macro_release_confirmed": macro_release_confirmed,
         "active_release_window": active_window,
         "next_high_impact_event": active_window or next_event,
         "next_scheduled_event": next_event,
