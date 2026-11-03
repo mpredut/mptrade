@@ -174,18 +174,45 @@ class _DiskBackedSymbolCollector:
         if not isinstance(symbol, str) or not (sym_clean := symbol.strip().upper()):
             return None, 0.0, None, None, False
         now_f = _effective_now_ts(now)
-        cached, fresh = self._lookup_cached(sym_clean, now_f)
-        if fresh is not None:
-            return sym_clean, now_f, cached, fresh, False
-        if (disk_snap := self._load_from_disk(sym_clean, now_f)) is not None:
-            return sym_clean, now_f, cached, disk_snap, False
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
+        require_exact_venue_sym = bool(
+            allow_net_bool
+            and self._QUOTE_ISOLATED
+            and sym_clean in ("HYPEUSD", "HYPEUSDC", "TAOUSD", "TAOUSDC", "ADAUSD", "ADAUSDC")
+        )
+        cached, fresh = self._lookup_cached(sym_clean, now_f)
+        if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
+            return sym_clean, now_f, cached, fresh, False
+        disk_snap = self._load_from_disk(sym_clean, now_f)
+        if disk_snap is not None and (not require_exact_venue_sym or str(getattr(disk_snap, "symbol", "") or "").strip().upper() == sym_clean):
+            return sym_clean, now_f, cached, disk_snap, False
         return sym_clean, now_f, cached, None, allow_net_bool
 
     def _commit_snapshot(self, symbol: str, now: float, snapshot: Any) -> Any:
         self._cache[symbol] = (now, snapshot)
         self._save_to_disk(snapshot)
         return snapshot
+
+    @staticmethod
+    def _post_hyperliquid_info(
+        payload: Dict[str, Any],
+        *,
+        timeout: float = 4.0,
+        user_agent: str = "mptrade-intelligence/1.0",
+    ) -> Any:
+        import json as _json
+        import urllib.request as _urlreq
+
+        body = _json.dumps(payload).encode("utf-8")
+        req = _urlreq.Request(
+            "https://api.hyperliquid.xyz/info",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": user_agent},
+            method="POST",
+        )
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return _json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
 
     @staticmethod
     def _fetch_json_dict(
@@ -196,7 +223,17 @@ class _DiskBackedSymbolCollector:
         timeout: float = 5.0,
         user_agent: str = "mptrade-intelligence/1.0",
     ) -> Dict[str, Any]:
-        raw_data = fetch_public_json(url, timeout=timeout, user_agent=user_agent)
+        if isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?"):
+            import urllib.parse as _urlparse
+
+            q_params = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
+            raw_data = _DiskBackedSymbolCollector._post_hyperliquid_info(
+                q_params, timeout=timeout, user_agent=user_agent
+            )
+            if isinstance(raw_data, list):
+                return {"result_list": raw_data}
+        else:
+            raw_data = fetch_public_json(url, timeout=timeout, user_agent=user_agent)
         if not isinstance(raw_data, dict):
             raise ValueError(f"Unexpected {label} payload for {lookup_sym}: {type(raw_data).__name__}")
         return raw_data
@@ -332,11 +369,29 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     if (usdc_sym and usdc_sym != lookup_sym)
                     else (f"https://api.binance.com/api/v3/depth?symbol={lookup_sym}&limit=500",)
                 )
-                base_urls = (
-                    *spot_urls,
-                    f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                    f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                )
+                hl_coin = _extract_base_asset(canon_sym)
+                hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
+                if canon_sym in ("TAOUSD", "ADAUSD"):
+                    base_urls = (
+                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                        *spot_urls,
+                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                        *((hl_book_url,) if hl_book_url else ()),
+                    )
+                elif canon_sym == "HYPEUSDC" and hl_book_url:
+                    base_urls = (
+                        *spot_urls,
+                        hl_book_url,
+                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                    )
+                else:
+                    base_urls = (
+                        *spot_urls,
+                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                        *((hl_book_url,) if hl_book_url else ()),
+                    )
             pref_url = self._preferred_url.get(symbol)
             urls = (
                 (pref_url, *(u for u in base_urls if u != pref_url))
@@ -348,6 +403,13 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     raw_data = self._fetch_json_dict(
                         url, "depth", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
                     )
+                    if "bids" not in raw_data and isinstance(raw_data.get("levels"), list) and len(raw_data["levels"]) >= 2:
+                        hl_bids, hl_asks = raw_data["levels"][0], raw_data["levels"][1]
+                        if isinstance(hl_bids, list) and isinstance(hl_asks, list):
+                            raw_data = {
+                                "bids": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_bids],
+                                "asks": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_asks],
+                            }
                     if "bids" not in raw_data and isinstance(raw_data.get("result"), dict):
                         krk_book = next(
                             (v for v in raw_data["result"].values() if isinstance(v, dict) and "bids" in v),

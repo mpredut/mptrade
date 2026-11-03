@@ -1698,11 +1698,9 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     assert len(captured_prompts) == 1
     prompt = captured_prompts[0]
 
-    # Verify full multi-horizon vs_btc and raw alt_btc_24h range geometry on TAOUSDC (without pre-calculated beta/corr)
+    # Verify full multi-horizon vs_btc and alt_btc_24h range geometry + beta/corr on TAOUSDC
     assert "vs_btc(15m=-0.30%, 1h=-1.00%, 3h=-0.50%, 6h=+1.00%, 12h=+2.00%, 24h=+3.00%, 7d=+12.00%)" in prompt
-    assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%)" in prompt
-    assert "beta=" not in prompt
-    assert "corr=" not in prompt
+    assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%, beta=1.42, corr=0.65)" in prompt
     assert "dd_high=-3.70%, bounce_low=+8.33%, span=12.5%" in prompt
     # Verify BTC and XBT do not have vs_btc
     btc_line = [ln for ln in prompt.splitlines() if "BTCUSDC" in ln][0]
@@ -2409,8 +2407,8 @@ def test_venue_alias_decision_dedup_kraken_pair_matching_and_cross_venue_fills(t
     snap2 = reconciler.harvest_sensors_telemetry(include_fleet=False, asset_scope="crypto")
     hype_pinfo = snap2.prices_and_trends["HYPEUSDC"]
     assert hype_pinfo.get("alt_btc_pos_24h_pct") is not None
-    assert "beta_btc_24h" not in hype_pinfo
-    assert "corr_btc_24h" not in hype_pinfo
+    assert hype_pinfo.get("beta_btc_24h") is not None
+    assert hype_pinfo.get("corr_btc_24h") is not None
 
     from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
     gw = AutonomousIntentGateway(workspace_dir=str(tmp_path), mode="shadow", notify_enabled=False)
@@ -7037,7 +7035,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     monkeypatch.setattr(wc, "_fetch_latest_json_row", _mock_rows)
     w_snap = wc.fetch("BTCUSDC", allow_network=True, now=1793627000.0)
     assert w_snap is not None
-    assert any("period=5m&limit=3" in u for u in called_urls)
+    assert any("period=5m&limit=48" in u or "period=5m&limit=3" in u for u in called_urls)
     assert any("period=5m&limit=13" in u for u in called_urls)
     # 350 buyVol / 290 sellVol = 1.2069
     assert w_snap.taker_buy_sell_ratio == pytest.approx(round(350.0 / 290.0, 4))
@@ -8084,6 +8082,423 @@ def test_harvest_log_anomalies_ignores_supervisor_gated_ntfy_and_patch_rollback_
     assert ok is False
     assert target_py.read_text(encoding="utf-8") == original_uncommitted
     assert not any(c[:2] == ["git", "checkout"] for c in git_calls)
+
+
+def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkeypatch):
+    """Verify Audit Remediations A-G and Section 3 (HYPEUSDC/HYPEUSD native L1 telemetry & ETH/BTC + BTCDOM rotation)."""
+    from types import SimpleNamespace
+    from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+    from intelligence.macro_sentiment_ssot import compute_dynamic_sentiment_interval
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.microstructure_collector import compute_volume_profile_metrics
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _normalize_open_orders_list,
+        enrich_cross_venue_trends,
+        harvest_recent_orders_and_enrich_positions,
+        sync_sibling_symbol_telemetry,
+    )
+    from market_regime import ClosedPriceSeries
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
+
+    # --- A. Kraken Partial Sell Reconciliation Preserves Remaining Cycle Qty & Cost ---
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    entry_ts_s = 1793369007.4793
+    sell_ts_ms = int((entry_ts_s + 350000.0) * 1000)
+
+    class _FakeKrakenPartialSellProvider:
+        name = "kraken"
+
+        def recent_orders(self, symbol, limit=10):
+            return [
+                {
+                    "id": "OBUY-INIT-1",
+                    "side": "BUY",
+                    "price": 91.209992,
+                    "executedQty": 2.835368,
+                    "status": "CLOSED",
+                    "time": int(entry_ts_s * 1000),
+                },
+                {
+                    "id": "OSELL-PART-2",
+                    "side": "SELL",
+                    "price": 87.12,
+                    "executedQty": 2.295092,
+                    "status": "CLOSED",
+                    "time": sell_ts_ms,
+                    "clientOrderId": "AI_intent_1793719000_sell_hypeusd",
+                },
+            ]
+
+    inst_map = {"kraken:HYPEUSD": SimpleNamespace(_provider=_FakeKrakenPartialSellProvider(), provider_name="kraken")}
+    tradable_positions = [
+        {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "base": "HYPE",
+            "quote": "USD",
+            "free_base": 0.540276,
+            "free_quote": 2861.30,
+            "price": 86.25,
+            "value_usd": 46.60,
+        }
+    ]
+    prices_and_trends = {"HYPEUSD": {"price": 86.25, "trend": 0, "growth_coefficient": 0.0}}
+    kraken_cycles = {
+        "HYPEUSD": {
+            "qty": 0.540276,
+            "cost_usd": 49.28,
+            "avg_cost_px": 91.209992,
+            "entry_price": 91.209992,
+            "last_buy_price": 91.209992,
+            "last_sell_price": 87.12,
+            "dca_buys": 0,
+            "dd_pct": -5.44,
+            "entry_ts": entry_ts_s,
+            "last_sell_ts": sell_ts_ms / 1000.0,
+        }
+    }
+    harvest_recent_orders_and_enrich_positions(
+        str(cache_dir),
+        inst_map,
+        tradable_positions,
+        prices_and_trends,
+        kraken_cycles,
+        {},
+        {},
+        known_ai_order_ids={"OSELL-PART-2"},
+    )
+    assert kraken_cycles["HYPEUSD"]["qty"] == pytest.approx(0.540276)
+    assert kraken_cycles["HYPEUSD"]["cost_usd"] == pytest.approx(49.28)
+    assert kraken_cycles["HYPEUSD"]["avg_cost_px"] == pytest.approx(91.209992)
+    assert tradable_positions[0]["active_avg_buy_px"] == pytest.approx(91.209992)
+
+    # --- B & D. Neutral Long Trend + Weibull Stats and vp_source=TPO|REAL_VOL in Section 3A ---
+    vp_tpo = compute_volume_profile_metrics([[1000 + i * 1000, 100.0 + (i % 5)] for i in range(20)])
+    assert vp_tpo.get("vp_source") == "TPO"
+    vp_real = compute_volume_profile_metrics([[1000 + i * 1000, 100.0 + (i % 5), 15.0 + i] for i in range(20)])
+    assert vp_real.get("vp_source") == "REAL_VOL"
+
+    s_ohlc = ClosedPriceSeries.from_raw_candles(
+        [
+            [1700000000000, "100.0", "101.0", "99.0", "100.5", "42.5"],
+            [1700000300000, "100.5", "102.0", "100.0", "101.0", "10.0"],
+        ],
+        5,
+        lambda r: float(r[4]),
+        lambda r: float(r[0]),
+        vol_getter=lambda r: float(r[5]),
+    )
+    assert s_ohlc.volumes == (42.5,)
+
+    pt_b = {"BTCUSDC": {"price": 78000.0, "trend": 0, "growth_coefficient": 0.0, **vp_real}}
+    enrich_cross_venue_trends(
+        pt_b,
+        trends_data={},
+        kalman_data={},
+        long_items={"BTCUSDC": None},
+        priceanalysis_data={"items": {"BTCUSDC": None}, "timestamp": 1793700000.0},
+        t_trend_map={"BTCUSDC": {"median_d": 3.0, "p90_d": 6.5}},
+        watcher_price_items={},
+    )
+    assert pt_b["BTCUSDC"].get("long_trend_neutral") is True
+    assert pt_b["BTCUSDC"].get("weibull_median_d") == 3.0
+    sec_3a = "\n".join(_format_market_prices_section(pt_b))
+    assert "long_trend=NEUTRAL(med_d=3.0d/p90=6.5d)" in sec_3a
+    assert "vp_source=REAL_VOL" in sec_3a
+
+    # --- E & 3.2. Macro Sentiment Advisor Live Flow Override & Market Breadth ETH/BTC + BTCDOM ---
+    tickers = [
+        {"symbol": "BTCUSDT", "lastPrice": "78000.0", "priceChangePercent": "1.20", "quoteVolume": "500000000"},
+        {"symbol": "ETHUSDT", "lastPrice": "2730.0", "priceChangePercent": "3.50", "quoteVolume": "250000000"},
+        {"symbol": "SOLUSDT", "lastPrice": "180.0", "priceChangePercent": "4.10", "quoteVolume": "150000000"},
+        {"symbol": "TAOUSDT", "lastPrice": "235.0", "priceChangePercent": "5.20", "quoteVolume": "50000000"},
+        {"symbol": "ARBUSDT", "lastPrice": "0.165", "priceChangePercent": "2.80", "quoteVolume": "30000000"},
+        {"symbol": "ADAUSDT", "lastPrice": "0.195", "priceChangePercent": "1.90", "quoteVolume": "20000000"},
+    ]
+    mb_snap = MarketBreadthCollector(min_volume_usd=1_000_000.0).parse_tickers(tickers)
+    assert mb_snap is not None
+    assert mb_snap.eth_btc_ratio == pytest.approx(2730.0 / 78000.0, rel=1e-4)
+    assert mb_snap.btc_vol_share_pct == pytest.approx(50.0)
+    assert mb_snap.alt_vol_share_pct == pytest.approx(25.0)
+    assert mb_snap.rotation_regime == "ETH_OUTPERFORMING"
+
+    cached_adv = SimpleNamespace(ts=1000.0, is_fallback=False, market_bias="DEFENSIVE", recommended_action="TRIM_PROFITS")
+    itv_sec, itv_reason = compute_dynamic_sentiment_interval(
+        base_interval_sec=1800.0,
+        last_eval_ts=1000.0,
+        now_ts=1600.0,
+        cached_assessment=cached_adv,
+        btc_taker_ratio=1.74,
+        prev_btc_taker_ratio=0.45,
+    )
+    assert itv_sec <= 300.0
+    assert "btc_whale_flow_regime_flip" in itv_reason
+
+    snap_macro = SimpleNamespace(
+        fear_greed=None,
+        market_breadth={
+            "advance_ratio": mb_snap.advance_ratio,
+            "regime": mb_snap.regime,
+            "median_change_pct": mb_snap.median_change_pct,
+            "mean_change_pct": mb_snap.mean_change_pct,
+            "dispersion_std": mb_snap.dispersion_std,
+            "advancing": mb_snap.advancing_count,
+            "total_symbols": mb_snap.total_count,
+            "eth_btc_ratio": mb_snap.eth_btc_ratio,
+            "eth_btc_chg_24h_pct": mb_snap.eth_btc_chg_24h_pct,
+            "eth_price": mb_snap.eth_price,
+            "eth_chg_24h_pct": mb_snap.eth_chg_24h_pct,
+            "btc_vol_share_pct": mb_snap.btc_vol_share_pct,
+            "alt_vol_share_pct": mb_snap.alt_vol_share_pct,
+            "rotation_regime": mb_snap.rotation_regime,
+        },
+        sentiment_advisor={
+            "market_bias": "DEFENSIVE",
+            "risk_level": "HIGH",
+            "recommended_action": "TRIM_PROFITS",
+            "confidence": 0.82,
+            "age_min": 36.4,
+            "summary": "Prior bearish flow",
+            "live_flow_divergence": "STALE_ADVISOR_BULLISH_REVERSAL(live_btc_taker_ratio=1.7456, cvd_15m=+$26,570,000)",
+        },
+        geopolitical_threat=None,
+        macro_benchmarks=None,
+        breaking_news=[],
+    )
+    sec_1 = "\n".join(_format_macro_and_news_section(snap_macro))
+    assert "ETH/BTC=" in sec_1
+    assert "BTCDOM=50.0%" in sec_1
+    assert "TOTAL3_share=25.0%" in sec_1
+    assert "rotation=ETH_OUTPERFORMING" in sec_1
+    assert "live_flow_override=STALE_ADVISOR_BULLISH_REVERSAL" in sec_1
+
+    # --- F. Open LIMIT Order Age Normalization ---
+    now_oo = 1793652348.0
+    norm_orders = _normalize_open_orders_list(
+        [
+            {
+                "id": "101",
+                "side": "SELL",
+                "price": 79000.0,
+                "origQty": 0.01,
+                "executedQty": 0.0,
+                "status": "NEW",
+                "clientOrderId": "AI_intent_1793651508_sell_btcusdc",
+            },
+            {
+                "id": "OWZ3YO-1",
+                "side": "SELL",
+                "price": 93.85,
+                "origQty": 4.87,
+                "executedQty": 0.0,
+                "status": "NEW",
+                "clientOrderId": "7a1312da8cc631eb9d091260fdf540bb",
+            },
+        ],
+        "kraken",
+        "HYPEUSD",
+        {"101", "OWZ3YO-1"},
+        now_ts=now_oo,
+        order_ts_map={"OWZ3YO-1": now_oo - 3600.0},
+    )
+    assert len(norm_orders) == 2
+    assert norm_orders[0]["age_min"] == pytest.approx(14.0, abs=0.2)
+    assert norm_orders[0]["age"] == "14.0m"
+    assert norm_orders[1]["age_min"] == pytest.approx(60.0, abs=0.2)
+    assert norm_orders[1]["age"] == "1.0h"
+
+    # --- G & 3.1. Rolling Microstructure Cycle Delta, Distinct HYPEUSDC vs HYPEUSD in 3B, and Portfolio Age ---
+    micro_g = {
+        "HYPEUSDC": {
+            "ob_imbalance": 0.55,
+            "bid_depth_usd": 320000.0,
+            "ask_depth_usd": 260000.0,
+            "best_bid": 86.40,
+            "best_ask": 86.42,
+            "ob_mid_price": 86.41,
+            "whale_long_pct": 0.68,
+            "taker_buy_sell_ratio": 1.25,
+            "taker_buy_vol_usd": 2500000.0,
+            "taker_sell_vol_usd": 2000000.0,
+            "oi_usd": 380000000.0,
+            "funding_rate": 0.0000125,
+        },
+        "HYPEUSD": {
+            "ob_imbalance": 0.42,
+            "bid_depth_usd": 18000.0,
+            "ask_depth_usd": 25000.0,
+            "best_bid": 86.35,
+            "best_ask": 86.45,
+            "ob_mid_price": 86.40,
+        },
+    }
+    pt_g = {
+        "HYPEUSDC": {"price": 86.41, "chg_15m_pct": 0.25},
+        "HYPEUSD": {"price": 86.40, "chg_15m_pct": 0.20},
+    }
+    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1000.0)
+    micro_g["HYPEUSDC"]["ob_imbalance"] = 0.64
+    micro_g["HYPEUSDC"]["cvd_15m_usd"] = 850000.0
+    micro_g["HYPEUSDC"]["taker_buy_vol_usd"] = 2850000.0
+    micro_g["HYPEUSDC"]["taker_sell_vol_usd"] = 2000000.0
+    sync_sibling_symbol_telemetry(pt_g, micro_g, cache_dir=str(cache_dir), now_ts=1600.0)
+    assert "cycle_delta" in micro_g["HYPEUSDC"]
+    sec_3b = "\n".join(_format_microstructure_section(micro_g, pt_g))
+    assert "* HYPEUSDC:" in sec_3b
+    assert "* HYPEUSD:" in sec_3b
+    assert "cycle_delta(" in sec_3b
+
+    # Verify Hyperliquid L1 l2Book & metaAndAssetCtxs collectors for HYPEUSDC
+    ob_col = OrderbookDepthCollector(cache_dir=str(cache_dir), cache_ttl_sec=0.0, disk_ttl_sec=0.0)
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_json_dict",
+        lambda url, label, lookup_sym, **kw: (
+            (_ for _ in ()).throw(RuntimeError("400"))
+            if "binance.com" in url
+            else {
+                "coin": "HYPE",
+                "levels": [
+                    [{"px": "86.40", "sz": "1000.0", "n": 5}],
+                    [{"px": "86.42", "sz": "800.0", "n": 4}],
+                ],
+            }
+        ),
+    )
+    hl_ob = ob_col.fetch("HYPEUSDC", allow_network=True, now=2000.0)
+    assert hl_ob is not None
+    assert hl_ob.best_bid == pytest.approx(86.40)
+    assert hl_ob.best_ask == pytest.approx(86.42)
+
+    deriv_col = DerivativesTelemetryCollector(cache_dir=str(cache_dir), cache_ttl_sec=0.0, disk_ttl_sec=0.0)
+    monkeypatch.setattr(
+        deriv_col,
+        "_fetch_json_dict",
+        lambda url, label, lookup_sym, **kw: {
+            "result_list": [
+                {"universe": [{"name": "BTC"}, {"name": "HYPE"}]},
+                [
+                    {"funding": "0.00001", "openInterest": "1000", "markPx": "78000"},
+                    {"funding": "0.000025", "openInterest": "4500000", "markPx": "86.41"},
+                ],
+            ]
+        },
+    )
+    hl_deriv = deriv_col.fetch("HYPEUSDC", allow_network=True, now=2000.0)
+    assert hl_deriv is not None
+    assert hl_deriv.funding_rate == pytest.approx(0.000025)
+    assert hl_deriv.open_interest == pytest.approx(4500000.0)
+
+    whale_col = WhalePositioningCollector(cache_dir=str(cache_dir), cache_ttl_sec=0.0, disk_ttl_sec=0.0)
+    monkeypatch.setattr(
+        whale_col,
+        "_fetch_latest_json_row",
+        lambda url, label, lookup_sym, **kw: (_ for _ in ()).throw(RuntimeError("fapi unavailable")),
+    )
+    monkeypatch.setattr(
+        whale_col,
+        "_fetch_json_dict",
+        lambda url, label, lookup_sym, **kw: (
+            {
+                "result_list": [
+                    {"px": "86.40", "sz": "100.0", "side": "B"},
+                    {"px": "86.41", "sz": "50.0", "side": "A"},
+                ]
+            }
+            if "recentTrades" in url
+            else {
+                "result_list": [
+                    {"universe": [{"name": "HYPE"}]},
+                    [{"funding": "0.000025", "openInterest": "4500000", "markPx": "86.41"}],
+                ]
+            }
+        ),
+    )
+    hl_whale = whale_col.fetch("HYPEUSDC", allow_network=True, now=2000.0)
+    assert hl_whale is not None
+    assert hl_whale.taker_buy_sell_ratio == pytest.approx((86.40 * 100.0) / (86.41 * 50.0), rel=1e-3)
+
+    sec_3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "total_value_usdc": 10915.49,
+                "total_value_usdc_age_min": 6.5,
+                "live_binance_equity_usdc": 11024.80,
+            },
+            {},
+        )
+    )
+    assert "snapshot_age=6.5m" in sec_3c
+    assert "live_reconciled=$11,024.80 USDC" in sec_3c
+
+
+def test_production_deep_audit_cross_btc_alignment_sell_tranches_and_slopes(tmp_path):
+    """Verify deep production audit fixes (Bugs H-O):
+    - compute_cross_btc_metrics aligns 5m OHLC candle close timestamps (k*300s) with 1s tick timestamps (k*300s - 1s)
+    - _compute_short_slopes_from_series derives multi-horizon slopes & growth coefficients from 24h series
+    - _format_recent_order_line formats Recent SELL Tranches alongside Recent BUY Tranches
+    - harvest_kraken_xstocks discovers .xstock_state.json (dotfile) as well as xstock_state.json
+    """
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        compute_cross_btc_metrics,
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _compute_short_slopes_from_series,
+        harvest_kraken_xstocks,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import _format_recent_order_line
+
+    # 1. 5m OHLC close at k*300_000 ms vs 1s tick at k*300_000 - 1000 ms
+    base_ms = 1_793_700_000_000
+    btc_1s = []
+    alt_5m = []
+    for k in range(24):
+        ret = 0.004 * (1 if k % 2 == 0 else -0.8)
+        b_px = 77000.0 * (1.0 + ret * (k + 1) * 0.1)
+        a_px = 0.19 * (1.0 + ret * (k + 1) * 0.12)
+        btc_1s.append([base_ms + k * 300_000 - 1000, b_px])
+        alt_5m.append([base_ms + k * 300_000, a_px])
+    cross = compute_cross_btc_metrics(alt_5m, btc_1s)
+    assert cross.get("beta_btc_24h", 0.0) > 0.5
+    assert cross.get("corr_btc_24h", 0.0) > 0.5
+
+    # 2. Fallback multi-horizon slopes from 24h series
+    slopes = _compute_short_slopes_from_series(alt_5m)
+    assert "slope_3_7m" in slopes and "slope_15m" in slopes and "slope_2_5h" in slopes
+    assert "growth_15m" in slopes
+
+    # 3. Recent SELL Tranches in _format_recent_order_line
+    fills = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 91.21, "executedQty": 4.9358, "time": 1_793_369_007_000, "orderId": "B1"},
+            {"side": "SELL", "price": 86.80, "executedQty": 0.3926, "time": 1_793_700_000_000, "orderId": "S1"},
+            {"side": "SELL", "price": 87.66, "executedQty": 1.7105, "time": 1_793_710_000_000, "orderId": "S2"},
+            {"side": "SELL", "price": 87.12, "executedQty": 2.2951, "time": 1_793_720_000_000, "orderId": "S3"},
+        ],
+        known_ai_order_ids={"B1", "S1", "S2", "S3"},
+        symbol="HYPEUSD",
+    )
+    line = _format_recent_order_line("HYPEUSD", fills, 1_793_725_000_000)
+    assert "Recent SELL Tranches=[0.3926@86.8, 1.7105@87.66, 2.2951@87.12]" in line
+
+    # 4. .xstock_state.json dotfile discovery
+    krk_dir = tmp_path / "kraken"
+    krk_dir.mkdir()
+    (krk_dir / ".xstock_state.json").write_text('{"known_assets": {"SPCXX.T": 2.5}, "pair": "SPCXUSD"}', encoding="utf-8")
+    xst = harvest_kraken_xstocks(str(krk_dir), {"SPCXUSD": {"price": 141.5}}, {}, lambda p: __import__("json").loads(open(p, encoding="utf-8").read()))
+    assert xst is not None
+    assert xst["holdings"] == {"SPCXX.T": 2.5}
+
+
 
 
 

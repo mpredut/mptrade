@@ -260,11 +260,12 @@ class AutonomousAIReconciler:
         )
 
         call_timeout = float(getattr(spec, "default_timeout_sec", 0.0) or (120.0 if spec.can_self_heal else 90.0))
+        now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
         resp = query_topic_json(
             self.gemini_auditor,
             topic_key,
             prompt,
-            subtitle=self.mode.upper(),
+            subtitle=f"{self.mode.upper()} [{now_ts_str}]",
             timeout_sec=call_timeout,
         )
 

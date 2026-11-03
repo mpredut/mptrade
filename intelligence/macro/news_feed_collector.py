@@ -18,6 +18,7 @@ from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
     _strip_headline_publisher_suffix,
+    are_headlines_semantically_duplicate,
     build_dynamic_rss_url,
     canonical_article_url,
     discover_dynamic_terms_from_headlines,
@@ -26,6 +27,7 @@ from intelligence.macro_sentiment_ssot import (
     get_specialized_rss_urls,
     has_acute_shock_keywords,
     is_cache_fresh,
+    is_encyclopedic_or_reference_headline,
     match_high_severity_keywords,
     obj_attr,
     resolve_now_ts,
@@ -156,6 +158,9 @@ class NewsFeedCollector:
             raw_title = item.get("title")
             if not isinstance(raw_title, str) or not raw_title.strip():
                 return None
+            raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
+            if is_encyclopedic_or_reference_headline(raw_title, raw_src, raw_url):
+                return None
             kws = item.get("matched_keywords")
             raw_str_kws = (
                 [str(k).strip() for k in kws if isinstance(k, str) and str(k).strip()]
@@ -177,7 +182,6 @@ class NewsFeedCollector:
                 if had_only_noise_kws
                 else self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0))
             )
-            raw_src, raw_pub, raw_url = item.get("source"), item.get("pub_date"), item.get("url")
             return NewsHeadline(
                 title=raw_title.strip(),
                 source=raw_src.strip() if isinstance(raw_src, str) else "",
@@ -186,7 +190,15 @@ class NewsFeedCollector:
                 matched_keywords=matched_kws,
                 is_high_severity=is_sev,
             )
-        return item if isinstance(getattr(item, "title", None), str) else None
+        if isinstance(getattr(item, "title", None), str):
+            if is_encyclopedic_or_reference_headline(
+                getattr(item, "title", ""),
+                getattr(item, "source", ""),
+                getattr(item, "url", ""),
+            ):
+                return None
+            return item
+        return None
 
     @staticmethod
     def _parse_recent_pub_date_ts(pub_date: Any, now: float) -> Optional[float]:
@@ -258,7 +270,18 @@ class NewsFeedCollector:
                             self._aggregated_pool[norm] = (merged_ts, merged_h)
                             self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
                         else:
-                            self._aggregated_pool[norm] = (ts, h)
+                            sem_merged = False
+                            for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                                if are_headlines_semantically_duplicate(h.title, getattr(old_h, "title", "")):
+                                    merged_ts, merged_h = self._merge_same_norm_headlines(h, ts, old_h, old_ts)
+                                    self._aggregated_pool[old_norm] = (merged_ts, merged_h)
+                                    self._seen_first_ts[old_norm] = min(
+                                        self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                                    )
+                                    sem_merged = True
+                                    break
+                            if not sem_merged:
+                                self._aggregated_pool[norm] = (ts, h)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
@@ -417,7 +440,18 @@ class NewsFeedCollector:
                             break
                 self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
                 if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
-                    self._aggregated_pool[norm] = (eff_ts, h_obj)
+                    sem_merged = False
+                    for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                        if are_headlines_semantically_duplicate(h_obj.title, getattr(old_h, "title", "")):
+                            merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
+                            self._aggregated_pool[old_norm] = (merged_ts, merged_h)
+                            self._seen_first_ts[old_norm] = min(
+                                self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                            )
+                            sem_merged = True
+                            break
+                    if not sem_merged:
+                        self._aggregated_pool[norm] = (eff_ts, h_obj)
 
         cutoff = now - self.rolling_window_sec
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
@@ -519,6 +553,11 @@ class NewsFeedCollector:
             }
             for it in items
             if (title := _xml_text(it, "title"))
+            and not is_encyclopedic_or_reference_headline(
+                title,
+                _xml_text(it, "source", channel_source),
+                _xml_text(it, "link"),
+            )
         ]
         if not raw_items:
             return None
@@ -539,6 +578,11 @@ class NewsFeedCollector:
             dup_idx = seen_norms.get(norm_t) if norm_t else None
             if dup_idx is None and canon_u:
                 dup_idx = seen_urls.get(canon_u)
+            if dup_idx is None:
+                for prev_idx, prev_item in enumerate(deduped_candidates):
+                    if are_headlines_semantically_duplicate(item["title"], prev_item["title"]):
+                        dup_idx = prev_idx
+                        break
             if dup_idx is not None:
                 prev_title = deduped_candidates[dup_idx]["title"]
                 if (

@@ -305,7 +305,7 @@ class BinanceProvider(MarketDataProvider):
                 raise ProviderError(f"open_orders({symbol}): boolean status/side field in order")
             clean_coid = _clean_client_order_id(order.get("clientOrderId"))
             side_norm = normalize_side(raw_side) or str(raw_side or "").strip().upper()
-            normalized.append({
+            ord_entry = {
                 "orderId": str(oid_int),
                 "clientOrderId": clean_coid,
                 "side": side_norm,
@@ -313,7 +313,10 @@ class BinanceProvider(MarketDataProvider):
                 "origQty": orig_f,
                 "executedQty": exec_f,
                 "status": str(raw_status or "NEW").strip().upper(),
-            })
+            }
+            if (ts_ms := extract_timestamp_ms(order, default=None)) is not None:
+                ord_entry["time"] = ts_ms
+            normalized.append(ord_entry)
         return normalized
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
@@ -494,6 +497,7 @@ class BinanceProvider(MarketDataProvider):
             interval_min,
             lambda item: item[4] if isinstance(item, (list, tuple)) and len(item) >= 5 else None,
             lambda item: item[6] if isinstance(item, (list, tuple)) and len(item) > 6 else None,
+            lambda item: item[5] if isinstance(item, (list, tuple)) and len(item) > 5 else None,
         )
 
     def submit_order(self, symbol: str, side: str, qty: float,

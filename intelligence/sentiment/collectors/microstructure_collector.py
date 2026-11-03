@@ -107,6 +107,7 @@ def compute_volume_profile_metrics(
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None
         raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])] if timed_rows else [(px_f, 0.0) for px_f in scalar_rows]
+        has_real_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0) >= max(4, len(raw_pairs) // 4)
         for px_f, vol_w in raw_pairs:
             if vol_w <= 0.0:
                 vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
@@ -135,8 +136,70 @@ def compute_volume_profile_metrics(
         if total_vol <= 0.0:
             return {}
 
-        poc_idx = max(range(n_bins), key=lambda i: bin_vols[i])
-        poc_raw = bin_px_sums[poc_idx] / bin_vols[poc_idx] if bin_vols[poc_idx] > 0.0 else (low_px + (poc_idx + 0.5) * bin_w)
+        # 3-bin kernel smoothing to prevent POC oscillation on bimodal distributions
+        smoothed_vols = [0.0] * n_bins
+        for i in range(n_bins):
+            if n_bins == 1:
+                smoothed_vols[i] = bin_vols[i]
+            elif i == 0:
+                smoothed_vols[i] = 0.70 * bin_vols[0] + 0.30 * bin_vols[1]
+            elif i == n_bins - 1:
+                smoothed_vols[i] = 0.70 * bin_vols[n_bins - 1] + 0.30 * bin_vols[n_bins - 2]
+            else:
+                smoothed_vols[i] = 0.25 * bin_vols[i - 1] + 0.50 * bin_vols[i] + 0.25 * bin_vols[i + 1]
+
+        poc_idx = max(range(n_bins), key=lambda i: (smoothed_vols[i], bin_vols[i]))
+        # Compute kernel-weighted POC price across [poc_idx-1, poc_idx, poc_idx+1] for stability
+        k_num, k_den = 0.0, 0.0
+        for j, kw in ((poc_idx - 1, 0.25), (poc_idx, 0.50), (poc_idx + 1, 0.25)):
+            if 0 <= j < n_bins and bin_vols[j] > 0.0:
+                bin_mean_px = bin_px_sums[j] / bin_vols[j]
+                w_eff = kw * bin_vols[j]
+                k_num += bin_mean_px * w_eff
+                k_den += w_eff
+        poc_raw = (
+            (k_num / k_den)
+            if k_den > 0.0
+            else (bin_px_sums[poc_idx] / bin_vols[poc_idx] if bin_vols[poc_idx] > 0.0 else (low_px + (poc_idx + 0.5) * bin_w))
+        )
+
+        # Secondary HVN (High Volume Node) & LVN (Low Volume Node) detection for bimodal profiles
+        hvn2_px: Optional[float] = None
+        lvn_px: Optional[float] = None
+        profile_shape = "UNIMODAL"
+        sep_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and bin_vols[i] > 0.0]
+        if sep_cands:
+            hvn2_idx = max(sep_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
+            if smoothed_vols[poc_idx] > 0.0 and smoothed_vols[hvn2_idx] >= 0.60 * smoothed_vols[poc_idx]:
+                hvn2_raw = (
+                    bin_px_sums[hvn2_idx] / bin_vols[hvn2_idx]
+                    if bin_vols[hvn2_idx] > 0.0
+                    else (low_px + (hvn2_idx + 0.5) * bin_w)
+                )
+                lo_b, hi_b = min(poc_idx, hvn2_idx), max(poc_idx, hvn2_idx)
+                valley_indices = list(range(lo_b + 1, hi_b))
+                if valley_indices:
+                    lvn_idx = min(valley_indices, key=lambda i: (smoothed_vols[i], bin_vols[i]))
+                    lvn_raw = (
+                        bin_px_sums[lvn_idx] / bin_vols[lvn_idx]
+                        if bin_vols[lvn_idx] > 0.0
+                        else (low_px + (lvn_idx + 0.5) * bin_w)
+                    )
+                    eff_dec_tmp = _auto_px_decimals(cur_px, decimals)
+                    hvn2_px = round(hvn2_raw, eff_dec_tmp)
+                    lvn_px = round(lvn_raw, eff_dec_tmp)
+                    if (
+                        smoothed_vols[hvn2_idx] >= 0.72 * smoothed_vols[poc_idx]
+                        and smoothed_vols[lvn_idx] <= 0.78 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
+                    ):
+                        profile_shape = "BIMODAL"
+                        # On a bimodal double-distribution where the two peaks are within 12% volume of each other,
+                        # anchor POC to the node closer to the Value Area center / current price to prevent flipping
+                        if smoothed_vols[hvn2_idx] >= 0.88 * smoothed_vols[poc_idx]:
+                            if abs(cur_px - hvn2_raw) < abs(cur_px - poc_raw) * 0.85:
+                                poc_raw, hvn2_raw = hvn2_raw, poc_raw
+                                hvn2_px = round(hvn2_raw, eff_dec_tmp)
+
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 
@@ -157,7 +220,19 @@ def compute_volume_profile_metrics(
         vah_px = round(max(poc_raw, low_px + (vah_idx + 1) * bin_w), eff_dec)
         if vah_px <= val_px:
             vah_px, val_px = round(high_px, eff_dec), round(low_px, eff_dec)
-        return {"poc_px": poc_px, "vah_px": vah_px, "val_px": val_px, **_build_vp_position_dict(cur_px, poc_px, val_px, vah_px)}
+        out_vp: Dict[str, Any] = {
+            "poc_px": poc_px,
+            "vah_px": vah_px,
+            "val_px": val_px,
+            "vp_source": "REAL_VOL" if has_real_vol else "TPO",
+            "profile_shape": profile_shape,
+            **_build_vp_position_dict(cur_px, poc_px, val_px, vah_px),
+        }
+        if hvn2_px is not None:
+            out_vp["hvn2_px"] = hvn2_px
+        if lvn_px is not None:
+            out_vp["lvn_px"] = lvn_px
+        return out_vp
     except Exception:
         return {}
 
@@ -421,7 +496,7 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
     try:
         def _clean_buckets(series: list) -> Dict[int, float]:
-            return {int(pt[0] // 300000.0): pt[1] for row in series if (pt := _parse_ts_px_row(row)) is not None}
+            return {int(round(pt[0] / 300000.0)): pt[1] for row in series if (pt := _parse_ts_px_row(row)) is not None}
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
         if len(a_map) < 4 or len(b_map) < 4:
@@ -439,25 +514,32 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         r_cur, r_low, r_high = ratios[-1], min(ratios), max(ratios)
         out: Dict[str, Any] = {}
         if r_high > 0:
-            out["alt_btc_dd_24h_high_pct"] = round((r_cur / r_high - 1.0) * 100.0, 2)
+            out["alt_btc_dd_24h_high_pct"] = round((r_cur / r_high - 1.0) * 100.0, 2) + 0.0
         if r_low > 0:
-            out["alt_btc_bounce_24h_low_pct"] = round((r_cur / r_low - 1.0) * 100.0, 2)
+            out["alt_btc_bounce_24h_low_pct"] = round((r_cur / r_low - 1.0) * 100.0, 2) + 0.0
         if r_high > r_low > 0:
-            out["alt_btc_pos_24h_pct"] = round(((r_cur - r_low) / (r_high - r_low)) * 100.0, 1)
+            out["alt_btc_pos_24h_pct"] = round(((r_cur - r_low) / (r_high - r_low)) * 100.0, 1) + 0.0
 
+        step = 3 if len(aligned) >= 18 else 1
         rets_a, rets_b = [], []
-        for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[1:]):
+        for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[step:]):
             if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
                 rets_a.append(a1 / a0 - 1.0)
                 rets_b.append(b1 / b0 - 1.0)
+        if len(rets_b) < 6 and step > 1:
+            rets_a, rets_b = [], []
+            for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[1:]):
+                if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
+                    rets_a.append(a1 / a0 - 1.0)
+                    rets_b.append(b1 / b0 - 1.0)
         if len(rets_b) >= 6:
             mean_a, mean_b = statistics.fmean(rets_a), statistics.fmean(rets_b)
             var_a, var_b = statistics.pvariance(rets_a, mu=mean_a), statistics.pvariance(rets_b, mu=mean_b)
             cov = statistics.fmean((ra - mean_a) * (rb - mean_b) for ra, rb in zip(rets_a, rets_b))
             if var_b > 1e-12:
-                out["beta_btc_24h"] = round(cov / var_b, 2)
+                out["beta_btc_24h"] = round(cov / var_b, 2) + 0.0
                 if var_a > 1e-12:
-                    out["corr_btc_24h"] = round(max(-1.0, min(1.0, cov / math.sqrt(var_a * var_b))), 2)
+                    out["corr_btc_24h"] = round(max(-1.0, min(1.0, cov / math.sqrt(var_a * var_b))), 2) + 0.0
         return out
     except Exception:
         return {}
@@ -608,6 +690,9 @@ def extract_symbol_recent_fills(
     cost_qty, active_avg = 0.0, 0.0
     buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
+    open_lots: list[Dict[str, Any]] = []
+    lifo_realized_pnl_usd = 0.0
+    lot_seq = 0
     for o in chron:
         side_o = extract_order_side(o)
         p_f, q_f, ts_raw = round_opt_px(extract_order_price(o, default=None), 6), extract_executed_qty(o, default=None), extract_timestamp_ms(o, default=None)
@@ -623,25 +708,87 @@ def extract_symbol_recent_fills(
             item_d["actor_tag"] = tag_o
         if side_o == "BUY":
             buys_fmt.append(item_d)
-            if q_f is not None and p_f is not None:
+            if q_f is not None and p_f is not None and q_f > 0.0 and p_f > 0.0:
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
+                lot_seq += 1
+                open_lots.append({
+                    "lot_id": f"L{lot_seq}",
+                    "qty": round(q_f, 6),
+                    "entry_px": p_f,
+                    "ts_ms": ts_raw,
+                    "actor": act_o,
+                })
         elif side_o == "SELL":
             sells_fmt.append(item_d)
-            if q_f is not None:
+            if q_f is not None and q_f > 0.0:
                 cost_qty, active_avg = (0.0, 0.0) if (q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12) else (cost_qty - q_f, active_avg)
+                rem_to_close = q_f
+                while rem_to_close > 1e-12 and open_lots:
+                    top_lot = open_lots[-1]
+                    lot_q = float(top_lot.get("qty") or 0.0)
+                    lot_px = float(top_lot.get("entry_px") or 0.0)
+                    matched_q = min(rem_to_close, lot_q)
+                    if p_f is not None and p_f > 0.0 and lot_px > 0.0:
+                        lifo_realized_pnl_usd += matched_q * (p_f - lot_px)
+                    rem_to_close -= matched_q
+                    if lot_q - matched_q <= 1e-9:
+                        open_lots.pop()
+                    else:
+                        top_lot["qty"] = round(lot_q - matched_q, 6)
+
+    # Compute Active Swing Sub-Cycle Cost (separating active tactical swing tranches from older legacy bags)
+    swing_subcycle_avg_px: Optional[float] = None
+    swing_subcycle_qty = 0.0
+    cand_swing_lots = open_lots[-4:] if open_lots else []
+    if cand_swing_lots:
+        newest_lot = cand_swing_lots[-1]
+        newest_px = float(newest_lot.get("entry_px") or 0.0)
+        newest_ts = int(newest_lot.get("ts_ms") or 0)
+        active_swing_lots = []
+        for lt in reversed(cand_swing_lots):
+            lt_px = float(lt.get("entry_px") or 0.0)
+            lt_ts = int(lt.get("ts_ms") or 0)
+            # Group lots belonging to the active swing cluster (within 72h or within 7.5% of newest tranche entry)
+            time_ok = (newest_ts <= 0 or lt_ts <= 0) or ((newest_ts - lt_ts) <= 72 * 3600 * 1000)
+            px_ok = newest_px <= 0.0 or (abs(lt_px - newest_px) / newest_px <= 0.075)
+            if time_ok and px_ok:
+                active_swing_lots.append(lt)
+            else:
+                break
+        if not active_swing_lots:
+            active_swing_lots = [newest_lot]
+        sw_cost = sum(float(x.get("qty") or 0.0) * float(x.get("entry_px") or 0.0) for x in active_swing_lots)
+        sw_qty = sum(float(x.get("qty") or 0.0) for x in active_swing_lots)
+        if sw_qty > 1e-12 and sw_cost > 0.0:
+            swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
+            swing_subcycle_qty = round(sw_qty, 6)
+    elif buys_fmt:
+        rec_b = [b for b in buys_fmt[-4:] if (b.get("qty") or 0.0) > 0.0 and (b.get("price") or 0.0) > 0.0]
+        if rec_b:
+            sw_cost = sum(float(b["qty"]) * float(b["price"]) for b in rec_b)
+            sw_qty = sum(float(b["qty"]) for b in rec_b)
+            if sw_qty > 1e-12:
+                swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
+                swing_subcycle_qty = round(sw_qty, 6)
 
     last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
     out_fills: Dict[str, Any] = {
         "last_action_side": extract_order_side(last_any) or last_any.get("side"),
         "last_action_actor": last_act,
         "active_avg_buy_px": round(active_avg, 6) if active_avg > 0 else None,
+        "swing_subcycle_avg_px": swing_subcycle_avg_px,
+        "swing_subcycle_qty": swing_subcycle_qty if swing_subcycle_qty > 0 else None,
+        "open_lots": open_lots[-6:],
+        "lifo_realized_pnl_usd": round(lifo_realized_pnl_usd, 2) if abs(lifo_realized_pnl_usd) >= 0.01 else 0.0,
         "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
         "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
         "recent_buys": buys_fmt[-4:],
-        "recent_sells": sells_fmt[-3:],
+        "recent_sells": sells_fmt[-4:],
     }
+    if cost_qty > 1e-12:
+        out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)
     if last_mod:
         out_fills["last_action_module"] = last_mod
     if last_rule:
@@ -896,6 +1043,10 @@ def load_symbol_microstructure(
         m_info["funding_rate"] = obj_attr(deriv, "funding_rate")
         m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate"))
         m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd", obj_attr(deriv, "oi_usd"))
+        m_info["mark_price"] = safe_pos_float(obj_attr(deriv, "mark_price"), default=None)
+        m_info["index_price"] = safe_pos_float(obj_attr(deriv, "index_price"), default=None)
+        m_info["perp_spot_basis_bps"] = safe_float(obj_attr(deriv, "perp_spot_basis_bps"), default=None)
+        m_info["funding_annualized_pct"] = safe_float(obj_attr(deriv, "funding_annualized_pct"), default=None)
     if whale is not None:
         for dst_k, src_k, alt_k in (
             ("whale_long_pct", "top_traders_long_pct", "whale_long_pct"),
@@ -905,18 +1056,28 @@ def load_symbol_microstructure(
             ("taker_sell_vol_usd", "taker_sell_vol_usd", None),
             ("oi_1h_chg_pct", "open_interest_1h_change_pct", "oi_1h_chg_pct"),
             ("divergence_regime", "divergence_regime", None),
+            ("taker_ratio_5m", "taker_ratio_5m", None),
+            ("taker_ratio_1h", "taker_ratio_1h", None),
+            ("taker_ratio_4h", "taker_ratio_4h", None),
+            ("cvd_5m_usd", "cvd_5m_usd", None),
+            ("cvd_1h_usd", "cvd_1h_usd", None),
+            ("cvd_4h_usd", "cvd_4h_usd", None),
         ):
-            m_info[dst_k] = obj_attr(whale, src_k, obj_attr(whale, alt_k) if alt_k else None)
+            val_w = obj_attr(whale, src_k, obj_attr(whale, alt_k) if alt_k else None)
+            if val_w is not None or dst_k not in m_info:
+                m_info[dst_k] = val_w
         if not safe_pos_float(m_info.get("oi_usd"), default=None) and (w_oi := safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)) is not None:
             m_info["oi_usd"] = w_oi
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr
+    if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
+        m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
     enrich_microstructure_cvd(m_info)
     return m_info
 
 
 def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, Any]] = None) -> None:
-    """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime` on `minfo`."""
+    """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime`, and cross-venue spot vs perp flow regime on `minfo`."""
     if not isinstance(minfo, dict):
         return
     b_bid = safe_pos_float(minfo.get("best_bid"), default=0.0) or 0.0
@@ -953,11 +1114,11 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     )
     if m_px is not None and m_px > 0.0:
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1))
+    ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+    has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
+    chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
+    div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
     if not minfo.get("cvd_regime") or pinfo is not None:
-        ob_imb = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
-        has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
-        chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
-        div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
         if cvd_usd > 0.0:
             minfo["cvd_regime"] = ("ask_absorbing" if chg_15m <= 0.02 else "aggressive_buying") if has_chg_15m else ("ask_absorbing" if ob_imb <= 0.44 else "aggressive_buying")
         elif cvd_usd < 0.0:
@@ -969,6 +1130,35 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             minfo["cvd_regime"] = "spot_absorbing" if is_bid_absorbing else "aggressive_market_dumps"
         else:
             minfo["cvd_regime"] = "balanced_flow"
+
+    # Compute Spot vs Perp CVD divergence & Perp-Spot Basis Regime (Layer II.1)
+    b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
+    a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
+    if minfo.get("spot_cvd_15m_usd") is None and (b_depth + a_depth) > 0.0:
+        # Estimate Spot Orderbook Pressure / Spot CVD proxy from L2 depth imbalance + realized price velocity vs perp flow
+        ob_net_depth = b_depth - a_depth
+        vel_adj = (b_depth + a_depth) * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
+        minfo["spot_cvd_15m_usd"] = round(ob_net_depth * 0.35 + vel_adj, 0)
+    spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
+    funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
+    oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
+    if minfo.get("perp_spot_basis_bps") is None and m_px and m_px > 0.0:
+        mark_p = safe_pos_float(minfo.get("mark_price"), default=None)
+        if mark_p is not None and mark_p > 0.0:
+            minfo["perp_spot_basis_bps"] = round(((mark_p - m_px) / m_px) * 10000.0, 2)
+        elif funding_r != 0.0:
+            minfo["perp_spot_basis_bps"] = round(funding_r * 10000.0 * 1.5, 2)
+
+    if spot_cvd > 0.0 and cvd_usd < 0.0 and funding_r <= 0.0001:
+        minfo["spot_perp_flow_regime"] = "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+    elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25:
+        minfo["spot_perp_flow_regime"] = "RETAIL_PERP_LONG_TRAP"
+    elif spot_cvd > 0.0 and cvd_usd > 0.0:
+        minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_BUYING"
+    elif spot_cvd < 0.0 and cvd_usd < 0.0:
+        minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_SELLING"
+    else:
+        minfo["spot_perp_flow_regime"] = "BALANCED_CROSS_VENUE_FLOW"
 
 
 def _blend_structural_liq_anchor(
@@ -1019,10 +1209,16 @@ def compute_liquidation_clusters(
     if oi_usd <= 0.0:
         return {}
 
-    raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=0.50, allow_percentage=True)
-    long_share = min(0.85, max(0.15, float(raw_long_pct if raw_long_pct is not None else 0.50)))
+    # De-bias crypto's structural whale_long_pct baseline (~58%-62% long bias) so short_liq vs long_liq pools
+    # reflect true marginal positioning skew rather than a permanent 2.5x downside bias.
+    raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percentage=True)
+    if raw_long_pct is not None:
+        raw_ls = min(0.85, max(0.15, float(raw_long_pct)))
+        long_share = min(0.75, max(0.25, 0.50 + (raw_ls - 0.58) * 0.65))
+    else:
+        long_share = 0.50
     funding = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
-    eff_long_share = min(0.88, max(0.12, long_share + max(-0.30, min(0.30, funding * 1500.0)) * 0.5))
+    eff_long_share = min(0.80, max(0.20, long_share + max(-0.25, min(0.25, funding * 1500.0)) * 0.45))
     eff_short_share = 1.0 - eff_long_share
 
     vol_1h = max(0.35, min(6.0, safe_pos_float(p_dict.get("vol_1h_pct"), default=1.2) or 1.2))
@@ -1066,11 +1262,29 @@ def compute_liquidation_clusters(
         round(((px_v - cur_px) / cur_px) * 100.0, 2)
         for px_v in (long_liq_px, short_liq_px, long_liq_deep_px, short_liq_deep_px)
     )
-    short_gravity = short_liq_usd / max(0.35, abs(short_liq_dist_pct))
-    long_gravity = long_liq_usd / max(0.35, abs(long_liq_dist_pct))
+    # Inverse-square distance weighting (1 / dist_pct^2) + Kalman/velocity & orderflow momentum tilt
+    short_dist_sq = max(0.35, abs(short_liq_dist_pct)) ** 2
+    long_dist_sq = max(0.35, abs(long_liq_dist_pct)) ** 2
+    kalman_vel = safe_float(
+        p_dict.get("gradient_recent_fast", p_dict.get("slope_15m", p_dict.get("slope_3_7m"))),
+        default=0.0,
+    ) or 0.0
+    chg_15m_v = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
+    taker_r = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=1.0) or 1.0
+    ob_imb_v = safe_float(minfo.get("ob_imbalance"), default=0.5) or 0.5
+    vel_sign = 1.0 if kalman_vel > 0.0 else (-1.0 if kalman_vel < 0.0 else 0.0)
+    vel_tilt = max(
+        -0.35,
+        min(
+            0.35,
+            (chg_15m_v * 0.08) + (vel_sign * 0.06) + ((taker_r - 1.0) * 0.15) + ((ob_imb_v - 0.50) * 0.30),
+        ),
+    )
+    short_gravity = (short_liq_usd / short_dist_sq) * (1.0 + max(-0.30, vel_tilt))
+    long_gravity = (long_liq_usd / long_dist_sq) * (1.0 - min(0.30, vel_tilt))
     liq_magnet_bias = (
-        "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.18
-        else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.18 else "BALANCED_LIQ_MAGNET")
+        "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.15
+        else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.15 else "BALANCED_LIQ_MAGNET")
     )
     return {
         "long_liq_px": long_liq_px, "long_liq_usd": long_liq_usd, "long_liq_dist_pct": long_liq_dist_pct,

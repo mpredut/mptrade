@@ -14,12 +14,13 @@ from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 from botcore import obj_attr, safe_float, safe_pos_float
-from cachepaths import telemetry_cache_file_path
+from cachepaths import canonical_symbol_key, telemetry_cache_file_path
 from intelligence.external.collectors.orderbook_depth import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
     _effective_now_ts,
+    _extract_base_asset,
     _resolve_binance_lookup_symbol,
     _symbol_variants,
     is_cache_fresh,
@@ -44,6 +45,12 @@ class WhalePositioningSnapshot:
     divergence_regime: str             # "accumulation", "short_covering", "aggressive_shorting", "long_liquidation", "neutral", "short_squeeze", "short_squeeze_primed", "long_unwinding"
     ts: float
     funding_rate: Optional[float] = None
+    taker_ratio_5m: Optional[float] = None
+    taker_ratio_1h: Optional[float] = None
+    taker_ratio_4h: Optional[float] = None
+    cvd_5m_usd: Optional[float] = None
+    cvd_1h_usd: Optional[float] = None
+    cvd_4h_usd: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -66,6 +73,12 @@ class WhalePositioningSnapshot:
             divergence_regime=reg_str,
             ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
             funding_rate=safe_float(data.get("funding_rate"), default=None),
+            taker_ratio_5m=safe_pos_float(data.get("taker_ratio_5m"), default=None),
+            taker_ratio_1h=safe_pos_float(data.get("taker_ratio_1h"), default=None),
+            taker_ratio_4h=safe_pos_float(data.get("taker_ratio_4h"), default=None),
+            cvd_5m_usd=safe_float(data.get("cvd_5m_usd"), default=None),
+            cvd_1h_usd=safe_float(data.get("cvd_1h_usd"), default=None),
+            cvd_4h_usd=safe_float(data.get("cvd_4h_usd"), default=None),
         )
 
 
@@ -228,10 +241,11 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             top_ratio = _clean_dict_float(latest_top, "longShortRatio", 1.0)
             top_long_pct = _clean_dict_float(latest_top, "longAccount", 0.5)
 
-            # 2. Taker Buy/Sell Volume Ratio (3x5m = 15m rolling window for live CVD / taker flow)
-            url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=5m&limit=3"
+            # 2. Taker Buy/Sell Volume Ratio (48x5m = 4h multi-horizon 5m/15m/1h/4h rolling windows for live CVD / taker flow)
+            url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=5m&limit=48"
             latest_taker, data_taker = self._fetch_latest_json_row(url_taker, "takerlongshortRatio", lookup_sym)
-            taker_rows = [r for r in (data_taker[-3:] if isinstance(data_taker, list) else []) if isinstance(r, dict)] or [latest_taker]
+            all_taker_rows = [r for r in (data_taker if isinstance(data_taker, list) else []) if isinstance(r, dict)] or [latest_taker]
+            taker_rows = all_taker_rows[-3:]
             taker_buy = sum(max(0.0, _clean_dict_float(r, "buyVol", 0.0)) for r in taker_rows)
             taker_sell = sum(max(0.0, _clean_dict_float(r, "sellVol", 0.0)) for r in taker_rows)
             taker_ratio = (
@@ -239,6 +253,14 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 if taker_buy > 0.0 and taker_sell > 0.0
                 else _clean_dict_float(latest_taker, "buySellRatio", 1.0)
             )
+            def _horizon_taker_stats(rows_slice: list[Dict[str, Any]], px_mult: float) -> tuple[Optional[float], Optional[float]]:
+                if not rows_slice:
+                    return None, None
+                b_sum = sum(max(0.0, _clean_dict_float(r, "buyVol", 0.0)) for r in rows_slice)
+                s_sum = sum(max(0.0, _clean_dict_float(r, "sellVol", 0.0)) for r in rows_slice)
+                r_val = round(b_sum / s_sum, 4) if b_sum > 0.0 and s_sum > 0.0 else None
+                cvd_val = round((b_sum - s_sum) * (px_mult if px_mult > 0.0 else 1.0), 0) if (b_sum + s_sum) > 0.0 else None
+                return r_val, cvd_val
 
             # 3. Open Interest History (13x5m = 1h rolling window for live 1h OI change and USD volume conversion)
             url_oi = f"https://fapi.binance.com/futures/data/openInterestHist?symbol={lookup_sym}&period=5m&limit=13"
@@ -250,6 +272,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 mark_px = latest_oi_usd / latest_oi_coins
                 taker_buy = round(taker_buy * mark_px, 2)
                 taker_sell = round(taker_sell * mark_px, 2)
+            tr_5m, cvd_5m = _horizon_taker_stats(all_taker_rows[-1:], mark_px)
+            tr_1h, cvd_1h = _horizon_taker_stats(all_taker_rows[-12:], mark_px) if len(all_taker_rows) >= 4 else (None, None)
+            tr_4h, cvd_4h = _horizon_taker_stats(all_taker_rows[-48:], mark_px) if len(all_taker_rows) >= 13 else (None, None)
             oi_rows = [r for r in (data_oi if isinstance(data_oi, list) else []) if isinstance(r, dict)]
             prev_oi_dict = oi_rows[0] if len(oi_rows) >= 2 else None
             prev_oi_usd = (
@@ -294,11 +319,111 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 divergence_regime=regime,
                 ts=now,
                 funding_rate=funding_rate,
+                taker_ratio_5m=tr_5m,
+                taker_ratio_1h=tr_1h,
+                taker_ratio_4h=tr_4h,
+                cvd_5m_usd=cvd_5m,
+                cvd_1h_usd=cvd_1h,
+                cvd_4h_usd=cvd_4h,
             )
             return self._commit_snapshot(symbol, now, snapshot)
         except Exception as e:
+            try:
+                if (hl_snap := self._fetch_hyperliquid_whale_fallback(symbol, price_1h_change_pct, now, cached)) is not None:
+                    return hl_snap
+            except Exception:
+                pass
             logger.warning("Could not fetch whale positioning for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)
+
+    def _fetch_hyperliquid_whale_fallback(
+        self,
+        symbol: str,
+        price_1h_change_pct: float,
+        now: float,
+        cached: Any,
+    ) -> Optional[WhalePositioningSnapshot]:
+        """Fallback to Hyperliquid L1 recentTrades and metaAndAssetCtxs for HYPE/HL symbols."""
+        if canonical_symbol_key(symbol) not in ("HYPEUSDC", "HYPEUSD"):
+            return None
+        base_coin = _extract_base_asset(symbol)
+        if not base_coin:
+            return None
+        trades_raw = self._fetch_json_dict(
+            f"https://api.hyperliquid.xyz/info?type=recentTrades&coin={base_coin}",
+            "recentTrades",
+            base_coin,
+            timeout=4.0,
+        )
+        trades = trades_raw.get("result_list") if isinstance(trades_raw, dict) else None
+        if not isinstance(trades, list) or not trades:
+            return None
+        taker_buy = 0.0
+        taker_sell = 0.0
+        for tr in trades:
+            if not isinstance(tr, dict):
+                continue
+            px = safe_pos_float(tr.get("px"), default=0.0) or 0.0
+            sz = safe_pos_float(tr.get("sz"), default=0.0) or 0.0
+            side = str(tr.get("side") or "").strip().upper()
+            if px > 0.0 and sz > 0.0:
+                if side == "B":
+                    taker_buy += px * sz
+                elif side == "A":
+                    taker_sell += px * sz
+        taker_buy = round(taker_buy, 2)
+        taker_sell = round(taker_sell, 2)
+        taker_ratio = round(taker_buy / taker_sell, 4) if taker_buy > 0.0 and taker_sell > 0.0 else 1.0
+        oi_usd = 0.0
+        funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
+        try:
+            meta_raw = self._fetch_json_dict(
+                "https://api.hyperliquid.xyz/info?type=metaAndAssetCtxs",
+                "metaAndAssetCtxs",
+                base_coin,
+                timeout=4.0,
+            )
+            res_list = meta_raw.get("result_list") if isinstance(meta_raw, dict) else None
+            if isinstance(res_list, list) and len(res_list) >= 2:
+                universe = (res_list[0].get("universe") if isinstance(res_list[0], dict) else None) or []
+                ctxs = res_list[1] if isinstance(res_list[1], list) else []
+                for idx, a_info in enumerate(universe):
+                    if isinstance(a_info, dict) and str(a_info.get("name") or "").casefold() == base_coin.casefold() and idx < len(ctxs) and isinstance(ctxs[idx], dict):
+                        ctx = ctxs[idx]
+                        oi_c = max(0.0, _clean_dict_float(ctx, "openInterest", 0.0))
+                        m_px = max(0.0, _clean_dict_float(ctx, "markPx", 0.0, "oraclePx"))
+                        oi_usd = round(oi_c * m_px, 2)
+                        if funding_rate is None:
+                            funding_rate = _clean_dict_float(ctx, "funding", 0.0)
+                        break
+        except Exception:
+            pass
+        prev_snap = (cached[1] if (isinstance(cached, tuple) and len(cached) >= 2) else cached) if cached else self._load_from_disk(symbol, now, ignore_ttl=True)
+        prev_oi = safe_pos_float(obj_attr(prev_snap, "open_interest_usd", None), default=0.0) or 0.0
+        oi_chg_pct = round(((oi_usd - prev_oi) / prev_oi) * 100.0, 2) if (oi_usd > 0.0 and prev_oi > 0.0) else 0.0
+        prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
+        regime = self.classify_regime(
+            price_1h_change_pct=price_1h_change_pct,
+            oi_change_pct=oi_chg_pct,
+            taker_ratio=taker_ratio,
+            funding_rate=funding_rate,
+            prev_regime=prev_reg,
+            top_long_pct=0.5,
+        )
+        snapshot = WhalePositioningSnapshot(
+            symbol=symbol,
+            top_traders_long_ratio=1.0,
+            top_traders_long_pct=0.5,
+            taker_buy_sell_ratio=taker_ratio,
+            taker_buy_vol_usd=taker_buy,
+            taker_sell_vol_usd=taker_sell,
+            open_interest_usd=oi_usd,
+            open_interest_1h_change_pct=oi_chg_pct,
+            divergence_regime=regime,
+            ts=now,
+            funding_rate=funding_rate,
+        )
+        return self._commit_snapshot(symbol, now, snapshot)
 
     def record_snapshot(self, snapshot: WhalePositioningSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for testing and deterministic replays)."""

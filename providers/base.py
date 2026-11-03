@@ -546,6 +546,8 @@ def normalize_open_order(
     symbol: str = "",
     known_ai_order_ids: Optional[set[str]] = None,
     audit_origin_map: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
+    now_ts: Optional[float] = None,
+    order_ts_map: Optional[dict[str, int]] = None,
 ) -> Optional[dict]:
     """Normalize a venue open-order dict into a uniform telemetry record."""
     if not isinstance(order, dict):
@@ -607,6 +609,22 @@ def normalize_open_order(
     if cid:
         rec["clientOrderId"] = cid
         rec["client_order_id"] = cid
+    ts_ms = extract_timestamp_ms(order, default=None)
+    if ts_ms is None and cid:
+        m_ts = re.search(r"(?:^|[_-])(1[789]\d{8}(?:\d{3})?)(?:$|[_-])", str(cid))
+        if m_ts:
+            ts_ms = normalize_timestamp_ms(m_ts.group(1), default=None)
+    if ts_ms is None and isinstance(order_ts_map, dict):
+        for tk in (str(oid) if oid is not None else "", str(cid or ""), str(cid or "").lower()):
+            if tk and (mapped_ts := normalize_timestamp_ms(order_ts_map.get(tk), default=None)) is not None:
+                ts_ms = mapped_ts
+                break
+    if ts_ms is not None and ts_ms > 0:
+        eff_now_s = safe_pos_float(now_ts, default=None) or time.time()
+        age_m = round(max(0.0, (eff_now_s * 1000.0 - float(ts_ms)) / 60000.0), 1)
+        rec["created_ts"] = round(float(ts_ms) / 1000.0, 1)
+        rec["age_min"] = age_m
+        rec["age"] = f"{age_m:.1f}m" if age_m < 60.0 else f"{age_m / 60.0:.1f}h"
     return rec
 
 
@@ -806,11 +824,17 @@ def read_client_ohlc_series(
                 closes = client.ohlc_closes(symbol, interval_i)
                 observed_at = None
             timestamps = ()
+        vols = (
+            getattr(client, "_last_ohlc_volumes", {}).get((symbol, interval_i), ())
+            if isinstance(getattr(client, "_last_ohlc_volumes", None), dict)
+            else ()
+        )
         return ClosedPriceSeries(
             tuple(closes) if closes is not None else (),
             interval_i,
             observed_at,
             timestamps,
+            tuple(vols) if vols else (),
         )
     except ProviderError:
         raise

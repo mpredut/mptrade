@@ -53,7 +53,7 @@ def _effective_t_cache_file() -> str:
 
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
-    """Return paginated Binance history with 1,000 candles per request."""
+    """Return paginated Binance history with 1,000 candles per request (falling back to Kraken 1h OHLC for non-Binance assets)."""
     candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
     ts_list: list[float] = []
     px_list: list[float] = []
@@ -65,6 +65,19 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
         if tf is not None and pf is not None:
             ts_list.append(tf)
             px_list.append(pf)
+    if len(ts_list) < 50 and "PYTEST_CURRENT_TEST" not in os.environ:
+        try:
+            from providers.kraken_provider import KrakenProvider
+
+            base_u = normalize_cache_base_asset(symbol)
+            krk_sym = f"{base_u}USD" if base_u else str(symbol or "").strip().upper()
+            s60 = KrakenProvider().ohlc_series(krk_sym, 60)
+            k_ts = [float(t) for t in getattr(s60, "timestamps", ()) if (safe_pos_float(t, default=None) or 0.0) > 0]
+            k_px = [float(p) for p in getattr(s60, "closes", ()) if (safe_pos_float(p, default=None) or 0.0) > 0]
+            if len(k_ts) >= 50 and len(k_ts) == len(k_px):
+                ts_list, px_list = k_ts, k_px
+        except Exception:
+            pass
     return np.asarray(ts_list, dtype=float), np.asarray(px_list, dtype=float)
 
 

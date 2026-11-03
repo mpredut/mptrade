@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob as _glob
 import logging
 import os
+import re
 import time as _time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.parse as _urlparse
@@ -14,7 +15,8 @@ from cachepaths import (
     get_cachedb_dir, normalize_venue_name,
 )
 from intelligence.macro_sentiment_ssot import (
-    filter_valid_severity_keywords, obj_attr, read_first_cached_dict,
+    are_headlines_semantically_duplicate, filter_valid_severity_keywords,
+    is_encyclopedic_or_reference_headline, obj_attr, read_first_cached_dict,
     resolve_macro_economic_calendar, safe_float, safe_nonneg_ts, safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
@@ -281,7 +283,8 @@ def harvest_macro_and_news_sensors(
         stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
         mb_cur = macro_sensors.get("market_breadth")
         mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
-        if mb_cur is None or mb_age is None or mb_age > stale_age_min:
+        mb_missing_rot = isinstance(mb_cur, dict) and (mb_cur.get("eth_btc_ratio") is None or mb_cur.get("btc_vol_share_pct") is None)
+        if mb_cur is None or mb_age is None or mb_age > stale_age_min or mb_missing_rot:
             try:
                 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
 
@@ -306,6 +309,13 @@ def harvest_macro_and_news_sensors(
                         "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
                         "ts": safe_pos_float(getattr(breadth_snap, "ts", None), now_ts) or now_ts,
                     }
+                    for rot_k in (
+                        "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
+                        "eth_btc_ratio", "eth_btc_chg_24h_pct", "btc_vol_share_pct",
+                        "eth_vol_share_pct", "alt_vol_share_pct", "rotation_regime",
+                    ):
+                        if (rot_v := getattr(breadth_snap, rot_k, None)) is not None:
+                            mb_payload[rot_k] = rot_v
                     mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
                     save_json_state(mb_path, mb_payload, indent=2)
                     macro_sensors["market_breadth"] = _with_age_min(mb_payload, mb_path)
@@ -323,11 +333,20 @@ def harvest_macro_and_news_sensors(
         for item in news_data:
             if not isinstance(item, dict) or not item.get("title"):
                 continue
+            if is_encyclopedic_or_reference_headline(item.get("title"), item.get("source"), item.get("url")):
+                continue
             raw_kws = item.get("matched_keywords") if isinstance(item.get("matched_keywords"), list) else []
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
             valid_news.append({**item, "matched_keywords": clean_kws, "is_high_severity": False if (raw_kws and not clean_kws) else bool(item.get("is_high_severity"))})
         valid_news.sort(key=lambda x: (1 if x.get("is_high_severity") else 0, safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0), reverse=True)
-        for item in valid_news[:6]:
+        deduped_news: List[Dict[str, Any]] = []
+        for item in valid_news:
+            if any(are_headlines_semantically_duplicate(str(item.get("title") or ""), str(ex.get("title") or "")) for ex in deduped_news):
+                continue
+            deduped_news.append(item)
+            if len(deduped_news) >= 6:
+                break
+        for item in deduped_news:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             breaking_news.append({
                 "title": item.get("title"), "source": item.get("source"),
@@ -398,12 +417,18 @@ def harvest_portfolio_and_venue_cycles(
     watcher_price_items: Any,
     inst_by_sym: Dict[str, Any],
     read_json_fn: Any = None,
+    *,
+    now_ts: Optional[float] = None,
 ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest portfolio value, venue cycles, Kraken xStocks, cross-market context, and portfolio_snapshot tail."""
     _rj = read_json_fn or read_json_cached
     last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
     if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
         portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
+        av_ts = extract_timestamp_s(last_av) or safe_pos_float(last_av.get("t"), default=None)
+        if av_ts is not None and now_ts is not None and now_ts > 0.0:
+            av_ts_s = av_ts / 1000.0 if av_ts > 1e11 else av_ts
+            portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, float(now_ts) - av_ts_s) / 60.0, 1)
 
     kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
         workspace_dir, prices_and_trends, build_cycle_fallback_prices(microstructure, watcher_price_items), _rj,
@@ -425,7 +450,12 @@ def harvest_portfolio_and_venue_cycles(
     for l_dir in logs_dirs:
         if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
             if isinstance(last_ps.get("hl"), dict):
-                portfolio_summary["hyperliquid_readonly"] = last_ps["hl"]
+                hl_ro = dict(last_ps["hl"])
+                ps_ts = extract_timestamp_s(last_ps) or safe_pos_float(last_ps.get("t"), default=None)
+                if ps_ts is not None and now_ts is not None and now_ts > 0.0:
+                    ps_ts_s = ps_ts / 1000.0 if ps_ts > 1e11 else ps_ts
+                    hl_ro["snapshot_age_min"] = round(max(0.0, float(now_ts) - ps_ts_s) / 60.0, 1)
+                portfolio_summary["hyperliquid_readonly"] = hl_ro
             break
 
     return kraken_cycles, hyperliquid_cycles, t212_cycles
@@ -529,11 +559,11 @@ def populate_market_and_portfolio_snapshot(
     enrich_cross_venue_trends(
         snapshot.prices_and_trends, trends_data, kalman_data, long_items, priceanalysis_data, t_trend_map, watcher_price_items
     )
-    sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure)
+    sync_sibling_symbol_telemetry(snapshot.prices_and_trends, snapshot.microstructure, cache_dir=cache_dir, now_ts=now_ts)
 
     kraken_cycles, hyperliquid_cycles, t212_cycles = harvest_portfolio_and_venue_cycles(
         cache_dir, workspace_dir, logs_dirs, snapshot.portfolio_summary, snapshot.prices_and_trends,
-        snapshot.microstructure, watcher_price_items, inst_by_sym, _rj,
+        snapshot.microstructure, watcher_price_items, inst_by_sym, _rj, now_ts=now_ts,
     )
 
     recent_orders = harvest_recent_orders_and_enrich_positions(
@@ -579,6 +609,60 @@ def populate_market_and_portfolio_snapshot(
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends, snapshot.microstructure, snapshot.portfolio_summary, scope, inst_by_sym, t212_cycles
     )
+    t_pos_list = snapshot.portfolio_summary.get("tradable_positions") if isinstance(snapshot.portfolio_summary.get("tradable_positions"), list) else []
+    vq_cash_map = snapshot.portfolio_summary.get("venue_quote_cash") if isinstance(snapshot.portfolio_summary.get("venue_quote_cash"), dict) else {}
+    if t_pos_list or vq_cash_map:
+        for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
+            v_pos_sum = sum(
+                (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
+                for p in t_pos_list
+                if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
+            )
+            v_cash_sum = sum(
+                (safe_pos_float(c.get("free"), default=0.0) or 0.0) + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
+                for c in vq_cash_map.values()
+                if isinstance(c, dict) and normalize_venue_name(c.get("venue")) == v_target
+            )
+            tot_v = round(v_pos_sum + v_cash_sum, 2)
+            if tot_v > 0.0:
+                if v_target == "binance":
+                    snapshot.portfolio_summary[eq_key] = tot_v
+                elif isinstance(hl_ro_d := snapshot.portfolio_summary.get("hyperliquid_readonly"), dict):
+                    hl_ro_d["live_reconciled_spot_usd"] = tot_v
+    if isinstance(sa_cur := getattr(snapshot, "sentiment_advisor", None), dict):
+        sa_age = safe_float(sa_cur.get("age_min"), 0.0) or 0.0
+        btc_m = (
+            snapshot.microstructure.get("BTCUSDC")
+            or snapshot.microstructure.get("BTCUSDT")
+            or snapshot.microstructure.get("XBTUSD")
+            or {}
+        )
+        if sa_age >= 10.0 and isinstance(btc_m, dict):
+            live_tr = safe_pos_float(btc_m.get("taker_buy_sell_ratio"), default=None)
+            live_cvd = safe_float(btc_m.get("cvd_15m_usd"), None)
+            sa_act = str(sa_cur.get("recommended_action") or "").upper()
+            sa_bias = str(sa_cur.get("directional_bias") or sa_cur.get("market_bias") or "").upper()
+            cited_tr: Optional[float] = None
+            if sa_age >= 15.0 and isinstance(sa_cur.get("summary"), str):
+                if m_tr := re.search(r"taker\s+buy/sell\s+ratio[^0-9]*([0-9]+\.[0-9]+)", sa_cur["summary"], re.IGNORECASE):
+                    cited_tr = safe_pos_float(m_tr.group(1), default=None)
+            tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else ""
+            cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else ""
+            flow_lbl = ", ".join(x for x in (tr_s, cvd_s) if x)
+            if (
+                sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
+                or sa_bias == "BEARISH"
+                or (cited_tr is not None and cited_tr <= 0.65)
+            ) and ((live_tr is not None and live_tr >= 1.25) or (live_cvd is not None and live_cvd >= 5_000_000.0)):
+                ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr <= 0.65 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
+                sa_cur["live_flow_divergence"] = f"LIVE_BUY_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
+            elif (
+                sa_act == "ACCUMULATE"
+                or sa_bias == "BULLISH"
+                or (cited_tr is not None and cited_tr >= 1.35)
+            ) and ((live_tr is not None and live_tr <= 0.75) or (live_cvd is not None and live_cvd <= -5_000_000.0)):
+                ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
+                sa_cur["live_flow_divergence"] = f"LIVE_SELL_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     if isinstance(mb_snap := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap and snapshot.portfolio_summary:
         snapshot.portfolio_summary["macro_benchmarks"] = mb_snap
         if isinstance(cmc := snapshot.portfolio_summary.get("cross_market_context"), dict):
@@ -776,11 +860,12 @@ def collect_pretrade_telemetry(
                 rng_str += f", tape_15m=[{', '.join(m24['recent_tape_15m'])}]"
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
             if m24.get("poc_px") is not None:
+                vp_src_s = f", vp_source={m24['vp_source']}" if m24.get("vp_source") else ""
                 telemetry["24h Volume Profile (POC / Value Area)"] = (
                     f"POC=${m24.get('poc_px')} ({float(m24.get('poc_dist_pct', 0.0)):+.2f}%), "
                     f"VAL=${m24.get('val_px')} ({float(m24.get('val_dist_pct', 0.0)):+.2f}%), "
                     f"VAH=${m24.get('vah_px')} ({float(m24.get('vah_dist_pct', 0.0)):+.2f}%), "
-                    f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}"
+                    f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}{vp_src_s}"
                 )
             btc_m24: Dict[str, Any] = {}
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
@@ -807,6 +892,9 @@ def collect_pretrade_telemetry(
                         )
                         if cross_btc.get(c_k) is not None
                     ]
+                    for sc_lbl, sc_k in (("beta", "beta_btc_24h"), ("corr", "corr_btc_24h")):
+                        if cross_btc.get(sc_k) is not None:
+                            cross_parts.append(f"{sc_lbl}={float(cross_btc[sc_k]):.2f}")
                     if vs_parts or cross_parts:
                         rel_str = f"vs_btc({', '.join(vs_parts)})" if vs_parts else ""
                         if cross_parts:

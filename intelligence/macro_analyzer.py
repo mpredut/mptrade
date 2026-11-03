@@ -116,6 +116,7 @@ class MacroAnalyzer:
         self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
         self._last_fg_value: Optional[int] = None
         self._last_advance_ratio: Optional[float] = None
+        self._last_btc_taker_ratio: Optional[float] = None
         self._effective_geo_interval_sec = self.macro_llm_interval_sec
         self._effective_geo_reason = "init"
         self._effective_advisor_interval_sec = self.advisor_interval_sec
@@ -230,6 +231,10 @@ class MacroAnalyzer:
                     self._last_fg_value = int(fg_snap.value)
                 if mb_snap is not None:
                     self._last_advance_ratio = float(mb_snap.advance_ratio)
+                btc_w = (whale_data or {}).get("BTCUSDC") or (whale_data or {}).get("BTCUSDT") if isinstance(whale_data, dict) else None
+                btc_tr = safe_pos_float(getattr(btc_w, "taker_buy_sell_ratio", None) if btc_w is not None else None, None)
+                if btc_tr is not None:
+                    self._last_btc_taker_ratio = float(btc_tr)
                 logger.info(
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,
@@ -321,6 +326,9 @@ class MacroAnalyzer:
 
         fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=current_ts)
         mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=current_ts)
+        whale_btc = load_cached_whale_telemetry(self.cache_dir, symbols=["BTCUSDC"])
+        btc_w_snap = (whale_btc or {}).get("BTCUSDC") if isinstance(whale_btc, dict) else None
+        cur_btc_tr = safe_pos_float(getattr(btc_w_snap, "taker_buy_sell_ratio", None) if btc_w_snap is not None else None, None)
         cached_adv = getattr(self.sentiment_advisor, "_cached_assessment", None)
         latest_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", cached_geo)
         geo_threat_str = str(getattr(latest_geo, "threat_level", "NORMAL") or "NORMAL")
@@ -335,6 +343,8 @@ class MacroAnalyzer:
             prev_fear_greed_val=self._last_fg_value,
             prev_advance_ratio=self._last_advance_ratio,
             geopolitical_threat_level=geo_threat_str,
+            btc_taker_ratio=cur_btc_tr,
+            prev_btc_taker_ratio=self._last_btc_taker_ratio,
         )
         self._effective_advisor_interval_sec = adv_interval
         self._effective_advisor_reason = adv_reason

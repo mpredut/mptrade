@@ -35,6 +35,7 @@ from .base import (
     build_price_history_points,
     env_values_map,
     extract_client_order_id,
+    extract_timestamp_ms,
     normalize_side,
     read_client_ohlc_series,
     require_clean_order_id,
@@ -548,7 +549,7 @@ class KrakenProvider(MarketDataProvider):
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
-            normalized.append({
+            ord_entry = {
                 "orderId": clean_oid,
                 "clientOrderId": extract_client_order_id(raw),
                 "side": side,
@@ -556,7 +557,10 @@ class KrakenProvider(MarketDataProvider):
                 "origQty": original_qty,
                 "executedQty": executed_qty,
                 "status": str(raw.get("status") or "open").upper(),
-            })
+            }
+            if (ts_ms := extract_timestamp_ms(raw, default=None)) is not None:
+                ord_entry["time"] = ts_ms
+            normalized.append(ord_entry)
         return normalized
 
     def _fills_from_cache(self, symbol: str):

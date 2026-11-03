@@ -281,6 +281,7 @@ class ClosedPriceSeries:
     interval_min: int
     last_closed_at: Optional[float] = None
     timestamps: tuple = ()
+    volumes: tuple = ()
 
     @classmethod
     def from_raw_candles(
@@ -289,6 +290,7 @@ class ClosedPriceSeries:
         interval_min: int,
         close_getter,
         ts_ms_getter,
+        vol_getter=None,
     ) -> "ClosedPriceSeries":
         completed = list(raw_candles or ())[:-1]
         valid = [
@@ -306,11 +308,17 @@ class ClosedPriceSeries:
                 break
             ts_list.append(t_ms / 1000.0)
         timestamps = tuple(ts_list) if ts_ok else ()
+        volumes = (
+            tuple(safe_nonneg_float(vol_getter(item), default=0.0) or 0.0 for item, _ in valid)
+            if callable(vol_getter) and valid
+            else ()
+        )
         return cls(
             closes,
             safe_pos_int(interval_min, 1),
             timestamps[-1] if timestamps else None,
             timestamps,
+            volumes,
         )
 
 

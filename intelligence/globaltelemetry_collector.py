@@ -150,25 +150,30 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
                 tot = getattr(breadth, "total_count", 0)
-                self._save_dual_cache(
-                    "market_breadth",
-                    {
-                        "advance_ratio": breadth.advance_ratio,
-                        "median_change_pct": breadth.median_change_pct,
-                        "mean_change_pct": breadth.mean_change_pct,
-                        "dispersion_std": breadth.dispersion_std,
-                        "regime": breadth.regime,
-                        "total_symbols": tot,
-                        "total_count": tot,
-                        "advancing": breadth.advancing_count,
-                        "advancing_count": breadth.advancing_count,
-                        "declining": breadth.declining_count,
-                        "declining_count": breadth.declining_count,
-                        "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
-                        "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
-                        "ts": safe_pos_float(getattr(breadth, "ts", None), time.time()),
-                    },
-                )
+                mb_payload: Dict[str, Any] = {
+                    "advance_ratio": breadth.advance_ratio,
+                    "median_change_pct": breadth.median_change_pct,
+                    "mean_change_pct": breadth.mean_change_pct,
+                    "dispersion_std": breadth.dispersion_std,
+                    "regime": breadth.regime,
+                    "total_symbols": tot,
+                    "total_count": tot,
+                    "advancing": breadth.advancing_count,
+                    "advancing_count": breadth.advancing_count,
+                    "declining": breadth.declining_count,
+                    "declining_count": breadth.declining_count,
+                    "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
+                    "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
+                    "ts": safe_pos_float(getattr(breadth, "ts", None), time.time()),
+                }
+                for rot_k in (
+                    "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
+                    "eth_btc_ratio", "eth_btc_chg_24h_pct", "btc_vol_share_pct",
+                    "eth_vol_share_pct", "alt_vol_share_pct", "rotation_regime",
+                ):
+                    if (rot_v := getattr(breadth, rot_k, None)) is not None:
+                        mb_payload[rot_k] = rot_v
+                self._save_dual_cache("market_breadth", mb_payload)
                 logger.debug("Market breadth updated: %.1f%% advancing", breadth.advance_ratio * 100)
                 return True
         except Exception as e:

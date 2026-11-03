@@ -31,7 +31,7 @@ except ImportError:
     from kraken_common import (
         _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
     )
-from botcore import exact_nonneg_int, exact_pos_int
+from botcore import exact_nonneg_int, exact_pos_int, safe_nonneg_float
 from providers.base import _clean_single_order_id, normalize_side
 
 API_URL = "https://api.kraken.com"
@@ -260,6 +260,7 @@ class KrakenClient:
         rows = list(res[key])[:-1] if key and isinstance(res.get(key), list) else []
         closes: list[float] = []
         timestamps: list[float] = []
+        volumes: list[float] = []
         for row in rows:
             if not isinstance(row, (list, tuple)) or len(row) < 5:
                 continue
@@ -269,6 +270,10 @@ class KrakenClient:
                 continue
             closes.append(c_val)
             timestamps.append(ts_val + itv_sec)
+            volumes.append(safe_nonneg_float(row[6], default=0.0) or 0.0 if len(row) > 6 else 0.0)
+        if not isinstance(getattr(self, "_last_ohlc_volumes", None), dict):
+            self._last_ohlc_volumes = {}
+        self._last_ohlc_volumes[(pair, itv_int)] = tuple(volumes)
         return closes, tuple(timestamps)
 
     def ohlc_closes_with_timestamp(

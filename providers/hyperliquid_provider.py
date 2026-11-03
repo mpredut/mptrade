@@ -629,6 +629,7 @@ class HyperliquidProvider(MarketDataProvider):
                 interval,
                 lambda item: item.get("c") if isinstance(item, dict) else None,
                 lambda item: item.get("T") if isinstance(item, dict) else None,
+                lambda item: item.get("v") if isinstance(item, dict) else None,
             )
         except Exception as exc:
             raise ProviderError(f"ohlc_series({symbol}): {exc}") from exc
