@@ -204,12 +204,25 @@ class KalmanStateTracker:
             last_fed = -1e18
         if ts - last_fed >= KALMAN_SAMPLE_SEC:
             kf = self._kalman.get(symbol)
+            fed = self._fed_prices.setdefault(symbol, [])
             if kf is None:
                 kf = self._kalman[symbol] = KalmanTrend(qr=KALMAN_QR, gap_reset_sec=GAP_RESET_SEC)
+                if isinstance(big_prices, (list, tuple)) and len(big_prices) >= 2:
+                    step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
+                    raw_hist = big_prices[:-1][-step_n * 60 :: step_n]
+                    hist_pts = [p_h for raw_p in raw_hist if (p_h := safe_pos_float(raw_p, default=None)) is not None]
+                    if len(hist_pts) >= 2:
+                        step_dt = step_n * max(sr_val, 0.1)
+                        n_h = len(hist_pts)
+                        for idx_h, p_h in enumerate(hist_pts):
+                            fed.append(p_h)
+                            if len(fed) > 60:
+                                fed.pop(0)
+                            eps_h = self._grad_std(fed) if len(fed) >= 5 else max(eps_val * math.sqrt(KALMAN_SAMPLE_SEC / max(sr_val, 0.1)), p_h * 0.0008)
+                            kf.update(ts - (n_h - idx_h) * step_dt, p_h, eps_h)
             # Measure R at the Kalman step scale rather than one-second tick scale,
             # which would appear unrealistically precise and flicker. Derive it from
             # the subsampled fed prices, falling back to caller epsilon during warm-up.
-            fed = self._fed_prices.setdefault(symbol, [])
             fed.append(price)
             if len(fed) > 60:
                 fed.pop(0)

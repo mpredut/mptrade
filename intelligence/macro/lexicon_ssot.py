@@ -197,8 +197,12 @@ def _is_excluded_non_crisis_attack_keyword(
     """Return True if a keyword appears solely in a non-crisis local crime, partisan election, or single-stock earnings context."""
     kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
     combined_words = text_words | kw_words
-    if kw_words and kw_words <= {"war", "wars", "conflict"}:
+    if kw_words and kw_words <= {"war", "wars", "conflict", "iran", "israel", "ukraine", "russia", "gaza", "middle", "east"}:
         if (combined_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (combined_words & _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS):
+            return True
+        if (combined_words & {"diplomatic", "diplomacy", "peace", "resolution", "truce"}) and not (
+            combined_words & (_KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {"crude", "oil", "ceasefire"})
+        ):
             return True
     if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):
         if (combined_words & _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS) and not (combined_words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):

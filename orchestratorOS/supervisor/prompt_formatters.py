@@ -7,8 +7,9 @@ Section-level and line-level formatters live in `orchestratorOS.supervisor.promp
 and are re-exported here for 100% backwards-compatibility.
 """
 
-import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
 from cachepaths import canonical_base_asset, compatible_quote_suffixes
@@ -76,14 +77,14 @@ def build_supervisor_prompt(
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
     if spec is None:
-        spec = topic_spec(topic_key or "auto_cryptotrade_executor")
+        spec = topic_spec(topic_key or _extra.get("topic") or "auto_cryptotrade_executor")
     lookback_hours = safe_pos_float(lookback_hours, default=1.0)
     min_usd = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_usd, default=10.0)
     max_usd = safe_pos_float(max_notional_usd if max_notional_usd is not None else max_usd, default=2000.0)
     min_conf = safe_pos_float(min_confidence if min_confidence is not None else min_conf, default=0.85)
 
     is_pure_sre = bool(spec.can_self_heal and not spec.can_trade)
-    now_ts_str = time.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    now_ts_str = datetime.now(ZoneInfo("Europe/Bucharest")).strftime("%Y-%m-%d %H:%M:%S %Z").strip()
     context_items: List[str] = [
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
@@ -104,6 +105,7 @@ def build_supervisor_prompt(
                 portfolio_summary,
                 getattr(spec, "asset_scope", "all"),
                 max_usd=max_usd,
+                include_macro_benchmarks=False,
             )
         )
     if not is_pure_sre and focus_symbols:

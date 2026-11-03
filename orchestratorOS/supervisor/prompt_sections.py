@@ -51,7 +51,7 @@ def _format_quote_breakdown(bd: Any, primary_asset: Any) -> str:
 def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
-    if cyc.get("pos_peak") is not None:
+    if cyc.get("pos_peak") is not None and not _same_anchor_px(cyc.get("pos_peak"), cyc.get("avg_cost_px")):
         pk_sfx = f" (dd_from_peak={cyc.get('dd_from_peak_pct')}%)" if cyc.get("dd_from_peak_pct") is not None else ""
         extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
     if cyc.get("realized_pnl_usd") is not None:
@@ -750,13 +750,13 @@ def _format_microstructure_section(
             cd_parts: List[str] = []
             if cd_map.get("dt_min") is not None:
                 cd_parts.append(f"dt={cd_map['dt_min']}m")
-            if (d_ob := _parse_finite_float(cd_map.get("ob_imbalance_delta"), None)) is not None:
+            if (d_ob := _parse_finite_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
                 cd_parts.append(f"d_ob={d_ob:+.3f}")
-            if (d_cvd := _parse_finite_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None:
+            if (d_cvd := _parse_finite_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
                 cd_parts.append(f"d_cvd={'+' if d_cvd >= 0 else '-'}{_fmt_liq_usd(abs(d_cvd))}")
-            if (d_wl := _parse_finite_float(cd_map.get("whale_long_delta_pct"), None)) is not None:
+            if (d_wl := _parse_finite_float(cd_map.get("whale_long_delta_pct"), None)) is not None and abs(d_wl) >= 0.005:
                 cd_parts.append(f"d_whale_long={d_wl:+.2f}%")
-            if (d_oi := _parse_finite_float(cd_map.get("oi_delta_pct"), None)) is not None:
+            if (d_oi := _parse_finite_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
                 cd_parts.append(f"d_oi={d_oi:+.2f}%")
             if len(cd_parts) > 1:
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
@@ -778,7 +778,7 @@ def _same_anchor_px(a: Any, b: Any) -> bool:
     if a is None or b is None:
         return False
     af, bf = _parse_finite_float(a, None), _parse_finite_float(b, None)
-    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 1e-5) if (af is not None and bf is not None) else (a == b)
+    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 2e-4) if (af is not None and bf is not None) else (a == b)
 
 
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
@@ -787,13 +787,13 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     px_f = _parse_finite_float(pos.get("price"), 0.0)
     for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
         ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", ()),
-        ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", ("active_avg_buy_px",)),
-        ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px")),
+        ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", ("active_avg_buy_px", "last_buy_px")),
+        ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
         ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", ("active_avg_buy_px",)),
         ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", ()),
         ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("last_buy_px",)),
         ("last_sell_px", "last_sell_px", "chg_vs_last_sell", "chg_vs_last_sell_pct", ()),
-        ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ()),
+        ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
     ):
         if pos.get(px_k) is not None and not any(_same_anchor_px(pos.get(px_k), pos.get(dk)) for dk in dedup_keys):
             pct_val = pos.get(pct_k)
@@ -891,14 +891,22 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
         return f"{qty_pfx}{px}{meta_sfx}"
 
+    last_b_px = _round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
     avg_b_px = _round_opt_px(oinfo.get("active_avg_buy_px"), 6)
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
     tac_b_px = _round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
-    tac_b_str = f" | Tactical Sub-Cycle Avg BUY={tac_b_px}" if tac_b_px and not _same_anchor_px(tac_b_px, avg_b_px) else ""
+    tac_b_str = (
+        f" | Tactical Sub-Cycle Avg BUY={tac_b_px}"
+        if tac_b_px and not _same_anchor_px(tac_b_px, avg_b_px) and not _same_anchor_px(tac_b_px, last_b_px)
+        else ""
+    )
     sw_b_px = _round_opt_px(oinfo.get("swing_subcycle_avg_px"), 6)
     sw_b_str = (
         f" | Swing Sub-Cycle Avg BUY={sw_b_px}"
-        if sw_b_px and not _same_anchor_px(sw_b_px, avg_b_px) and not _same_anchor_px(sw_b_px, tac_b_px)
+        if sw_b_px
+        and not _same_anchor_px(sw_b_px, avg_b_px)
+        and not _same_anchor_px(sw_b_px, tac_b_px)
+        and not _same_anchor_px(sw_b_px, last_b_px)
         else ""
     )
     lifo_v = _parse_finite_float(oinfo.get("lifo_realized_pnl_usd"), None)
@@ -932,6 +940,7 @@ def _format_portfolio_section(
     asset_scope: str,
     *,
     max_usd: float = 2000.0,
+    include_macro_benchmarks: bool = True,
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
@@ -1009,8 +1018,24 @@ def _format_portfolio_section(
         else (ps.get("open_orders") if isinstance(ps.get("open_orders"), list) else [])
     )
     if open_lim:
+        _dup_oo_keys = {"orderId", "origQty", "executedQty", "clientOrderId", "client_order_id", "created_ts", "age_min"}
+        clean_open_lim = [
+            {
+                k: v
+                for k, v in o.items()
+                if k not in _dup_oo_keys
+                and not (
+                    k in ("orig_qty", "remaining_qty")
+                    and v == o.get("qty")
+                    and (_parse_finite_float(o.get("filled_qty"), 0.0) or 0.0) == 0.0
+                )
+            }
+            if isinstance(o, dict)
+            else o
+            for o in open_lim
+        ]
         lines.append(
-            f"  * Active Open Orders on Exchange (Locking Liquidity) — open_limit_orders: {open_lim}"
+            f"  * Active Open Orders on Exchange (Locking Liquidity) — open_limit_orders: {clean_open_lim}"
         )
     else:
         lines.append(
@@ -1041,13 +1066,17 @@ def _format_portfolio_section(
                 lines.append(
                     f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
                 )
-    mb_bench_3c = _extract_macro_benchmarks_line(
-        ps.get("macro_benchmarks")
-        or (
-            ps["cross_market_context"].get("macro_benchmarks")
-            if isinstance(ps.get("cross_market_context"), dict)
-            else None
+    mb_bench_3c = (
+        _extract_macro_benchmarks_line(
+            ps.get("macro_benchmarks")
+            or (
+                ps["cross_market_context"].get("macro_benchmarks")
+                if isinstance(ps.get("cross_market_context"), dict)
+                else None
+            )
         )
+        if include_macro_benchmarks
+        else ""
     )
     if mb_bench_3c:
         lines.append(
@@ -1060,8 +1089,15 @@ def _format_portfolio_section(
         if isinstance(oinfo, dict):
             lines.append(_format_recent_order_line(sym, oinfo, now_ms))
     if ps.get("last_cycle_execution_status"):
+        raw_lces = ps["last_cycle_execution_status"]
+        if isinstance(raw_lces, list):
+            clean_lces: Any = [{k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item for item in raw_lces]
+        elif isinstance(raw_lces, dict):
+            clean_lces = {k: v for k, v in raw_lces.items() if v is not None}
+        else:
+            clean_lces = raw_lces
         lines.append(
-            f"  * Last Cycle Execution Status — last_cycle_execution_status: {ps['last_cycle_execution_status']}"
+            f"  * Last Cycle Execution Status — last_cycle_execution_status: {clean_lces}"
         )
     for st_key, st_label in (
         ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),
