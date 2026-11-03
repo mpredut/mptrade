@@ -187,18 +187,11 @@ class BinanceWSBase:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Market data — Combined Stream (public)
+#  Market data — Shared Public Price Stream Base & Binance Combined Stream
 # ══════════════════════════════════════════════════════════════════════════════
 
-class BinancePriceStream(BinanceWSBase):
-    """
-    Public market-data stream: live prices through one Combined Stream thread,
-    one WebSocket, and N multiplexed symbols. Symmetric with BinanceAccountStream.
-
-    Public API:
-        start()/stop(), add_symbol(s)/remove_symbol(s), get_price(s),
-        get_all_prices(), subscribe(sub)/unsubscribe(sub), running_symbols.
-    """
+class PublicPriceStreamBase(BinanceWSBase):
+    """Shared base class for public WebSocket price streams across all venues (Binance, Hyperliquid, Kraken)."""
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
@@ -212,23 +205,16 @@ class BinancePriceStream(BinanceWSBase):
         self._prices: Dict[str, float] = {}
         self._subscribed: Set[str]     = set()
         self._lock = threading.Lock()
-        self._cmd_queue: Optional[asyncio.Queue] = None
-        self._req_id = 0
         self._subscribers = []
-        if isinstance(symbols, str):
-            symbols = [symbols]
-        if symbols:
-            for s in symbols:
-                norm_s = self._norm_ws_symbol(s)
-                if norm_s:
-                    self._subscribed.add(norm_s)
+        raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
+        norm_list = []
+        for s in raw_syms:
+            norm_s = self._norm_ws_symbol(s)
+            if norm_s and norm_s not in self._subscribed:
+                self._subscribed.add(norm_s)
+                norm_list.append(norm_s)
+        self._symbols = tuple(norm_list)
 
-    def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
-        # Preserve the original non-daemon market-manager thread behavior.
-        super().start(name=name, daemon=_as_bool(daemon, default=False))
-        return self
-
-    # ─── Subscription management (observers) ─────────────────────────────────
     def subscribe(self, subscriber) -> None:
         with self._lock:
             if subscriber not in self._subscribers:
@@ -247,6 +233,66 @@ class BinancePriceStream(BinanceWSBase):
                 sub.on_items_update(symbol, items)
             except Exception as e:
                 logger.error("Subscriber notify error: %s", e)
+
+    def add_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s in self._subscribed:
+                return False
+            self._subscribed.add(norm_s)
+            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
+        return True
+
+    def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s not in self._subscribed:
+                return False
+            self._subscribed.discard(norm_s)
+            self._symbols = tuple(s for s in self._symbols if s != norm_s)
+            self._prices.pop(norm_s, None)
+        return True
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return None
+        with self._lock:
+            return self._prices.get(norm_s)
+
+    def get_all_prices(self) -> Dict[str, float]:
+        with self._lock:
+            return dict(self._prices)
+
+    @property
+    def running_symbols(self) -> Set[str]:
+        with self._lock:
+            return set(self._subscribed)
+
+
+class BinancePriceStream(PublicPriceStreamBase):
+    """
+    Public market-data stream: live prices through one Combined Stream thread,
+    one WebSocket, and N multiplexed symbols. Symmetric with BinanceAccountStream.
+
+    Public API:
+        start()/stop(), add_symbol(s)/remove_symbol(s), get_price(s),
+        get_all_prices(), subscribe(sub)/unsubscribe(sub), running_symbols.
+    """
+
+    def __init__(self, symbols: Optional[list] = None):
+        super().__init__(symbols=symbols)
+        self._cmd_queue: Optional[asyncio.Queue] = None
+        self._req_id = 0
+
+    def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
+        # Preserve the original non-daemon market-manager thread behavior.
+        super().start(name=name, daemon=_as_bool(daemon, default=False))
+        return self
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
     def _next_id(self) -> int:
@@ -404,37 +450,18 @@ class BinancePriceStream(BinanceWSBase):
                 logger.warning("Max streams (%d) reached, cannot add %s", WS_MAX_STREAMS, symbol)
                 return False
             self._subscribed.add(symbol)
+            self._symbols = tuple(dict.fromkeys((*self._symbols, symbol)))
         self._enqueue_cmd(_Cmd.SUBSCRIBE, symbol)
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
-        symbol = self._norm_ws_symbol(symbol)
-        if not symbol:
+        if not super().remove_symbol(symbol):
+            logger.debug("[%s] Not subscribed", symbol)
             return False
-        with self._lock:
-            if symbol not in self._subscribed:
-                logger.debug("[%s] Not subscribed", symbol)
-                return False
-            self._subscribed.discard(symbol)
-            self._prices.pop(symbol, None)
-        self._enqueue_cmd(_Cmd.UNSUBSCRIBE, symbol)
-        return True
-
-    def get_price(self, symbol: str) -> Optional[float]:
         norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return None
-        with self._lock:
-            return self._prices.get(norm_s)
-
-    def get_all_prices(self) -> Dict[str, float]:
-        with self._lock:
-            return dict(self._prices)
-
-    @property
-    def running_symbols(self) -> Set[str]:
-        with self._lock:
-            return set(self._subscribed)
+        if norm_s:
+            self._enqueue_cmd(_Cmd.UNSUBSCRIBE, norm_s)
+        return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════

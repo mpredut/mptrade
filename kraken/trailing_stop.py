@@ -46,6 +46,7 @@ except ImportError:
     from notify import notify  # noqa: E402
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+    COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     extract_short_trend_slope,
     extract_trailing_intent_action_asset,
@@ -61,6 +62,7 @@ from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     _kraken_balance_asset_candidates,
     _kraken_pair_matches,
+    _split_kraken_pair,
 )
 from order_retry import (  # noqa: E402
     StrategyExecutorLifecycleApi,
@@ -259,6 +261,25 @@ class KrakenTrailing(TrailingAdapterBase):
         if not bx:
             return 0.0
         return safe_nonneg_float(bx.get("balance", 0), default=0.0)
+
+    def cost_basis(self, pair: str):
+        """Use reconciled BUY/SELL inventory for new-position warm-up when fresh SSOT fills are available."""
+        try:
+            pair_norm = str(pair or "").strip().upper()
+            spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair)
+            asset = spec.base if spec is not None else _split_kraken_pair(pair_norm)[0]
+            if not asset:
+                return None
+            held = self.total_qty(asset)
+            if held is None or held <= 0.0:
+                return None
+            inner = getattr(self.executor, "_inner", None)
+            if inner is None or not hasattr(inner, "position_cost_basis"):
+                return None
+            return inner.position_cost_basis(pair_norm or pair, held, _COST_BASIS_LOOKBACK_S)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
+            return None
 
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""

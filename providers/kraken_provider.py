@@ -59,7 +59,7 @@ _MISSING = object()
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
-_DEFAULT_KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cache_trade_kraken.json")
+_DEFAULT_KRAKEN_CACHE_FILE = cache_path("cache_trade_kraken.json")
 _KRAKEN_CACHE_FILE = _DEFAULT_KRAKEN_CACHE_FILE
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
@@ -137,7 +137,7 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
 
 
 def _normalize_kraken_fill(raw: dict) -> dict:
-    """Normalize a Kraken fill while preserving ordertxid/orderId for order-level aggregation."""
+    """Normalize a Kraken fill while preserving ordertxid/orderId and fee metadata."""
     norm = _normalize_order(raw)
     if isinstance(raw, dict):
         order_id = _clean_single_order_id(raw.get("ordertxid")) or _clean_single_order_id(raw.get("orderId"))
@@ -145,6 +145,15 @@ def _normalize_kraken_fill(raw: dict) -> dict:
             norm["orderId"] = order_id
         else:
             norm.pop("orderId", None)
+        fill_id = _clean_single_order_id(raw.get("id")) or _clean_single_order_id(raw.get("trade_id"))
+        if fill_id is not None:
+            norm["id"] = fill_id
+        fee_f = safe_nonneg_float(raw.get("fee"), default=None)
+        if fee_f is not None:
+            norm["fee"] = fee_f
+            fee_asset = str(raw.get("feeAsset") or "").strip().upper()
+            if fee_asset:
+                norm["feeAsset"] = fee_asset
     return norm
 
 
@@ -585,11 +594,22 @@ class KrakenProvider(MarketDataProvider):
             normalized.append(ord_entry)
         return normalized
 
+    def _fills_cache_file(self) -> Optional[str]:
+        custom = getattr(self, "_ssot_fills_cache_path", None)
+        if custom:
+            return str(custom)
+        if _KRAKEN_CACHE_FILE != _DEFAULT_KRAKEN_CACHE_FILE or self._allow_ssot_price_cache():
+            return str(_KRAKEN_CACHE_FILE)
+        return None
+
     def _fills_from_cache(self, symbol: str):
         """Read symbol fills from the shared cache, or return None for API fallback."""
+        cache_file = self._fills_cache_file()
+        if not cache_file:
+            return None
         return self.read_ssot_fills_cache(
             symbol,
-            _KRAKEN_CACHE_FILE,
+            cache_file,
             max_stale_sec=_CACHE_MAX_STALE_S,
             match_fn=_kraken_pair_matches,
             normalize_fn=_normalize_kraken_fill,
@@ -657,14 +677,11 @@ class KrakenProvider(MarketDataProvider):
             res = self._client().add_order(
                 symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
                 cl_ord_id=cl_ord_id)
-            if res and (
-                self._allow_ssot_price_cache()
-                or getattr(self, "_ssot_fills_cache_path", None)
-                or _KRAKEN_CACHE_FILE not in (_DEFAULT_KRAKEN_CACHE_FILE, cache_path("cache_trade_kraken.json"))
-            ):
+            cache_file = self._fills_cache_file() if res else None
+            if cache_file:
                 self.invalidate_ssot_fills_cache(
                     symbol,
-                    str(getattr(self, "_ssot_fills_cache_path", None) or _KRAKEN_CACHE_FILE),
+                    cache_file,
                     match_fn=_kraken_pair_matches,
                 )
             return res
@@ -722,14 +739,11 @@ class KrakenProvider(MarketDataProvider):
         order_id = extract_order_id(res)
         if order_id is None:
             raise ProviderError(f"submit_order {symbol}: a response without a txid ({res})")
-        if (
-            self._allow_ssot_price_cache()
-            or getattr(self, "_ssot_fills_cache_path", None)
-            or _KRAKEN_CACHE_FILE not in (_DEFAULT_KRAKEN_CACHE_FILE, cache_path("cache_trade_kraken.json"))
-        ):
+        cache_file = self._fills_cache_file()
+        if cache_file:
             self.invalidate_ssot_fills_cache(
                 symbol,
-                str(getattr(self, "_ssot_fills_cache_path", None) or _KRAKEN_CACHE_FILE),
+                cache_file,
                 match_fn=_kraken_pair_matches,
             )
         return order_id

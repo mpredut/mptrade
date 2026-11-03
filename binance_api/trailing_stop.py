@@ -49,6 +49,7 @@ from order_retry import (
 )
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
+    COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
     TrailingAdapterBase,
     extract_short_trend_slope,
     load_trailing_common_env,
@@ -83,8 +84,6 @@ TRAIL_PCT = {symbol: spec.number("trailing.pct")
 # (backtested), so it is now decided per instrument.
 REBUY_MODE_BY_SYMBOL = {symbol: spec.rebuy_mode()
                         for symbol, spec in TRAILING_INSTRUMENTS.items()}
-# Recent history is usable only when it explains the currently held inventory.
-_COST_BASIS_LOOKBACK_S = 120 * 24 * 3600
 TRAILING_ENABLED = required_bool_env("TRAILING_ENABLED")
 SELL_FRACTION = required_float_env("TRAILING_SELL_FRACTION")
 MIN_NOTIONAL_USD = 11.0

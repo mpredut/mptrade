@@ -470,6 +470,77 @@ class TestFetchDeadline(unittest.TestCase):
         kp.invalidate_ssot_fills_cache("BTCUSD", fills_file)
         self.assertIsNone(kp.read_ssot_fills_cache("BTCUSD", fills_file, max_stale_sec=90.0))
 
+        # 5. PublicPriceStreamBase shared inheritance and cross-venue position_cost_basis symmetry
+        from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
+        from providers.hyperliquid_provider import HyperliquidProvider
+
+        self.assertTrue(issubclass(BinancePriceStream, PublicPriceStreamBase))
+        self.assertTrue(issubclass(cm.HyperliquidPriceStream, PublicPriceStreamBase))
+        self.assertTrue(issubclass(cm.KrakenPriceStream, PublicPriceStreamBase))
+
+        kr_cost_file = os.path.join(tmp_dir, "kr_cost_cache.json")
+        with open(kr_cost_file, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "HYPEUSD": [
+                            {
+                                "id": "T1",
+                                "ordertxid": "O10",
+                                "side": "BUY",
+                                "price": 40.0,
+                                "qty": 2.0,
+                                "timestamp": now_ms - 10_000,
+                                "fee": 0.20,
+                                "feeAsset": "USD",
+                            },
+                            {
+                                "id": "T2",
+                                "ordertxid": "O11",
+                                "side": "BUY",
+                                "price": 50.0,
+                                "qty": 2.0,
+                                "timestamp": now_ms - 5_000,
+                                "fee": 0.20,
+                                "feeAsset": "USD",
+                            },
+                        ]
+                    },
+                    "fetchtime": {"HYPEUSD": now_ms - 1_000},
+                },
+                fh,
+            )
+        kp._ssot_fills_cache_path = kr_cost_file
+        # Total cost = (40*2 + 0.20) + (50*2 + 0.20) = 180.40 for 4.0 HYPE -> 45.10
+        self.assertAlmostEqual(kp.position_cost_basis("HYPEUSD", 4.0, 3600.0), 45.10, places=4)
+
+        hl_cost_file = os.path.join(tmp_dir, "hl_cost_cache.json")
+        with open(hl_cost_file, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "items": {
+                        "HYPEUSDC": [
+                            {
+                                "tid": 1,
+                                "oid": 201,
+                                "side": "B",
+                                "px": "30.0",
+                                "sz": "3.0",
+                                "time": now_ms - 8_000,
+                                "fee": "0.30",
+                                "feeToken": "USDC",
+                            }
+                        ]
+                    },
+                    "fetchtime": {"HYPEUSDC": now_ms - 1_000},
+                },
+                fh,
+            )
+        hlp = HyperliquidProvider(token="HYPE")
+        hlp._ssot_fills_cache_path = hl_cost_file
+        # Total cost = 30*3 + 0.30 = 90.30 for 3.0 HYPE -> 30.10
+        self.assertAlmostEqual(hlp.position_cost_basis("HYPEUSDC", 3.0, 3600.0), 30.10, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

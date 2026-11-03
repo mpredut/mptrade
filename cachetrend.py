@@ -1634,6 +1634,7 @@ CacheShortTrend = CacheShortTrendManager
 
 from binance_api.bapi_ws import (
     BinanceWSBase,
+    PublicPriceStreamBase,
     WS_CLOSE_TIMEOUT,
     WS_PING_INTERVAL,
     WS_PING_TIMEOUT,
@@ -1644,86 +1645,26 @@ import json as _json
 import websockets as _websockets
 
 
-class _VenuePriceStreamBase(BinanceWSBase):
+class _VenuePriceStreamBase(PublicPriceStreamBase):
     """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
 
     MIN_SAME_PRICE_EMIT_MS = 1000
 
-    @staticmethod
-    def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if not isinstance(symbol, str):
-            return None
-        s = symbol.strip().upper().replace("/", "")
-        return s or None
-
     def __init__(self, symbols=None, *, ws_url: str):
-        super().__init__()
+        super().__init__(symbols=symbols)
         self.ws_url = ws_url
-        self._prices: dict[str, float] = {}
         self._last_emit_ts_ms: dict[str, int] = {}
         self._last_emit_price: dict[str, float] = {}
-        self._lock = threading.Lock()
-        self._subscribers = []
-        raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
-        self._symbols = tuple(
-            dict.fromkeys(
-                norm_s
-                for s in raw_syms
-                if (norm_s := self._norm_ws_symbol(s)) is not None
-            )
-        )
-        self._subscribed = set(self._symbols)
-
-    def add_symbol(self, symbol: str) -> bool:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return False
-        with self._lock:
-            if norm_s in self._subscribed:
-                return False
-            self._subscribed.add(norm_s)
-            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
-        return True
 
     def remove_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
+        if not super().remove_symbol(symbol):
             return False
-        with self._lock:
-            if norm_s not in self._subscribed:
-                return False
-            self._subscribed.discard(norm_s)
-            self._symbols = tuple(s for s in self._symbols if s != norm_s)
-            self._prices.pop(norm_s, None)
-            self._last_emit_ts_ms.pop(norm_s, None)
-            self._last_emit_price.pop(norm_s, None)
+        if norm_s:
+            with self._lock:
+                self._last_emit_ts_ms.pop(norm_s, None)
+                self._last_emit_price.pop(norm_s, None)
         return True
-
-    def get_price(self, symbol: str) -> Optional[float]:
-        norm_s = self._norm_ws_symbol(symbol)
-        if not norm_s:
-            return None
-        with self._lock:
-            return self._prices.get(norm_s)
-
-    def get_all_prices(self) -> dict[str, float]:
-        with self._lock:
-            return dict(self._prices)
-
-    @property
-    def running_symbols(self) -> set[str]:
-        with self._lock:
-            return set(self._subscribed)
-
-    def subscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber not in self._subscribers:
-                self._subscribers.append(subscriber)
-
-    def unsubscribe(self, subscriber) -> None:
-        with self._lock:
-            if subscriber in self._subscribers:
-                self._subscribers.remove(subscriber)
 
     def _notify_subscribers(self, symbol: str, items) -> None:
         ts_ms = None
@@ -1828,7 +1769,8 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
         return removed
 
     def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
-        cached = self._resolved_spot_keys.get(symbol)
+        with self._lock:
+            cached = self._resolved_spot_keys.get(symbol)
         if cached:
             return cached
         split = split_symbol_assets(symbol)
@@ -1851,7 +1793,8 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             if fallback and fallback not in keys:
                 keys.append(fallback)
         resolved = tuple(keys)
-        self._resolved_spot_keys[symbol] = resolved
+        with self._lock:
+            self._resolved_spot_keys[symbol] = resolved
         return resolved
 
     def _build_subscribe_payload(self) -> str:
@@ -1887,7 +1830,9 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict) and isinstance(loaded.get("fetchtime"), dict)
             else {"items": {}, "fetchtime": {}}
         )
-        for sym in self._symbols:
+        with self._lock:
+            symbols = self._symbols
+        for sym in symbols:
             spot_coins = {
                 k.upper()
                 for k in self._candidate_mids_keys(sym)
@@ -1929,8 +1874,10 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             cache_file = self._resolve_fills_cache_file()
             loaded = read_json_dict(cache_file, default=None, recover_previous=True)
             if isinstance(loaded, dict) and isinstance(loaded.get("fetchtime"), dict) and isinstance(loaded.get("items"), dict):
+                with self._lock:
+                    symbols = self._symbols
                 changed = False
-                for sym in self._symbols:
+                for sym in symbols:
                     if sym in loaded["fetchtime"] and sym in loaded["items"]:
                         loaded["fetchtime"][sym] = ts_ms
                         changed = True
@@ -1956,7 +1903,9 @@ class HyperliquidPriceStream(_VenuePriceStreamBase):
             mids = data.get("mids") if isinstance(data, dict) else None
             if not isinstance(mids, dict):
                 return
-            for sym in self._symbols:
+            with self._lock:
+                symbols = self._symbols
+            for sym in symbols:
                 px = None
                 for k in self._candidate_mids_keys(sym):
                     raw_val = casefold_get(mids, k)

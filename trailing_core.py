@@ -53,6 +53,9 @@ from providers.execution_audit import intent_client_order_id
 from state_io import load_json_state, save_json_state
 
 
+COST_BASIS_LOOKBACK_S = 120 * 24 * 3600
+
+
 def load_trailing_common_env(
     prefix: str, env: dict | None = None
 ) -> tuple[float, bool, float, bool, bool, float, float]:

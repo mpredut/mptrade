@@ -355,6 +355,29 @@ class HyperliquidProvider(MarketDataProvider):
             return None
         return self.read_ssot_fills_cache(symbol, cache_file, max_stale_sec=60.0)
 
+    def _fills_from_api(self, symbol: str) -> List[dict]:
+        """Fall back to direct Hyperliquid user_fills for this spot pair and refresh SSOT cache."""
+        c = self._hl()
+        pair = self._pair()
+        if c is None or pair is None:
+            raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
+        addr = os.environ.get("HL_ACCOUNT_ADDRESS")
+        if not addr:
+            raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
+        fills = c.info.user_fills(addr)
+        if fills is None:
+            raise ProviderError(f"get_orders({symbol}): user_fills returned None")
+        if not isinstance(fills, list):
+            raise ProviderError(f"get_orders({symbol}): user_fills returned unexpected type {type(fills).__name__}")
+        spot_fills = [
+            f for f in fills
+            if isinstance(f, dict) and f.get("coin") == pair
+        ]
+        cache_file = self._fills_cache_file()
+        if cache_file:
+            self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
+        return spot_fills
+
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Return normalized recent spot orders (fills aggregated by oid), optionally filtered by side.
 
@@ -365,30 +388,11 @@ class HyperliquidProvider(MarketDataProvider):
         if since_val is None:
             return []
         cutoff_ms = (time.time() - since_val) * 1000.0
-        cached_fills = self._fills_from_cache(symbol)
-        if cached_fills is not None:
-            return aggregate_fills_by_order_id(cached_fills, cutoff_ms=cutoff_ms, side=side)
-        c = self._hl()
-        pair = self._pair()
-        if c is None or pair is None:
-            raise ProviderError(f"get_orders({symbol}): Hyperliquid client or pair unavailable")
         try:
-            addr = os.environ.get("HL_ACCOUNT_ADDRESS")
-            if not addr:
-                raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
-            fills = c.info.user_fills(addr)
-            if fills is None:
-                raise ProviderError(f"get_orders({symbol}): user_fills returned None")
-            if not isinstance(fills, list):
-                raise ProviderError(f"get_orders({symbol}): user_fills returned unexpected type {type(fills).__name__}")
-            spot_fills = [
-                f for f in fills
-                if isinstance(f, dict) and f.get("coin") == pair
-            ]
-            cache_file = self._fills_cache_file()
-            if cache_file:
-                self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
-            return aggregate_fills_by_order_id(spot_fills, cutoff_ms=cutoff_ms, side=side)
+            rows = self._fills_from_cache(symbol)
+            if rows is None:
+                rows = self._fills_from_api(symbol)
+            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001

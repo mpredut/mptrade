@@ -20,6 +20,7 @@ from botcore import (
     obj_attr,
     parse_dotenv,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_pos_float,
 )
@@ -768,12 +769,84 @@ def aggregate_fills_by_order_id(
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 
-from .quantity import decide_quantity, venue_fee_cap_quantity  # noqa: E402
+from .quantity import decide_quantity, remaining_average_cost, venue_fee_cap_quantity  # noqa: E402
 from .strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,
     PairPrecision,
     ProviderError,
 )
+
+
+def compute_fills_cost_basis(
+    rows: Any,
+    held_qty: float,
+    since_s: float,
+    *,
+    base_asset: str = "",
+    quote_asset: str = "",
+    require_explicit_fee_asset: bool = False,
+    validate_row_fn: Any = None,
+) -> Optional[float]:
+    """Compute inventory-reconciled acquisition cost (``remaining_average_cost``) from raw or normalized fill rows."""
+    since_val = safe_pos_float(since_s, default=None)
+    if since_val is None:
+        raise ValueError("since_s must be finite and positive")
+    if not isinstance(rows, (list, tuple)):
+        return None
+    now_ms = time.time() * 1000.0
+    cutoff = now_ms - since_val * 1000.0
+    normalized = []
+    for idx, r in enumerate(rows):
+        if not isinstance(r, dict):
+            return None
+        row = dict(r)
+        ts_ms = extract_timestamp_ms(row, default=0) or 0
+        if (callable(validate_row_fn) and not validate_row_fn(row)) or ts_ms <= 0 or ts_ms > now_ms:
+            return None
+        if ts_ms < cutoff:
+            continue
+        px = extract_order_price(row, default=0.0) or 0.0
+        qty = extract_order_qty(row, default=0.0) or 0.0
+        side = extract_order_side(row)
+        if px <= 0.0 or qty <= 0.0 or side not in ("BUY", "SELL"):
+            return None
+        fee_info = extract_order_fee(
+            row,
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+            fill_price=px,
+            require_explicit_asset=require_explicit_fee_asset,
+        )
+        if fee_info is None:
+            if require_explicit_fee_asset:
+                return None
+            base_fee = 0.0
+            quote_fee = 0.0
+        else:
+            base_fee = fee_info["base_fee"]
+            quote_fee = fee_info["quote_fee"]
+        fill_id = row.get("id", row.get("tid", row.get("tradeId", row.get("orderId", idx))))
+        normalized.append(
+            {
+                "id": fill_id,
+                "timestamp": ts_ms,
+                "qty": qty,
+                "price": px,
+                "side": side,
+                "base_fee": base_fee,
+                "quote_fee": quote_fee,
+            }
+        )
+
+    def _trade_sort_key(item: dict) -> tuple[int, int, str]:
+        raw_id = item.get("id")
+        id_int = safe_int(raw_id, default=None)
+        if id_int is not None:
+            return (int(item["timestamp"]), 0, f"{id_int:020d}")
+        return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
+
+    normalized.sort(key=_trade_sort_key)
+    return remaining_average_cost(normalized, held_qty)
 
 
 def _derive_128bit_client_order_id(
@@ -1006,8 +1079,49 @@ class MarketDataProvider(ABC):
         return self.get_orders(symbol, None, since_s)
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
-        """Return inventory-reconciled acquisition cost, or unknown when unsupported."""
-        return None
+        """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
+        since_val = safe_pos_float(since_s, default=None)
+        if since_val is None:
+            raise ValueError("since_s must be finite and positive")
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return None
+        fills_fn = getattr(self, "_fills_from_cache", None)
+        if not callable(fills_fn):
+            return None
+        rows = fills_fn(symbol)
+        if rows is None:
+            return None
+        sym_u = symbol.strip().upper()
+        sym_canon = canonical_symbol_key(sym_u)
+        base_asset = ""
+        quote_asset = ""
+        try:
+            import instrument_registry
+
+            venue_slug = normalize_venue_name(getattr(self, "name", ""))
+            spec = next(
+                (
+                    item
+                    for item in instrument_registry.select_instruments(venue_slug).values()
+                    if item.symbol.upper() == sym_u or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
+                ),
+                None,
+            )
+            if spec is not None:
+                base_asset, quote_asset = spec.base, spec.quote
+        except Exception:
+            pass
+        if not base_asset:
+            parts = split_symbol_assets(sym_u)
+            if parts is not None:
+                base_asset, quote_asset = parts
+        return compute_fills_cost_basis(
+            rows,
+            held_qty,
+            since_val,
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+        )
 
     def open_orders(self, symbol: str) -> List[dict]:
         return []

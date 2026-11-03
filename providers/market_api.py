@@ -24,6 +24,7 @@ from .base import (
     MarketDataProvider,
     _normalize_order,
     clean_order_id,
+    compute_fills_cost_basis,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,
@@ -251,48 +252,23 @@ class BinanceProvider(MarketDataProvider):
                 if bucket is not None:
                     break
             raw_rows = list(bucket) if isinstance(bucket, (list, tuple)) else []
-        rows = []
-        for r in raw_rows:
-            if not isinstance(r, dict):
-                return None
-            rows.append(dict(r))
-        now_ms = time.time() * 1000
-        cutoff = now_ms - since_s * 1000
-        normalized = []
-        for row in rows:
-            ts_ms = extract_timestamp_ms(row, default=0) or 0
-            row_sym = str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else ""
-            if (not manager._is_valid_item(row)
-                    or (row_sym != symbol and (not sym_canon or canonical_symbol_key(row_sym) != sym_canon))
-                    or ts_ms > now_ms):
-                return None
-            if ts_ms < cutoff:
-                continue
-            # Missing commission metadata is unknown history, not an invented zero fee.
-            px = extract_order_price(row)
-            fee_info = extract_order_fee(
-                row,
-                base_asset=spec.base,
-                quote_asset=spec.quote,
-                fill_price=px,
-                require_explicit_asset=True,
-            )
-            if fee_info is None:
-                return None
-            normalized.append(dict(
-                id=row["id"], timestamp=ts_ms, qty=extract_order_qty(row), price=px,
-                side=extract_order_side(row),
-                base_fee=fee_info["base_fee"],
-                quote_fee=fee_info["quote_fee"]))
-        def _trade_sort_key(item: dict) -> tuple[int, int, str]:
-            raw_id = item.get("id")
-            id_int = safe_int(raw_id, default=None)
-            if id_int is not None:
-                return (int(item["timestamp"]), 0, f"{id_int:020d}")
-            return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
 
-        normalized.sort(key=_trade_sort_key)
-        return remaining_average_cost(normalized, held_qty)
+        def _valid_binance_fill(row: dict) -> bool:
+            row_sym = str(row.get("symbol") or "").strip().upper() if isinstance(row.get("symbol"), str) else ""
+            return bool(
+                manager._is_valid_item(row)
+                and (row_sym == symbol or (sym_canon and canonical_symbol_key(row_sym) == sym_canon))
+            )
+
+        return compute_fills_cost_basis(
+            raw_rows,
+            held_qty,
+            since_s,
+            base_asset=spec.base,
+            quote_asset=spec.quote,
+            require_explicit_fee_asset=True,
+            validate_row_fn=_valid_binance_fill,
+        )
 
     def open_orders(self, symbol: str) -> List[dict]:
         try:
