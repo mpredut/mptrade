@@ -771,7 +771,7 @@ def resolve_derived_telemetry_intervals(
 
     return {
         "crypto_executor_interval_sec": round(exec_sec, 6),
-        "share_executor_interval_sec": _sec("share_executor_interval_mult", 2.0),
+        "share_executor_interval_sec": _sec("share_executor_interval_mult", 5.0),
         "ui_sync_interval_sec": _sec("ui_sync_interval_mult", 2.0),
         "ui_sync_idle_sec": _sec("ui_sync_idle_mult", 1.0 / 3.0),
         "orderbook_interval_sec": _sec("orderbook_interval_mult", 1.0 / 24.0),

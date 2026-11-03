@@ -22,5 +22,5 @@ SHELL=/bin/bash
 35 3 * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_technical_repair.lock /usr/bin/timeout 600 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_technical_repair >> logs/auto_technical_repair.log 2>&1; ./orchestratorOS/admin/manage_agy.sh ui-sync >> logs/manage_agy.log 2>&1
 # 6-min 24/7 crypto trade executor on the permanent auto_cryptotrade_executor thread (Binance, Kraken, Hyperliquid)
 */6 * * * * cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_cryptotrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_cryptotrade_executor >> logs/auto_trade_executor.log 2>&1
-# 12-min staggered US RTH share trade executor on the permanent auto_sharetrade_executor thread (Trading212 SPCX, NVDA, RGNT)
-3-51/12 * * * 1-5 cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_sharetrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_sharetrade_executor >> logs/auto_sharetrade_executor.log 2>&1
+# 30-min staggered US RTH share trade executor on the permanent auto_sharetrade_executor thread (Trading212 SPCX, NVDA, RGNT)
+3,33 * * * 1-5 cd $HOME/mptrade && /usr/bin/flock -n logs/.auto_sharetrade_executor.lock /usr/bin/timeout 270 ./orchestratorOS/run_python.sh orchestratorOS/supervisor/autonomous_ai_reconciler.py --topic-key auto_sharetrade_executor >> logs/auto_sharetrade_executor.log 2>&1

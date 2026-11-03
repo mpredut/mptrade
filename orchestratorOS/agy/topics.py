@@ -100,7 +100,7 @@ TOPIC_SPECS: Dict[str, TopicSpec] = {
         default_timeout_sec=90.0,
     ),
     "auto_sharetrade_executor": TopicSpec(
-        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 12m)",
+        "📈 [auto_sharetrade_executor] Autonomous Share Trade Decisions (Trading212 RTH 30m)",
         can_trade=True,
         asset_scope="equities",
         preferred_model=EXECUTOR_MODEL,
