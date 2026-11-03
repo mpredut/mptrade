@@ -217,6 +217,14 @@ def load_tradable_instruments(
                 and _bind_inst(f"HYPERLIQUID_{base}", "hyperliquid", pair, base, quote, live=True)
             ):
                 existing_hl_syms.add(pair)
+            else:
+                for inst in active_map.values():
+                    if (
+                        normalize_venue_name(getattr(inst, "provider_name", "")) == "hyperliquid"
+                        and str(getattr(inst, "symbol", "")).upper() in (pair, base)
+                        and hasattr(inst, "_provider")
+                    ):
+                        inst._provider._live_enabled = True
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
         if scope == "equities":

@@ -74,7 +74,7 @@ def main() -> int:
     if hype:
         check(hype.symbol == "HYPEUSDC" and hype.base == "HYPE", "HYPE symbol/base",
               f"{hype.symbol}/{hype.base}")
-        check(hype.enabled is False, "HYPE enabled=no (gated)", str(hype.enabled))
+        check(hype.enabled is True, "HYPE enabled=yes (role.mt=no, role.archive=yes)", str(hype.enabled))
 
     print("\n==== 2. params mt.* == monitortrades.conf (behavior-preserving) ====")
     g, per = parse_monitortrades_conf()
@@ -167,8 +167,8 @@ def main() -> int:
     check(all(i.enabled for i in mt.values()) and
           all(any(k.startswith("mt.") for k in i.params) for i in mt.values()),
           "load_for('mt') = only enabled instruments that have mt.* params", str(sorted(mt.keys())))
-    check(hype is None or not hype.enabled, "HYPE_HL e enabled=no in config")
-    check("HYPE_HL" not in mt, "HYPE_HL (enabled=no) does NOT appear in load_for")
+    check(hype is not None and hype.enabled, "HYPERLIQUID_HYPE e enabled=yes in config")
+    check("HYPERLIQUID_HYPE" not in mt, "HYPERLIQUID_HYPE (role.mt=no) does NOT appear in load_for('mt')")
     try:                                  # Public Kraken price (informational, tolerant of network failures).
         print(f"  [info] Kraken HYPEUSD price = {kp.get_current_price('HYPEUSD') if kp else None}")
     except Exception as _e:  # noqa: BLE001

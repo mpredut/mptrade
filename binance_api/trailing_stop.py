@@ -296,19 +296,6 @@ class TrailingStop(TrailingAdapterBase):
             return 0.0
         return safe_nonneg_float(bal.get("free"), default=0.0)
 
-    # -- instant trend from cacheManager for optional filters ------------------
-    def _trend_value(self, symbol: str) -> float:
-        """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown).
-        Errors return 0: optional filters do not block, but this is not a safety guarantee."""
-        try:
-            import cacheManager as cm
-            snap = cm.get_short_trend_manager().get_fresh_snapshot(symbol)
-            if snap:
-                return extract_short_trend_slope(snap, symbol)
-        except Exception:
-            pass
-        return 0.0
-
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for symbol in self.sym.symbols:

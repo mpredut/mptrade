@@ -292,7 +292,26 @@ class KrakenProvider(MarketDataProvider):
             raise
 
     # -- Public market data without keys. --------------------------------------
+    def _allow_ssot_price_cache(self) -> bool:
+        if not super()._allow_ssot_price_cache():
+            return False
+        if (
+            self._cli is not None
+            and type(self._cli).__name__ != "KrakenClient"
+            and not bool(
+                getattr(self, "_force_ssot_cache", False)
+                or getattr(self, "_ssot_price_cache_path", None)
+                or getattr(self, "_ssot_trend_cache_path", None)
+                or getattr(self, "_ssot_24price_cache_dir", None)
+            )
+        ):
+            return False
+        return True
+
     def get_current_price(self, symbol: str) -> Optional[float]:
+        cached = self.get_ssot_cached_price(symbol)
+        if cached is not None:
+            return cached
         try:
             return self._client().last_price(symbol)
         except Exception as e:  # noqa: BLE001
@@ -328,6 +347,9 @@ class KrakenProvider(MarketDataProvider):
         lookback_f = safe_pos_float(lookback_h, default=None)
         if lookback_f is None:
             return None
+        cached_hist = self.get_ssot_price_history(symbol, lookback_f)
+        if cached_hist is not None:
+            return cached_hist
         try:
             cli = self._client()
             # Choose a valid Kraken OHLC minute interval that fits roughly 720 points or fewer.

@@ -454,6 +454,16 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "get_orders", None)
         return reader(symbol, side, lookback) if callable(reader) else []
 
+    def trend_snapshot(self, symbol: str):
+        reader = getattr(self._executor, "trend_snapshot", None)
+        return reader(symbol) if callable(reader) else None
+
+    def trend(self, symbol: str) -> float:
+        reader = getattr(self._executor, "trend", None)
+        if callable(reader):
+            return safe_float(reader(symbol), default=0.0)
+        return 0.0
+
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)

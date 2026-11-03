@@ -197,34 +197,6 @@ class KrakenTrailing(TrailingAdapterBase):
             return 0.0
         return safe_nonneg_float(bal_f - hold_f, default=0.0)
 
-    # -- HYPE short trend from cache_short_trend.json for optional filters --
-    def _trend_value(self, pair: str) -> float:
-        """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown).
-        Errors return 0, making trend filters a safe no-op."""
-        try:
-            data = read_json_dict(CACHE_TREND, default=None, recover_previous=True)
-            if not isinstance(data, dict):
-                return 0.0
-            items_map = data.get("items") if isinstance(data.get("items"), dict) else data
-            snap = None
-            for cand in [pair] + cache_symbol_variants(pair):
-                if not cand:
-                    continue
-                cand_val = casefold_get(items_map, cand)
-                if isinstance(cand_val, dict):
-                    snap = cand_val
-                    break
-            if isinstance(snap, dict):
-                raw_ts = extract_timestamp_s(snap, default=None)
-                if raw_ts is None or raw_ts <= 0:
-                    return 0.0
-                age = time.time() - raw_ts
-                if -5.0 <= age <= 15.0:
-                    return extract_short_trend_slope(snap, pair)
-        except Exception:
-            pass
-        return 0.0
-
     # == TrailingCore ADAPTER contract ========================================
     def assets(self):
         for asset, trail in TRAIL_PCT.items():
@@ -280,6 +252,14 @@ class KrakenTrailing(TrailingAdapterBase):
             return False
 
     def price(self, pair: str):
+        try:
+            inner = getattr(self.executor, "_inner", None)
+            if inner is not None and hasattr(inner, "get_ssot_cached_price"):
+                cached = inner.get_ssot_cached_price(pair)
+                if cached is not None:
+                    return cached
+        except Exception:
+            pass
         return self.client.last_price(pair)
 
     def reconcile_pending(self, pending, persist):

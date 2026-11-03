@@ -1,23 +1,50 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
+import contextlib
 import hashlib
 import math
 import os
 import re
+import sys
+import threading
+import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
+    extract_current_price_item,
     obj_attr,
     parse_dotenv,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import normalize_venue_name
+from cachepaths import clean_symbol_key, normalize_venue_name, resolve_cachedb_filepath
+from instrument_registry import casefold_get
+from state_io import read_json_dict_recovering
+
+
+_LIVE_FETCH_LOCAL = threading.local()
+
+
+@contextlib.contextmanager
+def live_price_fetch_context():
+    """Mark the current thread as performing a live venue price poll for cacheManager."""
+    depth = int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0)
+    _LIVE_FETCH_LOCAL.depth = depth + 1
+    try:
+        yield
+    finally:
+        _LIVE_FETCH_LOCAL.depth = max(0, depth)
+
+
+def is_in_live_price_fetch() -> bool:
+    """Return True when called inside a cacheManager remote price poll."""
+    return int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0) > 0
 
 
 def env_value(folder: str, key: str) -> Optional[str]:
@@ -98,8 +125,27 @@ def _nonneg_abs_float(value: Any) -> Optional[float]:
     return abs(val) if val is not None else None
 
 
+def _parse_epoch_or_iso_s(value: Any) -> Optional[float]:
+    numeric = safe_nonneg_float(value, default=None)
+    if numeric is not None:
+        return numeric
+    if isinstance(value, str):
+        s = value.strip()
+        if len(s) >= 10 and ("-" in s or "T" in s):
+            try:
+                iso_s = s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s
+                dt = datetime.fromisoformat(iso_s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ts_s = dt.timestamp()
+                return ts_s if ts_s >= 0.0 else None
+            except Exception:
+                return None
+    return None
+
+
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
-    """Normalize a raw timestamp (in seconds or milliseconds) to integer milliseconds.
+    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds.
 
     Epoch values in ``[1_000_000_000, 100_000_000_000)`` (all Unix seconds between
     2001 and 2286) and non-integer float seconds are converted to milliseconds.
@@ -107,6 +153,8 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
     (``< 1_000_000_000``) are preserved as-is.
     """
     numeric = safe_nonneg_float(value, default=None)
+    if numeric is None:
+        numeric = _parse_epoch_or_iso_s(value)
     if numeric is None:
         return default
     if numeric == 0.0:
@@ -125,7 +173,7 @@ def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[
 
 def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
     """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
-    numeric = _first_mapped(order, _TIMESTAMP_KEYS, lambda v: safe_nonneg_float(v, default=None))
+    numeric = _first_mapped(order, _TIMESTAMP_KEYS, _parse_epoch_or_iso_s)
     if numeric is None:
         return default
     return numeric / 1000.0 if numeric >= 100_000_000_000.0 else numeric
@@ -1127,3 +1175,245 @@ class MarketDataProvider(ABC):
             closes = getattr(series, "closes", None) if series is not None else None
             return list(closes) if closes is not None else []
         return []
+
+    # ── Agnostic SSOT cacheManager coupling (price, 24h history, short trend) ─
+
+    def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
+        """Return venue-scoped symbol keys to look up in SSOT cacheManager stores."""
+        raw_u = str(symbol or "").strip().upper()
+        cleaned = clean_symbol_key(raw_u)
+        return tuple(dict.fromkeys(c for c in (cleaned, raw_u) if c))
+
+    def _allow_ssot_price_cache(self) -> bool:
+        """Return True when this provider should consult cacheManager SSOT before venue HTTP."""
+        if is_in_live_price_fetch():
+            return False
+        if getattr(self, "_ssot_cache_enabled", None) is False:
+            return False
+        if (
+            getattr(self, "_force_ssot_cache", False)
+            or getattr(self, "_ssot_price_cache_path", None)
+            or getattr(self, "_ssot_trend_cache_path", None)
+            or getattr(self, "_ssot_24price_cache_dir", None)
+        ):
+            return True
+        if "pytest" in sys.modules:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_ssot_price_point(entry: Any, fallback_ts: Optional[float] = None) -> Optional[tuple[int, float]]:
+        if isinstance(entry, dict):
+            ts_ms = extract_timestamp_ms(entry, default=None)
+            if ts_ms is None and fallback_ts is not None:
+                ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
+            px_f = extract_current_price_item(entry)
+            if px_f is None:
+                px_f = safe_pos_float(entry.get("price", entry.get("px")), default=None)
+            if ts_ms is not None and ts_ms > 0 and px_f is not None:
+                return ts_ms, px_f
+            return None
+        if isinstance(entry, (list, tuple)):
+            if len(entry) >= 2 and not isinstance(entry[0], (list, tuple, dict)):
+                ts_ms = normalize_timestamp_ms(entry[0], default=None)
+                px_f = safe_pos_float(entry[1], default=None)
+                if ts_ms is not None and ts_ms > 0 and px_f is not None:
+                    return ts_ms, px_f
+            for sub in reversed(entry):
+                parsed = MarketDataProvider._parse_ssot_price_point(sub, fallback_ts=fallback_ts)
+                if parsed is not None:
+                    return parsed
+        px_f = extract_current_price_item(entry)
+        if px_f is not None and fallback_ts is not None:
+            ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
+            if ts_ms is not None and ts_ms > 0:
+                return ts_ms, px_f
+        return None
+
+    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+        """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
+        if not self._allow_ssot_price_cache():
+            return None
+        max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
+        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        if not candidates:
+            return None
+        custom_path = getattr(self, "_ssot_price_cache_path", None)
+        if custom_path is None:
+            cm = sys.modules.get("cacheManager")
+            cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
+            if cpm is not None and hasattr(cpm, "get_cached_price_observation"):
+                for cand in candidates:
+                    try:
+                        obs = cpm.get_cached_price_observation(cand, max_age)
+                        if obs is not None:
+                            px = safe_pos_float(obs[1], default=None)
+                            if px is not None:
+                                return px
+                    except Exception:
+                        continue
+        price_path = str(custom_path) if custom_path else str(resolve_cachedb_filepath("cache_current_price.json"))
+        if not os.path.exists(price_path):
+            return None
+        try:
+            data = read_json_dict_recovering(price_path)
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+            file_ts = extract_timestamp_s(data, default=None)
+            now_s = time.time()
+            for cand in candidates:
+                raw_entry = casefold_get(items, cand)
+                if raw_entry is None:
+                    continue
+                fb_ts = casefold_get(fetchtime_map, cand)
+                if fb_ts is None:
+                    fb_ts = file_ts
+                parsed = MarketDataProvider._parse_ssot_price_point(raw_entry, fallback_ts=fb_ts)
+                if parsed is None:
+                    continue
+                ts_ms, px = parsed
+                obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+                if -5.0 <= (now_s - obs_s) <= max_age:
+                    return px
+        except Exception:
+            pass
+        return None
+
+    def get_ssot_price_history(
+        self,
+        symbol: str,
+        lookback_hours: float,
+        max_latest_age_sec: float = 120.0,
+    ) -> Optional[list[dict]]:
+        """Read 24h tick history from Cache24PriceManager when fresh and covering ``lookback_hours``."""
+        if not self._allow_ssot_price_cache():
+            return None
+        lh_f = safe_pos_float(lookback_hours, default=None)
+        if lh_f is None or lh_f > 24.0:
+            return None
+        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        if not candidates:
+            return None
+        now_s = time.time()
+        cutoff_ms = int((now_s - lh_f * 3600.0) * 1000)
+        custom_dir = getattr(self, "_ssot_24price_cache_dir", None)
+        for cand in candidates:
+            c24_path = (
+                os.path.join(str(custom_dir), f"cache_24_price_{cand}.json")
+                if custom_dir
+                else str(resolve_cachedb_filepath(f"cache_24_price_{cand}.json"))
+            )
+            if not os.path.exists(c24_path):
+                continue
+            try:
+                raw = read_json_dict_recovering(c24_path)
+                if not isinstance(raw, dict):
+                    continue
+                if isinstance(raw.get("items"), list):
+                    entries = raw.get("items")
+                else:
+                    items_map = raw.get("items") if isinstance(raw.get("items"), dict) else raw
+                    entries = casefold_get(items_map, cand)
+                if not isinstance(entries, list) or len(entries) < 2:
+                    continue
+                valid: list[tuple[int, float]] = []
+                for entry in entries:
+                    parsed = MarketDataProvider._parse_ssot_price_point(entry)
+                    if parsed is not None:
+                        valid.append(parsed)
+                if len(valid) < 2:
+                    continue
+                valid.sort(key=lambda pt: pt[0])
+                latest_age_s = now_s - (valid[-1][0] / 1000.0)
+                if latest_age_s < -5.0 or latest_age_s > max_latest_age_sec:
+                    continue
+                if custom_dir is None and lh_f > 0.25 and (valid[-1][0] - valid[0][0]) < (lh_f * 3600.0 * 1000.0 * 0.75):
+                    continue
+                out = [{"timestamp": ts, "price": px} for ts, px in valid if ts >= cutoff_ms]
+                if out:
+                    return out
+            except Exception:
+                continue
+        return None
+
+    def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0) -> Optional[dict]:
+        """Return a fresh short-trend snapshot for ``symbol`` from CacheShortTrendManager / cache_short_trend.json."""
+        if not self._allow_ssot_price_cache():
+            return None
+        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
+        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        if not candidates:
+            return None
+        custom_path = getattr(self, "_ssot_trend_cache_path", None)
+        if custom_path is None:
+            cm = sys.modules.get("cacheManager")
+            stm = getattr(cm, "_short_trend_instance", None) if cm is not None else None
+            if stm is not None and hasattr(stm, "get_fresh_snapshot"):
+                for cand in candidates:
+                    try:
+                        snap = stm.get_fresh_snapshot(cand)
+                        if isinstance(snap, dict):
+                            return dict(snap)
+                    except Exception:
+                        continue
+        trend_path = str(custom_path) if custom_path else str(resolve_cachedb_filepath("cache_short_trend.json"))
+        if not os.path.exists(trend_path):
+            return None
+        try:
+            data = read_json_dict_recovering(trend_path)
+            if not isinstance(data, dict):
+                return None
+            items = data.get("items") if isinstance(data.get("items"), dict) else data
+            now_s = time.time()
+            for cand in candidates:
+                snap = casefold_get(items, cand)
+                if not isinstance(snap, dict):
+                    continue
+                raw_ts = extract_timestamp_s(snap, default=None)
+                if raw_ts is not None and -5.0 <= (now_s - raw_ts) <= max_age:
+                    return dict(snap)
+        except Exception:
+            pass
+        return None
+
+    def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
+        """Return instant-trend slope (>0 up, <0 down, 0.0 neutral/unknown) from cacheManager SSOT."""
+        snap = self.trend_snapshot(symbol, max_age_sec=max_age_sec)
+        if not isinstance(snap, dict):
+            return 0.0
+        try:
+            from trailing_core import extract_short_trend_slope
+
+            slope = safe_float(extract_short_trend_slope(snap, symbol), default=0.0)
+            if slope != 0.0:
+                return slope
+        except Exception:
+            pass
+        for key in ("trend", "final_trend", "growth_coefficient", "gradient_recent", "slope_small"):
+            val = safe_float(snap.get(key), default=None)
+            if val is not None and val != 0.0:
+                return val
+        return 0.0
+
+    def trend_direction(self, symbol: str, max_age_sec: float = 15.0) -> Optional[str]:
+        """Return short-trend direction ('up', 'down', or 'flat') from cacheManager SSOT, or None if unavailable."""
+        snap = self.trend_snapshot(symbol, max_age_sec=max_age_sec)
+        if not isinstance(snap, dict):
+            return None
+        try:
+            from cachetrend import CacheShortTrendManager
+
+            if CacheShortTrendManager._eval_upward_formula(snap):
+                return "up"
+            inv_snap = dict(snap)
+            for key in ("growth_coefficient", "gradient_recent", "slope_small", "final_trend"):
+                val = safe_float(inv_snap.get(key), default=None)
+                if val is not None:
+                    inv_snap[key] = -val
+            if CacheShortTrendManager._eval_upward_formula(inv_snap):
+                return "down"
+            return "flat"
+        except Exception:
+            return None

@@ -56,6 +56,7 @@ from providers.base import (
     extract_order_side,
     extract_timestamp_ms,
     extract_timestamp_s,
+    live_price_fetch_context,
     normalize_side,
     normalize_timestamp_ms,
 )
@@ -3436,11 +3437,12 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         """Fetch current price through the market-data facade."""
         try:
             provider_name = self.provider_name_for(symbol)
-            if provider_name is None:
-                price = self.market_api.get_current_price(symbol=symbol)
-            else:
-                price = self.market_api.get_current_price(
-                    symbol=symbol, provider_name=provider_name)
+            with live_price_fetch_context():
+                if provider_name is None:
+                    price = self.market_api.get_current_price(symbol=symbol)
+                else:
+                    price = self.market_api.get_current_price(
+                        symbol=symbol, provider_name=provider_name)
             price_val = safe_pos_float(price, default=None)
             if price_val is None:
                 return []

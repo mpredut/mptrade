@@ -51,6 +51,7 @@ from state_io import (
 from providers.base import (
     _parse_bool_flag,
     extract_timestamp_s,
+    live_price_fetch_context,
     normalize_side,
     normalize_timestamp_ms,
 )
@@ -1640,7 +1641,12 @@ def _fetch_price_with_deadline(
     kwargs = {"symbol": symbol}
     if provider_name is not None:
         kwargs["provider_name"] = provider_name
-    fut = pool.submit(market_api.get_current_price, **kwargs)
+
+    def _poll():
+        with live_price_fetch_context():
+            return market_api.get_current_price(**kwargs)
+
+    fut = pool.submit(_poll)
     try:
         return fut.result(timeout=deadline_sec)
     except _futures.TimeoutError:

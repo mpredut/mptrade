@@ -232,8 +232,31 @@ class HyperliquidProvider(MarketDataProvider):
         return self._spot_pair
 
     # -- Public market data without a key. -------------------------------------
+    def _ssot_symbol_candidates(self, symbol: str) -> tuple[str, ...]:
+        self.validate_symbol(symbol)
+        return (f"{self._token}USDC", self._token)
+
+    def _allow_ssot_price_cache(self) -> bool:
+        if not super()._allow_ssot_price_cache():
+            return False
+        if (
+            self._client is not None
+            and type(self._client).__name__ != "HLClient"
+            and not bool(
+                getattr(self, "_force_ssot_cache", False)
+                or getattr(self, "_ssot_price_cache_path", None)
+                or getattr(self, "_ssot_trend_cache_path", None)
+                or getattr(self, "_ssot_24price_cache_dir", None)
+            )
+        ):
+            return False
+        return True
+
     def get_current_price(self, symbol: str) -> Optional[float]:
         self.validate_symbol(symbol)
+        cached = self.get_ssot_cached_price(symbol)
+        if cached is not None:
+            return cached
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -250,6 +273,9 @@ class HyperliquidProvider(MarketDataProvider):
         lookback_f = safe_nonneg_float(lookback_h, default=None)
         if lookback_f is None:
             return None
+        cached_hist = self.get_ssot_price_history(symbol, lookback_f)
+        if cached_hist is not None:
+            return cached_hist
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:

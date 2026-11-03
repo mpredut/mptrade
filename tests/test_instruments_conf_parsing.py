@@ -228,13 +228,13 @@ def test_current_execution_policy_is_preserved():
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
     all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
-    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
-    assert nb_syms == ["HYPEUSD"]
-    assert nb_providers == {"HYPEUSD": "kraken"}
+    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "ADAUSD"]
+    assert nb_syms == ["HYPEUSDC", "HYPEUSD", "ADAUSD"]
+    assert nb_providers == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "ADAUSD": "kraken"}
     arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
-    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"]
-    assert arch_nb == ["HYPEUSD"]
-    assert arch_prov == {"HYPEUSD": "kraken"}
+    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "ADAUSD"]
+    assert arch_nb == ["HYPEUSDC", "HYPEUSD", "ADAUSD"]
+    assert arch_prov == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "ADAUSD": "kraken"}
 
 
 def test_invalid_policy_fails_before_selection(tmp_path):
@@ -412,6 +412,106 @@ def test_load_tradable_instruments_duplicate_kraken_base(monkeypatch, tmp_path):
     res = ic.load_tradable_instruments(str(tmp_path), asset_scope="crypto")
     assert "KRAKEN_BTC" in res
     assert "KRAKEN_BTC/EUR" in res
+
+
+def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
+    import json
+    import time
+    from providers.base import live_price_fetch_context
+    from providers.execution_audit import AuditedStrategyExecutor
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.kraken_provider import KrakenProvider
+    from intelligence.external.collectors.orderbook_depth import (
+        _has_hyperliquid_instrument,
+        _resolve_configured_venue,
+    )
+
+    now = time.time()
+    price_cache = tmp_path / "cache_current_price.json"
+    price_cache.write_text(
+        json.dumps({
+            "timestamp": now,
+            "items": {
+                "HYPEUSDC": {"symbol": "HYPEUSDC", "price": 41.25, "timestamp": now},
+                "HYPEUSD": {"symbol": "HYPEUSD", "price": 41.10, "timestamp": now},
+                "ADAUSD": {"symbol": "ADAUSD", "price": 0.725, "timestamp": now},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    trend_cache = tmp_path / "cache_short_trend.json"
+    trend_cache.write_text(
+        json.dumps({
+            "timestamp": now,
+            "items": {
+                "HYPEUSDC": {"symbol": "HYPEUSDC", "trend": 0.42, "timestamp": now},
+                "HYPEUSD": {"symbol": "HYPEUSD", "trend": -0.18, "timestamp": now},
+                "ADAUSD": {"symbol": "ADAUSD", "trend": 0.11, "timestamp": now},
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    hist_points = [
+        {"timestamp": int((now - (11 - i) * 300) * 1000), "price": 40.0 + i * 0.1}
+        for i in range(12)
+    ]
+    (tmp_path / "cache_24_price_HYPEUSDC.json").write_text(
+        json.dumps({"timestamp": now, "items": hist_points}),
+        encoding="utf-8",
+    )
+
+    class _BoomClient:
+        def spot_mid(self, pair):
+            raise AssertionError("should have used SSOT cache")
+
+        def last_price(self, pair):
+            raise AssertionError("should have used SSOT cache")
+
+    hl_prov = HyperliquidProvider(token="HYPE", live_enabled=False)
+    hl_prov._client = _BoomClient()
+    hl_prov._spot_pair = "@107"
+    hl_prov._ssot_price_cache_path = str(price_cache)
+    hl_prov._ssot_trend_cache_path = str(trend_cache)
+    hl_prov._ssot_24price_cache_dir = str(tmp_path)
+
+    kr_prov = KrakenProvider(client=_BoomClient())
+    kr_prov._ssot_price_cache_path = str(price_cache)
+    kr_prov._ssot_trend_cache_path = str(trend_cache)
+    kr_prov._ssot_24price_cache_dir = str(tmp_path)
+
+    # Venue-isolated SSOT reads: HL gets HYPEUSDC (41.25), Kraken gets HYPEUSD (41.10) & ADAUSD (0.725)
+    assert hl_prov.get_current_price("HYPE") == pytest.approx(41.25)
+    assert hl_prov.get_current_price("HYPEUSDC") == pytest.approx(41.25)
+    assert kr_prov.get_current_price("HYPEUSD") == pytest.approx(41.10)
+    assert kr_prov.get_current_price("ADAUSD") == pytest.approx(0.725)
+
+    # 24h history read from cache_24_price_HYPEUSDC.json
+    hist = hl_prov.get_price_history("HYPEUSDC", 2.0)
+    assert hist is not None and len(hist) == 12
+
+    # Trend slope delegation through StrategyExecutor and AuditedStrategyExecutor
+    hl_exec = AuditedStrategyExecutor(hl_prov, venue="hyperliquid")
+    kr_exec = AuditedStrategyExecutor(kr_prov, venue="kraken")
+    assert hl_exec.trend("HYPEUSDC") == pytest.approx(0.42)
+    assert kr_exec.trend("HYPEUSD") == pytest.approx(-0.18)
+    assert kr_exec.trend("ADAUSD") == pytest.approx(0.11)
+
+    # Inside live_price_fetch_context (used by cacheManager & cachetrend pollers), SSOT cache is bypassed
+    with live_price_fetch_context():
+        assert hl_prov.get_ssot_cached_price("HYPEUSDC") is None
+        assert kr_prov.get_ssot_cached_price("HYPEUSD") is None
+
+    # Telemetry collectors resolve venues via SSOT registry
+    assert _resolve_configured_venue("HYPEUSDC") == "hyperliquid"
+    assert _resolve_configured_venue("HYPEUSD") == "kraken"
+    assert _resolve_configured_venue("ADAUSD") == "kraken"
+    assert _resolve_configured_venue("TAOUSDC") == "binance"
+    assert _resolve_configured_venue("SUIUSD") == "binance"
+    assert _has_hyperliquid_instrument("HYPEUSDC") is True
+    assert _has_hyperliquid_instrument("HYPEUSD") is True
+    assert _has_hyperliquid_instrument("ADAUSD") is False
 
 
 if __name__ == "__main__":

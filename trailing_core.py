@@ -713,6 +713,45 @@ class TrailingAdapterBase:
     def _save(self, state: dict) -> None:
         self.core.save(state)
 
+    def _trend_value(self, pair: str) -> float:
+        """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
+        Errors return 0, making trend filters a safe no-op."""
+        try:
+            mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
+            cache_trend_path = mod_globals.get("CACHE_TREND")
+            if cache_trend_path:
+                from cachepaths import cache_symbol_variants
+                from instrument_registry import casefold_get
+                from providers.base import extract_timestamp_s
+                from state_io import read_json_dict
+
+                data = read_json_dict(cache_trend_path, default=None, recover_previous=True)
+                if isinstance(data, dict):
+                    items_map = data.get("items") if isinstance(data.get("items"), dict) else data
+                    snap = None
+                    for cand in [pair] + cache_symbol_variants(pair):
+                        if not cand:
+                            continue
+                        cand_val = casefold_get(items_map, cand)
+                        if isinstance(cand_val, dict):
+                            snap = cand_val
+                            break
+                    if isinstance(snap, dict):
+                        raw_ts = extract_timestamp_s(snap, default=None)
+                        if raw_ts is not None and raw_ts > 0:
+                            age = time.time() - raw_ts
+                            if -5.0 <= age <= 15.0:
+                                return extract_short_trend_slope(snap, pair)
+                return 0.0
+            import cacheManager as cm
+
+            snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
+            if snap:
+                return extract_short_trend_slope(snap, pair)
+        except Exception:
+            pass
+        return 0.0
+
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
 
