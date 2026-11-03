@@ -540,6 +540,13 @@ def _strip_kraken_asset_suffixes(token: str) -> str:
     return token
 
 
+def clean_symbol_key(symbol: object) -> str:
+    """Return uppercase alphanumeric symbol key stripped of '/', '-', '_'."""
+    if symbol is None or isinstance(symbol, bool):
+        return ""
+    return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+
+
 def normalize_cache_base_asset(symbol: object) -> str:
     """Extract the canonical uppercase base asset from a spot/perp/venue symbol.
 
@@ -554,7 +561,7 @@ def normalize_cache_base_asset(symbol: object) -> str:
     s = raw.upper()
     if not s:
         return ""
-    cleaned = s.replace("/", "").replace("-", "").replace("_", "")
+    cleaned = clean_symbol_key(s)
     if cleaned == "USDCUSDT":
         return "USDCUSDT"
     if "/" in raw:
@@ -660,7 +667,7 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     if isinstance(symbol, bool) or not isinstance(symbol, str):
         return None
     raw = symbol.strip()
-    sym_u = raw.upper().replace("/", "").replace("-", "").replace("_", "")
+    sym_u = clean_symbol_key(raw)
     if not sym_u:
         return None
     if (sym_u.endswith("USEQ") and len(sym_u) > 4) or (raw.upper().endswith("_EQ") and len(sym_u) > 2):
@@ -688,7 +695,7 @@ def canonical_symbol_key(symbol: object) -> str:
     if isinstance(symbol, bool) or symbol is None:
         return ""
     raw_str = str(symbol).strip()
-    cleaned = raw_str.upper().replace("/", "").replace("-", "").replace("_", "")
+    cleaned = clean_symbol_key(raw_str)
     if not cleaned:
         return ""
     if cleaned == "USDCUSDT":
@@ -707,7 +714,7 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     s = symbol.strip().upper()
     if not s:
         return ""
-    if s.replace("/", "").replace("-", "").replace("_", "") == "USDCUSDT":
+    if clean_symbol_key(s) == "USDCUSDT":
         return "USDCUSDT"
     base = canonical_base_asset(s)
     if base:
@@ -742,7 +749,7 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     eff_dir = resolve_cache_dir_path(cache_dir)
     if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
         return None
-    safe_sym = symbol.upper().strip().replace("/", "").replace("-", "").replace("_", "")
+    safe_sym = clean_symbol_key(symbol)
     if not safe_sym:
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
@@ -781,7 +788,7 @@ def cache_symbol_variants(
     raw = symbol.strip().upper()
     if not raw:
         return [symbol] if include_original else []
-    cleaned = raw.replace("/", "").replace("-", "").replace("_", "")
+    cleaned = clean_symbol_key(raw)
     variants: list = []
     if include_original:
         variants.append(symbol)

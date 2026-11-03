@@ -21,6 +21,7 @@ import urllib.request
 
 from botcore import (
     _parse_bool_flag,
+    clean_json_value,
     obj_attr,
     parse_notify_enabled_flag,
     safe_float,
@@ -199,17 +200,6 @@ SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 as_bool_flag = _parse_bool_flag
-
-
-def clean_json_value(val: Any) -> Any:
-    """Recursively sanitize non-finite floats (NaN/Inf -> None) and normalize dict keys to strings."""
-    if isinstance(val, float):
-        return safe_float(val, default=None)
-    if isinstance(val, dict):
-        return {str(k): clean_json_value(v) for k, v in val.items()}
-    if isinstance(val, (list, tuple)):
-        return [clean_json_value(v) for v in val]
-    return val
 
 
 # ---------------------------------------------------------------------------

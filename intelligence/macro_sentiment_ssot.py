@@ -45,16 +45,26 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
+    check_cooldown_gate,
+    clean_scale,
     exact_pos_int,
     fetch_public_json as _fetch_public_json,
+    is_cache_fresh,
+    is_interval_due,
     obj_attr,
+    obj_float,
     parse_dotenv,
+    parse_symbol_list,
     required_float_env,
+    resolve_now_ts,
+    resolve_order_notional,
     safe_float,
     safe_int,
     safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
     safe_nonneg_float as safe_nonneg_ts,
     safe_pos_float,
+    safe_thresh,
+    split_csv as _split_csv,
 )
 
 fetch_public_json = _fetch_public_json
@@ -63,6 +73,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
+    clean_symbol_key,
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
@@ -90,89 +101,7 @@ _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": Non
 # 0. Universal Coercion, Cache Freshness, Attribute & Daemon Primitives
 # ============================================================================
 
-def safe_thresh(val: Any, default: int) -> int:
-    """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
-    f = safe_float(val, -1.0)
-    return int(round(f)) if 0.0 <= f <= 100.0 else default
-
-
-def clean_scale(
-    val: Any,
-    default: float = 1.0,
-    *,
-    allow_percent: bool = False,
-    allow_percentage: bool = False,
-    min_positive: bool = False,
-) -> float:
-    """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] or '%' percentages."""
-    allow_pct = allow_percent or allow_percentage
-    if allow_pct and isinstance(val, str) and val.strip().endswith("%"):
-        pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
-        f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
-    else:
-        f = safe_float(val, -1.0)
-        if allow_pct and 1.0 < f <= 100.0:
-            f = round(f / 100.0, 4)
-    if f < 0.0 or (min_positive and f <= 0.0):
-        return default
-    return f if 0.0 <= f <= 1.0 else default
-
-
-def resolve_now_ts(now_ts: Any = None) -> float:
-    """Return ``now_ts`` if it is a valid positive finite timestamp, otherwise ``time.time()``."""
-    f = safe_pos_float(now_ts, -1.0)
-    return f if f > 0.0 else time.time()
-
-
-def is_cache_fresh(
-    last_ts: Any,
-    now_ts: float,
-    ttl_sec: Any,
-    *,
-    force_refresh: Any = False,
-) -> bool:
-    """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
-    if _parse_bool_flag(force_refresh, False):
-        return False
-    lt = safe_nonneg_ts(last_ts, 0.0)
-    ttl = safe_nonneg_ts(ttl_sec, 0.0)
-    return lt > 0.0 and 0.0 <= (now_ts - lt) < ttl
-
-
-def is_interval_due(
-    current_ts: float,
-    last_ts: Any,
-    interval_sec: Any,
-    *,
-    force: Any = False,
-) -> bool:
-    """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
-    if _parse_bool_flag(force, False):
-        return True
-    lt = safe_nonneg_ts(last_ts, 0.0)
-    itv = safe_nonneg_float(interval_sec, 0.0)
-    return not (0.0 <= (current_ts - lt) < itv)
-
-
-def resolve_order_notional(
-    notional_eur: Any,
-    price: Any,
-    qty: Any,
-    *,
-    default: Optional[float] = None,
-    fallback_on_nonfinite: bool = True,
-) -> Optional[float]:
-    """Resolve positive order notional from explicit ``notional_eur`` or ``price * qty`` fallback."""
-    n_clean = safe_pos_float(notional_eur, 0.0)
-    if n_clean > 0.0:
-        return n_clean
-    if not fallback_on_nonfinite and notional_eur is not None and safe_float(notional_eur, None) is None:
-        return default
-    px_clean = safe_pos_float(price, 0.0)
-    qty_clean = safe_pos_float(qty, 0.0)
-    if px_clean > 0.0 and qty_clean > 0.0:
-        return px_clean * qty_clean
-    return default
+normalize_order_side = normalize_side
 
 
 def extract_high_severity_headlines_and_digest(
@@ -188,35 +117,6 @@ def extract_high_severity_headlines_and_digest(
     )
     digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
     return high_sev, digest
-
-
-def obj_float(obj: Any, key: str, default: float = 0.0) -> float:
-    """Extract ``key`` from ``obj`` (dict or object) and coerce to finite float."""
-    return safe_float(obj_attr(obj, key, None), default)
-
-
-normalize_order_side = normalize_side
-
-
-def clean_symbol_key(symbol: Any) -> str:
-    """Return uppercase alphanumeric symbol key stripped of '/', '-', '_'."""
-    if symbol is None or isinstance(symbol, bool):
-        return ""
-    return str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
-
-
-def parse_symbol_list(symbols: Any) -> List[str]:
-    """Normalize comma-separated string or iterable of symbols into uppercase list."""
-    raw = (
-        symbols.split(",")
-        if isinstance(symbols, str)
-        else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
-    )
-    return [
-        s.strip().upper()
-        for s in raw
-        if isinstance(s, str) and s.strip()
-    ]
 
 
 def detect_active_binance_symbols(
@@ -247,6 +147,12 @@ def detect_active_binance_symbols(
                 _add_sym(s, skip_eq=True)
         except Exception:
             pass
+        try:
+            from instruments_config import discover_hyperliquid_spot
+            for hl_sym, _, _ in discover_hyperliquid_spot(_ROOT_DIR):
+                _add_sym(hl_sym, skip_eq=True)
+        except Exception:
+            pass
     if not out:
         try:
             from instruments_config import binance_symbols
@@ -264,23 +170,6 @@ def detect_active_binance_symbols(
         except Exception:
             pass
     return out if out else list(default)
-
-
-def check_cooldown_gate(
-    cooldown_map: Dict[Any, float],
-    key: Any,
-    now_ts: float,
-    cooldown_sec: float = 1800.0,
-    max_entries: int = 1000,
-) -> bool:
-    """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
-    last = cooldown_map.get(key, -1e18)
-    if 0.0 <= (now_ts - last) < cooldown_sec:
-        return False
-    cooldown_map[key] = now_ts
-    while len(cooldown_map) > max_entries:
-        cooldown_map.pop(next(iter(cooldown_map)), None)
-    return True
 
 
 _ACTIVE_BOUNDED_STEPS: Dict[str, threading.Thread] = {}
@@ -637,15 +526,6 @@ class ExternalTelemetryMixin:
 # ============================================================================
 # 1. Config-Driven Taxonomies, Filenames, Endpoints & Interval Bounds
 # ============================================================================
-
-def _split_csv(raw: str, *, lower: bool = False, upper: bool = False) -> Tuple[str, ...]:
-    items: List[str] = []
-    for part in re.split(r"[,\n]+", raw or ""):
-        if cleaned := part.strip():
-            cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
-            if cleaned not in items:
-                items.append(cleaned)
-    return tuple(items)
 
 
 def _parse_kv_map(raw: str) -> Dict[str, str]:
@@ -1749,6 +1629,8 @@ def compute_dynamic_sentiment_interval(
     prev_fear_greed_val: Optional[int] = None,
     prev_advance_ratio: Optional[float] = None,
     geopolitical_threat_level: str = "NORMAL",
+    btc_taker_ratio: Optional[float] = None,
+    prev_btc_taker_ratio: Optional[float] = None,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_sentiment`` evaluation."""
     derived = resolve_derived_telemetry_intervals()
@@ -1791,6 +1673,17 @@ def compute_dynamic_sentiment_interval(
         or (cur_adv is not None and (cur_adv <= 0.15 or cur_adv >= 0.85))
     ):
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
+    cur_tr = safe_pos_float(btc_taker_ratio, default=None)
+    prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
+    if cur_tr is not None:
+        if prev_tr is not None and ((prev_tr <= 0.75 and cur_tr >= 1.25) or (prev_tr >= 1.25 and cur_tr <= 0.75) or abs(cur_tr - prev_tr) >= 0.55):
+            return min(min_interval, 300.0), f"btc_whale_flow_regime_flip_{prev_tr:.2f}_to_{cur_tr:.2f}"
+        cached_act = str(obj_attr(cached_assessment, "recommended_action", "") or "").upper()
+        cached_bias = str(obj_attr(cached_assessment, "market_bias", "") or obj_attr(cached_assessment, "directional_bias", "") or "").upper()
+        if (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias) and cur_tr >= 1.35:
+            return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
+        if (cached_act == "ACCUMULATE" or "BULL" in cached_bias) and cur_tr <= 0.65:
+            return min(min_interval, 300.0), f"btc_seller_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
     cur_fg_val = safe_int(obj_attr(fear_greed, "value", None), None)
     prev_fg_val = safe_int(prev_fear_greed_val, None)
     if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:

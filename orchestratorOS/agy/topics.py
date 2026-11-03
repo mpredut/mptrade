@@ -23,6 +23,7 @@ from botcore import (
     _parse_bool_flag,
     exact_pos_int,
     load_dotenv,
+    optional_env,
     required_int_env,
     safe_float,
     safe_int,
@@ -81,9 +82,9 @@ class TopicSpec:
         return m.group(1).strip() if m else self.title
 
 
-HIGH_STAKE_MODEL = os.environ.get("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high").strip() or "gemini-4-argon-high"
-EXECUTOR_MODEL = os.environ.get("LLM_DEFAULT_MODEL", "gemini-4-argon-medium").strip() or "gemini-4-argon-medium"
-LOW_STAKE_MODEL = os.environ.get("LLM_LOW_STAKE_MODEL", "gpt-oss-120b-medium").strip() or "gpt-oss-120b-medium"
+HIGH_STAKE_MODEL = optional_env("LLM_HIGH_STAKE_MODEL", "gemini-4-argon-high")
+EXECUTOR_MODEL = optional_env("LLM_DEFAULT_MODEL", "gemini-4-argon-medium")
+LOW_STAKE_MODEL = optional_env("LLM_LOW_STAKE_MODEL", "gpt-oss-120b-medium")
 
 TOPIC_SPECS: Dict[str, TopicSpec] = {
     "auto_technical_repair": TopicSpec(
@@ -151,7 +152,7 @@ def topic_spec(topic_key: str) -> TopicSpec:
 
 def get_topic_registry_path(registry_path: Optional[str] = None) -> str:
     """Registry JSON path: explicit, LLM_TOPIC_REGISTRY_PATH (tests/ops override), or cachedb/llm_topic_threads.json."""
-    raw = registry_path or os.environ.get("LLM_TOPIC_REGISTRY_PATH", "").strip()
+    raw = registry_path or optional_env("LLM_TOPIC_REGISTRY_PATH", "")
     if raw:
         return str(resolve_cachedb_filepath(expand_config_path(raw)))
     try:

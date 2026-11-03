@@ -17,6 +17,7 @@ import fcntl
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time as _time
@@ -350,6 +351,22 @@ def obj_attr(obj: object, key: str, default: object = None) -> object:
     return default if val is None else val
 
 
+def obj_float(obj: object, key: str, default: float = 0.0) -> float:
+    """Extract ``key`` from ``obj`` (dict or object) and coerce to finite float."""
+    return safe_float(obj_attr(obj, key, None), default)
+
+
+def clean_json_value(val: object) -> object:
+    """Recursively sanitize non-finite floats (NaN/Inf -> None) and normalize dict keys to strings."""
+    if isinstance(val, float):
+        return safe_float(val, default=None)
+    if isinstance(val, dict):
+        return {str(k): clean_json_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [clean_json_value(v) for v in val]
+    return val
+
+
 def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     Supports both float_env(key, env_dict) and float_env(key, default_val)."""
@@ -564,6 +581,29 @@ def fetch_public_json(
         return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
 
 
+def fetch_json_post(
+    url: str,
+    payload: dict | bytes | None = None,
+    *,
+    timeout: float = 5.0,
+    headers: dict | None = None,
+) -> object:
+    """Send an HTTP POST request with a JSON body and decode the JSON response."""
+    req_headers = {"Content-Type": "application/json"}
+    if isinstance(headers, dict):
+        req_headers.update(headers)
+    if payload is None:
+        data = b"{}"
+    elif isinstance(payload, (bytes, bytearray)):
+        data = bytes(payload)
+    else:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
 # Single source for the fleet and bots. Replaces utils.are_close, whose random.randint
 # tolerance loop could return True OR False for the same input in [tol*1.01, tol*1.5],
@@ -614,7 +654,7 @@ ET = ZoneInfo("America/New_York")
 
 def is_us_rth_open(now_ts: float | None = None) -> bool:
     """Return True if US equities regular trading hours (09:30-16:00 America/New_York, Mon-Fri) are open."""
-    ts = safe_pos_float(now_ts, _time.time()) or _time.time()
+    ts = resolve_now_ts(now_ts)
     try:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)
     except (ValueError, OverflowError, OSError):
@@ -827,6 +867,133 @@ def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
     """Parse a numeric config value that may be expressed either as a ratio or as a percentage."""
     val = float(raw)
     return val / 100.0 if val > pct_cutoff else val
+
+
+def safe_thresh(val: object, default: int) -> int:
+    """Safely coerce sentiment index/threshold to an integer in [0, 100]."""
+    f = safe_float(val, -1.0)
+    return int(round(f)) if 0.0 <= f <= 100.0 else default
+
+
+def resolve_order_notional(
+    notional_eur: object,
+    price: object,
+    qty: object,
+    *,
+    default: float | None = None,
+    fallback_on_nonfinite: bool = True,
+) -> float | None:
+    """Resolve positive order notional from explicit ``notional_eur`` or ``price * qty`` fallback."""
+    n_clean = safe_pos_float(notional_eur, 0.0)
+    if n_clean > 0.0:
+        return n_clean
+    if not fallback_on_nonfinite and notional_eur is not None and safe_float(notional_eur, None) is None:
+        return default
+    px_clean = safe_pos_float(price, 0.0)
+    qty_clean = safe_pos_float(qty, 0.0)
+    if px_clean > 0.0 and qty_clean > 0.0:
+        return px_clean * qty_clean
+    return default
+
+
+def clean_scale(
+    val: object,
+    default: float = 1.0,
+    *,
+    allow_percent: bool = False,
+    allow_percentage: bool = False,
+    min_positive: bool = False,
+) -> float:
+    """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] or '%' percentages."""
+    allow_pct = allow_percent or allow_percentage
+    if allow_pct and isinstance(val, str) and val.strip().endswith("%"):
+        pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
+        f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
+    else:
+        f = safe_float(val, -1.0)
+        if allow_pct and 1.0 < f <= 100.0:
+            f = round(f / 100.0, 4)
+    if f < 0.0 or (min_positive and f <= 0.0):
+        return default
+    return f if 0.0 <= f <= 1.0 else default
+
+
+def resolve_now_ts(now_ts: object = None) -> float:
+    """Return ``now_ts`` if it is a valid positive finite timestamp, otherwise ``time.time()``."""
+    f = safe_pos_float(now_ts, -1.0)
+    return f if f > 0.0 else _time.time()
+
+
+def is_cache_fresh(
+    last_ts: object,
+    now_ts: float,
+    ttl_sec: object,
+    *,
+    force_refresh: object = False,
+) -> bool:
+    """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
+    if _parse_bool_flag(force_refresh, False):
+        return False
+    lt = safe_nonneg_float(last_ts, 0.0)
+    ttl = safe_nonneg_float(ttl_sec, 0.0)
+    return lt > 0.0 and 0.0 <= (now_ts - lt) < ttl
+
+
+def is_interval_due(
+    current_ts: float,
+    last_ts: object,
+    interval_sec: object,
+    *,
+    force: object = False,
+) -> bool:
+    """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
+    if _parse_bool_flag(force, False):
+        return True
+    lt = safe_nonneg_float(last_ts, 0.0)
+    itv = safe_nonneg_float(interval_sec, 0.0)
+    return not (0.0 <= (current_ts - lt) < itv)
+
+
+def check_cooldown_gate(
+    cooldown_map: dict,
+    key: object,
+    now_ts: float,
+    cooldown_sec: float = 1800.0,
+    max_entries: int = 1000,
+) -> bool:
+    """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
+    last = cooldown_map.get(key, -1e18)
+    if 0.0 <= (now_ts - last) < cooldown_sec:
+        return False
+    cooldown_map[key] = now_ts
+    while len(cooldown_map) > max_entries:
+        cooldown_map.pop(next(iter(cooldown_map)), None)
+    return True
+
+
+def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> tuple[str, ...]:
+    """Split comma- or newline-delimited strings into a deduplicated tuple of stripped tokens."""
+    items: list[str] = []
+    for part in re.split(r"[,\n]+", raw or ""):
+        if cleaned := part.strip():
+            cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
+            if cleaned not in items:
+                items.append(cleaned)
+    return tuple(items)
+
+
+def parse_symbol_list(symbols: object) -> list[str]:
+    """Normalize comma-separated string or iterable of symbols into uppercase list."""
+    raw = (
+        symbols.split(",")
+        if isinstance(symbols, str)
+        else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
+    )
+    return [
+        s.strip().upper()
+        for s in raw
+        if isinstance(s, str) and s.strip()
+    ]
 
 
 def validate_required_env_keys(

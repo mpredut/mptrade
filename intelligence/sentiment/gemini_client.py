@@ -12,9 +12,18 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 import urllib.request
 
-from botcore import _parse_bool_flag, load_dotenv, required_env, safe_float
+from botcore import (
+    _parse_bool_flag,
+    fetch_json_post,
+    is_cache_fresh,
+    load_dotenv,
+    optional_env,
+    required_env,
+    safe_float,
+    safe_pos_float,
+    split_csv,
+)
 from cachepaths import cache_path
-from intelligence.macro_sentiment_ssot import is_cache_fresh, safe_pos_float
 from orchestratorOS.agy.paths import resolve_agy_bot_bin, resolve_bot_cli_base, resolve_ui_cli_base
 from orchestratorOS.agy.summary_store import (
     delete_threads,
@@ -39,9 +48,7 @@ logger = logging.getLogger("intelligence.sentiment.gemini_client")
 
 DEFAULT_MODEL = required_env("LLM_DEFAULT_MODEL")
 FALLBACK_MODELS_RAW = required_env("LLM_FALLBACK_MODELS")
-DEFAULT_FALLBACK_MODELS = tuple(
-    m.strip() for m in FALLBACK_MODELS_RAW.split(",") if m.strip()
-)
+DEFAULT_FALLBACK_MODELS = split_csv(FALLBACK_MODELS_RAW)
 AGY_CLI_PATH = resolve_agy_bot_bin()
 QUOTA_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
 LOAD_ASSIST_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
@@ -104,7 +111,7 @@ class GeminiClient:
         raw_key = (
             api_key
             if isinstance(api_key, str) and api_key.strip()
-            else (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "")
+            else (optional_env("GEMINI_API_KEY") or optional_env("GOOGLE_API_KEY"))
         )
         self.api_key = raw_key.strip() if isinstance(raw_key, str) and raw_key.strip() else None
         self.cli_path = resolve_agy_bot_bin(cli_path) if cli_path else AGY_CLI_PATH
@@ -140,7 +147,7 @@ class GeminiClient:
         remaining = [m for m in models_to_try[attempt_idx:] if m]
         if getattr(self, "_custom_fallbacks", False):
             return remaining
-        preferred_compact = (os.environ.get("LLM_COMPACT_MODEL") or "gpt-oss-120b-medium").strip()
+        preferred_compact = optional_env("LLM_COMPACT_MODEL", "gpt-oss-120b-medium")
         allowed = set(remaining)
         compact_chain: list[str] = []
         for low_m in (
@@ -239,19 +246,17 @@ class GeminiClient:
         with cls._QUOTA_LOCK:
             mem = cls._QUOTA_MEM_CACHE
             if (
-                not force_refresh
-                and isinstance(mem, dict)
+                isinstance(mem, dict)
                 and isinstance(mem.get("buckets"), dict)
-                and (now - safe_float(mem.get("checked_ts"), 0.0)) < ttl_sec
+                and is_cache_fresh(mem.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
             ):
                 return dict(mem)
 
             disk = read_json_dict(state_path, default={})
             if (
-                not force_refresh
-                and isinstance(disk, dict)
+                isinstance(disk, dict)
                 and isinstance(disk.get("buckets"), dict)
-                and (now - safe_float(disk.get("checked_ts"), 0.0)) < ttl_sec
+                and is_cache_fresh(disk.get("checked_ts"), now, ttl_sec, force_refresh=force_refresh)
             ):
                 cls._QUOTA_MEM_CACHE = dict(disk)
                 return dict(disk)
@@ -266,24 +271,18 @@ class GeminiClient:
         access_token = ""
         for base_dir in cli_bases:
             tok_path = os.path.join(base_dir, "antigravity-oauth-token")
-            if not os.path.isfile(tok_path):
+            tok_data = read_json_dict(tok_path, default={})
+            if not tok_data:
                 continue
-            try:
-                with open(tok_path, "r", encoding="utf-8") as fh:
-                    tok_data = json.load(fh)
-                if not isinstance(tok_data, dict):
-                    continue
-                nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
-                tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
-                exp_ts = safe_float(
-                    nested_tok.get("expiry_timestamp") or tok_data.get("expiry_timestamp"),
-                    0.0,
-                )
-                if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
-                    access_token = tok
-                    break
-            except Exception:
-                continue
+            nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
+            tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
+            exp_ts = safe_float(
+                nested_tok.get("expiry_timestamp") or tok_data.get("expiry_timestamp"),
+                0.0,
+            )
+            if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
+                access_token = tok
+                break
 
         if not access_token:
             return None
@@ -296,9 +295,7 @@ class GeminiClient:
 
         buckets: Dict[str, float] = {}
         try:
-            req = urllib.request.Request(QUOTA_API_URL, data=b"{}", headers=headers)
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                quota_payload = json.loads(resp.read().decode("utf-8"))
+            quota_payload = fetch_json_post(QUOTA_API_URL, timeout=2.5, headers=headers)
             if not isinstance(quota_payload, dict) or not isinstance(quota_payload.get("buckets"), list):
                 return None
             for b in quota_payload.get("buckets", []):
@@ -326,9 +323,7 @@ class GeminiClient:
         available_credits = 0.0
         tier_id = ""
         try:
-            req_assist = urllib.request.Request(LOAD_ASSIST_API_URL, data=b"{}", headers=headers)
-            with urllib.request.urlopen(req_assist, timeout=2.0) as resp_assist:
-                assist_payload = json.loads(resp_assist.read().decode("utf-8"))
+            assist_payload = fetch_json_post(LOAD_ASSIST_API_URL, timeout=2.0, headers=headers)
             if isinstance(assist_payload, dict):
                 available_credits = cls._extract_available_credits(assist_payload)
                 paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
@@ -990,33 +985,27 @@ class GeminiClient:
                         "contents": [{"parts": [{"text": prompt}]}],
                         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1000},
                     }
-                    req = urllib.request.Request(
-                        url,
-                        data=json.dumps(body).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
-                    )
-                    with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
-                        resp_data = json.loads(resp.read().decode("utf-8"))
-                        candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
-                        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
-                            continue
-                        content_obj = candidates[0].get("content")
-                        parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
-                        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
-                            continue
-                        raw_text = parts[0].get("text")
-                        text = raw_text.strip() if isinstance(raw_text, str) else ""
-                        if not text:
-                            continue
-                        if require_json and extract_json_object(text) is None:
-                            logger.warning(
-                                "Gemini REST API with model %s returned non-JSON output; trying next.",
-                                r_model,
-                            )
-                            continue
-                        if cache_ttl_sec > 0:
-                            self._cache[prompt] = (now, text)
-                        return text
+                    resp_data = fetch_json_post(url, body, timeout=timeout_sec)
+                    candidates = resp_data.get("candidates") if isinstance(resp_data, dict) else None
+                    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+                        continue
+                    content_obj = candidates[0].get("content")
+                    parts = content_obj.get("parts") if isinstance(content_obj, dict) else None
+                    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
+                        continue
+                    raw_text = parts[0].get("text")
+                    text = raw_text.strip() if isinstance(raw_text, str) else ""
+                    if not text:
+                        continue
+                    if require_json and extract_json_object(text) is None:
+                        logger.warning(
+                            "Gemini REST API with model %s returned non-JSON output; trying next.",
+                            r_model,
+                        )
+                        continue
+                    if cache_ttl_sec > 0:
+                        self._cache[prompt] = (now, text)
+                    return text
                 except Exception as e:
                     logger.warning("Gemini REST API attempt with model %s failed: %s", r_model, e)
 

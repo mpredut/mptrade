@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from botcore import obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_symbol_key
 from providers.base import normalize_side
 
@@ -150,10 +150,7 @@ class GuardDecision:
 
     @classmethod
     def downscale(cls, guard_name: str, scale: float, reason: str, **meta) -> "GuardDecision":
-        scale_f = safe_float(scale, default=0.0)
-        if 1.0 < scale_f <= 100.0:
-            scale_f = scale_f / 100.0
-        clamped_scale = max(0.0, min(1.0, scale_f))
+        clamped_scale = clean_scale(scale, default=0.0, allow_percent=True)
         return cls(
             allowed=clamped_scale > 0.0,
             brake_action=BrakeAction.DOWNSCALE_QTY if clamped_scale > 0 else BrakeAction.HARD_VETO,

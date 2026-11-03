@@ -656,5 +656,29 @@ def test_iteration186_load_local_module_should_wait_short_trend_and_strip_owner_
         sys.path[:] = orig_sys_path
 
 
+def test_shared_intelligence_and_agent_primitives_promoted_to_core():
+    from cachepaths import clean_symbol_key
+
+    assert botcore.obj_float({"x": "12.5"}, "x") == pytest.approx(12.5)
+    assert botcore.clean_json_value({"a": float("nan"), "b": [1.5, float("inf")]}) == {"a": None, "b": [1.5, None]}
+    assert botcore.safe_thresh("75.4", 50) == 75
+    assert botcore.safe_thresh("150", 50) == 50
+    assert botcore.clean_scale("65%", default=1.0, allow_percent=True) == pytest.approx(0.65)
+    assert botcore.clean_scale(50, default=1.0, allow_percent=True) == pytest.approx(0.5)
+    assert botcore.resolve_now_ts(1700000000.0) == pytest.approx(1700000000.0)
+    assert botcore.is_cache_fresh(100.0, 110.0, 30.0) is True
+    assert botcore.is_cache_fresh(100.0, 110.0, 30.0, force_refresh=True) is False
+    assert botcore.is_interval_due(150.0, 100.0, 30.0) is True
+    assert botcore.is_interval_due(110.0, 100.0, 30.0) is False
+    cd = {}
+    assert botcore.check_cooldown_gate(cd, "k", 100.0, cooldown_sec=60.0) is True
+    assert botcore.check_cooldown_gate(cd, "k", 120.0, cooldown_sec=60.0) is False
+    assert botcore.split_csv(" a, b , a\nc ", upper=True) == ("A", "B", "C")
+    assert botcore.parse_symbol_list("btcusdc, ethusdc") == ["BTCUSDC", "ETHUSDC"]
+    assert clean_symbol_key("tao/usd-perp_1") == "TAOUSDPERP1"
+    assert botcore.resolve_order_notional(None, 250.0, 3.0) == pytest.approx(750.0)
+    assert botcore.resolve_order_notional(800.0, 250.0, 3.0) == pytest.approx(800.0)
+
+
 if __name__ == "__main__":
     unittest.main()
