@@ -215,9 +215,16 @@ class GeminiClient:
             if not os.path.isfile(tok_path):
                 continue
             try:
-                tok_data = read_json_dict(tok_path, default={})
-                tok = str(tok_data.get("access_token") or "").strip()
-                exp_ts = safe_float(tok_data.get("expiry_timestamp"), 0.0)
+                with open(tok_path, "r", encoding="utf-8") as fh:
+                    tok_data = json.load(fh)
+                if not isinstance(tok_data, dict):
+                    continue
+                nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
+                tok = str(nested_tok.get("access_token") or tok_data.get("access_token") or "").strip()
+                exp_ts = safe_float(
+                    nested_tok.get("expiry_timestamp") or tok_data.get("expiry_timestamp"),
+                    0.0,
+                )
                 if tok and (exp_ts <= 0.0 or exp_ts > now + 10.0):
                     access_token = tok
                     break

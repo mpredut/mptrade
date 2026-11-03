@@ -1101,7 +1101,12 @@ def test_gemini_client_pre_call_quota_filter_and_dynamic_topup_restoration(tmp_p
     quota_state_file = tmp_path / "llm_quota_status.json"
 
     (bot_cli_base / "antigravity-oauth-token").write_text(
-        json.dumps({"access_token": "tok-live-123", "expiry_timestamp": int(time.time()) + 3600})
+        json.dumps(
+            {
+                "token": {"access_token": "tok-live-123", "expires_in": 3599},
+                "auth_method": "oauth",
+            }
+        )
     )
     monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(quota_state_file)))
     GeminiClient._QUOTA_MEM_CACHE = {}
