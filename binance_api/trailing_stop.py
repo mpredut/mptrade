@@ -232,8 +232,10 @@ class TrailingStop(TrailingAdapterBase):
         stale, or inconsistent evidence, retain the core's first-observation fallback.
         Existing peaks, warm-up thresholds, and pending orders are never rewritten.
         """
+        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return None
         try:
-            pair_norm = str(pair or "").strip().upper()
+            pair_norm = pair.strip().upper()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair) or TRAILING_INSTRUMENTS[pair]
             asset = spec.base
             balance = self._find_balance_row(self._balances, asset, unique=True)

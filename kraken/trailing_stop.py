@@ -248,8 +248,10 @@ class KrakenTrailing(TrailingAdapterBase):
 
     def cost_basis(self, pair: str):
         """Use reconciled BUY/SELL inventory for new-position warm-up when fresh SSOT fills are available."""
+        if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
+            return None
         try:
-            pair_norm = str(pair or "").strip().upper()
+            pair_norm = pair.strip().upper()
             spec = self._lookup_symbol_entry(TRAILING_INSTRUMENTS, pair)
             asset = spec.base if spec is not None else _split_kraken_pair(pair_norm)[0]
             if not asset:

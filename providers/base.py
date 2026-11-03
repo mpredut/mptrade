@@ -25,6 +25,7 @@ from botcore import (
     safe_pos_float,
 )
 from cachepaths import (
+    canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
     normalize_venue_name,
@@ -452,11 +453,18 @@ def extract_order_fee(
     fee_in_quote: Optional[float] = 0.0 if fee == 0.0 else None
 
     if fee > 0.0:
-        if base_u and fee_asset == base_u:
+        _quote_aliases = {"ZUSD": "USD", "ZEUR": "EUR", "ZUSDT": "USDT"}
+        fee_base_canon = canonical_base_asset(fee_asset) if fee_asset else ""
+        base_canon = canonical_base_asset(base_u) if base_u else ""
+        fee_quote_canon = _quote_aliases.get(fee_asset, fee_asset)
+        quote_canon = _quote_aliases.get(quote_u, quote_u)
+        if base_u and (fee_asset == base_u or (fee_base_canon and fee_base_canon == base_canon)):
             base_fee = fee
             if px > 0.0:
                 fee_in_quote = fee * px
-        elif (quote_u and fee_asset == quote_u) or (not fee_asset and not req_explicit):
+        elif (quote_u and (fee_asset == quote_u or (fee_quote_canon and fee_quote_canon == quote_canon))) or (
+            not fee_asset and not req_explicit
+        ):
             quote_fee = fee
             fee_in_quote = fee
 
@@ -1459,6 +1467,7 @@ class MarketDataProvider(ABC):
             or getattr(self, "_ssot_price_cache_path", None)
             or getattr(self, "_ssot_trend_cache_path", None)
             or getattr(self, "_ssot_24price_cache_dir", None)
+            or getattr(self, "_ssot_fills_cache_path", None)
         )
         inj_client = getattr(self, "_cli", None) or getattr(self, "_client", None)
         if (

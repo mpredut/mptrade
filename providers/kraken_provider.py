@@ -35,6 +35,7 @@ from .base import (
     build_price_history_points,
     env_values_map,
     extract_client_order_id,
+    extract_order_fee,
     extract_timestamp_ms,
     normalize_side,
     read_client_ohlc_series,
@@ -148,12 +149,11 @@ def _normalize_kraken_fill(raw: dict) -> dict:
         fill_id = _clean_single_order_id(raw.get("id")) or _clean_single_order_id(raw.get("trade_id"))
         if fill_id is not None:
             norm["id"] = fill_id
-        fee_f = safe_nonneg_float(raw.get("fee"), default=None)
-        if fee_f is not None:
-            norm["fee"] = fee_f
-            fee_asset = str(raw.get("feeAsset") or "").strip().upper()
-            if fee_asset:
-                norm["feeAsset"] = fee_asset
+        fee_info = extract_order_fee(raw)
+        if fee_info is not None:
+            norm["fee"] = fee_info["fee"]
+            if fee_info["fee_asset"]:
+                norm["feeAsset"] = fee_info["fee_asset"]
     return norm
 
 

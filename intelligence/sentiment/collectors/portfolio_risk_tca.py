@@ -37,10 +37,11 @@ from providers.base import (
     normalize_timestamp_ms,
     resolve_order_origin,
 )
-from providers.execution_audit import extract_intent_order_type, extract_intent_side
+from providers.execution_audit import extract_intent_order_type, extract_intent_side, intent_venue_client_order_ids
 from providers.quantity import venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as read_json_cached,
+    read_json_file,
     read_tail_jsonl_dicts,
     resolve_cachedb_filepath,
 )
@@ -870,6 +871,7 @@ def _normalize_open_orders_list(
     symbol: str,
     known_ai_order_ids: Optional[set[str]] = None,
     *,
+    audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
     now_ts: Optional[float] = None,
     order_ts_map: Optional[Dict[str, float]] = None,
 ) -> List[Dict[str, Any]]:
@@ -885,6 +887,7 @@ def _normalize_open_orders_list(
                 venue=venue,
                 symbol=symbol,
                 known_ai_order_ids=known_ai_order_ids,
+                audit_origin_map=audit_origin_map,
                 now_ts=now_ts,
                 order_ts_map=order_ts_map,
             )),
@@ -910,14 +913,21 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
     if not cache_dir:
         return out
     intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
-    if os.path.exists(intents_path) and isinstance(raw_int := read_json_cached(intents_path), dict):
-        for it in raw_int.get("intents") or ():
-            if isinstance(it, dict) and (it_ts := safe_pos_float(it.get("timestamp"), default=None)) is not None:
+    if os.path.exists(intents_path):
+        raw_int = read_json_file(intents_path, default=[], recover_previous=True)
+        int_list = raw_int.get("intents") if isinstance(raw_int, dict) else (raw_int if isinstance(raw_int, list) else ())
+        for it in int_list or ():
+            if isinstance(it, dict) and (it_ts := safe_pos_float(it.get("executed_at") or it.get("timestamp"), default=None)) is not None:
                 exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
                 for src_d in (it, exec_pay):
                     for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
                         if kv := str(src_d.get(id_k) or "").strip():
                             out.setdefault(kv, it_ts)
+                if oid_pay := extract_order_id(exec_pay, default=""):
+                    out.setdefault(str(oid_pay), it_ts)
+                for cid_v in intent_venue_client_order_ids(it):
+                    if cid_v:
+                        out.setdefault(cid_v, it_ts)
     for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
         for fpath in files:
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=512 * 1024):

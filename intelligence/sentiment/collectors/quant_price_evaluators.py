@@ -678,27 +678,34 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         r1h_new = min(r1h_lo, p_cur)
         pinfo["recent_1h_low_px"] = round(r1h_new, eff_dec_b)
         b_struct = pinfo.get("bottom_structure_6h")
-        if b_struct == "HIGHER_LOW_DOUBLE_BOTTOM":
+        if r1h_new <= p6h_lo and p_cur <= p6h_lo:
+            pinfo.pop("higher_low_vs_prior_pct", None)
+            pinfo.pop("reclaim_above_prior_low_pct", None)
+            if ((p_cur / r1h_new) - 1.0) * 100.0 <= 2.5:
+                pinfo["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
+        elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM":
             if r1h_new < p6h_lo and p_cur > p6h_lo:
                 pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
                 pinfo.pop("higher_low_vs_prior_pct", None)
                 pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
             else:
                 pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
-        elif b_struct == "LIQUIDITY_SWEEP_RECLAIM":
+        elif b_struct in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") and r1h_new < p6h_lo and p_cur > p6h_lo:
+            pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
             pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
     if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
         tape_copy = list(tape_15m)
         if isinstance(tape_copy[-1], str) and tape_copy[-1].startswith("now:"):
             tape_copy[-1] = f"now:{p_cur:.6g}"
             pinfo["recent_tape_15m"] = tape_copy
-        l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
-        h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
-        if l15 is not None and h15 is not None:
-            l15_new, h15_new = min(l15, p_cur), max(h15, p_cur)
-            pinfo["low_15m"], pinfo["high_15m"] = round(l15_new, 6), round(h15_new, 6)
-            if h15_new > l15_new > 0:
-                pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
+    l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
+    h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
+    if l15 is not None and h15 is not None:
+        l15_new, h15_new = min(l15, p_cur), max(h15, p_cur)
+        pinfo["low_15m"], pinfo["high_15m"] = round(l15_new, 6), round(h15_new, 6)
+        if h15_new > l15_new > 0:
+            pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
+            pinfo["span_15m_pct"] = pct_delta(h15_new, l15_new)
 
 
 def _apply_24h_series_enrichment(

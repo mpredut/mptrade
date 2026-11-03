@@ -310,6 +310,7 @@ def harvest_tradable_positions_and_orders(
     failed_open_venues: set[str] = set()
     now_ts_oo = _time.time()
     order_ts_map = _load_open_order_timestamps(cache_dir, cached_bals)
+    audit_origin_map = _load_recent_audit_origins(cache_dir) if cache_dir else {}
 
     def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
         if not asset:
@@ -434,7 +435,13 @@ def harvest_tradable_positions_and_orders(
                     if isinstance(raw_open := open_fn(), list):
                         sym_open_ok = True
                         sym_norm_orders = _normalize_open_orders_list(
-                            raw_open, venue, sym, known_ai_order_ids, now_ts=now_ts_oo, order_ts_map=order_ts_map
+                            raw_open,
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
                         )
                         open_orders_list.extend(sym_norm_orders)
                         updated_bals[oo_key] = sym_norm_orders
@@ -446,7 +453,13 @@ def harvest_tradable_positions_and_orders(
                     failed_open_venues.add(v_norm)
                     open_orders_list.extend(
                         _normalize_open_orders_list(
-                            cached_bals.get(oo_key), venue, sym, known_ai_order_ids, now_ts=now_ts_oo, order_ts_map=order_ts_map
+                            cached_bals.get(oo_key),
+                            venue,
+                            sym,
+                            known_ai_order_ids,
+                            audit_origin_map=audit_origin_map,
+                            now_ts=now_ts_oo,
+                            order_ts_map=order_ts_map,
                         )
                     )
     elif allow_empty_inst_recovery and cached_bals:
@@ -518,6 +531,7 @@ def harvest_tradable_positions_and_orders(
                         parts[1] if len(parts) > 1 else "",
                         parts[2] if len(parts) > 2 else "",
                         known_ai_order_ids,
+                        audit_origin_map=audit_origin_map,
                         now_ts=now_ts_oo,
                         order_ts_map=order_ts_map,
                     )
@@ -1349,8 +1363,9 @@ def harvest_bot_runtime_states(
         terminal_ai_intent_ids: set[str] = set()
         intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
         intents_raw = read_json_file(intents_path, default=[], recover_previous=True) if os.path.exists(intents_path) else []
-        if isinstance(intents_raw, list):
-            for it in intents_raw:
+        intents_iter = intents_raw.get("intents") if isinstance(intents_raw, dict) else (intents_raw if isinstance(intents_raw, list) else ())
+        if isinstance(intents_iter, list):
+            for it in intents_iter:
                 if not isinstance(it, dict):
                     continue
                 st_u = str(it.get("status") or "").strip().upper()

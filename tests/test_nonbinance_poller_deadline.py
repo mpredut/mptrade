@@ -541,6 +541,50 @@ class TestFetchDeadline(unittest.TestCase):
         # Total cost = 30*3 + 0.30 = 90.30 for 3.0 HYPE -> 30.10
         self.assertAlmostEqual(hlp.position_cost_basis("HYPEUSDC", 3.0, 3600.0), 30.10, places=4)
 
+        # 6. Kraken fee asset aliases (XXBT / ZUSD), live price geometry 15m/6h updates, and open order ts lookup from list intents
+        from providers.base import extract_order_fee
+        from intelligence.sentiment.collectors.quant_price_evaluators import recalculate_live_price_geometry
+        from intelligence.sentiment.collectors.portfolio_risk_tca import _load_open_order_timestamps
+
+        fee_btc = extract_order_fee({"fee": 0.001, "feeAsset": "XXBT"}, base_asset="BTC", quote_asset="USD", fill_price=90000.0)
+        self.assertIsNotNone(fee_btc)
+        self.assertAlmostEqual(fee_btc["base_fee"], 0.001)
+        self.assertAlmostEqual(fee_btc["fee_in_quote"], 90.0)
+        fee_usd = extract_order_fee({"fee": 1.25, "feeAsset": "ZUSD"}, base_asset="BTC", quote_asset="USD", fill_price=90000.0)
+        self.assertIsNotNone(fee_usd)
+        self.assertAlmostEqual(fee_usd["quote_fee"], 1.25)
+
+        pinfo = {
+            "low_15m": 100.0,
+            "high_15m": 102.0,
+            "prior_6h_low_px": 100.0,
+            "recent_1h_low_px": 100.5,
+            "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+            "higher_low_vs_prior_pct": 0.5,
+        }
+        recalculate_live_price_geometry(pinfo, 99.5)
+        self.assertEqual(pinfo["bottom_structure_6h"], "FRESH_6H_LOW_TEST")
+        self.assertNotIn("higher_low_vs_prior_pct", pinfo)
+        self.assertAlmostEqual(pinfo["low_15m"], 99.5)
+        self.assertAlmostEqual(pinfo["pos_15m_pct"], 0.0)
+        self.assertAlmostEqual(pinfo["span_15m_pct"], 2.51, places=2)
+
+        intents_file = os.path.join(tmp_dir, "autonomous_trade_intents_state.json")
+        with open(intents_file, "w", encoding="utf-8") as fh:
+            json.dump(
+                [
+                    {
+                        "intent_id": "krk-hype-buy-1700000123",
+                        "timestamp": 1700000123.5,
+                        "execution_payload": {"txid": ["O-KRK-777"]},
+                    }
+                ],
+                fh,
+            )
+        ts_map = _load_open_order_timestamps(tmp_dir, {})
+        self.assertAlmostEqual(ts_map.get("O-KRK-777"), 1700000123.5)
+        self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
+
 
 if __name__ == "__main__":
     unittest.main()
