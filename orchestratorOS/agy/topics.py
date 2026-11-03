@@ -22,12 +22,15 @@ if _ROOT_DIR not in sys.path:
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
+    load_dotenv,
     required_int_env,
     safe_float,
     safe_int,
     safe_nonneg_int,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
+
+load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
 from orchestratorOS.agy.paths import (
     expand_config_path,
     resolve_bot_cli_base,

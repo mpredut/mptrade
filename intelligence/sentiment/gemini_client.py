@@ -135,19 +135,35 @@ class GeminiClient:
         """Return shared SSOT cache path for live LLM model quota & credit status."""
         return cache_path("llm_quota_status.json")
 
+    _SHARED_GEMINI_POOL_MODELS = (
+        "gemini-4-argon-high",
+        "gemini-4-argon-medium",
+        "gemini-4-argon-low",
+        "gemini-3.8-flash-medium",
+        "gemini-3.8-flash-low",
+    )
+
     @staticmethod
     def _extract_available_credits(load_assist_payload: Any) -> float:
         """Extract total available paid credits from loadCodeAssist response payload."""
         if not isinstance(load_assist_payload, dict):
             return 0.0
         total = 0.0
+        seen_tier_ids: set[str] = set()
         for tier_key in ("paidTier", "currentTier"):
             tier = load_assist_payload.get(tier_key)
             if not isinstance(tier, dict):
                 continue
+            tid = str(tier.get("id") or "").strip()
+            if tid and tid in seen_tier_ids:
+                continue
+            if not tid and total > 0.0:
+                continue
             credits_list = tier.get("availableCredits")
             if not isinstance(credits_list, list):
                 continue
+            if tid:
+                seen_tier_ids.add(tid)
             for item in credits_list:
                 if isinstance(item, dict):
                     val = safe_float(
@@ -257,19 +273,13 @@ class GeminiClient:
                 buckets[mid] = rem
             # Cloud Code retrieveUserQuota reports the shared Google Gemini/Argon quota pool
             # under gemini-3.8-flash-tiered / gemini-2.5-pro / gemini-3-flash.
+            gemini_pool_keys = ("gemini-3.8-flash-tiered", "gemini-2.5-pro", "gemini-3-flash")
             gemini_pool_rem = max(
-                safe_float(buckets.get("gemini-3.8-flash-tiered"), 0.0),
-                safe_float(buckets.get("gemini-2.5-pro"), 0.0),
-                safe_float(buckets.get("gemini-3-flash"), 0.0),
+                (safe_float(buckets.get(k), 0.0) for k in gemini_pool_keys),
+                default=0.0,
             )
-            if gemini_pool_rem > 0.0:
-                for gemini_alias in (
-                    "gemini-4-argon-high",
-                    "gemini-4-argon-medium",
-                    "gemini-4-argon-low",
-                    "gemini-3.8-flash-medium",
-                    "gemini-3.8-flash-low",
-                ):
+            if gemini_pool_rem > 0.0 or any(k in buckets for k in gemini_pool_keys):
+                for gemini_alias in cls._SHARED_GEMINI_POOL_MODELS:
                     buckets.setdefault(gemini_alias, gemini_pool_rem)
         except Exception as exc:
             logger.debug("Live LLM quota check failed (non-fatal): %s", exc)
@@ -349,7 +359,10 @@ class GeminiClient:
                 continue
             if available_credits > 0.0 or safe_float(buckets.get(m), 0.0) > 0.0:
                 confirmed.append(m)
-        return confirmed
+        if confirmed:
+            return confirmed
+        non_exhausted = [m for m in candidates if safe_float(runtime_exhausted.get(m), 0.0) <= now]
+        return non_exhausted or list(candidates)
 
     @classmethod
     def _record_model_quota_exhausted(cls, model_name: str, ttl_sec: float = 120.0) -> None:
@@ -358,6 +371,7 @@ class GeminiClient:
         if not cleaned:
             return
         now = time.time()
+        exp_until = now + max(15.0, float(ttl_sec))
         state_path = cls._get_quota_state_path()
         snapshot: Optional[Dict[str, Any]] = None
         with cls._QUOTA_LOCK:
@@ -365,17 +379,23 @@ class GeminiClient:
             if not isinstance(data, dict):
                 data = {}
             buckets = data.get("buckets") if isinstance(data.get("buckets"), dict) else {}
-            buckets[cleaned] = 0.0
             runtime_exhausted = (
                 data.get("runtime_exhausted")
                 if isinstance(data.get("runtime_exhausted"), dict)
                 else {}
             )
-            runtime_exhausted[cleaned] = now + max(15.0, float(ttl_sec))
+            affected = (
+                cls._SHARED_GEMINI_POOL_MODELS
+                if cleaned in cls._SHARED_GEMINI_POOL_MODELS
+                else (cleaned,)
+            )
+            for m_alias in affected:
+                buckets[m_alias] = 0.0
+                runtime_exhausted[m_alias] = exp_until
             data["buckets"] = buckets
             data["runtime_exhausted"] = runtime_exhausted
             data.setdefault("checked_ts", now)
-            data.setdefault("available_credits", 0.0)
+            data["available_credits"] = 0.0
             cls._QUOTA_MEM_CACHE = dict(data)
             try:
                 save_json_state(state_path, data)
@@ -678,6 +698,19 @@ class GeminiClient:
                 )
 
                 for attempt_idx, model_candidate in enumerate(models_to_try):
+                    if attempt_idx > 0 and enable_pre_quota:
+                        rt_ex = (
+                            self._QUOTA_MEM_CACHE.get("runtime_exhausted")
+                            if isinstance(self._QUOTA_MEM_CACHE, dict)
+                            and isinstance(self._QUOTA_MEM_CACHE.get("runtime_exhausted"), dict)
+                            else {}
+                        )
+                        now_iter = time.time()
+                        if safe_float(rt_ex.get(model_candidate), 0.0) > now_iter and any(
+                            safe_float(rt_ex.get(rem_m), 0.0) <= now_iter
+                            for rem_m in models_to_try[attempt_idx + 1:]
+                        ):
+                            continue
                     output, turn_cid = None, None
                     replaced_conversation = False
                     proc = None

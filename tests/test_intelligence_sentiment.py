@@ -1226,6 +1226,50 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     GeminiClient._maybe_notify_low_quota(snap_low)
     assert snap_low["last_alert_tier"] == "ok"
 
+    # 5. _extract_available_credits does not double-count identical tier IDs in paidTier and currentTier
+    dup_tier_payload = {
+        "paidTier": {"id": "g1-ultra-tier", "availableCredits": [{"creditAmount": 25.0}]},
+        "currentTier": {"id": "g1-ultra-tier", "availableCredits": [{"creditAmount": 25.0}]},
+    }
+    assert GeminiClient._extract_available_credits(dup_tier_payload) == 25.0
+
+    # 6. Runtime credit exhaustion on gemini-4-argon-medium clears shared Gemini/Argon pool buckets & available_credits
+    quota_state_file.write_text(
+        json.dumps({
+            "checked_ts": time.time(),
+            "available_credits": 10.0,
+            "buckets": {
+                "gemini-4-argon-high": 0.8,
+                "gemini-4-argon-medium": 0.8,
+                "gemini-4-argon-low": 0.8,
+                "gemini-3.8-flash-medium": 0.8,
+                "gemini-3.8-flash-low": 0.8,
+                "claude-sonnet-5-5-medium": 1.0,
+                "gpt-oss-120b-medium": 1.0,
+            },
+            "last_alert_ts": 0.0,
+            "last_alert_tier": "ok",
+        }),
+        encoding="utf-8",
+    )
+    alerts.clear()
+    GeminiClient._record_model_quota_exhausted("gemini-4-argon-medium")
+    assert len(alerts) == 1
+    assert GeminiClient._QUOTA_MEM_CACHE["available_credits"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-low"] == 0.0
+    assert GeminiClient._QUOTA_MEM_CACHE["buckets"]["gemini-4-argon-high"] == 0.0
+
+    # 7. filter_models_with_confirmed_credits never returns an empty list if all buckets report 0.0
+    all_zero_snap = {
+        "checked_ts": time.time(),
+        "available_credits": 0.0,
+        "buckets": {"claude-sonnet-5-5-medium": 0.0, "gpt-oss-120b-medium": 0.0},
+        "runtime_exhausted": {},
+    }
+    cands = ["claude-sonnet-5-5-medium", "gpt-oss-120b-medium"]
+    assert GeminiClient.filter_models_with_confirmed_credits(cands, all_zero_snap) == cands
+
+
 
 
 
