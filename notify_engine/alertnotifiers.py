@@ -295,13 +295,25 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
         (str(it.get("priority") or "default") for it in items),
         key=lambda p: prio_rank.get(p, 1),
     )
-    # Choose the highest-priority topic (preferring error/server/guard topics)
+    # Choose the highest-priority topic (error/deadman > guard/trades > server/macro > other)
+    def _topic_tier(t: str) -> int:
+        tl = t.lower()
+        if "error" in tl or "deadman" in tl:
+            return 3
+        if "guard" in tl or "trade" in tl:
+            return 2
+        if "server" in tl or "macro" in tl:
+            return 1
+        return 0
+
     best_topic = str(items[0].get("topic") or "")
-    for it in items:
+    best_tier = _topic_tier(best_topic)
+    for it in items[1:]:
         t = str(it.get("topic") or "")
-        if any(k in t.lower() for k in ("error", "deadman", "server")):
+        tier = _topic_tier(t)
+        if tier > best_tier:
             best_topic = t
-            break
+            best_tier = tier
 
     if len(items) == 1:
         it = items[0]

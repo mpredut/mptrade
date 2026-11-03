@@ -282,16 +282,8 @@ class AutonomousIntentGateway:
 
         replace_open = _parse_bool_flag(intent.get("replace_open_orders"), default=False)
         cancel_bot_open = _parse_bool_flag(intent.get("cancel_bot_open_orders"), default=False)
-        if mode == "enforce" and (replace_open or cancel_bot_open):
-            canceled_ids = self._cancel_existing_ai_open_orders(
-                inst,
-                decision,
-                include_bot_orders=cancel_bot_open,
-                any_side=cancel_bot_open,
-            )
-            if canceled_ids:
-                intent["canceled_prior_open_orders"] = canceled_ids
-        elif mode == "enforce" and is_limit:
+        dup_oid: Optional[str] = None
+        if mode == "enforce" and is_limit and not cancel_bot_open:
             dup_oid = find_duplicate_ai_open_limit_order(
                 inst,
                 decision,
@@ -299,21 +291,31 @@ class AutonomousIntentGateway:
                 effective_usd,
                 intents=self.load_all_intents(),
             )
-            if dup_oid:
-                logger.info(
-                    "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
-                    decision, inst.symbol, price, effective_usd, dup_oid,
-                )
-                intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
-                intent["duplicate_of_order_id"] = dup_oid
-                _append_intent_history(intent, {
-                    "ts": now,
-                    "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
-                    "duplicate_of_order_id": dup_oid,
-                    "price": price,
-                    "notional_usd": effective_usd,
-                })
-                return intent
+        if mode == "enforce" and (replace_open or cancel_bot_open):
+            canceled_ids = self._cancel_existing_ai_open_orders(
+                inst,
+                decision,
+                include_bot_orders=cancel_bot_open,
+                any_side=cancel_bot_open,
+                exclude_order_ids={dup_oid} if dup_oid else None,
+            )
+            if canceled_ids:
+                intent["canceled_prior_open_orders"] = canceled_ids
+        if dup_oid:
+            logger.info(
+                "[LLM TRADER · ENFORCE] Skipping duplicate %s LIMIT %s @ $%.4f ($%.2f); identical AI order %s is already open.",
+                decision, inst.symbol, price, effective_usd, dup_oid,
+            )
+            intent["status"] = "SKIPPED_DUPLICATE_OPEN_ORDER"
+            intent["duplicate_of_order_id"] = dup_oid
+            _append_intent_history(intent, {
+                "ts": now,
+                "action": "SKIPPED_DUPLICATE_OPEN_ORDER",
+                "duplicate_of_order_id": dup_oid,
+                "price": price,
+                "notional_usd": effective_usd,
+            })
+            return intent
 
         # Minimal Operational Preflight (Symmetric BUY / SELL, Zero Strategy or Daily-Cap Guards):
         # Clamp desired notional strictly to real spot wallet free liquidity.
@@ -409,6 +411,7 @@ class AutonomousIntentGateway:
         *,
         include_bot_orders: bool = False,
         any_side: bool = False,
+        exclude_order_ids: Optional[set[str]] = None,
     ) -> List[str]:
         """Cancel any prior unfilled AI-placed (or bot-placed when requested) open orders on the symbol."""
         return cancel_existing_ai_open_orders(
@@ -418,6 +421,7 @@ class AutonomousIntentGateway:
             intents=self.load_all_intents(),
             include_bot_orders=include_bot_orders,
             any_side=any_side,
+            exclude_order_ids=exclude_order_ids,
         )
 
     def submit(

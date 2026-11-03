@@ -1420,6 +1420,46 @@ def test_duplicate_open_ai_limit_order_is_skipped_while_ladder_at_distinct_price
         assert dup_rec["duplicate_of_order_id"] == "592714535208"
         hl_inst.place.assert_not_called()
 
+        # Even when replace_open_orders=True is passed, an identical resting AI limit order is preserved
+        # while any stale AI open order at a different price is still canceled
+        from providers.hyperliquid_provider import _cloid_for_client_order_id
+        ai_cloid = _cloid_for_client_order_id("AI_intent_1793644299_sell_hypeusdc")
+        hl_inst.open_orders.return_value = [
+            {
+                "oid": 592714000111,
+                "side": "A",
+                "limitPx": "90.10",
+                "sz": "3.00",
+                "origSz": "3.00",
+                "cloid": ai_cloid,
+            },
+            {
+                "oid": 592714535208,
+                "side": "A",
+                "limitPx": "88.45",
+                "sz": "3.95",
+                "origSz": "3.95",
+                "cloid": ai_cloid,
+            },
+        ]
+        dup_replace_rec = gw.submit({
+            "decision": "SELL",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 88.45,
+            "replace_open_orders": True,
+            "confidence": 0.90,
+            "suggested_notional_usd": 350.0,
+            "thesis": "Restated limit order with replace_open_orders=True.",
+        }, source="auto_cryptotrade_executor", max_mode="enforce", instruments_map={"HYPEUSDC": hl_inst})
+
+        assert dup_replace_rec["status"] == "SKIPPED_DUPLICATE_OPEN_ORDER"
+        assert dup_replace_rec["duplicate_of_order_id"] == "592714535208"
+        assert dup_replace_rec.get("canceled_prior_open_orders") == ["592714000111"]
+        hl_inst.cancel_order.assert_called_once_with("592714000111")
+        hl_inst.place.assert_not_called()
+
         # Multi-tranche scale-out ladder at a distinct price (e.g. $92.00 vs $88.45) executes normally
         ladder_rec = gw.submit({
             "decision": "SELL",

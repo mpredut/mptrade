@@ -1774,6 +1774,7 @@ def cancel_existing_ai_open_orders(
     intents: Optional[list[dict[str, Any]]] = None,
     include_bot_orders: bool = False,
     any_side: bool = False,
+    exclude_order_ids: Optional[set[str]] = None,
 ) -> list[str]:
     """Cancel prior unfilled AI-placed (or bot-placed when ``include_bot_orders=True``) open orders on the symbol."""
     canceled_ids: list[str] = []
@@ -1781,6 +1782,7 @@ def cancel_existing_ai_open_orders(
     cancel_fn = getattr(inst, "cancel_order", None)
     if not callable(open_fn) or not callable(cancel_fn):
         return canceled_ids
+    excluded = {str(x) for x in (exclude_order_ids or ()) if x}
     try:
         raw_open = open_fn()
         if not isinstance(raw_open, list):
@@ -1793,6 +1795,8 @@ def cancel_existing_ai_open_orders(
             if not any_side and oo_side != side:
                 continue
             oid = extract_order_id(oo, default="")
+            if oid and str(oid) in excluded:
+                continue
             is_ai_order = resolve_order_actor(oo, ai_oids) == "AI"
             if not is_ai_order and not include_bot_orders:
                 continue

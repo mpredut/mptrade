@@ -779,9 +779,11 @@ def _report_has_action_in(report: Any, allowed_actions: FrozenSet[str]) -> bool:
 
 def _iter_actionable_issue_categories(report: Any) -> List[str]:
     return [
-        str(issue.get("category") or "").strip().upper()
+        cat
         for issue in (obj_attr(report, "diagnosed_issues") or [])
-        if isinstance(issue, dict) and str(issue.get("severity") or "").strip().upper() in ACTIONABLE_ERROR_SEVERITIES
+        if isinstance(issue, dict)
+        and str(issue.get("severity") or "").strip().upper() in ACTIONABLE_ERROR_SEVERITIES
+        and (cat := str(issue.get("category") or "").strip().upper()) not in ("", "HEALTHY", "GUARD_VETO")
     ]
 
 
@@ -1039,7 +1041,7 @@ def format_supervisor_ntfy_notification(
         i
         for i in (obj_attr(report, "diagnosed_issues") or [])
         if isinstance(i, dict)
-        and str(i.get("category") or "").strip().upper() not in ("HEALTHY", "GUARD_VETO")
+        and str(i.get("category") or "").strip().upper() not in ("", "HEALTHY", "GUARD_VETO")
         and str(i.get("severity") or "").strip().upper() != "INFO"
     ]
     issues_cnt = len(non_healthy_issues)

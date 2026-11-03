@@ -790,6 +790,39 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertIn("Primary Issue: [LOW] Transient Binance CloudFront", bulk_body)
         self.assertIn("\n\n2. 🛠 [auto_technical_repair]", bulk_body)
 
+        # Verify GUARD_VETO / HEALTHY tagged with MEDIUM severity do not trigger false-alarm SYSTEM error
+        report_guard_med = SupervisorAuditReport(
+            ts=1793669702.0,
+            mode="enforce",
+            summary="All fleet processes healthy; routine guard vetoes observed.",
+            diagnosed_issues=[
+                {"severity": "MEDIUM", "category": "GUARD_VETO", "description": "Routine guard vetoes"},
+                {"severity": "MEDIUM", "category": "HEALTHY", "description": "System healthy"},
+            ],
+            venue_actions=[{"action": "NONE", "venue": "system", "symbol": "SYSTEM"}],
+            code_remediation={"has_fix": False},
+            actions_executed=False,
+        )
+        g_title, _, g_prio, _, g_any_err = format_supervisor_ntfy_notification(
+            report_guard_med,
+            "auto_technical_repair",
+            "ntfy-error-1978",
+            "ntfy-server-1978",
+            "ntfy-server-1978",
+        )
+        self.assertFalse(g_any_err)
+        self.assertEqual(g_prio, "default")
+        self.assertEqual(g_title, "🛠 [auto_technical_repair] Issues: 0 | Actions: 0")
+
+        # Verify bulk topic ranking prefers error/deadman over server regardless of item order
+        _, _, b_prio, b_topic = synthesize_bulk_notifications([
+            {"title": "Server status", "body": "ok", "priority": "default", "topic": "ntfy-server-1978", "count": 1},
+            {"title": "Critical error", "body": "boom", "priority": "urgent", "topic": "ntfy-error-1978", "count": 1},
+        ])
+        self.assertEqual(b_prio, "urgent")
+        self.assertEqual(b_topic, "ntfy-error-1978")
+
+
 
 
 
