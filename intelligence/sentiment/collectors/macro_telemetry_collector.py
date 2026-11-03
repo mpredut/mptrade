@@ -60,6 +60,18 @@ MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
     ("IBIT", "IBIT", "usd"),
 )
 
+_MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
+    "coinbase_premium_bps",
+    "coinbase_premium_regime",
+    "btc_dvol",
+    "eth_dvol",
+    "options_vol_regime",
+    "btc_rv_pct",
+    "btc_vrp_pct",
+    "btc_pc_oi_ratio",
+    "btc_skew_25d_pct",
+})
+
 
 def compute_deribit_options_surface(
     books: Any,
@@ -67,7 +79,7 @@ def compute_deribit_options_surface(
     btc_dvol: Optional[float] = None,
     btc_rv: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Compute institutional BTC options surface metrics (RV, VRP, Put/Call OI, 25d Skew, Gamma Pin Strike, Dealer Gamma Regime)."""
+    """Compute BTC options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy)."""
     out: Dict[str, Any] = {}
     rv_f = safe_pos_float(btc_rv, default=None)
     dvol_f = safe_pos_float(btc_dvol, default=None)
@@ -86,7 +98,6 @@ def compute_deribit_options_surface(
                     break
         call_oi = put_oi = 0.0
         put_iv_num = put_iv_den = call_iv_num = call_iv_den = 0.0
-        strike_oi: Dict[int, float] = {}
         for b in books:
             if not isinstance(b, dict):
                 continue
@@ -104,31 +115,16 @@ def compute_deribit_options_surface(
                 if spot > 0.0 and 1.02 * spot <= strike <= 1.12 * spot and 5.0 <= iv <= 250.0:
                     call_iv_num += iv * oi
                     call_iv_den += oi
-            elif opt_type == "P":
+            else:
                 put_oi += oi
                 if spot > 0.0 and 0.88 * spot <= strike <= 0.98 * spot and 5.0 <= iv <= 250.0:
                     put_iv_num += iv * oi
                     put_iv_den += oi
-            if spot > 0.0 and 0.90 * spot <= strike <= 1.10 * spot:
-                strike_k = int(round(strike))
-                strike_oi[strike_k] = strike_oi.get(strike_k, 0.0) + oi
 
         if call_oi > 0.0 and put_oi > 0.0:
             out["btc_pc_oi_ratio"] = round(put_oi / call_oi, 2)
         if put_iv_den > 0.0 and call_iv_den > 0.0:
             out["btc_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
-        if strike_oi:
-            out["btc_gamma_pin_strike"] = max(strike_oi.items(), key=lambda kv: kv[1])[0]
-
-    skew_v = safe_float(out.get("btc_skew_25d_pct"), default=None)
-    vrp_v = safe_float(out.get("btc_vrp_pct"), default=None)
-    pin_v = safe_pos_float(out.get("btc_gamma_pin_strike"), default=None)
-    if (skew_v is not None and skew_v >= 4.0) or (vrp_v is not None and vrp_v <= -3.0) or (dvol_f is not None and dvol_f >= 62.0):
-        out["dealer_gamma_regime"] = "SHORT_GAMMA_EXPANSION"
-    elif pin_v is not None and spot > 0.0 and abs(spot - pin_v) / spot <= 0.035 and (vrp_v is None or vrp_v >= 0.0):
-        out["dealer_gamma_regime"] = "LONG_GAMMA_PINNING"
-    elif out:
-        out["dealer_gamma_regime"] = "BALANCED_GAMMA"
     return out
 
 
@@ -139,13 +135,7 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
     items = data.get("items") if isinstance(data.get("items"), dict) else data
     if not isinstance(items, dict):
         return ""
-    meta_skip = {
-        "ts", "age_min", "summary_line", "items",
-        "coinbase_premium_bps", "coinbase_premium_regime",
-        "btc_dvol", "eth_dvol", "options_vol_regime",
-        "btc_rv_pct", "btc_vrp_pct", "btc_pc_oi_ratio",
-        "btc_skew_25d_pct", "btc_gamma_pin_strike", "dealer_gamma_regime",
-    }
+    meta_skip = {"ts", "age_min", "summary_line", "items"} | _MACRO_EXTRA_TELEMETRY_KEYS
     ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items] + [
         k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
     ]
@@ -184,10 +174,6 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
         opt_parts.append(f"PC_OI={pc_v:.2f}")
     if (sk_v := safe_float(data.get("btc_skew_25d_pct", items.get("btc_skew_25d_pct")), default=None)) is not None:
         opt_parts.append(f"Skew_25d={sk_v:+.2f}%")
-    if (pin_v := safe_pos_float(data.get("btc_gamma_pin_strike", items.get("btc_gamma_pin_strike")), default=None)) is not None:
-        opt_parts.append(f"GammaPin=${int(round(pin_v)):,}")
-    if (g_reg := str(data.get("dealer_gamma_regime") or items.get("dealer_gamma_regime") or "").strip()):
-        opt_parts.append(g_reg)
     if opt_parts:
         parts.append(f"Options_Surface({', '.join(opt_parts)})")
     return " | ".join(parts)

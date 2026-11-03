@@ -2028,21 +2028,22 @@ def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_
     assert "swing_subcycle_avg_px" not in ro_out.get("TAOUSD", {})
     assert "open_lots" not in ro_out.get("TAOUSD", {})
 
-    # 5. compute_enterprise_portfolio_risk_metrics falls back to last_buy/last_sell when recent_buys/recent_sells omitted
+    # 5. compute_enterprise_portfolio_risk_metrics computes clean risk metrics without noisy fee-drag/markout
     risk = compute_enterprise_portfolio_risk_metrics(
         {
             "tradable_positions": [{"venue": "kraken", "symbol": "BTCUSD", "value_usd": 500.0, "free_quote": 500.0, "quote": "USD"}],
             "venue_quote_cash": {"kraken:USD": {"venue": "kraken", "free": 500.0}},
-            "recent_orders": {"BTCUSD": {"last_buy": {"price": 100000.0, "qty": 0.005}}},
+            "recent_orders": {"BTCUSD": {"lifo_realized_pnl_usd": 12.5, "last_buy": {"price": 100000.0, "qty": 0.005}}},
         },
-        {"BTCUSD": {"price": 101000.0, "volatility_1h_pct": 1.0}},
+        {"BTCUSD": {"price": 101000.0, "vol_1h_pct": 1.0}},
         {"BTCUSD": {"spread_bps": 2.0}},
     )
-    assert risk["avg_entry_markout_bps"] == 100.0
-    assert risk["post_trade_win_rate_pct"] == 100.0
-    assert risk["est_recent_fee_drag_usd"] == 1.3  # $500 notional * 26 bps Kraken taker fee = $1.30
+    assert risk["unified_nav_usd"] == 1000.0
+    assert risk["subcycle_lifo_realized_pnl_usd"] == 12.5
+    assert "avg_entry_markout_bps" not in risk
+    assert "est_recent_fee_drag_usd" not in risk
 
-    # 6. compute_deribit_options_surface ignores non-C/P instruments when building strike_oi
+    # 6. compute_deribit_options_surface ignores non-C/P instruments and excludes bogus gamma pin / dealer gamma fields
     surf = compute_deribit_options_surface(
         [
             {"instrument_name": "BTC-28NOV26-90000-C", "open_interest": 100.0, "mark_iv": 52.0, "underlying_price": 90000.0},
@@ -2052,5 +2053,42 @@ def test_macro_surprise_word_boundaries_fomc_gating_and_cross_venue_routing(tmp_
         btc_dvol=50.0,
         btc_rv=45.0,
     )
-    assert surf["btc_gamma_pin_strike"] == 90000
+    assert surf["btc_pc_oi_ratio"] == 0.8
+    assert "btc_gamma_pin_strike" not in surf
+    assert "dealer_gamma_regime" not in surf
+
+
+def test_enrich_cross_venue_trends_preserves_7d_range_over_short_watcher_history():
+    """Verify newly initialized <5d watcher_price_items do not overwrite 7d OHLC range metrics."""
+    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends
+
+    now_ms = 1_780_000_000_000
+    prices_and_trends = {
+        "ADAUSD": {
+            "price": 0.1912,
+            "chg_7d_pct": -10.02,
+            "pos_7d_pct": 19.8,
+            "high_7d": 0.214343,
+            "low_7d": 0.185479,
+            "swings_7d": ["0.214343@-140h(H)", "0.185479@-48h(L)"],
+        }
+    }
+    short_watcher_series = [
+        [now_ms - 1800_000 + i * 15_000, 0.1900 + (i % 5) * 0.0003]
+        for i in range(120)
+    ]
+    enrich_cross_venue_trends(
+        prices_and_trends=prices_and_trends,
+        trends_data={},
+        kalman_data={},
+        long_items={},
+        priceanalysis_data={},
+        t_trend_map={},
+        watcher_price_items={"ADAUSD": short_watcher_series},
+    )
+    assert prices_and_trends["ADAUSD"]["chg_7d_pct"] == -10.02
+    assert prices_and_trends["ADAUSD"]["high_7d"] == 0.214343
+    assert prices_and_trends["ADAUSD"]["low_7d"] == 0.185479
+    assert len(prices_and_trends["ADAUSD"]["swings_7d"]) == 2
+
 
