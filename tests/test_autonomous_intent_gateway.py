@@ -1816,5 +1816,130 @@ def test_harvest_bot_runtime_states_excludes_executed_and_rejected_ai_intents(tm
     assert [x.get("symbol") for x in active_q] == ["TAOUSDC"]
 
 
+def test_process_intent_replace_open_orders_unlocks_bot_order_when_free_remainder_clamped(temp_workspace, monkeypatch):
+    ws, _ = temp_workspace
+    gw = AutonomousIntentGateway(workspace_dir=ws, cache_dir="cachedb", mode="enforce")
+
+    locked_state = {"locked_shares": 1.0}
+
+    class _Provider:
+        def free_balance(self, asset):
+            if asset == "TAO":
+                return 1.24 - locked_state["locked_shares"]
+            return 500.0
+
+        def get_current_price(self, symbol):
+            return 100.0
+
+    class _Inst:
+        symbol = "TAOUSDC"
+        base = "TAO"
+        quote = "USDC"
+        provider_name = "binance"
+        _provider = _Provider()
+
+        def open_orders(self):
+            if locked_state["locked_shares"] > 0:
+                return [{"orderId": "bot_tp_1", "symbol": "TAOUSDC", "side": "SELL", "price": 108.0, "origQty": 1.0, "executedQty": 0.0}]
+            return []
+
+        def cancel_order(self, oid):
+            if str(oid) == "bot_tp_1":
+                locked_state["locked_shares"] = 0.0
+                return True
+            return False
+
+    inst = _Inst()
+    monkeypatch.setattr(gw, "resolve_instrument", lambda *_a, **_kw: inst)
+
+    executed_calls = []
+
+    def _fake_exec(inst_arg, intent_arg, **kwargs):
+        executed_calls.append(kwargs)
+        intent_arg["status"] = "EXECUTED"
+        return intent_arg
+
+    monkeypatch.setattr("orchestratorTrade.autonomous_intent_gateway.execute_enforce_intent_order", _fake_exec)
+
+    intent = {
+        "intent_id": "intent_replace_bot_tp",
+        "symbol": "TAOUSDC",
+        "venue": "binance",
+        "decision": "SELL",
+        "confidence": 0.90,
+        "reference_price": 100.0,
+        "suggested_notional_usd": 124.0,
+        "replace_open_orders": True,
+        "status": "PENDING",
+    }
+    out = gw.process_intent(intent, instruments_map={"BINANCE_TAO": inst})
+    assert out["status"] == "EXECUTED"
+    assert out.get("canceled_bot_open_orders") == ["bot_tp_1"]
+    assert len(executed_calls) == 1
+    assert executed_calls[0]["effective_usd"] == pytest.approx(124.0)
+
+
+def test_harvest_tradable_positions_preserves_trailing_peak_for_100pct_locked_sell_and_updates_bcache(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+
+    bcache_file = tmp_path / "venue_balances_state.json"
+    bcache_file.write_text("{}", encoding="utf-8")
+
+    class _Provider:
+        def free_balance(self, asset):
+            if str(asset).upper() == "TAO":
+                return 0.0
+            return 50.0
+
+        def get_current_price(self, symbol):
+            return 400.0
+
+    class _Inst:
+        symbol = "TAOUSDC"
+        base = "TAO"
+        quote = "USDC"
+        provider_name = "binance"
+        params = {"trailing.pct": 1.5}
+        _provider = _Provider()
+
+        def open_orders(self):
+            return [
+                {
+                    "orderId": "sell_lock_1",
+                    "symbol": "TAOUSDC",
+                    "side": "SELL",
+                    "price": 420.0,
+                    "origQty": 1.5,
+                    "executedQty": 0.0,
+                    "status": "NEW",
+                }
+            ]
+
+    prices_and_trends = {"TAOUSDC": {"price": 400.0, "trend": 1, "growth_coefficient": 0.1}}
+    trailing_by_venue = {"binance": {"TAOUSDC": {"peak": 440.0}}}
+    positions, open_orders, cash_map, _ = harvest_tradable_positions_and_orders(
+        {"BINANCE_TAO": _Inst()},
+        prices_and_trends,
+        {},
+        trailing_by_venue,
+        known_ai_order_ids=set(),
+        gateway_max_usd=250.0,
+        cache_dir=str(tmp_path),
+    )
+    assert len(positions) == 1
+    pos = positions[0]
+    assert pos["free_base"] == 0.0
+    assert pos["locked_base_qty"] == pytest.approx(1.5)
+    assert pos["trailing_peak"] == pytest.approx(440.0)
+    assert pos["dd_from_peak_pct"] == pytest.approx(-9.09)
+
+    saved_bcache = json.loads(bcache_file.read_text(encoding="utf-8"))
+    cached_pos = saved_bcache["pos:binance:TAOUSDC"]
+    assert cached_pos["locked_base_qty"] == pytest.approx(1.5)
+    assert cached_pos["trailing_peak"] == pytest.approx(440.0)
+
+
+
 
 

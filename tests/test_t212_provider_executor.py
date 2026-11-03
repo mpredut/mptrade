@@ -262,6 +262,42 @@ class T212ExecutorContractTest(unittest.TestCase):
         })
         self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 37.77)
 
+    def test_open_orders_resolves_nested_instrument_ticker_and_skips_terminal_statuses(self):
+        self.fake.portfolio_result = [
+            {"ticker": "RGNT_US_EQ", "quantity": 100.0, "averagePrice": 1.20, "currentPrice": 1.38}
+        ]
+        self.fake.active_orders_result = [
+            {
+                "id": 901,
+                "instrument": {"ticker": "RGNT_US_EQ"},
+                "orderedQuantity": -30.0,
+                "filledQuantity": 0.0,
+                "limitPrice": 1.45,
+                "status": "WORKING",
+            },
+            {
+                "id": 902,
+                "instrument": {"ticker": "RGNT_US_EQ"},
+                "orderedQuantity": -20.0,
+                "filledQuantity": 20.0,
+                "limitPrice": 1.40,
+                "status": "FILLED",
+            },
+            {
+                "id": 903,
+                "ticker": "RGNT_US_EQ",
+                "orderedQuantity": -15.0,
+                "filledQuantity": 0.0,
+                "limitPrice": 1.50,
+                "status": "CANCELLED",
+            },
+        ]
+        open_ords = self.provider.open_orders("RGNT_US_EQ")
+        self.assertEqual([o["id"] for o in open_ords], ["901"])
+        self.assertEqual(open_ords[0]["side"], "SELL")
+        self.assertEqual(open_ords[0]["origQty"], 30.0)
+        self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 70.0)
+
     def test_place_order_raises_submission_refused_on_definitive_error(self):
         # 400 Bad Request (e.g. InsufficientQuantity) is a definitive rejection
         self.fake.portfolio_result = [{"ticker": "RGNT_US_EQ", "quantity": 100.0, "averagePrice": 1.20, "currentPrice": 1.38}]

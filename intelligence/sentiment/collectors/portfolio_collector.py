@@ -548,6 +548,8 @@ def harvest_tradable_positions_and_orders(
         balance_memo[key] = val_f
         return val_f
 
+    pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]] = {}
+
     if isinstance(inst_map, dict) and inst_map:
         for inst in inst_map.values():
             sym = str(getattr(inst, "symbol", "") or "").strip().upper()
@@ -623,9 +625,12 @@ def harvest_tradable_positions_and_orders(
             )
             min_notional_f = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
             has_held_base = base_free is None or (base_free > 1e-8 and (px_f <= 0.0 or base_free * px_f >= min_notional_f))
-            if peak is not None and peak_f > 0 and has_held_base:
-                pos_entry["trailing_peak"] = round(peak_f, 6)
-                pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
+            if peak is not None and peak_f > 0:
+                if has_held_base:
+                    pos_entry["trailing_peak"] = round(peak_f, 6)
+                    pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
+                else:
+                    pending_peaks_by_vs[(v_norm, sym)] = (round(peak_f, 6), dd_from_peak_pct)
             if params.get("trailing.pct"):
                 pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
             if params.get("mt.gain") or params.get("mt.lost"):
@@ -699,6 +704,9 @@ def harvest_tradable_positions_and_orders(
                 cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
                 if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
                     cash_val["locked_quote_usd"] = round(lq_val, 2)
+                    cash_bkey = f"cash:{cv_norm}:{cq_u}"
+                    if cash_bkey in updated_bals:
+                        updated_bals[cash_bkey] = dict(cash_val)
 
         for pos_entry in tradable_positions:
             p_v_norm = normalize_venue_name(pos_entry.get("venue"))
@@ -708,19 +716,30 @@ def harvest_tradable_positions_and_orders(
             lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
             if lq_pos > 0.0 or lb_pos > 0.0:
                 inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
+                px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
+                fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
                 pos_entry.update(
                     resolve_venue_fee_and_limits(
                         str(pos_entry.get("venue") or ""),
                         p_sym_u,
                         inst_obj,
-                        price=safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0,
+                        price=px_pos,
                         free_quote=safe_nonneg_float(pos_entry.get("free_quote"), default=None),
-                        free_base=safe_nonneg_float(pos_entry.get("free_base"), default=None),
+                        free_base=fb_pos,
                         locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
                         locked_base_qty=lb_pos if lb_pos > 0.0 else None,
                         gateway_max_usd=gateway_max_usd,
                     )
                 )
+                if lb_pos > 1e-8 and "trailing_peak" not in pos_entry and (pend_peak := pending_peaks_by_vs.get((p_v_norm, p_sym_u))) is not None:
+                    min_not_pos = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
+                    held_total = (fb_pos or 0.0) + lb_pos
+                    if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
+                        pos_entry["trailing_peak"] = pend_peak[0]
+                        pos_entry["dd_from_peak_pct"] = pend_peak[1]
+                pos_bkey = f"pos:{p_v_norm}:{p_sym_u}"
+                if pos_bkey in updated_bals:
+                    updated_bals[pos_bkey] = dict(pos_entry)
 
     if bcache_path and updated_bals and ("PYTEST_CURRENT_TEST" not in os.environ or os.path.exists(bcache_path)):
         try:

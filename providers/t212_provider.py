@@ -516,7 +516,13 @@ class T212Provider(MarketDataProvider):
             for o in raw_orders:
                 if not isinstance(o, dict):
                     continue
-                if not _t212_tickers_match(str(o.get("ticker") or ""), symbol):
+                inst_d = o.get("instrument")
+                inst_ticker = inst_d.get("ticker") if isinstance(inst_d, dict) else ""
+                order_ticker = str(o.get("ticker") or inst_ticker or "").strip()
+                if not _t212_tickers_match(order_ticker, symbol):
+                    continue
+                status_u = str(o.get("status") or "NEW").strip().upper()
+                if status_u in _STATUS_MAP:
                     continue
                 raw_qty = safe_float(o.get("orderedQuantity", o.get("quantity")), default=0.0)
                 side = normalize_side(o.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
@@ -536,7 +542,7 @@ class T212Provider(MarketDataProvider):
                     "price": px,
                     "origQty": orig_q,
                     "executedQty": exec_q,
-                    "status": str(o.get("status") or "NEW").strip().upper(),
+                    "status": status_u,
                 })
             return out
         except ProviderError:
