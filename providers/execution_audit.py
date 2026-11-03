@@ -1985,8 +1985,8 @@ def resolve_intent_execution_price(
             price = round(live_price * fallback_mult, 8)
             if log:
                 log.warning(
-                    "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.4g; "
-                    "using passive fallback $%.4g for %s",
+                    "[INTENT GATEWAY] Intent %s limit_price %r missing or out of [0.5x, 2.0x] bounds vs live $%.6g; "
+                    "using passive fallback $%.6g for %s",
                     intent_id, limit_px, live_price, price, symbol,
                 )
             append_intent_history(intent, {

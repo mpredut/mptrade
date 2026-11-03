@@ -120,11 +120,12 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
         )
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
+        px_str = f"{px:,.2f}" if px >= 10 else f"{px:.6g}"
         alert.notify(
             title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
             body=(
                 f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue. "
-                f"Qty: {qty:.4f} {symbol} @ ${px:.4g} (~${val:.2f} {quote}) | Time: {now_str}"
+                f"Qty: {qty:.6g} {symbol} @ ${px_str} (~${val:.2f} {quote}) | Time: {now_str}"
             ),
             source="monitororder",
             symbol=str(symbol),
