@@ -1270,6 +1270,38 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     assert GeminiClient.filter_models_with_confirmed_credits(cands, all_zero_snap) == cands
 
 
+def test_unified_ai_agent_base_classes_and_query_topic_json():
+    """Verify PreTradeLLMGuardBase, CachedTopicAssessmentAgent, and query_topic_json normalization."""
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro_sentiment_ssot import CachedTopicAssessmentAgent
+    from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
+    from intelligence.sentiment.guards import HighStakeGuard, PostStopReentryGuard, PreTradeLLMGuardBase
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+
+    assert issubclass(HighStakeGuard, PreTradeLLMGuardBase)
+    assert issubclass(PostStopReentryGuard, PreTradeLLMGuardBase)
+    assert issubclass(GeopoliticalThreatAnalyzer, CachedTopicAssessmentAgent)
+    assert issubclass(SentimentAdvisor, CachedTopicAssessmentAgent)
+
+    recorded_calls = []
+
+    class _SpyClient(GeminiClient):
+        def query_json(self, prompt, **kwargs):
+            recorded_calls.append((prompt, kwargs))
+            return {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
+
+    spy = _SpyClient()
+    res = spy.query_topic_json("guard_high_stake", "Evaluate BUY", subtitle="BUY BTCUSDC €1,000.00")
+    assert res == {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "ok"}
+    assert len(recorded_calls) == 1
+    _, kw = recorded_calls[0]
+    assert kw["topic_key"] == "guard_high_stake"
+    assert "BUY BTCUSDC €1,000.00" in kw["thread_title"]
+    assert kw["timeout_sec"] == 120.0
+    assert query_topic_json(None, "guard_high_stake", "noop") is None
+
+
+
 
 
 

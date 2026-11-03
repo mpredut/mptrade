@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from intelligence.macro.news_feed_collector import NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     ACUTE_SHOCK_PHRASES,
+    CachedTopicAssessmentAgent,
     clean_scale,
     demote_dynamic_acute_terms,
     extract_high_severity_headlines_and_digest,
@@ -54,8 +55,15 @@ class GeopoliticalThreatAssessment:
     is_fallback: bool = False
 
 
-class GeopoliticalThreatAnalyzer:
+class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     """Evaluates breaking macro headlines through a multi-stage filter: keyword screening + Gemini LLM."""
+
+    TOPIC_KEY = "macro_geopolitical"
+    DEFAULT_STATE_FILE = DEFAULT_STATE_FILE
+    DEFAULT_CACHE_FILENAME = _GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_eval.json"
+    STATE_FILE_ATTR = "state_file"
+    AGENT_LABEL = "geopolitical"
+    _logger = logger
 
     def __init__(
         self,
@@ -74,12 +82,6 @@ class GeopoliticalThreatAnalyzer:
         self._last_eval_ts: float = 0.0
         self._last_headlines_digest: str = ""
         self._load_from_disk()
-
-    def _effective_state_file(self) -> str:
-        sf = getattr(self, "state_file", DEFAULT_STATE_FILE) or DEFAULT_STATE_FILE
-        if sf == DEFAULT_STATE_FILE:
-            return cache_path(_GEO_FILENAMES[0] if _GEO_FILENAMES else "geopolitical_eval.json")
-        return str(sf)
 
     def _build_assessment(
         self,
@@ -116,27 +118,17 @@ class GeopoliticalThreatAnalyzer:
             is_fallback=fb_flag,
         )
 
-    def _load_from_disk(self) -> None:
-        state_file = self._effective_state_file()
-        try:
-            data = read_json_dict(state_file, default=None, recover_previous=True)
-            if not isinstance(data, dict):
-                return
-            self._cached_assessment = self._build_assessment(data, default_risk_score=0.1)
-            self._last_eval_ts = self._cached_assessment.ts
-            raw_digest = data.get("headlines_digest")
-            self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
-        except Exception as e:
-            logger.debug("Could not load cached geopolitical state %s: %s", state_file, e)
+    def _deserialize_from_disk(self, data: Dict[str, Any]) -> GeopoliticalThreatAssessment:
+        return self._build_assessment(data, default_risk_score=0.1)
 
-    def _save_to_disk(self, assessment: GeopoliticalThreatAssessment) -> None:
-        state_file = self._effective_state_file()
-        try:
-            data = asdict(assessment)
-            data["headlines_digest"] = self._last_headlines_digest
-            save_json_state(state_file, data, indent=2)
-        except Exception as e:
-            logger.warning("Could not persist geopolitical state to %s: %s", state_file, e)
+    def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
+        raw_digest = data.get("headlines_digest")
+        self._last_headlines_digest = raw_digest if isinstance(raw_digest, str) else ""
+
+    def _serialize_for_disk(self, assessment: GeopoliticalThreatAssessment) -> Dict[str, Any]:
+        data = asdict(assessment)
+        data["headlines_digest"] = getattr(self, "_last_headlines_digest", "")
+        return data
 
     def _commit_assessment(
         self,
@@ -144,11 +136,8 @@ class GeopoliticalThreatAnalyzer:
         now: float,
         digest: str = "",
     ) -> GeopoliticalThreatAssessment:
-        self._cached_assessment = assessment
-        self._last_eval_ts = now
         self._last_headlines_digest = digest
-        self._save_to_disk(assessment)
-        return assessment
+        return self._commit_topic_assessment(assessment, now)
 
     @staticmethod
     def _as_bool_flag(val: Any) -> bool:
@@ -264,11 +253,10 @@ class GeopoliticalThreatAnalyzer:
         )
 
         lead_headline = str(obj_attr(high_sev[0], "title", None) or "")[:60] if high_sev else "Macro Geopolitical Assessment"
-        resp = self.gemini_client.query_json(
+        resp = self._query_topic(
             prompt,
+            subtitle=lead_headline,
             timeout_sec=120.0,
-            thread_title=f"{topic_spec('macro_geopolitical').title} — {lead_headline}",
-            topic_key="macro_geopolitical",
         )
         if not resp or not isinstance(resp, dict):
             has_acute_phrase = has_acute_shock_keywords([str(obj_attr(h, "title", None) or "") for h in high_sev])

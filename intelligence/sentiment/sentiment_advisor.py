@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_SENTIMENT_INTERVAL_SEC,
+    CachedTopicAssessmentAgent,
     clean_scale,
     get_cache_filenames,
     is_cache_fresh,
@@ -47,8 +48,15 @@ class SentimentAdvisorAssessment:
     ts: float
 
 
-class SentimentAdvisor:
+class SentimentAdvisor(CachedTopicAssessmentAgent):
     """Queries LLM periodically to generate a holistic qualitative macro perspective."""
+
+    TOPIC_KEY = "macro_sentiment"
+    DEFAULT_STATE_FILE = DEFAULT_CACHE_FILE
+    DEFAULT_CACHE_FILENAME = _SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_eval.json"
+    STATE_FILE_ATTR = "cache_file"
+    AGENT_LABEL = "SentimentAdvisor"
+    _logger = logger
 
     def __init__(
         self,
@@ -62,11 +70,6 @@ class SentimentAdvisor:
         self._cached_assessment: Optional[SentimentAdvisorAssessment] = None
         self._last_eval_ts: float = 0.0
         self._load_from_disk()
-
-    def _effective_cache_file(self) -> str:
-        if self.cache_file == DEFAULT_CACHE_FILE:
-            return cache_path(_SENTIMENT_FILENAMES[0] if _SENTIMENT_FILENAMES else "sentiment_eval.json")
-        return self.cache_file
 
     @staticmethod
     def _build_assessment(data: Dict[str, Any], ts_override: Optional[float] = None) -> SentimentAdvisorAssessment:
@@ -88,24 +91,6 @@ class SentimentAdvisor:
             recommended_action=normalize_recommended_action(data.get("recommended_action"), default="HOLD"),
             ts=ts_val,
         )
-
-    def _load_from_disk(self) -> None:
-        cache_file = self._effective_cache_file()
-        try:
-            data = read_json_dict(cache_file, default=None, recover_previous=True)
-            if not isinstance(data, dict):
-                return
-            self._cached_assessment = self._build_assessment(data)
-            self._last_eval_ts = self._cached_assessment.ts
-        except Exception as e:
-            logger.debug("Could not load cached macro file %s: %s", cache_file, e)
-
-    def _save_to_disk(self, assessment: SentimentAdvisorAssessment) -> None:
-        cache_file = self._effective_cache_file()
-        try:
-            save_json_state(cache_file, asdict(assessment), indent=2)
-        except Exception as e:
-            logger.warning("Could not persist LLM assessment to %s: %s", cache_file, e)
 
     def review(
         self,
@@ -189,29 +174,24 @@ class SentimentAdvisor:
         )
 
         fg_label = f"F&G={int(round(obj_float(fear_greed, 'value', 50.0)))}" if fear_greed else "Pulse"
-        resp = self.gemini_client.query_json(
+        resp = self._query_topic(
             prompt,
+            subtitle=fg_label,
             timeout_sec=120.0,
-            thread_title=f"{topic_spec('macro_sentiment').title} — {fg_label}",
-            topic_key="macro_sentiment",
         )
         if not resp or not isinstance(resp, dict):
             return self._cached_assessment
 
         try:
             assessment = self._build_assessment(resp, ts_override=now)
-            if assessment.risk_level in ("HIGH", "EXTREME") and (assessment.summary or assessment.key_risks):
-                record_dynamic_crisis_terms_from_assessment(
-                    assessment.summary,
-                    assessment.key_risks,
-                    is_acute_shock=(assessment.risk_level == "EXTREME"),
-                    cache_dir=os.path.dirname(os.path.abspath(self._effective_cache_file())),
-                    now_ts=now,
-                )
-            self._cached_assessment = assessment
-            self._last_eval_ts = now
-            self._save_to_disk(assessment)
-            return assessment
+            return self._commit_topic_assessment(
+                assessment,
+                now,
+                record_crisis_terms=(assessment.risk_level in ("HIGH", "EXTREME") and bool(assessment.summary or assessment.key_risks)),
+                crisis_summary=assessment.summary,
+                crisis_items=assessment.key_risks,
+                is_acute_shock=(assessment.risk_level == "EXTREME"),
+            )
         except Exception as e:
             logger.error("Failed to construct SentimentAdvisorAssessment: %s", e)
             return self._cached_assessment

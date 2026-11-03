@@ -2106,3 +2106,100 @@ def scan_latest_long_trend_value(
                 if val is not None:
                     return val
     return None
+
+
+class CachedTopicAssessmentAgent:
+    """Unified base class for stateful topic-backed macro/sentiment AI assessment agents."""
+
+    TOPIC_KEY: str = ""
+    DEFAULT_STATE_FILE: str = ""
+    DEFAULT_CACHE_FILENAME: str = ""
+    STATE_FILE_ATTR: str = "state_file"
+    AGENT_LABEL: str = "assessment"
+    _logger: logging.Logger = logger
+
+    gemini_client: Any
+    cache_ttl_sec: float
+    _cached_assessment: Optional[Any]
+    _last_eval_ts: float
+
+    def _effective_state_file(self) -> str:
+        raw_f = getattr(self, self.STATE_FILE_ATTR, None) or self.DEFAULT_STATE_FILE
+        if raw_f == self.DEFAULT_STATE_FILE and self.DEFAULT_CACHE_FILENAME:
+            return cache_path(self.DEFAULT_CACHE_FILENAME)
+        return str(raw_f)
+
+    _effective_cache_file = _effective_state_file
+
+    def _deserialize_from_disk(self, data: Dict[str, Any]) -> Any:
+        return self._build_assessment(data)  # type: ignore[attr-defined]
+
+    def _on_loaded_from_disk(self, data: Dict[str, Any], assessment: Any) -> None:
+        pass
+
+    def _serialize_for_disk(self, assessment: Any) -> Dict[str, Any]:
+        return asdict(assessment)
+
+    def _load_from_disk(self) -> None:
+        path = self._effective_state_file()
+        if not path:
+            return
+        try:
+            data = read_json_dict(path, default=None, recover_previous=True)
+            if not isinstance(data, dict):
+                return
+            assessment = self._deserialize_from_disk(data)
+            self._cached_assessment = assessment
+            self._last_eval_ts = float(getattr(assessment, "ts", 0.0) or 0.0)
+            self._on_loaded_from_disk(data, assessment)
+        except Exception as e:
+            self._logger.debug("Could not load cached %s state %s: %s", self.AGENT_LABEL, path, e)
+
+    def _save_to_disk(self, assessment: Any) -> None:
+        path = self._effective_state_file()
+        if not path:
+            return
+        try:
+            save_json_state(path, self._serialize_for_disk(assessment), indent=2)
+        except Exception as e:
+            self._logger.warning("Could not persist %s state to %s: %s", self.AGENT_LABEL, path, e)
+
+    def _query_topic(
+        self,
+        prompt: str,
+        *,
+        subtitle: Optional[str] = None,
+        timeout_sec: float = 120.0,
+    ) -> Optional[Dict[str, Any]]:
+        from intelligence.sentiment.gemini_client import query_topic_json
+
+        return query_topic_json(
+            self.gemini_client,
+            self.TOPIC_KEY,
+            prompt,
+            subtitle=subtitle,
+            timeout_sec=timeout_sec,
+        )
+
+    def _commit_topic_assessment(
+        self,
+        assessment: Any,
+        now: float,
+        *,
+        record_crisis_terms: bool = False,
+        crisis_summary: str = "",
+        crisis_items: Sequence[str] = (),
+        is_acute_shock: bool = False,
+    ) -> Any:
+        if record_crisis_terms and (crisis_summary or crisis_items):
+            record_dynamic_crisis_terms_from_assessment(
+                crisis_summary,
+                crisis_items,
+                is_acute_shock=is_acute_shock,
+                cache_dir=os.path.dirname(os.path.abspath(self._effective_state_file())),
+                now_ts=now,
+            )
+        self._cached_assessment = assessment
+        self._last_eval_ts = now
+        self._save_to_disk(assessment)
+        return assessment

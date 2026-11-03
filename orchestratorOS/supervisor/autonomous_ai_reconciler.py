@@ -34,7 +34,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from intelligence.sentiment.gemini_client import GeminiClient
+from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     populate_market_and_portfolio_snapshot,
 )
@@ -260,11 +260,12 @@ class AutonomousAIReconciler:
         )
 
         call_timeout = float(getattr(spec, "default_timeout_sec", 0.0) or (120.0 if spec.can_self_heal else 90.0))
-        resp = self.gemini_auditor.query_json(
+        resp = query_topic_json(
+            self.gemini_auditor,
+            topic_key,
             prompt,
+            subtitle=self.mode.upper(),
             timeout_sec=call_timeout,
-            thread_title=f"{spec.title} — {self.mode.upper()}",
-            topic_key=topic_key,
         )
 
         if not resp or not isinstance(resp, dict):

@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import _parse_bool_flag, fetch_public_json
-from intelligence.internal.guards.guard_decision import GuardDecision
+from intelligence.internal.guards.guard_decision import GuardDecision, normalize_guard_mode
 from intelligence.macro_sentiment_ssot import (
     clean_scale, clean_symbol_key, is_cache_fresh, normalize_order_side,
     resolve_now_ts, resolve_order_notional, safe_float, safe_nonneg_float, safe_nonneg_ts, safe_pos_float,
@@ -34,15 +34,25 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     parse_venue_cycle_state, resolve_symbol_price, resolve_venue_fee_and_limits,
     set_pos_anchor, sync_sibling_symbol_telemetry,
 )
-from intelligence.sentiment.gemini_client import GeminiClient
+from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from orchestratorOS.agy.topics import topic_spec
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
-DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = 600.0
+DEFAULT_LLM_GUARD_CACHE_TTL_SEC = 600.0
+DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
+
+LLM_GUARD_JSON_SCHEMA_FOOTER = (
+    "Respond strictly in valid JSON format with exact keys:\n"
+    "{\n"
+    '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'
+    '  "suggested_scale": 0.0 to 1.0,\n'
+    '  "reason": "Concise 1-2 sentence rationale for the decision"\n'
+    "}"
+)
 
 
 def is_llm_guard_exempt(explicit_client: bool = False) -> bool:
@@ -95,8 +105,130 @@ def resolve_llm_guard_cache_ttl(
     return default_ttl_sec if (not explicit_client and getattr(gemini_client, "_custom_runner", None) is None) else 0.0
 
 
-class HighStakeGuard:
+class PreTradeLLMGuardBase:
+    """Unified base class for real-time pre-trade LLM guards (HighStakeGuard & PostStopReentryGuard)."""
+
+    GUARD_NAME: str = "PreTradeLLMGuard"
+    TOPIC_KEY: str = "guard_high_stake"
+    DEFAULT_TIMEOUT_SEC: float = 120.0
+    DEFAULT_FALLBACK: str = "allow"
+    DEFAULT_CACHE_TTL_SEC: float = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
+
+    _normalize_mode = staticmethod(normalize_guard_mode)
+    _as_bool_flag = staticmethod(_parse_bool_flag)
+
+    def __init__(
+        self,
+        gemini_client: Optional[GeminiClient] = None,
+        timeout_sec: float = 120.0,
+        fallback_action: str = "allow",
+        mode: str = "enforce",
+        notify_enabled: bool = True,
+        cache_ttl_sec: Optional[float] = None,
+    ) -> None:
+        self._explicit_client = gemini_client is not None
+        self.gemini_client = gemini_client or GeminiClient()
+        self.timeout_sec = safe_pos_float(timeout_sec, self.DEFAULT_TIMEOUT_SEC)
+        self.fallback_action = str(fallback_action or self.DEFAULT_FALLBACK).strip().lower()
+        self.mode = self._normalize_mode(mode, default="enforce")
+        self.notify_enabled = self._as_bool_flag(notify_enabled)
+        self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
+            cache_ttl_sec, self._explicit_client, self.gemini_client, self.DEFAULT_CACHE_TTL_SEC
+        )
+
+    def _execute_pretrade_guard_eval(
+        self,
+        *,
+        symbol: str,
+        notional: float,
+        cache_key: Any,
+        decision_cache: Dict[Any, tuple[float, GuardDecision]],
+        now_ts: float,
+        header_lines: Sequence[str],
+        build_prompt_fn: Callable[[str], str],
+        subtitle: str,
+        action_label: str,
+        timeout_log_label: str,
+        telemetry: Optional[Dict[str, Any]] = None,
+        regime_context: Optional[Any] = None,
+        dur_sec: Optional[float] = None,
+        on_decision: Optional[Callable[[GuardDecision], None]] = None,
+        logger_inst: Optional[logging.Logger] = None,
+    ) -> GuardDecision:
+        """Shared pre-trade LLM guard pipeline: cache lookup -> telemetry -> topic query -> decision -> shadow wrap -> cache write."""
+        if self.cache_ttl_sec > 0:
+            cached = decision_cache.get(cache_key)
+            if (
+                isinstance(cached, (tuple, list))
+                and len(cached) >= 2
+                and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec)
+            ):
+                return cached[1]
+
+        effective_telemetry = (
+            telemetry
+            if isinstance(telemetry, dict)
+            else (
+                collect_pretrade_telemetry(symbol, regime_context=regime_context, dur_sec=dur_sec)
+                if dur_sec is not None
+                else collect_pretrade_telemetry(symbol, regime_context=regime_context)
+            )
+        )
+        context_items = list(header_lines)
+        if isinstance(effective_telemetry, dict) and effective_telemetry:
+            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
+        context_str = "\n".join(context_items)
+
+        prompt = f"{build_prompt_fn(context_str)}\n\n{LLM_GUARD_JSON_SCHEMA_FOOTER}"
+        valid_resp = query_topic_json(
+            self.gemini_client,
+            self.TOPIC_KEY,
+            prompt,
+            subtitle=subtitle,
+            timeout_sec=self.timeout_sec,
+        )
+        if valid_resp is None:
+            (logger_inst or logger).warning(
+                "LLM %s query failed or timed out for %s €%.2f. Fallback: %s",
+                timeout_log_label,
+                symbol,
+                notional,
+                self.fallback_action,
+            )
+
+        dec = evaluate_llm_guard_response(
+            self.GUARD_NAME,
+            action_label,
+            valid_resp,
+            fallback_action=self.fallback_action,
+            notional_eur=notional,
+        )
+        if on_decision is not None:
+            on_decision(dec)
+
+        if self.mode == "shadow":
+            if valid_resp is None:
+                shadow_msg = f"shadow_mode ({dec.reason})"
+            else:
+                raw_dec, raw_reason = valid_resp.get("decision"), valid_resp.get("reason")
+                decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
+                reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
+                shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
+            final_dec = GuardDecision.allow(self.GUARD_NAME, shadow_msg, notional_eur=notional, shadow_decision=dec)
+        else:
+            final_dec = dec
+
+        if self.cache_ttl_sec > 0:
+            decision_cache[cache_key] = (now_ts, final_dec)
+        return final_dec
+
+
+class HighStakeGuard(PreTradeLLMGuardBase):
     """Invokes LLM reasoning before executing large BUY/SELL orders (>= 700 EUR/USD)."""
+
+    GUARD_NAME = "HighStakeGuard"
+    TOPIC_KEY = "guard_high_stake"
+    DEFAULT_CACHE_TTL_SEC = DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
 
     def __init__(
         self,
@@ -107,14 +239,45 @@ class HighStakeGuard:
         fallback_action: str = "allow",
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
-        self._explicit_client = gemini_client is not None
-        self.gemini_client = gemini_client or GeminiClient()
+        super().__init__(
+            gemini_client=gemini_client,
+            timeout_sec=timeout_sec,
+            fallback_action=fallback_action,
+            cache_ttl_sec=cache_ttl_sec,
+        )
         resolved_min = safe_pos_float(min_notional_usd if min_notional_usd is not None else min_notional_eur, DEFAULT_MIN_NOTIONAL_USD)
         self.min_notional_usd = self.min_notional_eur = resolved_min
-        self.timeout_sec = safe_pos_float(timeout_sec, 120.0)
-        self.fallback_action = str(fallback_action or "allow").strip().lower()
-        self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
-            cache_ttl_sec, self._explicit_client, self.gemini_client, DEFAULT_HIGH_STAKE_CACHE_TTL_SEC
+
+    def _build_high_stake_prompt(self, side_norm: str, notional: float, context_str: str) -> str:
+        if side_norm == "BUY":
+            action_desc = "HIGH-VALUE BUY order"
+            risk_context = (
+                "evaluating whether this entry is sound or if there are critical red flags "
+                "(e.g., euphoric top buying, aggressive whale distribution, severe funding imbalance, or active cascade)."
+            )
+            policy_rules = (
+                "CORE RISK POLICIES & PRIORITY RULES:\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
+                "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
+                "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED — do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated."
+            )
+        else:
+            action_desc = "HIGH-VALUE SELL order"
+            risk_context = (
+                "evaluating whether this sale is sound or if there are critical red flags "
+                "(e.g., dumping directly into major whale support/walls, panic-selling at local bottom during whale accumulation, or excessive slippage)."
+            )
+            policy_rules = (
+                "CORE RISK POLICIES & PRIORITY RULES:\n"
+                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated. If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
+                "2. ORDERBOOK RESISTANCE LIMITATION: Ask walls and orderbook ask depth are passive and can be pulled or absorbed by aggressive market buying. Do NOT use orderbook ask depth alone to override persistent taker buying.\n"
+                "3. CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE): Do not approve panic-selling into extreme negative funding, active whale accumulation, or a verified 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'FRESH_6H_LOW_TEST') at local bottoms."
+            )
+        return (
+            "You are a principal quantitative crypto risk officer. "
+            f"An automated trading bot is about to place a {action_desc}:\n\n{context_str}\n\n"
+            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing {risk_context}\n\n"
+            f"{policy_rules}"
         )
 
     def check(
@@ -147,67 +310,26 @@ class HighStakeGuard:
 
         now_ts = resolve_now_ts(now)
         cache_key = (clean_symbol_key(symbol), side_norm, int(notional // 100.0))
-        if self.cache_ttl_sec > 0:
-            cached = _HIGH_STAKE_DECISION_CACHE.get(cache_key)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec):
-                return cached[1]
-
-        effective_telemetry = telemetry if isinstance(telemetry, dict) else collect_pretrade_telemetry(
-            symbol, regime_context=regime_context, dur_sec=dur_sec
-        )
-        context_items = [
+        header_lines = (
             f"- Symbol: {symbol}",
             f"- Side: {side_norm}",
             f"- Requested Price: {price}",
             f"- Requested Quantity: {qty}",
             f"- Total Notional Value: €{notional:,.2f} EUR",
-        ]
-        if isinstance(effective_telemetry, dict) and effective_telemetry:
-            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
-
-        context_str = "\n".join(context_items)
-        if side_norm == "BUY":
-            action_desc = "HIGH-VALUE BUY order"
-            risk_context = (
-                "evaluating whether this entry is sound or if there are critical red flags "
-                "(e.g., euphoric top buying, aggressive whale distribution, severe funding imbalance, or active cascade)."
-            )
-            policy_rules = (
-                "CORE RISK POLICIES & PRIORITY RULES:\n"
-                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. Static long holdings can be trapped or liquidated. If Whale Taker Flow is below 0.85 (net sell aggression), you must NEVER issue an unrestricted APPROVED. If Whale Taker Flow is below 0.80 in a FLAT or BEAR market, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural support).\n"
-                "2. ORDERBOOK SUPPORT LIMITATION: Bid walls and orderbook depth are passive and can be pulled or absorbed by aggressive market selling. Do NOT use orderbook depth alone to override persistent taker selling.\n"
-                "3. MACRO, GEOPOLITICAL & CONTRARIAN BOTTOM ACCUMULATION: If Macro Sentiment recommends CAUTION or Geopolitical threat is elevated, do not fight negative taker flow. However, when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM' (especially with 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE') AND Whale Taker Flow is >= 1.0 (or 15m CVD is positive/spot_absorbing), issue APPROVED — do NOT veto or downscale a verified contrarian bottom entry merely because lagging 24h breadth or residual geopolitical headlines remain elevated.\n\n"
-            )
-        else:
-            action_desc = "HIGH-VALUE SELL order"
-            risk_context = (
-                "evaluating whether this sale is sound or if there are critical red flags "
-                "(e.g., dumping directly into major whale support/walls, panic-selling at local bottom during whale accumulation, or excessive slippage)."
-            )
-            policy_rules = (
-                "CORE RISK POLICIES & PRIORITY RULES:\n"
-                "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions and Orderbook Ask Depth. Static short holdings can be squeezed or liquidated. If Whale Taker Flow is above 1.18 (net buy aggression), you must NEVER issue an unrestricted APPROVED for a non-stop-loss SELL into strength. If Whale Taker Flow is above 1.25 in a FLAT or BULL market during whale accumulation or short squeeze, you must issue REJECTED (or DOWNSCALE <= 0.25 only if at verified structural resistance).\n"
-                "2. ORDERBOOK RESISTANCE LIMITATION: Ask walls and orderbook ask depth are passive and can be pulled or absorbed by aggressive market buying. Do NOT use orderbook ask depth alone to override persistent taker buying.\n"
-                "3. CAPITULATION & SQUEEZE PROTECTION (6H DOUBLE-BOTTOM & RECLAIM DEFENSE): Do not approve panic-selling into extreme negative funding, active whale accumulation, or a verified 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'FRESH_6H_LOW_TEST') at local bottoms.\n\n"
-            )
-
-        prompt = (
-            "You are a principal quantitative crypto risk officer. "
-            f"An automated trading bot is about to place a {action_desc}:\n\n{context_str}\n\n"
-            f"Because this order exceeds €{self.min_notional_eur:,.2f} EUR, you must evaluate if executing {risk_context}\n\n"
-            f"{policy_rules}"
-            "Respond strictly in valid JSON format with exact keys:\n"
-            '{\n  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n  "suggested_scale": 0.0 to 1.0,\n  "reason": "Concise 1-2 sentence rationale for the decision"\n}'
         )
-
-        thread_title = f"{topic_spec('guard_high_stake').title} — {side_norm} {symbol} €{notional:,.2f}"
-        resp = self.gemini_client.query_json(prompt, timeout_sec=self.timeout_sec, thread_title=thread_title, topic_key="guard_high_stake")
-        if not resp:
-            logger.warning("LLM high-stake query failed or timed out for %s €%.2f. Fallback: %s", symbol, notional, self.fallback_action)
-
-        dec = evaluate_llm_guard_response(
-            "HighStakeGuard", f"high-stake {side_norm}", resp or None, fallback_action=self.fallback_action, notional_eur=notional
+        return self._execute_pretrade_guard_eval(
+            symbol=symbol,
+            notional=notional,
+            cache_key=cache_key,
+            decision_cache=_HIGH_STAKE_DECISION_CACHE,
+            now_ts=now_ts,
+            header_lines=header_lines,
+            build_prompt_fn=lambda ctx: self._build_high_stake_prompt(side_norm, notional, ctx),
+            subtitle=f"{side_norm} {symbol} €{notional:,.2f}",
+            action_label=f"high-stake {side_norm}",
+            timeout_log_label="high-stake",
+            telemetry=telemetry,
+            regime_context=regime_context,
+            dur_sec=dur_sec,
+            logger_inst=logger,
         )
-        if self.cache_ttl_sec > 0:
-            _HIGH_STAKE_DECISION_CACHE[cache_key] = (now_ts, dec)
-        return dec

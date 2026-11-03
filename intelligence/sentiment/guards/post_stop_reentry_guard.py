@@ -36,6 +36,8 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.gemini_client import GeminiClient
 from intelligence.sentiment.guards.high_stake_guard import (
+    DEFAULT_LLM_GUARD_CACHE_TTL_SEC,
+    PreTradeLLMGuardBase,
     collect_pretrade_telemetry,
     evaluate_llm_guard_response,
     is_llm_guard_exempt,
@@ -47,7 +49,7 @@ logger = logging.getLogger("intelligence.sentiment.guards.post_stop_reentry_guar
 
 DEFAULT_TIMEOUT_SEC = 120.0
 DEFAULT_FALLBACK = "allow"
-DEFAULT_POST_STOP_CACHE_TTL_SEC = 600.0
+DEFAULT_POST_STOP_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
 _POST_STOP_DECISION_CACHE: Dict[Tuple[str, float, int], Tuple[float, GuardDecision]] = {}
 _POST_STOP_NOTIFY_CACHE: Dict[Tuple[str, str], float] = {}
 
@@ -58,12 +60,14 @@ def clear_post_stop_reentry_cache() -> None:
     _POST_STOP_NOTIFY_CACHE.clear()
 
 
-class PostStopReentryGuard:
+class PostStopReentryGuard(PreTradeLLMGuardBase):
     """Evaluates re-entry buy orders following a STOP-LOSS exit using Gemini LLM reasoning."""
 
-    _normalize_mode = staticmethod(normalize_guard_mode)
-
-    _as_bool_flag = staticmethod(_parse_bool_flag)
+    GUARD_NAME = "PostStopReentryGuard"
+    TOPIC_KEY = "guard_post_stop"
+    DEFAULT_TIMEOUT_SEC = DEFAULT_TIMEOUT_SEC
+    DEFAULT_FALLBACK = DEFAULT_FALLBACK
+    DEFAULT_CACHE_TTL_SEC = DEFAULT_POST_STOP_CACHE_TTL_SEC
 
     def __init__(
         self,
@@ -74,14 +78,28 @@ class PostStopReentryGuard:
         notify_enabled: bool = True,
         cache_ttl_sec: Optional[float] = None,
     ) -> None:
-        self._explicit_client = gemini_client is not None
-        self.gemini_client = gemini_client or GeminiClient()
-        self.timeout_sec = safe_pos_float(timeout_sec, DEFAULT_TIMEOUT_SEC)
-        self.fallback_action = str(fallback_action or DEFAULT_FALLBACK).strip().lower()
-        self.mode = self._normalize_mode(mode, default="enforce")
-        self.notify_enabled = self._as_bool_flag(notify_enabled)
-        self.cache_ttl_sec = resolve_llm_guard_cache_ttl(
-            cache_ttl_sec, self._explicit_client, self.gemini_client, DEFAULT_POST_STOP_CACHE_TTL_SEC
+        super().__init__(
+            gemini_client=gemini_client,
+            timeout_sec=timeout_sec,
+            fallback_action=fallback_action,
+            mode=mode,
+            notify_enabled=notify_enabled,
+            cache_ttl_sec=cache_ttl_sec,
+        )
+
+    @staticmethod
+    def _build_post_stop_prompt(symbol: str, context_str: str) -> str:
+        return (
+            "You are a principal quantitative crypto risk officer.\n"
+            f"An automated trading bot previously exited {symbol} on STOP-LOSS and is now evaluating whether "
+            "to RE-ENTER (buy back) following a technical recovery bounce:\n\n"
+            f"{context_str}\n\n"
+            "CORE RISK POLICIES & PRIORITY RULES:\n"
+            "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. "
+            "If Whale Taker Flow is below 0.85 (net sell aggression) or the divergence regime is 'aggressive_shorting' or 'short_covering' (bounce without new Open Interest), you must issue REJECTED. "
+            "Do NOT approve re-entries into dead-cat bounces where whales are dumping or merely covering short positions without spot accumulation.\n"
+            "2. GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION: If Whale Taker Flow is >= 1.0 (or Buyer/Seller ratio >= 1.05, or 15m CVD regime is 'spot_absorbing' / 'bullish_breakout') and Open Interest is stabilizing or rising along with price recovery—especially when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE'—issue APPROVED (suggested_scale: 1.0).\n"
+            "3. UNCERTAIN RECOVERY / WEAK MOMENTUM: Note that 24h Market Breadth is a lagging 24h rolling metric that stays bearish for hours after an overnight flush even after the intraday bottom is already in. Do NOT downscale when 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM') and positive Taker Flow (>= 1.0) / 15m CVD absorption are both confirmed. Reserve DOWNSCALE (with suggested_scale 0.50) for bounces where whale participation is mixed (0.85 <= Taker Flow < 1.0) without a verified 6h double-bottom or liquidity sweep reclaim."
         )
 
     def check(
@@ -112,10 +130,6 @@ class PostStopReentryGuard:
         safe_sell_ts_f = safe_float(last_sell_time_s, 0.0)
         safe_sell_ts = int(safe_sell_ts_f) if safe_sell_ts_f > 0.0 else 0
         cache_key = (clean_symbol_key(symbol), round(safe_sell_px, 6), safe_sell_ts)
-        if self.cache_ttl_sec > 0:
-            cached = _POST_STOP_DECISION_CACHE.get(cache_key)
-            if isinstance(cached, (tuple, list)) and len(cached) >= 2 and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec):
-                return cached[1]
 
         safe_trough = safe_float(trough, 0.0)
         safe_qty = safe_pos_float(qty, 1.0)
@@ -128,12 +142,7 @@ class PostStopReentryGuard:
         bounce_from_trough_pct = float(safe_bounce * 100.0)
         notional = float(resolve_order_notional(notional_eur, safe_curr_px, safe_qty, default=0.0) or 0.0)
 
-        effective_telemetry = (
-            telemetry
-            if isinstance(telemetry, dict)
-            else collect_pretrade_telemetry(symbol, regime_context=regime_context)
-        )
-        context_items = [
+        header_lines = [
             f"- Symbol: {symbol}",
             f"- Previous Stop-Loss Exit Price: ${safe_sell_px:.4f}",
             f"- Lowest Post-Stop Trough: ${safe_trough:.4f} (-{drop_after_sl_pct:.2f}% drop from SL)",
@@ -142,70 +151,26 @@ class PostStopReentryGuard:
             f"- Estimated Notional Value: €{notional:,.2f} EUR",
         ]
         if safe_sell_ts_f > 0:
-            context_items.append(f"- Elapsed Time Since Stop-Loss: {max(0.0, (now_ts - safe_sell_ts_f) / 60.0):.1f} minutes")
-        if isinstance(effective_telemetry, dict) and effective_telemetry:
-            context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
+            header_lines.append(f"- Elapsed Time Since Stop-Loss: {max(0.0, (now_ts - safe_sell_ts_f) / 60.0):.1f} minutes")
 
-        context_str = "\n".join(context_items)
-        prompt = (
-            "You are a principal quantitative crypto risk officer.\n"
-            f"An automated trading bot previously exited {symbol} on STOP-LOSS and is now evaluating whether "
-            "to RE-ENTER (buy back) following a technical recovery bounce:\n\n"
-            f"{context_str}\n\n"
-            "CORE RISK POLICIES & PRIORITY RULES:\n"
-            "1. WHALE TAKER FLOW SUPREMACY: Dynamic Whale Taker Flow (Buyer/Seller ratio) strictly trumps static open positions (% Top Traders Long) and Orderbook Bid Depth. "
-            "If Whale Taker Flow is below 0.85 (net sell aggression) or the divergence regime is 'aggressive_shorting' or 'short_covering' (bounce without new Open Interest), you must issue REJECTED. "
-            "Do NOT approve re-entries into dead-cat bounces where whales are dumping or merely covering short positions without spot accumulation.\n"
-            "2. GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION: If Whale Taker Flow is >= 1.0 (or Buyer/Seller ratio >= 1.05, or 15m CVD regime is 'spot_absorbing' / 'bullish_breakout') and Open Interest is stabilizing or rising along with price recovery—especially when 6h Intraday Bottom Structure confirms 'HIGHER_LOW_DOUBLE_BOTTOM', 'LIQUIDITY_SWEEP_RECLAIM', or 'smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE'—issue APPROVED (suggested_scale: 1.0).\n"
-            "3. UNCERTAIN RECOVERY / WEAK MOMENTUM: Note that 24h Market Breadth is a lagging 24h rolling metric that stays bearish for hours after an overnight flush even after the intraday bottom is already in. Do NOT downscale when 6h Intraday Bottom Structure ('HIGHER_LOW_DOUBLE_BOTTOM' or 'LIQUIDITY_SWEEP_RECLAIM') and positive Taker Flow (>= 1.0) / 15m CVD absorption are both confirmed. Reserve DOWNSCALE (with suggested_scale 0.50) for bounces where whale participation is mixed (0.85 <= Taker Flow < 1.0) without a verified 6h double-bottom or liquidity sweep reclaim.\n\n"
-            "Respond strictly in valid JSON format with exact keys:\n"
-            "{\n"
-            '  "decision": "APPROVED" | "REJECTED" | "DOWNSCALE",\n'
-            '  "suggested_scale": 0.0 to 1.0,\n'
-            '  "reason": "Concise 1-2 sentence rationale for the decision"\n'
-            "}"
+        return self._execute_pretrade_guard_eval(
+            symbol=symbol,
+            notional=notional,
+            cache_key=cache_key,
+            decision_cache=_POST_STOP_DECISION_CACHE,
+            now_ts=now_ts,
+            header_lines=header_lines,
+            build_prompt_fn=lambda ctx: self._build_post_stop_prompt(symbol, ctx),
+            subtitle=f"BUY {symbol} €{notional:,.2f}",
+            action_label="post-stop re-entry",
+            timeout_log_label="post-stop re-entry",
+            telemetry=telemetry,
+            regime_context=regime_context,
+            on_decision=lambda dec: self._maybe_notify(
+                symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts
+            ),
+            logger_inst=logger,
         )
-
-        thread_title = f"{topic_spec('guard_post_stop').title} — BUY {symbol} €{notional:,.2f}"
-        resp = self.gemini_client.query_json(
-            prompt,
-            timeout_sec=self.timeout_sec,
-            thread_title=thread_title,
-            topic_key="guard_post_stop",
-        )
-        valid_resp = resp if isinstance(resp, dict) and resp else None
-        if valid_resp is None:
-            logger.warning(
-                "LLM post-stop re-entry query failed or timed out for %s €%.2f. Fallback: %s",
-                symbol,
-                notional,
-                self.fallback_action,
-            )
-
-        dec = evaluate_llm_guard_response(
-            "PostStopReentryGuard",
-            "post-stop re-entry",
-            valid_resp,
-            fallback_action=self.fallback_action,
-            notional_eur=notional,
-        )
-        self._maybe_notify(symbol, safe_curr_px, safe_sell_px, safe_trough, bounce_from_trough_pct, dec, now_ts=now_ts)
-
-        if self.mode == "shadow":
-            if valid_resp is None:
-                shadow_msg = f"shadow_mode ({dec.reason})"
-            else:
-                raw_dec, raw_reason = valid_resp.get("decision"), valid_resp.get("reason")
-                decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
-                reason = str(raw_reason).strip() if (isinstance(raw_reason, str) and raw_reason.strip()) else "evaluated by LLM"
-                shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
-            final_dec = GuardDecision.allow("PostStopReentryGuard", shadow_msg, notional_eur=notional, shadow_decision=dec)
-        else:
-            final_dec = dec
-
-        if self.cache_ttl_sec > 0:
-            _POST_STOP_DECISION_CACHE[cache_key] = (now_ts, final_dec)
-        return final_dec
 
     def _maybe_notify(
         self,

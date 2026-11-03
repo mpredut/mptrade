@@ -1044,6 +1044,62 @@ class GeminiClient:
             logger.warning("Failed to decode JSON from Gemini output (raw text: %s)", str(raw_text)[:200])
         return parsed
 
+    def query_topic_json(
+        self,
+        topic_key: str,
+        prompt: str,
+        *,
+        subtitle: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+        cache_ttl_sec: float = 0.0,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Query a registered topic (`TOPICS[topic_key]`) and return a validated JSON dictionary."""
+        return query_topic_json(
+            self,
+            topic_key,
+            prompt,
+            subtitle=subtitle,
+            timeout_sec=timeout_sec,
+            cache_ttl_sec=cache_ttl_sec,
+            conversation_id=conversation_id,
+        )
+
+
+def query_topic_json(
+    client: Any,
+    topic_key: str,
+    prompt: str,
+    *,
+    subtitle: Optional[str] = None,
+    timeout_sec: Optional[float] = None,
+    cache_ttl_sec: float = 0.0,
+    conversation_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Shared topic-aware JSON query dispatcher resolving title and timeout from ``topic_spec(topic_key)``."""
+    if client is None:
+        return None
+    spec = topic_spec(topic_key)
+    base_title = str(getattr(spec, "title", "") or topic_key).strip()
+    sub = str(subtitle or "").strip()
+    thread_title = f"{base_title} — {sub}" if sub else base_title
+    default_timeout = safe_pos_float(
+        getattr(spec, "default_timeout_sec", None),
+        120.0 if getattr(spec, "can_self_heal", False) else 90.0,
+    )
+    eff_timeout = safe_pos_float(timeout_sec, default_timeout)
+    call_kwargs: Dict[str, Any] = {
+        "timeout_sec": eff_timeout,
+        "thread_title": thread_title,
+        "topic_key": topic_key,
+    }
+    if cache_ttl_sec > 0.0:
+        call_kwargs["cache_ttl_sec"] = cache_ttl_sec
+    if conversation_id is not None:
+        call_kwargs["conversation_id"] = conversation_id
+    resp = client.query_json(prompt, **call_kwargs)
+    return resp if isinstance(resp, dict) and resp else None
+
 
 # Generic LLM alias
 LLMClient = GeminiClient
