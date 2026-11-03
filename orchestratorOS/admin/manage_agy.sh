@@ -69,12 +69,20 @@ do_restart() {
             [ -S \"\${XDG_RUNTIME_DIR}/bus\" ] && export DBUS_SESSION_BUS_ADDRESS=\"\${DBUS_SESSION_BUS_ADDRESS:-unix:path=\${XDG_RUNTIME_DIR}/bus}\"
             sleep 3
             '$AGY_BIN' remote-control stop || true
+            for _ in {1..10}; do
+                systemctl --user is-active --quiet antigravity-cli-daemon 2>/dev/null || break
+                sleep 1
+            done
             sleep 2
             '$AGY_BIN' remote-control start --name '$INSTANCE_NAME'
         "
         log "Transient restart service queued ($job_unit)."
     else
         "$AGY_BIN" remote-control stop || true
+        for _ in {1..10}; do
+            systemctl --user is-active --quiet antigravity-cli-daemon 2>/dev/null || break
+            sleep 1
+        done
         sleep 2
         "$AGY_BIN" remote-control start --name "$INSTANCE_NAME"
         sleep 2
@@ -94,6 +102,10 @@ do_watchdog() {
         log "WARNING: Daemon is DOWN/INACTIVE. Triggering auto-recovery as '${INSTANCE_NAME}'..."
         local start_out start_out_single
         start_out="$("$AGY_BIN" remote-control start --name "$INSTANCE_NAME" 2>&1 || true)"
+        if echo "$start_out" | grep -qi "not signed in"; then
+            sleep 3
+            start_out="$("$AGY_BIN" remote-control start --name "$INSTANCE_NAME" 2>&1 || true)"
+        fi
         start_out_single="$(printf '%s' "$start_out" | tr '\r\n' '  ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
         sleep 2
         if is_active; then
