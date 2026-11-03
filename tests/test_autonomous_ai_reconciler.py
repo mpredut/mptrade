@@ -7943,5 +7943,75 @@ def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_can
     assert fb_cli.cancelled == ["O-CANCEL-ME-1"]
 
 
+def test_iteration51_long_trend_freshness_neutral_override_and_parse_rss_valid_keywords(tmp_path):
+    """Verify:
+    1. enrich_cross_venue_trends respects an explicit neutral (None) or newer timestamp in priceanalysis.json
+       over a stale 10-minute-old entry in cache_long_trend.json, and stops on a trailing None in long_items.
+    2. NewsFeedCollector.parse_rss_xml filters emerging_terms through filter_valid_severity_keywords so
+       non-stem neighbor bigrams (like 'intel stock') are not attached to matched_keywords.
+    """
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.collectors.portfolio_collector import enrich_cross_venue_trends
+
+    # 1a. Explicit None in fresher priceanalysis.json overrides stale cache_long_trend.json entry
+    prices_and_trends = {
+        "BTCUSDC": {"price": 77500.0, "long_trend_dir": "down", "long_trend_hours": 100.0, "long_trend_est_rem_hours": 50.0},
+        "XBTUSDC": {"price": 77500.0},
+        "ETHUSDC": {"price": 2350.0},
+        "SOLUSDC": {"price": 152.0},
+    }
+    long_items = {
+        "timestamp": 1793678092,
+        "items": {
+            "BTCUSDC": [{"direction": "down", "duration_seconds": 360000.0, "timestamp": 1793678000}],
+            "ETHUSDC": [{"direction": "down", "duration_seconds": 360000.0, "timestamp": 1793678000}],
+            "SOLUSDC": [{"direction": "up", "duration_seconds": 180000.0, "timestamp": 1793678000}, None],
+        },
+    }
+    priceanalysis_data = {
+        "timestamp": 1793678598,
+        "items": {
+            "BTCUSDC": None,
+            "ETHUSDC": {
+                "direction": "down",
+                "duration_seconds": 396000.0,
+                "estimated_future_hours": 55.0,
+                "timestamp": 1793678598,
+            },
+        },
+    }
+    enrich_cross_venue_trends(prices_and_trends, {}, {}, long_items, priceanalysis_data, {}, {})
+
+    assert "long_trend_dir" not in prices_and_trends["BTCUSDC"]
+    assert "long_trend_hours" not in prices_and_trends["BTCUSDC"]
+    assert "long_trend_est_rem_hours" not in prices_and_trends["BTCUSDC"]
+    assert "long_trend_dir" not in prices_and_trends["XBTUSDC"]
+    assert "long_trend_dir" not in prices_and_trends["SOLUSDC"]
+    assert prices_and_trends["ETHUSDC"]["long_trend_dir"] == "down"
+    assert prices_and_trends["ETHUSDC"]["long_trend_hours"] == pytest.approx(110.0)
+    assert prices_and_trends["ETHUSDC"]["long_trend_est_rem_hours"] == pytest.approx(55.0)
+
+    # 2. parse_rss_xml filters out non-stem neighbor bigrams ('intel stock') from matched_keywords
+    t0 = 1_793_678_000.0
+    rss_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+  <item>
+    <title>Intel stock plunges 28% on weak outlook</title>
+    <pubDate>Tue, 03 Nov 2026 04:00:00 GMT</pubDate>
+    <source>Reuters</source>
+  </item>
+  <item>
+    <title>Intel stock collapse triggers tech selloff</title>
+    <pubDate>Tue, 03 Nov 2026 04:05:00 GMT</pubDate>
+    <source>Bloomberg</source>
+  </item>
+</channel></rss>"""
+    snap = NewsFeedCollector.parse_rss_xml(rss_xml, now_ts=t0, cache_dir=str(tmp_path))
+    assert snap is not None
+    for hl in snap.headlines:
+        assert "intel stock" not in hl.matched_keywords
+
+
+
 
 

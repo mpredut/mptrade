@@ -943,6 +943,43 @@ _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
     "bet", "chord", "balance", "gold", "rich", "pose", "lightning",
 })
 
+_NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "allegedly", "arrest", "arrested", "baseball", "bat", "boy", "burglary",
+    "charged", "dog", "heart", "mugger", "panic", "robbery", "shark",
+    "stabbing", "suspect", "teenager", "volunteer",
+})
+
+_TRACKING_QUERY_PARAMS: frozenset[str] = frozenset({
+    "at_campaign", "at_medium", "mod", "oc", "rss", "traffic_source",
+    "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term",
+})
+
+
+def canonical_article_url(url: Any) -> str:
+    """Normalize an article URL by stripping RSS tracking query parameters and trailing slashes."""
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    raw = url.strip()
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        if not parsed.scheme or not parsed.netloc:
+            return raw.rstrip("/")
+        kept_q = [
+            (k, v)
+            for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_QUERY_PARAMS
+        ]
+        clean_path = parsed.path.rstrip("/") or "/"
+        return urllib.parse.urlunsplit((
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            clean_path,
+            urllib.parse.urlencode(kept_q),
+            "",
+        ))
+    except Exception:
+        return raw.rstrip("/")
+
 _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
     "ban": frozenset({"ban", "bans", "banned", "banning"}),
     "freeze": frozenset({"freeze", "freezes", "freezing", "frozen"}),
@@ -981,14 +1018,16 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
-    "ahead", "already", "answered", "apps", "article", "articles", "brake",
-    "briefing", "bus", "car", "chip", "commentary", "continue", "continues",
-    "debunked", "digested", "downscale", "elevated", "exceptionally", "explained",
-    "exposes", "false", "features", "history", "horrific", "introduces", "jet",
-    "join", "keyword", "localized", "moderate", "non", "normal", "noting",
-    "orderly", "plane", "potential", "processed", "progress", "questions",
-    "readiness", "retaining", "say", "seven", "suspected", "timeline", "train",
-    "trains", "truck", "unpriced", "veto", "worse", "wrap",
+    "ahead", "allegedly", "already", "answered", "apps", "arrested", "article",
+    "articles", "baseball", "bat", "boy", "brake", "briefing", "bus", "car",
+    "chip", "commentary", "continue", "continues", "debunked", "digested",
+    "downscale", "eight", "elevated", "exceptionally", "explained", "exposes",
+    "false", "features", "five", "four", "history", "horrific", "introduces",
+    "jet", "join", "keyword", "localized", "moderate", "nine", "non", "normal",
+    "noting", "one", "orderly", "plane", "potential", "processed", "progress",
+    "questions", "readiness", "retaining", "say", "seven", "six", "suspected",
+    "ten", "three", "timeline", "train", "trains", "truck", "two", "unpriced",
+    "veto", "volunteer", "worse", "wrap",
 })
 
 
@@ -1250,7 +1289,12 @@ def discover_dynamic_terms_from_headlines(
             continue
         norm_title = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(raw_title).lower()).strip()
         all_words = re.findall(r"[a-zA-Z]{3,}", norm_title)
-        eff_stems = crisis_stems - {"strike"} if (set(all_words) & _NON_CRISIS_STRIKE_CONTEXT_WORDS) else crisis_stems
+        word_set = set(all_words)
+        eff_stems = set(crisis_stems)
+        if word_set & _NON_CRISIS_STRIKE_CONTEXT_WORDS:
+            eff_stems.discard("strike")
+        if word_set & _NON_CRISIS_ATTACK_CONTEXT_WORDS:
+            eff_stems.discard("attack")
         tokens = [tok for tok in all_words if tok not in stopwords]
         if len(tokens) < 2:
             continue
@@ -1258,6 +1302,7 @@ def discover_dynamic_terms_from_headlines(
         if not any(stem_flags):
             continue
         src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
+        article_key = canonical_article_url(obj_attr(h, "url", "")) or norm_title
         for i in range(len(tokens) - 1):
             if not any(stem_flags[max(0, i - 1) : min(len(tokens), i + 3)]):
                 continue
@@ -1266,9 +1311,11 @@ def discover_dynamic_terms_from_headlines(
                 continue
             if stem_flags[i] or stem_flags[i + 1]:
                 phrase_has_direct_stem[bigram] = True
-            phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
+            seen_articles = phrase_headlines.setdefault(bigram, set())
+            if article_key not in seen_articles:
+                seen_articles.add(article_key)
+                phrase_counts[bigram] = phrase_counts.get(bigram, 0) + 1
             phrase_sources.setdefault(bigram, set()).add(src_key)
-            phrase_headlines.setdefault(bigram, set()).add(norm_title)
 
     discovered = [
         phrase

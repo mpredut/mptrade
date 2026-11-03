@@ -18,6 +18,7 @@ from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
     build_dynamic_rss_url,
+    canonical_article_url,
     discover_dynamic_terms_from_headlines,
     filter_valid_severity_keywords,
     get_cache_filenames,
@@ -196,6 +197,13 @@ class NewsFeedCollector:
                     prev_seen = self._seen_first_ts.get(norm)
                     self._seen_first_ts[norm] = min(prev_seen, ts) if prev_seen is not None else ts
                 if 0.0 <= (now - ts) < self.rolling_window_sec:
+                    canon_url = canonical_article_url(h.url)
+                    if canon_url:
+                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                            if old_norm != norm and canonical_article_url(old_h.url) == canon_url:
+                                self._aggregated_pool.pop(old_norm, None)
+                                ts = min(ts, old_ts)
+                                self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, ts), ts)
                     self._aggregated_pool[norm] = (ts, h)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
@@ -295,6 +303,12 @@ class NewsFeedCollector:
                 if h_obj and norm and norm not in self._aggregated_pool:
                     pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
                     prev_seen = self._seen_first_ts.get(norm)
+                    canon_url = canonical_article_url(h_obj.url)
+                    if canon_url:
+                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                            if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
+                                self._aggregated_pool.pop(old_norm, None)
+                                prev_seen = min(prev_seen, old_ts) if prev_seen is not None else old_ts
                     eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
                     if pub_ts is not None and pub_ts < eff_ts:
                         eff_ts = pub_ts
@@ -304,6 +318,7 @@ class NewsFeedCollector:
 
         cutoff = now - self.rolling_window_sec
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
+        url_to_key: Dict[str, str] = {}
         for k, v in self._aggregated_pool.items():
             if not self._is_valid_pool_entry(v, cutoff):
                 continue
@@ -312,6 +327,14 @@ class NewsFeedCollector:
             eff_ts = min(ts_val, pub_ts) if pub_ts is not None else ts_val
             self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
             if eff_ts >= cutoff:
+                canon_url = canonical_article_url(getattr(h_item, "url", ""))
+                if canon_url and canon_url in url_to_key:
+                    prev_k = url_to_key[canon_url]
+                    prev_ts, _ = cleaned_pool.pop(prev_k)
+                    eff_ts = min(eff_ts, prev_ts)
+                    self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+                if canon_url:
+                    url_to_key[canon_url] = k
                 cleaned_pool[k] = (eff_ts, h_item)
         self._aggregated_pool = cleaned_pool
 
@@ -408,7 +431,7 @@ class NewsFeedCollector:
             for em_term in emerging_terms:
                 if em_term in lower_title and em_term not in matched_list and re.search(r"\b" + re.escape(em_term) + r"\b", lower_title):
                     matched_list.append(em_term)
-            matched = tuple(matched_list)
+            matched = filter_valid_severity_keywords(matched_list, title=title, cache_dir=cache_dir, now_ts=now)
             parsed_headlines.append(
                 NewsHeadline(
                     title=title,

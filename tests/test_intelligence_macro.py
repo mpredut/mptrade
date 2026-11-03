@@ -1200,6 +1200,45 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         ):
             assert noise_term not in high_terms
 
+        # Same-URL RSS headline revisions (e.g. BBC crime story edited from "baseball bat" to "bat")
+        # must deduplicate in the rolling pool and must not self-promote local crime bigrams like
+        # "allegedly attacking" or "attacking one".
+        bbc_rev1_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>BBC News</title>
+  <item>
+    <title>Man and boy arrested after allegedly attacking One Nation volunteer with baseball bat in Australia</title>
+    <link>https://www.bbc.co.uk/news/articles/cwly3jd27m9xo?at_medium=RSS&amp;at_campaign=rss</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC News</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+        bbc_rev2_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>BBC News</title>
+  <item>
+    <title>Man and boy arrested after allegedly attacking One Nation volunteer with bat</title>
+    <link>https://www.bbc.co.uk/news/articles/cwly3jd27m9xo?at_medium=RSS&amp;at_campaign=rss</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC News</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+
+        url_collector = NewsFeedCollector(
+            history_file=str(tmp_path / "url_dedup_history.json"),
+            rolling_window_sec=21600.0,
+        )
+        snap_r1 = NewsFeedCollector.parse_rss_xml(bbc_rev1_xml, now_ts=t0, cache_dir=str(tmp_path))
+        snap_r2 = NewsFeedCollector.parse_rss_xml(bbc_rev2_xml, now_ts=t0 + 60.0, cache_dir=str(tmp_path))
+        url_collector._aggregate(snap_r1, now=t0)
+        agg_r2 = url_collector._aggregate(snap_r2, now=t0 + 60.0)
+        assert agg_r2.total_fetched == 1
+        assert agg_r2.high_severity_count == 0
+        assert agg_r2.headlines[0].title == "Man and boy arrested after allegedly attacking One Nation volunteer with bat"
+        assert agg_r2.headlines[0].is_high_severity is False
+        lex_after_bbc = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=t0 + 60.0)["high_severity_terms"]
+        assert "allegedly attacking" not in lex_after_bbc
+        assert "attacking one" not in lex_after_bbc
+
+
 
 
 

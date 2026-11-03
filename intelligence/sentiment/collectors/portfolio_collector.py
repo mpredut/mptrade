@@ -750,6 +750,36 @@ def enrich_cross_venue_trends(
         return {}
 
     trends_items_map, pa_map = _unwrap_items_dict(trends_data), _unwrap_items_dict(priceanalysis_data)
+    long_map = _unwrap_items_dict(long_items)
+    pa_root_ts = safe_pos_float(priceanalysis_data.get("timestamp") if isinstance(priceanalysis_data, dict) else None, default=0.0) or 0.0
+    lt_root_ts = safe_pos_float(long_items.get("timestamp") if isinstance(long_items, dict) else None, default=0.0) or 0.0
+    pa_cf_keys = {k.casefold(): k for k in pa_map if isinstance(k, str)}
+    lt_cf_keys = {k.casefold(): k for k in long_map if isinstance(k, str)}
+
+    def _resolve_source_long_trend(
+        src_map: Dict[str, Any], cf_keys: Dict[str, str], cands: Tuple[str, ...], root_ts: float
+    ) -> Tuple[Optional[Dict[str, Any]], bool, float]:
+        if not src_map:
+            return None, False, 0.0
+        for ck in cands:
+            if not ck or not isinstance(ck, str):
+                continue
+            real_k = ck if ck in src_map else cf_keys.get(ck.casefold())
+            if real_k is None:
+                continue
+            raw_val = src_map[real_k]
+            if raw_val is None or (isinstance(raw_val, list) and raw_val and raw_val[-1] is None):
+                return None, True, root_ts
+            parsed = scan_latest_long_trend_value(
+                raw_val,
+                lambda e: e if e.get("direction") else None,
+                stop_on_none=True,
+            )
+            if isinstance(parsed, dict):
+                item_ts = safe_pos_float(parsed.get("timestamp"), default=root_ts) or root_ts
+                return parsed, False, item_ts
+        return None, False, root_ts
+
     for sym, entry in list(prices_and_trends.items()):
         sym_quotes = compatible_quote_suffixes(sym)
         cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
@@ -805,21 +835,28 @@ def enrich_cross_venue_trends(
             if entry.get("adapt_dca_pct") is None and calc_dca is not None:
                 entry["adapt_dca_pct"] = calc_dca
 
-        lt_obj: Optional[Dict[str, Any]] = None
-        for lt_source in (long_items, pa_map):
-            if isinstance(lt_source, dict):
-                lt_obj = scan_latest_long_trend_value(
-                    lookup_symbol_cache_items(lt_source, sym, cand_keys=cand_keys, allow_base_fallback=False),
-                    lambda e: e if e.get("direction") else None,
-                    stop_on_none=False,
-                )
-                if isinstance(lt_obj, dict):
-                    break
+        pa_obj, pa_neutral, pa_item_ts = _resolve_source_long_trend(pa_map, pa_cf_keys, cand_keys, pa_root_ts)
+        lt_val, lt_neutral, lt_item_ts = _resolve_source_long_trend(long_map, lt_cf_keys, cand_keys, lt_root_ts)
+        if isinstance(pa_obj, dict) and isinstance(lt_val, dict):
+            lt_obj: Optional[Dict[str, Any]] = pa_obj if pa_item_ts >= lt_item_ts else lt_val
+        elif isinstance(pa_obj, dict):
+            lt_obj = None if (lt_neutral and lt_item_ts > pa_item_ts > 0.0) else pa_obj
+        elif isinstance(lt_val, dict):
+            lt_obj = None if (pa_neutral and (pa_item_ts >= lt_item_ts or lt_item_ts <= 0.0)) else lt_val
+        else:
+            lt_obj = None
+
         if isinstance(lt_obj, dict):
             entry["long_trend_dir"] = lt_obj.get("direction")
             entry["long_trend_hours"] = round(safe_float(lt_obj.get("duration_seconds"), 0.0) / 3600.0, 1)
             if (est_rem := safe_float(lt_obj.get("estimated_future_hours"), -1.0)) >= 0.0:
                 entry["long_trend_est_rem_hours"] = round(est_rem, 1)
+            else:
+                entry.pop("long_trend_est_rem_hours", None)
+        else:
+            entry.pop("long_trend_dir", None)
+            entry.pop("long_trend_hours", None)
+            entry.pop("long_trend_est_rem_hours", None)
         if isinstance(t_trend_map, dict) and isinstance(tt := _first_variant_dict(t_trend_map, cand_keys), dict):
             entry["weibull_median_d"], entry["weibull_p90_d"] = tt.get("median_d"), tt.get("p90_d")
         if isinstance(watcher_price_items, dict):
