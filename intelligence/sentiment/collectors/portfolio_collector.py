@@ -1487,15 +1487,19 @@ def harvest_bot_runtime_states(
             rec_iid = str(rec.get("intent_id") or "").strip()
             if rec_iid and rec_iid in terminal_ai_intent_ids:
                 continue
-            lifecycle = str(rec.get("lifecycle") or "").lower()
+            lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
             exp_ts = safe_float(rec.get("expires_at_ts"), 0.0)
+            checked_oq_expiry = False
             if _oq is not None and (rec.get("created_ts") is not None or rec.get("ttl_started_ts") is not None):
                 try:
+                    checked_oq_expiry = True
                     if _oq.is_expired(rec, now_ts):
                         continue
                 except Exception:
-                    pass
-            if lifecycle in ("submit_pending", "pending", "active") and (exp_ts == 0.0 or exp_ts > now_ts):
+                    checked_oq_expiry = False
+            if lifecycle in ("submit_pending", "awaiting_cancel", "pending", "active") and (
+                checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > now_ts
+            ):
                 active_retries.append({
                     "venue": str(rec.get("provider_name") or "").lower(),
                     **{k: rec.get(k) for k in ("symbol", "side", "qty", "requested_price", "kind", "attempts", "last_failure_reason")},

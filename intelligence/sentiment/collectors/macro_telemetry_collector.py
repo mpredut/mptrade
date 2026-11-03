@@ -872,18 +872,33 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        known_ai_oids = collect_known_ai_order_ids(
-            read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
-        )
+        intents_raw = read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
+        known_ai_oids = collect_known_ai_order_ids(intents_raw)
+        ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
         audit_origin_map = _load_recent_audit_origins(cachedb_dir)
         fills: Optional[Dict[str, Any]] = None
         best_fill_ts = -1.0
-        for ord_file in ("cache_order.json", "cache_trade_kraken.json", "cache_trade_hyperliquid.json", "cache_trade_t212.json"):
+        for ord_file, cache_venue in (
+            ("cache_order.json", "binance"),
+            ("cache_trade_kraken.json", "kraken"),
+            ("cache_trade_hyperliquid.json", "hyperliquid"),
+            ("cache_trade_t212.json", "t212"),
+        ):
             ord_data = read_json_cached(os.path.join(cachedb_dir, ord_file))
             if not isinstance(o_items := ord_data.get("items", {}) if isinstance(ord_data, dict) else {}, dict):
                 continue
             orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
-            if cand_fills := extract_symbol_recent_fills(orders_for_sym, known_ai_order_ids=known_ai_oids, audit_origin_map=audit_origin_map):
+            v_ai_intents = (
+                [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
+                if ai_intents_list is not None
+                else None
+            )
+            if cand_fills := extract_symbol_recent_fills(
+                orders_for_sym,
+                known_ai_order_ids=known_ai_oids,
+                audit_origin_map=audit_origin_map,
+                ai_intents=v_ai_intents,
+            ):
                 cand_ts = max(
                     safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
                     safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),

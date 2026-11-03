@@ -770,6 +770,22 @@ class OrderRetryStoreTest(unittest.TestCase):
             self.assertEqual(r["created_ts"], 1000.0)
             self.assertEqual(r["attempts"], 2)
 
+        with self.subTest(msg="dedup_does_not_clobber_distinct_venues"):
+            self._reset_env()
+            id_bn = oq.enqueue(
+                "HYPEUSDC", "BUY", 1.0, {}, requested_price=30.0,
+                now=1000.0, failure_reason="trend_deferred", provider_name="binance",
+            )
+            id_hl = oq.enqueue(
+                "HYPEUSDC", "BUY", 2.5, {}, requested_price=30.5,
+                now=1001.0, failure_reason="trend_deferred", provider_name="hyperliquid",
+            )
+            self.assertNotEqual(id_bn, id_hl)
+            queued = oq.load_all()
+            self.assertEqual(len(queued), 2)
+            by_venue = {r["provider_name"]: r["qty"] for r in queued}
+            self.assertEqual(by_venue, {"binance": 1.0, "hyperliquid": 2.5})
+
     def test_claim_leasing_and_recovery_semantics(self):
         self._reset_env()
         with self.subTest(msg="claim_leases_and_returns_without_removing"):

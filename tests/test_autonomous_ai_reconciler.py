@@ -7683,3 +7683,91 @@ def test_harvest_heartbeats_and_state_files_supports_mtime_rtrade_heartbeat_and_
     assert "rtrade.heartbeat" not in active_hb_stale
 
 
+def test_harvest_bot_runtime_states_awaiting_cancel_and_pretrade_ai_intent_fills(tmp_path):
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
+
+    cache_dir = tmp_path / "cachedb"
+    (cache_dir / "orders").mkdir(parents=True, exist_ok=True)
+    (cache_dir / "state").mkdir(parents=True, exist_ok=True)
+    now_ts = 1_800_000_000.0
+
+    # 1. awaiting_cancel and non-failure deferred records remain visible in active_retry_queue
+    retry_records = [
+        {
+            "id": "r1",
+            "provider_name": "kraken",
+            "symbol": "HYPEUSD",
+            "side": "BUY",
+            "qty": 5.0,
+            "requested_price": 32.0,
+            "kind": "monitor_order_replace",
+            "attempts": 0,
+            "created_ts": now_ts - 7200.0,
+            "ttl_started_ts": now_ts - 7200.0,
+            "expires_at_ts": now_ts - 60.0,
+            "lifecycle": "awaiting_cancel",
+            "replaces_order_id": "O-OLD-1",
+            "replaces_original_qty": 5.0,
+        },
+        {
+            "id": "r2",
+            "provider_name": "binance",
+            "symbol": "TAOUSDC",
+            "side": "BUY",
+            "qty": 0.25,
+            "requested_price": 230.0,
+            "kind": "trend_signal",
+            "attempts": 0,
+            "created_ts": now_ts - 60.0,
+            "ttl_started_ts": now_ts - 60.0,
+            "last_failure_reason": "trend_deferred",
+        },
+    ]
+    (cache_dir / "orders" / "order_retry_queue.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in retry_records) + "\n",
+        encoding="utf-8",
+    )
+    runtime_st = harvest_bot_runtime_states(str(cache_dir), now_ts)
+    active_q = runtime_st.get("active_retry_queue", [])
+    assert len(active_q) == 2
+    assert {item["symbol"] for item in active_q} == {"HYPEUSD", "TAOUSDC"}
+
+    # 2. collect_pretrade_telemetry attributes Kraken fill to AI via ai_intents when order_id differs
+    (cache_dir / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "ai-krk-1",
+                "status": "EXECUTED",
+                "venue": "kraken",
+                "symbol": "HYPEUSD",
+                "decision": "BUY",
+                "order_type": "MARKET",
+                "timestamp": now_ts - 30.0,
+                "execution_payload": {"order_id": "O-SUB-1", "executed_qty": 2.0},
+            }
+        ]),
+        encoding="utf-8",
+    )
+    (cache_dir / "orders" / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    {
+                        "symbol": "HYPEUSD",
+                        "ordertxid": "T-FILL-999",
+                        "side": "buy",
+                        "price": 33.5,
+                        "vol_exec": 2.0,
+                        "time": now_ts - 28.0,
+                    }
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    telem = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(cache_dir))
+    assert "by=AI" in telem.get("Recent Venue Fills", "")
+
+
+

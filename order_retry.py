@@ -570,13 +570,16 @@ def enqueue(
                     f"deferred ({failure_reason}) {side_u} {symbol} record(s) into the latest intent"
                 )
         if RETRY_DEDUP and lifecycle == "submit_pending" and _producer_lease_sec is None:
+            provider_key = normalize_venue_name(provider_name)
             for e in existing:
                 if not _safe_to_evict_for_capacity(e):
                     continue
+                e_provider = normalize_venue_name(e.get("provider_name"))
                 if (
-                    e.get("symbol") == symbol
+                    str(e.get("symbol") or "").strip().upper() == symbol.upper()
                     and (e.get("side") or "").upper() == side_u
                     and str(e.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                    and (not provider_key or not e_provider or provider_key == e_provider)
                 ):
                     e["requested_price"] = requested_price
                     e["ref_price"] = ref_price
