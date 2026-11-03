@@ -1571,7 +1571,7 @@ def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(
     assert "msg" not in intents[0]["execution_payload"]
 
     open_orders = [
-        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "BUY", "order_id": "HL_OPEN_2", "price": 41.5},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "BUY", "order_id": "HL_OPEN_2", "price": 41.5, "by": "AI"},
         {"venue": "binance", "symbol": "ARBUSDC", "side": "SELL", "order_id": "562350381", "price": 0.1628},
         {"venue": "binance", "symbol": "ARBUSDC", "side": "SELL", "order_id": "562352955", "price": 0.1598},
     ]
@@ -1581,5 +1581,61 @@ def test_reconcile_canceled_prior_open_orders_and_carried_resting_multi_tranche(
     assert isinstance(last_st, list)
     assert [x.get("order_id") for x in last_st] == ["HL_OPEN_2", "562350381", "562352955"]
     assert all(x["status"] == "OPEN_RESTING" for x in last_st)
+
+    # Partial fill in audit does not prematurely lock reconciled_terminal=True before final FILLED audit arrives,
+    # and a non-fill cancel audit does not overwrite a fill audit on the same intent.
+    import json
+    audit_file = tmp_path / "execution_audit_2026-11-03.jsonl"
+    audit_file.write_text(
+        json.dumps({
+            "ts": now_ts - 5.0,
+            "event": "order_terminal",
+            "intent_id": "intent_arb_tranche_1",
+            "order_id": "562350381",
+            "venue_status": "PARTIALLY_FILLED",
+            "status": "partially_filled",
+            "filled_qty": "250.0",
+            "price": "0.1628",
+            "cost": "40.70",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert reconcile_intents_from_execution_audit(intents, str(tmp_path)) is True
+    assert intents[3]["execution_payload"]["status"] == "PARTIALLY_FILLED"
+    assert intents[3]["execution_payload"]["executedQty"] == "250.0"
+    assert "reconciled_terminal" not in intents[3]["execution_payload"]
+    # Second pass without new audit events does not report a spurious state change
+    assert reconcile_intents_from_execution_audit(intents, str(tmp_path)) is False
+
+    # Subsequent FILLED event (plus a trailing non-fill cancel event) transitions intent to terminal FILLED
+    audit_file.write_text(
+        audit_file.read_text(encoding="utf-8")
+        + json.dumps({
+            "ts": now_ts - 2.0,
+            "event": "order_terminal",
+            "intent_id": "intent_arb_tranche_1",
+            "order_id": "562350381",
+            "venue_status": "FILLED",
+            "status": "closed",
+            "filled_qty": "737.1",
+            "price": "0.1628",
+            "cost": "120.0",
+        }) + "\n"
+        + json.dumps({
+            "ts": now_ts - 1.0,
+            "event": "order_terminal_retry",
+            "intent_id": "intent_arb_tranche_1",
+            "order_id": "562350381",
+            "venue_status": "CANCELED",
+            "status": "canceled",
+            "filled_qty": "0.0",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert reconcile_intents_from_execution_audit(intents, str(tmp_path)) is True
+    assert intents[3]["execution_payload"]["status"] == "FILLED"
+    assert intents[3]["execution_payload"]["executedQty"] == "737.1"
+    assert intents[3]["execution_payload"]["reconciled_terminal"] is True
+
 
 

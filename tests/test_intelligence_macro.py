@@ -1176,7 +1176,11 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert snap_mixed.headlines[0].title == "Red Sea missile attack disrupts container shipping"
 
         update_dynamic_lexicon(
-            ["older blockade", "war timeline", "war exposes", "crash ahead", "attack debunked", "unpriced shock"],
+            [
+                "older blockade", "war timeline", "war exposes", "crash ahead",
+                "attack debunked", "unpriced shock", "train crash", "jet crash",
+                "florida jet", "alert apps", "worse chip",
+            ],
             cache_dir=str(tmp_path),
             now_ts=t0 - 3600.0,
         )
@@ -1189,7 +1193,11 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         high_terms = lex["high_severity_terms"]
         assert high_terms[0] == "newest embargo"
         assert "older blockade" in high_terms
-        for noise_term in ("war timeline", "war exposes", "crash ahead", "attack debunked", "unpriced shock"):
+        for noise_term in (
+            "war timeline", "war exposes", "crash ahead", "attack debunked",
+            "unpriced shock", "train crash", "jet crash", "florida jet",
+            "alert apps", "worse chip",
+        ):
             assert noise_term not in high_terms
 
 

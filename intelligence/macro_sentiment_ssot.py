@@ -981,13 +981,14 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
-    "ahead", "already", "answered", "article", "articles", "brake", "briefing",
-    "commentary", "continue", "continues", "debunked", "digested", "downscale",
-    "elevated", "exceptionally", "explained", "exposes", "false", "features",
-    "history", "horrific", "introduces", "join", "keyword", "localized",
-    "moderate", "non", "normal", "noting", "orderly", "potential", "processed",
-    "progress", "questions", "readiness", "retaining", "say", "seven",
-    "suspected", "timeline", "unpriced", "veto", "worse", "wrap",
+    "ahead", "already", "answered", "apps", "article", "articles", "brake",
+    "briefing", "bus", "car", "chip", "commentary", "continue", "continues",
+    "debunked", "digested", "downscale", "elevated", "exceptionally", "explained",
+    "exposes", "false", "features", "history", "horrific", "introduces", "jet",
+    "join", "keyword", "localized", "moderate", "non", "normal", "noting",
+    "orderly", "plane", "potential", "processed", "progress", "questions",
+    "readiness", "retaining", "say", "seven", "suspected", "timeline", "train",
+    "trains", "truck", "unpriced", "veto", "worse", "wrap",
 })
 
 

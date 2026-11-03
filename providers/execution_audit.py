@@ -652,9 +652,13 @@ def reconcile_intents_from_execution_audit(
                 if intent_oid is not None and rec_oid is not None and str(intent_oid) != str(rec_oid):
                     continue
                 v_stat, l_stat, *_, is_fill = _extract_audit_fill_metrics(rec)
-                if (
-                    is_fill
-                    or v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
+                if is_fill:
+                    matched_exec_records[iid] = rec
+                elif (
+                    iid not in matched_exec_records
+                    or not _extract_audit_fill_metrics(matched_exec_records[iid])[-1]
+                ) and (
+                    v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")
                     or l_stat in ("canceled", "cancelled", "expired", "rejected")
                 ):
                     matched_exec_records[iid] = rec
@@ -721,9 +725,11 @@ def reconcile_intents_from_execution_audit(
                 exec_pay["price"] = f_px
             if str(exec_pay.get("msg") or "").strip().lower() == "resting":
                 exec_pay.pop("msg", None)
-            exec_pay["reconciled_terminal"] = True
-            intent["execution_payload"] = exec_pay
-            updated = True
+            if norm_st != "PARTIALLY_FILLED":
+                exec_pay["reconciled_terminal"] = True
+            if exec_pay != intent.get("execution_payload"):
+                intent["execution_payload"] = exec_pay
+                updated = True
         else:
             cur_st = str(exec_pay.get("status") or "").strip().upper()
             if cur_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING"):
@@ -789,9 +795,10 @@ def _resolve_intent_execution_details(
         last_hist.get("order_id") or last_hist.get("payload"), default=None
     )
 
+    raw_intent_st = str(i.get("status") or "").strip().upper()
     matched_open = None
     expected_cids: Optional[set[str]] = None
-    if isinstance(open_orders, list):
+    if isinstance(open_orders, list) and raw_intent_st in ("EXECUTED", "FAILED", "PENDING_EXECUTION"):
         for oo in open_orders:
             if not isinstance(oo, dict):
                 continue
@@ -834,7 +841,6 @@ def _resolve_intent_execution_details(
         if fill_px is None:
             fill_px = safe_pos_float(matched_open.get("price"), default=None)
 
-    raw_intent_st = str(i.get("status") or "").strip().upper()
     venue_st = str(
         exec_pay.get("status")
         or ("RESTING" if str(exec_pay.get("msg") or "").strip().lower() == "resting" else "")
@@ -1080,7 +1086,8 @@ def summarize_recent_ai_intents(
             str(det.get("side") or "").strip().upper(),
         )
         if (
-            det.get("exec_status") in ("CANCELED", "CANCELLED", "EXPIRED", "CANCELED_OR_EXPIRED")
+            det.get("exec_status")
+            in ("CANCELED", "CANCELLED", "EXPIRED", "CANCELED_OR_EXPIRED", "SKIPPED_DUPLICATE_OPEN_ORDER")
             and not det.get("filled_qty")
             and sym_side_key in seen_sym_side
         ):
@@ -1545,7 +1552,9 @@ def execute_enforce_intent_order(
                 f"Thesis: {thesis}"
             )
             intent["execution_payload"] = order_res
-            extra_limit = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
+            extra_limit: dict[str, Any] = {"order_type": "LIMIT", "limit_price": price} if is_limit else {}
+            if order_id_str and order_id_str != "N/A":
+                extra_limit["order_id"] = order_id_str
             _record_intent_state(
                 intent,
                 "EXECUTED",
