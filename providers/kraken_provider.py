@@ -187,6 +187,13 @@ def kraken_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 
 
 class KrakenProvider(MarketDataProvider):
+    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_kraken.json"
+    _FILLS_CACHE_PATH_MODULE_ATTR = "_KRAKEN_CACHE_FILE"
+    _FILLS_CACHE_DEFAULT_MODULE_ATTR = "_DEFAULT_KRAKEN_CACHE_FILE"
+    _FILLS_CACHE_MAX_STALE_S = _CACHE_MAX_STALE_S
+    _fills_match_fn = staticmethod(_kraken_pair_matches)
+    _fills_normalize_fn = staticmethod(_normalize_kraken_fill)
+
     def __init__(self, client=None):
         # kraken_bot can inject its _BOT client to share connection and nonce.
         # None lazily builds a fleet client using the _SPARE credentials.
@@ -518,32 +525,6 @@ class KrakenProvider(MarketDataProvider):
         except Exception as e:  # noqa: BLE001
             print(f"[Kraken] USDC->USD funding conversion before {symbol} BUY failed: {e}")
 
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Return own pair orders/fills filtered by side and age, grouped by parent orderId.
-
-        Prefer the fresh shared cross-process cache for one fetch across processes
-        and a common guard view; otherwise fall back safely to TradesHistory.
-        Multi-fill executions sharing the same ordertxid/orderId are aggregated into
-        a single order record (VWAP price, summed qty, max timestamp), symmetrically
-        with BinanceProvider.get_orders().
-        """
-        try:
-            since_val = safe_nonneg_float(since_s, default=None)
-            if since_val is None:
-                return []
-            rows = self._fills_from_cache(symbol)
-            if rows is None:                                  # Missing or stale cache: direct API.
-                rows = self._fills_from_api(symbol)
-            if rows is None:
-                raise ProviderError(f"get_orders({symbol}): fills history unavailable")
-            cutoff_ms = (time.time() - since_val) * 1000.0
-            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
-        except ProviderError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            print(f"[Kraken] get_orders {symbol}: {e}")
-            raise ProviderError(f"get_orders({symbol}): {e}") from e
-
     def open_orders(self, symbol: str) -> List[dict]:
         """Return a strict Binance-shaped snapshot of active Kraken orders."""
         raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({symbol})")
@@ -591,27 +572,6 @@ class KrakenProvider(MarketDataProvider):
                 ord_entry["time"] = ts_ms
             normalized.append(ord_entry)
         return normalized
-
-    def _fills_cache_file(self) -> Optional[str]:
-        custom = getattr(self, "_ssot_fills_cache_path", None)
-        if custom:
-            return str(custom)
-        if _KRAKEN_CACHE_FILE != _DEFAULT_KRAKEN_CACHE_FILE or self._allow_ssot_price_cache():
-            return str(_KRAKEN_CACHE_FILE)
-        return None
-
-    def _fills_from_cache(self, symbol: str):
-        """Read symbol fills from the shared cache, or return None for API fallback."""
-        cache_file = self._fills_cache_file()
-        if not cache_file:
-            return None
-        return self.read_ssot_fills_cache(
-            symbol,
-            cache_file,
-            max_stale_sec=_CACHE_MAX_STALE_S,
-            match_fn=_kraken_pair_matches,
-            normalize_fn=_normalize_kraken_fill,
-        )
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""
@@ -675,13 +635,8 @@ class KrakenProvider(MarketDataProvider):
             res = self._client().add_order(
                 symbol, s, qty, submit_price, ordertype=ordertype, validate=False,
                 cl_ord_id=cl_ord_id)
-            cache_file = self._fills_cache_file() if res else None
-            if cache_file:
-                self.invalidate_ssot_fills_cache(
-                    symbol,
-                    cache_file,
-                    match_fn=_kraken_pair_matches,
-                )
+            if res:
+                self._invalidate_fills_cache(symbol)
             return res
         except SubmissionRefused:
             raise
@@ -737,13 +692,7 @@ class KrakenProvider(MarketDataProvider):
         order_id = extract_order_id(res)
         if order_id is None:
             raise ProviderError(f"submit_order {symbol}: a response without a txid ({res})")
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.invalidate_ssot_fills_cache(
-                symbol,
-                cache_file,
-                match_fn=_kraken_pair_matches,
-            )
+        self._invalidate_fills_cache(symbol)
         return order_id
 
     def preflight_order(self, symbol: str, side: str, qty: float,

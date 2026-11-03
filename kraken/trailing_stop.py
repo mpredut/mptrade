@@ -259,10 +259,7 @@ class KrakenTrailing(TrailingAdapterBase):
             held = self.total_qty(asset)
             if held is None or held <= 0.0:
                 return None
-            inner = getattr(self.executor, "_inner", None)
-            if inner is None or not hasattr(inner, "position_cost_basis"):
-                return None
-            return inner.position_cost_basis(pair_norm or pair, held, _COST_BASIS_LOOKBACK_S)
+            return self.executor.position_cost_basis(pair_norm or pair, held, _COST_BASIS_LOOKBACK_S)
         except Exception as e:  # noqa: BLE001
             self.log(f"  [TRAIL-K] cost_basis({pair}) unavailable ({e}) — warm-up from current price")
             return None
@@ -295,11 +292,9 @@ class KrakenTrailing(TrailingAdapterBase):
 
     def price(self, pair: str):
         try:
-            inner = getattr(self.executor, "_inner", None)
-            if inner is not None and hasattr(inner, "get_ssot_cached_price"):
-                cached = inner.get_ssot_cached_price(pair)
-                if cached is not None:
-                    return cached
+            cached = self.executor.get_ssot_cached_price(pair)
+            if cached is not None:
+                return cached
         except Exception:
             pass
         return self.client.last_price(pair)

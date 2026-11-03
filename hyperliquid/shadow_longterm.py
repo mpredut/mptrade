@@ -30,7 +30,8 @@ if ROOT not in sys.path:
 from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime, require_shadow_interval,
 )
-from botcore import required_env, safe_pos_float  # noqa: E402
+from botcore import required_env  # noqa: E402
+from providers.base import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)
 from kraken import shadow_live as shadow  # noqa: E402
@@ -98,21 +99,17 @@ def _fetch_with_ts(_pair: str, interval: int):
     for item in candles or []:
         if not isinstance(item, dict):
             continue
-        t_f = safe_pos_float(item.get("t"), default=None)
-        o_v = safe_pos_float(item.get("o"), default=None)
-        h_v = safe_pos_float(item.get("h"), default=None)
-        l_v = safe_pos_float(item.get("l"), default=None)
-        c_v = safe_pos_float(item.get("c"), default=None)
-        if None in (t_f, o_v, h_v, l_v, c_v):
-            continue
-        ts = int(t_f) // 1000
-        if (
-            ts > 0
-            and h_v >= l_v
-            and h_v >= max(o_v, c_v)
-            and l_v <= min(o_v, c_v)
-        ):
-            parsed.append((ts, o_v, h_v, l_v, c_v))
+        bar = validate_ohlc_candle_bar(
+            item.get("t"),
+            item.get("o"),
+            item.get("h"),
+            item.get("l"),
+            item.get("c"),
+            drop_incomplete=False,
+            ts_in_ms=True,
+        )
+        if bar is not None:
+            parsed.append((bar["timestamp"], bar["open"], bar["high"], bar["low"], bar["close"]))
     by_ts = {r[0]: r for r in parsed}
     rows = [by_ts[k] for k in sorted(by_ts)]
     # The final candle may still be forming; remove it as the Kraken runner does.

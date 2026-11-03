@@ -132,6 +132,9 @@ def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
+    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_hyperliquid.json"
+    _FILLS_CACHE_MAX_STALE_S = 60.0
+
     #: Served spot token, defaulting to HYPE.
     def __init__(self, token: str = "HYPE", live_enabled: Optional[bool] = None):
         if isinstance(token, bool):
@@ -347,21 +350,6 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] free_balance({asset}) failed: {e}")
             return None
 
-    def _fills_cache_file(self) -> Optional[str]:
-        custom = getattr(self, "_ssot_fills_cache_path", None)
-        if custom:
-            return str(custom)
-        if self._allow_ssot_price_cache():
-            return cache_path("cache_trade_hyperliquid.json")
-        return None
-
-    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
-        """Read spot fills from shared SSOT cache_trade_hyperliquid.json when fresh."""
-        cache_file = self._fills_cache_file()
-        if not cache_file:
-            return None
-        return self.read_ssot_fills_cache(symbol, cache_file, max_stale_sec=60.0)
-
     def _fills_from_api(self, symbol: str) -> List[dict]:
         """Fall back to direct Hyperliquid user_fills for this spot pair and refresh SSOT cache."""
         c = self._hl()
@@ -384,27 +372,6 @@ class HyperliquidProvider(MarketDataProvider):
         if cache_file:
             self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
         return spot_fills
-
-    def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Return normalized recent spot orders (fills aggregated by oid), optionally filtered by side.
-
-        Exclude perpetual HYPE fills to avoid mixing delta-neutral activity.
-        """
-        self.validate_symbol(symbol)
-        since_val = safe_nonneg_float(since_s, default=None)
-        if since_val is None:
-            return []
-        cutoff_ms = (time.time() - since_val) * 1000.0
-        try:
-            rows = self._fills_from_cache(symbol)
-            if rows is None:
-                rows = self._fills_from_api(symbol)
-            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
-        except ProviderError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            print(f"[HL] get_orders({symbol},{side}) failed: {e}")
-            raise ProviderError(f"get_orders({symbol}): {e}") from e
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return normalized resting spot orders for the resolved pair."""
@@ -587,9 +554,7 @@ class HyperliquidProvider(MarketDataProvider):
                 if isinstance(oid, (int, float))
                 else clean_oid
             )
-            cache_file = self._fills_cache_file()
-            if cache_file:
-                self.invalidate_ssot_fills_cache(symbol, cache_file)
+            self._invalidate_fills_cache(symbol)
             return {"orderId": out_oid, "ok": ok, "msg": msg}
         except SubmissionRefused:
             raise
@@ -732,9 +697,7 @@ class HyperliquidProvider(MarketDataProvider):
             # no order was accepted. Mark it definitive so durable lifecycle state
             # does not wait forever for a CLOID that cannot exist.
             raise SubmissionRefused(f"submit_order({symbol}) rejected: {msg}")
-        cache_file = self._fills_cache_file()
-        if cache_file:
-            self.invalidate_ssot_fills_cache(symbol, cache_file)
+        self._invalidate_fills_cache(symbol)
         return clean_oid
 
     def preflight_order(self, symbol: str, side: str, qty: float,

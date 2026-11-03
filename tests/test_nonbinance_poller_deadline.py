@@ -543,8 +543,8 @@ class TestFetchDeadline(unittest.TestCase):
 
         # 6. Kraken fee asset aliases (XXBT / ZUSD), live price geometry 15m/6h updates, and open order ts lookup from list intents
         from providers.base import extract_order_fee
-        from intelligence.sentiment.collectors.quant_price_evaluators import recalculate_live_price_geometry
-        from intelligence.sentiment.collectors.portfolio_risk_tca import _load_open_order_timestamps
+        from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
+        from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 
         fee_btc = extract_order_fee({"fee": 0.001, "feeAsset": "XXBT"}, base_asset="BTC", quote_asset="USD", fill_price=90000.0)
         self.assertIsNotNone(fee_btc)

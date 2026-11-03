@@ -1067,6 +1067,13 @@ class MarketDataProvider(ABC):
     def supports_symbol(self, symbol: str) -> bool:
         ...
 
+    _DEFAULT_FILLS_CACHE_FILENAME: Optional[str] = None
+    _FILLS_CACHE_PATH_MODULE_ATTR: Optional[str] = None
+    _FILLS_CACHE_DEFAULT_MODULE_ATTR: Optional[str] = None
+    _FILLS_CACHE_MAX_STALE_S: float = 60.0
+    _fills_match_fn: Any = None
+    _fills_normalize_fn: Any = None
+
     def validate_symbol(self, symbol: str) -> None:
         """Reject a symbol incompatible with this configured provider instance."""
         return None
@@ -1080,8 +1087,78 @@ class MarketDataProvider(ABC):
         """Return free balance: ``0.0`` is real zero; ``None`` means unavailable."""
         return None
 
+    def _fills_cache_file(self) -> Optional[str]:
+        custom = getattr(self, "_ssot_fills_cache_path", None)
+        if custom:
+            return str(custom)
+        mod = sys.modules.get(type(self).__module__)
+        mod_path = (
+            getattr(mod, self._FILLS_CACHE_PATH_MODULE_ATTR, None)
+            if (mod is not None and self._FILLS_CACHE_PATH_MODULE_ATTR)
+            else None
+        )
+        def_path = (
+            getattr(mod, self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None)
+            if (mod is not None and self._FILLS_CACHE_DEFAULT_MODULE_ATTR)
+            else None
+        )
+        if mod_path and def_path and mod_path != def_path:
+            return str(mod_path)
+        if self._allow_ssot_price_cache():
+            if mod_path:
+                return str(mod_path)
+            if self._DEFAULT_FILLS_CACHE_FILENAME:
+                return str(resolve_cachedb_filepath(self._DEFAULT_FILLS_CACHE_FILENAME))
+        return None
+
+    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
+        """Read symbol fills from the shared SSOT trade cache, or return None for API fallback."""
+        cache_file = self._fills_cache_file()
+        if not cache_file:
+            return None
+        mod = sys.modules.get(type(self).__module__)
+        stale_s = getattr(mod, "_CACHE_MAX_STALE_S", None) if mod is not None else None
+        return self.read_ssot_fills_cache(
+            symbol,
+            cache_file,
+            max_stale_sec=stale_s if stale_s is not None else self._FILLS_CACHE_MAX_STALE_S,
+            match_fn=getattr(type(self), "_fills_match_fn", None),
+            normalize_fn=getattr(type(self), "_fills_normalize_fn", None),
+        )
+
+    def _invalidate_fills_cache(self, symbol: str) -> None:
+        """Expire ``fetchtime`` for ``symbol`` in this provider's configured SSOT trade cache."""
+        cache_file = self._fills_cache_file()
+        if cache_file:
+            self.invalidate_ssot_fills_cache(
+                symbol,
+                cache_file,
+                match_fn=getattr(type(self), "_fills_match_fn", None),
+            )
+
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        return []
+        """Return normalized recent orders (fills aggregated by orderId), reading SSOT cache first and falling back to ``_fills_from_api``."""
+        api_fn = getattr(self, "_fills_from_api", None)
+        if not callable(api_fn):
+            return []
+        self.validate_symbol(symbol)
+        since_val = safe_nonneg_float(since_s, default=None)
+        if since_val is None:
+            return []
+        try:
+            cache_fn = getattr(self, "_fills_from_cache", None)
+            rows = cache_fn(symbol) if callable(cache_fn) else None
+            if rows is None:
+                rows = api_fn(symbol)
+            if rows is None:
+                raise ProviderError(f"get_orders({symbol}): fills history unavailable")
+            cutoff_ms = (time.time() - since_val) * 1000.0
+            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"[{self.name}] get_orders({symbol},{side}) failed: {e}")
+            raise ProviderError(f"get_orders({symbol}): {e}") from e
 
     def get_trades(self, symbol: str, since_s: float) -> List[dict]:
         return self.get_orders(symbol, None, since_s)

@@ -468,6 +468,14 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "get_orderbook", None)
         return reader(symbol, limit) if callable(reader) else None
 
+    def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
+        reader = getattr(self._executor, "position_cost_basis", None)
+        return reader(symbol, held_qty, since_s) if callable(reader) else None
+
+    def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
+        reader = getattr(self._executor, "get_ssot_cached_price", None)
+        return reader(symbol, max_age_sec=max_age_sec) if callable(reader) else None
+
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)
