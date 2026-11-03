@@ -1410,11 +1410,13 @@ def test_macro_analyzer_and_daemon_apply_retry_backoff_on_llm_failure(monkeypatc
     assert res["geopolitical_updated"] is False
     assert res["advisor_updated"] is False
     # Instead of staying at 0.0 (hammering every 5s), both timestamps advance so next retry is ~300s away
-    assert analyzer._last_macro_llm_ts > now_ts - 1800.0
-    assert analyzer._last_advisor_ts > now_ts - 10800.0
+    eff_geo_int = res["effective_geo_interval_sec"]
+    eff_adv_int_1 = res["effective_advisor_interval_sec"]
+    assert analyzer._last_macro_llm_ts > now_ts - eff_geo_int
+    assert analyzer._last_advisor_ts > now_ts - eff_adv_int_1
 
     # Also test when SentimentAdvisor falls back to a stale cached assessment on LLM failure
-    stale_ts = now_ts - 12000.0
+    stale_ts = now_ts - max(12000.0, eff_adv_int_1 + 1200.0)
     analyzer.sentiment_advisor._last_eval_ts = stale_ts
     analyzer.sentiment_advisor._cached_assessment = SentimentAdvisorAssessment(
         market_bias="NEUTRAL",
