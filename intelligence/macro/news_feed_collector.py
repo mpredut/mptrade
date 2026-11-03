@@ -198,13 +198,24 @@ class NewsFeedCollector:
                     self._seen_first_ts[norm] = min(prev_seen, ts) if prev_seen is not None else ts
                 if 0.0 <= (now - ts) < self.rolling_window_sec:
                     canon_url = canonical_article_url(h.url)
+                    keep_new = True
                     if canon_url:
                         for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
                             if old_norm != norm and canonical_article_url(old_h.url) == canon_url:
-                                self._aggregated_pool.pop(old_norm, None)
-                                ts = min(ts, old_ts)
-                                self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, ts), ts)
-                    self._aggregated_pool[norm] = (ts, h)
+                                merged_ts = min(ts, old_ts)
+                                if self._prefer_newer_url_revision(h, raw_ts, old_h, old_ts, now):
+                                    self._aggregated_pool.pop(old_norm, None)
+                                    ts = merged_ts
+                                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, ts), ts)
+                                else:
+                                    self._aggregated_pool[old_norm] = (merged_ts, old_h)
+                                    self._seen_first_ts[old_norm] = min(
+                                        self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                                    )
+                                    keep_new = False
+                                break
+                    if keep_new:
+                        self._aggregated_pool[norm] = (ts, h)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
@@ -286,6 +297,29 @@ class NewsFeedCollector:
             return False
         return max_ts is None or ts_f <= max_ts
 
+    def _prefer_newer_url_revision(
+        self,
+        cand_h: NewsHeadline,
+        cand_raw_ts: Optional[float],
+        existing_h: NewsHeadline,
+        existing_raw_ts: Optional[float],
+        now: float,
+        *,
+        replace_on_tie: bool = True,
+    ) -> bool:
+        """Return True if ``cand_h`` should replace ``existing_h`` for the same canonical URL."""
+        cand_pub = self._parse_recent_pub_date_ts(getattr(cand_h, "pub_date", ""), now)
+        exist_pub = self._parse_recent_pub_date_ts(getattr(existing_h, "pub_date", ""), now)
+        if cand_pub is not None and exist_pub is not None and cand_pub != exist_pub:
+            return cand_pub > exist_pub
+        if cand_pub is not None and exist_pub is None:
+            return True
+        if cand_pub is None and exist_pub is not None:
+            return False
+        c_ts = safe_pos_float(cand_raw_ts, default=0.0)
+        e_ts = safe_pos_float(existing_raw_ts, default=0.0)
+        return (c_ts >= e_ts) if replace_on_tie else (c_ts > e_ts)
+
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         cache_dir = self._CacheDirOrNone()
@@ -303,17 +337,35 @@ class NewsFeedCollector:
                 if h_obj and norm and norm not in self._aggregated_pool:
                     pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
                     prev_seen = self._seen_first_ts.get(norm)
-                    canon_url = canonical_article_url(h_obj.url)
-                    if canon_url:
-                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
-                            if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
-                                self._aggregated_pool.pop(old_norm, None)
-                                prev_seen = min(prev_seen, old_ts) if prev_seen is not None else old_ts
                     eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
                     if pub_ts is not None and pub_ts < eff_ts:
                         eff_ts = pub_ts
-                    self._seen_first_ts[norm] = eff_ts
-                    if 0.0 <= (now - eff_ts) < self.rolling_window_sec:
+                    canon_url = canonical_article_url(h_obj.url)
+                    keep_new = True
+                    if canon_url:
+                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                            if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
+                                merged_ts = min(eff_ts, old_ts)
+                                cand_order_ts = now if prev_seen is None else prev_seen
+                                if self._prefer_newer_url_revision(
+                                    h_obj,
+                                    cand_order_ts,
+                                    old_h,
+                                    old_ts,
+                                    now,
+                                    replace_on_tie=(prev_seen is None),
+                                ):
+                                    self._aggregated_pool.pop(old_norm, None)
+                                    eff_ts = merged_ts
+                                else:
+                                    self._aggregated_pool[old_norm] = (merged_ts, old_h)
+                                    self._seen_first_ts[old_norm] = min(
+                                        self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                                    )
+                                    keep_new = False
+                                break
+                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
+                    if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
                         self._aggregated_pool[norm] = (eff_ts, h_obj)
 
         cutoff = now - self.rolling_window_sec
@@ -330,9 +382,18 @@ class NewsFeedCollector:
                 canon_url = canonical_article_url(getattr(h_item, "url", ""))
                 if canon_url and canon_url in url_to_key:
                     prev_k = url_to_key[canon_url]
-                    prev_ts, _ = cleaned_pool.pop(prev_k)
-                    eff_ts = min(eff_ts, prev_ts)
-                    self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+                    prev_ts, prev_h = cleaned_pool[prev_k]
+                    merged_ts = min(eff_ts, prev_ts)
+                    if self._prefer_newer_url_revision(h_item, ts_val, prev_h, prev_ts, now):
+                        cleaned_pool.pop(prev_k, None)
+                        eff_ts = merged_ts
+                        self._seen_first_ts[k] = min(self._seen_first_ts.get(k, eff_ts), eff_ts)
+                        url_to_key[canon_url] = k
+                        cleaned_pool[k] = (eff_ts, h_item)
+                    else:
+                        cleaned_pool[prev_k] = (merged_ts, prev_h)
+                        self._seen_first_ts[prev_k] = min(self._seen_first_ts.get(prev_k, merged_ts), merged_ts)
+                    continue
                 if canon_url:
                     url_to_key[canon_url] = k
                 cleaned_pool[k] = (eff_ts, h_item)

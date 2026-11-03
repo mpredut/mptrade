@@ -1047,7 +1047,9 @@ class TradingBot:
             )
         extra_place_kwargs = {}
         if isinstance(getattr(self, "_pair_precheck_pending", None), set):
-            extra_place_kwargs["abort_if"] = lambda: self._pair_abort_if(side, is_opp_filled)
+            abort_fn = lambda: self._pair_abort_if(side, is_opp_filled)
+            abort_fn.is_aborted = lambda: bool(getattr(self, "_round_aborted", False) and not is_opp_filled())
+            extra_place_kwargs["abort_if"] = abort_fn
         if not is_buy:
             extra_place_kwargs["allow_math_reference_sell"] = bool(RTRADE_BYPASS_PROFIT_GUARD)
         return mkt.place(

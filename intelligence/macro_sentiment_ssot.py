@@ -1049,6 +1049,24 @@ def _dynamic_keyword_has_crisis_stem(term: str, crisis_stems: Optional[Set[str]]
     return any(_token_matches_crisis_stem(w, stems) for w in re.findall(r"[a-zA-Z]{3,}", (term or "").lower()))
 
 
+def _is_excluded_non_crisis_attack_keyword(
+    kw_clean: str,
+    text_words: Set[str],
+    crisis_stems: Set[str],
+) -> bool:
+    """Return True if an 'attack'-based keyword appears solely in a local crime/medical/animal attack context."""
+    kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
+    combined_words = text_words | kw_words
+    if not (combined_words & _NON_CRISIS_ATTACK_CONTEXT_WORDS):
+        return False
+    other_stems = crisis_stems - {"attack"}
+    if any(_token_matches_crisis_stem(w, other_stems) for w in kw_words):
+        return False
+    if text_words and any(_token_matches_crisis_stem(w, other_stems) for w in text_words):
+        return False
+    return any(w.startswith("attack") for w in kw_words)
+
+
 def filter_valid_severity_keywords(
     raw_keywords: Any,
     *,
@@ -1060,12 +1078,15 @@ def filter_valid_severity_keywords(
     seed_set = _get_seed_terms_set()
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
+    title_words = set(re.findall(r"[a-zA-Z]{3,}", title.lower())) if isinstance(title, str) and title.strip() else set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
         for k in raw_keywords:
             if not isinstance(k, str) or not k.strip():
                 continue
             k_clean = re.sub(r"\s+", " ", k.strip()).lower()
+            if _is_excluded_non_crisis_attack_keyword(k_clean, title_words, crisis_stems):
+                continue
             if k_clean in seed_set or (
                 not _is_noise_dynamic_keyword(k_clean, sw)
                 and _dynamic_keyword_has_crisis_stem(k_clean, crisis_stems)
@@ -1393,10 +1414,12 @@ def match_high_severity_keywords(
     if not lower:
         return ()
     seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
+    text_words = set(re.findall(r"[a-zA-Z]{3,}", lower))
     return tuple(
         kw
         for kw in get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts)
         if kw in lower
+        and not _is_excluded_non_crisis_attack_keyword(kw, text_words, crisis_stems)
         and (kw in seed_set or _dynamic_keyword_has_crisis_stem(kw, crisis_stems))
         and re.search(r"\b" + re.escape(kw) + r"\b", lower)
     )

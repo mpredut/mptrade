@@ -1504,6 +1504,51 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertFalse(bot2.is_sell_filled)
         self.assertEqual(mock_cancel2.call_count, 2)
 
+    def test_early_abort_short_circuits_stage3_profit_guard_when_opposite_leg_already_aborted(self):
+        import instrument as inst_mod
+
+        bot = _bot()
+        bot._pair_precheck_pending = {"BUY", "SELL"}
+        bot._pair_precheck_cond = threading.Condition(bot.lock)
+        bot._round_aborted = False
+
+        def _qty_decision(*_a, **_kw):
+            # Opposite leg (BUY) aborts while SELL is in Stage 2 quantity_decision
+            bot._round_aborted = True
+            return SimpleNamespace(
+                final_qty=1.0, refuse_reason=None, balance_asset="TAO",
+                scale_applied=False, applied_scale=1.0,
+            )
+
+        provider = SimpleNamespace(
+            name="Binance",
+            validate_symbol=lambda _s: None,
+            guards_internally=lambda: False,
+            get_orders=lambda *_a, **_kw: [],
+            split_symbol=lambda _s: ("TAO", "USDC"),
+            round_price=lambda _s, p: float(p),
+            round_quantity=lambda _s, q: float(q),
+            quantity_decision=_qty_decision,
+        )
+        instrument = inst_mod.Instrument(
+            "TAOUSDC", "TAOUSDC", "Binance", base="TAO", quote="USDC",
+            api=SimpleNamespace(provider_by_name=lambda _p: provider),
+        )
+        outcome_ctx = {}
+        with patch.object(inst_mod.order_guard, "get_profit_guard_mode_cfg", return_value="off"), \
+             patch.object(inst_mod.order_guard, "get_margin_cfg", return_value=0.01), \
+             patch.object(inst_mod.order_guard, "check_math_profit_reference", return_value=True), \
+             patch.object(inst_mod.order_guard, "profit_guard", side_effect=AssertionError("Stage 3 profit_guard must not run after early abort")) as pg_mock, \
+             patch.object(rtrade.mkt, "place", side_effect=lambda sym, side, px, qty, **kw: instrument.place(side, px, qty, **kw)):
+            res = bot._place_legacy_side_order(
+                "SELL", False, lambda: False, 250.0, 1.0,
+                0.0064, 1, 5.0, 5.0, None, outcome_ctx,
+            )
+
+        self.assertIsNone(res)
+        self.assertEqual(outcome_ctx.get("reason"), "aborted_by_caller")
+        pg_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

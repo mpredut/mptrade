@@ -22,7 +22,12 @@ from botcore import (
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
 from market_regime import MarketRegimeDecision, MarketRegimeService
-from providers.base import _clean_single_order_id as _clean_order_id, normalize_side
+from providers.base import (
+    _clean_single_order_id as _clean_order_id,
+    extract_order_side,
+    extract_remaining_qty,
+    normalize_side,
+)
 from providers.execution_audit import intent_client_order_id
 from providers.strategy_executor import ProviderError, StrategyExecutor
 from order_retry import StrategyExecutorLifecycleApi, TrackedOrderLifecycle
@@ -1410,9 +1415,9 @@ class Strategy(BaseSpotMixin):
                     open_rows = None
                 if isinstance(open_rows, list):
                     open_sell_qty = sum(
-                        _clean_pos_float(r.get("remaining_qty") or r.get("qty") or r.get("origQty")) or 0.0
+                        extract_remaining_qty(r, default=0.0)
                         for r in open_rows
-                        if isinstance(r, dict) and str(r.get("side") or "").strip().upper() == "SELL"
+                        if isinstance(r, dict) and extract_order_side(r) == "SELL"
                     )
                     if open_sell_qty > 0.0:
                         ledger_qty += open_sell_qty
@@ -1473,13 +1478,28 @@ class Strategy(BaseSpotMixin):
                 raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
                 if hasattr(raw_cli, "get_orders"):
                     buy_rows = raw_cli.get_orders(self.pair, "BUY", 3600.0)
-                    if isinstance(buy_rows, list) and buy_rows and isinstance(buy_rows[-1], dict):
-                        cand_px = _clean_pos_float(buy_rows[-1].get("price"))
+                    dict_rows = (
+                        [(idx, r) for idx, r in enumerate(buy_rows) if isinstance(r, dict)]
+                        if isinstance(buy_rows, list)
+                        else []
+                    )
+                    if dict_rows:
+                        def _row_ts_sec(row: dict) -> float:
+                            ts_v = _clean_pos_float(row.get("timestamp"))
+                            if ts_v is None:
+                                return 0.0
+                            return ts_v / 1000.0 if ts_v > 1e11 else ts_v
+
+                        _, latest_buy = max(
+                            dict_rows,
+                            key=lambda item: (_row_ts_sec(item[1]), item[0]),
+                        )
+                        cand_px = _clean_pos_float(latest_buy.get("price"))
                         if cand_px is not None:
                             fill_px = cand_px
-                        cand_ts_ms = _clean_pos_float(buy_rows[-1].get("timestamp"))
-                        if cand_ts_ms is not None:
-                            fill_ts = cand_ts_ms / 1000.0 if cand_ts_ms > 1e11 else cand_ts_ms
+                        cand_ts_sec = _row_ts_sec(latest_buy)
+                        if cand_ts_sec > 0.0:
+                            fill_ts = cand_ts_sec
             except Exception:
                 pass
             added_cost = (ledger_qty - held) * fill_px

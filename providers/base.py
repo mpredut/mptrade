@@ -342,9 +342,10 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     """Extract remaining unfilled quantity for an open/cancelled order across any venue shape."""
     if not isinstance(order, dict):
         return default
-    rem_f = safe_nonneg_float(order.get("remainingQty"), default=None)
-    if rem_f is not None:
-        return rem_f
+    for k in ("remainingQty", "remaining_qty", "leavesQty", "leaves_qty"):
+        rem_f = safe_nonneg_float(order.get(k), default=None)
+        if rem_f is not None:
+            return rem_f
     if "origSz" in order and "sz" in order and not any(k in order for k in _EXEC_QTY_KEYS):
         sz_f = _nonneg_abs_float(order.get("sz"))
         if sz_f is not None:

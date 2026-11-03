@@ -1009,3 +1009,41 @@ def test_spot_engine_pending_stop_exit_does_not_reinitiate_mhdsl_bounce_watch():
     assert engine.pair not in engine.exit_manager.sl_bounce_state
 
 
+def test_reconcile_venue_ledger_uses_remaining_qty_on_partial_open_sell_and_latest_buy_fill():
+    from types import SimpleNamespace
+    from providers.base import extract_remaining_qty
+
+    assert extract_remaining_qty({"origQty": 1.0, "executedQty": 0.4}) == pytest.approx(0.6)
+    assert extract_remaining_qty({"remaining_qty": 0.35, "origQty": 1.0}) == pytest.approx(0.35)
+
+    engine, executor = positioned()
+    engine.observe_only = True
+    engine.s["qty"] = 0.6
+    engine.s["cost"] = 60.0
+    engine.s["spent"] = 60.0
+    engine.s["ledger_reconcile_required"] = True
+
+    # 1) Partial open SELL (origQty=1.0, executedQty=0.4 -> remaining=0.6) adds 0.6 (not 1.0) to free_balance=0.6
+    raw_exec = SimpleNamespace(
+        open_orders=lambda _pair: [{"side": "SELL", "origQty": 1.0, "executedQty": 0.4}],
+        get_orders=lambda _pair, _side, _lookback: [
+            {"price": 112.0, "timestamp": 1700000200000},
+            {"price": 95.0, "timestamp": 1700000100000},
+        ],
+    )
+    executor._executor = raw_exec
+    executor.free_balance = lambda _base: 0.6
+
+    assert engine._reconcile_venue_ledger(110.0, 1700000250.0, True) is True
+    assert engine.s["qty"] == pytest.approx(1.2)
+
+    # 2) External BUY when free_balance increases to 1.5 (+0.6 open SELL = 2.1 total vs held=1.2)
+    # picks the newest BUY fill (112.0 @ t=1700000200000) even when get_orders returns descending order
+    executor.free_balance = lambda _base: 1.5
+    assert engine._reconcile_venue_ledger(110.0, 1700000260.0, True) is True
+    assert engine.s["qty"] == pytest.approx(2.1)
+    assert engine.s["last_buy_price"] == pytest.approx(112.0)
+    assert engine.s["cost"] == pytest.approx(120.0 + 0.9 * 112.0)
+
+
+

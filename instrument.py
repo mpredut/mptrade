@@ -483,6 +483,11 @@ class Instrument:
                         reason = "profit_guard"
                         return None
 
+            early_abort_if = getattr(abort_if, "is_aborted", None)
+            if callable(early_abort_if) and bool(early_abort_if()):
+                reason = "aborted_by_caller"
+                return None
+
             # Stage 2: Quantity Sizing, Gaussian/Chop Weights & Balance Capping.
             hours_f = safe_pos_float(kwargs.get("hours", 5), default=5.0)
             decision = self._provider.quantity_decision(
@@ -519,6 +524,10 @@ class Instrument:
                 if refusal:
                     reason = refusal
                     return None
+
+            if callable(early_abort_if) and bool(early_abort_if()):
+                reason = "aborted_by_caller"
+                return None
 
             # 2. Optional provider-agnostic short trend gate (GT_S).
             if wait_for_trend:
@@ -591,6 +600,10 @@ class Instrument:
                             reason = gt2_refusal
                             return None
                         applied_scale = min(float(applied_scale), scale_factor)
+
+            if callable(early_abort_if) and bool(early_abort_if()):
+                reason = "aborted_by_caller"
+                return None
 
             # Stage 3: Post-sizing Profit & Intelligence Guards.
             if not bypass_profit_guard and qty > 0:

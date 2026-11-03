@@ -1238,6 +1238,28 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert "allegedly attacking" not in lex_after_bbc
         assert "attacking one" not in lex_after_bbc
 
+        # Re-ingesting the older revision (snap_r1) from a lagging/cached feed must NOT overwrite the newer revision
+        agg_r1_replay = url_collector._aggregate(snap_r1, now=t0 + 120.0)
+        assert agg_r1_replay.total_fetched == 1
+        assert agg_r1_replay.headlines[0].title == "Man and boy arrested after allegedly attacking One Nation volunteer with bat"
+
+        # Seed "attack" keyword must not trigger high-severity on local crime/assault headlines
+        bbc_bat_attack_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>BBC News</title>
+  <item>
+    <title>Boy, 15, arrested after volunteer allegedly hit with baseball bat in attack</title>
+    <link>https://www.bbc.co.uk/news/articles/cwly3jd27m9xo</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC News</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+        snap_bat = NewsFeedCollector.parse_rss_xml(bbc_bat_attack_xml, now_ts=t0 + 180.0, cache_dir=str(tmp_path))
+        assert snap_bat is not None
+        assert snap_bat.high_severity_count == 0
+        assert snap_bat.headlines[0].is_high_severity is False
+        assert snap_bat.headlines[0].matched_keywords == ()
+
+
 
 
 
