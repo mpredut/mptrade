@@ -272,6 +272,10 @@ def _similarity_signature(
     return hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
 
 
+_PRIO_RANK = {"urgent": 3, "high": 2, "default": 1, "low": 0}
+_MAX_FINGERPRINT_HISTORY = 200
+
+
 def _canonical_topic_key(topic: Any) -> str:
     """Normalize a topic name or URL into a canonical per-topic queue key."""
     if isinstance(topic, bool) or topic is None:
@@ -299,20 +303,12 @@ def _config_notification_int(key: str, default: int) -> int:
 
 
 def _common_gate_seconds() -> int:
-    """Return the central single-gate dispatcher minimum interval in seconds (default 600s = 10 min).
-
-    Every outgoing message (individual or topic-bulk) passes through this central gate; if the
-    interval since the previous dispatch has not elapsed, delivery is deferred in the queue.
-    """
+    """Return the central single-gate dispatcher minimum interval in seconds (default 600s = 10 min)."""
     return _config_notification_int("NOTIFICATION_GATE_SECONDS", 600)
 
 
 def _topic_bulk_seconds() -> int:
-    """Return the per-topic batching/bulk interval in seconds (default 300s = 5 min).
-
-    Messages arriving on the same topic more frequently than this window are grouped into a
-    thematic bulk batch for that specific topic.
-    """
+    """Return the per-topic batching/bulk interval in seconds (default 300s = 5 min)."""
     raw_topic = os.environ.get("NOTIFICATION_TOPIC_BULK_SECONDS")
     if (
         raw_topic is not None
@@ -330,14 +326,92 @@ def _topic_bulk_seconds() -> int:
     return _config_notification_int("NOTIFICATION_TOPIC_BULK_SECONDS", 300)
 
 
+def _topic_bulk_max_items() -> int:
+    """Maximum notifications buffered per topic before dropping lower/equal priority overflow."""
+    return max(1, _positive_int_env("NOTIFICATION_TOPIC_BULK_MAX_ITEMS", 10))
+
+
+def _queue_max_items() -> int:
+    """Maximum total notifications buffered across all topics and retry queues."""
+    return max(1, _positive_int_env("NOTIFICATION_QUEUE_MAX_ITEMS", 50))
+
+
+def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
+    """Normalize and bound per-channel delivery state so state files remain compact."""
+    raw_ch = state["channels"].get(channel)
+    if not isinstance(raw_ch, dict):
+        raw_ch = {}
+        state["channels"][channel] = raw_ch
+    cutoff = now_ts - 2 * 24 * 60 * 60
+    last_raw = raw_ch.get("last")
+    valid_last = [
+        (str(k), vf)
+        for k, v in (last_raw.items() if isinstance(last_raw, dict) else ())
+        if cutoff <= (vf := safe_float(v, -1.0)) <= now_ts
+    ]
+    if len(valid_last) > _MAX_FINGERPRINT_HISTORY:
+        valid_last = sorted(valid_last, key=lambda kv: kv[1])[-_MAX_FINGERPRINT_HISTORY:]
+    raw_ch["last"] = dict(valid_last)
+
+    topic_raw = raw_ch.get("topic_last_ts")
+    raw_ch["topic_last_ts"] = {
+        str(k): vf
+        for k, v in (topic_raw.items() if isinstance(topic_raw, dict) else ())
+        if cutoff <= (vf := safe_float(v, -1.0)) <= now_ts
+    }
+    raw_bulk = raw_ch.get("pending_bulk")
+    raw_ch["pending_bulk"] = (
+        [it for it in raw_bulk if isinstance(it, dict)]
+        if isinstance(raw_bulk, list)
+        else []
+    )
+    lg = safe_float(raw_ch.get("last_gate_ts", 0.0), 0.0)
+    raw_ch["last_gate_ts"] = 0.0 if (lg < 0.0 or lg > now_ts) else lg
+    return raw_ch
+
+
+def _enqueue_bounded_bulk(
+    pending_bulk: list[dict],
+    new_item: dict,
+    topic_max: int,
+    queue_max: int,
+) -> tuple[bool, str]:
+    """Bounded producer enqueue: cap per-topic and total queue sizes, dropping lower/equal priority overflow."""
+    t_key = _canonical_topic_key(new_item.get("topic"))
+    new_rank = _PRIO_RANK.get(str(new_item.get("priority") or "default"), 1)
+
+    topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
+    if len(topic_indices) >= topic_max:
+        victim_idx = min(
+            topic_indices,
+            key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1),
+        )
+        victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
+        if new_rank <= victim_rank:
+            return False, "topic_queue_full_dropped"
+        pending_bulk.pop(victim_idx)
+
+    if len(pending_bulk) >= queue_max:
+        victim_idx = min(
+            range(len(pending_bulk)),
+            key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1),
+        )
+        victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
+        if new_rank <= victim_rank:
+            return False, "queue_full_dropped"
+        pending_bulk.pop(victim_idx)
+
+    pending_bulk.append(new_item)
+    return True, "buffered_for_bulk"
+
+
 def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
     """Synthesize and concatenate multiple distinct notifications into a single bulk message."""
     if not items:
         return ("Alert", "", "default", "")
-    prio_rank = {"urgent": 3, "high": 2, "default": 1, "low": 0}
     best_priority = max(
         (str(it.get("priority") or "default") for it in items),
-        key=lambda p: prio_rank.get(p, 1),
+        key=lambda p: _PRIO_RANK.get(p, 1),
     )
     # Choose the highest-priority topic (error/deadman > guard/trades > server/macro > other)
     def _topic_tier(t: str) -> int:
@@ -489,14 +563,13 @@ def pass_common_gate(
     urgent: bool = False,
     now: Optional[float] = None,
 ) -> tuple[bool, str, bool, Optional[tuple[str, str, str, str]]]:
-    """Two-stage per-topic bulk batcher and central single-gate dispatcher.
+    """Bounded Producer-Consumer notification gate:
 
-    1. Eliminates structurally similar messages arriving within the similarity/dedup window.
-    2. Batches messages arriving for the SAME topic within NOTIFICATION_TOPIC_BULK_SECONDS (default 5 min)
-       into a thematic topic bulk (never mixing different topics).
-    3. Routes every outgoing individual or topic-bulk message through the central single-gate
-       dispatcher (NOTIFICATION_GATE_SECONDS, default 10 min), deferring delivery in the persistent
-       queue until the central gate interval has elapsed.
+    1. Deduplicates / merges structurally similar notifications.
+    2. Batches same-topic messages arriving within NOTIFICATION_TOPIC_BULK_SECONDS (default 5m),
+       strictly bounded by NOTIFICATION_TOPIC_BULK_MAX_ITEMS and NOTIFICATION_QUEUE_MAX_ITEMS.
+    3. Routes every outgoing single or bulk message through the central single-gate dispatcher
+       (NOTIFICATION_GATE_SECONDS, default 10m).
     """
     now_ts = _resolve_gate_now(now)
     urgent = _as_bool_flag(urgent, False)
@@ -511,25 +584,11 @@ def pass_common_gate(
     sim_key = _similarity_signature(title, body, topic, alerts_list)
     gate_sec = _common_gate_seconds()
     topic_bulk_sec = _topic_bulk_seconds()
-    dedup_sec = _dedup_seconds(alerts_list, urgent)
-    sim_window = max(gate_sec, topic_bulk_sec, dedup_sec)
+    sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
 
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with FileLock(lock_path):
+    with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
-        raw_ch = state["channels"].get(channel)
-        if not isinstance(raw_ch, dict):
-            raw_ch = {
-                "sent": 0,
-                "last": {},
-                "blocked": False,
-                "budget_warning_sent": False,
-                "last_gate_ts": 0.0,
-                "topic_last_ts": {},
-                "pending_bulk": [],
-            }
-            state["channels"][channel] = raw_ch
-        channel_state = raw_ch
+        channel_state = _normalize_channel_state(state, channel, now_ts)
         if channel == "ntfy" and channel_state.get("blocked"):
             blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
             if blocked_until > 0 and now_ts >= blocked_until:
@@ -537,56 +596,27 @@ def pass_common_gate(
             else:
                 return False, "provider_daily_limit", False, None
 
-        last_raw = channel_state.get("last")
-        last = last_raw if isinstance(last_raw, dict) else {}
-        cutoff = now_ts - 2 * 24 * 60 * 60
-        cleaned_last: dict[str, float] = {}
-        for key, value in last.items():
-            v_f = safe_float(value, -1.0)
-            if cutoff <= v_f <= now_ts:
-                cleaned_last[key] = v_f
-        channel_state["last"] = cleaned_last
+        last_map: dict[str, float] = channel_state["last"]
+        topic_last: dict[str, float] = channel_state["topic_last_ts"]
+        pending_bulk: list[dict] = channel_state["pending_bulk"]
 
-        raw_topic_last = channel_state.get("topic_last_ts")
-        cleaned_topic_last: dict[str, float] = {}
-        if isinstance(raw_topic_last, dict):
-            for k, val in raw_topic_last.items():
-                vf = safe_float(val, -1.0)
-                if cutoff <= vf <= now_ts:
-                    cleaned_topic_last[str(k)] = vf
-        channel_state["topic_last_ts"] = cleaned_topic_last
-
-        raw_bulk = channel_state.get("pending_bulk")
-        pending_bulk: list[dict] = (
-            [it for it in raw_bulk if isinstance(it, dict)]
-            if isinstance(raw_bulk, list)
-            else []
-        )
-        channel_state["pending_bulk"] = pending_bulk
-
-        # 1. Eliminate if already sitting in pending_bulk for the same topic with same similarity or fingerprint
+        # 1. Coalesce if already queued in pending_bulk for the same topic
         for item in pending_bulk:
             if _canonical_topic_key(item.get("topic")) == t_key and (
                 item.get("sim_key") == sim_key or item.get("fingerprint") == fingerprint
             ):
                 item["count"] = _safe_pos_int(item.get("count", 1), 1) + 1
-                channel_state["last"][fingerprint] = now_ts
-                channel_state["last"][sim_key] = now_ts
+                last_map[fingerprint] = now_ts
+                last_map[sim_key] = now_ts
                 _save_delivery_state(path, state)
                 return False, "similar_eliminated", False, None
 
-        # 2. Eliminate if sent/seen within dedup or similarity window
-        prev_fp = channel_state["last"].get(fingerprint)
-        prev_fp_f = safe_float(prev_fp, -1.0)
-        if prev_fp is not None and prev_fp_f >= 0.0 and 0 <= now_ts - prev_fp_f < sim_window:
-            _save_delivery_state(path, state)
-            return False, "duplicate", False, None
-
-        prev_sim = channel_state["last"].get(sim_key)
-        prev_sim_f = safe_float(prev_sim, -1.0)
-        if prev_sim is not None and prev_sim_f >= 0.0 and 0 <= now_ts - prev_sim_f < sim_window:
-            _save_delivery_state(path, state)
-            return False, "similar_eliminated", False, None
+        # 2. Suppress if seen within deduplication / similarity window
+        for k, reason in ((fingerprint, "duplicate"), (sim_key, "similar_eliminated")):
+            prev_f = safe_float(last_map.get(k), -1.0)
+            if prev_f >= 0.0 and 0 <= now_ts - prev_f < sim_window:
+                _save_delivery_state(path, state)
+                return False, reason, False, None
 
         # 3. Daily routine budget check for ntfy
         sent = safe_nonneg_int(channel_state.get("sent", 0), default=0)
@@ -599,10 +629,10 @@ def pass_common_gate(
                 _save_delivery_state(path, state)
                 return False, "local_daily_budget", warn, None
 
-        # 4. Evaluate Per-Topic Batching Window (5 min) & Central Single-Gate Dispatcher (10 min)
+        # 4. Producer-Consumer Gate Evaluation (5m per-topic batching + 10m central single-gate)
         new_item = {
-            "title": title,
-            "body": body,
+            "title": str(title or "Alert")[:240],
+            "body": str(body or "")[:1200],
             "priority": priority,
             "topic": topic,
             "ts": now_ts,
@@ -610,47 +640,36 @@ def pass_common_gate(
             "fingerprint": fingerprint,
             "count": 1,
         }
-        last_gate_ts = safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
-        if last_gate_ts > now_ts or last_gate_ts < 0.0:
-            last_gate_ts = 0.0
-        last_topic_ts = safe_float(cleaned_topic_last.get(t_key, 0.0), 0.0)
-        if last_topic_ts > now_ts or last_topic_ts < 0.0:
-            last_topic_ts = 0.0
-
+        last_gate_ts = channel_state["last_gate_ts"]
+        last_topic_ts = safe_float(topic_last.get(t_key, 0.0), 0.0)
         central_gate_closed = gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec
         topic_window_closed = topic_bulk_sec > 0 and last_topic_ts > 0 and (now_ts - last_topic_ts) < topic_bulk_sec
-        has_earlier_other_topic = any(
+        has_due_other_topic = any(
             (other_tk := _canonical_topic_key(it.get("topic"))) != t_key
-            and (
-                topic_bulk_sec <= 0
-                or (other_last := safe_float(cleaned_topic_last.get(other_tk, 0.0), 0.0)) <= 0
-                or (now_ts - other_last) >= topic_bulk_sec
-            )
+            and (topic_bulk_sec <= 0 or (now_ts - safe_float(topic_last.get(other_tk, 0.0), 0.0)) >= topic_bulk_sec)
             for it in pending_bulk
         )
 
-        if central_gate_closed or topic_window_closed or has_earlier_other_topic:
-            # Defer in persistent queue: batch with same-topic items until both topic window and central gate open
-            channel_state["last"][fingerprint] = now_ts
-            channel_state["last"][sim_key] = now_ts
-            pending_bulk.append(new_item)
+        if central_gate_closed or topic_window_closed or has_due_other_topic:
+            last_map[fingerprint] = now_ts
+            last_map[sim_key] = now_ts
+            _, q_reason = _enqueue_bounded_bulk(
+                pending_bulk, new_item, _topic_bulk_max_items(), _queue_max_items()
+            )
             _save_delivery_state(path, state)
-            return False, "buffered_for_bulk", False, None
+            return False, q_reason, False, None
 
-        # 5. Both Per-Topic Window and Central Single Gate are OPEN: dispatch this topic now
+        # 5. Both Per-Topic Window and Central Single Gate are OPEN: consume & dispatch this topic now
         same_topic_items = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) == t_key]
         channel_state["pending_bulk"] = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) != t_key]
         channel_state["sent"] = sent + 1
-        channel_state["last"][fingerprint] = now_ts
-        channel_state["last"][sim_key] = now_ts
+        last_map[fingerprint] = now_ts
+        last_map[sim_key] = now_ts
         channel_state["last_gate_ts"] = now_ts
-        cleaned_topic_last[t_key] = now_ts
-        if same_topic_items:
-            items_to_send = same_topic_items + [new_item]
-            _save_delivery_state(path, state)
-            return True, "bulk_synthesized", False, synthesize_bulk_notifications(items_to_send)
-
+        topic_last[t_key] = now_ts
         _save_delivery_state(path, state)
+        if same_topic_items:
+            return True, "bulk_synthesized", False, synthesize_bulk_notifications(same_topic_items + [new_item])
         return True, "reserved", False, (title, body, priority, topic)
 
 
@@ -660,65 +679,52 @@ def pop_due_bulk_batch(
     now: Optional[float] = None,
     force: bool = False,
 ) -> Optional[tuple[str, str, str, str]]:
-    """Pop and synthesize the next due per-topic batch once the central single-gate dispatcher opens."""
+    """Consumer: pop and synthesize the next due per-topic batch once the central single-gate opens."""
     now_ts = _resolve_gate_now(now)
     force = _as_bool_flag(force, False)
     today = datetime.fromtimestamp(now_ts, timezone.utc).date().isoformat()
     path = _delivery_state_path()
-    prev_path = path.with_name(path.name + ".previous")
-    if not path.exists() and not prev_path.exists():
+    if not path.exists() and not path.with_name(path.name + ".previous").exists():
         return None
     gate_sec = _common_gate_seconds()
     topic_bulk_sec = _topic_bulk_seconds()
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with FileLock(lock_path):
+    with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
-        channel_state = state["channels"].get(channel)
-        if not isinstance(channel_state, dict):
+        if channel not in state["channels"]:
             return None
-        raw_bulk = channel_state.get("pending_bulk")
-        if not isinstance(raw_bulk, list):
-            return None
-        pending_bulk: list[dict] = [it for it in raw_bulk if isinstance(it, dict)]
+        channel_state = _normalize_channel_state(state, channel, now_ts)
+        pending_bulk: list[dict] = channel_state["pending_bulk"]
         if not pending_bulk:
             return None
-        last_gate_ts = safe_float(channel_state.get("last_gate_ts", 0.0), 0.0)
-        if last_gate_ts > now_ts or last_gate_ts < 0.0:
-            last_gate_ts = 0.0
+        last_gate_ts = channel_state["last_gate_ts"]
         if not force and gate_sec > 0 and last_gate_ts > 0 and (now_ts - last_gate_ts) < gate_sec:
             return None
 
-        raw_topic_last = channel_state.get("topic_last_ts")
-        topic_last_ts: dict[str, float] = (
-            {str(k): safe_float(v, 0.0) for k, v in raw_topic_last.items() if safe_float(v, 0.0) <= now_ts}
-            if isinstance(raw_topic_last, dict)
-            else {}
-        )
-        channel_state["topic_last_ts"] = topic_last_ts
-
-        # Select the earliest queued topic whose per-topic batching window (topic_bulk_sec) has elapsed
-        seen_topics: list[str] = []
+        topic_last: dict[str, float] = channel_state["topic_last_ts"]
+        due_topics: list[str] = []
         for it in pending_bulk:
             tk = _canonical_topic_key(it.get("topic"))
-            if tk not in seen_topics:
-                seen_topics.append(tk)
-
-        chosen_topic: Optional[str] = None
-        for tk in seen_topics:
-            last_t_ts = safe_float(topic_last_ts.get(tk, 0.0), 0.0)
-            if force or topic_bulk_sec <= 0 or last_t_ts <= 0 or (now_ts - last_t_ts) >= topic_bulk_sec:
-                chosen_topic = tk
-                break
-
-        if chosen_topic is None:
+            if tk not in due_topics:
+                last_t_ts = safe_float(topic_last.get(tk, 0.0), 0.0)
+                if force or topic_bulk_sec <= 0 or last_t_ts <= 0 or (now_ts - last_t_ts) >= topic_bulk_sec:
+                    due_topics.append(tk)
+        if not due_topics:
             return None
 
+        # Dispatch highest-priority due topic first, breaking ties by earliest arrival order
+        chosen_topic = max(
+            due_topics,
+            key=lambda tk: max(
+                _PRIO_RANK.get(str(it.get("priority") or "default"), 1)
+                for it in pending_bulk
+                if _canonical_topic_key(it.get("topic")) == tk
+            ),
+        )
         items = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) == chosen_topic]
         channel_state["pending_bulk"] = [it for it in pending_bulk if _canonical_topic_key(it.get("topic")) != chosen_topic]
         channel_state["last_gate_ts"] = now_ts
-        topic_last_ts[chosen_topic] = now_ts
-        prev_sent = safe_nonneg_int(channel_state.get("sent", 0), default=0)
-        channel_state["sent"] = prev_sent + 1
+        topic_last[chosen_topic] = now_ts
+        channel_state["sent"] = safe_nonneg_int(channel_state.get("sent", 0), default=0) + 1
         _save_delivery_state(path, state)
         return synthesize_bulk_notifications(items)
 

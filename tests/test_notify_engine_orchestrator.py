@@ -948,6 +948,65 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
                 self.assertEqual(len(self.dispatched), 2)
                 self.assertEqual(self.dispatched[1]["topic"], "ntfy-server-test")
 
+        # Verify bounded Producer-Consumer queue caps per-topic and total items (dropping overflow / evicting lower priority)
+        from notify_engine.alertnotifiers import pass_common_gate, pop_due_bulk_batch
+        with mock.patch.dict(os.environ, {
+            "NOTIFICATION_TOPIC_BULK_SECONDS": "300",
+            "NOTIFICATION_GATE_SECONDS": "600",
+            "NOTIFICATION_TOPIC_BULK_MAX_ITEMS": "2",
+            "NOTIFICATION_QUEUE_MAX_ITEMS": "3",
+        }):
+            t2 = 1_770_000_000.0
+            # Open and close central gate with first message on macro topic
+            ok, reason, _, _ = pass_common_gate("ntfy", "Init Macro", "m0", "default", "ntfy-macro-test", now=t2)
+            self.assertTrue(ok)
+            self.assertEqual(reason, "reserved")
+
+            # Buffer 2 default-priority items on ntfy-macro-test (reaches topic_max=2)
+            ok, r1, _, _ = pass_common_gate("ntfy", "Macro A", "body A", "default", "ntfy-macro-test", now=t2 + 10)
+            self.assertFalse(ok)
+            self.assertEqual(r1, "buffered_for_bulk")
+            ok, r2, _, _ = pass_common_gate("ntfy", "Macro B", "body B", "default", "ntfy-macro-test", now=t2 + 20)
+            self.assertFalse(ok)
+            self.assertEqual(r2, "buffered_for_bulk")
+
+            # 3rd default-priority item on ntfy-macro-test is dropped because topic_max=2 is full
+            ok, r3, _, _ = pass_common_gate("ntfy", "Macro C Overflow", "body C", "default", "ntfy-macro-test", now=t2 + 30)
+            self.assertFalse(ok)
+            self.assertEqual(r3, "topic_queue_full_dropped")
+
+            # Urgent item on ntfy-macro-test evicts the oldest default-priority item ("Macro A")
+            ok, r4, _, _ = pass_common_gate("ntfy", "Macro D Urgent", "body D", "urgent", "ntfy-macro-test", urgent=True, now=t2 + 40)
+            self.assertFalse(ok)
+            self.assertEqual(r4, "buffered_for_bulk")
+
+            # Fill global queue (queue_max=3) with 1 item on ntfy-server-test, then verify 4th item on ntfy-price-test is dropped
+            ok, r5, _, _ = pass_common_gate("ntfy", "Server A", "srv A", "default", "ntfy-server-test", now=t2 + 50)
+            self.assertEqual(r5, "buffered_for_bulk")
+            ok, r6, _, _ = pass_common_gate("ntfy", "Price Overflow", "px", "default", "ntfy-price-test", now=t2 + 60)
+            self.assertFalse(ok)
+            self.assertEqual(r6, "queue_full_dropped")
+
+            # Pop after 10m gate: macro batch contains "Macro B" and "Macro D Urgent" (not "Macro A" or "Macro C Overflow")
+            batch = pop_due_bulk_batch("ntfy", now=t2 + 605)
+            self.assertIsNotNone(batch)
+            b_title, b_body, b_prio, b_topic = batch
+            self.assertEqual(b_topic, "ntfy-macro-test")
+            self.assertEqual(b_prio, "urgent")
+            self.assertIn("Macro B", b_body)
+            self.assertIn("Macro D Urgent", b_body)
+            self.assertNotIn("Macro A", b_body)
+            self.assertNotIn("Macro C Overflow", b_body)
+
+            # Also verify NotificationServer._enqueue_payload caps queue.jsonl to NOTIFICATION_QUEUE_MAX_ITEMS=3
+            self.server._enqueue_payload("ntfy_webhook", {"title": "Q1"})
+            self.server._enqueue_payload("ntfy_webhook", {"title": "Q2"})
+            self.server._enqueue_payload("ntfy_webhook", {"title": "Q3"})
+            self.server._enqueue_payload("ntfy_webhook", {"title": "Q4"})
+            with open(self.server.queue_file, "r", encoding="utf-8") as f:
+                q_titles = [json.loads(ln)["title"] for ln in f if ln.strip()]
+            self.assertEqual(q_titles, ["Q2", "Q3", "Q4"])
+
 
 
 

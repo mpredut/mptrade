@@ -29,6 +29,7 @@ from notify_engine.alertnotifiers import (
     _external_notifications_disabled,
     _is_provider_daily_limit,
     _mark_provider_daily_limit,
+    _queue_max_items,
     format_ntfy_url,
     is_fake_alert_text,
     pass_common_gate,
@@ -186,10 +187,46 @@ class NotificationServer:
         try:
             payload = dict(data) if isinstance(data, dict) else {}
             payload["__orchestrator_intent__"] = intent_type
-            with open(self.queue_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload) + "\n")
+            max_q = _queue_max_items()
+            existing = (
+                [ln.strip() for ln in read_text_lines(self.queue_file, keepends=True, errors="replace") if ln.strip()]
+                if os.path.exists(self.queue_file)
+                else []
+            )
+            if len(existing) >= max_q:
+                logging.warning(f"Retry queue full ({len(existing)} >= {max_q}); dropping oldest notification.")
+                existing = existing[-(max_q - 1):] if max_q > 1 else []
+            existing.append(json.dumps(payload))
+            atomic_write_text(self.queue_file, "".join(ln + "\n" for ln in existing))
         except Exception as e:
             logging.error(f"Failed to enqueue notification: {e}")
+
+    def _apply_ntfy_gate(
+        self,
+        title: str,
+        body: str,
+        priority: str,
+        topic: str,
+        alerts: list | None = None,
+        *,
+        urgent: bool = False,
+        skip_email: bool = False,
+    ) -> tuple[str, str, str, str] | None:
+        allowed, reason, _, out_payload = pass_common_gate(
+            "ntfy", title, body, priority, topic, alerts, urgent=urgent,
+        )
+        if allowed:
+            return out_payload or (title, body, priority, topic)
+        logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
+        if reason == "buffered_for_bulk":
+            self.flush_pending_bulk()
+        elif (
+            reason not in ("duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped")
+            and not skip_email
+            and is_email_mirrored(topic)
+        ):
+            self._send_email(title, body)
+        return None
 
     def _gate_and_send_ntfy(
         self,
@@ -201,26 +238,10 @@ class NotificationServer:
         *,
         urgent: bool = False,
     ) -> bool:
-        allowed, reason, _, out_payload = pass_common_gate(
-            "ntfy",
-            title,
-            body,
-            priority,
-            topic,
-            alerts,
-            urgent=urgent,
-        )
-        if not allowed:
-            logging.info(f"ntfy delivery gated by common policy ({reason}): {title}")
-            if reason == "buffered_for_bulk":
-                self.flush_pending_bulk()
-            elif (
-                reason not in ("duplicate", "similar_eliminated")
-                and is_email_mirrored(topic)
-            ):
-                self._send_email(title, body)
+        gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent)
+        if gated is None:
             return False
-        out_title, out_body, out_prio, out_topic = out_payload or (title, body, priority, topic)
+        out_title, out_body, out_prio, out_topic = gated
         prev = getattr(_GATED_DISPATCH_TLS, "active", False)
         _GATED_DISPATCH_TLS.active = True
         try:
@@ -229,7 +250,7 @@ class NotificationServer:
             _GATED_DISPATCH_TLS.active = prev
 
     def flush_pending_bulk(self, *, now: float | None = None, force: bool = False) -> bool:
-        """Flush and synthesize any buffered notifications once the 5-minute common gate opens."""
+        """Consumer: flush and synthesize the next due per-topic batch once the central gate opens."""
         flushed = False
         batch = pop_due_bulk_batch("ntfy", now=now, force=force)
         if batch:
@@ -273,27 +294,12 @@ class NotificationServer:
             and not getattr(_GATED_DISPATCH_TLS, "active", False)
             and not getattr(self, "_in_gated_dispatch", False)
         ):
-            allowed, reason, _, out_payload = pass_common_gate(
-                "ntfy",
-                title,
-                message,
-                priority,
-                topic_str,
-                urgent=(priority == "urgent"),
+            gated = self._apply_ntfy_gate(
+                title, message, priority, topic_str, urgent=(priority == "urgent"), skip_email=skip_email
             )
-            if not allowed:
-                logging.info(f"Direct ntfy gated by common policy ({reason}): {title}")
-                if reason == "buffered_for_bulk":
-                    self.flush_pending_bulk()
-                elif (
-                    reason not in ("duplicate", "similar_eliminated")
-                    and not skip_email
-                    and is_email_mirrored(topic_str)
-                ):
-                    self._send_email(title, message)
+            if gated is None:
                 return False
-            if out_payload:
-                title, message, priority, topic_str = out_payload
+            title, message, priority, topic_str = gated
 
         # ERROR / DEADMAN topics are mirrored to email (policy: notify_engine.mailer).
         # Sent before the push so an ntfy outage or quota never swallows the email.
@@ -686,6 +692,9 @@ class NotificationServer:
                         "source": bot_name or "orchestrator",
                         "symbol": "SYSTEM",
                     }
+                    if len(self.cooldowns) >= 200:
+                        oldest_key = min(self.cooldowns, key=self.cooldowns.get)
+                        self.cooldowns.pop(oldest_key, None)
                     self.cooldowns[rule_key] = now
                     self._gate_and_send_ntfy(
                         full_title,
@@ -819,7 +828,8 @@ class NotificationServer:
                             newly_appended = [
                                 l.strip() for l in cur_lines[read_count:] if l.strip()
                             ]
-                    content = "".join(r + "\n" for r in remaining + newly_appended)
+                    combined = (remaining + newly_appended)[-_queue_max_items():]
+                    content = "".join(r + "\n" for r in combined)
                     atomic_write_text(self.queue_file, content)
                     if success_count > 0:
                         logging.info(f"Flushed {success_count} delayed notifications from queue.")
