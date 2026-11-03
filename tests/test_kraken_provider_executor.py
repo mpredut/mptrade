@@ -436,8 +436,8 @@ class KrakenExecutorContractTest(unittest.TestCase):
         with self.subTest(msg="balance_ex_subtracts_hold_trade_and_triggers_usdc_conversion"):
             self.fake.calls.clear()
             with patch.object(self.fake, "balance_ex", create=True, return_value={
-                "ZUSD": {"balance": "808.8325", "hold_trade": "800.0000"},
-                "USDC": {"balance": "2049.5800", "hold_trade": "0.0"},
+                "ZUSD.F": {"balance": "808.8325", "hold_trade": "800.0000"},
+                "USDC.F": {"balance": "2049.5800", "hold_trade": "0.0"},
                 "HYPE": {"balance": "4.9386", "hold_trade": "4.8769"},
             }):
                 self.assertAlmostEqual(self.p.free_balance("HYPE"), 0.0617, places=4)

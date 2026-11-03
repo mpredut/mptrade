@@ -202,7 +202,7 @@ class GeopoliticalThreatAnalyzer:
             and has_new_acute_phrase
         )
         if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
-            if headline_digest and not self._cached_assessment.is_fallback:
+            if headline_digest and not self._last_headlines_digest and not self._cached_assessment.is_fallback:
                 self._last_headlines_digest = headline_digest
             return self._cached_assessment
 

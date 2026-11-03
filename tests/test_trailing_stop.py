@@ -39,6 +39,7 @@ class FakePo:
         bypasses = kw.get("bypass_guards") or set()
         order = {"side": side, "symbol": symbol, "price": price,
                             "qty": qty, "force": force,
+                            "kind": kw.get("kind"),
                             "client_order_id": kw.get("client_order_id"),
                             "bypass_guards": bypasses}
         self.orders.append(order)
@@ -134,6 +135,7 @@ class TestTrailing(Base):
             ts.check_once()
             self.assertEqual(len(self.po.orders), 1)
             self.assertEqual(self.po.orders[0]["side"], "SELL")
+            self.assertEqual(self.po.orders[0]["kind"], "TRAIL_SELL")
             self.assertTrue(self.po.orders[0]["force"], "force=True is required so it bypasses the weight")
             self.assertEqual(
                 self.po.orders[0]["bypass_guards"],

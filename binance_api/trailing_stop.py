@@ -378,6 +378,7 @@ class TrailingStop(TrailingAdapterBase):
         def submit_once():
             response = self.po.place(
                 pair, side, price, qty, force=True,
+                kind=kind,
                 bypass_guards=bypass_guards, smart=False,
                 caller_owns_retry=True, wait_for_trend=(side != "SELL"),
                 client_order_id=intent["client_order_id"],

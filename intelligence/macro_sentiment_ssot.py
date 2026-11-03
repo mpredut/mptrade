@@ -1728,26 +1728,34 @@ def compute_dynamic_geopolitical_interval(
     high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
     has_new_acute = not bool(last_headlines_digest)
-    if changed_b and threat_level in ("NORMAL", "ELEVATED") and last_headlines_digest and news_snapshot is not None:
+    new_high_sev_count = high_sev_count
+    if changed_b and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
-        active_acute_phrases = get_active_acute_shock_phrases(now_ts=ts)
-        has_new_acute = any(
-            phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
-            for h in high_sev[:12]
-            for phrase in active_acute_phrases
-        )
+        if high_sev:
+            new_high_sev_count = sum(
+                1
+                for h in high_sev[:12]
+                if (str(obj_attr(h, "title", None) or "").strip().lower() not in prev_lower)
+            )
+        if threat_level in ("NORMAL", "ELEVATED"):
+            active_acute_phrases = get_active_acute_shock_phrases(now_ts=ts)
+            has_new_acute = any(
+                phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
+                for h in high_sev[:12]
+                for phrase in active_acute_phrases
+            )
 
     if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:
         return 0.0, "acute_shock_keyword_alert"
 
-    if changed_b and high_sev_count > 0:
+    if changed_b and new_high_sev_count > 0:
         if threat_level == "CRITICAL_SHOCK":
             return min(base, min_geo_itv * 2.0), "critical_shock_active_monitoring_30m"
         if threat_level == "ELEVATED":
             return min(base, min_geo_itv * 4.0), "elevated_threat_new_headlines_1h"
-        if high_sev_count >= 3:
-            return min(base, cp_cooldown_itv), f"high_severity_headline_surge_{high_sev_count}"
+        if new_high_sev_count >= 3:
+            return min(base, cp_cooldown_itv), f"high_severity_headline_surge_{new_high_sev_count}"
         crossed_cp = did_cross_session_checkpoint(last_eval_ts, ts, min_cooldown_sec=cp_cooldown_itv)
         if crossed_cp is not None:
             return min(base, cp_cooldown_itv), f"geopolitical_session_checkpoint_{crossed_cp}"

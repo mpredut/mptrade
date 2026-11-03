@@ -1009,6 +1009,92 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert "iran war" not in lex_after["acute_shock_phrases"]
         assert demote_dynamic_acute_terms(cache_dir=str(tmp_path), now_ts=1_700_000_030.0) is False
 
+    def test_geopolitical_surge_counts_only_new_headlines_and_preserves_digest_until_stale(self, tmp_path):
+        from intelligence.macro_sentiment_ssot import (
+            compute_dynamic_geopolitical_interval,
+            extract_high_severity_headlines_and_digest,
+        )
+
+        # Simulate a 6h rolling pool with high_severity_count=79 where 11 of top 12 were already in last_headlines_digest
+        old_titles = [f"Tariff trade negotiations round {i}" for i in range(11)]
+        prev_digest = "|".join(sorted(t.lower() for t in old_titles))
+        one_new_headlines = [
+            {"title": "Central bank policy review scheduled", "source": "Reuters", "is_high_severity": True},
+            *[{"title": t, "source": "Reuters", "is_high_severity": True} for t in old_titles],
+        ]
+        snap_one_new = {
+            "headlines": one_new_headlines,
+            "high_severity_count": 79,
+            "has_critical_shock_keywords": False,
+        }
+        itv_one_new, reason_one_new = compute_dynamic_geopolitical_interval(
+            base_interval_sec=16200.0,
+            last_eval_ts=1_700_000_000.0,
+            now_ts=1_700_000_600.0,
+            cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+            news_snapshot=snap_one_new,
+            headlines_changed=True,
+            last_headlines_digest=prev_digest,
+        )
+        assert itv_one_new == 16200.0
+        assert reason_one_new == "standard_geopolitical_ttl_normal"
+
+        # Whereas 3+ genuinely new high-severity headlines in top 12 trigger high_severity_headline_surge_3
+        three_new_headlines = [
+            {"title": "Sanctions package announced on oil exports", "source": "Reuters", "is_high_severity": True},
+            {"title": "Military drills near shipping lane", "source": "BBC", "is_high_severity": True},
+            {"title": "Tariff hike on industrial imports", "source": "CNBC", "is_high_severity": True},
+            *[{"title": t, "source": "Reuters", "is_high_severity": True} for t in old_titles[:9]],
+        ]
+        snap_three_new = {
+            "headlines": three_new_headlines,
+            "high_severity_count": 81,
+            "has_critical_shock_keywords": False,
+        }
+        itv_three_new, reason_three_new = compute_dynamic_geopolitical_interval(
+            base_interval_sec=16200.0,
+            last_eval_ts=1_700_000_000.0,
+            now_ts=1_700_000_600.0,
+            cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+            news_snapshot=snap_three_new,
+            headlines_changed=True,
+            last_headlines_digest=prev_digest,
+        )
+        assert itv_three_new == 2700.0
+        assert reason_three_new == "high_severity_headline_surge_3"
+
+        # GeopoliticalThreatAnalyzer.assess must not overwrite _last_headlines_digest while cache is still fresh
+        calls = []
+
+        def counting_runner(prompt, model, timeout):
+            calls.append(prompt)
+            return json.dumps({
+                "threat_level": "NORMAL",
+                "risk_score": 0.15,
+                "summary": "Routine macro headlines.",
+                "recommended_brake": "NONE",
+            })
+
+        analyzer = GeopoliticalThreatAnalyzer(
+            gemini_client=GeminiClient(custom_runner=counting_runner),
+            cache_ttl_sec=16200.0,
+            state_file=str(tmp_path / "geo_digest_preserve.json"),
+        )
+        snap_initial = {"headlines": [{"title": t, "source": "Reuters", "is_high_severity": True} for t in old_titles[:4]]}
+        _, initial_digest = extract_high_severity_headlines_and_digest(snap_initial)
+        analyzer.assess(snap_initial, now_ts=1_700_000_000.0)
+        assert len(calls) == 1
+        assert analyzer._last_headlines_digest == initial_digest
+
+        # Call while not stale with modified headlines: must return cached assessment WITHOUT overwriting _last_headlines_digest
+        analyzer.assess(snap_one_new, now_ts=1_700_000_600.0)
+        assert len(calls) == 1
+        assert analyzer._last_headlines_digest == initial_digest
+        # Once stale (after 16200s), the new digest must be evaluated by LLM
+        analyzer.assess(snap_one_new, now_ts=1_700_017_000.0)
+        assert len(calls) == 2
+
+
 
 
 

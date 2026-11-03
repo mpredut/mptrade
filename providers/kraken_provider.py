@@ -467,8 +467,8 @@ class KrakenProvider(MarketDataProvider):
             bal = self._query_with_bot_fallback(self._available_balances_from_client) or {}
             if not isinstance(bal, dict):
                 return
-            _, zusd = self._lookup_balance_candidates(bal, ("ZUSD", "USD", "XUSD"))
-            _, usdc = self._lookup_balance_candidates(bal, ("USDC",))
+            _, zusd = self._lookup_balance_candidates(bal, ("USD", "ZUSD", "XUSD", "USD.F", "ZUSD.F"))
+            _, usdc = self._lookup_balance_candidates(bal, ("USDC", "USDC.F", "USDC.S"))
             zusd_f = zusd or 0.0
             usdc_f = usdc or 0.0
             if usdc_f < 5.0:
