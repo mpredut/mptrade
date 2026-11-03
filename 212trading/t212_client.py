@@ -78,6 +78,7 @@ class T212Client:
         self._pf_cache: tuple[float, list] | None = None
         self._ord_cache: tuple[float, list] | None = None
         self._cash_cache: tuple[float, dict] | None = None
+        self._hist_cache: tuple[float, list] | None = None
         self._pf_ttl = safe_nonneg_float(
             required_float_env("T212_PORTFOLIO_TTL_SEC") if portfolio_ttl_sec is None else portfolio_ttl_sec,
             default=6.0,
@@ -142,6 +143,8 @@ class T212Client:
         self._fetch_fail.pop("_pf_cache", None)
         self._cash_cache = None
         self._fetch_fail.pop("_cash_cache", None)
+        self._hist_cache = None
+        self._fetch_fail.pop("_hist_cache", None)
         if self._shared_cache_enabled():
             try:
                 if os.path.exists(self._shared_cache_path):
@@ -189,6 +192,21 @@ class T212Client:
             "User-Agent": _BROWSER_UA,  # Avoid Cloudflare 403 responses.
             "Accept": "application/json",
         }
+
+    def _headers_for_endpoint(self, endpoint_key: str) -> dict:
+        """Enforce per-endpoint minimum spacing (_order_min_gap) before building headers."""
+        last_attr_map = getattr(self, "_last_attr_fetch", None)
+        min_endpoint_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)
+        if isinstance(last_attr_map, dict) and min_endpoint_gap > 0.0:
+            last_ts = last_attr_map.get(endpoint_key)
+            if last_ts is not None:
+                since_last = time.monotonic() - last_ts
+                if 0.0 <= since_last < min_endpoint_gap:
+                    time.sleep(min_endpoint_gap - since_last)
+        headers = self._headers()
+        if isinstance(last_attr_map, dict):
+            last_attr_map[endpoint_key] = time.monotonic()
+        return headers
 
     # -- Instruments. ----------------------------------------------------------
     def list_instruments(self) -> list[dict] | None:
@@ -331,6 +349,18 @@ class T212Client:
 
     _clean_order_id = staticmethod(_clean_single_order_id)
 
+    @staticmethod
+    def _extract_history_matches(items, target_oid: str) -> list[tuple[dict, dict | None]]:
+        matches: list[tuple[dict, dict | None]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order") if isinstance(item.get("order"), dict) else item
+            cand_oid = extract_order_id(order)
+            if cand_oid is not None and cand_oid == target_oid:
+                matches.append((order, item.get("fill")))
+        return matches
+
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.
 
@@ -342,29 +372,31 @@ class T212Client:
         target_oid = self._clean_order_id(order_id)
         if target_oid is None:
             return None
-        status, body = http_get(
-            f"{self.base}/equity/history/orders?limit=50",
-            headers=self._headers(),
-        )
-        if status == 429:
-            self.notify_rate_limit(max(5.0, self._pf_ttl))
-        if status != 200 or not body:
-            self._log_read_fail("order history", status)
-            return None
-        try:
-            payload = json.loads(body)
-        except ValueError:
-            self._log_read_fail("order history (invalid JSON)", status)
-            return None
-        items = payload.get("items", []) if isinstance(payload, dict) else payload
-        matches = []
-        for item in items or []:
-            if not isinstance(item, dict):
-                continue
-            order = item.get("order") if isinstance(item.get("order"), dict) else item
-            cand_oid = extract_order_id(order)
-            if cand_oid is not None and cand_oid == target_oid:
-                matches.append((order, item.get("fill")))
+        matches: list[tuple[dict, dict | None]] = []
+        with self._lock:
+            hc = getattr(self, "_hist_cache", None)
+            if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
+                matches = self._extract_history_matches(hc[1], target_oid)
+        if not matches:
+            status, body = http_get(
+                f"{self.base}/equity/history/orders?limit=50",
+                headers=self._headers_for_endpoint("_hist_cache"),
+            )
+            if status == 429:
+                self.notify_rate_limit(max(5.0, self._pf_ttl))
+            if status != 200 or not body:
+                self._log_read_fail("order history", status)
+                return None
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                self._log_read_fail("order history (invalid JSON)", status)
+                return None
+            items = payload.get("items", []) if isinstance(payload, dict) else payload
+            if isinstance(items, list):
+                with self._lock:
+                    self._hist_cache = (time.monotonic(), items)
+            matches = self._extract_history_matches(items, target_oid)
         if not matches:
             return False
 
@@ -413,7 +445,10 @@ class T212Client:
         target_oid = self._clean_order_id(order_id)
         if target_oid is None:
             return None
-        status, body = http_get(f"{self.base}/equity/orders/{target_oid}", headers=self._headers())
+        status, body = http_get(
+            f"{self.base}/equity/orders/{target_oid}",
+            headers=self._headers_for_endpoint("_order_status"),
+        )
         if status == 404:
             return self.get_historical_order(target_oid)
         if status == 429:
@@ -503,18 +538,7 @@ class T212Client:
                     setattr(self, attr, (time.monotonic() - s_age, s_val))
                     self._fetch_fail.pop(attr, None)
                 return s_val
-            last_attr_map = getattr(self, "_last_attr_fetch", None)
-            min_endpoint_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)
-            if isinstance(last_attr_map, dict) and min_endpoint_gap > 0.0:
-                last_ts = last_attr_map.get(attr)
-                if last_ts is not None:
-                    since_last = time.monotonic() - last_ts
-                    if 0.0 <= since_last < min_endpoint_gap:
-                        time.sleep(min_endpoint_gap - since_last)
-            headers = self._headers()
-            if isinstance(last_attr_map, dict):
-                last_attr_map[attr] = time.monotonic()
-            status, body = http_get(f"{self.base}{path}", headers=headers)
+            status, body = http_get(f"{self.base}{path}", headers=self._headers_for_endpoint(attr))
             if status != 200 or not body:
                 s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, 60.0)
                 if s_fb_hit and s_fb_val is not None:

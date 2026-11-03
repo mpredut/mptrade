@@ -51,6 +51,7 @@ from state_io import (  # noqa: E402
     durable_replace_file,
     read_bytes_file,
     read_json_dict,
+    read_tail_jsonl_dicts,
     read_text_file,
     save_json_state,
 )
@@ -615,6 +616,9 @@ def last_store_activity() -> float:
         except OSError:
             pass
     brain = os.path.join(CLI, "brain")
+    now_ts = time.time()
+    if _has_active_schedule_timer(brain, ignored, now_ts):
+        return now_ts
     for root, dirs, files in os.walk(brain):
         if root == brain:
             dirs[:] = [d for d in dirs if d not in ignored]
@@ -626,6 +630,63 @@ def last_store_activity() -> float:
             except OSError:
                 pass
     return newest
+
+
+def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) -> bool:
+    """Return True when an interactive conversation has an active one-shot or cron schedule timer."""
+    if not os.path.isdir(brain_dir):
+        return False
+    try:
+        cids = os.listdir(brain_dir)
+    except OSError:
+        return False
+    from datetime import datetime
+    for cid in cids:
+        if cid in ignored:
+            continue
+        tp = os.path.join(brain_dir, cid, ".system_generated", "logs", "transcript.jsonl")
+        try:
+            st = os.stat(tp)
+        except OSError:
+            continue
+        if (now - st.st_mtime) > 3600:
+            continue
+        records = read_tail_jsonl_dicts(tp, limit=50)
+        oneshot_until = 0.0
+        cron_active = False
+        for rec in records:
+            step_type = str(rec.get("type") or "")
+            content = str(rec.get("content") or "")
+            if step_type == "SYSTEM_MESSAGE":
+                oneshot_until = 0.0
+                if "stopped due to server restart" in content:
+                    cron_active = False
+            for tc in rec.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                name = str(tc.get("name") or "")
+                args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
+                if name == "manage_task" and str(args.get("Action") or "").strip().strip('"') == "kill":
+                    oneshot_until = 0.0
+                    cron_active = False
+                elif name == "schedule":
+                    created_raw = str(rec.get("created_at") or "").strip()
+                    sched_ts = st.st_mtime
+                    if created_raw:
+                        try:
+                            sched_ts = datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            sched_ts = st.st_mtime
+                    dur_raw = str(args.get("DurationSeconds") or "").strip().strip('"')
+                    cron_raw = str(args.get("CronExpression") or "").strip().strip('"')
+                    dur_s = safe_pos_float(dur_raw, default=None)
+                    if dur_s is not None:
+                        oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
+                    elif cron_raw:
+                        cron_active = True
+        if cron_active or now < oneshot_until:
+            return True
+    return False
 
 
 def daemon_started_at() -> float:

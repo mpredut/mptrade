@@ -255,5 +255,48 @@ def test_known_mirrored_topic_relinked_or_new_webui_thread_does_not_trigger_rest
     assert asf.mode_ui_sync_check(900, min_interval_sec=720.0) == asf.UI_SYNC_READY
 
 
+def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
+    import json
+    from datetime import datetime, timezone
+
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1500)
+
+    log_dir = cli / "brain" / "interactive-cid" / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tp = log_dir / "transcript.jsonl"
+    sched_ts = time.time() - 1000.0  # 16.6m into a 20m (1200s) schedule timer
+    sched_iso = datetime.fromtimestamp(sched_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 10,
+                "type": "PLANNER_RESPONSE",
+                "created_at": sched_iso,
+                "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": "1200", "Prompt": "wake"}}],
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # Once the timer fires (SYSTEM_MESSAGE appended) and store is aged past idle_sec, ui-sync proceeds
+    tp.write_text(
+        tp.read_text()
+        + json.dumps({"step_index": 11, "type": "SYSTEM_MESSAGE", "content": "[Message] timer fired"})
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+
 
 

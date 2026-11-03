@@ -465,6 +465,28 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(len(sleep_calls), 1)
             self.assertAlmostEqual(sleep_calls[0], 2.1, delta=0.2)
 
+        # Verify get_historical_order caches the 50-item history page across multiple order lookups
+        history_payload = (
+            b'{"items":['
+            b'{"order":{"id":201,"ticker":"RGNT_US_EQ","status":"FILLED"},"fill":{"quantity":72.14,"price":1.43}},'
+            b'{"order":{"id":202,"ticker":"SPCX_US_EQ","status":"FILLED"},"fill":{"quantity":0.71,"price":140.51}}'
+            b']}'
+        )
+        with mock.patch("time.sleep"), \
+             mock.patch.object(
+                 t212_client,
+                 "http_get",
+                 side_effect=[(404, b""), (200, history_payload), (404, b"")],
+             ) as hist_get_mock:
+            st1 = client.get_order_status(201)
+            st2 = client.get_order_status(202)
+            self.assertEqual(st1["status"], "FILLED")
+            self.assertAlmostEqual(st1["filledQuantity"], 72.14)
+            self.assertEqual(st2["status"], "FILLED")
+            self.assertAlmostEqual(st2["filledQuantity"], 0.71)
+            # Only 3 HTTP GETs total: (404 on 201, 200 on history, 404 on 202 -> served from _hist_cache)
+            self.assertEqual(hist_get_mock.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
