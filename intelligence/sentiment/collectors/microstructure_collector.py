@@ -365,20 +365,33 @@ def load_symbol_price_series(
         ]
 
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
+    p0: Optional[Tuple[float, float]] = None
+    p1: Optional[Tuple[float, float]] = None
+    span_24h_ms = 0.0
     for cand in cands:
         for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
             ser = _extract_cached_items_series(read_json_cached(p24_path), cands)
             if len(ser) >= 2:
-                series_24h = list(ser)
+                if not series_24h:
+                    series_24h = list(ser)
+                    p0 = _parse_ts_px_row(series_24h[0])
+                    p1 = _parse_ts_px_row(series_24h[-1])
+                    span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
+                elif p0 is not None:
+                    sib_p0 = _parse_ts_px_row(ser[0])
+                    sib_p1 = _parse_ts_px_row(ser[-1])
+                    if sib_p0 and sib_p1 and sib_p0[0] < p0[0] and not _prices_diverged(sib_p1[1], p0[1]):
+                        older_pts = [r for r in ser if (pt := _parse_ts_px_row(r)) is not None and pt[0] < p0[0]]
+                        if older_pts:
+                            series_24h = older_pts + series_24h
+                            p0 = _parse_ts_px_row(series_24h[0])
+                            p1 = _parse_ts_px_row(series_24h[-1])
+                            span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
                 break
-        if series_24h:
+        if series_24h and span_24h_ms >= 3600000.0 * 18:
             break
-
-    p0 = _parse_ts_px_row(series_24h[0]) if len(series_24h) >= 2 else None
-    p1 = _parse_ts_px_row(series_24h[-1]) if len(series_24h) >= 2 else None
-    span_24h_ms = max(0.0, p1[0] - p0[0]) if (p0 and p1) else 0.0
 
     # 2. Supplement 24h (when < 18h span) and extract 7d history from cache_sparse_price_<SYM> / cache_365_price_<SYM>
     need_24h_supplement = span_24h_ms < 3600000.0 * 18
@@ -414,19 +427,32 @@ def load_symbol_price_series(
             if not need_24h_supplement
             else (f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json", f"cache_sparse_price_{cand}.jsonl")
         )
+        cand_arch: list = []
         for arch_path in _cand_paths(*primary_names):
             if rows := _read_arch_file(arch_path):
-                archive_pts = rows
+                cand_arch = rows
                 break
-        if archive_pts:
-            if include_7d and need_24h_supplement:
-                a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
-                if a0 and a1 and (a1[0] - a0[0]) < 5.0 * 86400.0 * 1000.0:
-                    for sp_path in _cand_paths(f"cache_sparse_price_{cand}.jsonl"):
-                        if sp_rows := _read_arch_file(sp_path, max_b=512 * 1024):
+        if cand_arch:
+            if not archive_pts:
+                archive_pts = cand_arch
+            else:
+                cur_a0 = _parse_ts_px_row(archive_pts[0])
+                sib_a0, sib_a1 = _parse_ts_px_row(cand_arch[0]), _parse_ts_px_row(cand_arch[-1])
+                if cur_a0 and sib_a0 and sib_a1 and sib_a0[0] < cur_a0[0] and not _prices_diverged(sib_a1[1], cur_a0[1]):
+                    older_arch = [r for r in cand_arch if (pt := _parse_ts_px_row(r)) is not None and pt[0] < cur_a0[0]]
+                    if older_arch:
+                        archive_pts = older_arch + archive_pts
+            a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
+            arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
+            if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
+                for sp_path in _cand_paths(f"cache_sparse_price_{cand}.jsonl"):
+                    if sp_rows := _read_arch_file(sp_path, max_b=512 * 1024):
+                        sp0, sp1 = _parse_ts_px_row(sp_rows[0]), _parse_ts_px_row(sp_rows[-1])
+                        if sp0 and sp1 and (sp1[0] - sp0[0]) > arch_span_ms:
                             sparse_7d_pts = sp_rows
                             break
-            break
+            if arch_span_ms >= 5.0 * 86400.0 * 1000.0 or sparse_7d_pts:
+                break
 
     if archive_pts:
         try:

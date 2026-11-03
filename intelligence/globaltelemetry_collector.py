@@ -80,7 +80,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.skip_news = _parse_bool_flag(skip_news, False)
         self.skip_external = _parse_bool_flag(skip_external, False)
         self.running = False
-        self.symbols = parse_symbol_list(symbols) or self._detect_active_symbols()
+        parsed_syms = parse_symbol_list(symbols)
+        self._explicit_symbols = bool(parsed_syms)
+        self.symbols = parsed_syms or self._detect_active_symbols()
+        self._auto_detected_symbols = list(self.symbols)
 
         self._init_external_collectors(logger)
         self.news_collector = NewsFeedCollector(
@@ -197,6 +200,10 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         """Execute one evaluation cycle, updating telemetry whose scheduled interval has elapsed."""
         force = _parse_bool_flag(force, False)
         current_ts = resolve_now_ts(now)
+        if not getattr(self, "_explicit_symbols", False) and self.symbols == getattr(self, "_auto_detected_symbols", None):
+            if detected_syms := self._detect_active_symbols():
+                self.symbols = detected_syms
+                self._auto_detected_symbols = list(detected_syms)
         results: Dict[str, Any] = {
             "ts": current_ts,
             "symbols": list(self.symbols),

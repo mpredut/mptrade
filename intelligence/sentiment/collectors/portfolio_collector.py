@@ -1203,11 +1203,14 @@ def enrich_24h_and_microstructure(
                 prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
             elif arch_vals_7d:
                 prices_and_trends[sym]["price"] = arch_vals_7d[-1]
+        s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
+        s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
+        span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
         if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
             prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d))
         if sym in inst_by_sym and callable(ohlc_fn := getattr(getattr(inst_by_sym[sym], "_provider", None), "ohlc_series", None)):
-            if not m24:
+            if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                 try:
                     s5, cutoff_24h = ohlc_fn(sym, 5), now_ts - 86400.0
                     s5_vols = getattr(s5, "volumes", ()) or ()
@@ -1216,15 +1219,33 @@ def enrich_24h_and_microstructure(
                         for idx, (ts, px) in enumerate(zip(getattr(s5, "timestamps", ()), getattr(s5, "closes", ())))
                         if ts >= cutoff_24h and float(px) > 0
                     ]
-                    if m24 := (compute_24h_price_metrics(pts_24h) or {}):
-                        matched_series_24h = pts_24h
-                    if "chg_7d_pct" not in prices_and_trends[sym]:
+                    if not pts_24h or (pts_24h[-1][0] - pts_24h[0][0]) < 18 * 3600 * 1000:
+                        s15 = ohlc_fn(sym, 15)
+                        s15_vols = getattr(s15, "volumes", ()) or ()
+                        first_s5_ts = (pts_24h[0][0] / 1000.0 - 300.0) if pts_24h else float("inf")
+                        pts_15 = [
+                            ([int(ts * 1000), float(px), float(s15_vols[idx])] if idx < len(s15_vols) and (safe_pos_float(s15_vols[idx], 0.0) or 0.0) > 0.0 else [int(ts * 1000), float(px)])
+                            for idx, (ts, px) in enumerate(zip(getattr(s15, "timestamps", ()), getattr(s15, "closes", ())))
+                            if cutoff_24h <= ts <= first_s5_ts and float(px) > 0
+                        ]
+                        pts_24h = pts_15 + pts_24h
+                    if not m24:
+                        if m24 := (compute_24h_price_metrics(pts_24h) or {}):
+                            matched_series_24h = pts_24h
+                    elif len(pts_24h) >= 8 and (pts_24h[-1][0] - pts_24h[0][0]) >= 18 * 3600 * 1000 and s24_p0 is not None:
+                        older_ohlc = [pt for pt in pts_24h if pt[0] < s24_p0[0]]
+                        if older_ohlc:
+                            matched_series_24h = older_ohlc + list(matched_series_24h)
+                            if m24_full := (compute_24h_price_metrics(matched_series_24h) or {}):
+                                m24 = m24_full
+                    if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                         s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
                         vals_7d = [float(px) for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
-                        prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
+                        if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or (len(vals_7d) >= 24 and len(vals_7d) > len(arch_vals_7d))):
+                            prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
                 except Exception:
                     pass
-            elif m24.get("vp_source") == "TPO":
+            if m24.get("vp_source") == "TPO":
                 try:
                     s5_vp, cutoff_vp = ohlc_fn(sym, 5), now_ts - 86400.0
                     s5_vp_vols = getattr(s5_vp, "volumes", ())
@@ -1305,20 +1326,44 @@ def enrich_24h_and_microstructure(
                     if kv is not None and prices_and_trends[sym].get(kk) is None:
                         prices_and_trends[sym][kk] = kv
             if not sym.endswith(("_EQ", "_US_EQ")) and matched_series_24h:
-                if prices_and_trends[sym].get("slope_3_7m") is None and (s_fb := _compute_short_slopes_from_series(matched_series_24h)):
+                stale_short_cache = (
+                    prices_and_trends[sym].get("slope_2_5h") is not None
+                    and prices_and_trends[sym].get("slope_15m") is not None
+                    and abs(float(prices_and_trends[sym]["slope_2_5h"]) - float(prices_and_trends[sym]["slope_15m"])) < 1e-12
+                    and abs(float(prices_and_trends[sym].get("growth_2_5h") or 0.0) - float(prices_and_trends[sym].get("growth_15m") or 0.0)) < 1e-9
+                )
+                if (prices_and_trends[sym].get("slope_3_7m") is None or stale_short_cache) and (s_fb := _compute_short_slopes_from_series(matched_series_24h)):
                     for sk, sv in s_fb.items():
-                        if sv is not None and prices_and_trends[sym].get(sk) is None:
+                        if sv is None:
+                            continue
+                        if prices_and_trends[sym].get(sk) is None or (
+                            stale_short_cache
+                            and (
+                                sk in ("slope_2_5h", "growth_2_5h", "trend_2_5h")
+                                or (sk in ("slope_90s", "growth_90s", "trend_90s") and abs(float(prices_and_trends[sym].get("slope_90s") or 0.0)) < 1e-12)
+                            )
+                        ):
                             prices_and_trends[sym][sk] = sv
-                if prices_and_trends[sym].get("vol_1h_pct") is None and len(matched_series_24h) >= 20:
-                    tail_pts_m = [pt for r in matched_series_24h[-60:] if (pt := _parse_ts_px_row(r)) is not None]
+                if (prices_and_trends[sym].get("vol_1h_pct") is None or stale_short_cache) and len(matched_series_24h) >= 20:
+                    all_pts_m = [pt for r in matched_series_24h if (pt := _parse_ts_px_row(r)) is not None]
+                    tail_pts_m: List[Tuple[float, float]] = []
+                    if len(all_pts_m) >= 10:
+                        cutoff_1h_ms = float(all_pts_m[-1][0]) - 3600.0 * 1000.0
+                        last_t_ms = -1e18
+                        for t_ms, px_v in all_pts_m:
+                            if t_ms >= cutoff_1h_ms and (t_ms - last_t_ms) >= 55000.0:
+                                tail_pts_m.append((t_ms, px_v))
+                                last_t_ms = t_ms
+                        if len(tail_pts_m) < 10:
+                            tail_pts_m = all_pts_m[-60:]
                     if len(tail_pts_m) >= 10:
                         dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
                         if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
                             prices_and_trends[sym]["vol_1h_pct"] = v1h_m
                             re_th_m, dca_th_m = adaptive_thresholds(v1h_m)
-                            if re_th_m is not None and prices_and_trends[sym].get("adapt_reentry_pct") is None:
+                            if re_th_m is not None and (prices_and_trends[sym].get("adapt_reentry_pct") is None or stale_short_cache):
                                 prices_and_trends[sym]["adapt_reentry_pct"] = re_th_m
-                            if dca_th_m is not None and prices_and_trends[sym].get("adapt_dca_pct") is None:
+                            if dca_th_m is not None and (prices_and_trends[sym].get("adapt_dca_pct") is None or stale_short_cache):
                                 prices_and_trends[sym]["adapt_dca_pct"] = dca_th_m
 
         if (
@@ -1326,14 +1371,24 @@ def enrich_24h_and_microstructure(
             and cache_dir
             and os.path.isdir(cache_dir)
             and sym.upper() in ("HYPEUSD", "TAOUSD", "ADAUSD")
-            and not os.path.exists(os.path.join(cache_dir, f"orderbook_depth_{sym.upper()}.json"))
         ):
-            try:
-                from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+            sym_u = sym.upper()
+            ob_p = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"orderbook_depth_{sym_u}.json")))
+            if not os.path.exists(ob_p) or (now_ts - os.path.getmtime(ob_p)) > 180.0:
+                try:
+                    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
 
-                OrderbookDepthCollector(cache_dir=cache_dir).fetch(sym.upper())
-            except Exception:
-                pass
+                    OrderbookDepthCollector(cache_dir=cache_dir).fetch(sym_u)
+                except Exception:
+                    pass
+            wh_p = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"whale_snapshot_{sym_u}.json")))
+            if not os.path.exists(wh_p) or (now_ts - os.path.getmtime(wh_p)) > 360.0:
+                try:
+                    from intelligence.external.collectors.whale_positioning import WhalePositioningCollector
+
+                    WhalePositioningCollector(cache_dir=cache_dir).fetch(sym_u)
+                except Exception:
+                    pass
         if m_info := load_symbol_microstructure(cache_dir, sym, _rj):
             is_usd_sym = "USD" in compatible_quote_suffixes(sym)
             sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
