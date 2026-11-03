@@ -1228,17 +1228,29 @@ def enrich_24h_and_microstructure(
                 try:
                     s5_vp, cutoff_vp = ohlc_fn(sym, 5), now_ts - 86400.0
                     s5_vp_vols = getattr(s5_vp, "volumes", ())
+                    pts_vp: List[List[Any]] = []
                     if isinstance(s5_vp_vols, (list, tuple)) and s5_vp_vols:
                         pts_vp = [
                             [int(ts * 1000), float(px), float(s5_vp_vols[idx])]
                             for idx, (ts, px) in enumerate(zip(getattr(s5_vp, "timestamps", ()), getattr(s5_vp, "closes", ())))
                             if ts >= cutoff_vp and float(px) > 0 and idx < len(s5_vp_vols) and (safe_pos_float(s5_vp_vols[idx], 0.0) or 0.0) > 0.0
                         ]
-                        if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
-                            if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_vp[-1][1]):
-                                pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
-                            if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
-                                m24.update(vp_real)
+                    if not pts_vp or (pts_vp[-1][0] - pts_vp[0][0]) < 18 * 3600 * 1000:
+                        s15_vp = ohlc_fn(sym, 15)
+                        s15_vols = getattr(s15_vp, "volumes", ())
+                        if isinstance(s15_vols, (list, tuple)) and s15_vols:
+                            first_s5_ts = (pts_vp[0][0] / 1000.0 - 300.0) if pts_vp else float("inf")
+                            pts_15 = [
+                                [int(ts * 1000), float(px), float(s15_vols[idx])]
+                                for idx, (ts, px) in enumerate(zip(getattr(s15_vp, "timestamps", ()), getattr(s15_vp, "closes", ())))
+                                if cutoff_vp <= ts <= first_s5_ts and float(px) > 0 and idx < len(s15_vols) and (safe_pos_float(s15_vols[idx], 0.0) or 0.0) > 0.0
+                            ]
+                            pts_vp = pts_15 + pts_vp
+                    if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
+                        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_vp[-1][1]):
+                            pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
+                        if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
+                            m24.update(vp_real)
                 except Exception:
                     pass
         is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
