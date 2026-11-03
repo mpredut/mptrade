@@ -810,7 +810,7 @@ class KrakenProvider(MarketDataProvider):
         """
         clean_id = _clean_kraken_order_id(order_id, "cancel_order")
         try:
-            result = self._client().cancel_order(clean_id) or {}
+            result = self._query_with_bot_fallback(lambda cli: cli.cancel_order(clean_id)) or {}
         except Exception as e:  # noqa: BLE001
             msg = str(e).lower()
             if "unknown order" in msg or "already" in msg:

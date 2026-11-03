@@ -24,10 +24,11 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     extract_symbol_recent_fills, load_symbol_microstructure, load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    _load_recent_audit_origins, build_cross_market_context, enrich_24h_and_microstructure,
-    enrich_cross_venue_trends, harvest_bot_runtime_states, harvest_kraken_xstocks,
-    harvest_recent_orders_and_enrich_positions, harvest_tradable_positions_and_orders,
-    harvest_venue_cycles, load_venue_trailing_maps, sync_sibling_symbol_telemetry,
+    _load_audit_terminal_orders, _load_recent_audit_origins, build_cross_market_context,
+    enrich_24h_and_microstructure, enrich_cross_venue_trends, harvest_bot_runtime_states,
+    harvest_kraken_xstocks, harvest_recent_orders_and_enrich_positions,
+    harvest_tradable_positions_and_orders, harvest_venue_cycles, load_venue_trailing_maps,
+    sync_sibling_symbol_telemetry,
 )
 from instrument_registry import casefold_get
 from providers.base import extract_timestamp_s
@@ -885,9 +886,11 @@ def collect_pretrade_telemetry(
             ("cache_trade_t212.json", "t212"),
         ):
             ord_data = read_json_cached(os.path.join(cachedb_dir, ord_file))
-            if not isinstance(o_items := ord_data.get("items", {}) if isinstance(ord_data, dict) else {}, dict):
-                continue
+            o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
             orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
+            if not orders_for_sym and cache_venue in ("hyperliquid", "t212"):
+                audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
+                orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(audit_items, cand))), [])
             v_ai_intents = (
                 [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
                 if ai_intents_list is not None
@@ -898,6 +901,7 @@ def collect_pretrade_telemetry(
                 known_ai_order_ids=known_ai_oids,
                 audit_origin_map=audit_origin_map,
                 ai_intents=v_ai_intents,
+                symbol=symbol,
             ):
                 cand_ts = max(
                     safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),

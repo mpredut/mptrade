@@ -60,14 +60,14 @@ _TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", 
 _ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
 _PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
 _QTY_KEYS = (
-    "qty", "quantity", "executedQty", "filledQuantity", "filledQty", "vol_exec",
-    "sz", "vol", "origQty", "origSz", "orig_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
+    "qty", "quantity", "executedQty", "executed_qty", "filledQuantity", "filledQty", "filled_qty", "vol_exec",
+    "sz", "vol", "origQty", "origSz", "orig_qty", "requested_qty", "orderedQuantity", "amount_shares", "l", "z", "q",
 )
 _ORIG_QTY_KEYS = (
-    "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty",
+    "origQty", "orig_qty", "origSz", "vol", "orderedQuantity", "original_qty", "requested_qty",
     "order_qty", "qty", "amount", "quantity", "sz", "amount_shares", "q",
 )
-_EXEC_QTY_KEYS = ("executedQty", "filledQuantity", "filledQty", "vol_exec", "filled_qty", "z")
+_EXEC_QTY_KEYS = ("executedQty", "executed_qty", "filledQuantity", "filledQty", "vol_exec", "filled_qty", "z")
 _UNFILLED_ORDER_STATUSES = frozenset({
     "NEW", "OPEN", "RESTING", "WORKING", "PENDING",
     "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "UNFILLED",

@@ -469,6 +469,7 @@ def extract_symbol_recent_fills(
     known_ai_order_ids: Optional[set[str]] = None,
     audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
+    symbol: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
     if not isinstance(orders_list, list) or not orders_list:
@@ -483,15 +484,24 @@ def extract_symbol_recent_fills(
     ]
     if not valid:
         return None
+    fallback_sym = str(symbol or "").strip().upper()
+    if not fallback_sym:
+        for o_item in valid:
+            if s_cand := str(o_item.get("symbol") or o_item.get("pair") or "").strip().upper():
+                fallback_sym = s_cand
+                break
     ai_oids: set[str] = set(known_ai_order_ids or ())
     valid_oids: set[str] = {str(oid_x) for x in valid if (oid_x := extract_order_id(x, default=""))}
     parsed_ai_intents: List[tuple[str, str, float, float, str]] = []
     for it in ai_intents or ():
-        if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() != "EXECUTED":
+        if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() not in ("EXECUTED", "FILLED", "PARTIALLY_FILLED", "CLOSED"):
             continue
         exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-        if (it_oid := extract_order_id(exec_pay, default="")) and str(it_oid) in valid_oids:
-            continue
+        it_oid = extract_order_id(exec_pay, default="") or extract_order_id(it, default="")
+        if it_oid:
+            ai_oids.add(str(it_oid))
+            if str(it_oid) in valid_oids:
+                continue
         i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
         i_ts_s = safe_pos_float(it.get("timestamp"), default=0.0) or 0.0
         if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
@@ -505,23 +515,39 @@ def extract_symbol_recent_fills(
             or 0.0
         )
         parsed_ai_intents.append((str(it.get("symbol") or "").strip().upper(), i_side, i_ts_s, i_qty, extract_intent_order_type(it)))
+
+    def _matches_ai_intent(o_dict: Dict[str, Any]) -> bool:
+        o_side = extract_order_side(o_dict)
+        o_ts_s = (extract_timestamp_ms(o_dict, default=0) or 0) / 1000.0
+        o_qty = extract_executed_qty(o_dict, default=0.0) or 0.0
+        o_sym = str(o_dict.get("symbol") or o_dict.get("pair") or fallback_sym).strip().upper()
+        for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
+            if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
+                continue
+            if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
+                continue
+            if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
+                return True
+        return False
+
+    def _mark_ai_origin(o_dict: Dict[str, Any]) -> None:
+        if oid_m := extract_order_id(o_dict, default=""):
+            oid_s = str(oid_m)
+            ai_oids.add(oid_s)
+            prev_m = origin_by_oid.get(oid_s)
+            origin_by_oid[oid_s] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
+        else:
+            side_ts_m = (extract_order_side(o_dict), extract_timestamp_ms(o_dict, default=None))
+            prev_m = origin_by_side_ts.get(side_ts_m)
+            origin_by_side_ts[side_ts_m] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
+
     origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
     origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
     for o in valid:
         act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
         if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
-            o_side = extract_order_side(o)
-            o_ts_s = (extract_timestamp_ms(o, default=0) or 0) / 1000.0
-            o_qty = extract_executed_qty(o, default=0.0) or 0.0
-            o_sym = str(o.get("symbol") or "").strip().upper()
-            for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
-                if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
-                    continue
-                if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
-                    continue
-                if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
-                    act_v = "AI"
-                    break
+            if _matches_ai_intent(o):
+                act_v = "AI"
         if oid_v := extract_order_id(o, default=""):
             oid_str = str(oid_v)
             if act_v == "AI":
@@ -538,6 +564,36 @@ def extract_symbol_recent_fills(
 
     if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
         valid = aggregate_fills_by_order_id(valid) or valid
+
+    if parsed_ai_intents:
+        for o in valid:
+            oid_k = str(extract_order_id(o, default="") or "")
+            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+            cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
+            if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
+                _mark_ai_origin(o)
+        for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
+            if i_qty <= 0.0:
+                continue
+            cands: List[tuple[Dict[str, Any], float]] = []
+            for o in valid:
+                if extract_order_side(o) != i_side:
+                    continue
+                o_ts_s = (extract_timestamp_ms(o, default=0) or 0) / 1000.0
+                if o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0 or o_ts_s > i_ts_s + 86400.0:
+                    continue
+                o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
+                if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
+                    continue
+                oid_k = str(extract_order_id(o, default="") or "")
+                side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
+                cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
+                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
+                    if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
+                        cands.append((o, o_q))
+            if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
+                for o_cand, _ in cands:
+                    _mark_ai_origin(o_cand)
 
     def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
         if not isinstance(o, dict):

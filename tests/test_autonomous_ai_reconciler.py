@@ -7770,4 +7770,178 @@ def test_harvest_bot_runtime_states_awaiting_cancel_and_pretrade_ai_intent_fills
     assert "by=AI" in telem.get("Recent Venue Fills", "")
 
 
+def test_symbol_less_order_cross_symbol_isolation_and_audit_dedup_and_kraken_cancel_fallback(tmp_path, monkeypatch):
+    """Verify:
+    1. Symbol-less order rows in cache_order.json do not inherit AI attribution from another symbol's MARKET intent.
+    2. Multi-fill Kraken AI limit order (split across two Ledger trade IDs) is attributed to AI when summed qty matches.
+    3. Duplicate order_terminal / order_terminal_retry records in execution_audit_*.jsonl are deduplicated (not doubled)
+       and used as fallback in collect_pretrade_telemetry for T212 / Hyperliquid.
+    4. KrakenProvider.cancel_order_by_id uses _query_with_bot_fallback when primary client fails with permission/nonce error.
+    """
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.collectors.microstructure_collector import extract_symbol_recent_fills
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+    from providers.kraken_provider import KrakenProvider
+
+    now_ts = 1793650000.0
+    now_ms = int(now_ts * 1000)
+
+    # 1. Symbol-less BTCUSDC order in cache_order.json must NOT match ARBUSDC AI MARKET intent
+    arb_ai_intents = [
+        {
+            "intent_id": "ai-arb-mkt",
+            "status": "EXECUTED",
+            "venue": "binance",
+            "symbol": "ARBUSDC",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "timestamp": now_ts - 15.0,
+            "execution_payload": {"order_id": "999001", "executed_qty": 500.0},
+        }
+    ]
+    btc_orders_no_symbol = [
+        {
+            "orderId": 123456,
+            "price": 68500.0,
+            "quantity": 0.005,
+            "timestamp": now_ms - 10000,
+            "side": "BUY",
+        }
+    ]
+    btc_fills = extract_symbol_recent_fills(
+        btc_orders_no_symbol,
+        ai_intents=arb_ai_intents,
+        symbol="BTCUSDC",
+    )
+    assert btc_fills is not None
+    assert btc_fills["last_action_actor"] == "BOT"
+    assert btc_fills["last_buy"]["actor"] == "BOT"
+
+    # 2. Multi-fill Kraken AI limit order across two Ledger trade IDs (T-PART-1 + T-PART-2) summing to intent qty
+    eth_ai_intents = [
+        {
+            "intent_id": "ai-eth-lmt",
+            "status": "EXECUTED",
+            "venue": "kraken",
+            "symbol": "ETHUSD",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "timestamp": now_ts - 120.0,
+            "execution_payload": {"order_id": "O-ETH-LIMIT-1", "executed_qty": 0.0446},
+        }
+    ]
+    eth_ledger_fills = [
+        {
+            "symbol": "ETHUSD",
+            "id": "T-PART-1",
+            "orderId": "T-PART-1",
+            "price": 2131.69,
+            "qty": 0.0200,
+            "timestamp": int((now_ts - 115.0) * 1000),
+            "side": "BUY",
+        },
+        {
+            "symbol": "ETHUSD",
+            "id": "T-PART-2",
+            "orderId": "T-PART-2",
+            "price": 2131.69,
+            "qty": 0.0246,
+            "timestamp": int((now_ts - 114.0) * 1000),
+            "side": "BUY",
+        },
+    ]
+    eth_fills = extract_symbol_recent_fills(eth_ledger_fills, ai_intents=eth_ai_intents, symbol="ETHUSD")
+    assert eth_fills is not None
+    assert eth_fills["last_action_actor"] == "AI"
+    assert eth_fills["last_buy"]["actor"] == "AI"
+    assert all(b["actor"] == "AI" for b in eth_fills["recent_buys"])
+
+    # 3. Duplicate order_terminal + order_terminal_retry in execution_audit_*.jsonl are deduplicated and visible in pretrade telemetry
+    cache_dir = tmp_path / "cachedb"
+    (cache_dir / "orders").mkdir(parents=True, exist_ok=True)
+    (cache_dir / "state").mkdir(parents=True, exist_ok=True)
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
+    (cache_dir / "state" / "autonomous_trade_intents_state.json").write_text(
+        json.dumps([
+            {
+                "intent_id": "ai-t212-1",
+                "status": "EXECUTED",
+                "venue": "t212",
+                "symbol": "NVDA_US_EQ",
+                "decision": "BUY",
+                "order_type": "LIMIT",
+                "timestamp": now_ts - 60.0,
+                "execution_payload": {"order_id": "T212-OID-77", "executed_qty": 1.5},
+            }
+        ]),
+        encoding="utf-8",
+    )
+    audit_records = [
+        {
+            "ts": now_ts - 59.0,
+            "event": "submit_accepted",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "side": "BUY",
+            "order_id": "T212-OID-77",
+        },
+        {
+            "ts": now_ts - 50.0,
+            "event": "order_terminal",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "side": "BUY",
+            "order_id": "T212-OID-77",
+            "filled_qty": 1.5,
+            "price": 140.0,
+        },
+        {
+            "ts": now_ts - 45.0,
+            "event": "order_terminal_retry",
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "side": "BUY",
+            "order_id": "T212-OID-77",
+            "filled_qty": 1.5,
+            "price": 140.0,
+        },
+    ]
+    (audit_dir / "execution_audit_2026-11-03.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in audit_records) + "\n",
+        encoding="utf-8",
+    )
+
+    ro_t212 = harvest_recent_orders_and_enrich_positions(
+        str(cache_dir), {}, [], {}, {}, {}, {}, known_ai_order_ids={"T212-OID-77"}
+    )
+    assert "NVDA_US_EQ" in ro_t212
+    assert ro_t212["NVDA_US_EQ"]["last_buy"]["qty"] == pytest.approx(1.5)
+    assert ro_t212["NVDA_US_EQ"]["last_buy"]["actor"] == "AI"
+
+    t212_telem = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cache_dir))
+    assert "Last BUY=1.5 @ 140.0 (by=AI)" in t212_telem.get("Recent Venue Fills", "")
+
+    # 4. KrakenProvider.cancel_order_by_id falls back to BOT client on permission error
+    class _DeniedPrimaryClient:
+        def cancel_order(self, order_id):
+            raise RuntimeError("Kraken error: EGeneral:Permission denied")
+
+    class _WorkingFallbackClient:
+        def __init__(self):
+            self.cancelled = []
+
+        def cancel_order(self, order_id):
+            self.cancelled.append(order_id)
+            return {"count": 1}
+
+    fb_cli = _WorkingFallbackClient()
+    prov = KrakenProvider(client=_DeniedPrimaryClient())
+    monkeypatch.setattr(prov, "_order_query_fallback_client", lambda: fb_cli)
+    prov.cancel_order_by_id("TAOUSD", "O-CANCEL-ME-1")
+    assert fb_cli.cancelled == ["O-CANCEL-ME-1"]
+
+
+
 

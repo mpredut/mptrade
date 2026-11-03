@@ -1155,7 +1155,11 @@ def sync_sibling_symbol_telemetry(
 def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str], Optional[str]]]:
     """Load recent orderId/clientOrderId -> (module, rule) mappings from execution_audit jsonl logs."""
     out: Dict[str, tuple[Optional[str], Optional[str]]] = {}
-    for d in (os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit"), cache_dir):
+    for d in (
+        os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cache_dir))), "logger", "execution_audit"),
+        cache_dir,
+    ):
         if not os.path.isdir(d):
             continue
         try:
@@ -1172,6 +1176,79 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
         if out:
             break
     return out
+
+
+def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Synthesize deduplicated per-symbol filled order lists from execution_audit_*.jsonl for venues lacking a disk order cache."""
+    by_sym: Dict[str, List[Dict[str, Any]]] = {}
+    if not cache_dir:
+        return by_sym
+    v_target = normalize_venue_name(venue)
+    audit_dirs = (
+        os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cache_dir))), "logger", "execution_audit"),
+        cache_dir,
+    )
+    for audit_dir in audit_dirs:
+        if not os.path.isdir(audit_dir):
+            continue
+        try:
+            audit_files = sorted(
+                (os.path.join(audit_dir, f) for f in os.listdir(audit_dir) if f.startswith("execution_audit") and f.endswith(".jsonl"))
+            )[-10:]
+            if not audit_files:
+                continue
+            submit_ts_by_oid: Dict[str, float] = {}
+            idx_by_oid: Dict[tuple[str, str], int] = {}
+            for af in audit_files:
+                for rec in read_tail_jsonl_dicts(af, limit=None, max_bytes=1024 * 1024):
+                    if normalize_venue_name(rec.get("venue")) != v_target:
+                        continue
+                    ev_name = str(rec.get("event") or "")
+                    oid_s = str(rec.get("order_id") or "").strip()
+                    ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                    if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
+                        submit_ts_by_oid.setdefault(oid_s, ts_s)
+                        continue
+                    if ev_name not in ("order_terminal", "order_terminal_retry"):
+                        continue
+                    sym_t = str(rec.get("symbol") or "").strip().upper()
+                    f_q = safe_pos_float(rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"), default=0.0) or 0.0
+                    cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
+                    px_f = safe_pos_float(rec.get("price"), default=None) or (round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None)
+                    eff_ts_s = submit_ts_by_oid.get(oid_s, ts_s) if oid_s else ts_s
+                    side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
+                    if sym_t and f_q > 0 and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
+                        row_d = {
+                            "symbol": sym_t,
+                            "orderId": rec.get("order_id"),
+                            "clientOrderId": rec.get("client_order_id"),
+                            "side": side_t,
+                            "price": px_f,
+                            "qty": f_q,
+                            "executedQty": f_q,
+                            "timestamp": int(round(eff_ts_s * 1000.0)),
+                            "status": "FILLED",
+                        }
+                        dedup_k = oid_s or str(rec.get("client_order_id") or "").strip()
+                        sym_list = by_sym.setdefault(sym_t, [])
+                        if dedup_k and (sym_t, dedup_k) in idx_by_oid:
+                            existing = sym_list[idx_by_oid[(sym_t, dedup_k)]]
+                            new_q = max(float(existing.get("qty") or 0.0), f_q)
+                            existing["qty"] = new_q
+                            existing["executedQty"] = new_q
+                            existing["price"] = px_f
+                            if rec.get("client_order_id") and not existing.get("clientOrderId"):
+                                existing["clientOrderId"] = rec.get("client_order_id")
+                        else:
+                            if dedup_k:
+                                idx_by_oid[(sym_t, dedup_k)] = len(sym_list)
+                            sym_list.append(row_d)
+            if by_sym:
+                break
+        except Exception:
+            pass
+    return by_sym
 
 
 def harvest_recent_orders_and_enrich_positions(
@@ -1213,7 +1290,7 @@ def harvest_recent_orders_and_enrich_positions(
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             v_ai_intents = _venue_intents(cache_venue)
             for sym, o_list in orders_data["items"].items():
-                if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=v_ai_intents):
+                if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=v_ai_intents, symbol=sym):
                     _record_venue_fills(cache_venue, sym, fills)
 
     seen_hl_syms: set[str] = set()
@@ -1227,47 +1304,16 @@ def harvest_recent_orders_and_enrich_positions(
         try:
             prov = getattr(inst, "_provider", None)
             if prov is not None and hasattr(prov, "get_orders"):
-                if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=hl_ai_intents):
+                if fills := extract_symbol_recent_fills(prov.get_orders(sym, None, 90 * 86400.0), known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=hl_ai_intents, symbol=sym):
                     _record_venue_fills("hyperliquid", sym, fills)
         except Exception:
             pass
-    if not venue_recent_orders["t212"] and cache_dir:
-        audit_dir = os.path.join(os.path.dirname(os.path.abspath(cache_dir)), "logger", "execution_audit")
-        if os.path.isdir(audit_dir):
-            try:
-                t212_by_sym: Dict[str, List[Dict[str, Any]]] = {}
-                submit_ts_by_oid: Dict[str, float] = {}
-                audit_files = sorted((os.path.join(audit_dir, f) for f in os.listdir(audit_dir) if f.startswith("execution_audit") and f.endswith(".jsonl")))[-10:]
-                for af in audit_files:
-                    for rec in read_tail_jsonl_dicts(af, limit=None, max_bytes=1024 * 1024):
-                        if normalize_venue_name(rec.get("venue")) != "t212":
-                            continue
-                        ev_name = str(rec.get("event") or "")
-                        oid_s = str(rec.get("order_id") or "").strip()
-                        ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
-                        if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
-                            submit_ts_by_oid.setdefault(oid_s, ts_s)
-                            continue
-                        if ev_name not in ("order_terminal", "order_terminal_retry"):
-                            continue
-                        sym_t = str(rec.get("symbol") or "").strip().upper()
-                        f_q = safe_pos_float(rec.get("filled_qty") if rec.get("filled_qty") is not None else rec.get("qty"), default=0.0) or 0.0
-                        cost_f = safe_pos_float(rec.get("cost"), default=0.0) or 0.0
-                        px_f = safe_pos_float(rec.get("price"), default=None) or (round(cost_f / f_q, 6) if cost_f > 0 and f_q > 0 else None)
-                        eff_ts_s = submit_ts_by_oid.get(oid_s, ts_s) if oid_s else ts_s
-                        side_t = extract_order_side(rec) or str(rec.get("side") or "").strip().upper()
-                        if sym_t and f_q > 0 and px_f is not None and px_f > 0 and eff_ts_s > 0 and side_t in ("BUY", "SELL"):
-                            t212_by_sym.setdefault(sym_t, []).append({
-                                "symbol": sym_t, "orderId": rec.get("order_id"), "clientOrderId": rec.get("client_order_id"),
-                                "side": side_t, "price": px_f, "qty": f_q, "executedQty": f_q,
-                                "timestamp": int(round(eff_ts_s * 1000.0)), "status": "FILLED",
-                            })
-                t212_ai_intents = _venue_intents("t212")
-                for sym_t, o_list in t212_by_sym.items():
-                    if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=t212_ai_intents):
-                        _record_venue_fills("t212", sym_t, fills)
-            except Exception:
-                pass
+    for fallback_venue in ("hyperliquid", "t212"):
+        if not venue_recent_orders[fallback_venue] and cache_dir:
+            fb_ai_intents = _venue_intents(fallback_venue)
+            for sym_fb, o_list in _load_audit_terminal_orders(cache_dir, fallback_venue).items():
+                if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=fb_ai_intents, symbol=sym_fb):
+                    _record_venue_fills(fallback_venue, sym_fb, fills)
     cyc_sell_ts_map: Dict[tuple[str, str], int] = {}
     for c_venue, cyc_map, avg_dec in (("kraken", kraken_cycles, 6), ("hyperliquid", hyperliquid_cycles, 6), ("t212", t212_cycles, 4)):
         if not isinstance(cyc_map, dict):
