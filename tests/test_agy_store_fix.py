@@ -284,10 +284,57 @@ def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
     os.utime(tp, (sched_ts, sched_ts))
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
 
-    # Once the timer fires (SYSTEM_MESSAGE appended) and store is aged past idle_sec, ui-sync proceeds
+    # Unrelated background task SYSTEM_MESSAGE or manage_task kill does not cancel a TimerCondition="never" schedule timer
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 10,
+                "type": "PLANNER_RESPONSE",
+                "created_at": sched_iso,
+                "tool_calls": [
+                    {"name": "schedule", "args": {"DurationSeconds": "1200", "Prompt": "wake", "TimerCondition": "never"}}
+                ],
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 11,
+                "type": "GENERIC",
+                "content": "Tool is running as a background task with task id: interactive-cid/task-sched-1\nTask Description: Timer: 20m",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 12,
+                "type": "SYSTEM_MESSAGE",
+                "content": "[Message] sender=interactive-cid/task-other-cmd Task finished",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 13,
+                "type": "PLANNER_RESPONSE",
+                "tool_calls": [{"name": "manage_task", "args": {"Action": "kill", "TaskId": "task-other-cmd"}}],
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    # Once the matching timer fires (SYSTEM_MESSAGE appended) and store is aged past idle_sec, ui-sync proceeds
     tp.write_text(
         tp.read_text()
-        + json.dumps({"step_index": 11, "type": "SYSTEM_MESSAGE", "content": "[Message] timer fired"})
+        + json.dumps(
+            {
+                "step_index": 14,
+                "type": "SYSTEM_MESSAGE",
+                "content": "[Message] sender=interactive-cid/task-sched-1 timer fired",
+            }
+        )
         + "\n"
     )
     os.utime(tp, (sched_ts, sched_ts))

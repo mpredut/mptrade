@@ -649,26 +649,53 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
             st = os.stat(tp)
         except OSError:
             continue
-        if (now - st.st_mtime) > 3600:
+        if (now - st.st_mtime) > 86400:
             continue
-        records = read_tail_jsonl_dicts(tp, limit=50)
+        records = read_tail_jsonl_dicts(tp, limit=80)
         oneshot_until = 0.0
         cron_active = False
+        sched_task_id = ""
+        sched_cond = "never"
+        awaiting_sched_task_id = False
         for rec in records:
             step_type = str(rec.get("type") or "")
             content = str(rec.get("content") or "")
+            if awaiting_sched_task_id and step_type == "GENERIC":
+                m_tid = re.search(r"background task with task id:\s*(\S+)", content)
+                if m_tid and ("Timer:" in content or "Cron:" in content or "schedule" in content):
+                    sched_task_id = m_tid.group(1).strip()
+                awaiting_sched_task_id = False
             if step_type == "SYSTEM_MESSAGE":
-                oneshot_until = 0.0
                 if "stopped due to server restart" in content:
+                    oneshot_until = 0.0
                     cron_active = False
+                    sched_task_id = ""
+                else:
+                    m_sender = re.search(r"\bsender=(\S+)", content)
+                    sender_id = m_sender.group(1).strip() if m_sender else ""
+                    if (
+                        not sender_id
+                        or not sched_task_id
+                        or sender_id == sched_task_id
+                        or sched_cond == "any"
+                        or sender_id == sched_cond
+                    ):
+                        oneshot_until = 0.0
+                        sched_task_id = ""
+            elif step_type == "USER_INPUT" and sched_cond == "any":
+                oneshot_until = 0.0
+                sched_task_id = ""
             for tc in rec.get("tool_calls") or []:
                 if not isinstance(tc, dict):
                     continue
                 name = str(tc.get("name") or "")
                 args = tc.get("args") if isinstance(tc.get("args"), dict) else {}
                 if name == "manage_task" and str(args.get("Action") or "").strip().strip('"') == "kill":
-                    oneshot_until = 0.0
-                    cron_active = False
+                    kill_tid = str(args.get("TaskId") or "").strip().strip('"')
+                    if not kill_tid or not sched_task_id or kill_tid == sched_task_id or sched_task_id.endswith(f"/{kill_tid}"):
+                        oneshot_until = 0.0
+                        cron_active = False
+                        sched_task_id = ""
                 elif name == "schedule":
                     created_raw = str(rec.get("created_at") or "").strip()
                     sched_ts = st.st_mtime
@@ -679,11 +706,17 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                             sched_ts = st.st_mtime
                     dur_raw = str(args.get("DurationSeconds") or "").strip().strip('"')
                     cron_raw = str(args.get("CronExpression") or "").strip().strip('"')
+                    cond_raw = str(args.get("TimerCondition") or "never").strip().strip('"').lower()
                     dur_s = safe_pos_float(dur_raw, default=None)
                     if dur_s is not None:
                         oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
+                        sched_cond = cond_raw or "never"
+                        sched_task_id = ""
+                        awaiting_sched_task_id = True
                     elif cron_raw:
                         cron_active = True
+                        sched_task_id = ""
+                        awaiting_sched_task_id = True
         if cron_active or now < oneshot_until:
             return True
     return False

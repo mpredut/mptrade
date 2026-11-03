@@ -152,17 +152,28 @@ class T212Client:
             except Exception:
                 pass
 
-    def _pace(self) -> None:
+    def _pace(self, endpoint_key: str | None = None) -> None:
         """Enforce at least ``_min_gap`` seconds between calls across all threads,
-        and respect rate limit backoff if any recent call returned HTTP 429."""
+        per-endpoint ``_order_min_gap`` when ``endpoint_key`` is given, and respect
+        rate limit backoff if any recent call returned HTTP 429."""
         with self._lock:
             now = time.monotonic()
             gap_wait = self._min_gap - (now - self._last)
             backoff_wait = self._backoff_until - now
-            wait = max(gap_wait, backoff_wait)
+            ep_wait = 0.0
+            last_attr_map = getattr(self, "_last_attr_fetch", None)
+            min_ep_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)
+            if endpoint_key and isinstance(last_attr_map, dict) and min_ep_gap > 0.0:
+                last_ep = last_attr_map.get(endpoint_key)
+                if last_ep is not None:
+                    ep_wait = min_ep_gap - (now - last_ep)
+            wait = max(gap_wait, backoff_wait, ep_wait)
             if wait > 0:
                 time.sleep(wait)
-            self._last = time.monotonic()
+            now_after = time.monotonic()
+            self._last = now_after
+            if endpoint_key and isinstance(last_attr_map, dict):
+                last_attr_map[endpoint_key] = now_after
 
     def _pace_order(self) -> None:
         """Enforce at least ``_order_min_gap`` seconds between mutating order calls
@@ -184,9 +195,9 @@ class T212Client:
             return f"Basic {token}"
         return self.api_key
 
-    def _headers(self) -> dict:
+    def _headers(self, endpoint_key: str | None = None) -> dict:
         # Every request builds headers here, providing one throttle point across threads.
-        self._pace()
+        self._pace(endpoint_key)
         return {
             "Authorization": self._auth(),
             "User-Agent": _BROWSER_UA,  # Avoid Cloudflare 403 responses.
@@ -195,18 +206,7 @@ class T212Client:
 
     def _headers_for_endpoint(self, endpoint_key: str) -> dict:
         """Enforce per-endpoint minimum spacing (_order_min_gap) before building headers."""
-        last_attr_map = getattr(self, "_last_attr_fetch", None)
-        min_endpoint_gap = safe_nonneg_float(getattr(self, "_order_min_gap", 0.0), default=0.0)
-        if isinstance(last_attr_map, dict) and min_endpoint_gap > 0.0:
-            last_ts = last_attr_map.get(endpoint_key)
-            if last_ts is not None:
-                since_last = time.monotonic() - last_ts
-                if 0.0 <= since_last < min_endpoint_gap:
-                    time.sleep(min_endpoint_gap - since_last)
-        headers = self._headers()
-        if isinstance(last_attr_map, dict):
-            last_attr_map[endpoint_key] = time.monotonic()
-        return headers
+        return self._headers(endpoint_key)
 
     # -- Instruments. ----------------------------------------------------------
     def list_instruments(self) -> list[dict] | None:
@@ -378,25 +378,51 @@ class T212Client:
             if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
                 matches = self._extract_history_matches(hc[1], target_oid)
         if not matches:
-            status, body = http_get(
-                f"{self.base}/equity/history/orders?limit=50",
-                headers=self._headers_for_endpoint("_hist_cache"),
-            )
-            if status == 429:
-                self.notify_rate_limit(max(5.0, self._pf_ttl))
-            if status != 200 or not body:
-                self._log_read_fail("order history", status)
-                return None
-            try:
-                payload = json.loads(body)
-            except ValueError:
-                self._log_read_fail("order history (invalid JSON)", status)
-                return None
-            items = payload.get("items", []) if isinstance(payload, dict) else payload
-            if isinstance(items, list):
+            with self._fetch_lock:
                 with self._lock:
-                    self._hist_cache = (time.monotonic(), items)
-            matches = self._extract_history_matches(items, target_oid)
+                    hc = getattr(self, "_hist_cache", None)
+                    if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
+                        matches = self._extract_history_matches(hc[1], target_oid)
+                if not matches:
+                    s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
+                    if s_hit and isinstance(s_val, list):
+                        s_matches = self._extract_history_matches(s_val, target_oid)
+                        if s_matches:
+                            with self._lock:
+                                self._hist_cache = (time.monotonic() - s_age, s_val)
+                                self._fetch_fail.pop("_hist_cache", None)
+                            matches = s_matches
+                if not matches:
+                    status, body = http_get(
+                        f"{self.base}/equity/history/orders?limit=50",
+                        headers=self._headers_for_endpoint("_hist_cache"),
+                    )
+                    if status == 429:
+                        self.notify_rate_limit(max(5.0, self._pf_ttl))
+                    if status != 200 or not body:
+                        self._log_read_fail("order history", status)
+                        with self._lock:
+                            self._fetch_fail["_hist_cache"] = time.monotonic()
+                            hc = getattr(self, "_hist_cache", None)
+                            if hc and (time.monotonic() - hc[0]) < 60.0:
+                                matches = self._extract_history_matches(hc[1], target_oid)
+                        if not matches:
+                            return None
+                    else:
+                        try:
+                            payload = json.loads(body)
+                        except ValueError:
+                            self._log_read_fail("order history (invalid JSON)", status)
+                            with self._lock:
+                                self._fetch_fail["_hist_cache"] = time.monotonic()
+                            return None
+                        items = payload.get("items", []) if isinstance(payload, dict) else payload
+                        if isinstance(items, list):
+                            with self._lock:
+                                self._hist_cache = (time.monotonic(), items)
+                                self._fetch_fail.pop("_hist_cache", None)
+                            self._write_shared_cache("_hist_cache", items)
+                        matches = self._extract_history_matches(items, target_oid)
         if not matches:
             return False
 
@@ -426,7 +452,10 @@ class T212Client:
                 tqf = safe_float(tax.get("quantity"), default=None)
                 if tqf is None:
                     continue
-                total_fee += abs(tqf)
+                tax_amt = abs(tqf)
+                if tax_amt <= 0.0:
+                    continue
+                total_fee += tax_amt
                 raw_cur = tax.get("currency")
                 currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
                 if currency:

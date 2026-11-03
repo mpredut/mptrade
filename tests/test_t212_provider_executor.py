@@ -466,9 +466,12 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(sleep_calls[0], 2.1, delta=0.2)
 
         # Verify get_historical_order caches the 50-item history page across multiple order lookups
+        # and ignores 0-amount tax currencies so order_status does not fail on zero-fee currency mismatch
         history_payload = (
             b'{"items":['
-            b'{"order":{"id":201,"ticker":"RGNT_US_EQ","status":"FILLED"},"fill":{"quantity":72.14,"price":1.43}},'
+            b'{"order":{"id":201,"ticker":"RGNT_US_EQ","status":"FILLED","currency":"USD"},'
+            b'"fill":{"quantity":72.14,"price":1.43,"walletImpact":{"taxes":['
+            b'{"quantity":0.0,"currency":"RON"},{"quantity":0.05,"currency":"USD"}]}}},'
             b'{"order":{"id":202,"ticker":"SPCX_US_EQ","status":"FILLED"},"fill":{"quantity":0.71,"price":140.51}}'
             b']}'
         )
@@ -482,10 +485,29 @@ class T212ClientTransportTest(unittest.TestCase):
             st2 = client.get_order_status(202)
             self.assertEqual(st1["status"], "FILLED")
             self.assertAlmostEqual(st1["filledQuantity"], 72.14)
+            self.assertEqual(st1["_feeCurrencies"], ["USD"])
             self.assertEqual(st2["status"], "FILLED")
             self.assertAlmostEqual(st2["filledQuantity"], 0.71)
             # Only 3 HTTP GETs total: (404 on 201, 200 on history, 404 on 202 -> served from _hist_cache)
             self.assertEqual(hist_get_mock.call_count, 3)
+
+        # Verify _pace(endpoint_key) does not double-sleep when both _min_gap and _order_min_gap are positive
+        client_both_gaps = t212_client.T212Client(
+            "dummy", "dummy", env="demo", min_gap_sec=1.2,
+            portfolio_ttl_sec=6.0, order_min_gap_sec=2.1,
+        )
+        both_sleeps = []
+        with mock.patch("time.sleep", side_effect=both_sleeps.append), \
+             mock.patch.object(t212_client, "http_get", return_value=(200, b'{"free": 500.0}')), \
+             mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 101}')):
+            self.assertEqual(client_both_gaps.get_cash(), {"free": 500.0})
+            self.assertEqual(len(both_sleeps), 0)
+            client_both_gaps.place_market_order("RGNT_US_EQ", 10.0)
+            both_sleeps.clear()
+            self.assertEqual(client_both_gaps.get_cash(), {"free": 500.0})
+            self.assertEqual(len(both_sleeps), 1)
+            self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
+
 
 
 if __name__ == "__main__":
