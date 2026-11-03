@@ -3274,6 +3274,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, ws_manager=None, api_client=api,
                  market_api=None, provider_names=None, read_only=False):
         self._ws_manager        = ws_manager
+        self._ws_managers       = [ws_manager] if ws_manager is not None else []
         self._ws_default_event_ts = 0.0
         self._ws_last_event_ts_value = 0.0
         self._ws_last_event_ts_per_symbol: dict = {}
@@ -3619,10 +3620,13 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         return entry[1] if entry else None
 
     def attach_ws_manager(self, ws_manager) -> None:
-        """Attach BinancePriceStream as the idempotent primary price source."""
+        """Attach a venue price WebSocket stream (Binance, Hyperliquid, Kraken) as a primary price source."""
         if ws_manager is None:
             return
-        self._ws_manager = ws_manager
+        if self._ws_manager is None:
+            self._ws_manager = ws_manager
+        if ws_manager not in self._ws_managers:
+            self._ws_managers.append(ws_manager)
         ws_manager.subscribe(self)
 
 

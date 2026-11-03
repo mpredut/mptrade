@@ -236,22 +236,6 @@ class HyperliquidProvider(MarketDataProvider):
         self.validate_symbol(symbol)
         return (f"{self._token}USDC", self._token)
 
-    def _allow_ssot_price_cache(self) -> bool:
-        if not super()._allow_ssot_price_cache():
-            return False
-        if (
-            self._client is not None
-            and type(self._client).__name__ != "HLClient"
-            and not bool(
-                getattr(self, "_force_ssot_cache", False)
-                or getattr(self, "_ssot_price_cache_path", None)
-                or getattr(self, "_ssot_trend_cache_path", None)
-                or getattr(self, "_ssot_24price_cache_dir", None)
-            )
-        ):
-            return False
-        return True
-
     def get_current_price(self, symbol: str) -> Optional[float]:
         self.validate_symbol(symbol)
         cached = self.get_ssot_cached_price(symbol)
@@ -603,28 +587,6 @@ class HyperliquidProvider(MarketDataProvider):
             if self._is_definitive_refusal(e):
                 raise SubmissionRefused(f"place_order({symbol}) rejected: {e}") from e
             return None
-
-    @staticmethod
-    def _is_definitive_refusal(error: object) -> bool:
-        text = str(error or "").lower()
-        return any(
-            token in text
-            for token in (
-                "insufficient",
-                "minimum value",
-                "order minimum",
-                "volume minimum",
-                "cost minimum",
-                "invalid price",
-                "invalid size",
-                "invalid order",
-                "invalid arguments",
-                "tick size",
-                "could not immediately match",
-                "price must be",
-                "too far from",
-            )
-        )
 
     @staticmethod
     def _invoke_spot_order(

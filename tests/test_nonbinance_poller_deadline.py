@@ -199,10 +199,12 @@ class TestFetchDeadline(unittest.TestCase):
         )
         hl_stream = cm.HyperliquidPriceStream(["HYPEUSDC"], market_api=api)
         krk_stream = cm.KrakenPriceStream(["HYPEUSD", "TAOUSD", "ADAUSD"])
-        hl_stream.subscribe(cpm)
-        krk_stream.subscribe(cpm)
+        cpm.attach_ws_manager(hl_stream)
+        cpm.attach_ws_manager(krk_stream)
+        self.assertEqual(hl_stream.running_symbols, {"HYPEUSDC"})
+        self.assertEqual(krk_stream.running_symbols, {"HYPEUSD", "TAOUSD", "ADAUSD"})
 
-        now_ms = int(time.time() * 1000)
+        now_ms = int(time.time() * 1000) - 2000
         hl_stream._process_message(
             json.dumps({"channel": "allMids", "data": {"mids": {"@107": "42.125"}}}),
             now_ms=now_ms,
@@ -219,6 +221,14 @@ class TestFetchDeadline(unittest.TestCase):
             json.dumps([44, {"c": ["0.80", "1.0"], "b": ["0.74", "1"], "a": ["0.76", "1"]}, "ticker", "ADA/USD"]),
             now_ms=now_ms,
         )
+
+        # Verify Kraken heartbeat refreshes known prices after >=1000ms so get_price never sees false staleness
+        hb_ms = now_ms + 1500
+        krk_stream._process_message(json.dumps({"event": "heartbeat"}), now_ms=hb_ms)
+        self.assertEqual(cpm.cache["TAOUSD"][0][0], hb_ms)
+        self.assertAlmostEqual(hl_stream.get_price("HYPEUSDC"), 42.125)
+        self.assertAlmostEqual(krk_stream.get_price("ADAUSD"), 0.75)
+        self.assertEqual(set(krk_stream.get_all_prices().keys()), {"HYPEUSD", "TAOUSD", "ADAUSD"})
 
         # Verify WS ticks updated cpm cache and marked real WS stream healthy
         self.assertTrue(cpm._real_ws_is_healthy("HYPEUSDC"))

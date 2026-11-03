@@ -292,22 +292,6 @@ class KrakenProvider(MarketDataProvider):
             raise
 
     # -- Public market data without keys. --------------------------------------
-    def _allow_ssot_price_cache(self) -> bool:
-        if not super()._allow_ssot_price_cache():
-            return False
-        if (
-            self._cli is not None
-            and type(self._cli).__name__ != "KrakenClient"
-            and not bool(
-                getattr(self, "_force_ssot_cache", False)
-                or getattr(self, "_ssot_price_cache_path", None)
-                or getattr(self, "_ssot_trend_cache_path", None)
-                or getattr(self, "_ssot_24price_cache_dir", None)
-            )
-        ):
-            return False
-        return True
-
     def get_current_price(self, symbol: str) -> Optional[float]:
         cached = self.get_ssot_cached_price(symbol)
         if cached is not None:
@@ -684,24 +668,6 @@ class KrakenProvider(MarketDataProvider):
     # Unlike place_order, this raw method returns an order id and raises typed
     # errors so strategy reconciliation can distinguish a disabled live gate from
     # a venue failure. The provider gate remains authoritative for every caller.
-    @staticmethod
-    def _is_definitive_refusal(error: object) -> bool:
-        text = str(error or "").lower()
-        return any(
-            token in text
-            for token in (
-                "insufficient funds",
-                "insufficient margin",
-                "order minimum not met",
-                "volume minimum not met",
-                "cost minimum not met",
-                "invalid price",
-                "invalid arguments",
-                "positions limit exceeded",
-                "tick size check failed",
-            )
-        )
-
     def submit_order(self, symbol: str, side: str, qty: float,
                      price: Optional[float] = None, *, market: bool = False,
                      kind: Optional[str] = None,

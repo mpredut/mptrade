@@ -1649,6 +1649,13 @@ class _VenuePriceStreamBase(BinanceWSBase):
 
     MIN_SAME_PRICE_EMIT_MS = 1000
 
+    @staticmethod
+    def _norm_ws_symbol(symbol: object) -> Optional[str]:
+        if not isinstance(symbol, str):
+            return None
+        s = symbol.strip().upper().replace("/", "")
+        return s or None
+
     def __init__(self, symbols=None, *, ws_url: str):
         super().__init__()
         self.ws_url = ws_url
@@ -1659,8 +1666,52 @@ class _VenuePriceStreamBase(BinanceWSBase):
         self._subscribers = []
         raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
         self._symbols = tuple(
-            dict.fromkeys(str(s).strip().upper() for s in raw_syms if str(s or "").strip())
+            dict.fromkeys(
+                norm_s
+                for s in raw_syms
+                if (norm_s := self._norm_ws_symbol(s)) is not None
+            )
         )
+        self._subscribed = set(self._symbols)
+
+    def add_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s in self._subscribed:
+                return False
+            self._subscribed.add(norm_s)
+            self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
+        return True
+
+    def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return False
+        with self._lock:
+            if norm_s not in self._subscribed:
+                return False
+            self._subscribed.discard(norm_s)
+            self._symbols = tuple(s for s in self._symbols if s != norm_s)
+            self._prices.pop(norm_s, None)
+        return True
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        norm_s = self._norm_ws_symbol(symbol)
+        if not norm_s:
+            return None
+        with self._lock:
+            return self._prices.get(norm_s)
+
+    def get_all_prices(self) -> dict[str, float]:
+        with self._lock:
+            return dict(self._prices)
+
+    @property
+    def running_symbols(self) -> set[str]:
+        with self._lock:
+            return set(self._subscribed)
 
     def subscribe(self, subscriber) -> None:
         with self._lock:
@@ -1843,6 +1894,15 @@ class KrakenPriceStream(_VenuePriceStreamBase):
     def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
         try:
             msg = _json.loads(raw) if isinstance(raw, str) else raw
+            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            if isinstance(msg, dict):
+                ev = str(msg.get("event") or "").strip().lower()
+                if ev == "heartbeat" or (ev == "systemstatus" and str(msg.get("status") or "").strip().lower() == "online"):
+                    with self._lock:
+                        known_prices = list(self._prices.items())
+                    for sym, px in known_prices:
+                        self._notify_subscribers(sym, [[ts_ms, px]])
+                return
             if not isinstance(msg, list) or len(msg) < 4:
                 return
             if msg[-2] != "ticker" or not isinstance(msg[1], dict):
@@ -1857,23 +1917,11 @@ class KrakenPriceStream(_VenuePriceStreamBase):
             c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
             b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
             a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
-            price = safe_pos_float(c_val, default=None) if not isinstance(c_val, bool) else None
-            bid = safe_pos_float(b_val, default=None) if not isinstance(b_val, bool) else None
-            ask = safe_pos_float(a_val, default=None) if not isinstance(a_val, bool) else None
-            if price is None and bid is not None and ask is not None and bid <= ask:
-                price = round((bid + ask) * 0.5, 8)
-            elif (
-                price is not None
-                and bid is not None
-                and ask is not None
-                and bid <= ask
-                and (ask - bid) / bid <= 0.05
-                and (price < bid or price > ask)
-            ):
-                price = round((bid + ask) * 0.5, 8)
+            from providers.base import MarketDataProvider
+
+            price = MarketDataProvider.clamp_price_to_bbo_mid(c_val, b_val, a_val)
             if price is None:
                 return
-            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
             with self._lock:
                 self._prices[sym] = price
             self._notify_subscribers(sym, [[ts_ms, price]])
@@ -1983,12 +2031,18 @@ def _start_nonbinance_trend_poller(
         ]
         if hl_syms and hasattr(cpm, "on_items_update"):
             hl_ws = HyperliquidPriceStream(hl_syms, market_api=getattr(cpm, "market_api", None))
-            hl_ws.subscribe(cpm)
+            if hasattr(cpm, "attach_ws_manager"):
+                cpm.attach_ws_manager(hl_ws)
+            else:
+                hl_ws.subscribe(cpm)
             hl_ws.start(name="HyperliquidPriceWS", daemon=True)
             ws_streams.append(hl_ws)
         if krk_syms and hasattr(cpm, "on_items_update"):
             krk_ws = KrakenPriceStream(krk_syms)
-            krk_ws.subscribe(cpm)
+            if hasattr(cpm, "attach_ws_manager"):
+                cpm.attach_ws_manager(krk_ws)
+            else:
+                krk_ws.subscribe(cpm)
             krk_ws.start(name="KrakenPriceWS", daemon=True)
             ws_streams.append(krk_ws)
 
@@ -1998,6 +2052,13 @@ def _start_nonbinance_trend_poller(
     stop_event = threading.Event()
 
     def run():
+        if ws_streams:
+            real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
+            if callable(real_ws_fn):
+                for _ in range(20):
+                    if stop_event.is_set() or all(real_ws_fn(s) for s in symbols):
+                        break
+                    stop_event.wait(0.1)
         while not stop_event.is_set():
             for s in symbols:
                 if stop_event.is_set():

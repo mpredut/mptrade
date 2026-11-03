@@ -1197,18 +1197,69 @@ class MarketDataProvider(ABC):
         kr_lookup = resolve_kraken_lookup_symbol(raw_u) if (parts is not None and parts[1] == "USD") else ""
         return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon, kr_lookup) if c))
 
+    _REAL_CLIENT_CLASS_NAMES = frozenset({"KrakenClient", "HLClient"})
+    _DEFINITIVE_REFUSAL_TOKENS = (
+        "insufficient",
+        "minimum value",
+        "order minimum",
+        "volume minimum",
+        "cost minimum",
+        "invalid price",
+        "invalid size",
+        "invalid order",
+        "invalid arguments",
+        "positions limit exceeded",
+        "tick size",
+        "could not immediately match",
+        "price must be",
+        "too far from",
+    )
+
+    @classmethod
+    def _is_definitive_refusal(cls, error: object) -> bool:
+        """Return True when a venue error message indicates a permanent order rejection."""
+        text = str(error or "").lower()
+        return any(token in text for token in cls._DEFINITIVE_REFUSAL_TOKENS)
+
+    @staticmethod
+    def clamp_price_to_bbo_mid(
+        price: Optional[float],
+        bid: Any,
+        ask: Any,
+        *,
+        max_spread_ratio: float = 0.05,
+    ) -> Optional[float]:
+        """Return ``price`` clamped to the BBO mid ``(bid + ask) / 2`` when ``price`` falls outside a tight ``[bid, ask]`` spread."""
+        px_f = safe_pos_float(price, default=None) if not isinstance(price, bool) else None
+        bid_f = safe_pos_float(bid, default=None) if not isinstance(bid, bool) else None
+        ask_f = safe_pos_float(ask, default=None) if not isinstance(ask, bool) else None
+        if bid_f is not None and ask_f is not None and bid_f <= ask_f:
+            if px_f is None:
+                return round((bid_f + ask_f) * 0.5, 8)
+            if (ask_f - bid_f) / bid_f <= max_spread_ratio and (px_f < bid_f or px_f > ask_f):
+                return round((bid_f + ask_f) * 0.5, 8)
+        return px_f
+
     def _allow_ssot_price_cache(self) -> bool:
         """Return True when this provider should consult cacheManager SSOT before venue HTTP."""
         if is_in_live_price_fetch():
             return False
         if getattr(self, "_ssot_cache_enabled", None) is False:
             return False
-        if (
+        has_explicit_ssot = bool(
             getattr(self, "_force_ssot_cache", False)
             or getattr(self, "_ssot_price_cache_path", None)
             or getattr(self, "_ssot_trend_cache_path", None)
             or getattr(self, "_ssot_24price_cache_dir", None)
+        )
+        inj_client = getattr(self, "_cli", None) or getattr(self, "_client", None)
+        if (
+            inj_client is not None
+            and type(inj_client).__name__ not in self._REAL_CLIENT_CLASS_NAMES
+            and not has_explicit_ssot
         ):
+            return False
+        if has_explicit_ssot:
             return True
         if "pytest" in sys.modules:
             return False
