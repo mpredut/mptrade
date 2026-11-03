@@ -31,7 +31,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import canonical_base_asset
+from cachepaths import cache_path, canonical_base_asset
 from .base import (
     MarketDataProvider,
     _clean_single_order_id,
@@ -267,6 +267,28 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] get_current_price({symbol}) failed: {e}")
             return None
 
+    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
+        self.validate_symbol(symbol)
+        c = self._hl()
+        pair = self._pair()
+        try:
+            if c is not None and pair is not None and hasattr(getattr(c, "info", None), "l2_snapshot"):
+                raw = c.info.l2_snapshot(pair)
+                norm = self.normalize_orderbook_payload(raw)
+                if norm is not None:
+                    return norm
+            from botcore import fetch_json_post
+
+            raw = fetch_json_post(
+                "https://api.hyperliquid.xyz/info",
+                {"type": "l2Book", "coin": self._token},
+                timeout=4.0,
+            )
+            return self.normalize_orderbook_payload(raw)
+        except Exception as e:  # noqa: BLE001
+            print(f"[HL] get_orderbook({symbol}) failed: {e}")
+            return None
+
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         """Return ascending granular spot closes over the last ``lookback_h`` hours."""
         self.validate_symbol(symbol)
@@ -334,6 +356,21 @@ class HyperliquidProvider(MarketDataProvider):
             print(f"[HL] free_balance({asset}) failed: {e}")
             return None
 
+    def _fills_cache_file(self) -> Optional[str]:
+        custom = getattr(self, "_ssot_fills_cache_path", None)
+        if custom:
+            return str(custom)
+        if self._allow_ssot_price_cache():
+            return cache_path("cache_trade_hyperliquid.json")
+        return None
+
+    def _fills_from_cache(self, symbol: str) -> Optional[List[dict]]:
+        """Read spot fills from shared SSOT cache_trade_hyperliquid.json when fresh."""
+        cache_file = self._fills_cache_file()
+        if not cache_file:
+            return None
+        return self.read_ssot_fills_cache(symbol, cache_file, max_stale_sec=60.0)
+
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Return normalized recent spot orders (fills aggregated by oid), optionally filtered by side.
 
@@ -343,6 +380,10 @@ class HyperliquidProvider(MarketDataProvider):
         since_val = safe_nonneg_float(since_s, default=None)
         if since_val is None:
             return []
+        cutoff_ms = (time.time() - since_val) * 1000.0
+        cached_fills = self._fills_from_cache(symbol)
+        if cached_fills is not None:
+            return aggregate_fills_by_order_id(cached_fills, cutoff_ms=cutoff_ms, side=side)
         c = self._hl()
         pair = self._pair()
         if c is None or pair is None:
@@ -351,7 +392,6 @@ class HyperliquidProvider(MarketDataProvider):
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
                 raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
-            cutoff_ms = (time.time() - since_val) * 1000.0
             fills = c.info.user_fills(addr)
             if fills is None:
                 raise ProviderError(f"get_orders({symbol}): user_fills returned None")
@@ -361,6 +401,9 @@ class HyperliquidProvider(MarketDataProvider):
                 f for f in fills
                 if isinstance(f, dict) and f.get("coin") == pair
             ]
+            cache_file = self._fills_cache_file()
+            if cache_file:
+                self.write_ssot_fills_cache(symbol, cache_file, spot_fills)
             return aggregate_fills_by_order_id(spot_fills, cutoff_ms=cutoff_ms, side=side)
         except ProviderError:
             raise
@@ -549,6 +592,9 @@ class HyperliquidProvider(MarketDataProvider):
                 if isinstance(oid, (int, float))
                 else clean_oid
             )
+            cache_file = self._fills_cache_file()
+            if cache_file:
+                self.invalidate_ssot_fills_cache(symbol, cache_file)
             return {"orderId": out_oid, "ok": ok, "msg": msg}
         except SubmissionRefused:
             raise

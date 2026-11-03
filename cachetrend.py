@@ -34,9 +34,11 @@ from cachepaths import (
     CACHEDB_SUBDOMAINS,
     cache_path,
     cache_symbol_variants,
+    clean_symbol_key,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    split_symbol_assets,
 )
 from instrument_registry import casefold_get
 from state_io import (
@@ -1630,6 +1632,224 @@ class CacheShortTrendManager(CacheManagerInterface):
 CacheShortTrend = CacheShortTrendManager
 
 
+from binance_api.bapi_ws import (
+    BinanceWSBase,
+    WS_CLOSE_TIMEOUT,
+    WS_PING_INTERVAL,
+    WS_PING_TIMEOUT,
+    WS_RECV_TIMEOUT,
+)
+import asyncio
+import json as _json
+import websockets as _websockets
+
+
+class _VenuePriceStreamBase(BinanceWSBase):
+    """Shared public WebSocket price stream base for non-Binance venues (Hyperliquid, Kraken)."""
+
+    def __init__(self, symbols=None, *, ws_url: str):
+        super().__init__()
+        self.ws_url = ws_url
+        self._prices: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._subscribers = []
+        raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
+        self._symbols = tuple(
+            dict.fromkeys(str(s).strip().upper() for s in raw_syms if str(s or "").strip())
+        )
+
+    def subscribe(self, subscriber) -> None:
+        with self._lock:
+            if subscriber not in self._subscribers:
+                self._subscribers.append(subscriber)
+
+    def unsubscribe(self, subscriber) -> None:
+        with self._lock:
+            if subscriber in self._subscribers:
+                self._subscribers.remove(subscriber)
+
+    def _notify_subscribers(self, symbol: str, items) -> None:
+        with self._lock:
+            subscribers = list(self._subscribers)
+        for sub in subscribers:
+            try:
+                sub.on_items_update(symbol, items)
+            except Exception as exc:
+                builtins.print(f"[{self.__class__.__name__}] subscriber error ({symbol}): {exc}")
+
+    async def _connect_and_run(self) -> None:
+        if not self._symbols or self._stop_event.is_set():
+            return
+        async with _websockets.connect(
+            self.ws_url,
+            ping_interval=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_TIMEOUT,
+            close_timeout=WS_CLOSE_TIMEOUT,
+        ) as ws:
+            sub_msg = self._build_subscribe_payload()
+            if sub_msg:
+                await ws.send(sub_msg)
+            while not self._stop_event.is_set():
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_RECV_TIMEOUT)
+                    self._process_message(raw)
+                except asyncio.TimeoutError:
+                    continue
+                except _websockets.exceptions.ConnectionClosed:
+                    break
+                except Exception:
+                    continue
+
+    def _build_subscribe_payload(self) -> Optional[str]:
+        raise NotImplementedError
+
+    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
+        raise NotImplementedError
+
+
+class HyperliquidPriceStream(_VenuePriceStreamBase):
+    """Real-time Hyperliquid public WebSocket stream (`allMids`) feeding CacheCurrentPriceManager."""
+
+    DEFAULT_WS_URL = "wss://api.hyperliquid.xyz/ws"
+    _KNOWN_SPOT_PAIRS = {"HYPE": "@107"}
+
+    def __init__(self, symbols=None, *, market_api=None, ws_url: str = DEFAULT_WS_URL):
+        super().__init__(symbols=symbols, ws_url=ws_url)
+        self.market_api = market_api
+        self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
+
+    def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
+        cached = self._resolved_spot_keys.get(symbol)
+        if cached:
+            return cached
+        split = split_symbol_assets(symbol)
+        base = split[0] if split else symbol.replace("USDC", "").replace("USD", "")
+        keys: list[str] = []
+        if self.market_api is not None and hasattr(self.market_api, "provider_by_name"):
+            try:
+                prov = self.market_api.provider_by_name("hyperliquid")
+                pair_fn = getattr(prov, "_pair", None)
+                spot_pair = pair_fn() if callable(pair_fn) else getattr(prov, "_spot_pair", None)
+                if isinstance(spot_pair, str) and spot_pair.strip():
+                    keys.append(spot_pair.strip())
+            except Exception:
+                pass
+        known_spot = self._KNOWN_SPOT_PAIRS.get(base.upper())
+        if known_spot and known_spot not in keys:
+            keys.append(known_spot)
+        for fallback in (f"{base}/USDC", symbol, base):
+            if fallback and fallback not in keys:
+                keys.append(fallback)
+        resolved = tuple(keys)
+        self._resolved_spot_keys[symbol] = resolved
+        return resolved
+
+    def _build_subscribe_payload(self) -> str:
+        return _json.dumps({"method": "subscribe", "subscription": {"type": "allMids"}})
+
+    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
+        try:
+            envelope = _json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(envelope, dict) or envelope.get("channel") != "allMids":
+                return
+            data = envelope.get("data")
+            mids = data.get("mids") if isinstance(data, dict) else None
+            if not isinstance(mids, dict):
+                return
+            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            for sym in self._symbols:
+                px = None
+                for k in self._candidate_mids_keys(sym):
+                    raw_val = casefold_get(mids, k)
+                    if not isinstance(raw_val, bool):
+                        px = safe_pos_float(raw_val, default=None)
+                    if px is not None:
+                        break
+                if px is not None:
+                    with self._lock:
+                        self._prices[sym] = px
+                    self._notify_subscribers(sym, [[ts_ms, px]])
+        except Exception:
+            return
+
+
+class KrakenPriceStream(_VenuePriceStreamBase):
+    """Real-time Kraken public WebSocket v1 `ticker` stream feeding CacheCurrentPriceManager."""
+
+    DEFAULT_WS_URL = "wss://ws.kraken.com"
+
+    def __init__(self, symbols=None, *, ws_url: str = DEFAULT_WS_URL):
+        super().__init__(symbols=symbols, ws_url=ws_url)
+        self._ws_pairs: list[str] = []
+        self._pair_to_symbol: dict[str, str] = {}
+        for sym in self._symbols:
+            split = split_symbol_assets(sym)
+            ws_pair = f"{split[0]}/{split[1]}" if split else sym
+            if ws_pair not in self._ws_pairs:
+                self._ws_pairs.append(ws_pair)
+            self._pair_to_symbol[ws_pair.upper()] = sym
+            self._pair_to_symbol[clean_symbol_key(sym)] = sym
+            if split and split[0] == "BTC":
+                self._pair_to_symbol[f"XBT/{split[1]}"] = sym
+                self._pair_to_symbol[f"XBT{split[1]}"] = sym
+
+    def _build_subscribe_payload(self) -> str:
+        return _json.dumps({
+            "event": "subscribe",
+            "pair": list(self._ws_pairs),
+            "subscription": {"name": "ticker"},
+        })
+
+    def _resolve_symbol(self, pair_label: str) -> Optional[str]:
+        raw_u = str(pair_label or "").strip().upper()
+        if not raw_u:
+            return None
+        return (
+            self._pair_to_symbol.get(raw_u)
+            or self._pair_to_symbol.get(clean_symbol_key(raw_u))
+        )
+
+    def _process_message(self, raw: str, *, now_ms: Optional[int] = None) -> None:
+        try:
+            msg = _json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(msg, list) or len(msg) < 4:
+                return
+            if msg[-2] != "ticker" or not isinstance(msg[1], dict):
+                return
+            sym = self._resolve_symbol(str(msg[-1] or ""))
+            if not sym:
+                return
+            ticker = msg[1]
+            c_raw = ticker.get("c")
+            b_raw = ticker.get("b")
+            a_raw = ticker.get("a")
+            c_val = c_raw[0] if isinstance(c_raw, list) and c_raw else c_raw
+            b_val = b_raw[0] if isinstance(b_raw, list) and b_raw else b_raw
+            a_val = a_raw[0] if isinstance(a_raw, list) and a_raw else a_raw
+            price = safe_pos_float(c_val, default=None) if not isinstance(c_val, bool) else None
+            bid = safe_pos_float(b_val, default=None) if not isinstance(b_val, bool) else None
+            ask = safe_pos_float(a_val, default=None) if not isinstance(a_val, bool) else None
+            if price is None and bid is not None and ask is not None and bid <= ask:
+                price = round((bid + ask) * 0.5, 8)
+            elif (
+                price is not None
+                and bid is not None
+                and ask is not None
+                and bid <= ask
+                and (ask - bid) / bid <= 0.05
+                and (price < bid or price > ask)
+            ):
+                price = round((bid + ask) * 0.5, 8)
+            if price is None:
+                return
+            ts_ms = safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+            with self._lock:
+                self._prices[sym] = price
+            self._notify_subscribers(sym, [[ts_ms, price]])
+        except Exception:
+            return
+
+
 def _fetch_price_with_deadline(
     market_api,
     symbol,
@@ -1655,15 +1875,21 @@ def _fetch_price_with_deadline(
 
 
 class _NonBinanceTrendPoller:
-    """Own the non-Binance poller's thread and executor lifecycle."""
+    """Own the non-Binance WebSocket streams, fallback poller thread, and executor lifecycle."""
 
-    def __init__(self, thread, pool, stop_event):
+    def __init__(self, thread, pool, stop_event, ws_streams=None):
         self.thread = thread
         self.pool = pool
         self.stop_event = stop_event
+        self.ws_streams = tuple(ws_streams or ())
 
     def stop(self, timeout=5.0):
         self.stop_event.set()
+        for ws in self.ws_streams:
+            try:
+                ws.stop(timeout=min(2.0, float(timeout or 2.0)))
+            except Exception:
+                pass
         if self.thread is not threading.current_thread():
             self.thread.join(timeout=timeout)
         self.pool.shutdown(wait=False, cancel_futures=True)
@@ -1676,12 +1902,16 @@ def _start_nonbinance_trend_poller(
     interval_sec=10,
     fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
     provider_names=None,
+    *,
+    start_ws=None,
 ):
-    """Feed short trends for non-WebSocket, non-Binance symbols.
+    """Feed short trends for non-Binance symbols using WebSocket-first + REST fallback.
 
-    Poll through the facade and push into the CurrentPrice/Cache24/ShortTrend chain.
-    Per-symbol failures do not affect Binance. A bounded poll wait and at least two
-    workers keep one slow fetch from freezing the poller; provider timeouts remain visible.
+    Mirrors the Binance architecture symmetrically:
+    - Starts public WebSocket streams (`HyperliquidPriceStream`, `KrakenPriceStream`) that push
+      live ticks directly into `cpm.on_items_update(symbol, [[ts_ms, price]])`.
+    - The background poller checks `cpm._real_ws_is_healthy(s)` before polling REST, executing
+      `_fetch_price_with_deadline` ONLY when a symbol's WebSocket stream is disconnected or stale.
     """
     symbols = tuple(str(symbol or "").strip() for symbol in symbols)
     bindings = {
@@ -1703,6 +1933,34 @@ def _start_nonbinance_trend_poller(
             + ", ".join(missing)
         )
     cpm.bind_providers(bindings)
+
+    if start_ws is None:
+        auto_ws_env = os.environ.get("BINANCE_AUTO_START_WEBSOCKETS", "1").strip().lower()
+        enable_ws = auto_ws_env not in ("0", "false", "no", "off") and "pytest" not in sys.modules
+    else:
+        enable_ws = _parse_bool_flag(start_ws, default=False)
+
+    ws_streams = []
+    if enable_ws:
+        hl_syms = [
+            s for s in symbols
+            if normalize_venue_name(bindings[s.upper()], default="") == "hyperliquid"
+        ]
+        krk_syms = [
+            s for s in symbols
+            if normalize_venue_name(bindings[s.upper()], default="") == "kraken"
+        ]
+        if hl_syms and hasattr(cpm, "on_items_update"):
+            hl_ws = HyperliquidPriceStream(hl_syms, market_api=getattr(cpm, "market_api", None))
+            hl_ws.subscribe(cpm)
+            hl_ws.start(name="HyperliquidPriceWS", daemon=True)
+            ws_streams.append(hl_ws)
+        if krk_syms and hasattr(cpm, "on_items_update"):
+            krk_ws = KrakenPriceStream(krk_syms)
+            krk_ws.subscribe(cpm)
+            krk_ws.start(name="KrakenPriceWS", daemon=True)
+            ws_streams.append(krk_ws)
+
     pool = _futures.ThreadPoolExecutor(
         max_workers=max(2, len(symbols)), thread_name_prefix="NBTrendFetch"
     )
@@ -1713,6 +1971,9 @@ def _start_nonbinance_trend_poller(
             for s in symbols:
                 if stop_event.is_set():
                     break
+                real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
+                if callable(real_ws_fn) and real_ws_fn(s):
+                    continue
                 try:
                     p = _fetch_price_with_deadline(
                         cpm.market_api,
@@ -1738,7 +1999,7 @@ def _start_nonbinance_trend_poller(
 
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()
-    return _NonBinanceTrendPoller(t, pool, stop_event)
+    return _NonBinanceTrendPoller(t, pool, stop_event, ws_streams=ws_streams)
 
 
 get_short_trend_manager = _cm_attr("get_short_trend_manager")
@@ -1750,6 +2011,8 @@ if _cm is not None:
     _cm.CacheShortTrend = CacheShortTrend
     _cm.SHORT_TREND_EVAL_INTERVAL_SEC = CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
     _cm._NB_FETCH_DEADLINE_SEC = _NB_FETCH_DEADLINE_SEC
+    _cm.HyperliquidPriceStream = HyperliquidPriceStream
+    _cm.KrakenPriceStream = KrakenPriceStream
     _cm._fetch_price_with_deadline = _fetch_price_with_deadline
     _cm._NonBinanceTrendPoller = _NonBinanceTrendPoller
     _cm._start_nonbinance_trend_poller = _start_nonbinance_trend_poller

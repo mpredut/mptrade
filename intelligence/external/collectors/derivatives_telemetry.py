@@ -112,7 +112,13 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
                 funding_rate = _clean_dict_float(ctx, "funding", 0.0)
                 oi = max(0.0, _clean_dict_float(ctx, "openInterest", 0.0))
                 mark_px = max(0.0, _clean_dict_float(ctx, "markPx", 0.0, "oraclePx"))
-                oracle_px = max(0.0, _clean_dict_float(ctx, "oraclePx", mark_px))
+                oracle_px = max(0.0, _clean_dict_float(ctx, "oraclePx", 0.0))
+                if oracle_px <= 0.0 or oracle_px == mark_px:
+                    ssot_px = self._resolve_ssot_price(symbol, now=now)
+                    if ssot_px is not None and ssot_px > 0.0:
+                        oracle_px = ssot_px
+                    elif oracle_px <= 0.0:
+                        oracle_px = mark_px
                 oi_usd = oi * mark_px
                 basis_bps = round(((mark_px - oracle_px) / oracle_px) * 10000.0, 2) if oracle_px > 0.0 and mark_px > 0.0 else 0.0
                 telemetry = DerivativesTelemetry(
@@ -165,7 +171,10 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
 
             oi = max(0.0, _clean_dict_float(data_oi, "openInterest", 0.0))
             mark_price = max(0.0, _clean_dict_float(data_fund, "markPrice", 0.0))
-            index_price = max(0.0, _clean_dict_float(data_fund, "indexPrice", mark_price))
+            index_price = max(0.0, _clean_dict_float(data_fund, "indexPrice", 0.0))
+            if index_price <= 0.0:
+                ssot_px = self._resolve_ssot_price(symbol, now=now)
+                index_price = ssot_px if (ssot_px is not None and ssot_px > 0.0) else mark_price
             oi_usd = oi * mark_price
             basis_bps = round(((mark_price - index_price) / index_price) * 10000.0, 2) if index_price > 0.0 and mark_price > 0.0 else 0.0
 

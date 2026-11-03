@@ -464,6 +464,10 @@ class AuditedStrategyExecutor:
             return safe_float(reader(symbol), default=0.0)
         return 0.0
 
+    def get_orderbook(self, symbol: str, limit: int = 200):
+        reader = getattr(self._executor, "get_orderbook", None)
+        return reader(symbol, limit) if callable(reader) else None
+
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)

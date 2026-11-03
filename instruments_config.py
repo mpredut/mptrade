@@ -90,9 +90,16 @@ def tradeall_trade_symbols(path=None):
 # ---------------------------------------------------------------------------
 
 def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
-    """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS) from kraken/config.env, excluding read-only xStocks."""
+    """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS / instruments.conf), excluding read-only xStocks."""
     kv = parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
     raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
+    if not raw_pairs.strip():
+        ws_inst_conf = os.path.join(workspace_dir, "instruments.conf")
+        if os.path.exists(ws_inst_conf):
+            try:
+                raw_pairs = ",".join(symbols_for("kraken", path=ws_inst_conf))
+            except Exception:
+                raw_pairs = ""
     out: list[tuple[str, str, str]] = []
     seen_pairs: set[str] = set()
     for item in raw_pairs.split(","):

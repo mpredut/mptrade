@@ -25,7 +25,7 @@ from botcore import (
 )
 from cachepaths import clean_symbol_key, normalize_venue_name, resolve_cachedb_filepath
 from instrument_registry import casefold_get
-from state_io import read_json_dict_recovering
+from state_io import read_json_dict_recovering, save_json_state
 
 
 _LIVE_FETCH_LOCAL = threading.local()
@@ -1417,3 +1417,238 @@ class MarketDataProvider(ABC):
             return "flat"
         except Exception:
             return None
+
+    @staticmethod
+    def normalize_orderbook_payload(raw_data: Any) -> Optional[dict]:
+        """Normalize Binance, Kraken, or Hyperliquid L2 orderbook payloads into ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}``."""
+        if not isinstance(raw_data, dict):
+            return None
+        data = raw_data
+        if "bids" not in data and isinstance(data.get("levels"), list) and len(data["levels"]) >= 2:
+            hl_bids, hl_asks = data["levels"][0], data["levels"][1]
+            if isinstance(hl_bids, list) and isinstance(hl_asks, list):
+                data = {
+                    "bids": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_bids],
+                    "asks": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_asks],
+                }
+        elif "bids" not in data and isinstance(data.get("result"), dict):
+            krk_book = next(
+                (v for v in data["result"].values() if isinstance(v, dict) and "bids" in v),
+                None,
+            )
+            if isinstance(krk_book, dict):
+                data = krk_book
+            else:
+                return None
+
+        def _parse_side(rows: Any) -> list[tuple[float, float]]:
+            if not isinstance(rows, list):
+                return []
+            out_side: list[tuple[float, float]] = []
+            for item in rows:
+                if isinstance(item, dict):
+                    pf = safe_pos_float(item.get("px", item.get("price")), default=None)
+                    qf = safe_pos_float(item.get("sz", item.get("qty", item.get("volume"))), default=None)
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    pf = safe_pos_float(item[0], default=None)
+                    qf = safe_pos_float(item[1], default=None)
+                else:
+                    continue
+                if pf is not None and qf is not None:
+                    out_side.append((pf, qf))
+            return out_side
+
+        bids = _parse_side(data.get("bids"))
+        asks = _parse_side(data.get("asks"))
+        if not bids or not asks:
+            return None
+        bids.sort(key=lambda x: x[0], reverse=True)
+        asks.sort(key=lambda x: x[0])
+        return {"bids": bids, "asks": asks}
+
+    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
+        """Return normalized L2 orderbook ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}`` for ``symbol``."""
+        return None
+
+    def read_ssot_fills_cache(
+        self,
+        symbol: str,
+        cache_file: str,
+        *,
+        max_stale_sec: float = 90.0,
+        match_fn: Any = None,
+        normalize_fn: Any = None,
+    ) -> Optional[List[dict]]:
+        """Read normalized fills for ``symbol`` from a shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return None
+        data = read_json_dict_recovering(str(cache_file), default=None)
+        if not isinstance(data, dict):
+            return None
+        items = data.get("items")
+        ft = data.get("fetchtime")
+        if not isinstance(items, dict) or not isinstance(ft, dict):
+            return None
+        if callable(match_fn):
+            key = next((k for k in items if match_fn(symbol, k)), None)
+        else:
+            cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
+            key = next((k for k in items if isinstance(k, str) and clean_symbol_key(k) in cands), None)
+        if key is None or not isinstance(items.get(key), list):
+            return None
+        ft_val = safe_pos_float(casefold_get(ft, key), default=None)
+        if ft_val is None:
+            return None
+        if ft_val < 1e11:
+            ft_val *= 1000.0
+        age_ms = time.time() * 1000.0 - ft_val
+        max_stale = safe_pos_float(max_stale_sec, default=90.0) or 90.0
+        if age_ms < -5000.0 or age_ms > max_stale * 1000.0:
+            return None
+        if callable(normalize_fn):
+            return [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
+        return [dict(t) for t in items[key] if isinstance(t, dict)]
+
+    def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
+        """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return False
+        sym_key = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        try:
+            data = read_json_dict_recovering(str(cache_file), default=None)
+            if not isinstance(data, dict):
+                data = {"items": {}, "fetchtime": {}}
+            items = data.get("items") if isinstance(data.get("items"), dict) else {}
+            ft = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+            items[sym_key] = [dict(f) for f in (fills or ()) if isinstance(f, dict)]
+            ft[sym_key] = int(time.time() * 1000)
+            data["items"] = items
+            data["fetchtime"] = ft
+            save_json_state(str(cache_file), data)
+            return True
+        except Exception:
+            return False
+
+    def invalidate_ssot_fills_cache(self, symbol: str, cache_file: str) -> None:
+        """Expire ``fetchtime`` for ``symbol`` in the shared SSOT trade cache after order execution."""
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip() or not cache_file:
+            return
+        try:
+            if not os.path.exists(str(cache_file)):
+                return
+            data = read_json_dict_recovering(str(cache_file), default=None)
+            if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
+                return
+            cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
+            changed = False
+            for k in list(data["fetchtime"].keys()):
+                if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands):
+                    data["fetchtime"].pop(k, None)
+                    changed = True
+            if changed:
+                save_json_state(str(cache_file), data)
+        except Exception:
+            pass
+
+
+def resolve_ssot_price_from_cache(
+    symbol: str,
+    cache_dir: Optional[str] = None,
+    max_age_sec: float = 60.0,
+    *,
+    quote_isolated: bool = True,
+    now_ts: Optional[float] = None,
+) -> Optional[float]:
+    """Resolve a fresh positive spot price for ``symbol`` from SSOT cacheManager stores (0 ms local)."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return None
+    sym_u = symbol.strip().upper()
+    sym_clean = clean_symbol_key(sym_u)
+    if not sym_clean:
+        return None
+    max_age = safe_pos_float(max_age_sec, default=60.0) or 60.0
+    now_s = safe_pos_float(now_ts, default=None) or time.time()
+
+    if quote_isolated:
+        from cachepaths import cache_symbol_variants, compatible_quote_suffixes
+
+        quotes = compatible_quote_suffixes(sym_clean, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+        cands = list(
+            dict.fromkeys(
+                c
+                for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean, quotes=quotes))
+                if isinstance(c, str) and c and "/" not in c
+            )
+        )
+    else:
+        from cachepaths import cache_symbol_variants
+
+        cands = list(
+            dict.fromkeys(
+                c
+                for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean))
+                if isinstance(c, str) and c and "/" not in c
+            )
+        )
+
+    is_default_dir = not cache_dir or str(cache_dir).strip() in ("", "cachedb")
+    if is_default_dir and "pytest" not in sys.modules:
+        cm = sys.modules.get("cacheManager")
+        cpm = getattr(cm, "_current_price_instance", None) if cm is not None else None
+        if cpm is not None and hasattr(cpm, "get_cached_price_observation"):
+            for cand in cands:
+                try:
+                    obs = cpm.get_cached_price_observation(cand, max_age)
+                    if obs is not None:
+                        px = safe_pos_float(obs[1], default=None)
+                        if px is not None:
+                            return px
+                except Exception:
+                    continue
+
+    eff_dir = str(cache_dir).strip() if (cache_dir and str(cache_dir).strip()) else "cachedb"
+    price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, "cache_current_price.json")))
+    if os.path.exists(price_path):
+        try:
+            data = read_json_dict_recovering(price_path)
+            if isinstance(data, dict):
+                items = data.get("items") if isinstance(data.get("items"), dict) else data
+                fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
+                file_ts = extract_timestamp_s(data, default=None)
+                for cand in cands:
+                    raw_entry = casefold_get(items, cand)
+                    if raw_entry is None:
+                        continue
+                    fb_ts = casefold_get(fetchtime_map, cand)
+                    if fb_ts is None:
+                        fb_ts = file_ts
+                    parsed = MarketDataProvider._parse_ssot_price_point(raw_entry, fallback_ts=fb_ts)
+                    if parsed is None:
+                        continue
+                    ts_ms, px = parsed
+                    obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+                    if -5.0 <= (now_s - obs_s) <= max_age:
+                        return px
+        except Exception:
+            pass
+
+    for cand in cands:
+        c24_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, f"cache_24_price_{cand}.json")))
+        if not os.path.exists(c24_path):
+            continue
+        try:
+            raw = read_json_dict_recovering(c24_path)
+            if not isinstance(raw, dict):
+                continue
+            entries = raw.get("items") if isinstance(raw.get("items"), list) else casefold_get(raw.get("items") if isinstance(raw.get("items"), dict) else raw, cand)
+            if not isinstance(entries, list) or not entries:
+                continue
+            parsed = MarketDataProvider._parse_ssot_price_point(entries[-1], fallback_ts=extract_timestamp_s(raw, default=None))
+            if parsed is not None:
+                ts_ms, px = parsed
+                obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+                if -5.0 <= (now_s - obs_s) <= max_age:
+                    return px
+        except Exception:
+            continue
+    return None

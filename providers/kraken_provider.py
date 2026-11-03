@@ -318,6 +318,21 @@ class KrakenProvider(MarketDataProvider):
             print(f"[Kraken] price {symbol}: {e}")
             return None
 
+    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
+        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
+            return None
+        from cachepaths import resolve_kraken_lookup_symbol
+
+        lim = max(5, min(500, int(safe_pos_float(limit, default=200) or 200)))
+        pair = resolve_kraken_lookup_symbol(str(symbol).strip())
+        try:
+            res = self._client()._public("Depth", {"pair": pair, "count": lim})
+            if isinstance(res, dict):
+                return self.normalize_orderbook_payload({"result": res} if "bids" not in res else res)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Kraken] orderbook {symbol}: {e}")
+        return None
+
     def min_order_qty(self, symbol: str) -> float:
         """Return public pair minimum volume, caching only a positive result.
 
@@ -587,31 +602,13 @@ class KrakenProvider(MarketDataProvider):
 
     def _fills_from_cache(self, symbol: str):
         """Read symbol fills from the shared cache, or return None for API fallback."""
-        if not symbol or isinstance(symbol, bool) or not str(symbol).strip():
-            return None
-        data = read_json_dict_recovering(_KRAKEN_CACHE_FILE, default=None)
-        if not isinstance(data, dict):
-            return None
-        items = data.get("items")
-        ft = data.get("fetchtime")
-        if not isinstance(items, dict) or not isinstance(ft, dict):
-            return None
-        key = next((k for k in items if _kraken_pair_matches(symbol, k)), None)
-        if key is None or not isinstance(items.get(key), list):
-            return None
-        ft_val = safe_pos_float(casefold_get(ft, key), default=None)
-        if ft_val is None:
-            return None
-        if ft_val < 1e11:
-            ft_val *= 1000.0
-        age_ms = time.time() * 1000.0 - ft_val
-        if age_ms < -5000.0 or age_ms > _CACHE_MAX_STALE_S * 1000.0:
-            return None                                       # Stale or clock-skewed cachemanager data.
-        return [
-            _normalize_kraken_fill(t)
-            for t in items[key]
-            if isinstance(t, dict)
-        ]
+        return self.read_ssot_fills_cache(
+            symbol,
+            _KRAKEN_CACHE_FILE,
+            max_stale_sec=_CACHE_MAX_STALE_S,
+            match_fn=_kraken_pair_matches,
+            normalize_fn=_normalize_kraken_fill,
+        )
 
     def _fills_from_api(self, symbol: str):
         """Fall back to direct TradesHistory, matching pre-cachemanager behavior."""

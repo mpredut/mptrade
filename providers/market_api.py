@@ -173,6 +173,31 @@ class BinanceProvider(MarketDataProvider):
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
         return None
 
+    def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
+        if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return None
+        from botcore import fetch_public_json
+        from cachepaths import resolve_binance_lookup_symbol
+
+        sym_u = symbol.strip().upper()
+        lim = max(5, min(500, exact_pos_int(limit, default=200) or 200))
+        lookup_sym = resolve_binance_lookup_symbol(sym_u)
+        for cand_sym in dict.fromkeys((sym_u, lookup_sym)):
+            if not cand_sym:
+                continue
+            try:
+                raw = fetch_public_json(
+                    f"https://api.binance.com/api/v3/depth?symbol={cand_sym}&limit={lim}",
+                    timeout=4.0,
+                    user_agent="mptrade-orderbook/1.0",
+                )
+                norm = self.normalize_orderbook_payload(raw)
+                if norm is not None:
+                    return norm
+            except Exception:
+                continue
+        return None
+
     def supports_symbol(self, symbol: str) -> bool:
         # The operational Binance account uses USDC pairs exclusively, preserving
         # the facade's Binance default. Hyperliquid owns HYPE spot symbols, so

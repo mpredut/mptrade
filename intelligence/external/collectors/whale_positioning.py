@@ -271,6 +271,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             mark_px = 0.0
             if latest_oi_usd > 0.0 and latest_oi_coins > 0.0:
                 mark_px = latest_oi_usd / latest_oi_coins
+            else:
+                mark_px = self._resolve_ssot_price(symbol, now=now) or 0.0
+            if mark_px > 0.0:
                 taker_buy = round(taker_buy * mark_px, 2)
                 taker_sell = round(taker_sell * mark_px, 2)
             tr_5m, cvd_5m = _horizon_taker_stats(all_taker_rows[-1:], mark_px)

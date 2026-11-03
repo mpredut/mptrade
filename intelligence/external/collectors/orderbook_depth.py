@@ -28,7 +28,8 @@ from cachepaths import (
     resolve_kraken_lookup_symbol,
     telemetry_cache_file_path,
 )
-from state_io import read_json_dict, save_json_state
+from providers.base import MarketDataProvider, resolve_ssot_price_from_cache
+from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 
 logger = logging.getLogger("intelligence.external.orderbook_depth")
 
@@ -45,9 +46,11 @@ def _resolve_configured_venue(symbol: str) -> str:
     try:
         from instrument_registry import load_registry
 
-        reg = load_registry()
+        reg_specs = list(load_registry().values())
         for enabled_only in (True, False):
-            for inst in reg.all(enabled_only=enabled_only):
+            for inst in reg_specs:
+                if enabled_only and not getattr(inst, "enabled", False):
+                    continue
                 if inst.symbol.upper() == canon_sym and inst.provider:
                     return str(inst.provider).strip().lower()
     except Exception:
@@ -67,10 +70,10 @@ def _is_multi_venue_base(symbol: str) -> bool:
     try:
         from instrument_registry import load_registry
 
-        reg = load_registry()
+        reg_specs = list(load_registry().values())
         venues = {
             str(inst.provider).strip().lower()
-            for inst in reg.all(enabled_only=False)
+            for inst in reg_specs
             if inst.base.upper() == base and inst.provider
         }
         if base in ("HYPE", "TAO", "ADA"):
@@ -90,10 +93,9 @@ def _has_hyperliquid_instrument(symbol: str) -> bool:
     try:
         from instrument_registry import load_registry
 
-        reg = load_registry()
         return any(
             inst.base.upper() == base and str(inst.provider).strip().lower() == "hyperliquid"
-            for inst in reg.all(enabled_only=False)
+            for inst in load_registry().values()
         )
     except Exception:
         return base == "HYPE"
@@ -187,7 +189,7 @@ class _DiskBackedSymbolCollector:
             if not p:
                 continue
             try:
-                data = read_json_dict(p, default=None, recover_previous=True)
+                data = read_json_dict_recovering(p, default=None)
                 if not isinstance(data, dict):
                     continue
                 try:
@@ -227,6 +229,24 @@ class _DiskBackedSymbolCollector:
         if self._as_bool_flag(save_to_disk, default=False):
             self._save_to_disk(item)
 
+    def _sync_existing_sibling_disk_file(self, sym_clean: str, snapshot: Any) -> None:
+        if not (p_exact := self._disk_path(sym_clean)):
+            return
+        try:
+            import os as _os
+
+            if not _os.path.isfile(p_exact):
+                return
+            cur_d = read_json_dict_recovering(p_exact, default=None)
+            cur_ts = safe_pos_float(cur_d.get("ts") if isinstance(cur_d, dict) else None, default=0.0) or 0.0
+            snap_ts = safe_pos_float(getattr(snapshot, "ts", None), default=0.0) or 0.0
+            if snap_ts > cur_ts + 5.0 and hasattr(snapshot, "to_dict"):
+                d_copy = dict(snapshot.to_dict())
+                d_copy["symbol"] = sym_clean
+                save_json_state(p_exact, d_copy, indent=2)
+        except Exception:
+            pass
+
     def _prepare_fetch(
         self,
         symbol: Any,
@@ -250,9 +270,13 @@ class _DiskBackedSymbolCollector:
         )
         cached, fresh = self._lookup_cached(sym_clean, now_f)
         if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean:
+                self._sync_existing_sibling_disk_file(sym_clean, fresh)
             return sym_clean, now_f, cached, fresh, False
         disk_snap = self._load_from_disk(sym_clean, now_f)
         if disk_snap is not None and (not require_exact_venue_sym or str(getattr(disk_snap, "symbol", "") or "").strip().upper() == sym_clean):
+            if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean:
+                self._sync_existing_sibling_disk_file(sym_clean, disk_snap)
             return sym_clean, now_f, cached, disk_snap, False
         return sym_clean, now_f, cached, None, allow_net_bool
 
@@ -260,6 +284,22 @@ class _DiskBackedSymbolCollector:
         self._cache[symbol] = (now, snapshot)
         self._save_to_disk(snapshot)
         return snapshot
+
+    def _resolve_ssot_price(
+        self,
+        symbol: str,
+        *,
+        max_age_sec: float = 60.0,
+        now: Optional[float] = None,
+    ) -> Optional[float]:
+        """Resolve spot price for ``symbol`` from cacheManager SSOT stores (`cache_current_price.json` / `cache_24_price`)."""
+        return resolve_ssot_price_from_cache(
+            symbol,
+            cache_dir=self.cache_dir,
+            max_age_sec=max_age_sec,
+            quote_isolated=bool(self._QUOTE_ISOLATED),
+            now_ts=now,
+        )
 
     @staticmethod
     def _post_hyperliquid_info(
@@ -472,23 +512,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     raw_data = self._fetch_json_dict(
                         url, "depth", lookup_sym, timeout=4, user_agent="mptrade-orderbook/1.0"
                     )
-                    if "bids" not in raw_data and isinstance(raw_data.get("levels"), list) and len(raw_data["levels"]) >= 2:
-                        hl_bids, hl_asks = raw_data["levels"][0], raw_data["levels"][1]
-                        if isinstance(hl_bids, list) and isinstance(hl_asks, list):
-                            raw_data = {
-                                "bids": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_bids],
-                                "asks": [[lvl.get("px"), lvl.get("sz")] if isinstance(lvl, dict) else lvl for lvl in hl_asks],
-                            }
-                    if "bids" not in raw_data and isinstance(raw_data.get("result"), dict):
-                        krk_book = next(
-                            (v for v in raw_data["result"].values() if isinstance(v, dict) and "bids" in v),
-                            None,
-                        )
-                        if isinstance(krk_book, dict):
-                            raw_data = krk_book
-                        else:
-                            raise ValueError(f"Empty Kraken depth result for {kraken_pair}")
-                    data = raw_data
+                    normalized_book = MarketDataProvider.normalize_orderbook_payload(raw_data)
+                    if normalized_book is None:
+                        raise ValueError(f"Empty or malformed depth payload for {symbol}")
+                    data = normalized_book
                     self._preferred_url[symbol] = url
                     break
                 except Exception as url_exc:
@@ -496,25 +523,10 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             if data is None:
                 raise last_err if last_err is not None else ValueError(f"No depth data for {symbol}")
 
-            def _parse_side(rows: Any) -> List[Tuple[float, float]]:
-                if not isinstance(rows, list):
-                    return []
-                return [
-                    (pf, qf)
-                    for item in rows
-                    if isinstance(item, (list, tuple))
-                    and len(item) >= 2
-                    and (pf := safe_pos_float(item[0], default=None)) is not None
-                    and (qf := safe_pos_float(item[1], default=None)) is not None
-                ]
-
-            bids = _parse_side(data.get("bids"))
-            asks = _parse_side(data.get("asks"))
+            bids = data["bids"]
+            asks = data["asks"]
             if not bids or not asks:
                 return None
-
-            bids.sort(key=lambda x: x[0], reverse=True)
-            asks.sort(key=lambda x: x[0])
 
             best_bid, best_ask = bids[0][0], asks[0][0]
             if best_bid <= 0 or best_ask <= 0 or best_bid > best_ask:

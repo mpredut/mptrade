@@ -37,7 +37,7 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     sync_sibling_symbol_telemetry,
 )
 from instrument_registry import casefold_get
-from providers.base import extract_timestamp_s
+from providers.base import extract_timestamp_s, resolve_ssot_price_from_cache
 from providers.execution_audit import (
     build_last_cycle_execution_status, collect_known_ai_order_ids,
     extract_intent_notional, summarize_recent_ai_intents,
@@ -261,12 +261,14 @@ def collect_macro_benchmarks_snapshot(
         return None
     extra_macro: Dict[str, Any] = {}
     if fetch_fn is None:
-        # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs Binance BTCUSDT)
+        # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs SSOT cacheManager BTCUSDC / fallback Binance HTTP)
         try:
             cb_raw = _fetch(get_coinbase_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-            bn_raw = _fetch(get_binance_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
             cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
-            bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
+            bn_px = resolve_ssot_price_from_cache("BTCUSDC", cache_dir=cache_dir, max_age_sec=60.0, now_ts=eff_now)
+            if bn_px is None:
+                bn_raw = _fetch(get_binance_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
             if cb_px and bn_px and bn_px > 0:
                 cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2)
                 extra_macro["coinbase_premium_bps"] = cb_bps

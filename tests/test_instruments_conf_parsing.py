@@ -228,13 +228,22 @@ def test_current_execution_policy_is_preserved():
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
     all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
-    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "ADAUSD"]
-    assert nb_syms == ["HYPEUSDC", "HYPEUSD", "ADAUSD"]
-    assert nb_providers == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "ADAUSD": "kraken"}
+    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
+    assert nb_syms == ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
+    assert nb_providers == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "TAOUSD": "kraken", "ADAUSD": "kraken"}
     arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
-    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "ADAUSD"]
-    assert arch_nb == ["HYPEUSDC", "HYPEUSD", "ADAUSD"]
-    assert arch_prov == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "ADAUSD": "kraken"}
+    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
+    assert arch_nb == ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
+    assert arch_prov == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "TAOUSD": "kraken", "ADAUSD": "kraken"}
+    krk_trails = {
+        item.base: (item.symbol, item.number("trailing.pct"), item.rebuy_mode())
+        for item in registry.select_instruments("kraken", "trailing").values()
+    }
+    assert krk_trails == {
+        "HYPE": ("HYPEUSD", 28.0, "on"),
+        "TAO": ("TAOUSD", 32.0, "on"),
+        "ADA": ("ADAUSD", 35.0, "on"),
+    }
 
 
 def test_invalid_policy_fails_before_selection(tmp_path):
@@ -512,6 +521,42 @@ def test_provider_ssot_cachemanager_coupling_and_telemetry_resolution(tmp_path):
     assert _has_hyperliquid_instrument("HYPEUSDC") is True
     assert _has_hyperliquid_instrument("HYPEUSD") is True
     assert _has_hyperliquid_instrument("ADAUSD") is False
+
+    # SSOT orderbook payload normalization and collector reference price coupling
+    from providers.base import MarketDataProvider, resolve_ssot_price_from_cache
+    from intelligence.external.collectors.orderbook_depth import OrderbookDepthCollector
+
+    assert resolve_ssot_price_from_cache("HYPEUSDC", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(41.25)
+    assert resolve_ssot_price_from_cache("ADAUSD", cache_dir=str(tmp_path), now_ts=now) == pytest.approx(0.725)
+
+    hl_book = MarketDataProvider.normalize_orderbook_payload({
+        "levels": [[{"px": "41.20", "sz": "10"}], [{"px": "41.30", "sz": "12"}]]
+    })
+    assert hl_book == {"bids": [(41.2, 10.0)], "asks": [(41.3, 12.0)]}
+
+    kr_book = MarketDataProvider.normalize_orderbook_payload({
+        "result": {"ADAUSD": {"bids": [["0.724", "1000", 123]], "asks": [["0.726", "1200", 123]]}}
+    })
+    assert kr_book == {"bids": [(0.724, 1000.0)], "asks": [(0.726, 1200.0)]}
+
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path))
+    assert ob_col._resolve_ssot_price("HYPEUSDC", now=now) == pytest.approx(41.25)
+
+    # Shared SSOT fills cache for Hyperliquid (cache_trade_hyperliquid.json)
+    now_ms = int(now * 1000)
+    hl_fills_cache = tmp_path / "cache_trade_hyperliquid.json"
+    hl_prov._ssot_fills_cache_path = str(hl_fills_cache)
+    hl_prov.write_ssot_fills_cache("HYPEUSDC", str(hl_fills_cache), [
+        {"coin": "@107", "oid": 991, "side": "B", "px": "40.5", "sz": "2.0", "time": now_ms - 5000},
+        {"coin": "@107", "oid": 991, "side": "B", "px": "41.5", "sz": "2.0", "time": now_ms - 4000},
+    ])
+    cached_orders = hl_prov.get_orders("HYPEUSDC", "BUY", 3600.0)
+    assert len(cached_orders) == 1
+    assert cached_orders[0]["orderId"] == "991"
+    assert cached_orders[0]["price"] == pytest.approx(41.0)
+    assert cached_orders[0]["qty"] == pytest.approx(4.0)
+    hl_prov.invalidate_ssot_fills_cache("HYPEUSDC", str(hl_fills_cache))
+    assert hl_prov._fills_from_cache("HYPEUSDC") is None
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ from order_retry import (  # noqa: E402
 from credentials import kraken_credentials  # noqa: E402
 from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset  # noqa: E402
 from guard_hierarchy import normalize_bypassed_guards  # noqa: E402
-from instrument_registry import casefold_get  # noqa: E402
+from instrument_registry import casefold_get, select_instruments  # noqa: E402
 import order_guard  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
@@ -85,8 +85,23 @@ load_env_stack(os.path.join(_HERE, ".env"))
 load_dotenv(os.path.join(_HERE, "trailing.conf"))
 
 # Wide threshold per asset (crash circuit breaker, not a profit tool) and sale pair.
-TRAIL_PCT = {"HYPE": required_float_env("KRAKEN_TRAILING_HYPE_PCT")}
-PAIR_FOR = {"HYPE": required_env("KRAKEN_TRAILING_HYPE_PAIR")}
+# Primary SSOT is instruments.conf (provider=kraken, role.trailing=yes), symmetric with Binance.
+TRAILING_INSTRUMENTS = {
+    spec.base.strip().upper(): spec
+    for spec in select_instruments("kraken", "trailing").values()
+}
+TRAIL_PCT = {
+    asset: spec.number("trailing.pct")
+    for asset, spec in TRAILING_INSTRUMENTS.items()
+}
+PAIR_FOR = {
+    asset: spec.symbol.strip().upper()
+    for asset, spec in TRAILING_INSTRUMENTS.items()
+}
+REBUY_MODE_BY_ASSET = {
+    asset: spec.rebuy_mode()
+    for asset, spec in TRAILING_INSTRUMENTS.items()
+}
 DEFAULT_TRAIL_PCT = required_float_env("KRAKEN_TRAILING_DEFAULT_PCT")
 MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 (
@@ -100,12 +115,22 @@ MIN_NOTIONAL_USD = required_float_env("KRAKEN_TRAILING_MIN_NOTIONAL_USD")
 ) = load_trailing_common_env("KRAKEN_TRAILING_")
 TRAILING_MARKET = required_bool_env("KRAKEN_TRAILING_MARKET")
 
-# Discover any additional configured assets (e.g. TAO, ADA)
+# Optional environment overrides (e.g. ad-hoc tests or KRAKEN_TRAILING_<ASSET>_PAIR/PCT)
 for _env_k, _env_v in os.environ.items():
-    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR") and _env_k != "KRAKEN_TRAILING_HYPE_PAIR":
-        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")]
-        TRAIL_PCT[_asset] = required_float_env(f"KRAKEN_TRAILING_{_asset}_PCT")
-        PAIR_FOR[_asset] = required_env(_env_k)
+    if _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PAIR"):
+        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PAIR")].strip().upper()
+        if _asset and str(_env_v or "").strip():
+            PAIR_FOR[_asset] = required_env(_env_k)
+            if f"KRAKEN_TRAILING_{_asset}_PCT" in os.environ:
+                TRAIL_PCT[_asset] = required_float_env(f"KRAKEN_TRAILING_{_asset}_PCT")
+    elif _env_k.startswith("KRAKEN_TRAILING_") and _env_k.endswith("_PCT") and _env_k not in {
+        "KRAKEN_TRAILING_DEFAULT_PCT",
+        "KRAKEN_TRAILING_REBUY_BOUNCE_PCT",
+        "KRAKEN_TRAILING_MIN_PROFIT_PCT",
+    }:
+        _asset = _env_k[len("KRAKEN_TRAILING_"):-len("_PCT")].strip().upper()
+        if _asset and _asset in PAIR_FOR:
+            TRAIL_PCT[_asset] = required_float_env(_env_k)
 
 
 class KrakenTrailing(TrailingAdapterBase):
@@ -161,6 +186,22 @@ class KrakenTrailing(TrailingAdapterBase):
             if val is not None:
                 return val
         return DEFAULT_TRAIL_PCT
+
+    def rebuy_enabled_for(self, asset: str) -> bool:
+        """Per-coin re-buy switch (registry trailing.rebuy): on/off, falling back to REBUY_ENABLED."""
+        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
+            return False
+        asset_norm = asset.strip().upper()
+        canon = canonical_base_asset(asset_norm)
+        for cand in (asset, asset_norm, canon):
+            if not cand:
+                continue
+            mode = casefold_get(REBUY_MODE_BY_ASSET, cand)
+            if mode == "on":
+                return True
+            if mode == "off":
+                return False
+        return bool(REBUY_ENABLED)
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:

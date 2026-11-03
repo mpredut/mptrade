@@ -3277,6 +3277,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         self._ws_default_event_ts = 0.0
         self._ws_last_event_ts_value = 0.0
         self._ws_last_event_ts_per_symbol: dict = {}
+        self._ws_stream_event_ts_per_symbol: dict = {}
         self._price_subscribers = []       # The base initializer preserves existing values.
         self._update_timestamps: dict = defaultdict(deque)  # Also required before super().
         self._first_sleep       = True     # Let WebSocket connect before HTTP fallback.
@@ -3302,6 +3303,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         self._ws_last_event_ts_value = ts
         self._ws_default_event_ts = ts
         self._ws_last_event_ts_per_symbol.clear()
+        self._ws_stream_event_ts_per_symbol.clear()
 
     def bind_provider(self, symbol: str, provider_name: str) -> None:
         """Bind one symbol to its configured venue and reject ambiguity."""
@@ -3345,6 +3347,21 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             < self.WS_TIMEOUT_SEC
             for s in self.symbols
         )
+
+    def _real_ws_is_healthy(self, symbol: Optional[str] = None) -> bool:
+        """Return True when a live WebSocket stream (not a REST fallback poll) updated ``symbol`` within WS_TIMEOUT_SEC."""
+        now = time.time()
+        if symbol is not None:
+            sym_u = str(symbol or "").strip().upper()
+            last_ts = (
+                self._ws_stream_event_ts_per_symbol.get(symbol)
+                or self._ws_stream_event_ts_per_symbol.get(sym_u)
+                or self._ws_default_event_ts
+            )
+            return -5.0 <= (now - last_ts) < self.WS_TIMEOUT_SEC
+        if not self.symbols:
+            return -5.0 <= (now - self._ws_last_event_ts_value) < self.WS_TIMEOUT_SEC
+        return all(self._real_ws_is_healthy(s) for s in self.symbols)
 
     # Inherit price subscription and notification methods from CacheManagerInterface.
 
@@ -3409,6 +3426,8 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         now = time.time()
         self._ws_last_event_ts_value = now
         self._ws_last_event_ts_per_symbol[symbol] = now
+        self._ws_stream_event_ts_per_symbol[symbol] = now
+        self._ws_stream_event_ts_per_symbol[str(symbol).strip().upper()] = now
         self._push_price(symbol, price, ts_ms=ts_ms)
 
     # ── CacheManagerInterface abstract methods ───────────────────────────────

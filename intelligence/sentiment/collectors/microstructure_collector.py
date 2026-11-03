@@ -1044,11 +1044,21 @@ def load_symbol_microstructure(
     read_json_fn = read_json_cached if read_json_fn is None else read_json_fn
     sym_cands = cache_symbol_variants(sym, include_base=True)
 
-    def _first_telemetry_dict(prefix: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _first_telemetry_dict(prefix: str, *, prefer_freshest_on_stale: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        best_d: Optional[Dict[str, Any]] = None
+        best_cand: Optional[str] = None
+        best_ts: float = 0.0
+        now_s = time.time()
         for cand in sym_cands:
             if isinstance((d := read_json_fn(os.path.join(cache_dir, f"{prefix}{cand}.json"))), dict):
-                return d, cand
-        return None, None
+                if not prefer_freshest_on_stale:
+                    return d, cand
+                d_ts = safe_pos_float(d.get("ts"), default=0.0) or 0.0
+                if d_ts <= 0.0 or (now_s - d_ts) <= 300.0:
+                    return (d, cand) if (best_d is None or d_ts > best_ts + 60.0) else (best_d, best_cand)
+                if best_d is None or d_ts > best_ts + 60.0:
+                    best_d, best_cand, best_ts = d, cand, d_ts
+        return best_d, best_cand
 
     if ob is None:
         ob, ob_cand = _first_telemetry_dict("orderbook_depth_")
@@ -1058,7 +1068,7 @@ def load_symbol_microstructure(
     if deriv is None:
         deriv, _ = _first_telemetry_dict("derivatives_telemetry_")
     if whale is None:
-        whale, _ = _first_telemetry_dict("whale_snapshot_")
+        whale, _ = _first_telemetry_dict("whale_snapshot_", prefer_freshest_on_stale=True)
     if not (ob or deriv or whale):
         return None
     m_info: Dict[str, Any] = {"_source_cand": ob_cand} if ob_cand else {}
