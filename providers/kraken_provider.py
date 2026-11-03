@@ -49,7 +49,7 @@ from .strategy_executor import (
     SubmissionRefused,
     extract_order_id,
 )
-from cachepaths import _LEGACY_KRAKEN_X_BASES, canonical_base_asset
+from cachepaths import _LEGACY_KRAKEN_X_BASES, cache_path, canonical_base_asset
 from credentials import CredentialProfileMissingError, kraken_credentials
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
@@ -59,7 +59,8 @@ _MISSING = object()
 
 _KRAKEN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kraken")
 # Shared cross-process fill cache produced by kraken_cachemanager.py.
-_KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cache_trade_kraken.json")
+_DEFAULT_KRAKEN_CACHE_FILE = os.path.join(os.path.dirname(_KRAKEN_DIR), "cachedb", "cache_trade_kraken.json")
+_KRAKEN_CACHE_FILE = _DEFAULT_KRAKEN_CACHE_FILE
 _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use TradesHistory.
 
 _KRAKEN_QUOTES = (
@@ -659,7 +660,7 @@ class KrakenProvider(MarketDataProvider):
             if res and (
                 self._allow_ssot_price_cache()
                 or getattr(self, "_ssot_fills_cache_path", None)
-                or _KRAKEN_CACHE_FILE != cache_path("cache_trade_kraken.json")
+                or _KRAKEN_CACHE_FILE not in (_DEFAULT_KRAKEN_CACHE_FILE, cache_path("cache_trade_kraken.json"))
             ):
                 self.invalidate_ssot_fills_cache(
                     symbol,
@@ -724,7 +725,7 @@ class KrakenProvider(MarketDataProvider):
         if (
             self._allow_ssot_price_cache()
             or getattr(self, "_ssot_fills_cache_path", None)
-            or _KRAKEN_CACHE_FILE != cache_path("cache_trade_kraken.json")
+            or _KRAKEN_CACHE_FILE not in (_DEFAULT_KRAKEN_CACHE_FILE, cache_path("cache_trade_kraken.json"))
         ):
             self.invalidate_ssot_fills_cache(
                 symbol,
