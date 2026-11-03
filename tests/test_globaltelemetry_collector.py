@@ -220,7 +220,7 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
             raise RuntimeError("HTTP 400 Invalid symbol")
         return {
             "result": {
-                "HYPEUSD": {
+                "SUIUSD": {
                     "bids": [["20.0", "10.0"]],
                     "asks": [["20.1", "10.0"]],
                 }
@@ -228,13 +228,13 @@ def test_bounded_step_skips_overlapping_thread_and_backs_off(temp_cache_dir):
         }
 
     with patch.object(ob_col, "_fetch_json_dict", side_effect=fake_fetch_json):
-        s1 = ob_col.fetch("HYPEUSD", allow_network=True, now=1000.0)
+        s1 = ob_col.fetch("SUIUSD", allow_network=True, now=1000.0)
         assert s1 is not None
-        assert len(urls_called) == 3  # HYPEUSDC spot, HYPEUSDT spot, then Kraken HYPEUSD
+        assert len(urls_called) == 3  # SUIUSDC spot, SUIUSDT spot, then Kraken SUIUSD
         assert "api.kraken.com" in urls_called[-1]
 
         urls_called.clear()
-        s2 = ob_col.fetch("HYPEUSD", allow_network=True, now=1010.0)
+        s2 = ob_col.fetch("SUIUSD", allow_network=True, now=1010.0)
         assert s2 is not None
         assert len(urls_called) == 1  # Goes straight to preferred Kraken URL on subsequent fetch!
         assert "api.kraken.com" in urls_called[0]

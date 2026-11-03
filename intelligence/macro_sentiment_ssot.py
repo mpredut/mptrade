@@ -170,7 +170,7 @@ def detect_active_binance_symbols(
             if os.path.exists(krk_cfg):
                 val = parse_dotenv(krk_cfg).get("KRAKEN_CACHE_PAIRS", "")
                 for item in (val.split(",") if val else ()):
-                    _add_sym(item, unique_base=True)
+                    _add_sym(item, skip_eq=True)
         except Exception:
             pass
     return out if out else list(default)
@@ -1769,6 +1769,84 @@ def get_macro_calendar_headline_keywords() -> Tuple[str, ...]:
     return _split_csv(_cfg_str("sessions", "macro_calendar_headline_keywords"), lower=True)
 
 
+def get_fomc_decision_dates() -> Set[str]:
+    """Load official Federal Reserve FOMC rate decision dates (YYYY-MM-DD) from ``macro_intelligence.conf``."""
+    return set(_split_csv(_cfg_str("sessions", "fomc_decision_dates")))
+
+
+def parse_live_macro_release_surprises(breaking_news: Optional[Sequence[Any]]) -> List[Dict[str, Any]]:
+    """Extract live Actual vs. Consensus/Forecast vs. Prior macro prints and compute Surprise Z-Score."""
+    if not breaking_news:
+        return []
+    out: List[Dict[str, Any]] = []
+    macro_labels = (
+        ("core cpi", "US Core CPI", 0.10, True),
+        ("cpi", "US CPI", 0.10, True),
+        ("core pce", "US Core PCE", 0.10, True),
+        ("pce", "US PCE", 0.10, True),
+        ("ppi", "US PPI", 0.15, True),
+        ("nonfarm payrolls", "US NFP", 35.0, False),
+        ("nfp", "US NFP", 35.0, False),
+        ("jobless claims", "US Jobless Claims", 8.0, True),
+        ("unemployment rate", "US Unemployment Rate", 0.10, True),
+        ("gdp", "US GDP", 0.25, False),
+        ("retail sales", "US Retail Sales", 0.20, False),
+        ("ism manufacturing", "US ISM Manufacturing", 0.80, False),
+        ("ism services", "US ISM Services", 0.80, False),
+    )
+    for item in breaking_news:
+        title = item.strip() if isinstance(item, str) else str(obj_attr(item, "title", "") or "").strip()
+        if not title:
+            continue
+        low = title.lower()
+        ev_name, std_unit, inflation_like = None, 0.10, True
+        for kw, lbl, su, inf_flag in macro_labels:
+            if re.search(r"\b" + re.escape(kw) + r"\b", low):
+                ev_name, std_unit, inflation_like = lbl, su, inf_flag
+                break
+        if not ev_name:
+            continue
+        m_act = re.search(
+            r"(?:actual|prints?|comes?\s+in\s+at|rises?\s+to|falls?\s+to|at)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            low,
+        )
+        m_cons = re.search(
+            r"(?:vs\.?|versus|est(?:imate)?|consensus|forecast|exp(?:ected)?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            low,
+        )
+        m_prior = re.search(
+            r"(?:prior|prev(?:ious)?)\s*[:=]?\s*([+-]?\d+(?:\.\d+)?)\s*(%|k\b)?",
+            low,
+        )
+        if m_act and m_cons:
+            act_v = safe_float(m_act.group(1), None)
+            cons_v = safe_float(m_cons.group(1), None)
+            prior_v = safe_float(m_prior.group(1), None) if m_prior else None
+            unit_s = (m_act.group(2) or m_cons.group(2) or "").upper()
+            if act_v is not None and cons_v is not None and std_unit > 0:
+                diff = round(act_v - cons_v, 3)
+                z_score = round(diff / std_unit, 2)
+                if abs(z_score) < 0.25:
+                    stance = "IN_LINE"
+                elif inflation_like:
+                    stance = "DOVISH_TAILWIND" if diff < 0 else "HAWKISH_HEADWIND"
+                else:
+                    stance = "GROWTH_BEAT" if diff > 0 else "GROWTH_MISS"
+                entry: Dict[str, Any] = {
+                    "event": ev_name,
+                    "actual": f"{act_v:g}{unit_s}",
+                    "consensus": f"{cons_v:g}{unit_s}",
+                    "surprise": f"{diff:+g}{unit_s}",
+                    "surprise_zscore": z_score,
+                    "stance": stance,
+                    "headline": title,
+                }
+                if prior_v is not None:
+                    entry["prior"] = f"{prior_v:g}{unit_s}"
+                out.append(entry)
+    return out[:3]
+
+
 def _fmt_countdown_min(delta_min: float) -> str:
     m = int(round(abs(delta_min)))
     if m < 60:
@@ -1788,6 +1866,10 @@ def resolve_macro_economic_calendar(
     tz_abbr = dt_eet.strftime("%Z") or "EET"
     windows = get_macro_calendar_windows_eet()
     routine_labels = get_macro_calendar_routine_labels()
+    fomc_dates = get_fomc_decision_dates()
+    today_iso = dt_eet.date().isoformat()
+    is_fomc_today = today_iso in fomc_dates
+    next_fomc_date = next((d for d in sorted(fomc_dates) if d >= today_iso), None)
 
     macro_kws = get_macro_calendar_headline_keywords()
     detected_macro_headlines: List[str] = []
@@ -1797,6 +1879,11 @@ def resolve_macro_economic_calendar(
             if title and any(re.search(r"\b" + re.escape(kw) + r"\b", title.lower()) for kw in macro_kws):
                 detected_macro_headlines.append(title)
     macro_release_confirmed = bool(detected_macro_headlines)
+    has_fomc_headline = any(
+        any(k in h.lower() for k in ("fomc", "fed rate", "interest rate decision", "fed minutes", "powell"))
+        for h in detected_macro_headlines
+    )
+    live_macro_prints = parse_live_macro_release_surprises(breaking_news)
 
     active_window: Optional[str] = None
     upcoming: List[Tuple[float, str, str, str]] = []
@@ -1804,13 +1891,18 @@ def resolve_macro_economic_calendar(
         cand_date = (dt_eet + timedelta(days=day_offset)).date()
         if cand_date.weekday() >= 5:
             continue
+        cand_is_fomc = cand_date.isoformat() in fomc_dates or (day_offset == 0 and has_fomc_headline)
         for hh, mm, code, desc in windows:
-            eff_desc = desc if macro_release_confirmed else routine_labels.get(code, desc)
+            if code == "US_FOMC_FED_WINDOW":
+                is_confirmed_win = cand_is_fomc or macro_release_confirmed
+            else:
+                is_confirmed_win = macro_release_confirmed
+            eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0
             time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
             if -20.0 <= delta_min <= 0.0 and active_window is None:
-                win_tag = "ACTIVE VOLATILITY WINDOW" if (macro_release_confirmed or code not in routine_labels) else "ACTIVE SESSION WINDOW"
+                win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
                 active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
             elif delta_min > 0.0:
                 upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
@@ -1827,6 +1919,8 @@ def resolve_macro_economic_calendar(
         "ny_time": session_ctx.ny_time_str,
         "is_weekend": session_ctx.is_weekend,
         "macro_release_confirmed": macro_release_confirmed,
+        "fomc_today": is_fomc_today,
+        "next_fomc_date": next_fomc_date,
         "active_release_window": active_window,
         "next_high_impact_event": active_window or next_event,
         "next_scheduled_event": next_event,
@@ -1834,6 +1928,7 @@ def resolve_macro_economic_calendar(
         "next_event_in_min": next_in_min,
         "upcoming_windows": [x[3] for x in upcoming[:3]],
         "detected_macro_headlines": detected_macro_headlines[:3],
+        "live_macro_prints": live_macro_prints,
         "ts": ts,
     }
 
@@ -1898,8 +1993,18 @@ def compute_dynamic_sentiment_interval(
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
     cur_tr = safe_pos_float(btc_taker_ratio, default=None)
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
+    if prev_tr is None and cached_assessment is not None:
+        summary_s = str(obj_attr(cached_assessment, "summary", "") or "")
+        if m_tr := re.search(r"taker\s+buy/sell\s+ratio[^0-9]*([0-9]+\.[0-9]+)", summary_s, re.IGNORECASE):
+            prev_tr = safe_pos_float(m_tr.group(1), default=None)
     if cur_tr is not None:
-        if prev_tr is not None and ((prev_tr <= 0.75 and cur_tr >= 1.25) or (prev_tr >= 1.25 and cur_tr <= 0.75) or abs(cur_tr - prev_tr) >= 0.55):
+        if prev_tr is not None and (
+            (prev_tr <= 0.75 and cur_tr >= 1.25)
+            or (prev_tr >= 1.25 and cur_tr <= 0.75)
+            or (prev_tr <= 0.65 and cur_tr >= 0.90)
+            or (prev_tr >= 1.35 and cur_tr <= 1.10)
+            or abs(cur_tr - prev_tr) >= 0.40
+        ):
             return min(min_interval, 300.0), f"btc_whale_flow_regime_flip_{prev_tr:.2f}_to_{cur_tr:.2f}"
         cached_act = str(obj_attr(cached_assessment, "recommended_action", "") or "").upper()
         cached_bias = str(obj_attr(cached_assessment, "market_bias", "") or obj_attr(cached_assessment, "directional_bias", "") or "").upper()

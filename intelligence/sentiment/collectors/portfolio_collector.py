@@ -1439,6 +1439,7 @@ def sync_sibling_symbol_telemetry(
     range_bound_keys = {
         "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct",
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
+        "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct", "recent_tape_15m",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
         "poc_px", "sec_poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
@@ -1489,6 +1490,18 @@ def sync_sibling_symbol_telemetry(
         poc_v, val_v, vah_v = (safe_pos_float(pinfo.get(k), default=0.0) or 0.0 for k in ("poc_px", "val_px", "vah_px"))
         if p_cur > 0.0 and poc_v > 0.0 and val_v > 0.0 and vah_v > val_v:
             pinfo.update(_build_vp_position_dict(p_cur, poc_v, val_v, vah_v))
+        if p_cur > 0.0 and isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
+            tape_copy = list(tape_15m)
+            if isinstance(tape_copy[-1], str) and tape_copy[-1].startswith("now:"):
+                tape_copy[-1] = f"now:{p_cur:.6g}"
+                pinfo["recent_tape_15m"] = tape_copy
+            l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
+            h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
+            if l15 is not None and h15 is not None:
+                l15_new, h15_new = min(l15, p_cur), max(h15, p_cur)
+                pinfo["low_15m"], pinfo["high_15m"] = round(l15_new, 6), round(h15_new, 6)
+                if h15_new > l15_new > 0:
+                    pinfo["pos_15m_pct"] = round(min(100.0, max(0.0, ((p_cur - l15_new) / (h15_new - l15_new)) * 100.0)), 1)
 
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
@@ -1947,11 +1960,21 @@ def harvest_recent_orders_and_enrich_positions(
             if is_flat_after_exit:
                 ro.pop("active_avg_buy_px", None)
                 ro.pop("tactical_avg_buy_px", None)
+                ro.pop("swing_subcycle_avg_px", None)
+                ro.pop("open_lots", None)
                 pos.pop("trailing_peak", None)
                 pos.pop("dd_from_peak_pct", None)
             else:
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
                 set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
+                sw_avg = safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)
+                act_avg = safe_pos_float(ro.get("active_avg_buy_px"), default=None)
+                if sw_avg is not None and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-9) >= 0.002):
+                    set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg, pos_px_f)
+                if isinstance(ro.get("open_lots"), list) and ro["open_lots"]:
+                    pos["open_lots"] = ro["open_lots"][-4:]
+                if (lifo_pnl := safe_float(ro.get("lifo_realized_pnl_usd"), default=None)) is not None and abs(lifo_pnl) >= 0.01:
+                    pos["lifo_realized_pnl_usd"] = round(lifo_pnl, 2)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
@@ -2166,4 +2189,209 @@ def harvest_bot_runtime_states(
     if isinstance(ssl_state := _rj(os.path.join(cache_dir, "smart_stop_loss_state.json")), dict) and ssl_state:
         out["smart_stop_loss_state"] = ssl_state
     return out
+
+
+def enrich_open_limit_orders_tca(
+    open_orders: List[Dict[str, Any]],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Enrich resting open limit orders with Orderbook Wall Queue Position, Front-Run Price, and 1h Fill Probability (Layer II.3)."""
+    import math as _math
+
+    if not isinstance(open_orders, list) or not open_orders:
+        return open_orders
+    for o in open_orders:
+        if not isinstance(o, dict):
+            continue
+        sym = str(o.get("symbol") or "").strip().upper()
+        side = str(o.get("side") or "").strip().upper()
+        lim_px = safe_pos_float(o.get("price"), default=None)
+        if not sym or lim_px is None or lim_px <= 0.0:
+            continue
+        p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
+        m_entry = casefold_get(microstructure, sym) if isinstance(microstructure, dict) else None
+        if not isinstance(m_entry, dict):
+            for cand in cache_symbol_variants(sym, include_base=False):
+                cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
+                if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
+                    m_entry = cand_m
+                    break
+        spot_px = (
+            safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
+            or safe_pos_float((p_entry or {}).get("price"), default=None)
+            or resolve_symbol_price(sym, prices_and_trends)
+        )
+        if spot_px and spot_px > 0.0 and o.get("dist_from_spot_pct") is None:
+            o["dist_from_spot_pct"] = round(((lim_px - spot_px) / spot_px) * 100.0, 2)
+        dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
+        vol_1h = max(0.35, safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=1.1) or 1.1)
+        dec = 2 if lim_px >= 100.0 else (4 if lim_px >= 1.0 else 6)
+        queue_penalty = 1.0
+        if isinstance(m_entry, dict):
+            if side == "SELL":
+                aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
+                aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
+                if aw_px is not None and aw_px > 0.0 and aw_usd >= 5000.0:
+                    if lim_px > aw_px * 1.0003:
+                        o["wall_queue_pos"] = "BEHIND_ASK_WALL"
+                        o["ask_wall_ahead_px"] = aw_px
+                        o["ask_wall_ahead_usd"] = round(aw_usd, 0)
+                        o["recommended_front_run_px"] = round(aw_px * 0.9998, dec)
+                        queue_penalty = 0.60
+                    elif abs(lim_px - aw_px) / aw_px <= 0.0003:
+                        o["wall_queue_pos"] = "AT_ASK_WALL"
+                        o["recommended_front_run_px"] = round(aw_px * 0.9998, dec)
+                        queue_penalty = 0.78
+                    else:
+                        o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
+            elif side == "BUY":
+                bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
+                bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
+                if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0:
+                    if lim_px < bw_px * 0.9997:
+                        o["wall_queue_pos"] = "BEHIND_BID_WALL"
+                        o["bid_wall_ahead_px"] = bw_px
+                        o["bid_wall_ahead_usd"] = round(bw_usd, 0)
+                        o["recommended_front_run_px"] = round(bw_px * 1.0002, dec)
+                        queue_penalty = 0.60
+                    elif abs(lim_px - bw_px) / bw_px <= 0.0003:
+                        o["wall_queue_pos"] = "AT_BID_WALL"
+                        o["recommended_front_run_px"] = round(bw_px * 1.0002, dec)
+                        queue_penalty = 0.78
+                    else:
+                        o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
+        raw_prob = 100.0 * _math.exp(-0.5 * ((dist_pct / vol_1h) ** 2)) * queue_penalty
+        o["fill_prob_1h_pct"] = round(min(99.0, max(1.0, raw_prob)), 1)
+    return open_orders
+
+
+def compute_enterprise_portfolio_risk_metrics(
+    portfolio_summary: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute Global Enterprise Portfolio Risk Engine metrics (Unified NAV, Cash %, BTC-Beta, 24h Correlation, 95% VaR, LIFO Alpha)."""
+    import math as _math
+
+    if not isinstance(portfolio_summary, dict):
+        return {}
+    t_pos = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
+    vq_cash = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
+    rec_orders = portfolio_summary.get("recent_orders") if isinstance(portfolio_summary.get("recent_orders"), dict) else {}
+
+    venue_pos_usd: Dict[str, float] = {}
+    venue_cash_usd: Dict[str, float] = {}
+    pos_exposures: List[Tuple[str, float, float, float, float]] = []  # (base, val_usd, beta_btc, corr_btc, daily_vol_pct)
+
+    for p in t_pos:
+        if not isinstance(p, dict):
+            continue
+        v_name = normalize_venue_name(p.get("venue")) or "unknown"
+        val_u = (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
+        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
+        if val_u >= 1.0:
+            sym = str(p.get("symbol") or "").strip().upper()
+            base = canonical_base_asset(sym)
+            p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else {}
+            if not isinstance(p_info, dict):
+                p_info = {}
+            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+            beta_v = 1.0 if base == "BTC" else (safe_float(p_info.get("beta_btc_24h"), default=(0.35 if is_eq else 1.15)) or (0.35 if is_eq else 1.15))
+            corr_v = 1.0 if base == "BTC" else (safe_float(p_info.get("corr_btc_24h"), default=(0.30 if is_eq else 0.78)) or (0.30 if is_eq else 0.78))
+            vol_1h = safe_pos_float(p_info.get("vol_1h_pct"), default=1.0) or 1.0
+            daily_vol_pct = min(25.0, max(0.8, vol_1h * _math.sqrt(24.0)))
+            pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
+
+    for c in vq_cash.values():
+        if not isinstance(c, dict):
+            continue
+        v_name = normalize_venue_name(c.get("venue")) or "unknown"
+        c_u = (safe_pos_float(c.get("free"), default=0.0) or 0.0) + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
+        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + c_u
+
+    all_venues = sorted(set(venue_pos_usd) | set(venue_cash_usd))
+    venue_nav: Dict[str, float] = {}
+    for v_k in all_venues:
+        v_tot = round(venue_pos_usd.get(v_k, 0.0) + venue_cash_usd.get(v_k, 0.0), 2)
+        if v_tot > 0.0:
+            venue_nav[v_k] = v_tot
+
+    # Reconcile Binance or Hyperliquid if snapshot total exceeds partial instrument sum
+    bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
+    if bn_snap > venue_nav.get("binance", 0.0):
+        venue_nav["binance"] = round(bn_snap, 2)
+    hl_ro = portfolio_summary.get("hyperliquid_readonly") if isinstance(portfolio_summary.get("hyperliquid_readonly"), dict) else {}
+    hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
+    if hl_snap > venue_nav.get("hyperliquid", 0.0):
+        venue_nav["hyperliquid"] = round(hl_snap, 2)
+
+    invested_usd = round(sum(venue_pos_usd.values()), 2)
+    free_cash_usd = round(sum(venue_cash_usd.values()), 2)
+    unified_nav = round(max(sum(venue_nav.values()), invested_usd + free_cash_usd), 2)
+    if unified_nav <= 0.0:
+        return {}
+
+    free_cash_pct = round((free_cash_usd / unified_nav) * 100.0, 1)
+    beta_adj_usd = sum(val_u * beta_v for _, val_u, beta_v, _, _ in pos_exposures)
+    portfolio_btc_beta = round(beta_adj_usd / unified_nav, 2)
+
+    # Correlation & Parametric 95% Intraday VaR (accounting for pairwise correlation via BTC factor)
+    corr_map: Dict[str, float] = {}
+    for base, _, _, corr_v, _ in pos_exposures:
+        if base != "BTC":
+            corr_map[base] = round(corr_v, 2)
+    non_btc_corrs = [c for b, _, _, c, _ in pos_exposures if b != "BTC"]
+    avg_corr_24h = round(sum(non_btc_corrs) / len(non_btc_corrs), 2) if non_btc_corrs else (1.0 if pos_exposures else 0.0)
+
+    var_cov_sum = 0.0
+    for i, (_, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
+        sig_i = val_i * (dvol_i / 100.0)
+        for j, (_, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
+            sig_j = val_j * (dvol_j / 100.0)
+            rho_ij = 1.0 if i == j else max(-0.5, min(0.98, corr_i * corr_j))
+            var_cov_sum += sig_i * sig_j * rho_ij
+    port_sigma_usd = _math.sqrt(max(0.0, var_cov_sum))
+    var_95_usd = round(1.645 * port_sigma_usd, 2)
+    var_95_pct = round((var_95_usd / unified_nav) * 100.0, 2)
+
+    concentration_regime = (
+        "HIGH_CORR_CONCENTRATED_BETA"
+        if len(pos_exposures) >= 2 and avg_corr_24h >= 0.80 and portfolio_btc_beta >= 0.65
+        else ("DEFENSIVE_HIGH_CASH" if free_cash_pct >= 55.0 else "BALANCED_DIVERSIFIED")
+    )
+
+    lifo_pnl_total = 0.0
+    est_fee_drag_usd = 0.0
+    for r_sym, r_info in rec_orders.items():
+        if not isinstance(r_info, dict):
+            continue
+        lifo_pnl_total += safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
+        for side_list_k in ("recent_buys", "recent_sells"):
+            for tr in (r_info.get(side_list_k) or []):
+                if isinstance(tr, dict):
+                    q_t = safe_pos_float(tr.get("qty"), default=0.0) or 0.0
+                    p_t = safe_pos_float(tr.get("price"), default=0.0) or 0.0
+                    if q_t > 0.0 and p_t > 0.0:
+                        est_fee_drag_usd += (q_t * p_t) * 0.0010
+
+    out_risk: Dict[str, Any] = {
+        "unified_nav_usd": unified_nav,
+        "invested_exposure_usd": invested_usd,
+        "global_free_cash_usd": free_cash_usd,
+        "global_free_cash_pct": free_cash_pct,
+        "venue_nav_breakdown_usd": venue_nav,
+        "portfolio_btc_beta": portfolio_btc_beta,
+        "beta_adjusted_exposure_usd": round(beta_adj_usd, 2),
+        "avg_corr_vs_btc_24h": avg_corr_24h,
+        "corr_vs_btc_24h": corr_map,
+        "concentration_regime": concentration_regime,
+        "intraday_var_95_usd": var_95_usd,
+        "intraday_var_95_pct": var_95_pct,
+    }
+    if abs(lifo_pnl_total) >= 0.01:
+        out_risk["subcycle_lifo_realized_pnl_usd"] = round(lifo_pnl_total, 2)
+    if est_fee_drag_usd >= 0.01:
+        out_risk["est_recent_fee_drag_usd"] = round(est_fee_drag_usd, 2)
+    return out_risk
 

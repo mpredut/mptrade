@@ -28,7 +28,8 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     _load_audit_terminal_orders, _load_recent_audit_origins, build_cross_market_context,
-    enrich_24h_and_microstructure, enrich_cross_venue_trends, harvest_bot_runtime_states,
+    compute_enterprise_portfolio_risk_metrics, enrich_24h_and_microstructure,
+    enrich_cross_venue_trends, enrich_open_limit_orders_tca, harvest_bot_runtime_states,
     harvest_kraken_xstocks, harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders, harvest_venue_cycles, load_venue_trailing_maps,
     sync_sibling_symbol_telemetry,
@@ -54,18 +55,24 @@ MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
     ("NQ=F", "NQ=F", "usd"),
     ("DXY", "DX-Y.NYB", "index"),
     ("US10Y", "^TNX", "yield_pct"),
+    ("IBIT", "IBIT", "usd"),
 )
 
 
 def format_macro_benchmarks_summary_line(data: Any) -> str:
-    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y)."""
+    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL)."""
     if not isinstance(data, dict):
         return ""
     items = data.get("items") if isinstance(data.get("items"), dict) else data
     if not isinstance(items, dict):
         return ""
+    meta_skip = {
+        "ts", "age_min", "summary_line", "items",
+        "coinbase_premium_bps", "coinbase_premium_regime",
+        "btc_dvol", "eth_dvol", "options_vol_regime",
+    }
     ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items] + [
-        k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in ("ts", "age_min", "summary_line", "items")
+        k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
     ]
     parts: List[str] = []
     for sym in ordered_keys:
@@ -83,6 +90,16 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
             d_parts.append(m_state.lower())
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
+    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
+    if cb_bps is not None:
+        cb_reg = str(data.get("coinbase_premium_regime") or items.get("coinbase_premium_regime") or "").strip()
+        parts.append(f"CB_Premium={cb_bps:+.1f}bps" + (f" ({cb_reg})" if cb_reg else ""))
+    btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
+    if btc_dvol is not None:
+        eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
+        dvol_s = f"BTC_DVOL={btc_dvol:.1f}%" + (f"/ETH_DVOL={eth_dvol:.1f}%" if eth_dvol is not None else "")
+        opt_reg = str(data.get("options_vol_regime") or items.get("options_vol_regime") or "").strip()
+        parts.append(dvol_s + (f" ({opt_reg})" if opt_reg else ""))
     return " | ".join(parts)
 
 
@@ -94,7 +111,7 @@ def collect_macro_benchmarks_snapshot(
     persist: bool = True,
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y 24h/1h/15m deltas from Yahoo Finance and persist to cachedb."""
+    """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
     _fetch = fetch_fn or fetch_public_json
     items: Dict[str, Dict[str, Any]] = {}
@@ -152,7 +169,45 @@ def collect_macro_benchmarks_snapshot(
 
     if not items:
         return None
-    payload: Dict[str, Any] = {"ts": eff_now, "items": items, "summary_line": format_macro_benchmarks_summary_line({"items": items})}
+    extra_macro: Dict[str, Any] = {}
+    if fetch_fn is None:
+        # 1. Coinbase BTC Premium Index (Coinbase BTC-USD vs Binance BTCUSDT)
+        try:
+            cb_raw = _fetch("https://api.exchange.coinbase.com/products/BTC-USD/ticker", timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            bn_raw = _fetch("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            cb_px = safe_pos_float((cb_raw or {}).get("price") if isinstance(cb_raw, dict) else None, default=None)
+            bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
+            if cb_px and bn_px and bn_px > 0:
+                cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2)
+                extra_macro["coinbase_premium_bps"] = cb_bps
+                extra_macro["coinbase_premium_regime"] = (
+                    "US_INSTITUTIONAL_BUYING" if cb_bps >= 5.0 else ("US_SPOT_SELLING_PRESSURE" if cb_bps <= -5.0 else "NEUTRAL")
+                )
+        except Exception:
+            pass
+        # 2. Deribit BTC / ETH Implied Volatility Index (DVOL)
+        try:
+            end_ms = int(eff_now * 1000)
+            start_ms = end_ms - 3600 * 1000
+            for ccy, d_key in (("BTC", "btc_dvol"), ("ETH", "eth_dvol")):
+                d_url = f"https://www.deribit.com/api/v2/public/get_volatility_index_data?currency={ccy}&start_timestamp={start_ms}&end_timestamp={end_ms}&resolution=3600"
+                d_raw = _fetch(d_url, timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
+                if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
+                    if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
+                        extra_macro[d_key] = round(dv, 2)
+            if "btc_dvol" in extra_macro:
+                bv = extra_macro["btc_dvol"]
+                extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
+        except Exception:
+            pass
+
+    payload: Dict[str, Any] = {
+        "ts": eff_now,
+        "items": items,
+        **extra_macro,
+    }
+    payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
     if persist and cache_dir:
         try:
             save_json_state(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
@@ -682,12 +737,30 @@ def populate_market_and_portfolio_snapshot(
             ) and ((live_tr is not None and live_tr <= 0.75) or (live_cvd is not None and live_cvd <= -5_000_000.0)):
                 ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
                 sa_cur["live_flow_divergence"] = f"LIVE_SELL_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
+            elif (
+                sa_age >= 15.0
+                and cited_tr is not None
+                and live_tr is not None
+                and abs(live_tr - cited_tr) >= 0.35
+            ):
+                shift_dir = "LIVE_FLOW_RECOVERY" if live_tr > cited_tr else "LIVE_FLOW_FADE"
+                sa_cur["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
     if isinstance(mb_snap := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap and snapshot.portfolio_summary:
         snapshot.portfolio_summary["macro_benchmarks"] = mb_snap
         if isinstance(cmc := snapshot.portfolio_summary.get("cross_market_context"), dict):
             cmc["macro_benchmarks"] = mb_snap
     if snapshot.portfolio_summary:
         snapshot.portfolio_summary.setdefault("open_limit_orders", [])
+        if isinstance(snapshot.portfolio_summary.get("open_limit_orders"), list) and snapshot.portfolio_summary["open_limit_orders"]:
+            enrich_open_limit_orders_tca(
+                snapshot.portfolio_summary["open_limit_orders"],
+                snapshot.prices_and_trends,
+                snapshot.microstructure,
+            )
+        if risk_eng := compute_enterprise_portfolio_risk_metrics(
+            snapshot.portfolio_summary, snapshot.prices_and_trends, snapshot.microstructure
+        ):
+            snapshot.portfolio_summary["portfolio_risk_engine"] = risk_eng
     return snapshot
 
 

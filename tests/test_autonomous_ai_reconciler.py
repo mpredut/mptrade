@@ -6961,9 +6961,17 @@ def test_orderbook_usdc_spot_priority_and_kraken_private_network_resilience(tmp_
     assert snap.best_bid == pytest.approx(76400.0)
     assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=BTCUSDC&limit=500"
     fetched_urls.clear()
-    snap_hype = ob_col.fetch("HYPEUSD", allow_network=True)
-    assert snap_hype is not None
-    assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=HYPEUSDC&limit=500"
+    snap_arb = ob_col.fetch("ARBUSD", allow_network=True)
+    assert snap_arb is not None
+    assert fetched_urls[0] == "https://api.binance.com/api/v3/depth?symbol=ARBUSDC&limit=500"
+    fetched_urls.clear()
+    snap_hype_krk = ob_col.fetch("HYPEUSD", allow_network=True)
+    assert snap_hype_krk is not None
+    assert fetched_urls[0] == "https://api.kraken.com/0/public/Depth?pair=HYPEUSD&count=200"
+    fetched_urls.clear()
+    snap_hype_hl = ob_col.fetch("HYPEUSDC", allow_network=True)
+    assert snap_hype_hl is not None
+    assert fetched_urls[0] == "https://api.hyperliquid.xyz/info?type=l2Book&coin=HYPE"
 
     # 2. KrakenClient._private retries transient (0, b"") on Balance and raises KrakenError if all attempts fail
     kc._CACHE.clear()
@@ -8630,8 +8638,157 @@ def test_enterprise_telemetry_upgrades_calendar_dedup_liq_gravity_and_tactical_c
     assert "tactical_avg_px=223.48 (pnl_vs_tactical=0.8%)" in pos_line
 
 
+def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(tmp_path):
+    """Verify Institutional Quant Desk Layers (II.1 - II.5) & Discrepancies 1-8 end-to-end."""
+    from datetime import datetime, timezone
+    from intelligence.macro_sentiment_ssot import (
+        parse_live_macro_release_surprises,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_microstructure_cvd,
+        extract_symbol_recent_fills,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+        sync_sibling_symbol_telemetry,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
 
+    # 1. Live Macro Calendar FOMC date recognition + Actual vs Consensus Surprise Z-Score (Layer II.2)
+    fomc_day_cal = resolve_macro_economic_calendar(
+        now_ts=datetime(2026, 11, 5, 18, 30, tzinfo=timezone.utc).timestamp(),  # 2026-11-05 is an official FOMC date
+        breaking_news=[{"title": "US CPI YoY Actual 2.9% vs Consensus 3.1%, Prior 3.2%"}],
+    )
+    assert fomc_day_cal["fomc_today"] is True
+    assert "FOMC Rate Decision" in fomc_day_cal["next_high_impact_event"]
+    prints = parse_live_macro_release_surprises(
+        [{"title": "US CPI YoY Actual 2.9% vs Consensus 3.1%, Prior 3.2%"}]
+    )
+    assert len(prints) == 1
+    assert prints[0]["event"] == "US CPI"
+    assert prints[0]["surprise_zscore"] == pytest.approx(-2.0)
+    assert prints[0]["stance"] == "DOVISH_TAILWIND"
 
+    # 2. Spot vs Perp CVD Divergence, Perp-Spot Basis, Multi-Horizon Flow & Cross-Venue Arbitrage (Layer II.1 & Discrepancy 3)
+    prices = {
+        "HYPEUSDC": {"price": 85.37, "chg_15m_pct": 0.65, "vol_1h_pct": 1.2},
+        "HYPEUSD": {"price": 85.62, "chg_15m_pct": 0.68, "vol_1h_pct": 1.2},
+    }
+    micro = {
+        "HYPEUSDC": {
+            "ob_mid_price": 85.37,
+            "best_bid": 85.35,
+            "best_ask": 85.39,
+            "spread_bps": 4.69,
+            "ob_imbalance": 0.64,
+            "bid_depth_usd": 340000.0,
+            "ask_depth_usd": 190000.0,
+            "bid_wall_px": 85.00,
+            "bid_wall_usd": 95000.0,
+            "ask_wall_px": 86.20,
+            "ask_wall_usd": 120000.0,
+            "taker_buy_sell_ratio": 0.88,
+            "taker_buy_vol_usd": 440000.0,
+            "taker_sell_vol_usd": 500000.0,
+            "taker_ratio_5m": 1.18,
+            "cvd_5m_usd": 45000.0,
+            "taker_ratio_1h": 1.09,
+            "cvd_1h_usd": 180000.0,
+            "taker_ratio_4h": 1.14,
+            "cvd_4h_usd": 620000.0,
+            "funding_rate": -0.00012,
+            "funding_annualized_pct": -13.14,
+            "mark_price": 85.31,
+            "oi_usd": 45000000.0,
+            "oi_1h_chg_pct": 1.5,
+            "whale_long_pct": 0.61,
+        },
+        "HYPEUSD": {
+            "ob_mid_price": 85.62,
+            "best_bid": 85.55,
+            "best_ask": 85.69,
+            "spread_bps": 16.35,
+            "ob_imbalance": 0.58,
+            "bid_depth_usd": 62000.0,
+            "ask_depth_usd": 45000.0,
+            "bid_wall_px": 85.10,
+            "bid_wall_usd": 18000.0,
+            "ask_wall_px": 86.50,
+            "ask_wall_usd": 22000.0,
+        },
+    }
+    enrich_microstructure_cvd(micro["HYPEUSDC"], prices["HYPEUSDC"])
+    assert micro["HYPEUSDC"]["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+    assert micro["HYPEUSDC"]["perp_spot_basis_bps"] == pytest.approx(-7.03, abs=0.1)
+    sync_sibling_symbol_telemetry(prices, micro)
+    assert micro["HYPEUSD"].get("cross_venue_peer") == "HYPEUSDC"
+    assert micro["HYPEUSD"].get("cross_venue_arb_bps") == pytest.approx(29.3, abs=0.5)
+    sec_3b = "\n".join(_format_microstructure_section(micro, prices))
+    assert "flow_horizons(5m=tr:1.18/cvd:+$45.0K" in sec_3b
+    assert "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE" in sec_3b
+    assert "arb_vs_HYPEUSDC=+29.3bps" in sec_3b
 
+    # 3. Sub-Cycle Lot Accounting without intervening SELL (Discrepancy 7 & Layer II.4)
+    t0 = 1_793_000_000_000
+    t_swing = t0 + 5 * 86_400_000  # 5 days later
+    tao_fills = extract_symbol_recent_fills(
+        [
+            {"symbol": "TAOUSDC", "orderId": "L1", "side": "BUY", "price": 295.00, "qty": 2.0, "time": t0, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "S1", "side": "BUY", "price": 223.30, "qty": 1.0, "time": t_swing, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "S2", "side": "BUY", "price": 221.00, "qty": 1.0, "time": t_swing + 60000, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "S3", "side": "BUY", "price": 227.00, "qty": 1.0, "time": t_swing + 120000, "status": "FILLED"},
+            {"symbol": "TAOUSDC", "orderId": "S4", "side": "BUY", "price": 226.90, "qty": 1.0, "time": t_swing + 180000, "status": "FILLED"},
+        ],
+        symbol="TAOUSDC",
+    )
+    assert tao_fills is not None
+    assert tao_fills["active_avg_buy_px"] == pytest.approx(248.0333, rel=1e-3)
+    assert tao_fills["swing_subcycle_avg_px"] == pytest.approx(224.55, rel=1e-3)
+    assert tao_fills["tactical_avg_buy_px"] == pytest.approx(224.55, rel=1e-3)
+    assert len(tao_fills["open_lots"]) == 5
 
+    # 4. Execution TCA Wall Queue Position & Front-Run Recommendation (Layer II.3)
+    open_orders = [
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "SELL", "price": 86.50, "orig_qty": 2.0, "remaining_qty": 2.0},
+    ]
+    enrich_open_limit_orders_tca(open_orders, prices, micro)
+    assert open_orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert open_orders[0]["recommended_front_run_px"] == pytest.approx(86.1828, rel=1e-3)
+    assert 0.0 < open_orders[0]["fill_prob_1h_pct"] < 100.0
+
+    # 5. Enterprise Global Portfolio Risk Engine (Layer II.5)
+    ps = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "base": "BTC", "quote": "USDC", "value_usd": 3500.0, "locked_base_usd": 0.0},
+            {"venue": "binance", "symbol": "TAOUSDC", "base": "TAO", "quote": "USDC", "value_usd": 2200.0, "locked_base_usd": 0.0},
+            {"venue": "hyperliquid", "symbol": "HYPEUSDC", "base": "HYPE", "quote": "USDC", "value_usd": 1800.0, "locked_base_usd": 0.0},
+            {"venue": "kraken", "symbol": "ADAUSD", "base": "ADA", "quote": "USD", "value_usd": 813.0, "locked_base_usd": 0.0},
+            {"venue": "kraken", "symbol": "TAOUSD", "base": "TAO", "quote": "USD", "value_usd": 838.0, "locked_base_usd": 0.0},
+        ],
+        "venue_quote_cash": {
+            "binance": {"venue": "binance", "asset": "USDC", "free": 2500.0, "locked_quote_usd": 0.0},
+            "kraken": {"venue": "kraken", "asset": "USD", "free": 387.66, "locked_quote_usd": 0.0},
+        },
+        "recent_orders": {"TAOUSDC": {"lifo_realized_pnl_usd": 42.50, "recent_buys": [{"qty": 1.0, "price": 224.0}]}},
+    }
+    p_trends = {
+        "BTCUSDC": {"price": 77600.0, "vol_1h_pct": 0.9},
+        "TAOUSDC": {"price": 226.0, "vol_1h_pct": 1.4, "beta_btc_24h": 1.35, "corr_btc_24h": 0.91},
+        "HYPEUSDC": {"price": 85.37, "vol_1h_pct": 1.5, "beta_btc_24h": 1.40, "corr_btc_24h": 0.89},
+        "ADAUSD": {"price": 0.42, "vol_1h_pct": 1.2, "beta_btc_24h": 1.20, "corr_btc_24h": 0.88},
+        "TAOUSD": {"price": 226.2, "vol_1h_pct": 1.4, "beta_btc_24h": 1.35, "corr_btc_24h": 0.91},
+    }
+    risk_eng = compute_enterprise_portfolio_risk_metrics(ps, p_trends, micro)
+    assert risk_eng["unified_nav_usd"] == pytest.approx(12038.66)
+    assert risk_eng["concentration_regime"] == "HIGH_CORR_CONCENTRATED_BETA"
+    assert risk_eng["intraday_var_95_usd"] > 0.0
+    ps["portfolio_risk_engine"] = risk_eng
+    sec_3c_lines = "\n".join(_format_portfolio_section(ps, "crypto"))
+    assert "Enterprise Global Portfolio Risk Engine:" in sec_3c_lines
+    assert "HIGH_CORR_CONCENTRATED_BETA" in sec_3c_lines
 

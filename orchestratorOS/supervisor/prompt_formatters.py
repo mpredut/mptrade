@@ -230,10 +230,16 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         ]
         if mc.get("active_release_window") and mc.get("next_scheduled_event"):
             mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
+        if mc.get("fomc_today") is not None:
+            mc_parts.append(f'fomc_today={mc.get("fomc_today")}')
+        if mc.get("next_fomc_date"):
+            mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
         if mc.get("upcoming_windows"):
             mc_parts.append(f'upcoming={mc.get("upcoming_windows")}')
         if mc.get("detected_macro_headlines"):
             mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
+        if mc.get("live_macro_prints"):
+            mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
         lines.append(f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}")
     mb_bench_line = _extract_macro_benchmarks_line(mb_bench)
     if mb_bench_line:
@@ -407,13 +413,16 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             )
             va_pos = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
             va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
-            sec_poc_sfx = f", sec_POC={pinfo.get('sec_poc_px')}" if pinfo.get("sec_poc_px") is not None else ""
+            sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
+            sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
+            lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
+            shape_sfx = f", shape={pinfo.get('profile_shape')}" if pinfo.get("profile_shape") == "BIMODAL" else ""
             vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
             extras.append(
-                f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%]{sec_poc_sfx}, "
+                f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%]{sec_poc_sfx}{lvn_sfx}, "
                 f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
                 f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
-                f"va_pos={va_pos}%, regime={va_reg}{vp_src_sfx})"
+                f"va_pos={va_pos}%, regime={va_reg}{shape_sfx}{vp_src_sfx})"
             )
 
         is_non_btc_crypto = not sym.endswith(("_EQ", "_US_EQ")) and canonical_base_asset(sym) != "BTC"
@@ -676,6 +685,33 @@ def _format_microstructure_section(
                 if cvd_b is not None
                 else f", cvd_15m={usd_s} ({cvd_reg})"
             )
+            mh_parts: List[str] = []
+            for h_lbl, tr_k, cvd_k in (
+                ("5m", "taker_ratio_5m", "cvd_5m_usd"),
+                ("1h", "taker_ratio_1h", "cvd_1h_usd"),
+                ("4h", "taker_ratio_4h", "cvd_4h_usd"),
+            ):
+                tr_v = _parse_finite_float(minfo.get(tr_k), None)
+                c_v = _parse_finite_float(minfo.get(cvd_k), None)
+                if tr_v is not None and c_v is not None:
+                    c_s = f"{'+' if c_v >= 0.0 else '-'}{_fmt_liq_usd(abs(c_v))}"
+                    mh_parts.append(f"{h_lbl}=tr:{tr_v:.2f}/cvd:{c_s}")
+            if mh_parts:
+                cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
+            if (sp_cvd := _parse_finite_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_perp_flow_regime"):
+                sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
+                cvd_sfx += f", spot_cvd_15m={sp_s} ({minfo['spot_perp_flow_regime']})"
+
+        basis_sfx = ""
+        basis_parts: List[str] = []
+        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+            basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
+        if (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None:
+            basis_parts.append(f"funding_ann={f_ann:+.1f}%")
+        if (arb_bps := _parse_finite_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
+            basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
+        if basis_parts:
+            basis_sfx = f", {', '.join(basis_parts)}"
 
         liq_sfx = ""
         if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
@@ -722,7 +758,7 @@ def _format_microstructure_section(
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
             f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}, "
             f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{spread_sfx}{liq_sfx}{cd_sfx}"
+            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
         )
     return lines
 
@@ -734,6 +770,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
     for px_k, lbl, pct_lbl, pct_k, dedup_k in (
         ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", None),
         ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", "active_avg_buy_px"),
+        ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", "tactical_avg_buy_px"),
         ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", "active_avg_buy_px"),
         ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", None),
         ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", "last_buy_px"),
@@ -741,6 +778,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", None),
     ):
         if pos.get(px_k) is not None and (dedup_k is None or pos.get(px_k) != pos.get(dedup_k)):
+            if px_k == "swing_subcycle_avg_px" and pos.get(px_k) == pos.get("active_avg_buy_px"):
+                continue
             pct_val = pos.get(pct_k)
             if pct_val is None and px_f > 0.0:
                 anchor_f = _parse_finite_float(pos.get(px_k), 0.0)
@@ -750,6 +789,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                     pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2)
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
+    if (lifo_p := _parse_finite_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
+        t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
         t_extra += f", bot_ref_gain={pos.get('mt_gain_pct')}%/lost={pos.get('mt_lost_pct')}%"
     venue = pos.get("venue")
@@ -836,6 +877,10 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     avg_b_str = f" | Active Cycle Avg BUY={avg_b_px}" if avg_b_px else ""
     tac_b_px = _round_opt_px(oinfo.get("tactical_avg_buy_px"), 6)
     tac_b_str = f" | Tactical Sub-Cycle Avg BUY={tac_b_px}" if tac_b_px and tac_b_px != avg_b_px else ""
+    sw_b_px = _round_opt_px(oinfo.get("swing_subcycle_avg_px"), 6)
+    sw_b_str = f" | Swing Sub-Cycle Avg BUY={sw_b_px}" if sw_b_px and sw_b_px not in (avg_b_px, tac_b_px) else ""
+    lifo_v = _parse_finite_float(oinfo.get("lifo_realized_pnl_usd"), None)
+    lifo_str = f" | Sub-Cycle LIFO Realized PnL=${lifo_v:+.2f}" if lifo_v is not None and abs(lifo_v) >= 0.01 else ""
     r_buys = [f"{b.get('qty')}@{_round_opt_px(b.get('price'), 6)}" for b in (oinfo.get("recent_buys") or []) if isinstance(b, dict)]
     tranches_str = f" | Recent BUY Tranches=[{', '.join(r_buys)}]" if len(r_buys) > 1 else ""
     r_sells = [f"{s.get('qty')}@{_round_opt_px(s.get('price'), 6)}" for s in (oinfo.get("recent_sells") or []) if isinstance(s, dict) and s.get("qty") is not None]
@@ -850,7 +895,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         f"  * {sym} Last Action={oinfo.get('last_action_side')}{last_act_sfx}: "
         f"Last BUY={_side_summary('last_buy')} | "
         f"Last SELL={_side_summary('last_sell')}"
-        f"{avg_b_str}{tac_b_str}{tranches_str}{sell_tranches_str}"
+        f"{avg_b_str}{tac_b_str}{sw_b_str}{lifo_str}{tranches_str}{sell_tranches_str}"
     )
 
 
@@ -862,6 +907,21 @@ def _format_portfolio_section(
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
+    if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
+        pre_parts = [
+            f"unified_nav=${_parse_finite_float(pre.get('unified_nav_usd'), 0.0):,.2f}",
+            f"invested=${_parse_finite_float(pre.get('invested_exposure_usd'), 0.0):,.2f}",
+            f"free_cash=${_parse_finite_float(pre.get('global_free_cash_usd'), 0.0):,.2f} ({pre.get('global_free_cash_pct')}%)",
+            f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
+            f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
+            f"intraday_var_95=${_parse_finite_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
+            f"regime={pre.get('concentration_regime')}",
+        ]
+        if pre.get("subcycle_lifo_realized_pnl_usd") is not None:
+            pre_parts.append(f"subcycle_lifo_pnl=${_parse_finite_float(pre.get('subcycle_lifo_realized_pnl_usd'), 0.0):+.2f}")
+        if pre.get("est_recent_fee_drag_usd") is not None:
+            pre_parts.append(f"est_fee_drag=${_parse_finite_float(pre.get('est_recent_fee_drag_usd'), 0.0):.2f}")
+        lines.append(f"  * Enterprise Global Portfolio Risk Engine: {', '.join(pre_parts)}")
     if ps.get("total_value_usdc") is not None:
         tv_extras: List[str] = []
         if ps.get("total_value_usdc_age_min") is not None:
@@ -1050,7 +1110,7 @@ def build_supervisor_prompt(
         target_desc = (
             "ALL live tradable US equity shares on 't212' (SPCX_US_EQ, NVDA_US_EQ, RGNT_US_EQ during US Regular Trading Hours, cross-referencing Kraken read-only xStocks SPCXx.T exposure)"
             if is_equities
-            else "ALL live tradable crypto spot coins (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD on 'kraken', while TAOUSD/ADAUSD on Kraken serve as cross-venue reference telemetry)"
+            else "ALL live tradable crypto spot coins (BTCUSDC, TAOUSDC, ARBUSDC on 'binance'; HYPEUSDC intensively on 'hyperliquid'; HYPEUSD, TAOUSD, ADAUSD on 'kraken')"
         )
         venue_schema = '"t212"' if is_equities else '"binance" | "kraken" | "hyperliquid"'
         ex_sym = '"NVDA_US_EQ"' if is_equities else '"BTCUSDC"'

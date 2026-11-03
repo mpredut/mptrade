@@ -177,8 +177,13 @@ class _DiskBackedSymbolCollector:
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
         require_exact_venue_sym = bool(
             allow_net_bool
-            and self._QUOTE_ISOLATED
-            and sym_clean in ("HYPEUSD", "HYPEUSDC", "TAOUSD", "TAOUSDC", "ADAUSD", "ADAUSDC")
+            and (
+                sym_clean == "HYPEUSDC"
+                or (
+                    self._QUOTE_ISOLATED
+                    and sym_clean in ("HYPEUSD", "TAOUSD", "TAOUSDC", "ADAUSD", "ADAUSDC")
+                )
+            )
         )
         cached, fresh = self._lookup_cached(sym_clean, now_f)
         if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
@@ -371,7 +376,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 )
                 hl_coin = _extract_base_asset(canon_sym)
                 hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
-                if canon_sym in ("TAOUSD", "ADAUSD"):
+                if canon_sym in ("HYPEUSD", "TAOUSD", "ADAUSD"):
                     base_urls = (
                         f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
                         *spot_urls,
@@ -380,8 +385,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     )
                 elif canon_sym == "HYPEUSDC" and hl_book_url:
                     base_urls = (
-                        *spot_urls,
                         hl_book_url,
+                        *spot_urls,
                         f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
                         f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
                     )

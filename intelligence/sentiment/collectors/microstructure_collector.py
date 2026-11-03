@@ -804,6 +804,8 @@ def extract_symbol_recent_fills(
         out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)
     if tactical_avg_r is not None and active_avg_r is not None and abs(tactical_avg_r - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
         out_fills["tactical_avg_buy_px"] = tactical_avg_r
+    elif swing_subcycle_avg_px is not None and active_avg_r is not None and abs(swing_subcycle_avg_px - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
+        out_fills["tactical_avg_buy_px"] = swing_subcycle_avg_px
     if last_mod:
         out_fills["last_action_module"] = last_mod
     if last_rule:
