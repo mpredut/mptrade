@@ -228,6 +228,80 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
                 # start_bot must refresh the 8-hour-old heartbeat file mtime on launch
                 self.assertLess(time.time() - os.path.getmtime(hb_file), 10.0)
 
+    async def test_hot_reload_loop_watches_git_head_and_spliced_stdout_intents(self):
+        import json
+        import botcore
+        import log as mp_log
+        from intelligence.macro_sentiment_ssot import discover_dynamic_terms_from_headlines
+        from notify_engine.server import NotificationServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            git_refs = os.path.join(tmp, ".git", "refs", "heads")
+            os.makedirs(git_refs, exist_ok=True)
+            with open(os.path.join(tmp, ".git", "HEAD"), "w", encoding="utf-8") as f:
+                f.write("ref: refs/heads/main\n")
+            ref_file = os.path.join(git_refs, "main")
+            with open(ref_file, "w", encoding="utf-8") as f:
+                f.write("1111111111111111111111111111111111111111\n")
+
+            with patch("orchestratorTrade.orchestrator.ROOT_DIR", tmp):
+                sig1 = self.manager._git_head_signature()
+                self.assertEqual(sig1, "1111111111111111111111111111111111111111")
+                with open(ref_file, "w", encoding="utf-8") as f:
+                    f.write("2222222222222222222222222222222222222222\n")
+                sig2 = self.manager._git_head_signature()
+                self.assertEqual(sig2, "2222222222222222222222222222222222222222")
+
+            # Verify NotificationServer.process_line extracts __orchestrator_intent__ even when spliced after a line with braces
+            srv = NotificationServer()
+            sent = []
+            srv._gate_and_send_ntfy = lambda title, msg, prio, topic, **kw: sent.append((title, msg, prio, topic))
+            spliced_line = (
+                '[08:30:11] [nvda] {"debug": 1}'
+                + json.dumps(
+                    {
+                        "__orchestrator_intent__": "ntfy_webhook",
+                        "title": "Macro Alert",
+                        "message": "Body text",
+                        "priority": "high",
+                        "topic": "ntfy-macro-1978",
+                    }
+                )
+                + "[08:30:11] [spcx] trailing"
+            )
+            srv.process_line(spliced_line, "macro_analyzer")
+            self.assertEqual(len(sent), 1)
+            self.assertEqual(sent[0][0], "Macro Alert")
+
+            # Verify log._print_lock and botcore._LOG_LOCK exist and serialize output
+            self.assertTrue(hasattr(mp_log, "_print_lock"))
+            self.assertTrue(hasattr(botcore, "_LOG_LOCK"))
+
+            # Verify discover_dynamic_terms_from_headlines(persist=True) prunes noise/expired entries on disk even when 0 new terms found
+            lex_path = os.path.join(tmp, "macro_lexicon_collect.json")
+            with open(lex_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "updated_ts": 1793680000.0,
+                        "entries": {
+                            "iran qeshm": {"ts": 1793680000.0, "tier": "high", "source": "test"},
+                            "iran war": {"ts": 1793680000.0, "tier": "high", "source": "test"},
+                        },
+                    },
+                    f,
+                )
+            discovered = discover_dynamic_terms_from_headlines(
+                [{"title": "Calm weather today", "source": "Reuters"}],
+                cache_dir=tmp,
+                now_ts=1793680100.0,
+                persist=True,
+            )
+            self.assertEqual(discovered, ())
+            with open(lex_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertNotIn("iran qeshm", saved["entries"])
+            self.assertIn("iran war", saved["entries"])
+
 
 if __name__ == "__main__":
     unittest.main()

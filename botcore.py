@@ -18,6 +18,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time as _time
 import urllib.error
 import urllib.parse
@@ -29,10 +30,12 @@ HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
 
 _LOCKS: dict = {}   # retain open lock fds for process lifetime; prevent garbage collection
+_LOG_LOCK = threading.RLock()
 
 
 def log(msg: str) -> None:
-    print(f"[{datetime.now(timezone.utc).astimezone(BUCHAREST):%H:%M:%S}] {msg}", flush=True)
+    with _LOG_LOCK:
+        print(f"[{datetime.now(timezone.utc).astimezone(BUCHAREST):%H:%M:%S}] {msg}", flush=True)
 
 
 def now_str() -> str:

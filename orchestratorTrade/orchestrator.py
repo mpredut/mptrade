@@ -295,18 +295,37 @@ class BotManager:
         data = read_bytes_file(filepath, default=None)
         return hashlib.md5(data).hexdigest() if data is not None else ""
 
+    def _git_head_signature(self) -> str:
+        git_dir = os.path.join(ROOT_DIR, ".git")
+        head_bytes = read_bytes_file(os.path.join(git_dir, "HEAD"), default=None)
+        if not head_bytes:
+            return ""
+        head_str = head_bytes.decode("utf-8", errors="replace").strip()
+        if head_str.startswith("ref:"):
+            ref_rel = head_str.split(":", 1)[1].strip()
+            ref_bytes = read_bytes_file(os.path.join(git_dir, ref_rel), default=None)
+            if ref_bytes:
+                return ref_bytes.decode("utf-8", errors="replace").strip()
+            packed_bytes = read_bytes_file(os.path.join(git_dir, "packed-refs"), default=None)
+            if packed_bytes:
+                return hashlib.md5(head_bytes + b"\n" + packed_bytes).hexdigest()
+        return head_str
+
     async def _hot_reload_loop(self):
-        """Watches config.env, procs.conf, and instruments.conf for changes to trigger restarts."""
+        """Watches config files and git HEAD for changes to trigger restarts."""
         config_path = os.path.join(ROOT_DIR, "config.env")
         procs_path = os.path.join(ROOT_DIR, "procs.conf")
         instruments_path = os.path.join(ROOT_DIR, "instruments.conf")
         order_guard_path = os.path.join(ROOT_DIR, "order_guard.conf")
+        macro_conf_path = os.path.join(ROOT_DIR, "macro_intelligence.conf")
         hashes = {
             config_path: self._hash_file(config_path),
             procs_path: self._hash_file(procs_path),
             instruments_path: self._hash_file(instruments_path),
             order_guard_path: self._hash_file(order_guard_path),
+            macro_conf_path: self._hash_file(macro_conf_path),
         }
+        last_git_head = self._git_head_signature()
 
         while self.running:
             await asyncio.sleep(10)
@@ -317,6 +336,14 @@ class BotManager:
                     logging.warning(f"Config {path} changed! Applying reload...")
                     hashes[path] = curr
                     changed_paths.append(path)
+
+            curr_git_head = self._git_head_signature()
+            if curr_git_head and last_git_head and curr_git_head != last_git_head:
+                logging.warning(f"Git HEAD changed ({last_git_head[:8]} -> {curr_git_head[:8]})! Applying reload...")
+                last_git_head = curr_git_head
+                changed_paths.append(".git/HEAD")
+            elif curr_git_head and not last_git_head:
+                last_git_head = curr_git_head
 
             if not changed_paths:
                 continue

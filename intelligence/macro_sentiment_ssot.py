@@ -1217,6 +1217,10 @@ def update_dynamic_lexicon(
                 ts = safe_float(v.get("ts"), 0.0)
                 if ts > 0.0 and (now - ts) <= ttl:
                     existing_entries[k_clean] = dict(v)
+                else:
+                    pruned_existing = True
+            else:
+                pruned_existing = True
 
     changed = pruned_existing
     for raw_t, tier_override in (
@@ -1377,7 +1381,7 @@ def discover_dynamic_terms_from_headlines(
             or (count >= 2 and phrase_has_direct_stem.get(phrase, False))
         )
     ]
-    if discovered and persist:
+    if persist:
         update_dynamic_lexicon(discovered, cache_dir=cache_dir, source="specialized_feed_salience", now_ts=now_ts)
     return tuple(discovered)
 
