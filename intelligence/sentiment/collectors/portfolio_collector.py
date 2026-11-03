@@ -29,6 +29,22 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_microstructure_cvd, extract_symbol_recent_fills, load_symbol_microstructure,
     load_symbol_price_series, round_opt_px,
 )
+from intelligence.sentiment.collectors.portfolio_risk_tca import (
+    _VENUE_DEFAULT_FEE_SPECS,
+    compute_enterprise_portfolio_risk_metrics,
+    enrich_open_limit_orders_tca,
+    enrich_recent_orders_markout,
+    parse_venue_cycle_state,
+    resolve_symbol_price,
+    resolve_venue_fee_and_limits,
+    set_pos_anchor,
+)
+from intelligence.sentiment.collectors.quant_price_evaluators import (
+    _apply_24h_series_enrichment,
+    _compute_kalman_from_series,
+    _compute_short_slopes_from_series,
+    _extract_ohlc_series_points,
+)
 from instrument_registry import casefold_get
 from providers.base import extract_order_id, extract_order_side, normalize_open_order, normalize_timestamp_ms, resolve_order_origin
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
@@ -38,255 +54,6 @@ from state_io import (
 )
 
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
-
-
-_VENUE_DEFAULT_FEE_SPECS: Dict[str, tuple[str, float, float, float]] = {
-    "binance": ("VIP0", 10.0, 10.0, 5.0),
-    "kraken": ("PRO_TIER0", 16.0, 26.0, 1.0),
-    "hyperliquid": ("SPOT_TIER0", 4.0, 7.0, 10.0),
-    "t212": ("INVEST_RTH", 15.0, 15.0, 1.0),
-}
-
-
-def resolve_venue_fee_and_limits(
-    venue: str,
-    symbol: str,
-    inst: Any = None,
-    *,
-    price: float = 0.0,
-    free_quote: Optional[float] = None,
-    free_base: Optional[float] = None,
-    locked_quote_usd: Optional[float] = None,
-    locked_base_qty: Optional[float] = None,
-    spread_bps: Optional[float] = None,
-    gateway_max_usd: float = 2000.0,
-) -> Dict[str, Any]:
-    """Resolve active venue fee tier, maker vs taker bps, live spread, and exchange/account order limits (0 ms, zero network calls)."""
-    v_norm = normalize_venue_name(venue)
-    fee_tier, maker_bps, taker_bps, min_notional = _VENUE_DEFAULT_FEE_SPECS.get(v_norm, ("STANDARD", 15.0, 15.0, 5.0))
-    px_f = safe_pos_float(price, default=0.0) or 0.0
-    if v_norm == "t212":
-        default_step, default_tick = 0.001, 0.01
-    elif v_norm == "hyperliquid":
-        default_step = 0.0001 if px_f >= 1000.0 else 0.01
-        default_tick = 0.01 if px_f >= 100.0 else (0.001 if px_f >= 1.0 else 0.0001)
-    else:
-        default_step = 0.0001 if px_f >= 1000.0 else (0.001 if px_f >= 50.0 else 0.01)
-        default_tick = 0.01 if px_f >= 10.0 else (0.001 if px_f >= 1.0 else 0.0001)
-
-    params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
-    if params.get("fee_tier"):
-        fee_tier = str(params["fee_tier"]).strip()
-    maker_bps = float(safe_nonneg_float(params.get("maker_fee_bps"), default=maker_bps))
-    taker_bps = float(safe_nonneg_float(params.get("taker_fee_bps"), default=taker_bps))
-    min_notional = float(safe_pos_float(params.get("min_notional"), default=min_notional))
-    min_qty = float(safe_pos_float(params.get("min_qty"), default=default_step))
-    step_size = float(safe_pos_float(params.get("step_size"), default=default_step))
-    tick_size = float(safe_pos_float(params.get("tick_size"), default=default_tick))
-
-    prov = getattr(inst, "_provider", None) if inst is not None else None
-    if v_norm == "kraken" and prov is not None:
-        sym_u = str(symbol or "").strip().upper()
-        kr_cands = list(
-            dict.fromkeys(
-                kc for kc in (symbol, sym_u, clean_symbol_key(sym_u), resolve_kraken_lookup_symbol(sym_u) if "USD" in compatible_quote_suffixes(sym_u) else None)
-                if isinstance(kc, str) and kc
-            )
-        )
-        if isinstance((minqty_map := getattr(prov, "_minqty", None)), dict):
-            min_qty = next((v for kc in kr_cands if (v := safe_pos_float(minqty_map.get(kc), default=None)) is not None), min_qty)
-        client = getattr(prov, "_cli", None) or getattr(prov, "_client", None)
-        cache_dict = getattr(client, "_CACHE", None)
-        if not isinstance(cache_dict, dict):
-            kc_mod = _sys.modules.get("kraken_client") or _sys.modules.get("kraken.kraken_client")
-            cache_dict = getattr(kc_mod, "_CACHE", None)
-        if isinstance(cache_dict, dict):
-            def _cache_val(ckey: Any) -> Any:
-                return hit[1] if isinstance((hit := cache_dict.get(ckey)), tuple) and len(hit) >= 2 else None
-
-            p_meta = next((m for kc in kr_cands if isinstance((m := _cache_val(f"pair:{kc}")), dict)), None)
-            if p_meta is None:
-                p_meta = next(
-                    (v for kc in kr_cands if isinstance((ap_res := _cache_val(("AssetPairs", (("pair", kc),)))), dict) for v in ap_res.values() if isinstance(v, dict)),
-                    None,
-                )
-            if p_meta is None and isinstance((ap_all_res := _cache_val(("AssetPairs", ()))), dict):
-                p_meta = next((ap_all_res[kc] for kc in kr_cands if isinstance(ap_all_res.get(kc), dict)), None)
-            if isinstance(p_meta, dict):
-                for fee_key, is_maker in (("fees_maker", True), ("fees", False)):
-                    tbl = p_meta.get(fee_key)
-                    if isinstance(tbl, list) and tbl and isinstance(tbl[0], (list, tuple)) and len(tbl[0]) >= 2:
-                        if (fv := safe_nonneg_float(tbl[0][1], default=None)) is not None:
-                            if is_maker:
-                                maker_bps = round(fv * 100.0, 2)
-                            else:
-                                taker_bps = round(fv * 100.0, 2)
-                min_qty = safe_pos_float(p_meta.get("ordermin"), default=min_qty) or min_qty
-                min_notional = safe_pos_float(p_meta.get("costmin"), default=min_notional) or min_notional
-                if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None:
-                    step_size = round(10.0 ** (-int(lot_dec)), 8)
-                if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None:
-                    tick_size = round(10.0 ** (-int(pair_dec)), 8)
-    elif v_norm == "hyperliquid" and prov is not None:
-        client = getattr(prov, "_client", None)
-        base_tok = canonical_base_asset(symbol)
-        meta_cache = getattr(prov, "_meta_cache", None) or getattr(client, "_meta_cache", None)
-        sz_dec = safe_nonneg_float(meta_cache[base_tok].get("szDecimals"), default=None) if isinstance(meta_cache, dict) and isinstance(meta_cache.get(base_tok), dict) else None
-        if sz_dec is None:
-            info_obj = getattr(client, "info", None)
-            c2a, a2sz, n2c = getattr(info_obj, "coin_to_asset", None), getattr(info_obj, "asset_to_sz_decimals", None), getattr(info_obj, "name_to_coin", None)
-            if isinstance(c2a, dict) and isinstance(a2sz, dict):
-                spot_pair = getattr(prov, "_spot_pair", None) or (n2c.get(f"{base_tok}/USDC") if isinstance(n2c, dict) else None)
-                sz_dec = next((v for ck in (spot_pair, base_tok) if ck and ck in c2a and (v := safe_nonneg_float(a2sz.get(c2a[ck]), default=None)) is not None), None)
-        if sz_dec is not None:
-            sz_i = int(sz_dec)
-            step_size = min_qty = round(10.0 ** (-sz_i), 8)
-            if safe_pos_float(params.get("tick_size"), default=None) is None:
-                eff_px_dec = min(max(8 - sz_i, 0), max(0, 4 - int(math.floor(math.log10(px_f)))) if px_f > 0.0 else 4)
-                tick_size = round(10.0 ** (-eff_px_dec), 8)
-
-    out: Dict[str, Any] = {
-        "fee_tier": fee_tier,
-        "maker_fee_bps": round(maker_bps, 2),
-        "taker_fee_bps": round(taker_bps, 2),
-        "maker_rebate_edge_bps": round(taker_bps - maker_bps, 2),
-        "exchange_min_notional_usd": round(min_notional, 2),
-        "min_qty": min_qty,
-        "step_size": step_size,
-        "tick_size": tick_size,
-        "buy_buffer_pct": 99.5,
-    }
-    if (sp_rounded := round_spread_bps(spread_bps)) is not None:
-        out["spread_bps"] = sp_rounded
-    gw_max = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
-    fq_f = safe_nonneg_float(free_quote, default=None)
-    fb_f = safe_nonneg_float(free_base, default=None)
-    lq_f = safe_pos_float(locked_quote_usd, default=0.0) or 0.0
-    lb_f = safe_pos_float(locked_base_qty, default=0.0) or 0.0
-    if fq_f is not None:
-        out["effective_max_buy_usd"] = round(min(gw_max, fq_f * 0.995), 2)
-    if lq_f > 0.0:
-        out["locked_quote_usd"] = round(lq_f, 2)
-        if fq_f is not None:
-            out["replace_max_buy_usd"] = round(min(gw_max, (fq_f + lq_f) * 0.995), 2)
-    if fb_f is not None and px_f > 0.0:
-        out["effective_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f) * px_f), 2)
-    if lb_f > 0.0:
-        out["locked_base_qty"] = round(lb_f, 6)
-        if px_f > 0.0:
-            out["locked_base_usd"] = round(lb_f * px_f, 2)
-            if fb_f is not None:
-                out["replace_max_sell_usd"] = round(min(gw_max, venue_fee_cap_quantity(v_norm, "SELL", px_f, fb_f + lb_f) * px_f), 2)
-    return out
-
-
-def resolve_symbol_price(
-    symbol: str,
-    prices_and_trends: Dict[str, Any],
-    fallback_prices: Optional[Dict[str, float]] = None,
-    *,
-    explicit_quote: Optional[str] = None,
-) -> float:
-    """Resolve a positive live price for ``symbol`` across quote-compatible symbol variants and optional fallback map."""
-    if not symbol:
-        return 0.0
-    sym_quotes = compatible_quote_suffixes(symbol, explicit_quote)
-    sym_variants = cache_symbol_variants(symbol, include_base="USD" in sym_quotes, quotes=sym_quotes)
-    for cand in sym_variants:
-        entry = casefold_get(prices_and_trends, cand)
-        if (cand_px := safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0) > 0:
-            return cand_px
-    if isinstance(fallback_prices, dict):
-        for cand in sym_variants:
-            if (cand_px := safe_pos_float(casefold_get(fallback_prices, cand), default=0.0) or 0.0) > 0:
-                return cand_px
-    return 0.0
-
-
-def set_pos_anchor(
-    pos: Dict[str, Any], px_key: str, pct_key: str, anchor_val: Any, cur_px: float, *, overwrite: bool = True,
-) -> None:
-    """Attach a cost/buy/sell/peak price anchor and its percentage delta to a position dict."""
-    a_f = safe_pos_float(anchor_val, default=0.0) or 0.0
-    if a_f <= 0 or (not overwrite and pos.get(px_key) is not None):
-        return
-    if px_key == "trailing_peak" and cur_px > a_f:
-        a_f = cur_px
-    pos[px_key] = round(a_f, 6)
-    if cur_px > 0:
-        pos[pct_key] = round(((cur_px - a_f) / a_f) * 100.0, 2)
-
-
-def parse_venue_cycle_state(
-    st_data: Dict[str, Any],
-    symbol: str,
-    prices_and_trends: Dict[str, Any],
-    *,
-    avg_decimals: int = 6,
-    fallback_prices: Optional[Dict[str, float]] = None,
-    include_meta: bool = False,
-) -> Dict[str, Any]:
-    """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
-    qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
-    raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
-    cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
-    avg_cost = (
-        round(cost / qty, avg_decimals)
-        if qty > 1e-12 and cost > 0
-        else (round_opt_px(st_data.get("avg_cost") or st_data.get("avg_price") or st_data.get("entry_price"), avg_decimals) if qty > 1e-12 else None)
-    )
-    px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
-    dd_pct = round(((px_f - avg_cost) / avg_cost) * 100.0, 2) if avg_cost and px_f > 0 else None
-    last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
-    cyc_entry: Dict[str, Any] = {
-        "qty": round(qty, 6),
-        "cost_usd": round(cost, 2),
-        "avg_cost_px": avg_cost,
-        "entry_price": round_opt_px(st_data.get("entry_price"), avg_decimals),
-        "last_buy_price": round_opt_px(last_buy_px, avg_decimals),
-        "last_sell_price": round_opt_px(st_data.get("last_sell_price"), avg_decimals),
-        "last_exit_kind": st_data.get("last_exit_kind"),
-        "dca_buys": st_data.get("dca_buys"),
-        "dd_pct": dd_pct,
-        "pnl_vs_avg_pct": dd_pct,
-    }
-    pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
-    if pos_peak is not None and qty > 1e-12:
-        cyc_entry["pos_peak"] = pos_peak
-        if px_f > 0 and pos_peak > 0:
-            eff_peak = max(pos_peak, px_f)
-            cyc_entry["dd_from_peak_pct"] = round(((px_f - eff_peak) / eff_peak) * 100.0, 2)
-    raw_realized = next(
-        (st_data[rk] for rk in ("realized_net", "realized_net_usd", "realized_pnl", "realized_pnl_usd", "realized_gross") if st_data.get(rk) is not None),
-        None,
-    )
-    if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
-        cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    ref_entry_px = safe_pos_float(avg_cost or cyc_entry.get("entry_price") or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
-    last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
-    if (
-        str(cyc_entry.get("last_exit_kind") or "").strip().upper() == "TP"
-        and ref_entry_px > 0.0
-        and last_sell_px_f > 0.0
-        and last_sell_px_f < ref_entry_px * 0.995
-        and realized_pnl < 0.0
-    ):
-        cyc_entry["last_exit_kind"] = "REDUCE"
-    tp_sold = st_data.get("tp_sold") if st_data.get("tp_sold") is not None else st_data.get("tp_sold_levels")
-    if isinstance(tp_sold, list) and tp_sold:
-        cyc_entry["tp_sold_levels"] = tp_sold
-    if isinstance((raw_orders := st_data.get("orders")), list) and raw_orders:
-        close_orders = [
-            {"side": o.get("side"), "px": o.get("px") or o.get("price") or o.get("limit"), "sz": o.get("sz") or o.get("qty"), "role": o.get("role") or o.get("kind")}
-            for o in raw_orders if isinstance(o, dict)
-        ]
-        if close_orders:
-            cyc_entry["resting_orders"] = close_orders
-    if include_meta:
-        for src_k, dst_k in (("entry_ts", "_entry_ts_ms"), ("last_sell_ts", "_last_sell_ts_ms")):
-            if (ts_ms := normalize_timestamp_ms(st_data.get(src_k), default=None)) is not None:
-                cyc_entry[dst_k] = ts_ms
-    return cyc_entry
 
 
 def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
@@ -1071,156 +838,6 @@ def enrich_cross_venue_trends(
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, list) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
                 entry.update(compute_7d_range_metrics(vals))
                 break
-
-
-def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
-    """Derive Kalman velocity (% per min), std, and trend from a 24h price series when cache_kalman_trend lacks the symbol."""
-    pts = [(parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None]
-    if len(pts) < 5:
-        return None
-    cutoff_s = pts[-1][0] - 7200.0
-    subsampled: List[Tuple[float, float]] = []
-    last_ts = -1e18
-    for ts_s, px_v in pts:
-        if ts_s >= cutoff_s and ts_s - last_ts >= 55.0:
-            subsampled.append((ts_s, px_v))
-            last_ts = ts_s
-    if subsampled and pts[-1][0] > subsampled[-1][0]:
-        subsampled.append(pts[-1])
-    if len(subsampled) < 5:
-        subsampled = pts[-min(len(pts), 30) :]
-    if len(subsampled) < 5:
-        return None
-    kf = KalmanTrend(gap_reset_sec=7200.0)
-    fed: List[float] = []
-    last_out: Optional[Dict[str, Any]] = None
-    for ts_s, px_v in subsampled[-60:]:
-        fed.append(px_v)
-        if len(fed) >= 3:
-            diffs = [fed[i] - fed[i - 1] for i in range(1, len(fed))]
-            mean_d = sum(diffs) / len(diffs)
-            var_d = sum((d - mean_d) ** 2 for d in diffs) / len(diffs)
-            eps_eff = max(math.sqrt(max(0.0, var_d)), px_v * 1e-4)
-        else:
-            eps_eff = max(px_v * 8e-4, 1e-9)
-        last_out = kf.update(ts_s, px_v, eps_eff)
-    if not isinstance(last_out, dict):
-        return None
-    return {"kalman_vel": last_out.get("vel"), "kalman_vel_std": last_out.get("vel_std"), "kalman_trend": last_out.get("trend")}
-
-
-def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
-    """Derive fallback multi-horizon slopes (90s, 3.7m, 15m, 2.5h) and growth coefficients from a 24h series."""
-    pts = [(parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None and parsed[1] > 0]
-    if len(pts) < 3:
-        return {}
-    t_now, p_now = pts[-1]
-    out: Dict[str, Any] = {}
-    for win_sec, win_min, s_key, t_key, g_key in (
-        (90.0, 1.5, "slope_90s", "trend_90s", "growth_90s"),
-        (222.0, 3.7, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
-        (900.0, 15.0, "slope_15m", "trend_15m", "growth_15m"),
-        (9000.0, 150.0, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
-    ):
-        target_t = t_now - win_sec
-        ref_t, ref_p = min(pts[:-1], key=lambda item: abs(item[0] - target_t))
-        dt_min = max(win_min, (t_now - ref_t) / 60.0)
-        if ref_p > 0 and dt_min > 0:
-            slope_v = round(((p_now - ref_p) / ref_p) / dt_min, 6) + 0.0
-            g_v = round(slope_v * win_min * 1000.0, 2) + 0.0
-            out[s_key] = slope_v
-            out[g_key] = g_v
-            out[t_key] = 1 if g_v >= 0.25 else (-1 if g_v <= -0.25 else 0)
-    if "slope_3_7m" in out:
-        out["gradient_recent_fast"] = out["slope_3_7m"]
-    return out
-
-
-def _extract_ohlc_series_points(
-    ohlc_obj: Any,
-    *,
-    min_ts: float = 0.0,
-    max_ts: float = float("inf"),
-    require_positive_volume: bool = False,
-) -> List[List[Any]]:
-    """Extract `[ts_ms, close, (vol)]` rows from an OHLC series within `[min_ts, max_ts]`."""
-    vols = getattr(ohlc_obj, "volumes", ()) or ()
-    has_vols = isinstance(vols, (list, tuple)) and bool(vols)
-    pts: List[List[Any]] = []
-    for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()), getattr(ohlc_obj, "closes", ()))):
-        if min_ts <= ts <= max_ts and float(px) > 0:
-            v_f = safe_pos_float(vols[idx], 0.0) or 0.0 if (has_vols and idx < len(vols)) else 0.0
-            if require_positive_volume and v_f <= 0.0:
-                continue
-            pts.append([int(ts * 1000), float(px), v_f] if v_f > 0.0 else [int(ts * 1000), float(px)])
-    return pts
-
-
-def _apply_24h_series_enrichment(
-    sym: str,
-    entry: Dict[str, Any],
-    m24: Dict[str, Any],
-    series_24h: List[Any],
-    btc_series_24h: Optional[List[Any]],
-) -> None:
-    """Enrich a symbol's `prices_and_trends` entry with 24h metrics, cross-BTC beta/corr, Kalman, slopes, and 1h vol."""
-    entry.update(m24)
-    if series_24h and safe_float(entry.get("price"), 0.0) <= 0.0:
-        entry["price"] = series_24h[-1][1]
-    if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
-        c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
-        if c1h >= 0.25 or c1h <= -0.25:
-            entry["trend"] = 1 if c1h >= 0.25 else -1
-    is_eq = sym.endswith(("_EQ", "_US_EQ"))
-    if series_24h and btc_series_24h and not is_eq and canonical_base_asset(sym) != "BTC":
-        cross_btc = compute_cross_btc_metrics(series_24h, btc_series_24h)
-        for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
-            if cross_btc.get(ck) is not None:
-                entry[ck] = cross_btc[ck]
-    if entry.get("kalman_vel") is None and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
-        for kk, kv in k_fb.items():
-            if kv is not None and entry.get(kk) is None:
-                entry[kk] = kv
-    if not is_eq and series_24h:
-        stale_short_cache = (
-            entry.get("slope_2_5h") is not None
-            and entry.get("slope_15m") is not None
-            and abs(float(entry["slope_2_5h"]) - float(entry["slope_15m"])) < 1e-12
-            and abs(float(entry.get("growth_2_5h") or 0.0) - float(entry.get("growth_15m") or 0.0)) < 1e-9
-        )
-        if (entry.get("slope_3_7m") is None or stale_short_cache) and (s_fb := _compute_short_slopes_from_series(series_24h)):
-            for sk, sv in s_fb.items():
-                if sv is None:
-                    continue
-                if entry.get(sk) is None or (
-                    stale_short_cache
-                    and (
-                        sk in ("slope_2_5h", "growth_2_5h", "trend_2_5h")
-                        or (sk in ("slope_90s", "growth_90s", "trend_90s") and abs(float(entry.get("slope_90s") or 0.0)) < 1e-12)
-                    )
-                ):
-                    entry[sk] = sv
-        if (entry.get("vol_1h_pct") is None or stale_short_cache) and len(series_24h) >= 20:
-            all_pts_m = [pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None]
-            tail_pts_m: List[Tuple[float, float]] = []
-            if len(all_pts_m) >= 10:
-                cutoff_1h_ms = float(all_pts_m[-1][0]) - 3600.0 * 1000.0
-                last_t_ms = -1e18
-                for t_ms, px_v in all_pts_m:
-                    if t_ms >= cutoff_1h_ms and (t_ms - last_t_ms) >= 55000.0:
-                        tail_pts_m.append((t_ms, px_v))
-                        last_t_ms = t_ms
-                if len(tail_pts_m) < 10:
-                    tail_pts_m = all_pts_m[-60:]
-            if len(tail_pts_m) >= 10:
-                dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
-                if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
-                    entry["vol_1h_pct"] = v1h_m
-                    re_th_m, dca_th_m = adaptive_thresholds(v1h_m)
-                    if re_th_m is not None and (entry.get("adapt_reentry_pct") is None or stale_short_cache):
-                        entry["adapt_reentry_pct"] = re_th_m
-                    if dca_th_m is not None and (entry.get("adapt_dca_pct") is None or stale_short_cache):
-                        entry["adapt_dca_pct"] = dca_th_m
 
 
 def enrich_24h_and_microstructure(
@@ -2190,15 +1807,34 @@ def harvest_recent_orders_and_enrich_positions(
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
             if (
-                cyc_qty is not None
-                and fb_cur >= 0.0
-                and lb_cur > 0.0
-                and abs(cyc_qty - fb_cur) <= max(1e-4, fb_cur * 0.02)
+                held_cur > 1e-8
+                and not is_flat_balance
+                and ((cyc_qty is not None and cyc_qty > 1e-8) or pos.get("active_avg_buy_px") is not None)
             ):
-                cyc_qty = round(fb_cur + lb_cur, 6)
-                cyc["qty"] = cyc_qty
-                if (c_avg_px := safe_pos_float(cyc.get("avg_cost_px"), default=None)) is not None:
-                    cyc["cost_usd"] = round(cyc_qty * c_avg_px, 2)
+                if cyc_qty is None or abs(cyc_qty - held_cur) > 1e-6:
+                    cyc_qty = round(held_cur, 6)
+                    cyc["qty"] = cyc_qty
+                eff_avg_cost = (
+                    (
+                        safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                        or safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+                    )
+                    if p_venue == "t212"
+                    else (
+                        safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+                        or safe_pos_float(cyc.get("avg_cost_px"), default=None)
+                        or safe_pos_float(cyc.get("entry_price"), default=None)
+                    )
+                )
+                if eff_avg_cost is not None and eff_avg_cost > 0.0:
+                    cyc["avg_cost_px"] = round(eff_avg_cost, 6)
+                    cyc["cost_usd"] = round(cyc_qty * eff_avg_cost, 2)
+                    if pos_px_f > 0.0:
+                        cyc["pnl_vs_avg_pct"] = round(((pos_px_f - eff_avg_cost) / eff_avg_cost) * 100.0, 2)
+                if pos_px_f > 0.0 and (c_peak := safe_pos_float(cyc.get("pos_peak") or pos.get("trailing_peak"), default=None)) is not None:
+                    eff_peak = max(c_peak, pos_px_f)
+                    cyc["pos_peak"] = round(eff_peak, 6)
+                    cyc["dd_pct"] = round(((pos_px_f - eff_peak) / eff_peak) * 100.0, 2)
             if pos.get("free_base") is None and cyc_qty is not None:
                 pos["free_base"] = round(cyc_qty, 6)
                 fb_cur = cyc_qty
@@ -2251,9 +1887,9 @@ def harvest_recent_orders_and_enrich_positions(
                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
-            if cyc.get("last_buy_price") is None and pos.get("last_buy_px") is not None:
+            if pos.get("last_buy_px") is not None and (cyc.get("last_buy_price") is None or p_venue in ("hyperliquid", "kraken")):
                 cyc["last_buy_price"] = pos["last_buy_px"]
-            if cyc.get("last_sell_price") is None and pos.get("last_sell_px") is not None:
+            if pos.get("last_sell_px") is not None and (cyc.get("last_sell_price") is None or p_venue in ("hyperliquid", "kraken")):
                 cyc["last_sell_price"] = pos["last_sell_px"]
         exact_sym_sp = (prices_and_trends.get(p_sym) or {}).get("spread_bps") if isinstance(prices_and_trends.get(p_sym), dict) else None
         sym_spread = (
@@ -2281,14 +1917,6 @@ def harvest_recent_orders_and_enrich_positions(
             )
         )
     return recent_orders
-
-
-def enrich_recent_orders_markout(
-    recent_orders: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-) -> None:
-    """Deprecated no-op: spot-to-last-fill delta is already exposed via `pnl_vs_last_buy_pct` / `chg_vs_last_sell_pct`."""
-    return
 
 
 def harvest_bot_runtime_states(
@@ -2387,243 +2015,4 @@ def harvest_bot_runtime_states(
         out["smart_stop_loss_state"] = ssl_state
     return out
 
-
-def enrich_open_limit_orders_tca(
-    open_orders: List[Dict[str, Any]],
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """Enrich resting open limit orders with Orderbook Wall Queue Position, Front-Run Price, and 1h Fill Probability (Layer II.3)."""
-    import math as _math
-
-    if not isinstance(open_orders, list) or not open_orders:
-        return open_orders
-    for o in open_orders:
-        if not isinstance(o, dict):
-            continue
-        sym = str(o.get("symbol") or "").strip().upper()
-        side = str(o.get("side") or "").strip().upper()
-        lim_px = safe_pos_float(o.get("price"), default=None)
-        if not sym or lim_px is None or lim_px <= 0.0:
-            continue
-        p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
-        m_entry = casefold_get(microstructure, sym) if isinstance(microstructure, dict) else None
-        if not isinstance(m_entry, dict):
-            for cand in cache_symbol_variants(sym, include_base=False):
-                cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
-                if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
-                    m_entry = cand_m
-                    break
-        spot_px = (
-            safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
-            or safe_pos_float((p_entry or {}).get("price"), default=None)
-            or resolve_symbol_price(sym, prices_and_trends)
-        )
-        if spot_px and spot_px > 0.0 and o.get("dist_from_spot_pct") is None:
-            o["dist_from_spot_pct"] = round(((lim_px - spot_px) / spot_px) * 100.0, 2)
-        dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
-        vol_1h = max(0.35, safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=1.1) or 1.1)
-        dec = 2 if lim_px >= 100.0 else (4 if lim_px >= 1.0 else 6)
-        queue_penalty = 1.0
-        if isinstance(m_entry, dict):
-            sp_bps = safe_nonneg_float(m_entry.get("spread_bps"), default=2.0) or 2.0
-            best_bid_px = safe_pos_float(m_entry.get("best_bid"), default=None) or (
-                spot_px * (1.0 - sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
-            )
-            best_ask_px = safe_pos_float(m_entry.get("best_ask"), default=None) or (
-                spot_px * (1.0 + sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
-            )
-            tick_step = 10.0 ** (-dec)
-            if side == "SELL":
-                aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
-                aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
-                if aw_px is not None and aw_px > 0.0 and aw_usd >= 5000.0 and (not spot_px or aw_px >= spot_px * 1.0010):
-                    step_fr = max(tick_step, min(aw_px * 0.0001, 5.0))
-                    raw_fr_ask = aw_px - step_fr
-                    floor_ask = max(best_ask_px or 0.0, (spot_px or 0.0) * 1.0002)
-                    if floor_ask > 0.0:
-                        raw_fr_ask = max(floor_ask + tick_step, raw_fr_ask)
-                    fr_ask_px = round(min(aw_px, raw_fr_ask), dec)
-                    if lim_px > aw_px * 1.0003:
-                        o["wall_queue_pos"] = "BEHIND_ASK_WALL"
-                        o["ask_wall_ahead_px"] = aw_px
-                        o["ask_wall_ahead_usd"] = round(aw_usd, 0)
-                        if fr_ask_px < aw_px and fr_ask_px < lim_px:
-                            o["recommended_front_run_px"] = fr_ask_px
-                        queue_penalty = 0.60
-                    elif abs(lim_px - aw_px) / aw_px <= 0.0003:
-                        o["wall_queue_pos"] = "AT_ASK_WALL"
-                        if fr_ask_px < aw_px and fr_ask_px < lim_px:
-                            o["recommended_front_run_px"] = fr_ask_px
-                        queue_penalty = 0.78
-                    else:
-                        o["wall_queue_pos"] = "FRONT_OF_ASK_WALL"
-            elif side == "BUY":
-                bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
-                bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
-                if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0 and (not spot_px or bw_px <= spot_px * 0.9990):
-                    step_fr = max(tick_step, min(bw_px * 0.0001, 5.0))
-                    raw_fr_bid = bw_px + step_fr
-                    ceil_bid = min(
-                        best_bid_px if best_bid_px and best_bid_px > 0.0 else bw_px * 2.0,
-                        (spot_px * 0.9998) if spot_px and spot_px > 0.0 else bw_px * 2.0,
-                    )
-                    if ceil_bid > 0.0:
-                        raw_fr_bid = min(ceil_bid - tick_step, raw_fr_bid)
-                    fr_bid_px = round(max(bw_px, raw_fr_bid), dec)
-                    if lim_px < bw_px * 0.9997:
-                        o["wall_queue_pos"] = "BEHIND_BID_WALL"
-                        o["bid_wall_ahead_px"] = bw_px
-                        o["bid_wall_ahead_usd"] = round(bw_usd, 0)
-                        if fr_bid_px > bw_px and fr_bid_px > lim_px:
-                            o["recommended_front_run_px"] = fr_bid_px
-                        queue_penalty = 0.60
-                    elif abs(lim_px - bw_px) / bw_px <= 0.0003:
-                        o["wall_queue_pos"] = "AT_BID_WALL"
-                        if fr_bid_px > bw_px and fr_bid_px > lim_px:
-                            o["recommended_front_run_px"] = fr_bid_px
-                        queue_penalty = 0.78
-                    else:
-                        o["wall_queue_pos"] = "FRONT_OF_BID_WALL"
-        raw_prob = 100.0 * _math.exp(-0.5 * ((dist_pct / vol_1h) ** 2)) * queue_penalty
-        o["fill_prob_1h_pct"] = round(min(99.0, max(1.0, raw_prob)), 1)
-    return open_orders
-
-
-def compute_enterprise_portfolio_risk_metrics(
-    portfolio_summary: Dict[str, Any],
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Compute Global Enterprise Portfolio Risk Engine metrics (Unified NAV, Cash %, BTC-Beta, 24h Correlation, 95% VaR, LIFO Alpha)."""
-    import math as _math
-
-    if not isinstance(portfolio_summary, dict):
-        return {}
-    t_pos = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
-    vq_cash = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
-    rec_orders = portfolio_summary.get("recent_orders") if isinstance(portfolio_summary.get("recent_orders"), dict) else {}
-
-    venue_pos_usd: Dict[str, float] = {}
-    venue_cash_usd: Dict[str, float] = {}
-    venue_free_cash_usd: Dict[str, float] = {}
-    venue_locked_quote_usd: Dict[str, float] = {}
-    pos_exposures: List[Tuple[str, float, float, float, float]] = []  # (base, val_usd, beta_btc, corr_btc, daily_vol_pct)
-
-    for p in t_pos:
-        if not isinstance(p, dict):
-            continue
-        v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        val_u = (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
-        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
-        if val_u >= 1.0:
-            sym = str(p.get("symbol") or "").strip().upper()
-            base = canonical_base_asset(sym)
-            p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
-            if not isinstance(p_info, dict) and isinstance(prices_and_trends, dict):
-                p_info = next(
-                    (v for c in cache_symbol_variants(sym) if isinstance((v := casefold_get(prices_and_trends, c)), dict)),
-                    {},
-                )
-            elif not isinstance(p_info, dict):
-                p_info = {}
-            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
-            beta_v = 1.0 if base == "BTC" else safe_float(p_info.get("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
-            corr_v = 1.0 if base == "BTC" else safe_float(p_info.get("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
-            vol_1h = safe_pos_float(p_info.get("vol_1h_pct"), default=1.0) or 1.0
-            daily_vol_pct = min(25.0, max(0.8, vol_1h * _math.sqrt(24.0)))
-            pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
-
-    for c in vq_cash.values():
-        if not isinstance(c, dict):
-            continue
-        v_name = normalize_venue_name(c.get("venue")) or "unknown"
-        f_u = safe_pos_float(c.get("free"), default=0.0) or 0.0
-        l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
-        venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
-        venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
-        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
-
-    all_venues = sorted(set(venue_pos_usd) | set(venue_cash_usd))
-    venue_nav: Dict[str, float] = {}
-    for v_k in all_venues:
-        v_tot = round(venue_pos_usd.get(v_k, 0.0) + venue_cash_usd.get(v_k, 0.0), 2)
-        if v_tot > 0.0:
-            venue_nav[v_k] = v_tot
-
-    # Reconcile Binance or Hyperliquid if snapshot total exceeds partial instrument sum
-    bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
-    if bn_snap > venue_nav.get("binance", 0.0):
-        venue_nav["binance"] = round(bn_snap, 2)
-    hl_ro = portfolio_summary.get("hyperliquid_readonly") if isinstance(portfolio_summary.get("hyperliquid_readonly"), dict) else {}
-    hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
-    if hl_snap > venue_nav.get("hyperliquid", 0.0):
-        venue_nav["hyperliquid"] = round(hl_snap, 2)
-
-    invested_usd = round(sum(venue_pos_usd.values()), 2)
-    free_cash_usd = round(sum(venue_free_cash_usd.values()), 2)
-    locked_quote_usd = round(sum(venue_locked_quote_usd.values()), 2)
-    total_quote_reserve_usd = round(free_cash_usd + locked_quote_usd, 2)
-    unified_nav = round(max(sum(venue_nav.values()), invested_usd + total_quote_reserve_usd), 2)
-    if unified_nav <= 0.0:
-        return {}
-
-    free_cash_pct = round((free_cash_usd / unified_nav) * 100.0, 1)
-    locked_quote_pct = round((locked_quote_usd / unified_nav) * 100.0, 1)
-    total_quote_reserve_pct = round((total_quote_reserve_usd / unified_nav) * 100.0, 1)
-    beta_adj_usd = sum(val_u * beta_v for _, val_u, beta_v, _, _ in pos_exposures)
-    portfolio_btc_beta = round(beta_adj_usd / unified_nav, 2)
-
-    # Correlation & Parametric 95% Intraday VaR (accounting for pairwise correlation via BTC factor)
-    corr_map: Dict[str, float] = {}
-    for base, _, _, corr_v, _ in pos_exposures:
-        if base != "BTC":
-            corr_map[base] = round(corr_v, 2)
-    non_btc_corrs = [c for b, _, _, c, _ in pos_exposures if b != "BTC"]
-    avg_corr_24h = round(sum(non_btc_corrs) / len(non_btc_corrs), 2) if non_btc_corrs else (1.0 if pos_exposures else 0.0)
-
-    var_cov_sum = 0.0
-    for i, (base_i, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
-        sig_i = val_i * (dvol_i / 100.0)
-        for j, (base_j, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
-            sig_j = val_j * (dvol_j / 100.0)
-            rho_ij = 1.0 if (i == j or (base_i and base_i == base_j)) else max(-0.5, min(0.98, corr_i * corr_j))
-            var_cov_sum += sig_i * sig_j * rho_ij
-    port_sigma_usd = _math.sqrt(max(0.0, var_cov_sum))
-    var_95_usd = round(1.645 * port_sigma_usd, 2)
-    var_95_pct = round((var_95_usd / unified_nav) * 100.0, 2)
-
-    concentration_regime = (
-        "HIGH_CORR_CONCENTRATED_BETA"
-        if len(pos_exposures) >= 2 and avg_corr_24h >= 0.80 and portfolio_btc_beta >= 0.65
-        else ("DEFENSIVE_HIGH_CASH" if free_cash_pct >= 55.0 else "BALANCED_DIVERSIFIED")
-    )
-
-    lifo_pnl_total = sum(
-        safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
-        for r_info in rec_orders.values()
-        if isinstance(r_info, dict)
-    )
-
-    out_risk: Dict[str, Any] = {
-        "unified_nav_usd": unified_nav,
-        "invested_exposure_usd": invested_usd,
-        "global_free_cash_usd": free_cash_usd,
-        "global_free_cash_pct": free_cash_pct,
-        "locked_quote_usd": locked_quote_usd,
-        "locked_quote_pct": locked_quote_pct,
-        "total_quote_reserve_usd": total_quote_reserve_usd,
-        "total_quote_reserve_pct": total_quote_reserve_pct,
-        "venue_nav_breakdown_usd": venue_nav,
-        "portfolio_btc_beta": portfolio_btc_beta,
-        "beta_adjusted_exposure_usd": round(beta_adj_usd, 2),
-        "avg_corr_vs_btc_24h": avg_corr_24h,
-        "corr_vs_btc_24h": corr_map,
-        "concentration_regime": concentration_regime,
-        "intraday_var_95_usd": var_95_usd,
-        "intraday_var_95_pct": var_95_pct,
-    }
-    if abs(lifo_pnl_total) >= 0.01:
-        out_risk["subcycle_lifo_realized_pnl_usd"] = round(lifo_pnl_total, 2)
-    return out_risk
 

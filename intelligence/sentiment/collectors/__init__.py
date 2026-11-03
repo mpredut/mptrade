@@ -23,6 +23,15 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     parse_venue_cycle_state, resolve_symbol_price, resolve_venue_fee_and_limits,
     set_pos_anchor, sync_sibling_symbol_telemetry,
 )
+from intelligence.sentiment.collectors.portfolio_risk_tca import (
+    compute_enterprise_portfolio_risk_metrics,
+    enrich_open_limit_orders_tca,
+    enrich_recent_orders_markout,
+)
+from intelligence.sentiment.collectors.quant_price_evaluators import (
+    pct_delta,
+    range_position_pct,
+)
 
 __all__ = [
     "FearGreedCollector", "FearGreedSnapshot", "MACRO_BENCHMARK_SPECS",
@@ -31,14 +40,17 @@ __all__ = [
     "build_cross_market_context", "build_cycle_fallback_prices",
     "collect_macro_benchmarks_snapshot", "collect_pretrade_telemetry",
     "compute_24h_price_metrics", "compute_7d_range_metrics", "compute_cross_btc_metrics",
+    "compute_enterprise_portfolio_risk_metrics",
     "compute_liquidation_clusters", "compute_swing_wave_metrics", "compute_volume_profile_metrics",
     "enrich_24h_and_microstructure", "enrich_cross_venue_trends", "enrich_microstructure_cvd",
+    "enrich_open_limit_orders_tca", "enrich_recent_orders_markout",
     "extract_symbol_recent_fills", "format_bottom_structure_6h_parts", "format_macro_benchmarks_summary_line",
     "harvest_bot_runtime_states", "harvest_initial_prices_and_trends", "harvest_kraken_xstocks",
     "harvest_macro_and_news_sensors", "harvest_portfolio_and_venue_cycles",
     "harvest_recent_orders_and_enrich_positions", "harvest_tradable_positions_and_orders",
     "harvest_venue_cycles", "load_symbol_microstructure", "load_symbol_price_series",
-    "load_venue_trailing_maps", "parse_venue_cycle_state", "populate_market_and_portfolio_snapshot",
+    "load_venue_trailing_maps", "parse_venue_cycle_state", "pct_delta",
+    "populate_market_and_portfolio_snapshot", "range_position_pct",
     "resolve_symbol_price", "resolve_venue_fee_and_limits", "round_opt_px",
     "set_pos_anchor", "sync_sibling_symbol_telemetry",
 ]

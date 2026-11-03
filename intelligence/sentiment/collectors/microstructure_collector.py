@@ -1,319 +1,58 @@
-"""Spot/perpetual microstructure, 24h/7d price series, volume profile, and liquidation cluster collector."""
+"""Spot/perpetual microstructure, 24h/7d price series loader, and liquidation cluster collector."""
 from __future__ import annotations
 
 import logging
-import math
 import os
-import statistics
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from botcore import extract_current_price_item
 from cachepaths import (
-    cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, legacy_filenames_for,
+    cache_symbol_variants,
+    canonical_base_asset,
+    compatible_quote_suffixes,
+    legacy_filenames_for,
 )
 from intelligence.external.collectors.orderbook_depth import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
-    clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float,
+    clean_scale,
+    obj_attr,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
+from intelligence.sentiment.collectors.portfolio_risk_tca import extract_symbol_recent_fills
+from intelligence.sentiment.collectors.quant_price_evaluators import (
+    _WINDOW_TREND_SPECS,
+    _auto_px_decimals,
+    _build_vp_position_dict,
+    _compute_horizon_range_dict,
+    _parse_ts_px_row,
+    _prices_diverged,
+    apply_live_24trend_windows,
+    apply_short_trend_item,
+    compute_7d_range_metrics,
+    compute_24h_price_metrics,
+    compute_cross_btc_metrics,
+    compute_swing_wave_metrics,
+    compute_volume_profile_metrics,
+    pct_delta,
+    range_position_pct,
+    round_opt_px,
 )
 from instrument_registry import casefold_get
-from providers.base import (
-    _EXEC_QTY_KEYS, _UNFILLED_ORDER_STATUSES, aggregate_fills_by_order_id, extract_executed_qty,
-    extract_order_id, extract_order_price, extract_order_side, extract_orig_qty,
-    extract_timestamp_ms, format_actor_tag, resolve_order_origin,
-)
-from providers.execution_audit import extract_intent_order_type, extract_intent_side
 from state_io import (
-    read_json_dict_recovering as read_json_cached, read_tail_jsonl_records, resolve_cachedb_filepath,
+    read_json_dict_recovering as read_json_cached,
+    read_tail_jsonl_records,
+    resolve_cachedb_filepath,
 )
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
-
-
-def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
-    """Round a positive price anchor to ``decimals``, returning None when absent or non-positive."""
-    vf = safe_pos_float(val, default=None)
-    return round(vf, decimals) if vf is not None else None
-
-
-def _auto_px_decimals(px: float, decimals: Optional[int] = None) -> int:
-    return decimals if decimals is not None else (2 if px >= 100.0 else (4 if px >= 1.0 else 6))
-
-
-def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
-    if not isinstance(row, (list, tuple)) or len(row) < 2:
-        return None
-    tf, pf = safe_pos_float(row[0], 0.0), safe_pos_float(row[1], 0.0)
-    return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
-
 
 _MICRO_PRICE_ANCHOR_KEYS: frozenset[str] = frozenset({
     "best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px",
     "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
     "long_liq_dist_pct", "short_liq_dist_pct", "long_liq_deep_dist_pct", "short_liq_deep_dist_pct",
 })
-
-
-def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
-    """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
-    a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
-    return (abs(a_f - b_f) / min(a_f, b_f) > threshold) if (a_f > 0.0 and b_f > 0.0) else False
-
-
-def _build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px: float) -> Dict[str, Any]:
-    """Compute symmetric % distances from POC/VAL/VAH, Value Area position %, and VA regime."""
-    if min(cur_px, poc_px, val_px, vah_px) <= 0.0:
-        return {}
-    return {
-        "poc_dist_pct": round(((cur_px / poc_px) - 1.0) * 100.0, 2),
-        "vah_dist_pct": round(((cur_px / vah_px) - 1.0) * 100.0, 2),
-        "val_dist_pct": round(((cur_px / val_px) - 1.0) * 100.0, 2),
-        "va_pos_pct": round(((cur_px - val_px) / (vah_px - val_px)) * 100.0, 1) if vah_px > val_px else 50.0,
-        "va_regime": (
-            "ABOVE_VAH" if cur_px > vah_px
-            else ("BELOW_VAL" if cur_px < val_px else ("INSIDE_VA_UPPER" if cur_px >= poc_px else "INSIDE_VA_LOWER"))
-        ),
-    }
-
-
-def _compute_horizon_range_dict(cur_px: float, low_px: float, high_px: float, suffix: str) -> Dict[str, Any]:
-    """Build low/high range geometry (`dd_<sfx>_high_pct`, `bounce_<sfx>_low_pct`, `span_<sfx>_pct`, `pos_<sfx>_pct`)."""
-    out: Dict[str, Any] = {f"low_{suffix}": low_px, f"high_{suffix}": high_px}
-    if high_px > 0:
-        out[f"dd_{suffix}_high_pct"] = round((cur_px / high_px - 1.0) * 100.0, 2)
-    if low_px > 0:
-        out[f"bounce_{suffix}_low_pct"] = round((cur_px / low_px - 1.0) * 100.0, 2)
-        out[f"span_{suffix}_pct"] = round((high_px / low_px - 1.0) * 100.0, 2)
-    if high_px > low_px > 0:
-        out[f"pos_{suffix}_pct"] = round(((cur_px - low_px) / (high_px - low_px)) * 100.0, 1)
-    return out
-
-
-def compute_volume_profile_metrics(
-    series: list, *, num_bins: int = 24, value_area_pct: float = 0.70, decimals: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Compute realized session Volume Profile (Point of Control POC, Value Area High VAH, Value Area Low VAL, symmetric % distances, VA position, and regime)."""
-    if not isinstance(series, list) or len(series) < 4:
-        return {}
-    try:
-        timed_rows: list[Tuple[float, float, float]] = []
-        scalar_rows: list[float] = []
-        for row in series:
-            if isinstance(row, (list, tuple)) and len(row) >= 2:
-                if (pt := _parse_ts_px_row(row)) is not None:
-                    timed_rows.append((pt[0], pt[1], safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0))
-            elif not isinstance(row, (list, tuple)) and (px_f := safe_pos_float(row, 0.0)) > 0.0:
-                scalar_rows.append(px_f)
-
-        samples: list[Tuple[float, float]] = []
-        prev_px: Optional[float] = None
-        raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])] if timed_rows else [(px_f, 0.0) for px_f in scalar_rows]
-        has_real_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0) >= max(4, len(raw_pairs) // 4)
-        for px_f, vol_w in raw_pairs:
-            if vol_w <= 0.0:
-                vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
-            prev_px = px_f
-            samples.append((px_f, vol_w))
-
-        if len(samples) < 4:
-            return {}
-        if len(samples) > 4000:
-            downsampled = samples[:: max(1, len(samples) // 2000)]
-            samples = downsampled + ([samples[-1]] if downsampled[-1][0] != samples[-1][0] else [])
-
-        cur_px = samples[-1][0]
-        low_px, high_px = min(p for p, _ in samples), max(p for p, _ in samples)
-        n_bins = max(8, min(64, int(num_bins)))
-        bin_w = (high_px - low_px) / float(n_bins) if high_px > low_px and low_px > 0.0 else 0.0
-        if bin_w <= 0.0:
-            return {}
-
-        bin_vols, bin_px_sums, total_vol = [0.0] * n_bins, [0.0] * n_bins, 0.0
-        for px_v, w_v in samples:
-            b_idx = min(n_bins - 1, max(0, int((px_v - low_px) / bin_w)))
-            bin_vols[b_idx] += w_v
-            bin_px_sums[b_idx] += px_v * w_v
-            total_vol += w_v
-        if total_vol <= 0.0:
-            return {}
-
-        # 3-bin kernel smoothing to prevent POC oscillation on bimodal distributions
-        smoothed_vols = [0.0] * n_bins
-        for i in range(n_bins):
-            if n_bins == 1:
-                smoothed_vols[i] = bin_vols[i]
-            elif i == 0:
-                smoothed_vols[i] = 0.70 * bin_vols[0] + 0.30 * bin_vols[1]
-            elif i == n_bins - 1:
-                smoothed_vols[i] = 0.70 * bin_vols[n_bins - 1] + 0.30 * bin_vols[n_bins - 2]
-            else:
-                smoothed_vols[i] = 0.25 * bin_vols[i - 1] + 0.50 * bin_vols[i] + 0.25 * bin_vols[i + 1]
-
-        poc_idx = max(range(n_bins), key=lambda i: (smoothed_vols[i], bin_vols[i]))
-        # Compute kernel-weighted POC price across [poc_idx-1, poc_idx, poc_idx+1] for stability
-        k_num, k_den = 0.0, 0.0
-        for j, kw in ((poc_idx - 1, 0.25), (poc_idx, 0.50), (poc_idx + 1, 0.25)):
-            if 0 <= j < n_bins and bin_vols[j] > 0.0:
-                bin_mean_px = bin_px_sums[j] / bin_vols[j]
-                w_eff = kw * bin_vols[j]
-                k_num += bin_mean_px * w_eff
-                k_den += w_eff
-        poc_raw = (
-            (k_num / k_den)
-            if k_den > 0.0
-            else (bin_px_sums[poc_idx] / bin_vols[poc_idx] if bin_vols[poc_idx] > 0.0 else (low_px + (poc_idx + 0.5) * bin_w))
-        )
-
-        # Secondary HVN (High Volume Node) & LVN (Low Volume Node) detection for bimodal profiles
-        hvn2_px: Optional[float] = None
-        lvn_px: Optional[float] = None
-        profile_shape = "UNIMODAL"
-        sep_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and bin_vols[i] > 0.0]
-        if sep_cands:
-            hvn2_idx = max(sep_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
-            if smoothed_vols[poc_idx] > 0.0 and smoothed_vols[hvn2_idx] >= 0.60 * smoothed_vols[poc_idx]:
-                hvn2_raw = (
-                    bin_px_sums[hvn2_idx] / bin_vols[hvn2_idx]
-                    if bin_vols[hvn2_idx] > 0.0
-                    else (low_px + (hvn2_idx + 0.5) * bin_w)
-                )
-                lo_b, hi_b = min(poc_idx, hvn2_idx), max(poc_idx, hvn2_idx)
-                valley_indices = list(range(lo_b + 1, hi_b))
-                if valley_indices:
-                    lvn_idx = min(valley_indices, key=lambda i: (smoothed_vols[i], bin_vols[i]))
-                    lvn_raw = (
-                        bin_px_sums[lvn_idx] / bin_vols[lvn_idx]
-                        if bin_vols[lvn_idx] > 0.0
-                        else (low_px + (lvn_idx + 0.5) * bin_w)
-                    )
-                    eff_dec_tmp = _auto_px_decimals(cur_px, decimals)
-                    hvn2_px = round(hvn2_raw, eff_dec_tmp)
-                    lvn_px = round(lvn_raw, eff_dec_tmp)
-                    if (
-                        smoothed_vols[hvn2_idx] >= 0.68 * smoothed_vols[poc_idx]
-                        and smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
-                    ):
-                        profile_shape = "BIMODAL"
-                    # On a bimodal double-distribution where the two peaks are within 15% volume of each other,
-                    # anchor POC to the node closer to the sample median / current price to prevent cycle-to-cycle flipping
-                    if smoothed_vols[hvn2_idx] >= 0.85 * smoothed_vols[poc_idx]:
-                        ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
-                        if abs(ref_center - hvn2_raw) < abs(ref_center - poc_raw):
-                            poc_raw, hvn2_raw = hvn2_raw, poc_raw
-                            hvn2_px = round(hvn2_raw, eff_dec_tmp)
-        target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
-        acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
-
-        while acc_vol < target_vol and (val_idx > 0 or vah_idx < n_bins - 1):
-            down_vol = bin_vols[val_idx - 1] if val_idx > 0 else -1.0
-            up_vol = bin_vols[vah_idx + 1] if vah_idx < n_bins - 1 else -1.0
-            go_up = up_vol > down_vol or (up_vol == down_vol and (poc_idx - val_idx) > (vah_idx - poc_idx) and vah_idx < n_bins - 1)
-            if go_up or val_idx == 0:
-                vah_idx += 1
-                acc_vol += up_vol
-            else:
-                val_idx -= 1
-                acc_vol += down_vol
-
-        eff_dec = _auto_px_decimals(cur_px, decimals)
-        poc_px = round(poc_raw, eff_dec)
-        val_px = round(min(poc_raw, low_px + val_idx * bin_w), eff_dec)
-        vah_px = round(max(poc_raw, low_px + (vah_idx + 1) * bin_w), eff_dec)
-        if vah_px <= val_px:
-            vah_px, val_px = round(high_px, eff_dec), round(low_px, eff_dec)
-        out_vp: Dict[str, Any] = {
-            "poc_px": poc_px,
-            "vah_px": vah_px,
-            "val_px": val_px,
-            "vp_source": "REAL_VOL" if has_real_vol else "TPO",
-            "profile_shape": profile_shape,
-            **_build_vp_position_dict(cur_px, poc_px, val_px, vah_px),
-        }
-        if hvn2_px is not None:
-            out_vp["hvn2_px"] = hvn2_px
-            out_vp["sec_poc_px"] = hvn2_px
-        if lvn_px is not None:
-            out_vp["lvn_px"] = lvn_px
-        if "sec_poc_px" not in out_vp:
-            sec_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and smoothed_vols[i] >= smoothed_vols[poc_idx] * 0.70 and bin_vols[i] > 0.0]
-            if sec_cands:
-                sec_idx = max(sec_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
-                sec_raw = bin_px_sums[sec_idx] / bin_vols[sec_idx] if bin_vols[sec_idx] > 0 else (low_px + (sec_idx + 0.5) * bin_w)
-                out_vp["sec_poc_px"] = round(sec_raw, eff_dec)
-        return out_vp
-    except Exception:
-        return {}
-
-
-def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
-    """Compute multi-horizon percentage changes (15m, 30m, 1h, 3h) and 24h range from a cache_24_price series."""
-    if not isinstance(series, list) or len(series) < 2:
-        return {}
-    try:
-        clean_series = sorted((pt for row in series if (pt := _parse_ts_px_row(row)) is not None), key=lambda x: x[0])
-        if len(clean_series) < 2:
-            return {}
-        now_ms, cur_px = clean_series[-1]
-        span_ms = now_ms - clean_series[0][0]
-
-        def _sample_at(mins: float) -> Tuple[Optional[float], float]:
-            target = now_ms - mins * 60000.0
-            return next(((tms, p_val) for tms, p_val in reversed(clean_series) if tms <= target), (None, clean_series[0][1]))
-
-        def _has_sample_near(mins: float, max_gap_mins: float) -> bool:
-            tms, _ = _sample_at(mins)
-            return tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0
-
-        out = _compute_horizon_range_dict(cur_px, min(x[1] for x in clean_series), max(x[1] for x in clean_series), "24h")
-        for key, mins, min_span_ms, max_gap_mins in (
-            ("chg_1m_pct", 1.0, 60000.0, 2.5), ("chg_3m_pct", 3.0, 180000.0, 4.0), ("chg_5m_pct", 5.0, 300000.0, 6.0),
-            ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
-            ("chg_3h_pct", 180.0, 0.0, 0.0), ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
-            ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
-        ):
-            _, p_ref = _sample_at(mins)
-            if p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins)):
-                out[key] = round((cur_px / p_ref - 1.0) * 100.0, 2)
-
-        recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
-        if len(recent_15m) >= 3:
-            l15, h15 = min(recent_15m), max(recent_15m)
-            out["low_15m"], out["high_15m"] = l15, h15
-            if h15 > l15 > 0:
-                out["pos_15m_pct"] = round(((cur_px - l15) / (h15 - l15)) * 100.0, 1)
-                out["span_15m_pct"] = round((h15 / l15 - 1.0) * 100.0, 2)
-            tape_pts = [
-                f"{lbl}:{(cur_px if m_off == 0.0 else _sample_at(m_off)[1]):.6g}"
-                for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now"))
-                if m_off == 0.0 or (span_ms >= m_off * 60000.0 and _has_sample_near(m_off, max(3.0, m_off * 0.5)))
-            ]
-            if len(tape_pts) >= 3:
-                out["recent_tape_15m"] = tape_pts
-        if span_ms >= 3600000.0 * 2.0:
-            win_6h = [(tms, p_v) for tms, p_v in clean_series if tms >= now_ms - 360.0 * 60000.0]
-            cutoff_1h = now_ms - 60.0 * 60000.0
-            prior_pts = [p_v for tms, p_v in win_6h if tms < cutoff_1h]
-            recent_pts = [p_v for tms, p_v in win_6h if tms >= cutoff_1h]
-            if len(prior_pts) >= 2 and len(recent_pts) >= 2:
-                high_6h, prior_low, recent_low = max(p_v for _, p_v in win_6h), min(prior_pts), min(recent_pts)
-                low_6h = min(prior_low, recent_low)
-                dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
-                pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
-                if dd_low_6h <= -2.0 and pos_6h <= 0.65 and prior_low > 0.0 and recent_low > 0.0:
-                    eff_dec = _auto_px_decimals(cur_px)
-                    if recent_low < prior_low and cur_px > prior_low:
-                        out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
-                        out["reclaim_above_prior_low_pct"] = round(((cur_px / prior_low) - 1.0) * 100.0, 2)
-                    elif recent_low >= prior_low and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5 and cur_px > recent_low * 1.002:
-                        out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
-                        out["higher_low_vs_prior_pct"] = round(((recent_low / prior_low) - 1.0) * 100.0, 2)
-                    elif recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5:
-                        out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
-                    if "bottom_structure_6h" in out:
-                        out["prior_6h_low_px"], out["recent_1h_low_px"] = round(prior_low, eff_dec), round(recent_low, eff_dec)
-        out.update(compute_volume_profile_metrics(series))
-        return out
-    except Exception:
-        return {}
 
 
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
@@ -523,507 +262,6 @@ def load_symbol_price_series(
     return series_24h, vals_7d
 
 
-def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any]:
-    """Compute 24h ALT/BTC ratio range position, drawdown/bounce, and realized beta/correlation vs BTC."""
-    if not isinstance(alt_series, list) or not isinstance(btc_series, list) or len(alt_series) < 4 or len(btc_series) < 4:
-        return {}
-    try:
-        def _clean_buckets(series: list) -> Dict[int, float]:
-            return {int(round(pt[0] / 300000.0)): pt[1] for row in series if (pt := _parse_ts_px_row(row)) is not None}
-
-        a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
-        if len(a_map) < 4 or len(b_map) < 4:
-            return {}
-
-        aligned = [
-            (bk, a_map[bk], b_px)
-            for bk in sorted(a_map.keys())
-            if (b_px := b_map.get(bk) or b_map.get(bk - 1) or b_map.get(bk + 1)) is not None and b_px > 0
-        ]
-        ratios = [a_px / b_px for _, a_px, b_px in aligned if b_px > 0]
-        if len(aligned) < 4 or len(ratios) < 4:
-            return {}
-
-        r_cur, r_low, r_high = ratios[-1], min(ratios), max(ratios)
-        out: Dict[str, Any] = {}
-        if r_high > 0:
-            out["alt_btc_dd_24h_high_pct"] = round((r_cur / r_high - 1.0) * 100.0, 2) + 0.0
-        if r_low > 0:
-            out["alt_btc_bounce_24h_low_pct"] = round((r_cur / r_low - 1.0) * 100.0, 2) + 0.0
-        if r_high > r_low > 0:
-            out["alt_btc_pos_24h_pct"] = round(((r_cur - r_low) / (r_high - r_low)) * 100.0, 1) + 0.0
-
-        step = 3 if len(aligned) >= 18 else 1
-        rets_a, rets_b = [], []
-        for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[step:]):
-            if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
-                rets_a.append(a1 / a0 - 1.0)
-                rets_b.append(b1 / b0 - 1.0)
-        if len(rets_b) < 6 and step > 1:
-            rets_a, rets_b = [], []
-            for (bk0, a0, b0), (bk1, a1, b1) in zip(aligned, aligned[1:]):
-                if 0 < (bk1 - bk0) <= 48 and a0 > 0 and b0 > 0:
-                    rets_a.append(a1 / a0 - 1.0)
-                    rets_b.append(b1 / b0 - 1.0)
-        if len(rets_b) >= 6:
-            mean_a, mean_b = statistics.fmean(rets_a), statistics.fmean(rets_b)
-            var_a, var_b = statistics.pvariance(rets_a, mu=mean_a), statistics.pvariance(rets_b, mu=mean_b)
-            cov = statistics.fmean((ra - mean_a) * (rb - mean_b) for ra, rb in zip(rets_a, rets_b))
-            if var_b > 1e-12:
-                out["beta_btc_24h"] = round(cov / var_b, 2) + 0.0
-                if var_a > 1e-12:
-                    out["corr_btc_24h"] = round(max(-1.0, min(1.0, cov / math.sqrt(var_a * var_b))), 2) + 0.0
-        return out
-    except Exception:
-        return {}
-
-
-def extract_symbol_recent_fills(
-    orders_list: list,
-    *,
-    known_ai_order_ids: Optional[set[str]] = None,
-    audit_origin_map: Optional[Dict[str, tuple[Optional[str], Optional[str]]]] = None,
-    ai_intents: Optional[List[Dict[str, Any]]] = None,
-    symbol: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Extract last action side/actor, active cycle avg BUY price, last BUY/SELL fills, and recent tranches."""
-    if not isinstance(orders_list, list) or not orders_list:
-        return None
-    _explicit_exec_keys = (*_EXEC_QTY_KEYS, "filled", "origSz", "resting", "msg")
-    valid = [
-        o for o in orders_list
-        if isinstance(o, dict) and (
-            extract_executed_qty(o, default=0.0) > 0.0
-            or (str(o.get("status") or "").strip().upper() not in _UNFILLED_ORDER_STATUSES and not any(k in o for k in _explicit_exec_keys))
-        )
-    ]
-    if not valid:
-        return None
-    fallback_sym = str(symbol or "").strip().upper()
-    if not fallback_sym:
-        for o_item in valid:
-            if s_cand := str(o_item.get("symbol") or o_item.get("pair") or "").strip().upper():
-                fallback_sym = s_cand
-                break
-    ai_oids: set[str] = set(known_ai_order_ids or ())
-    valid_oids: set[str] = {str(oid_x) for x in valid if (oid_x := extract_order_id(x, default=""))}
-    parsed_ai_intents: List[tuple[str, str, float, float, str]] = []
-    for it in ai_intents or ():
-        if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() not in ("EXECUTED", "FILLED", "PARTIALLY_FILLED", "CLOSED"):
-            continue
-        exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-        it_oid = extract_order_id(exec_pay, default="") or extract_order_id(it, default="")
-        if it_oid:
-            ai_oids.add(str(it_oid))
-            if str(it_oid) in valid_oids:
-                continue
-        i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
-        i_ts_s = safe_pos_float(it.get("timestamp"), default=0.0) or 0.0
-        if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
-            continue
-        hist = it.get("history") if isinstance(it.get("history"), list) else []
-        last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
-        i_qty = (
-            extract_executed_qty(exec_pay, default=0.0)
-            or extract_orig_qty(exec_pay, default=0.0)
-            or safe_pos_float(last_h.get("qty"), default=0.0)
-            or 0.0
-        )
-        parsed_ai_intents.append((str(it.get("symbol") or "").strip().upper(), i_side, i_ts_s, i_qty, extract_intent_order_type(it)))
-
-    def _matches_ai_intent(o_dict: Dict[str, Any]) -> bool:
-        o_side = extract_order_side(o_dict)
-        o_ts_s = (extract_timestamp_ms(o_dict, default=0) or 0) / 1000.0
-        o_qty = extract_executed_qty(o_dict, default=0.0) or 0.0
-        o_sym = str(o_dict.get("symbol") or o_dict.get("pair") or fallback_sym).strip().upper()
-        for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
-            if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
-                continue
-            if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
-                continue
-            if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
-                return True
-        return False
-
-    def _mark_ai_origin(o_dict: Dict[str, Any]) -> None:
-        if oid_m := extract_order_id(o_dict, default=""):
-            oid_s = str(oid_m)
-            ai_oids.add(oid_s)
-            prev_m = origin_by_oid.get(oid_s)
-            origin_by_oid[oid_s] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
-        else:
-            side_ts_m = (extract_order_side(o_dict), extract_timestamp_ms(o_dict, default=None))
-            prev_m = origin_by_side_ts.get(side_ts_m)
-            origin_by_side_ts[side_ts_m] = ("AI", prev_m[1] if prev_m else None, prev_m[2] if prev_m else None)
-
-    origin_by_oid: Dict[str, tuple[str, Optional[str], Optional[str]]] = {}
-    origin_by_side_ts: Dict[tuple[str, Any], tuple[str, Optional[str], Optional[str]]] = {}
-    for o in valid:
-        act_v, mod_v, rule_v = resolve_order_origin(o, ai_oids, audit_origin_map)
-        if act_v == "BOT" and not (mod_v or rule_v or o.get("clientOrderId") or o.get("client_order_id")) and parsed_ai_intents:
-            if _matches_ai_intent(o):
-                act_v = "AI"
-        if oid_v := extract_order_id(o, default=""):
-            oid_str = str(oid_v)
-            if act_v == "AI":
-                ai_oids.add(oid_str)
-            prev = origin_by_oid.get(oid_str)
-            if prev is None or (not prev[1] and mod_v) or (not prev[2] and rule_v) or act_v == "AI":
-                origin_by_oid[oid_str] = (
-                    "AI" if (act_v == "AI" or (prev and prev[0] == "AI")) else "BOT",
-                    mod_v or (prev[1] if prev else None),
-                    rule_v or (prev[2] if prev else None),
-                )
-        else:
-            origin_by_side_ts[(extract_order_side(o), extract_timestamp_ms(o, default=None))] = (act_v, mod_v, rule_v)
-
-    if any(o.get(k) is not None for o in valid for k in ("orderId", "order_id", "ordertxid", "oid")):
-        valid = aggregate_fills_by_order_id(valid) or valid
-
-    if parsed_ai_intents:
-        for o in valid:
-            oid_k = str(extract_order_id(o, default="") or "")
-            side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-            cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-            if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")) and _matches_ai_intent(o):
-                _mark_ai_origin(o)
-        for i_sym, i_side, i_ts_s, i_qty, _ in parsed_ai_intents:
-            if i_qty <= 0.0:
-                continue
-            cands: List[tuple[Dict[str, Any], float]] = []
-            for o in valid:
-                if extract_order_side(o) != i_side:
-                    continue
-                o_ts_s = (extract_timestamp_ms(o, default=0) or 0) / 1000.0
-                if o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0 or o_ts_s > i_ts_s + 86400.0:
-                    continue
-                o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
-                if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
-                    continue
-                oid_k = str(extract_order_id(o, default="") or "")
-                side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-                cur_act, cur_mod, cur_rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or ("BOT", None, None)
-                if cur_act == "BOT" and not (cur_mod or cur_rule or o.get("clientOrderId") or o.get("client_order_id")):
-                    if (o_q := extract_executed_qty(o, default=0.0) or 0.0) > 0.0:
-                        cands.append((o, o_q))
-            if len(cands) > 1 and abs(sum(q for _, q in cands) - i_qty) <= max(1e-5, i_qty * 0.01):
-                for o_cand, _ in cands:
-                    _mark_ai_origin(o_cand)
-
-    def _fill_origin(o: Optional[Dict[str, Any]]) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-        if not isinstance(o, dict):
-            return None, None, None, None
-        oid_k = str(extract_order_id(o, default="") or "")
-        side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))
-        act, mod, rule = origin_by_oid.get(oid_k) or origin_by_side_ts.get(side_ts_k) or resolve_order_origin(o, ai_oids, audit_origin_map)
-        return ("AI", None, None, "AI") if act == "AI" else ("BOT", mod, rule, format_actor_tag("BOT", mod, rule))
-
-    chron = [o for _, o in sorted(enumerate(valid), key=lambda item: (extract_timestamp_ms(item[1], default=0) or 0, item[0]))]
-    last_any = chron[-1]
-    cost_qty, active_avg = 0.0, 0.0
-    tactical_qty, tactical_avg = 0.0, 0.0
-    buys_fmt: list[Dict[str, Any]] = []
-    sells_fmt: list[Dict[str, Any]] = []
-    open_lots: list[Dict[str, Any]] = []
-    lifo_realized_pnl_usd = 0.0
-    lot_seq = 0
-    for o in chron:
-        side_o = extract_order_side(o)
-        p_f, q_f, ts_raw = round_opt_px(extract_order_price(o, default=None), 6), extract_executed_qty(o, default=None), extract_timestamp_ms(o, default=None)
-        act_o, mod_o, rule_o, tag_o = _fill_origin(o)
-        item_d: Dict[str, Any] = {"price": p_f, "qty": q_f, "ts_ms": ts_raw, "actor": act_o}
-        if oid_item := extract_order_id(o, default=""):
-            item_d["order_id"] = str(oid_item)
-        if mod_o:
-            item_d["module"] = mod_o
-        if rule_o:
-            item_d["rule"] = rule_o
-        if tag_o and tag_o != act_o:
-            item_d["actor_tag"] = tag_o
-        if side_o == "BUY":
-            buys_fmt.append(item_d)
-            if q_f is not None and p_f is not None and q_f > 0.0 and p_f > 0.0:
-                new_cost_qty = cost_qty + q_f
-                active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
-                cost_qty = new_cost_qty
-                new_tac_qty = tactical_qty + q_f
-                tactical_avg = ((tactical_qty * tactical_avg) + (q_f * p_f)) / new_tac_qty if new_tac_qty > 0 else 0.0
-                tactical_qty = new_tac_qty
-                lot_seq += 1
-                open_lots.append({
-                    "lot_id": f"L{lot_seq}",
-                    "qty": round(q_f, 6),
-                    "entry_px": p_f,
-                    "ts_ms": ts_raw,
-                    "actor": act_o,
-                })
-        elif side_o == "SELL":
-            sells_fmt.append(item_d)
-            tactical_qty, tactical_avg = 0.0, 0.0
-            if q_f is not None and q_f > 0.0:
-                cost_qty, active_avg = (0.0, 0.0) if (q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12) else (cost_qty - q_f, active_avg)
-                rem_to_close = q_f
-                while rem_to_close > 1e-12 and open_lots:
-                    top_lot = open_lots[-1]
-                    lot_q = float(top_lot.get("qty") or 0.0)
-                    lot_px = float(top_lot.get("entry_px") or 0.0)
-                    matched_q = min(rem_to_close, lot_q)
-                    if p_f is not None and p_f > 0.0 and lot_px > 0.0:
-                        lifo_realized_pnl_usd += matched_q * (p_f - lot_px)
-                    rem_to_close -= matched_q
-                    if lot_q - matched_q <= 1e-9:
-                        open_lots.pop()
-                    else:
-                        top_lot["qty"] = round(lot_q - matched_q, 6)
-
-    # Compute Active Swing Sub-Cycle Cost (separating active tactical swing tranches from older legacy bags)
-    swing_subcycle_avg_px: Optional[float] = None
-    swing_subcycle_qty = 0.0
-    cand_swing_lots = open_lots[-4:] if open_lots else []
-    if cand_swing_lots:
-        newest_lot = cand_swing_lots[-1]
-        newest_px = float(newest_lot.get("entry_px") or 0.0)
-        newest_ts = int(newest_lot.get("ts_ms") or 0)
-        active_swing_lots = []
-        for lt in reversed(cand_swing_lots):
-            lt_px = float(lt.get("entry_px") or 0.0)
-            lt_ts = int(lt.get("ts_ms") or 0)
-            # Group lots belonging to the active swing cluster (within 72h or within 7.5% of newest tranche entry)
-            time_ok = (newest_ts <= 0 or lt_ts <= 0) or ((newest_ts - lt_ts) <= 72 * 3600 * 1000)
-            px_ok = newest_px <= 0.0 or (abs(lt_px - newest_px) / newest_px <= 0.075)
-            if time_ok and px_ok:
-                active_swing_lots.append(lt)
-            else:
-                break
-        if not active_swing_lots:
-            active_swing_lots = [newest_lot]
-        sw_cost = sum(float(x.get("qty") or 0.0) * float(x.get("entry_px") or 0.0) for x in active_swing_lots)
-        sw_qty = sum(float(x.get("qty") or 0.0) for x in active_swing_lots)
-        if sw_qty > 1e-12 and sw_cost > 0.0:
-            swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
-            swing_subcycle_qty = round(sw_qty, 6)
-    elif buys_fmt:
-        rec_b = [b for b in buys_fmt[-4:] if (b.get("qty") or 0.0) > 0.0 and (b.get("price") or 0.0) > 0.0]
-        if rec_b:
-            sw_cost = sum(float(b["qty"]) * float(b["price"]) for b in rec_b)
-            sw_qty = sum(float(b["qty"]) for b in rec_b)
-            if sw_qty > 1e-12:
-                swing_subcycle_avg_px = round(sw_cost / sw_qty, 6)
-                swing_subcycle_qty = round(sw_qty, 6)
-
-    last_act, last_mod, last_rule, last_tag = _fill_origin(last_any)
-    active_avg_r = round(active_avg, 6) if active_avg > 0 else None
-    tactical_avg_r = round(tactical_avg, 6) if tactical_avg > 0 else None
-    out_fills: Dict[str, Any] = {
-        "last_action_side": extract_order_side(last_any) or last_any.get("side"),
-        "last_action_actor": last_act,
-        "active_avg_buy_px": active_avg_r,
-        "swing_subcycle_avg_px": swing_subcycle_avg_px,
-        "swing_subcycle_qty": swing_subcycle_qty if swing_subcycle_qty > 0 else None,
-        "open_lots": open_lots[-6:],
-        "lifo_realized_pnl_usd": round(lifo_realized_pnl_usd, 2) if abs(lifo_realized_pnl_usd) >= 0.01 else 0.0,
-        "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
-        "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
-        "recent_buys": buys_fmt[-4:],
-        "recent_sells": sells_fmt[-4:],
-    }
-    if cost_qty > 1e-12:
-        out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)
-    if tactical_avg_r is not None and active_avg_r is not None and abs(tactical_avg_r - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
-        out_fills["tactical_avg_buy_px"] = tactical_avg_r
-    elif swing_subcycle_avg_px is not None and active_avg_r is not None and abs(swing_subcycle_avg_px - active_avg_r) / max(active_avg_r, 1e-12) >= 0.001:
-        out_fills["tactical_avg_buy_px"] = swing_subcycle_avg_px
-    if last_mod:
-        out_fills["last_action_module"] = last_mod
-    if last_rule:
-        out_fills["last_action_rule"] = last_rule
-    if last_tag and last_tag != last_act:
-        out_fills["last_action_actor_tag"] = last_tag
-    return out_fills
-
-
-_WINDOW_TREND_SPECS: Tuple[Tuple[str, str, str, str], ...] = (
-    ("90", "slope_90s", "trend_90s", "growth_90s"),
-    ("222", "slope_3_7m", "trend_3_7m", "growth_3_7m"),
-    ("900", "slope_15m", "trend_15m", "growth_15m"),
-    ("9000", "slope_2_5h", "trend_2_5h", "growth_2_5h"),
-)
-
-
-def apply_short_trend_item(
-    entry: Dict[str, Any],
-    tinfo: Dict[str, Any],
-    *,
-    fallback_price: Any = None,
-    require_any_slope: bool = False,
-    allow_price_update: bool = True,
-) -> bool:
-    """Populate short/dynamic trend slopes (90s, 3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
-    dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
-    wins = {wk: (dyn.get(wk) if isinstance(dyn.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
-    if wins["222"].get("slope_full") is None:
-        wins["222"] = tinfo if tinfo.get("slope_full") is not None else (wins["90"] if wins["90"].get("slope_full") is not None else wins["222"])
-    if require_any_slope and not any(x.get("slope_full") is not None for x in (wins["222"], wins["900"], wins["9000"], tinfo)):
-        return False
-    cur_px = safe_pos_float(fallback_price, default=None) or safe_pos_float(tinfo.get("current_price"), default=None)
-    if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
-        entry["price"] = cur_px
-    trend = tinfo.get("final_trend", entry.get("trend", 0))
-    entry["trend"] = trend
-    entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
-    entry["slope_full"] = tinfo.get("slope_full", 0.0)
-    entry["gradient_recent"] = tinfo.get("gradient_recent", 0.0)
-    for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
-        if not require_any_slope or tinfo.get(k) is not None:
-            entry[k] = tinfo.get(k)
-    if not require_any_slope:
-        entry["trend_fast"] = tinfo.get("trend_fast", trend)
-    t_vol, t_re = safe_pos_float(tinfo.get("vol_1h_pct"), default=None), safe_pos_float(tinfo.get("adapt_reentry_pct"), default=None)
-    if t_vol is None or (t_re is not None and abs(t_re - 2.0 * t_vol) <= 0.05):
-        for ak in ("adapt_reentry_pct", "adapt_dca_pct"):
-            if tinfo.get(ak) is not None:
-                entry[ak] = tinfo[ak]
-    for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
-        w_dict = wins[wk]
-        is_90 = wk == "90"
-        if w_dict.get("slope_full") is not None or (require_any_slope and not is_90):
-            entry[s_key] = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
-            entry[t_key] = w_dict.get("final_trend", trend)
-        if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
-    return True
-
-
-def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fallback_price: Any = None) -> None:
-    """Overlay fresh 1-second sampled dynamic windows (90s, 3.7m, 15m, 2.5h) from `cachedb/24trend/live_<SYM>.json`."""
-    wins = {wk: (lt_win.get(wk) if isinstance(lt_win.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
-    w90, w222, w900 = wins["90"], wins["222"] or wins["90"], wins["900"]
-    wins["222"] = w222
-    live_px = (
-        safe_pos_float(fallback_price, default=None)
-        or safe_pos_float(w222.get("current_price"), default=None)
-        or safe_pos_float(w900.get("current_price"), default=None)
-    )
-    if entry.get("price") is None and live_px is not None:
-        entry["price"] = live_px
-    entry.setdefault("trend", w222.get("final_trend", 0))
-    entry.setdefault("growth_coefficient", w222.get("growth_coefficient", 0.0))
-    if entry.get("gradient_recent") is None and w222.get("gradient_recent") is not None:
-        entry["gradient_recent"] = w222.get("gradient_recent")
-    if entry.get("gradient_recent_fast") is None:
-        if (gf_live := w90.get("gradient_recent_fast") or w222.get("gradient_recent_fast") or w90.get("gradient_recent")) is not None:
-            entry["gradient_recent_fast"] = gf_live
-    if entry.get("epsilon") is None and (eps_live := w222.get("epsilon") or w90.get("epsilon")) is not None:
-        entry["epsilon"] = eps_live
-    for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
-        w_dict = wins[wk]
-        if not w_dict:
-            continue
-        if wk != "90":
-            entry[s_key] = w_dict.get("slope_full", entry.get(s_key, 0.0))
-            entry[t_key] = w_dict.get("final_trend", entry.get(t_key, 0))
-        else:
-            if w_dict.get("slope_full") is not None:
-                entry[s_key] = w_dict.get("slope_full")
-            if w_dict.get("final_trend") is not None:
-                entry[t_key] = w_dict.get("final_trend")
-        if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
-
-
-def compute_swing_wave_metrics(
-    series_or_vals: list[Any], *, reversal_pct: float = 3.0, decimals: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Extract raw ZigZag swing waves (>=3% reversals), active swing low/high, and rally/pullback % from a price series."""
-    if not isinstance(series_or_vals, list) or len(series_or_vals) < 2:
-        return {}
-    vals = [
-        v for item in series_or_vals
-        if (v := safe_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, 0.0)) > 0.0
-    ]
-    if len(vals) < 2:
-        return {}
-
-    cur_v, thr = vals[-1], max(0.5, float(reversal_pct)) / 100.0
-    pivots: list[Tuple[str, int, float]] = []
-    direction, hi_px, hi_idx, lo_px, lo_idx = 0, vals[0], 0, vals[0], 0
-
-    for idx, v in enumerate(vals[1:], start=1):
-        if direction == 0:
-            if v > hi_px:
-                hi_px, hi_idx = v, idx
-            if v < lo_px:
-                lo_px, lo_idx = v, idx
-            if lo_px > 0 and (v - lo_px) / lo_px >= thr and lo_idx < idx:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction, hi_px, hi_idx = 1, v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr and hi_idx < idx:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction, lo_px, lo_idx = -1, v, idx
-        elif direction == 1:
-            if v >= hi_px:
-                hi_px, hi_idx = v, idx
-            elif hi_px > 0 and (hi_px - v) / hi_px >= thr:
-                pivots.append(("HIGH", hi_idx, hi_px))
-                direction, lo_px, lo_idx = -1, v, idx
-        else:
-            if v <= lo_px:
-                lo_px, lo_idx = v, idx
-            elif lo_px > 0 and (v - lo_px) / lo_px >= thr:
-                pivots.append(("LOW", lo_idx, lo_px))
-                direction, hi_px, hi_idx = 1, v, idx
-
-    chain: list[Tuple[str, int, float]] = list(pivots)
-    if direction == 1 and chain and chain[-1][2] > 0 and (hi_px - chain[-1][2]) / chain[-1][2] >= thr:
-        chain.append(("HIGH", hi_idx, hi_px))
-    elif direction == -1 and chain and chain[-1][2] > 0 and (chain[-1][2] - lo_px) / chain[-1][2] >= thr:
-        chain.append(("LOW", lo_idx, lo_px))
-
-    swing_legs_pct = [round(((p1[2] - p0[2]) / p0[2]) * 100.0, 2) for p0, p1 in zip(chain, chain[1:]) if p0[2] > 0]
-    major_low_px: Optional[float] = None
-    if direction == 1 and pivots:
-        swing_low_px, swing_high_px = pivots[-1][2], max(hi_px, cur_v)
-        if len(pivots) >= 3 and pivots[-3][0] == "LOW" and pivots[-3][2] < swing_low_px:
-            major_low_px = pivots[-3][2]
-    elif direction == -1 and pivots:
-        swing_high_px, swing_low_px = pivots[-1][2], min(lo_px, cur_v)
-        if len(pivots) >= 2 and pivots[-2][0] == "LOW" and pivots[-2][2] < swing_low_px:
-            major_low_px = pivots[-2][2]
-    else:
-        swing_low_px, swing_high_px = min(vals), max(vals)
-
-    rally_pct = round(((cur_v / swing_low_px) - 1.0) * 100.0, 2) if swing_low_px > 0 else 0.0
-    pullback_pct = round(((cur_v / swing_high_px) - 1.0) * 100.0, 2) if swing_high_px > 0 else 0.0
-    major_rally_pct = round(((cur_v / major_low_px) - 1.0) * 100.0, 2) if major_low_px and major_low_px > 0 else None
-    eff_dec = decimals if decimals is not None else 6
-    out: Dict[str, Any] = {
-        "swing_low_px": round(swing_low_px, eff_dec),
-        "swing_high_px": round(swing_high_px, eff_dec),
-        "rally_from_swing_low_pct": rally_pct,
-        "pullback_from_swing_high_pct": pullback_pct,
-    }
-    if major_rally_pct is not None and major_low_px is not None and major_rally_pct > rally_pct:
-        out["major_swing_low_px"] = round(major_low_px, eff_dec)
-        out["rally_from_major_low_pct"] = major_rally_pct
-    if swing_legs_pct:
-        out["recent_swings_7d"] = [f"{x:+.1f}%" for x in swing_legs_pct[-5:]]
-        out["avg_swing_amp_7d_pct"] = round(sum(abs(x) for x in swing_legs_pct) / len(swing_legs_pct), 2)
-    return out
-
-
-def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) -> Dict[str, Any]:
-    """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
-    if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
-        return {}
-    eff_dec = decimals if decimals is not None else 6
-    cur_v = vals[-1]
-    return {
-        "chg_7d_pct": round(((cur_v - vals[0]) / vals[0]) * 100.0, 2),
-        **_compute_horizon_range_dict(cur_v, round(min(vals), eff_dec), round(max(vals), eff_dec), "7d"),
-        **compute_swing_wave_metrics(vals, decimals=eff_dec),
-    }
-
-
 def _first_variant_dict(mapping: Any, variants: Any, default: Any = None) -> Any:
     """Return the first dict entry in `mapping` matching any candidate key in `variants` (case-insensitive)."""
     if not isinstance(mapping, dict):
@@ -1179,7 +417,6 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
     a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
     if minfo.get("spot_cvd_15m_usd") is None and (b_depth + a_depth) > 0.0:
-        # Estimate Spot Orderbook Pressure / Spot CVD proxy from L2 depth imbalance + realized price velocity vs perp flow
         ob_net_depth = b_depth - a_depth
         vel_adj = (b_depth + a_depth) * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
         minfo["spot_cvd_15m_usd"] = round(ob_net_depth * 0.35 + vel_adj, 0)
@@ -1253,8 +490,6 @@ def compute_liquidation_clusters(
     if oi_usd <= 0.0:
         return {}
 
-    # De-bias crypto's structural whale_long_pct baseline (~58%-62% long bias) so short_liq vs long_liq pools
-    # reflect true marginal positioning skew rather than a permanent 2.5x downside bias.
     raw_long_pct = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percentage=True)
     if raw_long_pct is not None:
         raw_ls = min(0.85, max(0.15, float(raw_long_pct)))
@@ -1272,12 +507,12 @@ def compute_liquidation_clusters(
     long_near_raw = _blend_structural_liq_anchor(
         cur_px, cur_px * (1.0 - near_band_pct / 100.0),
         ((p_dict.get("val_px"), 0.995), (p_dict.get("low_24h"), 0.996), (minfo.get("bid_wall_px"), 0.997)),
-        is_short=False, min_dist=0.012, max_dist=0.065, bound_px=cur_px * (1.0 - 0.012),
+        is_short=False, min_dist=0.0045, max_dist=0.065, bound_px=cur_px * (1.0 - 0.0045),
     )
     short_near_raw = _blend_structural_liq_anchor(
         cur_px, cur_px * (1.0 + near_band_pct / 100.0),
         ((p_dict.get("vah_px"), 1.005), (p_dict.get("high_24h"), 1.004), (minfo.get("ask_wall_px"), 1.003)),
-        is_short=True, min_dist=0.012, max_dist=0.065, bound_px=cur_px * (1.0 + 0.012),
+        is_short=True, min_dist=0.0045, max_dist=0.065, bound_px=cur_px * (1.0 + 0.0045),
     )
     long_deep_raw = _blend_structural_liq_anchor(
         cur_px, min(cur_px * (1.0 - deep_band_pct / 100.0), long_near_raw * 0.978),
@@ -1303,14 +538,16 @@ def compute_liquidation_clusters(
     short_liq_deep_usd = round(oi_usd * eff_short_share * 0.024 * oi_heat_mult, 0)
 
     long_liq_dist_pct, short_liq_dist_pct, long_liq_deep_dist_pct, short_liq_deep_dist_pct = (
-        round(((px_v - cur_px) / cur_px) * 100.0, 2)
+        pct_delta(px_v, cur_px)
         for px_v in (long_liq_px, short_liq_px, long_liq_deep_px, short_liq_deep_px)
     )
-    # Inverse-square distance weighting (1 / dist_pct^2) + Kalman/velocity & orderflow momentum tilt
     short_dist_sq = max(0.35, abs(short_liq_dist_pct)) ** 2
     long_dist_sq = max(0.35, abs(long_liq_dist_pct)) ** 2
     kalman_vel = safe_float(
-        p_dict.get("gradient_recent_fast", p_dict.get("slope_15m", p_dict.get("slope_3_7m"))),
+        p_dict.get(
+            "kalman_vel",
+            p_dict.get("gradient_recent_fast", p_dict.get("slope_15m", p_dict.get("slope_3_7m"))),
+        ),
         default=0.0,
     ) or 0.0
     chg_15m_v = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
@@ -1338,3 +575,29 @@ def compute_liquidation_clusters(
         "liq_magnet_bias": liq_magnet_bias,
     }
 
+
+__all__ = [
+    "_MICRO_PRICE_ANCHOR_KEYS",
+    "_WINDOW_TREND_SPECS",
+    "_auto_px_decimals",
+    "_build_vp_position_dict",
+    "_compute_horizon_range_dict",
+    "_first_variant_dict",
+    "_parse_ts_px_row",
+    "_prices_diverged",
+    "apply_live_24trend_windows",
+    "apply_short_trend_item",
+    "compute_24h_price_metrics",
+    "compute_7d_range_metrics",
+    "compute_cross_btc_metrics",
+    "compute_liquidation_clusters",
+    "compute_swing_wave_metrics",
+    "compute_volume_profile_metrics",
+    "enrich_microstructure_cvd",
+    "extract_symbol_recent_fills",
+    "load_symbol_microstructure",
+    "load_symbol_price_series",
+    "pct_delta",
+    "range_position_pct",
+    "round_opt_px",
+]
