@@ -17,6 +17,7 @@ from providers.strategy_executor import (
     OrderStatus,
     PairPrecision,
     ProviderError,
+    SubmissionRefused,
     StrategyExecutor,
 )
 from providers.t212_provider import T212Provider
@@ -38,9 +39,13 @@ class FakeT212Client:
             "filledValue": 48.0,
         }
         self.cancel_result = True
+        self.active_orders_result = []
 
     def get_portfolio(self):
         return self.portfolio_result
+
+    def list_active_orders(self):
+        return self.active_orders_result
 
     def place_limit_order(self, ticker, quantity, limit_price, validity="DAY"):
         self.calls.append(("limit", ticker, quantity, limit_price, validity))
@@ -220,6 +225,66 @@ class T212ExecutorContractTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ProviderError, "still open"):
             self.provider.cancel_order("NVDA_US_EQ", "712")
+
+    def test_free_balance_deducts_active_sell_orders(self):
+        self.fake.portfolio_result = [{
+            "ticker": "RGNT_US_EQ",
+            "quantity": 90.23,
+            "averagePrice": 1.20,
+            "currentPrice": 1.38,
+        }]
+        # 1. No active orders: full position is available
+        self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 90.23)
+
+        # 2. Active sell order committed on exchange: deducted from free balance
+        self.fake.active_orders_result = [{
+            "id": 59857476538,
+            "ticker": "RGNT_US_EQ",
+            "quantity": -72.46,
+            "filledQuantity": 0.0,
+            "side": "SELL",
+            "status": "NEW",
+        }]
+        self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 17.77)
+
+        # 3. Partially executed sell order: only unfilled remaining qty is deducted
+        self.fake.active_orders_result[0]["filledQuantity"] = -20.0
+        self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 37.77)
+
+        # 4. Unrelated active BUY order on same ticker: doesn't deduct stock balance
+        self.fake.active_orders_result.append({
+            "id": 59857476539,
+            "ticker": "RGNT_US_EQ",
+            "quantity": 10.0,
+            "filledQuantity": 0.0,
+            "side": "BUY",
+            "status": "NEW",
+        })
+        self.assertEqual(self.provider.free_balance("RGNT_US_EQ"), 37.77)
+
+    def test_place_order_raises_submission_refused_on_definitive_error(self):
+        # 400 Bad Request (e.g. InsufficientQuantity) is a definitive rejection
+        self.fake.portfolio_result = [{"ticker": "RGNT_US_EQ", "quantity": 100.0, "averagePrice": 1.20, "currentPrice": 1.38}]
+        self.fake.place_result = (400, {"code": "InsufficientQuantity", "message": "Not enough shares"})
+        with self.assertRaises(SubmissionRefused) as ctx:
+            self.provider.place_order("RGNT_US_EQ", "SELL", 1.38, 72.46)
+        self.assertIn("HTTP 400", str(ctx.exception))
+
+        # Instrument integration verification: definitive rejection marks state as 'refused'
+        from instrument import Instrument
+        from providers.market_api import MarketApi
+        import order_guard
+        inst = Instrument("RGNT", "RGNT_US_EQ", "t212", api=MarketApi([self.provider]))
+        outcome = {}
+        with mock.patch.object(order_guard, "daily_limit_guard", return_value=(True, None)), \
+             mock.patch("instrument.trade_cooldown.trade_slot"):
+            placed = inst.place(
+                "SELL", 1.38, 72.46, smart=False, wait_for_trend=False,
+                caller_owns_retry=True, _outcome_context=outcome,
+            )
+        self.assertIsNone(placed)
+        self.assertEqual(outcome.get("state"), "refused")
+        self.assertIn("HTTP 400", str(outcome.get("reason") or ""))
 
 
 class T212ClientTransportTest(unittest.TestCase):

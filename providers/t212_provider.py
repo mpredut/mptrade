@@ -242,7 +242,19 @@ class T212Provider(MarketDataProvider):
             return None
         if not p:
             return 0.0
-        return safe_nonneg_float(p.get("quantity", 0.0), default=None)
+        total_qty = safe_nonneg_float(p.get("quantity", 0.0), default=None)
+        if total_qty is None:
+            return None
+        open_sell_qty = 0.0
+        try:
+            for o in self.open_orders(asset):
+                if o.get("side") == "SELL":
+                    orig = safe_float(o.get("origQty"), default=0.0) or 0.0
+                    exec_q = safe_float(o.get("executedQty"), default=0.0) or 0.0
+                    open_sell_qty += max(0.0, orig - exec_q)
+        except Exception as e:
+            print(f"[T212] balance {asset} open_orders check: {e}")
+        return max(0.0, round(total_qty - open_sell_qty, 6))
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         """Represent the portfolio position as one synthetic average-price buy."""
@@ -332,6 +344,9 @@ class T212Provider(MarketDataProvider):
             status, data = self._send_order(
                 symbol, side, qty, price, market=is_market)
             if status not in (200, 201):
+                print(f"[T212] place_order {symbol} failed (HTTP {status}): {data}")
+                if _definitive_submit_failure(status, data):
+                    raise SubmissionRefused(f"T212 HTTP {status}: {data}")
                 return None
             # Instrument.place uses the common orderId key for cooldown. Preserve
             # T212's native id while exposing the mechanical alias on a copied payload.
@@ -340,6 +355,8 @@ class T212Provider(MarketDataProvider):
                 data = dict(data)
                 data["orderId"] = oid
             return data
+        except SubmissionRefused:
+            raise
         except Exception as e:  # noqa: BLE001
             print(f"[T212] place_order {symbol}: {e}")
             return None
