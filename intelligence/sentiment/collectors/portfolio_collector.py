@@ -525,7 +525,8 @@ def harvest_tradable_positions_and_orders(
     def _query_free_bal(inst_obj: Any, asset: str) -> Optional[float]:
         if not asset:
             return None
-        v_name = str(getattr(inst_obj, "provider_name", "")).lower()
+        raw_v = str(getattr(inst_obj, "provider_name", "") or "").strip().lower()
+        v_name = normalize_venue_name(raw_v) or raw_v
         key = (v_name, asset.upper())
         if key in balance_memo:
             return balance_memo[key]
@@ -537,10 +538,13 @@ def harvest_tradable_positions_and_orders(
             except Exception:
                 val_f = None
         bkey = f"{v_name}:{asset.upper()}"
+        raw_bkey = f"{raw_v}:{asset.upper()}"
         if val_f is not None:
             updated_bals[bkey] = round(val_f, 8)
         elif bkey in cached_bals:
             val_f = safe_nonneg_float(cached_bals.get(bkey), default=None)
+        elif raw_bkey in cached_bals:
+            val_f = safe_nonneg_float(cached_bals.get(raw_bkey), default=None)
         balance_memo[key] = val_f
         return val_f
 

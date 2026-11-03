@@ -413,7 +413,11 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     is_buy_side = side == "BUY"
     effective_scale = scale if is_buy_side else None
     if effective_scale is None and regime_context is not None and is_buy_side:
-        effective_scale = getattr(regime_context, "suggested_scale", None)
+        effective_scale = (
+            regime_context.get("suggested_scale")
+            if isinstance(regime_context, dict)
+            else getattr(regime_context, "suggested_scale", None)
+        )
 
     eff_scale_f = safe_float(effective_scale, default=None)
 

@@ -167,6 +167,41 @@ class RuntimeImportSafetyTest(unittest.TestCase):
         self.assertNotIn("\n", str(ctx.exception))
         self.assertNotIn("\r", str(ctx.exception))
 
+    def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
+        from unittest.mock import MagicMock, patch
+        from binance_api import bapi_client
+        from keys import apikeys
+
+        init_kwargs = {}
+        events = []
+
+        class _FakeSdkClient:
+            def __init__(self, api_key, api_secret, **kwargs):
+                init_kwargs.update(kwargs)
+                self.session = MagicMock()
+                self.REQUEST_RECVWINDOW = None
+                self.timestamp_offset = 0
+
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                return {"ok": True}
+
+            def get_server_time(self):
+                events.append(("get_server_time", getattr(self, "_recvwindow_retry_installed", False)))
+                return {"serverTime": 1_700_000_005_000}
+
+        with (
+            patch.object(bapi_client, "_client", None),
+            patch.object(bapi_client, "Client", _FakeSdkClient),
+            patch.object(bapi_client, "_start_periodic_resync"),
+            patch.object(apikeys, "api_key", "k"),
+            patch.object(apikeys, "api_secret", "s"),
+        ):
+            cl = bapi_client.getClient()
+
+        self.assertIs(init_kwargs.get("ping"), False)
+        self.assertEqual(events, [("get_server_time", True)])
+        self.assertEqual(cl.REQUEST_RECVWINDOW, bapi_client.REQUEST_RECVWINDOW_MS)
+
 
 if __name__ == "__main__":
     unittest.main()

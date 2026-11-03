@@ -1356,6 +1356,20 @@ def _record_context_suggested_scale(
     """Update `_suggested_scale_by_side` and (for BUY) `suggested_scale` on `regime_context`."""
     if regime_context is None:
         return
+    if isinstance(regime_context, dict):
+        scales_by_side = regime_context.get("_suggested_scale_by_side")
+        if not isinstance(scales_by_side, dict):
+            scales_by_side = {}
+        curr_side = scales_by_side.get(side)
+        if not only_if_smaller or curr_side is None or scale < curr_side:
+            scales_by_side[side] = scale
+        regime_context["_suggested_scale_by_side"] = scales_by_side
+        if side == "BUY":
+            curr = regime_context.get("suggested_scale")
+            if not only_if_smaller or curr is None or scale < curr:
+                regime_context["suggested_scale"] = scale
+                regime_context[reason_attr] = reason
+        return
     try:
         scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
         if not isinstance(scales_by_side, dict):

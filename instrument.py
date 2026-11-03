@@ -174,7 +174,12 @@ class Instrument:
         if regime_context is None or isinstance(qty, bool) or side_u != "BUY":
             return qty, applied_scale, None
         qty_f = safe_pos_float(qty, default=None)
-        scale_f = safe_pos_float(getattr(regime_context, "suggested_scale", None), default=None)
+        raw_scale = (
+            regime_context.get("suggested_scale")
+            if isinstance(regime_context, dict)
+            else getattr(regime_context, "suggested_scale", None)
+        )
+        scale_f = safe_pos_float(raw_scale, default=None)
         app_f = 1.0 if isinstance(applied_scale, bool) else safe_pos_float(applied_scale, default=None)
         if qty_f is None or scale_f is None or app_f is None or not (0.0 < scale_f < app_f):
             return qty, applied_scale, None
@@ -688,12 +693,23 @@ class Instrument:
                     ):
                         reason = "profit_guard"
                         return None
+                    pre_final_qty = qty
                     qty, applied_scale, refusal = self._apply_late_intelligence_scale(
                         qty, final_market_price, is_market, enforce_business_minimum,
                         regime_context, applied_scale, side_u=side_u)
                     if refusal:
                         reason = refusal
                         return None
+                    if (
+                        qty != pre_final_qty
+                        and requires_permit
+                        and not caller_supplied_cache_permit
+                        and callable(preflight_order)
+                    ):
+                        cache_permit = preflight_order(
+                            self.symbol, side_u, qty, price, market=is_market, kind=order_kind)
+                        if cache_permit is None:
+                            raise SubmissionRefused("account_cache_not_fresh")
                     if prequeued_claim is not None:
                         prequeued_claim = self._sync_claimed_qty(prequeued_claim, qty, applied_scale)
                         if prequeued_intent_id and applied_scale < 1.0:

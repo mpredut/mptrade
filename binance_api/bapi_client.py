@@ -172,7 +172,15 @@ def getClient():
             from keys.apikeys import api_key, api_secret
             if not api_key or not api_secret:
                 raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
-            cl = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
+            try:
+                cl = Client(
+                    api_key,
+                    api_secret,
+                    requests_params={"timeout": REQUEST_TIMEOUT_SEC},
+                    ping=False,
+                )
+            except TypeError:
+                cl = Client(api_key, api_secret, requests_params={"timeout": REQUEST_TIMEOUT_SEC})
             cl.REQUEST_RECVWINDOW = REQUEST_RECVWINDOW_MS
             _install_retry(cl)             # Retry transient GET failures, never POST/order placement.
             _install_recvwindow_retry(cl)  # Re-sync and re-sign once on -1021 recvWindow rejection.
