@@ -1035,7 +1035,14 @@ def format_supervisor_ntfy_notification(
     """Build (title, body, priority, target_topic, is_any_error) for a SupervisorAuditReport ntfy push."""
     from orchestratorOS.agy.topics import TOPIC_ALIASES, TOPIC_SPECS, topic_spec
 
-    issues_cnt = sum(1 for i in (obj_attr(report, "diagnosed_issues") or []) if isinstance(i, dict) and str(i.get("category") or "").strip().upper() != "HEALTHY")
+    non_healthy_issues = [
+        i
+        for i in (obj_attr(report, "diagnosed_issues") or [])
+        if isinstance(i, dict)
+        and str(i.get("category") or "").strip().upper() not in ("HEALTHY", "GUARD_VETO")
+        and str(i.get("severity") or "").strip().upper() != "INFO"
+    ]
+    issues_cnt = len(non_healthy_issues)
     actions_cnt = sum(1 for a in (obj_attr(report, "venue_actions") or []) if isinstance(a, dict) and str(a.get("action") or "NONE").strip().upper() != "NONE")
     code_rem = obj_attr(report, "code_remediation")
     has_fix = bool(isinstance(code_rem, dict) and _parse_bool_flag(code_rem.get("has_fix", False), False))
@@ -1053,11 +1060,14 @@ def format_supervisor_ntfy_notification(
     else:
         title, target_topic, priority = f"{spec.ntfy_prefix} Issues: {issues_cnt} | Actions: {actions_cnt}", ntfy_topic_server or ntfy_topic or "ntfy-server-1978", "default"
 
-    body_lines = [
-        f"Mode: {mode_label} · Status: {'Executed' if obj_attr(report, 'actions_executed', False) else 'Simulated/Observed'}",
-        f"{obj_attr(report, 'summary', '')}",
-    ]
-    if (diag_issues := obj_attr(report, "diagnosed_issues")) and isinstance(top_issue := diag_issues[0], dict):
+    body_lines: List[str] = []
+    if actions_cnt > 0 or obj_attr(report, "actions_executed", False):
+        status_label = "Executed" if obj_attr(report, "actions_executed", False) else "Simulated/Observed"
+        body_lines.append(f"Mode: {mode_label} · Status: {status_label}")
+    if summary_str := str(obj_attr(report, "summary", "") or "").strip():
+        body_lines.append(summary_str)
+    if non_healthy_issues:
+        top_issue = non_healthy_issues[0]
         body_lines.append(f"Primary Issue: [{top_issue.get('severity', 'INFO')}] {top_issue.get('description', '')}")
     if has_fix and isinstance(code_rem, dict):
         body_lines.append(f"Code Patch Proposed: {code_rem.get('target_file', 'unknown')} (tests={obj_attr(report, 'tests_passed')})")

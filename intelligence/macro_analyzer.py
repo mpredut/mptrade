@@ -195,8 +195,7 @@ class MacroAnalyzer:
                     icon=icon,
                     headline_suffix=f"{assessment.recommended_brake} ({assessment.threat_level})",
                     body=(
-                        f"Brake: {assessment.recommended_brake} · Threat: {assessment.threat_level} "
-                        f"(Risk: {assessment.risk_score:.2f}, Headlines: {assessment.headlines_analyzed})\n"
+                        f"Risk: {assessment.risk_score:.2f} · Headlines: {assessment.headlines_analyzed}\n"
                         f"{assessment.summary}"
                     ),
                     skip_notify=_parse_bool_flag(getattr(assessment, "is_fallback", False), False),
@@ -247,7 +246,7 @@ class MacroAnalyzer:
                     icon=icon,
                     headline_suffix=f"{assessment.recommended_action} ({assessment.market_bias})",
                     body=(
-                        f"Action: {assessment.recommended_action} · Bias: {assessment.market_bias} (Risk: {assessment.risk_level})\n"
+                        f"Risk: {assessment.risk_level}\n"
                         f"{assessment.summary}"
                     ),
                 )

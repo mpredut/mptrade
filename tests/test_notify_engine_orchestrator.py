@@ -715,5 +715,81 @@ class TestNotifyEngineOrchestrator(unittest.TestCase):
         self.assertEqual(sensors["geopolitical_threat"]["threat_level"], "ELEVATED")
         self.assertEqual(sensors["geopolitical_threat"]["risk_score"], 0.65)
 
+    def test_bulk_synthesis_strips_redundant_headers_and_preserves_full_summary(self):
+        from notify_engine.alertnotifiers import synthesize_bulk_notifications
+        from orchestratorOS.lib.technical_repair_ssot import format_supervisor_ntfy_notification
+        from orchestratorOS.supervisor.autonomous_ai_reconciler import SupervisorAuditReport
+
+        report = SupervisorAuditReport(
+            ts=1793669701.0,
+            mode="enforce",
+            summary=(
+                "All 19/19 fleet processes and heartbeats are fresh, Linux OS resources (CPU load 0.45, "
+                "RAM 50.0%, Disk 68.1%) and wgpia0 VPN/DNS connectivity are healthy, all configuration "
+                "files are valid, and zero persistent errors remain unresolved at log tails."
+            ),
+            diagnosed_issues=[
+                {
+                    "severity": "LOW",
+                    "category": "NETWORK_ERROR",
+                    "description": "Transient Binance CloudFront HTML error response at 02:00:10 (already self-recovered).",
+                },
+                {
+                    "severity": "INFO",
+                    "category": "GUARD_VETO",
+                    "description": "17 guard enforcement and shadow test logs recorded.",
+                },
+                {
+                    "severity": "INFO",
+                    "category": "HEALTHY",
+                    "description": "19/19 fleet processes active with fresh heartbeats.",
+                },
+            ],
+            venue_actions=[{"action": "NONE", "venue": "system", "symbol": "SYSTEM"}],
+            code_remediation={"has_fix": False},
+            actions_executed=False,
+        )
+        rep_title, rep_body, rep_prio, rep_topic, _ = format_supervisor_ntfy_notification(
+            report,
+            "auto_technical_repair",
+            "ntfy-error-1978",
+            "ntfy-server-1978",
+            "ntfy-server-1978",
+        )
+        self.assertEqual(rep_title, "🛠 [auto_technical_repair] Issues: 1 | Actions: 0")
+        self.assertNotIn("Simulated/Observed", rep_body)
+        self.assertIn("Primary Issue: [LOW] Transient Binance CloudFront", rep_body)
+
+        bulk_title, bulk_body, _, _ = synthesize_bulk_notifications([
+            {
+                "title": "🔴 [auto_macro_sentiment] DEFENSIVE (BEARISH)",
+                "body": (
+                    "Action: DEFENSIVE · Bias: BEARISH (Risk: HIGH)\n"
+                    "During the Asian overnight session (03:31 EET), BTCUSDC entered an 'aggressive_shorting' "
+                    "regime as 1h open interest expanded +0.82% to $7.66B alongside heavy taker selling "
+                    "($82.11M sell vs. $48.70M buy, ratio 0.593) and deepening BEARISH_BREADTH."
+                ),
+                "priority": "high",
+                "topic": "ntfy-macro-1978",
+                "count": 1,
+            },
+            {
+                "title": rep_title,
+                "body": rep_body,
+                "priority": rep_prio,
+                "topic": rep_topic,
+                "count": 1,
+            },
+        ])
+        self.assertTrue(bulk_title.startswith("📦 Bulk (2):"))
+        self.assertNotIn("Action: DEFENSIVE · Bias: BEARISH", bulk_body)
+        self.assertNotIn("Simulated/Observed", bulk_body)
+        self.assertIn("[Risk: HIGH] During the Asian overnight session", bulk_body)
+        self.assertIn("deepening BEARISH_BREADTH.", bulk_body)
+        self.assertIn("all configuration files are valid", bulk_body)
+        self.assertIn("Primary Issue: [LOW] Transient Binance CloudFront", bulk_body)
+        self.assertIn("\n\n2. 🛠 [auto_technical_repair]", bulk_body)
+
+
 
 

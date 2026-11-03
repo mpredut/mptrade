@@ -186,14 +186,44 @@ def _normalize_alert_title_for_identity(name: str) -> str:
     return norm
 
 
-def _strip_log_tails_and_compact(body: str) -> str:
-    """Strip verbose 'Last logs:' tails and return a compact 1-2 line summary."""
+_REDUNDANT_BULK_LINE_RE = re.compile(
+    r"^(?:Mode:\s*\S+\s*·\s*Status:\s*Simulated/Observed"
+    r"|Action:\s*[^·]+·\s*Bias:\s*[^(]+\(([^)]+)\)"
+    r"|Brake:\s*[^·]+·\s*Threat:\s*[^(]+\(([^)]+)\)"
+    r"|Risk:\s*(.+))$",
+    flags=re.IGNORECASE,
+)
+
+
+def _strip_log_tails_and_compact(body: str, max_chars: int = 900) -> str:
+    """Strip verbose 'Last logs:' tails, redundant metadata headers, and return a clean summary."""
     cleaned = re.sub(r"(?is)\n*\s*last logs:.*", "", str(body or "")).strip()
-    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-    if not lines:
+    raw_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    if not raw_lines:
         return ""
-    summary = " | ".join(lines[:2])
-    return summary[:220] + ("..." if len(summary) > 220 else "")
+    lines: list[str] = []
+    prefix_tag = ""
+    for idx, ln in enumerate(raw_lines):
+        if idx == 0:
+            m = _REDUNDANT_BULK_LINE_RE.match(ln)
+            if m:
+                inner = (m.group(1) or m.group(2) or "").strip()
+                risk_only = (m.group(3) or "").strip()
+                if inner:
+                    prefix_tag = f"[{inner}]"
+                elif risk_only:
+                    prefix_tag = f"[Risk: {risk_only}]"
+                continue
+        lines.append(ln)
+    if not lines:
+        return prefix_tag or raw_lines[0]
+    summary = " | ".join(lines[:4])
+    if prefix_tag:
+        summary = f"{prefix_tag} {summary}"
+    if len(summary) > max_chars:
+        cut = summary[:max_chars].rsplit(" ", 1)[0]
+        summary = (cut if len(cut) >= max_chars // 2 else summary[:max_chars]) + "..."
+    return summary
 
 
 def _normalize_text_for_similarity(text: str) -> str:
@@ -298,7 +328,7 @@ def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str
     if len(joined_titles) > 90:
         joined_titles = joined_titles[:87] + "..."
     bulk_title = f"📦 Bulk ({len(items)}): {joined_titles}"
-    bulk_body = "\n".join(body_lines)
+    bulk_body = "\n\n".join(body_lines)
     return (bulk_title, bulk_body, best_priority, best_topic)
 
 
