@@ -880,29 +880,15 @@ def touch_heartbeat_file(
     if not force_flag and now_m - last_ts < interval_sec:
         return last_ts
     try:
+        from state_io import atomic_write_json
         hb_path = str(path)
-        hb_dir = os.path.dirname(hb_path)
-        if hb_dir:
-            os.makedirs(hb_dir, exist_ok=True)
         payload = build_heartbeat_payload(
             status,
             symbols=symbols,
             intervals=intervals if intervals is not None else {"heartbeat": interval_sec},
             extra=extra,
         )
-        tmp_path = f"{hb_path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-            os.replace(tmp_path, hb_path)
-        except OSError:
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except OSError:
-                pass
-            with open(hb_path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
+        atomic_write_json(hb_path, payload)
         os.utime(hb_path, None)
     except OSError:
         return last_ts
