@@ -1259,6 +1259,135 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert snap_bat.headlines[0].is_high_severity is False
         assert snap_bat.headlines[0].matched_keywords == ()
 
+        # Syndicated wire headlines across multiple local stations (- WSOC TV, - WKMG, - KSAT) and
+        # cross-feed duplicates ("Title - BBC" vs "Title") must deduplicate to a single headline,
+        # prefer the clean un-suffixed title, and not self-promote reporting bigrams.
+        syndicated_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Google News</title>
+  <item>
+    <title>US has conducted defensive strikes on some Iranian targets in the Strait of Hormuz, US official says - WSOC TV</title>
+    <link>https://news.google.com/rss/articles/CBMi_wsoc</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>WSOC TV</source>
+  </item>
+  <item>
+    <title>US has conducted defensive strikes on some Iranian targets in the Strait of Hormuz, US official says - WKMG</title>
+    <link>https://news.google.com/rss/articles/CBMi_wkmg</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>WKMG</source>
+  </item>
+  <item>
+    <title>US has conducted defensive strikes on some Iranian targets in the Strait of Hormuz, US official says - KSAT</title>
+    <link>https://news.google.com/rss/articles/CBMi_ksat</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>KSAT</source>
+  </item>
+  <item>
+    <title>Russian bombing kills 26 people at Ukraine aid centre, Kyiv says - BBC</title>
+    <link>https://news.google.com/rss/articles/CBMi_bbc</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC</source>
+  </item>
+  <item>
+    <title>Russian bombing kills 26 people at Ukraine aid centre, Kyiv says</title>
+    <link>https://www.bbc.com/news/articles/c23456</link>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>BBC World</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+
+        snap_synd = NewsFeedCollector.parse_rss_xml(syndicated_xml, now_ts=t0 + 200.0, cache_dir=str(tmp_path))
+        assert snap_synd is not None
+        assert snap_synd.total_fetched == 2
+        assert snap_synd.high_severity_count == 1
+        synd_titles = [h.title for h in snap_synd.headlines]
+        assert "Russian bombing kills 26 people at Ukraine aid centre, Kyiv says" in synd_titles
+        assert "Russian bombing kills 26 people at Ukraine aid centre, Kyiv says - BBC" not in synd_titles
+
+        synd_collector = NewsFeedCollector(
+            history_file=str(tmp_path / "synd_dedup_history.json"),
+            rolling_window_sec=21600.0,
+        )
+        agg_synd = synd_collector._aggregate(snap_synd, now=t0 + 200.0)
+        assert agg_synd.total_fetched == 2
+        assert agg_synd.high_severity_count == 1
+        lex_after_synd = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=t0 + 200.0)["high_severity_terms"]
+        for noise_bg in (
+            "conducts defensive",
+            "conducted defensive",
+            "carries defensive",
+            "iranian targets",
+            "war conducts",
+            "reportedly strikes",
+            "strikes reported",
+            "media strikes",
+        ):
+            assert noise_bg not in lex_after_synd
+
+
+def test_binance_account_stream_dynamic_recv_timeout_and_response_health(monkeypatch):
+    import asyncio
+    from binance_api import bapi_ws
+
+    sent_frames = []
+    recv_timeouts = []
+    healthy_count = 0
+
+    class FakeWS:
+        def __init__(self):
+            self.step = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def send(self, msg):
+            sent_frames.append(json.loads(msg))
+
+        async def recv(self):
+            self.step += 1
+            if self.step == 1:
+                return json.dumps({"id": "login", "status": 200})
+            if self.step == 2:
+                return json.dumps({"id": "sub", "status": 200})
+            stream._stop_event.set()
+            raise asyncio.TimeoutError()
+
+    orig_wait_for = asyncio.wait_for
+
+    async def tracking_wait_for(coro, timeout=None):
+        recv_timeouts.append(timeout)
+        return await orig_wait_for(coro, timeout=timeout)
+
+    monkeypatch.setattr(bapi_ws.websockets, "connect", lambda *a, **kw: FakeWS())
+    monkeypatch.setattr(bapi_ws.asyncio, "wait_for", tracking_wait_for)
+
+    def on_healthy():
+        nonlocal healthy_count
+        healthy_count += 1
+
+    stream = bapi_ws.BinanceAccountStream(
+        on_event=lambda e: None,
+        on_healthy=on_healthy,
+        on_unhealthy=lambda: None,
+        on_available=lambda a: None,
+        keepalive_sec=1800,
+        loss_timeout_sec=40,
+    )
+    stream._signing_key = "dummy_key"
+    monkeypatch.setattr(bapi_ws.u, "_sign_ed25519", lambda k, p: "sig")
+
+    asyncio.run(stream._connect_and_run())
+
+    # recv_timeouts[0] is 10s login timeout; recv_timeouts[1] and [2] are bounded by loss_timeout_sec / 2 (<= 20.0s, not 30.0s)
+    assert recv_timeouts[0] == 10
+    assert all(1.0 <= t <= 20.0 for t in recv_timeouts[1:])
+    # Both initial subscribe and the 200 OK "sub" response mark the stream healthy
+    assert healthy_count >= 2
+
+
 
 
 

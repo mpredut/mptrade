@@ -17,6 +17,7 @@ from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_NEWS_ROLLING_WINDOW_SEC,
+    _strip_headline_publisher_suffix,
     build_dynamic_rss_url,
     canonical_article_url,
     discover_dynamic_terms_from_headlines,
@@ -112,7 +113,43 @@ class NewsFeedCollector:
         return self._aggregated_pool
 
     def _normalize_title(self, title: Any) -> str:
-        return re.sub(r"\s+", " ", title.strip().lower()) if isinstance(title, str) else ""
+        if not isinstance(title, str):
+            return ""
+        return re.sub(r"\s+", " ", _strip_headline_publisher_suffix(title).strip().lower())
+
+    def _merge_same_norm_headlines(
+        self,
+        cand_h: NewsHeadline,
+        cand_ts: float,
+        existing_h: NewsHeadline,
+        existing_ts: float,
+    ) -> Tuple[float, NewsHeadline]:
+        """Merge two headlines with the same normalized title, preferring clean un-suffixed titles and preserving earliest ts."""
+        merged_ts = min(cand_ts, existing_ts)
+        cand_title = getattr(cand_h, "title", "") or ""
+        exist_title = getattr(existing_h, "title", "") or ""
+        cand_clean = bool(cand_title) and _strip_headline_publisher_suffix(cand_title) == cand_title.strip()
+        exist_clean = bool(exist_title) and _strip_headline_publisher_suffix(exist_title) == exist_title.strip()
+        primary, secondary = (cand_h, existing_h) if (cand_clean and not exist_clean) else (existing_h, cand_h)
+        merged_kws = tuple(
+            dict.fromkeys([*(getattr(primary, "matched_keywords", ()) or ()), *(getattr(secondary, "matched_keywords", ()) or ())])
+        )
+        merged_sev = (
+            self._as_bool_flag(getattr(primary, "is_high_severity", False))
+            or self._as_bool_flag(getattr(secondary, "is_high_severity", False))
+            or bool(merged_kws)
+        )
+        return (
+            merged_ts,
+            NewsHeadline(
+                title=primary.title,
+                source=getattr(primary, "source", "") or getattr(secondary, "source", ""),
+                pub_date=getattr(primary, "pub_date", "") or getattr(secondary, "pub_date", ""),
+                url=getattr(primary, "url", "") or getattr(secondary, "url", ""),
+                matched_keywords=merged_kws,
+                is_high_severity=merged_sev,
+            ),
+        )
 
     def _coerce_headline(self, item: Any, default_sev: bool = False) -> Optional[NewsHeadline]:
         if isinstance(item, dict):
@@ -215,7 +252,13 @@ class NewsFeedCollector:
                                     keep_new = False
                                 break
                     if keep_new:
-                        self._aggregated_pool[norm] = (ts, h)
+                        if norm in self._aggregated_pool:
+                            old_ts, old_h = self._aggregated_pool[norm]
+                            merged_ts, merged_h = self._merge_same_norm_headlines(h, ts, old_h, old_ts)
+                            self._aggregated_pool[norm] = (merged_ts, merged_h)
+                            self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
+                        else:
+                            self._aggregated_pool[norm] = (ts, h)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
@@ -334,39 +377,47 @@ class NewsFeedCollector:
             for h in raw_headlines:
                 h_obj = self._coerce_headline(h)
                 norm = self._normalize_title(h_obj.title) if h_obj else ""
-                if h_obj and norm and norm not in self._aggregated_pool:
-                    pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
-                    prev_seen = self._seen_first_ts.get(norm)
-                    eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
-                    if pub_ts is not None and pub_ts < eff_ts:
-                        eff_ts = pub_ts
-                    canon_url = canonical_article_url(h_obj.url)
-                    keep_new = True
-                    if canon_url:
-                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
-                            if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
-                                merged_ts = min(eff_ts, old_ts)
-                                cand_order_ts = now if prev_seen is None else prev_seen
-                                if self._prefer_newer_url_revision(
-                                    h_obj,
-                                    cand_order_ts,
-                                    old_h,
-                                    old_ts,
-                                    now,
-                                    replace_on_tie=(prev_seen is None),
-                                ):
-                                    self._aggregated_pool.pop(old_norm, None)
-                                    eff_ts = merged_ts
-                                else:
-                                    self._aggregated_pool[old_norm] = (merged_ts, old_h)
-                                    self._seen_first_ts[old_norm] = min(
-                                        self._seen_first_ts.get(old_norm, merged_ts), merged_ts
-                                    )
-                                    keep_new = False
-                                break
-                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
-                    if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
-                        self._aggregated_pool[norm] = (eff_ts, h_obj)
+                if not (h_obj and norm):
+                    continue
+                pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
+                prev_seen = self._seen_first_ts.get(norm)
+                eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
+                if pub_ts is not None and pub_ts < eff_ts:
+                    eff_ts = pub_ts
+                if norm in self._aggregated_pool:
+                    old_ts, old_h = self._aggregated_pool[norm]
+                    merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
+                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
+                    if 0.0 <= (now - merged_ts) < self.rolling_window_sec:
+                        self._aggregated_pool[norm] = (merged_ts, merged_h)
+                    continue
+                canon_url = canonical_article_url(h_obj.url)
+                keep_new = True
+                if canon_url:
+                    for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                        if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
+                            merged_ts = min(eff_ts, old_ts)
+                            cand_order_ts = now if prev_seen is None else prev_seen
+                            if self._prefer_newer_url_revision(
+                                h_obj,
+                                cand_order_ts,
+                                old_h,
+                                old_ts,
+                                now,
+                                replace_on_tie=(prev_seen is None),
+                            ):
+                                self._aggregated_pool.pop(old_norm, None)
+                                eff_ts = merged_ts
+                            else:
+                                self._aggregated_pool[old_norm] = (merged_ts, old_h)
+                                self._seen_first_ts[old_norm] = min(
+                                    self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                                )
+                                keep_new = False
+                            break
+                self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
+                if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
+                    self._aggregated_pool[norm] = (eff_ts, h_obj)
 
         cutoff = now - self.rolling_window_sec
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
@@ -479,6 +530,30 @@ class NewsFeedCollector:
             or 0.0 <= (now - pub_ts) < DEFAULT_NEWS_ROLLING_WINDOW_SEC
         ]
         candidate_items = fresh_raw_items if fresh_raw_items else raw_items
+        deduped_candidates: List[Dict[str, str]] = []
+        seen_norms: Dict[str, int] = {}
+        seen_urls: Dict[str, int] = {}
+        for item in candidate_items:
+            norm_t = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(item["title"]).strip().lower())
+            canon_u = canonical_article_url(item["url"])
+            dup_idx = seen_norms.get(norm_t) if norm_t else None
+            if dup_idx is None and canon_u:
+                dup_idx = seen_urls.get(canon_u)
+            if dup_idx is not None:
+                prev_title = deduped_candidates[dup_idx]["title"]
+                if (
+                    _strip_headline_publisher_suffix(item["title"]) == item["title"].strip()
+                    and _strip_headline_publisher_suffix(prev_title) != prev_title.strip()
+                ):
+                    deduped_candidates[dup_idx] = item
+                continue
+            idx = len(deduped_candidates)
+            deduped_candidates.append(item)
+            if norm_t:
+                seen_norms[norm_t] = idx
+            if canon_u:
+                seen_urls[canon_u] = idx
+
         emerging_terms = discover_dynamic_terms_from_headlines(
             fresh_raw_items,
             cache_dir=cache_dir,
@@ -486,7 +561,7 @@ class NewsFeedCollector:
             persist=bool(cache_dir),
         )
         parsed_headlines: List[NewsHeadline] = []
-        for item in candidate_items:
+        for item in deduped_candidates:
             title, lower_title = item["title"], item["title"].lower()
             matched_list = list(match_high_severity_keywords(title, cache_dir=cache_dir, now_ts=now))
             for em_term in emerging_terms:

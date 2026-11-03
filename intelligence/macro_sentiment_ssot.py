@@ -1020,14 +1020,17 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "ahead", "allegedly", "already", "answered", "apps", "arrested", "article",
     "articles", "baseball", "bat", "boy", "brake", "briefing", "bus", "car",
-    "chip", "commentary", "continue", "continues", "debunked", "digested",
-    "downscale", "eight", "elevated", "exceptionally", "explained", "exposes",
-    "false", "features", "five", "four", "history", "horrific", "introduces",
-    "jet", "join", "keyword", "localized", "moderate", "nine", "non", "normal",
-    "noting", "one", "orderly", "plane", "potential", "processed", "progress",
-    "questions", "readiness", "retaining", "say", "seven", "six", "suspected",
-    "ten", "three", "timeline", "train", "trains", "truck", "two", "unpriced",
-    "veto", "volunteer", "worse", "wrap",
+    "carried", "carries", "chip", "commentary", "conduct", "conducted",
+    "conducts", "continue", "continues", "criticize", "criticized", "criticizes",
+    "debunked", "digested", "downscale", "eight", "elevated", "exceptionally",
+    "explained", "exposes", "false", "features", "five", "four", "history",
+    "horrific", "introduces", "involvement", "jet", "join", "keyword", "links",
+    "localized", "media", "moderate", "nine", "non", "normal", "noting",
+    "official", "officials", "one", "orderly", "plane", "potential", "processed",
+    "progress", "questions", "readiness", "record", "reported", "reportedly",
+    "researchers", "retaining", "say", "seven", "six", "suspected", "targets",
+    "ten", "three", "timeline", "trace", "traced", "train", "trains", "truck",
+    "two", "unpriced", "veto", "volunteer", "worse", "wrap",
 })
 
 
@@ -1303,12 +1306,22 @@ def discover_dynamic_terms_from_headlines(
     phrase_counts: Dict[str, int] = {}
 
     phrase_has_direct_stem: Dict[str, bool] = {}
+    seen_norm_titles: Set[str] = set()
+    seen_canon_urls: Set[str] = set()
 
     for h in headlines:
         raw_title = obj_attr(h, "title", "")
         if not isinstance(raw_title, str) or not raw_title.strip():
             continue
         norm_title = re.sub(r"\s+", " ", _strip_headline_publisher_suffix(raw_title).lower()).strip()
+        if not norm_title:
+            continue
+        canon_url = canonical_article_url(obj_attr(h, "url", ""))
+        if norm_title in seen_norm_titles or (canon_url and canon_url in seen_canon_urls):
+            continue
+        seen_norm_titles.add(norm_title)
+        if canon_url:
+            seen_canon_urls.add(canon_url)
         all_words = re.findall(r"[a-zA-Z]{3,}", norm_title)
         word_set = set(all_words)
         eff_stems = set(crisis_stems)
@@ -1323,7 +1336,7 @@ def discover_dynamic_terms_from_headlines(
         if not any(stem_flags):
             continue
         src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
-        article_key = canonical_article_url(obj_attr(h, "url", "")) or norm_title
+        article_key = canon_url or norm_title
         for i in range(len(tokens) - 1):
             if not any(stem_flags[max(0, i - 1) : min(len(tokens), i + 3)]):
                 continue

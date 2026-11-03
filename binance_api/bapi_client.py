@@ -193,10 +193,32 @@ def getClient():
 class _LazyClientProxy:
     """Preserve the ``client.*`` API while constructing the client on first real use."""
     def __getattr__(self, name):
-        return getattr(getClient(), name)
+        try:
+            target = getClient()
+        except ValueError as exc:
+            if hasattr(Client, name):
+                def _deferred_call(*args, **kwargs):
+                    return getattr(getClient(), name)(*args, **kwargs)
+                _deferred_call._is_lazy_client_stub = True
+                return _deferred_call
+            raise AttributeError(str(exc)) from exc
+        return getattr(target, name)
 
     def __setattr__(self, name, value):
-        setattr(getClient(), name, value)
+        if getattr(value, "_is_lazy_client_stub", False):
+            self.__dict__.pop(name, None)
+        elif _client is not None:
+            setattr(_client, name, value)
+        else:
+            object.__setattr__(self, name, value)
+
+    def __delattr__(self, name):
+        if name in self.__dict__:
+            object.__delattr__(self, name)
+        elif _client is not None:
+            delattr(_client, name)
+        else:
+            raise AttributeError(name)
 
 
 client = _LazyClientProxy()

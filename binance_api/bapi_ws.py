@@ -568,12 +568,17 @@ class BinanceAccountStream(BinanceWSBase):
                 if now - last_keepalive >= self.keepalive_sec:
                     await ws.send(self._signed_logon_msg("keepalive"))
                     last_keepalive = now
-                if now - last_ping >= self.loss_timeout_sec / 2:
+                ping_interval = max(1.0, self.loss_timeout_sec / 2.0)
+                if now - last_ping >= ping_interval:
                     await ws.send(json.dumps({"id": "ping", "method": "ping"}))
                     last_ping = now
 
+                recv_timeout = min(
+                    float(WS_USERDATA_RECV_TIMEOUT),
+                    max(1.0, ping_interval - max(0.0, time.time() - last_ping)),
+                )
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=WS_USERDATA_RECV_TIMEOUT)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
                 except asyncio.TimeoutError:
                     logger.debug("[WS] Heartbeat (no events)")
                     continue
@@ -597,6 +602,8 @@ class BinanceAccountStream(BinanceWSBase):
                                        event.get("id"), event.get("status"), event)
                         if event.get("id") in ("sub", "keepalive"):
                             raise RuntimeError(f"{event.get('id')} failed: {event}")
+                    else:
+                        self._mark_event()
                     continue
                 self._mark_event()
                 self.on_event(payload)
