@@ -980,6 +980,17 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
     )
 
 
+_NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
+    "ahead", "already", "answered", "article", "articles", "brake", "briefing",
+    "commentary", "continue", "continues", "debunked", "digested", "downscale",
+    "elevated", "exceptionally", "explained", "exposes", "false", "features",
+    "history", "horrific", "introduces", "join", "keyword", "localized",
+    "moderate", "non", "normal", "noting", "orderly", "potential", "processed",
+    "progress", "questions", "readiness", "retaining", "say", "seven",
+    "suspected", "timeline", "unpriced", "veto", "worse", "wrap",
+})
+
+
 def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -> bool:
     """Return True if ``term`` is a generic stopword/publisher/lifestyle phrase that must not trigger [HIGH-SEV]."""
     if not isinstance(term, str):
@@ -989,7 +1000,7 @@ def _is_noise_dynamic_keyword(term: Any, stopwords: Optional[Set[str]] = None) -
     if len(t) < 4 or t in _NOISE_LEXICON_PHRASES or t in sw:
         return True
     words = re.findall(r"[a-zA-Z]{2,}", t)
-    return not words or any(w in sw for w in words)
+    return not words or any(w in sw or w in _NON_CRISIS_DYNAMIC_BIGRAM_WORDS for w in words)
 
 
 def _dynamic_keyword_has_crisis_stem(term: str, crisis_stems: Optional[Set[str]] = None) -> bool:
@@ -1064,9 +1075,8 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         if cached_eval is not None:
             return cached_eval
         stopwords = _get_stopwords_set()
-        high_seen: Dict[str, None] = {}
-        acute_seen: Dict[str, None] = {}
-        for term, meta in entries.items():
+        valid_rows: List[Tuple[float, int, str, str]] = []
+        for idx, (term, meta) in enumerate(entries.items()):
             if not isinstance(term, str) or not term.strip():
                 continue
             t_clean = re.sub(r"\s+", " ", term.strip().lower())
@@ -1075,9 +1085,14 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             ts = safe_float(meta.get("ts") if isinstance(meta, dict) else meta, 0.0)
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
             if ts > 0.0 and (now - ts) <= ttl:
-                high_seen.setdefault(t_clean, None)
-                if tier == "acute":
-                    acute_seen.setdefault(t_clean, None)
+                valid_rows.append((ts, idx, t_clean, tier))
+        valid_rows.sort(key=lambda r: (-r[0], r[1]))
+        high_seen: Dict[str, None] = {}
+        acute_seen: Dict[str, None] = {}
+        for _, _, t_clean, tier in valid_rows:
+            high_seen.setdefault(t_clean, None)
+            if tier == "acute":
+                acute_seen.setdefault(t_clean, None)
         high_tup, acute_tup = tuple(high_seen), tuple(acute_seen)
         res = {
             "high_severity_terms": high_tup,

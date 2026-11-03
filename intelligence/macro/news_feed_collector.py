@@ -152,7 +152,7 @@ class NewsFeedCollector:
 
     @staticmethod
     def _parse_recent_pub_date_ts(pub_date: Any, now: float) -> Optional[float]:
-        """Parse RFC-2822 / ISO-8601 RSS pubDate when within 7 days of ``now``."""
+        """Parse RFC-2822 / ISO-8601 RSS pubDate when valid and not in the far future."""
         if not isinstance(pub_date, str) or not pub_date.strip():
             return None
         s = pub_date.strip()
@@ -163,7 +163,7 @@ class NewsFeedCollector:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             pub_ts = float(dt.timestamp())
-            if -600.0 <= (now - pub_ts) <= 7 * 86400.0:
+            if (now - pub_ts) >= -600.0:
                 return min(now, pub_ts)
         except Exception:
             pass
@@ -388,9 +388,21 @@ class NewsFeedCollector:
         if not raw_items:
             return None
 
-        emerging_terms = discover_dynamic_terms_from_headlines(raw_items, cache_dir=cache_dir, now_ts=now, persist=bool(cache_dir))
+        fresh_raw_items = [
+            it
+            for it in raw_items
+            if (pub_ts := NewsFeedCollector._parse_recent_pub_date_ts(it["pub_date"], now)) is None
+            or 0.0 <= (now - pub_ts) < DEFAULT_NEWS_ROLLING_WINDOW_SEC
+        ]
+        candidate_items = fresh_raw_items if fresh_raw_items else raw_items
+        emerging_terms = discover_dynamic_terms_from_headlines(
+            fresh_raw_items,
+            cache_dir=cache_dir,
+            now_ts=now,
+            persist=bool(cache_dir),
+        )
         parsed_headlines: List[NewsHeadline] = []
-        for item in raw_items:
+        for item in candidate_items:
             title, lower_title = item["title"], item["title"].lower()
             matched_list = list(match_high_severity_keywords(title, cache_dir=cache_dir, now_ts=now))
             for em_term in emerging_terms:

@@ -1147,6 +1147,52 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert "worse chip" not in discovered_single
         assert "stock collapse" in discovered_single
 
+        # Archival RSS items older than 7 days (e.g., months-old Google News background articles)
+        # must not return None from _parse_recent_pub_date_ts, must not crowd out fresh items in parse_rss_xml,
+        # and must not pollute dynamic lexicon with editorial words like "war timeline" or "war exposes".
+        from intelligence.macro_sentiment_ssot import load_dynamic_lexicon, update_dynamic_lexicon
+
+        archival_items = "\n".join(
+            f"""  <item>
+    <title>Iran war timeline and exposes #{idx} - CNN</title>
+    <pubDate>Fri, 15 May 2026 07:00:00 GMT</pubDate>
+    <source>Source{idx}</source>
+  </item>"""
+            for idx in range(30)
+        )
+        mixed_archival_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>News</title>
+{archival_items}
+  <item>
+    <title>Red Sea missile attack disrupts container shipping</title>
+    <pubDate>{fresh_pub}</pubDate>
+    <source>Reuters</source>
+  </item>
+</channel></rss>""".encode("utf-8")
+
+        snap_mixed = NewsFeedCollector.parse_rss_xml(mixed_archival_xml, now_ts=t0, cache_dir=str(tmp_path))
+        assert snap_mixed is not None
+        assert len(snap_mixed.headlines) == 1
+        assert snap_mixed.headlines[0].title == "Red Sea missile attack disrupts container shipping"
+
+        update_dynamic_lexicon(
+            ["older blockade", "war timeline", "war exposes", "crash ahead", "attack debunked", "unpriced shock"],
+            cache_dir=str(tmp_path),
+            now_ts=t0 - 3600.0,
+        )
+        update_dynamic_lexicon(
+            ["newest embargo"],
+            cache_dir=str(tmp_path),
+            now_ts=t0,
+        )
+        lex = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=t0)
+        high_terms = lex["high_severity_terms"]
+        assert high_terms[0] == "newest embargo"
+        assert "older blockade" in high_terms
+        for noise_term in ("war timeline", "war exposes", "crash ahead", "attack debunked", "unpriced shock"):
+            assert noise_term not in high_terms
+
+
 
 
 
