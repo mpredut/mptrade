@@ -3865,6 +3865,190 @@ def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
     assert res.stdout.strip() == "hello_world"
 
 
+def test_iter72_series_24h_double_ms_order_ts_iso_and_portfolio_enrichment(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _load_audit_terminal_orders,
+        _load_open_order_timestamps,
+        harvest_bot_runtime_states,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    # 1. load_symbol_price_series does not double-multiply synthetic (<1e8) timestamps from archive_pts or scalar overlay
+    (tmp_path / "cache_24_price_SYNTHUSDC.json").write_text(
+        json.dumps({"items": {"SYNTHUSDC": [[150.0, 100.0], [160.0, 101.0]]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "cache_365_price_SYNTHUSDC.json").write_text(
+        json.dumps({"items": {"SYNTHUSDC": [[100.0, 99.0], [140.0, 99.5]]}}),
+        encoding="utf-8",
+    )
+    s24, _ = load_symbol_price_series(str(tmp_path), "SYNTHUSDC", current_price_items={"SYNTHUSDC": 102.0})
+    assert [pt[0] for pt in s24] == [100000.0, 140000.0, 150000.0, 160000.0, 161000.0]
+    assert [pt[1] for pt in s24] == [99.0, 99.5, 100.0, 101.0, 102.0]
+
+    # 2. _load_open_order_timestamps & _load_audit_terminal_orders & harvest_bot_runtime_states normalize ISO and ms timestamps
+    (tmp_path / "autonomous_trade_intents_state.json").write_text(
+        json.dumps(
+            {
+                "intents": [
+                    {
+                        "intent_id": "int-iso",
+                        "order_id": "oid-iso",
+                        "executed_at": "2023-11-14T22:13:20+00:00",
+                        "timestamp": 1700000000000,
+                    },
+                    {
+                        "intent_id": "int-ms",
+                        "order_id": "oid-ms",
+                        "timestamp": 1700000050000,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    audit_file = tmp_path / "execution_audit_20231114.jsonl"
+    audit_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "submit_accepted",
+                        "venue": "binance",
+                        "symbol": "BTCUSDC",
+                        "order_id": "oid-audit-ms",
+                        "ts": 1700000100000,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "order_terminal",
+                        "venue": "binance",
+                        "symbol": "BTCUSDC",
+                        "order_id": "oid-audit-ms",
+                        "side": "BUY",
+                        "filled_qty": 0.1,
+                        "price": 50000.0,
+                        "ts": "2023-11-14T22:15:05+00:00",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ts_map = _load_open_order_timestamps(
+        str(tmp_path),
+        {"open_orders:binance": [{"order_id": "oid-prev-ms", "created_ts": 1700000020000}]},
+    )
+    assert ts_map["oid-iso"] == pytest.approx(1700000000.0)
+    assert ts_map["oid-ms"] == pytest.approx(1700000050.0)
+    assert ts_map["oid-prev-ms"] == pytest.approx(1700000020.0)
+    assert ts_map["oid-audit-ms"] == pytest.approx(1700000100.0)
+
+    term_orders = _load_audit_terminal_orders(str(tmp_path), "binance")
+    assert term_orders["BTCUSDC"][0]["timestamp"] == 1700000100000
+
+    (tmp_path / "order_retry_queue.jsonl").write_text(
+        json.dumps(
+            {
+                "provider_name": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "requested_price": 49000.0,
+                "lifecycle": "submit_pending",
+                "expires_at_ts": 1700000050000,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    rt_expired = harvest_bot_runtime_states(str(tmp_path), now_ts=1700000100000)
+    assert "active_retry_queue" not in rt_expired
+    rt_active = harvest_bot_runtime_states(str(tmp_path), now_ts=1700000010000)
+    assert len(rt_active.get("active_retry_queue", [])) == 1
+
+    # 3. enrich_positions_with_orders_and_cycles preserves custom fee/limit fields when inst_obj is None
+    #    and clears pos_peak/dd_from_peak_pct/pnl_vs_avg_pct on flat cycles
+    pos_list = [
+        {
+            "venue": "kraken",
+            "symbol": "BTCUSD",
+            "price": 50000.0,
+            "free_base": 0.0,
+            "free_quote": 1000.0,
+            "value_usd": 0.0,
+            "fee_tier": "VIP_CUSTOM",
+            "maker_fee_bps": 0.0,
+            "taker_fee_bps": 5.0,
+            "maker_rebate_edge_bps": 5.0,
+            "exchange_min_notional_usd": 11.0,
+            "min_qty": 0.0005,
+            "step_size": 0.0005,
+            "tick_size": 0.1,
+        }
+    ]
+    kraken_cycles = {
+        "BTCUSD": {
+            "qty": 0.0,
+            "cost_usd": 500.0,
+            "avg_cost_px": 48000.0,
+            "pos_peak": 52000.0,
+            "dd_from_peak_pct": -3.85,
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_list,
+        prices_and_trends={"BTCUSD": {"price": 50000.0, "spread_bps": 1.2}},
+        inst_by_sym={},
+        venue_recent_orders={},
+        recent_orders={},
+        kraken_cycles=kraken_cycles,
+        hyperliquid_cycles={},
+        t212_cycles={},
+        cyc_sell_ts_map={},
+    )
+    assert pos_list[0]["fee_tier"] == "VIP_CUSTOM"
+    assert pos_list[0]["maker_fee_bps"] == pytest.approx(0.0)
+    assert pos_list[0]["taker_fee_bps"] == pytest.approx(5.0)
+    assert pos_list[0]["exchange_min_notional_usd"] == pytest.approx(11.0)
+    assert pos_list[0]["min_qty"] == pytest.approx(0.0005)
+    assert kraken_cycles["BTCUSD"]["avg_cost_px"] is None
+    assert kraken_cycles["BTCUSD"]["pnl_vs_avg_pct"] is None
+    assert "pos_peak" not in kraken_cycles["BTCUSD"]
+    assert "dd_from_peak_pct" not in kraken_cycles["BTCUSD"]
+
+    # 4. build_cross_market_context excludes lowercase equity symbols from crypto_bellwethers
+    #    and normalizes casefolded equity_bellwethers without non-BIMODAL profile_shape
+    ctx = build_cross_market_context(
+        prices_and_trends={
+            "nvda_us_eq": {
+                "price": 125.0,
+                "chg_1h_pct": 1.5,
+                "profile_shape": "NORMAL",
+                "low_24h": 120.0,
+                "high_24h": 126.0,
+                "low_7d": 120.0,
+                "high_7d": 126.0,
+                "chg_7d_pct": 2.0,
+            },
+            "BTCUSDC": {"price": 90000.0, "chg_1h_pct": 0.8},
+        },
+        microstructure={},
+        all_t212_cycles={"NVDA_US_EQ": {"qty": 2.0, "avg_cost_px": 120.0}},
+    )
+    assert "NVDA" not in ctx.get("crypto_bellwethers", {})
+    assert list(ctx.get("equity_bellwethers", {}).keys()) == ["NVDA_US_EQ"]
+    eq_nvda = ctx["equity_bellwethers"]["NVDA_US_EQ"]
+    assert eq_nvda["price"] == pytest.approx(125.0)
+    assert "profile_shape" not in eq_nvda
+    assert "chg_7d_pct" not in eq_nvda
+
+
 
 
 

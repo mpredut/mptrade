@@ -254,7 +254,7 @@ def load_symbol_price_series(
                         if pt[0] >= cutoff_7d:
                             pts_7d_vals.append(pt[1])
                         if need_24h_supplement and pt[0] >= cutoff_24h:
-                            pts_24.append([pt[0], pt[1]])
+                            pts_24.append([row[0], pt[1]])
                 if sparse_7d_pts and (sp_last := _parse_ts_px_row(sparse_7d_pts[-1])) is not None:
                     sp_cutoff_7d = sp_last[0] - 7.0 * 86400.0 * 1000.0
                     sp_vals = [pt[1] for row in sparse_7d_pts if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
@@ -288,7 +288,17 @@ def load_symbol_price_series(
                     break
             if (px_f := extract_current_price_item(cur_item)) is not None and series_24h and last_24_pt is not None:
                 if not _prices_diverged(last_24_pt[1], px_f):
-                    series_24h = list(series_24h) + [[last_24_pt[0] + 1000.0, px_f]]
+                    raw_last_t = (
+                        safe_pos_float(series_24h[-1][0], default=None)
+                        if isinstance(series_24h[-1], (list, tuple)) and series_24h[-1]
+                        else None
+                    )
+                    next_raw_t = (
+                        (raw_last_t + 1.0)
+                        if (raw_last_t is not None and raw_last_t < 1e11 - 1.0)
+                        else (last_24_pt[0] + 1000.0)
+                    )
+                    series_24h = list(series_24h) + [[next_raw_t, px_f]]
                     break
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] (or [tms, px, vol]) points

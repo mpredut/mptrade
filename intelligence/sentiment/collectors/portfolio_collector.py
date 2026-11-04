@@ -18,6 +18,8 @@ from cachepaths import (
     split_symbol_assets,
 )
 from intelligence.macro_sentiment_ssot import (
+    normalize_epoch_sec,
+    resolve_now_ts,
     resolve_read_json_cached,
     resolve_save_json_state,
     safe_float,
@@ -188,7 +190,7 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
         if isinstance(k, str) and k.startswith("open_orders:") and isinstance(v, list):
             for oo_prev in v:
                 if isinstance(oo_prev, dict):
-                    c_ts = safe_pos_float(oo_prev.get("created_ts"), default=None)
+                    c_ts = normalize_epoch_sec(oo_prev.get("created_ts"), default=None, allow_iso=True)
                     if c_ts is None and (ms_v := normalize_timestamp_ms(oo_prev.get("time") or oo_prev.get("timestamp"), default=None)) is not None:
                         c_ts = float(ms_v) / 1000.0
                     if c_ts is not None and c_ts > 0.0:
@@ -202,22 +204,31 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
         raw_int = read_json_file(intents_path, default=[], recover_previous=True)
         int_list = raw_int.get("intents") if isinstance(raw_int, dict) else (raw_int if isinstance(raw_int, list) else ())
         for it in int_list or ():
-            if isinstance(it, dict) and (it_ts := safe_pos_float(it.get("executed_at") or it.get("timestamp"), default=None)) is not None:
-                exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
-                for src_d in (it, exec_pay):
-                    for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
-                        if kv := str(src_d.get(id_k) or "").strip():
-                            out.setdefault(kv, it_ts)
-                if oid_pay := extract_order_id(exec_pay, default=""):
-                    out.setdefault(str(oid_pay), it_ts)
-                for cid_v in intent_venue_client_order_ids(it):
-                    if cid_v:
-                        out.setdefault(cid_v, it_ts)
+            if isinstance(it, dict):
+                it_ts = next(
+                    (
+                        ts_v
+                        for ts_k in ("executed_ts", "executed_at", "timestamp", "created_at", "ts")
+                        if (ts_v := normalize_epoch_sec(it.get(ts_k), default=None, allow_iso=True)) is not None
+                    ),
+                    None,
+                )
+                if it_ts is not None:
+                    exec_pay = it.get("execution_payload") if isinstance(it.get("execution_payload"), dict) else {}
+                    for src_d in (it, exec_pay):
+                        for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId", "intent_id"):
+                            if kv := str(src_d.get(id_k) or "").strip():
+                                out.setdefault(kv, it_ts)
+                    if oid_pay := extract_order_id(exec_pay, default=""):
+                        out.setdefault(str(oid_pay), it_ts)
+                    for cid_v in intent_venue_client_order_ids(it):
+                        if cid_v:
+                            out.setdefault(cid_v, it_ts)
     for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=False):
         found_in_batch = False
         for fpath in files:
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=512 * 1024):
-                if (rec_ts := safe_pos_float(rec.get("ts"), default=None)) is not None:
+                if (rec_ts := normalize_epoch_sec(rec.get("ts"), default=None, allow_iso=True)) is not None:
                     for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                         if kv := str(rec.get(id_k) or "").strip():
                             out.setdefault(kv, rec_ts)
@@ -259,7 +270,7 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
                         continue
                     ev_name = str(rec.get("event") or "")
                     oid_s = str(rec.get("order_id") or "").strip()
-                    ts_s = safe_pos_float(rec.get("ts"), default=0.0) or 0.0
+                    ts_s = normalize_epoch_sec(rec.get("ts"), default=0.0, allow_iso=True) or 0.0
                     if ev_name == "submit_accepted" and oid_s and ts_s > 0.0:
                         submit_ts_by_oid.setdefault(oid_s, ts_s)
                         continue
@@ -559,7 +570,21 @@ def _apply_open_orders_locked_balances(
             px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
             fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
             prev_inst_limits = (
-                {k: pos_entry[k] for k in ("exchange_min_notional_usd", "min_qty", "step_size", "tick_size", "spread_bps") if pos_entry.get(k) is not None}
+                {
+                    k: pos_entry[k]
+                    for k in (
+                        "fee_tier",
+                        "maker_fee_bps",
+                        "taker_fee_bps",
+                        "maker_rebate_edge_bps",
+                        "exchange_min_notional_usd",
+                        "min_qty",
+                        "step_size",
+                        "tick_size",
+                        "spread_bps",
+                    )
+                    if pos_entry.get(k) is not None
+                }
                 if inst_obj is None
                 else {}
             )
@@ -1053,7 +1078,7 @@ def harvest_bot_runtime_states(
     """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
     if callable(now_ts) and read_json_fn is None:
         read_json_fn, now_ts = now_ts, None
-    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+    eff_now = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn)
     out: Dict[str, Any] = {}
     retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
@@ -1097,7 +1122,7 @@ def harvest_bot_runtime_states(
             if rec_iid and rec_iid in terminal_ai_intent_ids:
                 continue
             lifecycle = str(rec.get("lifecycle") or "submit_pending").lower()
-            exp_ts = safe_float(rec.get("expires_at_ts"), 0.0)
+            exp_ts = normalize_epoch_sec(rec.get("expires_at_ts"), default=0.0, allow_zero=True, allow_iso=True) or 0.0
             checked_oq_expiry = False
             if _oq is not None and (rec.get("created_ts") is not None or rec.get("ttl_started_ts") is not None):
                 try:

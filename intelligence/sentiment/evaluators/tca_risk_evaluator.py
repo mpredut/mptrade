@@ -521,7 +521,7 @@ def build_cross_market_context(
 
     crypto_bellwethers: Dict[str, Any] = {}
     for b_canon, (sym, pinfo) in sorted(by_base.items()):
-        if sym.endswith(("_EQ", "_US_EQ")) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
+        if str(sym).upper().endswith(("_EQ", "_US_EQ")) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
             continue
         is_sub24h_dup_7d = (
             "chg_24h_pct" not in pinfo
@@ -561,16 +561,22 @@ def build_cross_market_context(
 
     equity_bellwethers: Dict[str, Any] = {}
     eq_syms = sorted(
-        {s for s in prices_and_trends if str(s).upper().endswith(("_EQ", "_US_EQ"))}
-        | {s for s in all_t212_cycles if str(s).upper().endswith(("_EQ", "_US_EQ"))}
+        {str(s).strip().upper() for s in prices_and_trends if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
+        | {str(s).strip().upper() for s in all_t212_cycles if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
     )
     for eq_sym in eq_syms:
-        pinfo = prices_and_trends.get(eq_sym) if isinstance(prices_and_trends.get(eq_sym), dict) else {}
+        pinfo_raw = casefold_get(prices_and_trends, eq_sym)
+        pinfo = pinfo_raw if isinstance(pinfo_raw, dict) else {}
         t_cyc = next(
             (val for cand in cache_symbol_variants(eq_sym, include_original=True, include_base=True) if isinstance((val := casefold_get(all_t212_cycles, cand)), dict)),
             {},
         )
         eq_px_f = safe_pos_float(pinfo.get("price"), default=None)
+        is_sub24h_dup_7d = (
+            "chg_24h_pct" not in pinfo
+            and pinfo.get("low_24h") is not None
+            and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+        )
         eq_entry: Dict[str, Any] = {
             "symbol": eq_sym,
             **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
@@ -578,6 +584,8 @@ def build_cross_market_context(
                 k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
                 if pinfo.get(k) is not None
+                and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
+                and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
                 and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
                 and not (k == "kalman_vel" and abs(sf_v) < 1e-12)
             },

@@ -866,13 +866,17 @@ def enrich_positions_with_orders_and_cycles(
             cyc_has_open_qty = (cyc_qty > 1e-8) if cyc_qty is not None else (not is_flat_balance)
             cyc_flat = is_flat_balance and not cyc_has_open_qty
             if (is_flat_after_exit or cyc_flat) and not cyc.get("resting_orders"):
-                cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None})
+                cyc.update({"qty": round(max(0.0, fb_cur), 6), "cost_usd": 0.0, "avg_cost_px": None, "dd_pct": None, "pnl_vs_avg_pct": None})
+                cyc.pop("pos_peak", None)
+                cyc.pop("dd_from_peak_pct", None)
                 _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=True)
                 if is_flat_after_exit and pos.get("last_sell_px") is not None:
                     cyc["last_sell_price"] = pos["last_sell_px"]
             elif cyc_flat:
                 pos.pop("trailing_peak", None)
                 pos.pop("dd_from_peak_pct", None)
+                cyc.pop("pos_peak", None)
+                cyc.pop("dd_from_peak_pct", None)
             elif not is_flat_after_exit and cyc_has_open_qty:
                 cyc_avg = cyc.get("avg_cost_px") or cyc.get("entry_price") or cyc.get("last_buy_price")
                 set_pos_anchor(
@@ -910,6 +914,24 @@ def enrich_positions_with_orders_and_cycles(
             )
         )
         inst_obj = inst_by_sym.get(f"{p_venue}:{p_sym}") or inst_by_sym.get(p_sym)
+        prev_inst_limits = (
+            {
+                k: pos[k]
+                for k in (
+                    "fee_tier",
+                    "maker_fee_bps",
+                    "taker_fee_bps",
+                    "maker_rebate_edge_bps",
+                    "exchange_min_notional_usd",
+                    "min_qty",
+                    "step_size",
+                    "tick_size",
+                )
+                if pos.get(k) is not None
+            }
+            if inst_obj is None
+            else {}
+        )
         pos.update(
             resolve_venue_fee_and_limits(
                 p_venue, p_sym, inst_obj, price=pos_px_f,
@@ -921,6 +943,8 @@ def enrich_positions_with_orders_and_cycles(
                 gateway_max_usd=gateway_max_usd,
             )
         )
+        if prev_inst_limits:
+            pos.update(prev_inst_limits)
 
 
 __all__ = [
