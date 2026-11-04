@@ -325,6 +325,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
             continue
 
         init_px_f = safe_pos_float(initial_prices.get(order_id), default=None)
+        if init_px_f is None:
+            for alt_k in (oid_str, int(oid_str) if oid_str.isdigit() else None):
+                if alt_k is not None and alt_k in initial_prices:
+                    init_px_f = safe_pos_float(initial_prices.pop(alt_k, None), default=None)
+                    if init_px_f is not None:
+                        break
         if init_px_f is not None:
             initial_prices[order_id] = init_px_f
         else:
@@ -495,6 +501,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 )
                 if status.terminal:
                     initial_prices.pop(order_id, None)
+                    initial_prices.pop(oid_str, None)
                 print(
                     f"Order {order_id} reconciled as {venue_status or 'UNKNOWN'}; "
                     "no replacement is submitted."
@@ -507,6 +514,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                 replacement_claim, quantity)
             if activation == "resolved":
                 initial_prices.pop(order_id, None)
+                initial_prices.pop(oid_str, None)
                 continue
             if activation != "activated":
                 print(
@@ -564,8 +572,12 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     'price': new_price,
                     'quantity': quantity
                 }
-                _remember_initial_price(
-                    initial_prices, raw_new_id, initial_prices.pop(order_id, float(price)))
+                orig_init_px = safe_pos_float(initial_prices.pop(order_id, None), default=None)
+                if orig_init_px is None:
+                    orig_init_px = safe_pos_float(initial_prices.pop(oid_str, None), default=None)
+                if orig_init_px is None:
+                    orig_init_px = float(price)
+                _remember_initial_price(initial_prices, raw_new_id, orig_init_px)
                 print(f"Updated order from {price} to {new_price}. New ID: {raw_new_id} (derived replacement)")
             else:
                 failure_reason = str(
@@ -592,6 +604,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
                     submission_state=submission_state)
                 if terminal_pre_submit_refusal:
                     initial_prices.pop(order_id, None)
+                    initial_prices.pop(oid_str, None)
                     print(
                         f"The {order_type} replacement was refused before submit "
                         f"after old order {order_id} was canceled; the stale "

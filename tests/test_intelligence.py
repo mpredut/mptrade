@@ -3572,6 +3572,69 @@ def test_iter68_accepted_ttl_map_spot_rules_ms_and_exit_manager_ms(monkeypatch):
     assert dec.action == ReentryAction.WAIT and "post_stop_stabilization_cooldown" in dec.reason and "elapsed=30s < 60s" in dec.reason
 
 
+def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_prices(monkeypatch):
+    from types import SimpleNamespace
+    import monitororder
+    from strategies.mt_position_accounting import _update_mt_reentry_state
+    from strategies.spot_engine import Strategy, StratParams
+
+    # 1. Strategy._sma_from_closes safely handles trend_sma_n <= 0 and non-finite elements without ZeroDivisionError
+    assert Strategy._sma_from_closes([100.0, 102.0, 104.0], 0) is None
+    assert Strategy._sma_from_closes([100.0, 102.0, 104.0], -2) is None
+    assert Strategy._sma_from_closes([100.0, float("nan"), 104.0], 3) is None
+    assert Strategy._sma_from_closes([100.0, 102.0, 104.0], 3) == pytest.approx(102.0)
+
+    # 2. Strategy._surge_window_move_pct handles None/NaN past_price and set_simulated_time normalizes ms (> 1e11)
+    class _DummyExec:
+        def pair_precision(self, pair):
+            return SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.001, base_asset="BTC")
+
+    params = StratParams.from_dict({"trend_sma_n": 0, "surge_guard": True, "surge_window_hours": 24.0, "trend_interval": 240})
+    strat = Strategy(_DummyExec(), "BTCUSDC", params, dry_run=True, replay_mode=True, initial_state={"entry_ts": 1700000000000.0})
+    assert strat.s["entry_ts"] == pytest.approx(1700000000.0)
+    strat.set_simulated_time(1700000600000.0)
+    assert strat._now() == pytest.approx(1700000600.0)
+    assert strat._surge_window_move_pct(110.0, closes=[None, float("nan"), 100.0, 105.0, 108.0, 109.0, 110.0, 110.0]) is None
+
+    # 3. _update_mt_reentry_state normalizes millisecond timestamps (> 1e11)
+    rmap = {}
+    st = _update_mt_reentry_state(
+        "BTCUSDC",
+        sell_price=100.0,
+        current_price=98.0,
+        current_time_s=1700000100000,
+        sell_time=1700000000000.0,
+        reentry_state_map=rmap,
+    )
+    assert st["sell_time"] == pytest.approx(1700000000.0)
+    assert st["started_at"] == pytest.approx(1700000100.0)
+    # Subsequent call with same sell_time in seconds does not reset trough/peak
+    st2 = _update_mt_reentry_state(
+        "BTCUSDC",
+        sell_price=100.0,
+        current_price=99.0,
+        current_time_s=1700000120,
+        sell_time=1700000000.0,
+        reentry_state_map=rmap,
+    )
+    assert st2["trough"] == pytest.approx(98.0)
+    assert st2["peak_bounce"] == pytest.approx(99.0)
+
+    # 4. monitororder preserves initial_prices across str vs int order_id keys
+    monitororder.reset_monitororder_state_for_test()
+    monitororder.initial_sell_prices["555"] = 100.0
+    monkeypatch.setattr(
+        monitororder.api,
+        "get_open_orders",
+        lambda side, sym: {555: {"orderId": 555, "price": 100.1, "origQty": 1.0, "executedQty": 0.0, "clientOrderId": "TA_1"}},
+    )
+    monkeypatch.setattr(monitororder.api, "get_current_price", lambda sym: 105.0)
+    monkeypatch.setattr(monitororder.order_retry, "get_accepted_order_ttl_map", lambda: {})
+    monkeypatch.setattr(monitororder.order_retry, "get_accepted_order_owner_map", lambda: {})
+    monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
+    assert monitororder.initial_sell_prices[555] == pytest.approx(100.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

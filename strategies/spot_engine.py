@@ -1117,9 +1117,20 @@ class Strategy(BaseSpotMixin):
         if not closes:
             return None
         idx = -self._surge_window_bars() - (1 if self.replay_mode else 0)
-        if abs(idx) > len(closes) or (past_price := closes[idx]) <= 0:
+        if abs(idx) > len(closes):
+            return None
+        past_price = _clean_pos_float(closes[idx])
+        if past_price is None:
             return None
         return (price - past_price) / past_price * 100.0
+
+    @staticmethod
+    def _sma_from_closes(closes: list | None, n: object) -> float | None:
+        n_i = safe_pos_int(n, default=None)
+        if not closes or n_i is None or len(closes) < n_i:
+            return None
+        window = [cf for c in closes[-n_i:] if (cf := _clean_pos_float(c)) is not None]
+        return sum(window) / n_i if len(window) == n_i else None
 
     # -- Common market regime and trend overlay --------------------------------
     def _trend_closes(self) -> list:
@@ -1288,8 +1299,7 @@ class Strategy(BaseSpotMixin):
             self.s["slow_grind_peak"] = slow_peak
             entry_ts = self.s.get("entry_ts")
             if entry_ts is not None and current_gain >= self.p.slow_grind_min_gain_pct:
-                n = self.p.trend_sma_n
-                sma = sum(closes[-n:]) / n if closes and len(closes) >= n else None
+                sma = self._sma_from_closes(closes, self.p.trend_sma_n)
                 triggered, reason = sr.check_slow_grind_exhaustion(
                     current_price=price, avg_cost=avg, entry_ts=entry_ts,
                     current_ts=tick_time if tick_time is not None else self._now(),
@@ -1330,8 +1340,7 @@ class Strategy(BaseSpotMixin):
             trail_stop = peak * (1 - eff_trail / 100)
             broke = False
             if self.p.trend_exit_break:
-                n = self.p.trend_sma_n
-                sma = sum(closes[-n:]) / n if len(closes) >= n else None
+                sma = self._sma_from_closes(closes, self.p.trend_sma_n)
                 broke = sma is not None and price < sma
             if (price <= trail_stop or broke) and self.s["qty"] > 1e-12:
                 exit_px = round(price * 0.999, self.price_dec)
@@ -1528,6 +1537,8 @@ class Strategy(BaseSpotMixin):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return None
         clean_ts = _clean_nonneg_float(timestamp)
+        if clean_ts is not None and clean_ts > 1e11:
+            clean_ts /= 1000.0
         had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
         if self.observe_only:
             tick_time = clean_ts if clean_ts is not None else self._now()
@@ -1642,12 +1653,12 @@ class Strategy(BaseSpotMixin):
         inc_vol = not self.replay_mode
         inc_shd = bool(self.p.fast_profit_guard) or not self.replay_mode
         snapshot = self._create_position_snapshot(
-            price, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
+            price, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd, tick_time=tick_time
         )
         prev_ride_state = dict(self.exit_manager.tp_ride_state.get(self.pair, {}))
         if high is not None and high > price:
             high_snap = self._create_position_snapshot(
-                high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd
+                high, avg, held, regime=regime, include_vol=inc_vol, include_shadow=inc_shd, tick_time=tick_time
             )
             existing_ride = self.exit_manager.tp_ride_state.get(self.pair)
             if isinstance(existing_ride, dict) and existing_ride.get("buy_price") is not None:

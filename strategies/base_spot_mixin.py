@@ -222,7 +222,10 @@ def sanitize_common_spot_state(
         state[ikey] = i if (i is not None and i >= 0) else 0
     for pkey in pos_float_keys:
         if pkey in state and state.get(pkey) is not None:
-            state[pkey] = safe_pos_float(state.get(pkey), None)
+            pval = safe_pos_float(state.get(pkey), None)
+            if pval is not None and pkey in ("entry_ts", "last_sell_ts") and pval > 1e11:
+                pval /= 1000.0
+            state[pkey] = pval
     for bkey in bool_keys:
         if bkey in state:
             state[bkey] = _parse_bool_flag(state.get(bkey), False)
@@ -251,7 +254,10 @@ def sanitize_common_spot_state(
                         o[pk] = safe_pos_float(o.get(pk), 0.0)
                 for nk in order_nonneg_float_keys:
                     if nk in o:
-                        o[nk] = safe_nonneg_float(o.get(nk), 0.0)
+                        nval = safe_nonneg_float(o.get(nk), 0.0)
+                        if nval is not None and nk == "ts" and nval > 1e11:
+                            nval /= 1000.0
+                        o[nk] = nval
                 for bk in order_bool_keys:
                     if bk in o:
                         o[bk] = _parse_bool_flag(o.get(bk), False)
@@ -320,7 +326,10 @@ class BaseSpotMixin:
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
-        self._simulated_ts = safe_nonneg_float(ts, None)
+        val = safe_nonneg_float(ts, None)
+        if val is not None and val > 1e11:
+            val /= 1000.0
+        self._simulated_ts = val
 
     def _next_paper_order_id(self) -> str:
         self._paper_seq += 1
@@ -677,11 +686,13 @@ class BaseSpotMixin:
         include_vol: bool = True,
         include_shadow: bool = True,
         include_trend: bool = True,
+        tick_time: float | None = None,
     ) -> PositionSnapshot:
         """Construct a standardized PositionSnapshot using the strategy's current context."""
         is_spot = self._exit_manager_mode == "spot"
         sp = getattr(self, "_shadow_prices", None)
-        tick_time = sp[-1][0] if (is_spot and sp) else self._now()
+        if tick_time is None:
+            tick_time = sp[-1][0] if (is_spot and sp) else self._now()
         vol_1h, vol_source = self._vol_1h_ratio() if include_vol else (0.0, "default")
         if is_spot:
             trend_up = self._is_trend_up(regime) if include_trend else False
