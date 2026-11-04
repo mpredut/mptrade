@@ -711,9 +711,10 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     ):
         target_t = t_now - win_sec
         ref_t, ref_p = min(pts[:-1], key=lambda item: abs(item[0] - target_t))
+        max_age_sec = 200.0 if win_sec <= 90.0 else win_sec * 4.0
         if len(pts) >= 10 and (
-            (win_sec < 9000.0 and (t_now - ref_t) > max(win_sec * 4.0, 900.0))
-            or ((t_now - ref_t) > max(win_sec * 4.0, 900.0) and ref_t in seen_slope_ref_t)
+            (win_sec < 9000.0 and (t_now - ref_t) > max_age_sec)
+            or ref_t in seen_slope_ref_t
         ):
             continue
         seen_slope_ref_t.add(ref_t)

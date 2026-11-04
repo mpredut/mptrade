@@ -520,7 +520,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
                 f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
             )
-        if "slope_15m" in pinfo or pinfo.get("slope_2_5h") is not None:
+        if any(k in pinfo for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
             s90_v = _parse_finite_float(pinfo.get("slope_90s"), None)
             s90_pfx = f"90s={_fmt_slope_val(s90_v, 5)}, " if s90_v is not None else ""
             gr_v = _parse_finite_float(pinfo.get("gradient_recent"), None)
@@ -538,14 +538,20 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
             ]
             g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
+            s_parts = [
+                f"{s_lbl}={_fmt_slope_val(sv, 5)}"
+                for s_lbl, s_k in (("90s", "slope_90s"), ("3.7m", "slope_3_7m"), ("15m", "slope_15m"), ("2.5h", "slope_2_5h"))
+                if (sv := _parse_finite_float(pinfo.get(s_k), None)) is not None
+            ]
             s_core = (
                 f"{s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
                 f"15m={_fmt_slope_val(pinfo.get('slope_15m'), 5)}, "
                 f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}"
-                if "slope_15m" in pinfo
-                else f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}"
+                if ("slope_15m" in pinfo and ("slope_3_7m" in pinfo or "slope_2_5h" not in pinfo))
+                else ", ".join(s_parts)
             )
-            extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx}){g_sfx}")
+            if s_core:
+                extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx}){g_sfx}")
         if pinfo.get("vol_1h_pct") is not None:
             vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
             if pinfo.get("adapt_reentry_pct") is not None:
