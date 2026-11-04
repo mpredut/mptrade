@@ -3755,8 +3755,115 @@ def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
         PairCoordinator.from_state(object(), pol, base_state, clock=lambda: float("nan"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_iter71_dotenv_strict_ini_cache_memo_and_sibling_sync(tmp_path):
+    import json
+    import subprocess
+    import botcore
+    import config as cfg_mod
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        reconcile_sibling_flow_and_liq_regimes,
+        sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _extract_sorted_ts_px,
+        compute_24h_price_metrics,
+    )
+
+    # 1. parse_dotenv_line preserves quoted '#' in strict=True and rejects unquoted '#' before '=' in both modes
+    assert botcore.parse_dotenv_line('KEY="val#with#hash" # inline comment', strict=True) == ("KEY", "val#with#hash")
+    assert botcore.parse_dotenv_line("export\tTAB_KEY = 'abc#123' # comment", strict=True) == ("TAB_KEY", "abc#123")
+    assert botcore.parse_dotenv_line("unassigned_token # comment with a=b", strict=False) is None
+    with pytest.raises(ValueError, match="Malformed configuration line"):
+        botcore.parse_dotenv_line("unassigned_token # comment with a=b", strict=True)
+    with pytest.raises(ValueError, match="Empty configuration key"):
+        botcore.parse_dotenv_line("export = 123", strict=True)
+
+    # 2. required_int_env preserves >53-bit integer precision and _clean_env_str preserves quoted '#'
+    large_id = (1 << 53) + 7
+    assert botcore.required_int_env("LARGE_ID", {"LARGE_ID": str(large_id)}) == large_id
+    assert botcore.required_int_env("LARGE_ID", {"LARGE_ID": large_id}) == large_id
+    assert botcore.required_env("QUOTED_SECRET", {"QUOTED_SECRET": "'sec#ret' # comment"}) == "sec#ret"
+
+    # 3. load_ini_config cache differentiates inline_comments=True vs inline_comments=False
+    ini_file = tmp_path / "sample.conf"
+    ini_file.write_text("[sec]\nurl = https://example.com/a;b # comment\n", encoding="utf-8")
+    cp_inline = botcore.load_ini_config(ini_file, inline_comments=True)
+    cp_raw = botcore.load_ini_config(ini_file, inline_comments=False)
+    assert cp_inline.get("sec", "url") == "https://example.com/a;b"
+    assert cp_raw.get("sec", "url") == "https://example.com/a;b # comment"
+
+    # 4. _extract_sorted_ts_px and compute_24h_price_metrics handle unhashable/malformed boundary elements safely
+    series_with_malformed = [
+        {"malformed": 1},
+        [1700000000000.0, 100.0],
+        [1700000900000.0, 105.0],
+        [999],
+    ]
+    pts = _extract_sorted_ts_px(series_with_malformed)
+    assert pts == [(1700000000000.0, 100.0), (1700000900000.0, 105.0)]
+    m24 = compute_24h_price_metrics(series_with_malformed)
+    assert m24.get("chg_15m_pct") == pytest.approx(5.0)
+
+    # 5. sync_sibling_symbol_telemetry does not leak USD hvn2_px/lvn_px into EUR siblings,
+    #    and reconcile_sibling_flow_and_liq_regimes does not treat 0.0 and negative CVD as same-sign
+    prices_and_trends = {
+        "BTCUSDC": {
+            "price": 90000.0,
+            "poc_px": 89500.0,
+            "sec_poc_px": 90500.0,
+            "hvn2_px": 90500.0,
+            "lvn_px": 89900.0,
+            "profile_shape": "BIMODAL",
+            "vah_px": 90800.0,
+            "val_px": 89200.0,
+        },
+        "BTCEUR": {
+            "price": 83000.0,
+        },
+    }
+    micro = {
+        "BTCUSDC": {
+            "ob_mid_price": 90000.0,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 500000.0,
+            "cvd_15m_usd": 0.0,
+            "cvd_regime": "balanced_flow",
+            "spot_perp_flow_regime": "BALANCED_CROSS_VENUE_FLOW",
+        },
+        "BTCUSDT": {
+            "ob_mid_price": 90010.0,
+            "bid_depth_usd": 100000.0,
+            "ask_depth_usd": 100000.0,
+            "cvd_15m_usd": -250000.0,
+            "cvd_regime": "aggressive_market_dumps",
+            "spot_perp_flow_regime": "SYNCHRONIZED_SPOT_PERP_SELLING",
+        },
+    }
+    sync_sibling_symbol_telemetry(prices_and_trends, {})
+    assert "hvn2_px" not in prices_and_trends["BTCEUR"]
+    assert "lvn_px" not in prices_and_trends["BTCEUR"]
+
+    reconcile_sibling_flow_and_liq_regimes(micro, prices_and_trends)
+    assert micro["BTCUSDT"]["cvd_regime"] == "aggressive_market_dumps"
+
+    # 6. load_symbol_price_series overlays scalar list current_price_items without dropping tick
+    p24_file = tmp_path / "cache_24_price_BTCUSDC.json"
+    p24_file.write_text(
+        json.dumps({"items": {"BTCUSDC": [[1700000000000.0, 100.0], [1700000060000.0, 101.0]]}}),
+        encoding="utf-8",
+    )
+    s24, _ = load_symbol_price_series(str(tmp_path), "BTCUSDC", current_price_items={"BTCUSDC": [101.5, 102.0]})
+    assert s24[-1][1] == pytest.approx(102.0)
+
+    # 7. env_common.sh env_get parses 'export KEY = val' with spaces
+    env_dir = tmp_path / "env_sh_test"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "config.env").write_text('export TEST_SPACED_KEY = "hello_world" # inline\n', encoding="utf-8")
+    sh_Script = f'REPO_ROOT="{env_dir}"; ROOT="{env_dir}"; source orchestratorOS/lib/env_common.sh && env_get TEST_SPACED_KEY'
+    res = subprocess.run(["bash", "-c", sh_Script], capture_output=True, text=True, check=True)
+    assert res.stdout.strip() == "hello_world"
+
 
 
 

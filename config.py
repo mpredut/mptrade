@@ -39,16 +39,15 @@ def load_config():
 
     # 1. Load from centralized config.env
     env_file_settings = _read_properties_file(CONFIG_ENV_PATH)
-    if "TRADE_ENABLED" in env_file_settings and env_file_settings["TRADE_ENABLED"] != "":
-        new_config["trade_enabled"] = _parse_bool(env_file_settings["TRADE_ENABLED"], default=True)
-    elif "trade_enabled" in env_file_settings and env_file_settings["trade_enabled"] != "":
-        new_config["trade_enabled"] = _parse_bool(env_file_settings["trade_enabled"], default=True)
+    for k, v in env_file_settings.items():
+        if isinstance(k, str) and k.lower() == "trade_enabled" and str(v).strip() != "":
+            new_config["trade_enabled"] = _parse_bool(v, default=True)
 
     # 2. Legacy config.txt if present
     txt_settings = _read_properties_file(CONFIG_TXT_PATH)
     for k, v in txt_settings.items():
         if k.lower() == "trade_enabled":
-            if v != "":
+            if str(v).strip() != "":
                 new_config["trade_enabled"] = _parse_bool(v, default=True)
         else:
             new_config[k.lower()] = v

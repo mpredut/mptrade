@@ -49,7 +49,7 @@ export TRADING_PYTHON="${TRADING_PYTHON:-$PYTHON_BIN}"
 env_get() {  # $1=KEY [$2=DEFAULT]
   local key="$1" default="${2:-}"
   local val home_dir
-  val=$(grep -hs -m1 "^${key}=" "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]"'"'"']+|[[:space:]"'"'"']+$//g')
+  val=$(grep -Ehs -m1 "^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=" "$ROOT/.env" "$ROOT/config.env" 2>/dev/null | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/^[[:space:]"'"'"']+|[[:space:]"'"'"']+$//g')
   home_dir="${HOME:-}"
   if [ -z "$home_dir" ]; then
     home_dir="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"

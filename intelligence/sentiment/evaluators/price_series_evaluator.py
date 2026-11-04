@@ -29,17 +29,31 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
 
 
-_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any], List[Tuple[float, float]]] = {}
-_BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any], Dict[int, float]] = {}
+_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any, Any], List[Tuple[float, float]]] = {}
+_BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any, Any], Dict[int, float]] = {}
 
 
-def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any]]:
+def _row_memo_token(row: Any) -> Any:
+    if isinstance(row, (list, tuple)):
+        return (row[0], row[1]) if len(row) >= 2 else tuple(row)
+    return row
+
+
+def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any, Any]]:
     if not isinstance(series, list) or not series:
         return None
-    r0, r1 = series[0], series[-1]
-    k0 = (r0[0], r0[1]) if isinstance(r0, (list, tuple)) and len(r0) >= 2 else r0
-    k1 = (r1[0], r1[1]) if isinstance(r1, (list, tuple)) and len(r1) >= 2 else r1
-    return (id(series), len(series), k0, k1)
+    cand = (
+        id(series),
+        len(series),
+        _row_memo_token(series[0]),
+        _row_memo_token(series[len(series) // 2]),
+        _row_memo_token(series[-1]),
+    )
+    try:
+        hash(cand)
+        return cand
+    except TypeError:
+        return None
 
 
 def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:

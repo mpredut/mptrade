@@ -62,25 +62,8 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
     _LOCKS[name] = fd   # retain the reference so the lock lasts until process exit
 
 
-def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | None:
-    """Parse a single ``KEY=VALUE`` (or ``export KEY=VALUE``) line, stripping inline comments and outer quotes."""
-    if not isinstance(raw, str):
-        return None
-    line = (raw.split("#", 1)[0] if strict else raw).strip()
-    if not line or line.startswith("#"):
-        return None
-    if "=" not in line:
-        if strict:
-            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
-        return None
-    if line.startswith("export "):
-        line = line[len("export "):]
-    key, _, val = line.partition("=")
-    key = key.strip()
-    if not key:
-        if strict:
-            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
-        return None
+def _strip_env_value_quotes_and_comment(val: str) -> str:
+    """Strip inline `#` comments and outer quotes from the value portion of an env setting."""
     val = val.strip()
     if val.startswith(('"', "'")):
         q = val[0]
@@ -88,14 +71,34 @@ def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | No
         if close_idx != -1:
             tail = val[close_idx + 1:].strip()
             if not tail or tail.startswith("#"):
-                val = val[1:close_idx]
-            else:
-                val = val.strip('"').strip("'")
-        else:
-            val = val.strip('"').strip("'")
-    else:
-        val = val.split("#", 1)[0].strip()
-    return key, val
+                return val[1:close_idx]
+            return val.strip('"').strip("'")
+        return val.strip('"').strip("'")
+    return val.split("#", 1)[0].strip()
+
+
+def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | None:
+    """Parse a single ``KEY=VALUE`` (or ``export KEY=VALUE``) line, stripping inline comments and outer quotes."""
+    if not isinstance(raw, str):
+        return None
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        return None
+    eq_idx = line.find("=")
+    hash_idx = line.find("#")
+    if eq_idx == -1 or (hash_idx != -1 and hash_idx < eq_idx):
+        if strict:
+            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
+        return None
+    key, _, val = line.partition("=")
+    key = key.strip()
+    if key.startswith("export") and (len(key) == 6 or key[6].isspace()):
+        key = key[6:].strip()
+    if not key:
+        if strict:
+            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
+        return None
+    return key, _strip_env_value_quotes_and_comment(val)
 
 
 def _dotenv_pairs(path: str | os.PathLike, *, strict: bool = False) -> tuple[list[tuple[str, str]], bool]:
@@ -122,9 +125,15 @@ def _dotenv_pairs(path: str | os.PathLike, *, strict: bool = False) -> tuple[lis
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _ROOT_CONFIG_PATH = os.path.abspath(os.path.join(_REPO_ROOT, "config.env"))
-_ROOT_CONFIG_KEYS: set[str] = set()
-_ROOT_CONFIG_VALUES: dict[str, str] = {}
-_LOADED_DOTENV_PATHS: set[str] = set()
+_ROOT_CONFIG_KEYS: set[str] = (
+    globals()["_ROOT_CONFIG_KEYS"] if isinstance(globals().get("_ROOT_CONFIG_KEYS"), set) else set()
+)
+_ROOT_CONFIG_VALUES: dict[str, str] = (
+    globals()["_ROOT_CONFIG_VALUES"] if isinstance(globals().get("_ROOT_CONFIG_VALUES"), dict) else {}
+)
+_LOADED_DOTENV_PATHS: set[str] = (
+    globals()["_LOADED_DOTENV_PATHS"] if isinstance(globals().get("_LOADED_DOTENV_PATHS"), set) else set()
+)
 
 
 def _log_dotenv_loaded_once(path: str, *, override: bool = False) -> None:
@@ -507,7 +516,7 @@ def _clean_env_str(val: object) -> str:
     """Strip inline `#` comment and surrounding whitespace from a raw env value."""
     if val is None or isinstance(val, bool):
         return ""
-    return str(val).split("#", 1)[0].strip()
+    return _strip_env_value_quotes_and_comment(str(val))
 
 
 def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
@@ -575,6 +584,16 @@ def required_float_env(key: str, env: dict | None = None) -> float:
 
 def required_int_env(key: str, env: dict | None = None) -> int:
     """Return a mandatory integer setting without silently truncating fractions."""
+    src = os.environ if env is None else env
+    raw_val = src.get(key)
+    if isinstance(raw_val, bool):
+        raise ValueError(f"Invalid numeric setting: {key}={raw_val!r}")
+    if isinstance(raw_val, int):
+        return raw_val
+    raw = required_env(key, env)
+    iv = exact_int(raw, default=None)
+    if iv is not None:
+        return iv
     value = required_float_env(key, env)
     if not value.is_integer():
         raise ValueError(f"Invalid integer setting: {key}={value!r}")
@@ -884,7 +903,7 @@ def load_ini_config(
             inline_comment_prefixes=("#", ";") if inline_comments else (),
         )
     st = os.stat(abs_path)
-    sig = (st.st_mtime_ns, st.st_size)
+    sig = (st.st_mtime_ns, st.st_size, bool(inline_comments))
     with _INI_CONFIG_LOCK:
         cached = _INI_CONFIG_CACHE.get(abs_path)
         if cached is not None and cached[0] == sig:

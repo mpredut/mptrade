@@ -691,12 +691,12 @@ def sync_sibling_symbol_telemetry(
     if not isinstance(microstructure, dict):
         microstructure = {}
     range_bound_keys = {
-        "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct",
+        "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct", "span_24h_pct",
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
         "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct", "recent_tape_15m",
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
-        "poc_px", "sec_poc_px", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+        "poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }
     for sym, pinfo in list(prices_and_trends.items()):
@@ -835,7 +835,9 @@ def reconcile_sibling_flow_and_liq_regimes(
             same_cvd_sign = (
                 prim_cvd_15m is None
                 or sib_cvd_15m is None
-                or (prim_cvd_15m * sib_cvd_15m) >= 0.0
+                or (prim_cvd_15m > 0.0 and sib_cvd_15m > 0.0)
+                or (prim_cvd_15m < 0.0 and sib_cvd_15m < 0.0)
+                or (prim_cvd_15m == 0.0 and sib_cvd_15m == 0.0)
             )
             if prim_cvd_reg and m_sib.get("cvd_regime") and same_cvd_sign:
                 m_sib["cvd_regime"] = prim_cvd_reg
