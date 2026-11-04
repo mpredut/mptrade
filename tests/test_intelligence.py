@@ -1528,6 +1528,105 @@ def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_co
     assert len(saved_macro) == 1
 
 
+def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_ssot_monkeypatch(monkeypatch, tmp_path):
+    import importlib.util
+    import os
+    import intelligence.macro.daemon_ssot as daemon_ssot
+    import intelligence.macro_sentiment_ssot as ssot_mod
+    import intelligence.sentiment.collectors.portfolio_collector as pc_mod
+
+    root_dir = os.path.dirname(os.path.dirname(__file__))
+    hl_spec = importlib.util.spec_from_file_location(
+        "hl_client_iter51",
+        os.path.join(root_dir, "hyperliquid", "hl_client.py"),
+    )
+    hl_mod = importlib.util.module_from_spec(hl_spec)
+    hl_spec.loader.exec_module(hl_mod)
+    HLClient = hl_mod.HLClient
+    HLError = hl_mod.HLError
+
+    # 1. HLClient.position_strict and spot_balance_strict reject empty-string numeric fields
+    #    and support spot quote suffixes (/USDC, USDC) across max_leverage, coin_listed, etc.
+    class _FakeHLInfo:
+        coin_to_asset = {"HYPE": 10001}
+
+        def meta(self):
+            return {"universe": [{"name": "HYPE", "szDecimals": 2, "maxLeverage": 5}]}
+
+        def user_state(self, address):
+            return {"assetPositions": [{"position": {"coin": "HYPE", "szi": self._szi, "entryPx": self._entry}}]}
+
+        def spot_user_state(self, address):
+            return {"balances": [{"coin": "HYPE", "total": self._spot_tot}]}
+
+        def open_orders(self, address):
+            return [{"coin": "HYPE", "oid": 777}]
+
+        def meta_and_asset_ctxs(self):
+            return {"universe": [{"name": "HYPE"}]}, [{"funding": "0.00012"}]
+
+    info = _FakeHLInfo()
+    info._szi = ""
+    info._entry = "25.0"
+    info._spot_tot = ""
+
+    hl = HLClient.__new__(HLClient)
+    hl.info = info
+    hl.address = "0x1111111111111111111111111111111111111111"
+    hl._meta_cache = None
+
+    with pytest.raises(HLError, match="Invalid numeric position state"):
+        hl.position_strict("HYPE")
+    with pytest.raises(HLError, match="Invalid numeric spot balance"):
+        hl.spot_balance_strict("HYPE")
+
+    info._szi = None
+    info._entry = None
+    info._spot_tot = None
+    assert hl.position_strict("HYPE/USDC") == (0.0, 0.0)
+    assert hl.spot_balance_strict("HYPE/USDC") == 0.0
+    assert hl.max_leverage("HYPE/USDC") == 5
+    assert hl.coin_listed("HYPE/USDC") is True
+    assert len(hl.open_orders_strict("HYPE/USDC")) == 1
+    assert hl.funding_rate("HYPE/USDC") == pytest.approx(0.00012)
+
+    # 2. portfolio_collector forwards monkeypatches on intelligence.macro_sentiment_ssot
+    monkeypatch.setattr(
+        ssot_mod,
+        "read_json_cached",
+        lambda p: {"BTCUSDC": {"peak": 71234.5}} if str(p).endswith("trailing_state.json") and "kraken" not in str(p) else None,
+    )
+    t_map, _ = pc_mod.load_venue_trailing_maps(str(tmp_path), str(tmp_path))
+    assert t_map.get("BTCUSDC", {}).get("peak") == 71234.5
+
+    # 3. daemon_ssot honours monkeypatches on intelligence.macro_sentiment_ssot
+    monkeypatch.setattr(
+        ssot_mod,
+        "read_json_dict_recovering",
+        lambda p: {"pid": os.getpid(), "ts": 9999999999.0, "intervals": {"fast": 10}},
+    )
+    hb = daemon_ssot.inspect_daemon_heartbeat(str(tmp_path), ("hb.json",))
+    assert hb["running"] is True
+    assert hb["status"] == "alive"
+
+    saved_hb = []
+    monkeypatch.setattr(ssot_mod, "save_json_state", lambda p, d, **kw: saved_hb.append((p, d)))
+    daemon_ssot.write_daemon_heartbeat_files([str(tmp_path / "hb.json")], {"ok": True}, use_save_json_state=True)
+    assert len(saved_hb) == 1 and saved_hb[0][1] == {"ok": True}
+
+    # 4. 212trading/market_data.py parse_interval_minutes rejects non-ASCII or signed prefixes
+    spec = importlib.util.spec_from_file_location(
+        "t212_market_data_iter51",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "market_data.py"),
+    )
+    md_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(md_mod)
+    assert md_mod.parse_interval_minutes("5m") == 5
+    for bad_iv in ("+5m", "5 m", "٥m"):
+        with pytest.raises(ValueError, match="invalid Yahoo interval"):
+            md_mod.parse_interval_minutes(bad_iv)
+
+
 if __name__ == "__main__":
     unittest.main()
 

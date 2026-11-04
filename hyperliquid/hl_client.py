@@ -195,6 +195,8 @@ class HLClient:
 
     # ----- metadata / prices --------------------------------------------------
     def _meta(self) -> dict:
+        if not isinstance(getattr(self, "_meta_cache", None), dict):
+            self._meta_cache = {}
         if not self._meta_cache:
             raw_meta = self.info.meta()
             universe = raw_meta.get("universe") if isinstance(raw_meta, dict) else None
@@ -272,7 +274,17 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             raise HLError(f"Missing leverage metadata for {coin}")
         coin = coin.strip()
-        meta = casefold_get(self._meta(), coin)
+        base_coin = self._strip_spot_quote_suffix(coin)
+        cand_coins = (coin,) if base_coin.casefold() == coin.casefold() else (coin, base_coin)
+        meta = None
+        try:
+            meta_map = self._meta()
+            for cand in cand_coins:
+                meta = casefold_get(meta_map, cand)
+                if meta is not None:
+                    break
+        except Exception:  # noqa: BLE001
+            meta = None
         lev_i = _exact_int_in_range(meta.get("maxLeverage") if isinstance(meta, dict) else None, 1)
         if lev_i is not None:
             return lev_i
@@ -281,7 +293,19 @@ class HLClient:
     def coin_listed(self, coin: str) -> bool:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return False
-        return casefold_get(self._meta(), coin.strip()) is not None
+        coin = coin.strip()
+        base_coin = self._strip_spot_quote_suffix(coin)
+        cand_coins = (coin,) if base_coin.casefold() == coin.casefold() else (coin, base_coin)
+        try:
+            meta_map = self._meta()
+            if any(casefold_get(meta_map, cand) is not None for cand in cand_coins):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        coin_to_asset = getattr(self.info, "coin_to_asset", None)
+        if isinstance(coin_to_asset, dict):
+            return any(casefold_get(coin_to_asset, cand) is not None for cand in cand_coins)
+        return False
 
     def _mid_for_key(self, key: str, label: str) -> float | None:
         if isinstance(key, bool) or not isinstance(key, str) or not key.strip():
@@ -311,12 +335,13 @@ class HLClient:
     def _find_position_dict(self, coin: str) -> dict | None:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return None
-        coin_cf = coin.strip().casefold()
+        coin = coin.strip()
+        cand_cfs = {coin.casefold(), self._strip_spot_quote_suffix(coin).casefold()}
         for ap in (self._user_state().get("assetPositions") or []):
             if not isinstance(ap, dict):
                 continue
             p = ap.get("position")
-            if isinstance(p, dict) and str(p.get("coin") or "").casefold() == coin_cf:
+            if isinstance(p, dict) and str(p.get("coin") or "").casefold() in cand_cfs:
                 return p
         return None
 
@@ -333,8 +358,8 @@ class HLClient:
             raw_entry = p.get("entryPx")
             if isinstance(raw_szi, bool) or isinstance(raw_entry, bool):
                 raise HLError(f"Invalid boolean position state for {coin}")
-            szi = safe_float(raw_szi or 0.0, default=None)
-            entry = safe_nonneg_float(raw_entry or 0.0, default=None)
+            szi = safe_float(0.0 if raw_szi is None else raw_szi, default=None)
+            entry = safe_nonneg_float(0.0 if raw_entry is None else raw_entry, default=None)
             if szi is None or entry is None:
                 raise HLError(f"Invalid numeric position state for {coin}")
             return szi, entry
@@ -361,17 +386,18 @@ class HLClient:
         """Return open orders while propagating API errors."""
         if not self.address:
             raise HLError("HL_ACCOUNT_ADDRESS missing")
-        coin_cf = None
+        cand_cfs: set[str] | None = None
         if coin is not None:
             if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
                 return []
-            coin_cf = coin.strip().casefold()
+            c_clean = coin.strip()
+            cand_cfs = {c_clean.casefold(), self._strip_spot_quote_suffix(c_clean).casefold()}
         oo = self.info.open_orders(self.address)
         if not isinstance(oo, list):
             raise HLError(f"Invalid open_orders payload: {type(oo).__name__}")
         return [
             o for o in oo
-            if isinstance(o, dict) and (coin_cf is None or str(o.get("coin") or "").casefold() == coin_cf)
+            if isinstance(o, dict) and (cand_cfs is None or str(o.get("coin") or "").casefold() in cand_cfs)
         ]
 
     def open_orders(self, coin: str | None = None) -> list[dict]:
@@ -431,16 +457,21 @@ class HLClient:
         if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
             return 0.0
         token = token.strip()
-        token_cf = token.casefold()
+        base_token = self._strip_spot_quote_suffix(token)
+        token_cfs = (
+            {token.casefold(), base_token.casefold()}
+            if base_token.upper() != "USDC" or token.upper() == "USDC"
+            else {token.casefold()}
+        )
         st = self.info.spot_user_state(self.address)
         if not isinstance(st, dict):
             raise HLError(f"Invalid spot_user_state payload: {type(st).__name__}")
         for b in (st.get("balances") or []):
-            if isinstance(b, dict) and str(b.get("coin") or "").casefold() == token_cf:
+            if isinstance(b, dict) and str(b.get("coin") or "").casefold() in token_cfs:
                 raw_tot = b.get("total")
                 if isinstance(raw_tot, bool):
                     raise HLError(f"Invalid boolean spot balance for {token}")
-                tot = safe_nonneg_float(raw_tot or 0.0, default=None)
+                tot = safe_nonneg_float(0.0 if raw_tot is None else raw_tot, default=None)
                 if tot is None:
                     raise HLError(f"Invalid numeric spot balance for {token}")
                 return tot
@@ -460,7 +491,7 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             return None
         coin = coin.strip()
-        coin_cf = coin.casefold()
+        cand_cfs = {coin.casefold(), self._strip_spot_quote_suffix(coin).casefold()}
         try:
             meta, ctxs = self.info.meta_and_asset_ctxs()
             universe = (meta.get("universe") or []) if isinstance(meta, dict) else []
@@ -469,7 +500,7 @@ class HLClient:
             for i, a in enumerate(universe):
                 if (
                     isinstance(a, dict)
-                    and str(a.get("name") or "").casefold() == coin_cf
+                    and str(a.get("name") or "").casefold() in cand_cfs
                     and i < len(ctxs)
                     and isinstance(ctxs[i], dict)
                 ):

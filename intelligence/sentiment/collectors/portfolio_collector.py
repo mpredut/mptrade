@@ -88,15 +88,52 @@ from providers.base import (
 from providers.execution_audit import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
+    read_json_dict_recovering as _default_read_json_cached,
     read_json_file,
     read_json_recovering,
     read_tail_jsonl_dicts,
     resolve_cachedb_filepath,
-    save_json_state,
+    save_json_state as _default_save_json_state,
 )
 
+read_json_cached = _default_read_json_cached
+save_json_state = _default_save_json_state
+
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
+
+
+def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
+    if read_json_fn is not None and callable(read_json_fn):
+        return read_json_fn
+    if callable(read_json_cached) and read_json_cached is not _default_read_json_cached:
+        return read_json_cached
+    import sys as _sys
+
+    for _mod_name in (
+        "intelligence.sentiment.collectors.macro_telemetry_collector",
+        "intelligence.macro_sentiment_ssot",
+    ):
+        _mod = _sys.modules.get(_mod_name)
+        _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
+        if callable(_cand) and _cand is not _default_read_json_cached:
+            return _cand
+    return read_json_cached
+
+
+def _resolve_save_json_state() -> Any:
+    if callable(save_json_state) and save_json_state is not _default_save_json_state:
+        return save_json_state
+    import sys as _sys
+
+    for _mod_name in (
+        "intelligence.sentiment.collectors.macro_telemetry_collector",
+        "intelligence.macro_sentiment_ssot",
+    ):
+        _mod = _sys.modules.get(_mod_name)
+        _cand = getattr(_mod, "save_json_state", None) if _mod is not None else None
+        if callable(_cand) and _cand is not _default_save_json_state:
+            return _cand
+    return save_json_state
 
 _ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
     ("cache_order.json", "binance"),
@@ -295,11 +332,13 @@ def harvest_venue_cycles(
     workspace_dir: str,
     prices_and_trends: Dict[str, Any],
     fallback_prices: Dict[str, float],
-    read_json_fn: Any,
+    read_json_fn: Any = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
+    _rj = _resolve_read_json_cached(read_json_fn)
+
     def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int) -> None:
-        if isinstance((st_data := read_json_fn(st_path)), dict):
+        if isinstance((st_data := _rj(st_path)), dict):
             target[sym] = parse_venue_cycle_state(
                 st_data, sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
             )
@@ -339,9 +378,10 @@ def harvest_kraken_xstocks(
     kraken_dir: str,
     prices_and_trends: Dict[str, Any],
     all_t212_cycles: Dict[str, Any],
-    read_json_fn: Any,
+    read_json_fn: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Harvest Kraken read-only xStocks holdings and link to Trading212 sibling cycle."""
+    _rj = _resolve_read_json_cached(read_json_fn)
     cand_paths = [
         p for p in (os.path.join(kraken_dir, "xstock_state.json"), os.path.join(kraken_dir, ".xstock_state.json"))
         if os.path.exists(p)
@@ -349,7 +389,7 @@ def harvest_kraken_xstocks(
     if not cand_paths:
         return None
     xst_path = max(cand_paths, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0)
-    xst_data = read_json_fn(xst_path)
+    xst_data = _rj(xst_path)
     if not isinstance(xst_data, dict):
         return None
     xstock_cfg = load_key_value_conf(kraken_dir, root_dir=kraken_dir)
@@ -397,7 +437,7 @@ def load_venue_trailing_maps(
     cache_dir: str, workspace_dir: str, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Dict[str, Any]]]]:
     """Load trailing peak maps from cachedb/trailing_state.json and kraken/trailing_state.json."""
-    _rj = read_json_fn or read_json_cached
+    _rj = _resolve_read_json_cached(read_json_fn)
     trailing_map: Dict[str, Dict[str, Any]] = {}
     trailing_by_venue: Dict[str, Dict[str, Dict[str, Any]]] = {"binance": {}, "kraken": {}}
     for trail_venue, raw_trail, default_quote in (
@@ -594,7 +634,8 @@ def harvest_tradable_positions_and_orders(
     inst_by_sym: Dict[str, Any] = {}
     balance_memo: Dict[tuple[str, str], Optional[float]] = {}
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
-    raw_cb = read_json_cached(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
+    _rj_bals = _resolve_read_json_cached()
+    raw_cb = _rj_bals(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
     updated_bals: Dict[str, Any] = {}
     live_open_ok_venues: set[str] = set()
@@ -829,7 +870,7 @@ def harvest_tradable_positions_and_orders(
             merged_bals = {**cached_bals, **updated_bals}
             if merged_bals != cached_bals:
                 os.makedirs(os.path.dirname(os.path.abspath(bcache_path)), exist_ok=True)
-                save_json_state(bcache_path, merged_bals, indent=2)
+                _resolve_save_json_state()(bcache_path, merged_bals, indent=2)
         except Exception:
             pass
 
@@ -845,9 +886,9 @@ def load_symbol_best_recent_fills(
     """Load the most recent venue fills dict for `symbol` across order caches and execution_audit fallback."""
     from instrument_registry import casefold_get
 
-    _rj = read_json_fn or read_json_cached
+    _rj = _resolve_read_json_cached(read_json_fn)
     intents_path = os.path.join(cachedb_dir, "autonomous_trade_intents_state.json")
-    intents_raw = _rj(intents_path) if (read_json_fn is not None and read_json_fn is not read_json_cached) else None
+    intents_raw = _rj(intents_path) if _rj is not _default_read_json_cached else None
     if intents_raw is None:
         intents_raw = read_json_recovering(intents_path)
     known_ai_oids = collect_known_ai_order_ids(intents_raw)
@@ -900,7 +941,7 @@ def harvest_recent_orders_and_enrich_positions(
     ai_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
-    _rj = read_json_fn or read_json_cached
+    _rj = _resolve_read_json_cached(read_json_fn)
     audit_origin_map = _load_recent_audit_origins(cache_dir)
     recent_orders: Dict[str, Any] = {}
     venue_recent_orders: Dict[str, Dict[str, Any]] = {"binance": {}, "kraken": {}, "hyperliquid": {}, "t212": {}}
@@ -1020,7 +1061,7 @@ def harvest_bot_runtime_states(
     tradable_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
-    _rj = read_json_fn or read_json_cached
+    _rj = _resolve_read_json_cached(read_json_fn)
     out: Dict[str, Any] = {}
     retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
     if os.path.exists(retry_q_path):

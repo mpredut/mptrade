@@ -30,19 +30,44 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from state_io import (
-    atomic_write_json,
-    discard_generation_file,
-    read_json_dict,
-    read_json_dict_recovering,
-    save_json_state,
+    atomic_write_json as _default_atomic_write_json,
+    discard_generation_file as _default_discard_generation_file,
+    read_json_dict as _default_read_json_dict,
+    read_json_dict_recovering as _default_read_json_dict_recovering,
+    save_json_state as _default_save_json_state,
 )
 
 fetch_public_json = _fetch_public_json
+atomic_write_json = _default_atomic_write_json
+discard_generation_file = _default_discard_generation_file
+read_json_dict = _default_read_json_dict
+read_json_dict_recovering = _default_read_json_dict_recovering
+save_json_state = _default_save_json_state
 logger = logging.getLogger("intelligence.macro_sentiment_ssot")
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _ACTIVE_BOUNDED_STEPS: Dict[str, threading.Thread] = {}
 _ACTIVE_BOUNDED_LOCK = threading.Lock()
+
+
+def _resolve_daemon_helper(
+    name: str,
+    local_fn: Any,
+    default_fn: Any,
+    owner_mod_name: Optional[str] = None,
+) -> Any:
+    if owner_mod_name:
+        owner_mod = sys.modules.get(owner_mod_name)
+        cand_owner = getattr(owner_mod, name, None) if owner_mod is not None else None
+        if callable(cand_owner) and cand_owner is not default_fn:
+            return cand_owner
+    ssot_mod = sys.modules.get("intelligence.macro_sentiment_ssot")
+    cand_ssot = getattr(ssot_mod, name, None) if ssot_mod is not None else None
+    if callable(cand_ssot) and cand_ssot is not default_fn:
+        return cand_ssot
+    if callable(local_fn) and local_fn is not default_fn:
+        return local_fn
+    return local_fn
 
 
 def detect_active_binance_symbols(
@@ -160,9 +185,12 @@ def inspect_daemon_heartbeat(
     include_symbols: bool = False,
 ) -> Dict[str, Any]:
     """Inspect a background daemon's heartbeat file(s) and check PID liveness."""
+    _read_dict = _resolve_daemon_helper(
+        "read_json_dict_recovering", read_json_dict_recovering, _default_read_json_dict_recovering
+    )
     data = None
     for fname in filenames:
-        cand_data = read_json_dict_recovering(os.path.join(cache_dir, fname))
+        cand_data = _read_dict(os.path.join(cache_dir, fname))
         if isinstance(cand_data, dict):
             data = cand_data
             break
@@ -215,22 +243,27 @@ def write_daemon_heartbeat_files(
     """Atomically write daemon heartbeat JSON to ``paths`` with direct-write fallback."""
     log = logger_inst or logger
     if use_save_json_state:
+        _save_state = _resolve_daemon_helper("save_json_state", save_json_state, _default_save_json_state)
         try:
             for raw_target in paths:
-                save_json_state(raw_target, payload, indent=2)
+                _save_state(raw_target, payload, indent=2)
         except Exception as exc:
             log.debug("Failed writing daemon heartbeat: %s", exc)
         return
 
+    _atomic_write = _resolve_daemon_helper("atomic_write_json", atomic_write_json, _default_atomic_write_json)
+    _discard_gen = _resolve_daemon_helper(
+        "discard_generation_file", discard_generation_file, _default_discard_generation_file
+    )
     for raw_target in paths:
         hb_target = str(resolve_cachedb_filepath(raw_target))
         try:
-            atomic_write_json(hb_target, payload, indent=2)
+            _atomic_write(hb_target, payload, indent=2)
         except Exception as exc:
             log.warning("Primary atomic heartbeat write failed for %s: %s; attempting fallback", hb_target, exc)
             try:
-                discard_generation_file(hb_target)
-                atomic_write_json(hb_target, payload, indent=2)
+                _discard_gen(hb_target)
+                _atomic_write(hb_target, payload, indent=2)
             except Exception as fallback_err:
                 log.error("Fallback heartbeat write failed for %s: %s", hb_target, fallback_err)
 
@@ -542,18 +575,9 @@ class CachedHttpJsonCollector:
         ):
             return self._cached_snapshot
         try:
-            mod = sys.modules.get(self.__class__.__module__)
-            ssot_mod = sys.modules.get("intelligence.macro_sentiment_ssot")
-            cand_mod = getattr(mod, "fetch_public_json", None) if mod is not None else None
-            cand_ssot = getattr(ssot_mod, "fetch_public_json", None) if ssot_mod is not None else None
-            if callable(cand_mod) and cand_mod is not _fetch_public_json:
-                fetch_fn = cand_mod
-            elif callable(cand_ssot) and cand_ssot is not _fetch_public_json:
-                fetch_fn = cand_ssot
-            elif callable(fetch_public_json) and fetch_public_json is not _fetch_public_json:
-                fetch_fn = fetch_public_json
-            else:
-                fetch_fn = cand_mod or cand_ssot or fetch_public_json
+            fetch_fn = _resolve_daemon_helper(
+                "fetch_public_json", fetch_public_json, _fetch_public_json, self.__class__.__module__
+            )
             data = fetch_fn(
                 self.endpoint_url,
                 timeout=self._DEFAULT_TIMEOUT_SEC,
@@ -609,7 +633,10 @@ class CachedTopicAssessmentAgent:
         if not path:
             return
         try:
-            data = read_json_dict(path, default=None, recover_previous=True)
+            _read_fn = _resolve_daemon_helper(
+                "read_json_dict", read_json_dict, _default_read_json_dict, self.__class__.__module__
+            )
+            data = _read_fn(path, default=None, recover_previous=True)
             if not isinstance(data, dict):
                 return
             assessment = self._deserialize_from_disk(data)
@@ -624,7 +651,10 @@ class CachedTopicAssessmentAgent:
         if not path:
             return
         try:
-            save_json_state(path, self._serialize_for_disk(assessment), indent=2)
+            _save_fn = _resolve_daemon_helper(
+                "save_json_state", save_json_state, _default_save_json_state, self.__class__.__module__
+            )
+            _save_fn(path, self._serialize_for_disk(assessment), indent=2)
         except Exception as e:
             self._logger.warning("Could not persist %s state to %s: %s", self.AGENT_LABEL, path, e)
 

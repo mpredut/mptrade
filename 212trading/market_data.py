@@ -31,11 +31,12 @@ def parse_interval_minutes(value: str) -> int:
     if not isinstance(value, str):
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
     cleaned = value.strip()
-    if len(cleaned) < 2:
+    num_part = cleaned[:-1]
+    if len(cleaned) < 2 or not (num_part.isascii() and num_part.isdigit()):
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
     units = {"m": 1, "h": 60, "d": 1440}
     try:
-        minutes = int(cleaned[:-1]) * units[cleaned[-1].lower()]
+        minutes = int(num_part) * units[cleaned[-1].lower()]
     except (KeyError, ValueError, IndexError, TypeError) as exc:
         raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d") from exc
     if minutes <= 0:
