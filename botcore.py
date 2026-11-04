@@ -311,6 +311,16 @@ def safe_float(val: object, default: float | None = 0.0) -> float | None:
         return default
 
 
+def clean_finite_floats(values: object) -> list[float]:
+    """Filter an iterable into a list of finite floats, rejecting None, booleans, strings, and non-iterables."""
+    if values is None or isinstance(values, (bool, str, bytes, bytearray)):
+        return []
+    try:
+        return [vf for x in values if (vf := safe_float(x, default=None)) is not None]
+    except TypeError:
+        return []
+
+
 def safe_pos_float(val: object, default: float | None = 0.0) -> float | None:
     """Safely coerce ``val`` to a strictly positive finite float, otherwise return ``default``."""
     f = safe_float(val, default=None)
@@ -1338,6 +1348,12 @@ def normalize_epoch_sec(
     if f is None:
         return default
     return f / 1000.0 if f >= 1e11 else f
+
+
+def safe_nonneg_ts(val: object, default: float = 0.0) -> float:
+    """Safely coerce a timestamp to non-negative epoch seconds, converting ms (>= 1e11)."""
+    res = normalize_epoch_sec(val, default=default, allow_zero=True)
+    return default if res is None else res
 
 
 def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:

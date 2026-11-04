@@ -563,11 +563,7 @@ def symbol_regime_context(
     benchmark_symbol: Optional[str] = None,
 ) -> MarketRegimeContext:
     """Resolve and bundle MarketRegimeContext once for multi-guard placement pipelines."""
-    now_ts = safe_nonneg_float(now, default=None)
-    if now_ts is None:
-        now_ts = time.time()
-    elif now_ts > 1e11:
-        now_ts /= 1000.0
+    now_ts = resolve_now_ts(now, allow_zero=True)
     decision = symbol_regime(
         symbol,
         provider=provider,

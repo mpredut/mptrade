@@ -13,24 +13,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 ### my import
-from botcore import safe_float, safe_pos_int
+from botcore import clean_finite_floats as _clean_finite_floats, safe_float, safe_pos_int
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from state_io import atomic_write_json
 import symbols as sym
 import cacheManager as cm
-
-
-def _clean_finite_floats(seq) -> List[float]:
-    if seq is None or isinstance(seq, bool):
-        return []
-    try:
-        return [
-            vf for x in seq
-            if (vf := safe_float(x, default=None)) is not None
-        ]
-    except TypeError:
-        return []
 
 
 def get_cache_for_symbol(symbol: str) -> List[Tuple[int, float]]:

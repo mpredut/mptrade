@@ -14,7 +14,8 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag, are_close, exact_nonneg_int, exact_pos_int, log, optional_env,
+    _parse_bool_flag, are_close, exact_nonneg_int, exact_pos_int, log,
+    normalize_epoch_sec, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
     touch_module_heartbeat,
@@ -222,10 +223,11 @@ def sanitize_common_spot_state(
         state[ikey] = i if (i is not None and i >= 0) else 0
     for pkey in pos_float_keys:
         if pkey in state and state.get(pkey) is not None:
-            pval = safe_pos_float(state.get(pkey), None)
-            if pval is not None and pkey in ("entry_ts", "last_sell_ts") and pval > 1e11:
-                pval /= 1000.0
-            state[pkey] = pval
+            state[pkey] = (
+                normalize_epoch_sec(state.get(pkey), None)
+                if pkey in ("entry_ts", "last_sell_ts")
+                else safe_pos_float(state.get(pkey), None)
+            )
     for bkey in bool_keys:
         if bkey in state:
             state[bkey] = _parse_bool_flag(state.get(bkey), False)
@@ -254,10 +256,11 @@ def sanitize_common_spot_state(
                         o[pk] = safe_pos_float(o.get(pk), 0.0)
                 for nk in order_nonneg_float_keys:
                     if nk in o:
-                        nval = safe_nonneg_float(o.get(nk), 0.0)
-                        if nval is not None and nk == "ts" and nval > 1e11:
-                            nval /= 1000.0
-                        o[nk] = nval
+                        o[nk] = (
+                            normalize_epoch_sec(o.get(nk), 0.0, allow_zero=True)
+                            if nk == "ts"
+                            else safe_nonneg_float(o.get(nk), 0.0)
+                        )
                 for bk in order_bool_keys:
                     if bk in o:
                         o[bk] = _parse_bool_flag(o.get(bk), False)
@@ -309,32 +312,28 @@ class BaseSpotMixin:
 
     @property
     def _symbol_id(self) -> str:
-        return getattr(self, "pair", None) or getattr(self, "ticker", "")
+        return getattr(self, "pair", None) or getattr(self, "ticker", None) or getattr(self, "coin", "")
 
     def _now(self) -> float:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
         clock = getattr(self, "_clock", None)
         if callable(clock):
             val = float(clock())
-            return val / 1000.0 if val > 1e11 else val
+            return normalize_epoch_sec(val, val, allow_zero=True) or val
         if getattr(self, "replay_mode", False):
             sim_ts = getattr(self, "_simulated_ts", None)
             if sim_ts is not None:
                 return sim_ts
             sp = getattr(self, "_shadow_prices", None)
             if sp:
-                val = safe_nonneg_float(sp[-1][0], 0.0) or 0.0
-                return val / 1000.0 if val > 1e11 else val
+                return normalize_epoch_sec(sp[-1][0], 0.0, allow_zero=True) or 0.0
             return 0.0
         val = float(self._mod_global("time", time).time())
-        return val / 1000.0 if val > 1e11 else val
+        return normalize_epoch_sec(val, val, allow_zero=True) or val
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
-        val = safe_nonneg_float(ts, None)
-        if val is not None and val > 1e11:
-            val /= 1000.0
-        self._simulated_ts = val
+        self._simulated_ts = normalize_epoch_sec(ts, None, allow_zero=True)
 
     def _next_paper_order_id(self) -> str:
         self._paper_seq += 1
@@ -342,7 +341,7 @@ class BaseSpotMixin:
 
     def _reset_cycle_state(self, preserved_keys: tuple[str, ...], **extra_fields: Any) -> int:
         """Reset ``self.s`` via module ``_new_state()``, incrementing ``cycle`` and preserving cumulative keys."""
-        preserved = {k: self.s[k] for k in preserved_keys}
+        preserved = {k: self.s.get(k, 0) for k in preserved_keys}
         next_cycle = self.s.get("cycle", 1) + 1
         self.s = self._mod_global("_new_state")()
         self.s.update(preserved, cycle=next_cycle, **extra_fields)
@@ -410,6 +409,13 @@ class BaseSpotMixin:
 
     _avg_cost = _avg
 
+    def _qty_for(self, amount: float, price: float) -> float:
+        amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
+        dec = getattr(self, "vol_dec", getattr(self, "sz_dec", 8))
+        return round(amt_f / px_f, dec) if (amt_f is not None and px_f is not None) else 0.0
+
+    _sz_for = _qty_for
+
     def _apply_buy_fill_accounting(
         self, order: dict, qty: float, price: float, *, fallback_to_notional: bool = False
     ) -> None:
@@ -461,6 +467,24 @@ class BaseSpotMixin:
         self._save()
         self._log_msg(f"  [STRAT] cancel requested {o.get('side', '?')} {o[id_key]} — waiting for a terminal status")
         return True
+
+    def _cancel_tracked_order(
+        self, o: dict, id_key: str, cancel_fn: Callable[[dict], None], *, log_prefix: str = "cancelled"
+    ) -> bool:
+        if self.dry_run or str(o[id_key]).startswith("PAPER"):
+            self._remove(o)
+            self._log_msg(f"  [STRAT] {log_prefix} {o.get('side', '?')} {o[id_key]}")
+            return True
+        if o.get("cancel_requested"):
+            return True
+        try:
+            cancel_fn(o)
+        except Exception as exc:
+            if not isinstance(exc, self._mod_global("ProviderError", Exception)):
+                raise
+            self._log_msg(f"  ! [STRAT] cancel failed for {o[id_key]}: {exc} — the order stays tracked")
+            return False
+        return self._mark_order_cancel_requested(o, id_key)
 
     def _cancel_open(self, side: str) -> bool:
         o = self._find_open(side)
@@ -554,10 +578,10 @@ class BaseSpotMixin:
         clean_pts = []
         for item in sp:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
-                tf = safe_nonneg_float(item[0], default=None)
+                tf = normalize_epoch_sec(item[0], default=None, allow_zero=True)
                 pf = safe_pos_float(item[1], default=None)
                 if tf is not None and pf is not None:
-                    clean_pts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                    clean_pts.append((tf, pf))
         n_clean = len(clean_pts)
         if n_clean < 20:
             return None
@@ -804,9 +828,7 @@ class BaseSpotMixin:
             return True, "no_last_sell"
 
         if not is_spot:
-            last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
-            if last_sell_ts is not None and last_sell_ts > 1e11:
-                last_sell_ts /= 1000.0
+            last_sell_ts = normalize_epoch_sec(self.s.get("last_sell_ts"), None)
             if self.p.reentry_ttl_hours > 0 and last_sell_ts:
                 if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
                     self.s.pop("sl_rebuy", None)

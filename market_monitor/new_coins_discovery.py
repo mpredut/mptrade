@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set, Callable
 from abc import ABC, abstractmethod
 
-from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, normalize_epoch_sec, safe_float, safe_pos_float, safe_pos_int
 from instrument_registry import casefold_get
 
 # ============================================
@@ -55,9 +55,8 @@ def _parse_coin_added_at(raw_added, *, utc: bool = False) -> Optional[datetime]:
             return None
     except Exception:
         pass
-    val_f = safe_pos_float(raw_added, default=None) if isinstance(raw_added, (int, float, str)) else None
-    if val_f is not None:
-        sec = val_f / 1000.0 if val_f > 1e11 else val_f
+    sec = normalize_epoch_sec(raw_added, default=None) if isinstance(raw_added, (int, float, str)) else None
+    if sec is not None:
         try:
             return datetime.fromtimestamp(sec, tz=timezone.utc) if utc else datetime.fromtimestamp(sec)
         except (ValueError, OSError, OverflowError):

@@ -24,6 +24,7 @@ from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.state.survival import get_cached_t_entry
 from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
+import order_guard as _og
 from providers.base import normalize_side
 
 logger = logging.getLogger("qlimit_order_guard")
@@ -31,20 +32,12 @@ logger = logging.getLogger("qlimit_order_guard")
 
 def _resolve_trend_duration(symbol: str) -> float:
     """Read trend duration in seconds, delegating to order_guard SSOT."""
-    try:
-        from order_guard import _resolve_trend_duration as _og_resolve
-        return _og_resolve(symbol)
-    except Exception:
-        return 0.0
+    return _og._resolve_trend_duration(symbol)
 
 
 def _resolve_trend_direction(symbol: str, regime_context: Any = None) -> Optional[str]:
     """Read trend direction ('up'/'down'/'bull'/'bear'), delegating to order_guard SSOT."""
-    try:
-        from order_guard import _resolve_trend_direction as _og_resolve_dir
-        return _og_resolve_dir(symbol, regime_context=regime_context)
-    except Exception:
-        return None
+    return _og._resolve_trend_direction(symbol, regime_context=regime_context)
 
 
 def resolve_cached_gaussian_horizon(symbol: str, exceed_percent: float = 0.4) -> Tuple[Optional[float], Optional[float], Optional[float]]:

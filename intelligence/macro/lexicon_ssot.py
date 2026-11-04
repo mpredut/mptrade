@@ -8,6 +8,7 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from botcore import (
+    normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -315,9 +316,7 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             t_clean = re.sub(r"\s+", " ", term.strip().lower())
             if _is_noise_dynamic_keyword(t_clean, stopwords):
                 continue
-            ts = safe_float(meta.get("ts") if isinstance(meta, dict) else meta, 0.0)
-            if ts > 1e11:
-                ts /= 1000.0
+            ts = normalize_epoch_sec(meta.get("ts") if isinstance(meta, dict) else meta, default=0.0) or 0.0
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
             if ts > 0.0 and (now - ts) <= ttl:
                 valid_rows.append((ts, idx, t_clean, tier))
@@ -368,9 +367,7 @@ def update_dynamic_lexicon(
                 if _is_noise_dynamic_keyword(k_clean, stopwords):
                     pruned_existing = True
                     continue
-                ts = safe_float(v.get("ts"), 0.0)
-                if ts > 1e11:
-                    ts /= 1000.0
+                ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
                 if ts > 0.0 and (now - ts) <= ttl:
                     existing_entries[k_clean] = dict(v, ts=ts)
                 else:
@@ -433,9 +430,7 @@ def demote_dynamic_acute_terms(
         if _is_noise_dynamic_keyword(k_clean, stopwords):
             changed = True
             continue
-        ts = safe_float(v.get("ts"), 0.0)
-        if ts > 1e11:
-            ts /= 1000.0
+        ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
         if ts <= 0.0 or (now - ts) > ttl:
             changed = True
             continue

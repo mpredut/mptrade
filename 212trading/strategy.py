@@ -29,6 +29,7 @@ from ipo_common import (
     log as _log, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
     safe_pos_float, safe_nonneg_float, exact_int, exact_pos_int, exact_nonneg_int,
+    normalize_epoch_sec,
 )
 from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
@@ -285,10 +286,7 @@ def _sanitize_t212_state(st: dict) -> dict:
                 level=_clean_pos_float(ps.get("level")),
             )
             if "ts" in ps_copy and ps_copy.get("ts") is not None:
-                ps_ts = _clean_nonneg_float(ps_copy.get("ts"), 0.0)
-                if ps_ts > 1e11:
-                    ps_ts /= 1000.0
-                ps_copy["ts"] = ps_ts
+                ps_copy["ts"] = normalize_epoch_sec(ps_copy.get("ts"), default=0.0, allow_zero=True)
             if "portfolio_fill_observed" in ps_copy:
                 ps_copy["portfolio_fill_observed"] = _parse_bool_flag(ps_copy.get("portfolio_fill_observed"), False)
             st["pending_submit"] = ps_copy
@@ -315,10 +313,7 @@ def _sanitize_t212_state(st: dict) -> dict:
             if "amount" in o_copy and o_copy.get("amount") is not None:
                 o_copy["amount"] = _clean_pos_float(o_copy.get("amount"))
             if "ts" in o_copy and o_copy.get("ts") is not None:
-                o_ts = _clean_nonneg_float(o_copy.get("ts"), 0.0)
-                if o_ts > 1e11:
-                    o_ts /= 1000.0
-                o_copy["ts"] = o_ts
+                o_copy["ts"] = normalize_epoch_sec(o_copy.get("ts"), default=0.0, allow_zero=True)
             if "intent_id" in o_copy:
                 o_copy["intent_id"] = T212Client._clean_order_id(o_copy.get("intent_id"))
             for bk in ("cancel_requested", "dca_counted"):
@@ -340,24 +335,19 @@ def _sanitize_t212_state(st: dict) -> dict:
         st["tp_sold_levels"] = []
     for k in ("buy_backoff_until", "locked_zero_until", "tr_fail_until", "sl_fail_until"):
         if k in st:
-            cleaned = _clean_nonneg_float(st.get(k), -1.0)
-            if cleaned > 1e11:
-                cleaned /= 1000.0
-            if cleaned >= 0.0:
+            cleaned = normalize_epoch_sec(st.get(k), default=None, allow_zero=True)
+            if cleaned is not None:
                 st[k] = cleaned
             else:
                 st.pop(k, None)
     if "tp_fail_until" in st:
         raw_fails = st.get("tp_fail_until")
         if isinstance(raw_fails, dict):
-            clean_fails = {}
-            for fk, fv in raw_fails.items():
-                cv = _clean_nonneg_float(fv, -1.0)
-                if cv > 0.0:
-                    if cv > 1e11:
-                        cv /= 1000.0
-                    clean_fails[str(fk)] = cv
-            st["tp_fail_until"] = clean_fails
+            st["tp_fail_until"] = {
+                str(fk): cv
+                for fk, fv in raw_fails.items()
+                if (cv := normalize_epoch_sec(fv, default=None)) is not None
+            }
         else:
             st.pop("tp_fail_until", None)
     return st
@@ -772,21 +762,16 @@ class Strategy(BaseSpotMixin):
         return True
 
     def _cancel_specific(self, o: dict) -> bool:
-        if self.dry_run or str(o["id"]).startswith("PAPER"):
-            self._remove_order(o)
-            log(f"  [STRAT] cancelled order {o.get('side', '?')} {o['id']}")
-            return True
-        if o.get("cancel_requested"):
-            return True
-        try:
-            self.executor.cancel_order_with_intent(
-                o.get("intent_id") or f"legacy-t212-{self.ticker}-{o['id']}",
-                self.ticker, str(o["id"]),
-            )
-        except ProviderError as exc:
-            log(f"  ! [STRAT] cancel failed for {o['id']}: {exc} — the order stays tracked")
-            return False
-        return self._mark_order_cancel_requested(o, "id")
+        return self._cancel_tracked_order(
+            o,
+            "id",
+            lambda order: self.executor.cancel_order_with_intent(
+                order.get("intent_id") or f"legacy-t212-{self.ticker}-{order['id']}",
+                self.ticker,
+                str(order["id"]),
+            ),
+            log_prefix="cancelled order",
+        )
 
     def _cancel_all_orders(self) -> bool:
         success = True

@@ -20,6 +20,7 @@ from botcore import (
     _parse_bool_flag,
     exact_int,
     load_dotenv as _load_dotenv,
+    normalize_epoch_sec,
     required_bool_env,
     required_env,
     required_float_env,
@@ -365,9 +366,7 @@ class _LivePairVenue:
         if requested_price is not None and req_px_f is None:
             raise ValueError(f"invalid requested_price in rtrade intent {kind}:{side}")
         raw_created = pending.get("created_at") or record.get("created_ts")
-        created_f = _finite_pos_float(raw_created, default=None)
-        if created_f is not None and created_f > 1e11:
-            created_f /= 1000.0
+        created_f = normalize_epoch_sec(raw_created, default=None)
         pending.update({
             "intent_id": pending.get("intent_id") or self._intent_id(record["pair_id"], side, kind),
             "client_order_id": pending["client_order_id"],
@@ -1326,9 +1325,7 @@ class TradingBot:
 
     @staticmethod
     def _default_recovered_state(record) -> dict:
-        created_ts = _finite_pos_float(record.get("created_ts"), default=None)
-        if created_ts is not None and created_ts > 1e11:
-            created_ts /= 1000.0
+        created_ts = normalize_epoch_sec(record.get("created_ts"), default=None)
         now_s = time.time()
         return {
             "pair_id": record["pair_id"],

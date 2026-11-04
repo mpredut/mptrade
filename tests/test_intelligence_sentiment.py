@@ -3616,3 +3616,44 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert m_tao["spread_bps"] == 19.7
     assert m_tao["taker_buy_sell_ratio"] == 1.4839
     assert m_tao["cvd_15m_usd"] > 0
+
+    # Bugs 33, 34 & 35:
+    # - collect_pretrade_telemetry selects freshest whale_snapshot across variants
+    # - harvest_heartbeats_and_state_files excludes stale macro_analyzer.heartbeat (>1800s)
+    # - _format_sre_and_fleet_section reports 'No running heartbeats (all fleet processes stopped)' when 0 processes run
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary, harvest_heartbeats_and_state_files
+    from orchestratorOS.supervisor.prompt_sections import _format_sre_and_fleet_section
+
+    pt_tao = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(tao_cache))
+    assert "Buyer/Seller ratio: 1.48" in pt_tao.get("Whale Taker Flow", "")
+    assert "aggressive_buying" in pt_tao.get("15m Cumulative Volume Delta (CVD)", "")
+
+    hb_dir_stale = tmp_path / "hb_stale_check"
+    hb_dir_stale.mkdir(parents=True, exist_ok=True)
+    (hb_dir_stale / "macro_analyzer.heartbeat").write_text(
+        json.dumps({"status": "alive", "ts": 1000.0}),
+        encoding="utf-8",
+    )
+    (hb_dir_stale / "globaltelemetry_collector.heartbeat").write_text(
+        json.dumps({"status": "alive", "ts": 4500.0}),
+        encoding="utf-8",
+    )
+    act_hbs, _ = harvest_heartbeats_and_state_files(str(hb_dir_stale), str(tmp_path), 5000.0)
+    assert "macro_analyzer.heartbeat" not in act_hbs
+    assert "globaltelemetry_collector.heartbeat" in act_hbs
+    assert act_hbs["globaltelemetry_collector.heartbeat"]["age_seconds"] == 500.0
+
+    sre_lines = _format_sre_and_fleet_section(
+        SimpleNamespace(
+            active_heartbeats={},
+            state_files={},
+            fleet_processes=[{"name": "HL-bot", "is_running": False, "heartbeat_fresh": False}],
+            system_and_vpn={},
+        ),
+        LogEventSummary(),
+        1.0,
+    )
+    sec_2b = next(l for l in sre_lines if "### 2B." in l)
+    assert "0/1 running" in sec_2b
+    assert "No running heartbeats (all fleet processes stopped)" in sec_2b
+    assert "All heartbeats fresh" not in sec_2b

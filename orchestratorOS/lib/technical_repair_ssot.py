@@ -25,6 +25,7 @@ from botcore import (
     clean_json_value,
     evaluate_heartbeat_files_freshness,
     load_ini_config,
+    normalize_epoch_sec,
     obj_attr,
     parse_dotenv_line,
     parse_notify_enabled_flag,
@@ -1097,13 +1098,20 @@ def harvest_heartbeats_and_state_files(
         hb_raw_path = os.path.join(cache_dir, hb_name)
         data = _rj(hb_raw_path)
         if isinstance(data, dict) and data:
-            if hb_name == "rtrade.heartbeat" and _is_default_rj:
+            if _is_default_rj:
                 hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
-                if os.path.exists(hb_resolved):
+                max_hb_age = 300.0 if hb_name == "rtrade.heartbeat" else 1800.0
+                hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
+                if hb_ts is not None and now_ts >= hb_ts:
+                    age_sec = max(0.0, now_ts - hb_ts)
+                    if age_sec > max_hb_age:
+                        continue
+                    data = {**data, "age_seconds": round(age_sec, 1)}
+                elif hb_name == "rtrade.heartbeat" and os.path.exists(hb_resolved):
                     try:
                         mtime = os.path.getmtime(hb_resolved)
                         age_sec = max(0.0, now_ts - mtime)
-                        if age_sec > 300.0:
+                        if age_sec > max_hb_age:
                             continue
                         data = {**data, "age_seconds": round(age_sec, 1)}
                     except OSError:

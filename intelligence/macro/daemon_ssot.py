@@ -22,7 +22,7 @@ from botcore import (
     resolve_now_ts,
     resolve_patched_attr,
     safe_float,
-    safe_nonneg_float as safe_nonneg_ts,
+    safe_nonneg_ts,
     safe_pos_float,
 )
 from cachepaths import (
@@ -195,9 +195,7 @@ def inspect_daemon_heartbeat(
 
     try:
         pid = exact_pos_int(data.get("pid", 0), 0)
-        ts = safe_float(data.get("ts", 0.0), 0.0)
-        if ts > 1e11:
-            ts /= 1000.0
+        ts = safe_nonneg_ts(data.get("ts", 0.0), 0.0)
         age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
         is_alive = False
         if pid > 0:
@@ -651,8 +649,7 @@ class CachedTopicAssessmentAgent:
                 return
             assessment = self._deserialize_from_disk(data)
             self._cached_assessment = assessment
-            eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
-            self._last_eval_ts = eval_ts / 1000.0 if eval_ts > 1e11 else eval_ts
+            self._last_eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
             self._on_loaded_from_disk(data, assessment)
         except Exception as e:
             self._logger.debug("Could not load cached %s state %s: %s", self.AGENT_LABEL, path, e)

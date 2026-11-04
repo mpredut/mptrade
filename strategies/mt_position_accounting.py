@@ -8,6 +8,7 @@ import sys
 from typing import Any, Optional, Tuple
 
 from botcore import (
+    normalize_epoch_sec,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -426,22 +427,16 @@ def _update_mt_reentry_state(
     reentry_state_map: dict,
     last_exit_kind_map: Optional[dict] = None,
 ) -> dict:
-    sell_time_clean = safe_pos_float(sell_time, default=None)
-    if sell_time_clean is not None and sell_time_clean > 1e11:
-        sell_time_clean /= 1000.0
-    now_s = safe_nonneg_float(current_time_s, default=0.0) or 0.0
-    if now_s > 1e11:
-        now_s /= 1000.0
+    sell_time_clean = normalize_epoch_sec(sell_time, default=None)
+    now_s = normalize_epoch_sec(current_time_s, default=0.0, allow_zero=True) or 0.0
     current_time_s = int(now_s) if isinstance(current_time_s, int) and not isinstance(current_time_s, bool) else now_s
     prev_reentry_state = dict(reentry_state_map.get(symbol, {}))
     if prev_reentry_state and sell_time_clean is not None:
-        state_sell_time = safe_pos_float(prev_reentry_state.get("sell_time"), default=None)
-        if state_sell_time is not None and state_sell_time > 1e11:
-            state_sell_time /= 1000.0
+        state_sell_time = normalize_epoch_sec(prev_reentry_state.get("sell_time"), default=None)
+        if state_sell_time is not None:
             prev_reentry_state["sell_time"] = state_sell_time
-        state_started_at = safe_pos_float(prev_reentry_state.get("started_at"), default=None)
-        if state_started_at is not None and state_started_at > 1e11:
-            state_started_at /= 1000.0
+        state_started_at = normalize_epoch_sec(prev_reentry_state.get("started_at"), default=None)
+        if state_started_at is not None:
             prev_reentry_state["started_at"] = state_started_at
         if (
             (state_sell_time is not None and state_sell_time != sell_time_clean)

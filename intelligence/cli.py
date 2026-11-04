@@ -21,8 +21,10 @@ from intelligence.macro_sentiment_ssot import (
     inspect_daemon_heartbeat,
     load_cached_geopolitical_eval,
     load_cached_sentiment_advisor_eval,
+    normalize_epoch_sec,
     safe_float,
     safe_int,
+    safe_nonneg_ts,
 )
 from state_io import read_json_dict
 
@@ -45,10 +47,8 @@ def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True
     raw_ts = data.get("ts")
     if raw_ts is None and ts_fallback_key:
         raw_ts = data.get(ts_fallback_key)
-    ts = safe_float(raw_ts, 0.0)
-    if ts > 1e11:
-        ts /= 1000.0
-    now_s = now / 1000.0 if now > 1e11 else now
+    ts = safe_nonneg_ts(raw_ts, 0.0)
+    now_s = normalize_epoch_sec(now, default=now, allow_zero=True) or now
     age = (now_s - ts) if ts > 0.0 else float("inf")
     if include_seconds:
         age_f = safe_float(age, default=None)

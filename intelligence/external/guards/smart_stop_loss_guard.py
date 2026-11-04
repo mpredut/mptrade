@@ -29,6 +29,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scale,
     load_dotenv,
+    normalize_epoch_sec,
     required_float_env,
     resolve_now_ts,
     safe_float,
@@ -120,8 +121,8 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
         norm_k: dict(v, start_ts=sts_sec)
         for k, v in data.items()
         if isinstance(v, dict)
-        and (sts := safe_float(v.get("start_ts"), None)) is not None
-        and (sts_sec := (sts / 1000.0 if sts > 1e11 else sts)) > 1_000_000_000
+        and (sts_sec := normalize_epoch_sec(v.get("start_ts"), default=None)) is not None
+        and sts_sec > 1_000_000_000
         and -5.0 <= (now_curr - sts_sec) < 3600.0
         and (norm_k := clean_guard_symbol_key(k))
     }
@@ -356,10 +357,8 @@ class SmartStopLossGuard:
             tracker = _load_grace_state(is_sim=is_sim, now_ts=now_ts)
             active_grace = tracker.get(sym_key) if isinstance(tracker.get(sym_key), dict) else None
             if active_grace is not None:
-                existing_start = safe_float(active_grace.get("start_ts"), -1.0)
-                if existing_start > 1e11:
-                    existing_start /= 1000.0
-                    active_grace["start_ts"] = existing_start
+                existing_start = normalize_epoch_sec(active_grace.get("start_ts"), default=-1.0)
+                active_grace["start_ts"] = existing_start
                 if (
                     existing_start < 0.0
                     or existing_start > now_ts + 5.0
@@ -467,9 +466,7 @@ class SmartStopLossGuard:
         if _is_buy_price_changed(grace_info.get("buy_price"), buy_price):
             return False
         price_decrease, lost_threshold = safe_float(price_decrease, 0.0), safe_float(lost_threshold, 0.0)
-        start_ts = safe_float(grace_info.get("start_ts"), -1.0)
-        if start_ts > 1e11:
-            start_ts /= 1000.0
+        start_ts = normalize_epoch_sec(grace_info.get("start_ts"), default=-1.0)
         if start_ts < 0.0 or start_ts > now_ts + 5.0 or (elapsed := max(0.0, now_ts - start_ts)) > 3600.0:
             return False
 

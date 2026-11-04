@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from cachepaths import normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
+    normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -236,11 +237,11 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
         for m_sym, m_ser in watcher_price_items.items():
             if isinstance(m_ser, list) and m_ser:
                 valid_pts = [
-                    (ts_f / 1000.0 if ts_f > 1e11 else ts_f, px_f)
+                    (ts_f, px_f)
                     for row in m_ser
                     if isinstance(row, (list, tuple))
                     and len(row) > 1
-                    and (ts_f := safe_pos_float(row[0], default=None)) is not None
+                    and (ts_f := normalize_epoch_sec(row[0], default=None)) is not None
                     and (px_f := safe_pos_float(row[1], default=0.0) or 0.0) > 0.0
                 ]
                 if valid_pts:

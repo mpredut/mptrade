@@ -22,7 +22,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import ensure_local_module_priority, safe_float, safe_nonneg_float, safe_pos_float  # noqa: E402
 ensure_local_module_priority(_HERE, "strategy")
-from strategies.spot_replay import make_spot_replay_adapter
+from strategies.spot_replay import build_replay_summary, make_spot_replay_adapter
 from strategy import Strategy, StratParams, HL_FEE_PCT
 from offline.backtests.execution import (
     ExecutionModel,
@@ -333,40 +333,27 @@ def _run_once(
         final_open_fee = (fee_pct_eff / 100.0) * cost
         total_fees += final_open_fee
 
-    if periods_per_year is None and valid_bar_minutes is not None:
-        periods_per_year = 365.0 * 24 * 60 / valid_bar_minutes
-
-    performance = calculate_performance_metrics(
-        equity_curve,
+    return build_replay_summary(
+        realized=realized,
+        net=realized + funding,
+        fees=total_fees,
+        total=realized + funding + final_upnl - final_open_fee,
+        final_upnl=final_upnl,
+        cycles=cycles,
+        wins=wins,
+        open_qty=qty,
+        fills=fills,
+        ambiguous_bars=ambiguous_bars,
         initial_capital=initial_capital,
-        periods_per_year=periods_per_year,
+        account_currency=strat_params.currency,
+        equity_curve=equity_curve,
         exposure=exposure,
         trade_pnls=trade_pnls,
         turnover_notional=turnover_notional,
+        bar_minutes=valid_bar_minutes,
+        periods_per_year=periods_per_year,
+        extra_fields={"funding": round_metric(funding)},
     )
-
-    rounded = round_metric
-    result = {
-        "realized": rounded(realized),
-        "net": rounded(realized + funding),
-        "fees": rounded(total_fees),
-        "funding": rounded(funding),
-        "cycles": cycles,
-        "wins": wins,
-        "maxdd": rounded(performance["max_drawdown_abs"]),
-        "open_qty": rounded(qty),
-        "final_upnl": rounded(final_upnl),
-        "total": rounded(realized + funding + final_upnl - final_open_fee),
-        "fills": fills,
-        "ambiguous_bars": ambiguous_bars,
-        "initial_capital": rounded(initial_capital),
-        "account_currency": strat_params.currency,
-    }
-    result.update({
-        key: rounded(value)
-        for key, value in performance.items()
-    })
-    return result
 
 
 def make_hyperliquid_spot_replay_adapter(params: Any, fee_pct: float = 0.035, **kwargs):

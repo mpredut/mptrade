@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, resolve_patched_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_patched_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_symbol_key,
@@ -149,6 +149,10 @@ def _clean_dict_float(
 def _clean_snapshot_symbol(data: Dict[str, Any], fallback: str = "") -> str:
     raw = (data.get("symbol") if isinstance(data, dict) else None) or fallback
     return raw.strip() if isinstance(raw, str) else ""
+
+
+def _clean_snapshot_ts(data: Dict[str, Any], default: float = 0.0) -> float:
+    return normalize_epoch_sec(_clean_dict_float(data, "ts", default, "timestamp", nonneg=True), default=default)
 
 
 def round_spread_bps(

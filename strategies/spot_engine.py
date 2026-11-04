@@ -515,10 +515,6 @@ class Strategy(BaseSpotMixin):
             log("  [STRAT] intent absence confirmed — the strategy may re-evaluate it")
 
     # -- Helpers ---------------------------------------------------------------
-    def _qty_for(self, amount: float, price: float) -> float:
-        amt_f, px_f = safe_pos_float(amount, default=None), safe_pos_float(price, default=None)
-        return round(amt_f / px_f, self.vol_dec) if (amt_f is not None and px_f is not None) else 0.0
-
     def _dust_safe_qty(self, qty: float) -> float:
         """Leave one volume tick to tolerate a venue's rounded balance."""
         qty_f = safe_pos_float(qty, default=None)
@@ -669,24 +665,16 @@ class Strategy(BaseSpotMixin):
 
     def _cancel_order(self, o: dict) -> bool:
         """Request cancellation without forgetting the order before terminal confirmation."""
-        if self.dry_run or str(o["txid"]).startswith("PAPER"):
-            self._remove(o)
-            log(f"  [STRAT] cancelled {o['side']} {o['txid']}")
-            return True
-        if o.get("cancel_requested"):
-            return True
-        try:
+        def _do_cancel(order: dict) -> None:
             cancel_with_intent = getattr(type(self.client), "cancel_order_with_intent", None)
             if callable(cancel_with_intent):
                 cancel_with_intent(
-                    self.client, o.get("intent_id") or f"legacy-{self.pair}-{o['txid']}", self.pair, o["txid"]
+                    self.client, order.get("intent_id") or f"legacy-{self.pair}-{order['txid']}", self.pair, order["txid"]
                 )
             else:
-                self.client.cancel_order(self.pair, o["txid"])
-        except ProviderError as e:
-            log(f"  ! [STRAT] cancel failed for {o['txid']}: {e} — the order stays tracked")
-            return False
-        return self._mark_order_cancel_requested(o, "txid")
+                self.client.cancel_order(self.pair, order["txid"])
+
+        return self._cancel_tracked_order(o, "txid", _do_cancel, log_prefix="cancelled")
 
     def _cancel_orders(self, side: str | None = None, *, exclude_market: bool = False) -> bool:
         """Request cancellation of selected orders; return False if any request fails."""
@@ -1536,9 +1524,7 @@ class Strategy(BaseSpotMixin):
         if self.s.get("pending_intent"):
             log("  [STRAT] pre-submit intent in reconciliation — deferring new decisions")
             return None
-        clean_ts = _clean_nonneg_float(timestamp)
-        if clean_ts is not None and clean_ts > 1e11:
-            clean_ts /= 1000.0
+        clean_ts = normalize_epoch_sec(timestamp, default=None, allow_zero=True)
         had_persisted_reconcile = bool(self.s.get("ledger_reconcile_required"))
         if self.observe_only:
             tick_time = clean_ts if clean_ts is not None else self._now()

@@ -72,7 +72,7 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
-    safe_nonneg_float as safe_nonneg_ts,
+    safe_nonneg_ts,
     safe_pos_float,
     safe_thresh,
     sanitize_heartbeat_status,
@@ -546,9 +546,7 @@ def load_cached_fear_greed_snapshot(
                     else fg_data.get("index_timestamp")
                 )
             )
-            fg_ts = safe_pos_float(raw_fg_ts, eval_now)
-            if fg_ts > 1e11:
-                fg_ts /= 1000.0
+            fg_ts = normalize_epoch_sec(raw_fg_ts, default=eval_now) or eval_now
             raw_hist = fg_data.get("historical_values") or ()
             hist_vals = tuple(
                 max(0, min(100, int(round(v_f))))
@@ -599,9 +597,7 @@ def load_cached_market_breadth_snapshot(
             raw_dec = mb_data.get("declining_count") if mb_data.get("declining_count") is not None else mb_data.get("declining")
             raw_tot = mb_data.get("total_count") if mb_data.get("total_count") is not None else mb_data.get("total_symbols")
             raw_ts = mb_data.get("ts") if mb_data.get("ts") is not None else mb_data.get("timestamp")
-            mb_ts = safe_pos_float(raw_ts, eval_now)
-            if mb_ts > 1e11:
-                mb_ts /= 1000.0
+            mb_ts = normalize_epoch_sec(raw_ts, default=eval_now) or eval_now
             rot_reg = _clean_nonbool_str(mb_data.get("rotation_regime"), "") or None
             return MarketBreadthSnapshot(
                 advance_ratio=clean_scale(mb_data.get("advance_ratio"), default=0.5, allow_percent=True),
@@ -660,8 +656,8 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
         }
         if "confidence" in data:
             out["confidence"] = clean_scale(data.get("confidence"), default=0.5, allow_percent=True)
-        if (ts_v := safe_pos_float(data.get("ts"), None)) is not None and ts_v > 1e11:
-            out["ts"] = ts_v / 1000.0
+        if (ts_v := normalize_epoch_sec(data.get("ts"), default=None)) is not None:
+            out["ts"] = ts_v
         return out
     return None
 
@@ -679,8 +675,8 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
         }
         if "risk_score" in data:
             out["risk_score"] = clean_scale(data.get("risk_score"), default=0.0, allow_percent=True)
-        if (ts_v := safe_pos_float(data.get("ts"), None)) is not None and ts_v > 1e11:
-            out["ts"] = ts_v / 1000.0
+        if (ts_v := normalize_epoch_sec(data.get("ts"), default=None)) is not None:
+            out["ts"] = ts_v
         return out
     return None
 

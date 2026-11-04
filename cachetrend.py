@@ -32,6 +32,7 @@ import utils as u
 from botcore import (
     diff_percent,
     load_dotenv as _load_dotenv,
+    normalize_epoch_sec,
     required_env,
     required_float_env,
     resolve_patched_attr,
@@ -806,11 +807,9 @@ class CacheShortTrendManager(CacheManagerInterface):
         if req is None:
             return None
         if now is not None:
-            now = safe_pos_float(now, default=None)
+            now = normalize_epoch_sec(now, default=None)
             if now is None:
                 return None
-            if now > 1e11:
-                now /= 1000.0
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -1432,16 +1431,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         """Validate the common full-snapshot price and observation timestamp."""
         if not isinstance(snap, dict):
             return False
-        now_f = safe_pos_float(now, default=None)
+        now_f = normalize_epoch_sec(now, default=None)
         max_age_f = safe_pos_float(max_age_sec, default=None)
-        observed_at = safe_pos_float(snap.get("ts"), default=None)
+        observed_at = normalize_epoch_sec(snap.get("ts"), default=None)
         price = safe_pos_float(snap.get("current_price"), default=None)
         if now_f is None or max_age_f is None or observed_at is None or price is None:
             return False
-        if now_f > 1e11:
-            now_f /= 1000.0
-        if observed_at > 1e11:
-            observed_at /= 1000.0
         age = now_f - observed_at
         return -5.0 <= age <= max_age_f
 

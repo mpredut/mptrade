@@ -10,6 +10,7 @@ from botcore import (
     _parse_bool_flag as _bool_flag,
     are_close,
     diff_percent,
+    normalize_epoch_sec,
     safe_float,
 )
 
@@ -25,10 +26,8 @@ def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]
     for item in shadow_prices:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        tf, pf = _finite_float(item[0]), _finite_float(item[1])
+        tf, pf = normalize_epoch_sec(item[0], default=None, allow_zero=True), _finite_float(item[1])
         if tf is not None and pf is not None and pf > 0:
-            if tf > 1e11:
-                tf /= 1000.0
             out.append((tf, pf))
     if len(out) > 1 and any(out[i][0] > out[i + 1][0] for i in range(len(out) - 1)):
         out.sort(key=lambda pair: pair[0])
@@ -230,9 +229,7 @@ def check_fast_profit_reversal(
     valid_shadows = _iter_valid_shadow_prices(shadow_prices)
     if not valid_shadows:
         return False, current_gain_pct, 0.0
-    now_f = _finite_float(current_time)
-    if now_f is not None and now_f > 1e11:
-        now_f /= 1000.0
+    now_f = normalize_epoch_sec(current_time, default=None, allow_zero=True)
     now = now_f if now_f is not None else valid_shadows[-1][0]
     cutoff = now - max(0.0, _finite_float(window_sec, 0.0))
     recent = [p for t, p in valid_shadows if cutoff <= t <= now]
@@ -309,11 +306,8 @@ def check_slow_grind_exhaustion(
 ) -> tuple[bool, str]:
     """Return (triggered, reason) for 1-3 week slow-grind accumulation exit."""
     avg_f, px_f = _finite_float(avg_cost), _finite_float(current_price)
-    ent_f, cur_t_f = _finite_float(entry_ts), _finite_float(current_ts)
-    if ent_f is not None and ent_f > 1e11:
-        ent_f /= 1000.0
-    if cur_t_f is not None and cur_t_f > 1e11:
-        cur_t_f /= 1000.0
+    ent_f = normalize_epoch_sec(entry_ts, default=None, allow_zero=True)
+    cur_t_f = normalize_epoch_sec(current_ts, default=None, allow_zero=True)
     md_f, mg_f = _finite_float(min_days), _finite_float(min_gain_pct)
     if (
         any(v is None or v <= 0 for v in (avg_f, px_f, md_f, mg_f))

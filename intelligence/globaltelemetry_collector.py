@@ -31,6 +31,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     run_daemon_loop,
     run_scheduled_step,
+    safe_nonneg_ts,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat,
@@ -153,9 +154,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 now_ts=eff_now,
             )
             if snap:
-                idx_ts = safe_pos_float(getattr(snap, "timestamp", None), now_val)
-                if idx_ts > 1e11:
-                    idx_ts /= 1000.0
+                idx_ts = safe_nonneg_ts(getattr(snap, "timestamp", None), now_val) or now_val
                 self._save_dual_cache(
                     "fear_greed",
                     {
@@ -190,9 +189,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
                 tot = getattr(breadth, "total_count", 0)
-                b_ts = safe_pos_float(getattr(breadth, "ts", None), now_val)
-                if b_ts > 1e11:
-                    b_ts /= 1000.0
+                b_ts = safe_nonneg_ts(getattr(breadth, "ts", None), now_val) or now_val
                 mb_payload: Dict[str, Any] = {
                     "advance_ratio": breadth.advance_ratio,
                     "median_change_pct": breadth.median_change_pct,

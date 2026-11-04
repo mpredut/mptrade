@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import deque
 import statistics
 from typing import Literal
-from botcore import safe_float, safe_pos_float, safe_pos_int
+from botcore import normalize_epoch_sec, safe_float, safe_pos_float, safe_pos_int
 from intelligence.internal.triggers.trigger_event import (
     TriggerEvent,
     TriggerAction,
@@ -100,9 +100,7 @@ class MeanReversionTrigger:
 
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
-        ts_clean = safe_float(timestamp, default=0.0) or 0.0
-        if ts_clean > 1e11:
-            ts_clean /= 1000.0
+        ts_clean = normalize_epoch_sec(timestamp, default=0.0, allow_zero=True) or 0.0
         price_f = safe_pos_float(price, default=None)
         if price_f is None:
             return TriggerEvent(

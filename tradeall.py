@@ -34,9 +34,9 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # botcore.load_dotenv does not overwrite variables already set by the real
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (exact_nonneg_int, exact_pos_int, load_dotenv as _load_dotenv,
-                     required_bool_env, required_float_env, required_int_env,
-                     safe_nonneg_float, safe_pos_float, sanitize_pipe_field,
-                     touch_module_heartbeat)
+                     normalize_epoch_sec, required_bool_env, required_float_env,
+                     required_int_env, resolve_now_ts, safe_nonneg_float, safe_pos_float,
+                     sanitize_pipe_field, touch_module_heartbeat)
 _load_dotenv()
 
 
@@ -402,16 +402,10 @@ class TrendState:
 
     @staticmethod
     def _norm_ts(ts):
-        if ts is None:
-            return None
-        f = safe_nonneg_float(ts, default=None)
-        if f is None:
-            return None
-        return f / 1000.0 if f > 1e11 else f
+        return normalize_epoch_sec(ts, default=None, allow_zero=True)
 
     def _now_sec(self):
-        val = self._norm_ts(self._now())
-        return val if val is not None else time.time()
+        return resolve_now_ts(self._now(), allow_zero=True)
 
     def start_trend(self, new_state):
         assert new_state in ['UP', 'DOWN', 'HOLD'], "Invalid trend state"

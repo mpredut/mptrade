@@ -37,6 +37,7 @@ from offline.backtests.execution import (
 )
 from offline.backtests.metrics import calculate_performance_metrics, round_metric
 from providers.replay_clock import SimClock as _SimClock
+from strategies.spot_replay import build_replay_summary
 
 
 def _ols_slope_pct(closes: list[float]) -> float | None:
@@ -225,38 +226,31 @@ def _run_once(
     finally:
         _strat.log, _strat.notify = original_log, original_notify
 
-    if periods_per_year is None and bar_minutes:
-        periods_per_year = 365.0 * 24 * 60 / bar_minutes
-    performance = calculate_performance_metrics(
-        equity_curve,
-        initial_capital=initial_capital,
-        periods_per_year=periods_per_year,
-        exposure=exposure,
-        trade_pnls=trade_pnls,
-        turnover_notional=turnover_account,
-    )
     qty = engine.s["qty"]
     avg = engine._avg_cost()
     final_upnl_usd = (float(ohlc[-1][3]) - avg) * qty if avg and qty > 1e-9 else 0.0
     open_buy_fee_usd = params.fx_fee_pct / 100.0 * engine.s["cost_usd"]
-    rounded = round_metric
-    return {
-        "realized": rounded(engine.s["realized_pnl_usd"]),
-        "net": rounded(engine.s["realized_net_usd"]),
-        "fees": rounded(engine.s["fees_usd"] + open_buy_fee_usd),
-        "total": rounded(engine.s["realized_net_usd"] + final_upnl_usd - open_buy_fee_usd),
-        "final_upnl": rounded(final_upnl_usd),
-        "open_buy_fee": rounded(open_buy_fee_usd),
-        "account_currency": params.currency,
-        "cycles": engine.s.get("cycle", 1) - cycle0,
-        "wins": wins,
-        "maxdd": rounded(performance["max_drawdown_abs"]),
-        "open_qty": rounded(qty),
-        "fills": fills,
-        "ambiguous_bars": ambiguous_bars,
-        "initial_capital": rounded(initial_capital),
-        **{key: rounded(value) for key, value in performance.items()},
-    }
+    return build_replay_summary(
+        realized=engine.s["realized_pnl_usd"],
+        net=engine.s["realized_net_usd"],
+        fees=engine.s["fees_usd"] + open_buy_fee_usd,
+        total=engine.s["realized_net_usd"] + final_upnl_usd - open_buy_fee_usd,
+        final_upnl=final_upnl_usd,
+        cycles=engine.s.get("cycle", 1) - cycle0,
+        wins=wins,
+        open_qty=qty,
+        fills=fills,
+        ambiguous_bars=ambiguous_bars,
+        initial_capital=initial_capital,
+        account_currency=params.currency,
+        equity_curve=equity_curve,
+        exposure=exposure,
+        trade_pnls=trade_pnls,
+        turnover_notional=turnover_account,
+        bar_minutes=bar_minutes,
+        periods_per_year=periods_per_year,
+        extra_fields={"open_buy_fee": round_metric(open_buy_fee_usd)},
+    )
 
 
 def make_t212_replay_adapter(

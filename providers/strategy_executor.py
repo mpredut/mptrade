@@ -242,7 +242,7 @@ def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
     return capabilities
 
 
-from .base import clean_order_id, extract_order_id, extract_orig_qty  # noqa: E402
+from .order_ohlc_utils import clean_order_id, extract_order_id, extract_orig_qty  # noqa: E402
 
 # Compatibility alias retained for existing imports.
 extract_order_qty = extract_orig_qty

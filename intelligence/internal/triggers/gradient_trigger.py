@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from botcore import safe_float, safe_pos_float
+from botcore import normalize_epoch_sec, safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 
 
@@ -32,9 +32,7 @@ class LinearGradientTrigger:
         if price_f is None or grad_f is None or eps_f is None:
             return "unknown", None
         price, gradient, epsilon = price_f, grad_f, eps_f
-        ts_f = safe_pos_float(ts, default=0.0) or 0.0
-        if ts_f > 1e11:
-            ts_f /= 1000.0
+        ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
 
         strength = abs(gradient) / epsilon
         regime = "sideways"

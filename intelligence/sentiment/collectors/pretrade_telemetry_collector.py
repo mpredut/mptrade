@@ -14,6 +14,7 @@ from cachepaths import (
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
     resolve_read_json_cached,
@@ -72,15 +73,28 @@ def collect_pretrade_telemetry(
     sym_variants = cache_symbol_variants(symbol, include_base=True)
     quote_variants = cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes)
 
+    def _snap_ts(obj: Any) -> float:
+        raw_t = obj_attr(obj, "ts", obj_attr(obj, "timestamp", None))
+        return normalize_epoch_sec(raw_t, default=0.0) or 0.0
+
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
         variants = quote_variants if prefix == "orderbook_depth_" else sym_variants
+        prefer_freshest = prefix in ("whale_snapshot_", "derivatives_telemetry_")
+        best_d: Optional[Dict[str, Any]] = None
+        best_ts = -1.0
         for cand in variants:
             d = _rj(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
             if isinstance(d, dict):
-                return d if d.get("symbol") else {**d, "symbol": cand}
-        return None
+                cand_d = d if d.get("symbol") else {**d, "symbol": cand}
+                if not prefer_freshest:
+                    return cand_d
+                ts_v = _snap_ts(cand_d)
+                if best_d is None or ts_v > best_ts:
+                    best_d, best_ts = cand_d, ts_v
+        return best_d
 
     def _fetch_pillar2(getter_fn: Callable[[], Any], prefix: str) -> Any:
+        snap = None
         try:
             col = getter_fn()
             col_cdir = getattr(col, "_cache_dir", None)
@@ -92,11 +106,13 @@ def collect_pretrade_telemetry(
                     col_cdir = raw_cdir
             if not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
                 snap = fetch_guard_snapshot(col, symbol, allow_network=False)
-                if snap is not None:
-                    return snap
         except Exception:
-            pass
-        return _disk_telem(prefix)
+            snap = None
+        disk_d = _disk_telem(prefix)
+        if snap is not None and disk_d is not None and prefix in ("whale_snapshot_", "derivatives_telemetry_"):
+            if _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
+                return disk_d
+        return snap if snap is not None else disk_d
 
     telemetry: Dict[str, Any] = {}
     ob_snap = None

@@ -19,6 +19,7 @@ from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
+    _clean_snapshot_ts,
     _effective_now_ts,
     _extract_base_asset,
     _has_hyperliquid_instrument,
@@ -65,9 +66,6 @@ class WhalePositioningSnapshot:
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         raw_long_val = data.get("top_traders_long_pct") if data.get("top_traders_long_pct") is not None else data.get("whale_long_pct")
         long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True, clamp=True)
-        ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
-        if ts_val > 1e11:
-            ts_val /= 1000.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             top_traders_long_ratio=_clean_dict_float(data, "top_traders_long_ratio", 1.0, "whale_long_ratio", nonneg=True),
@@ -78,7 +76,7 @@ class WhalePositioningSnapshot:
             open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
             open_interest_1h_change_pct=_clean_dict_float(data, "open_interest_1h_change_pct", 0.0, "oi_1h_chg_pct"),
             divergence_regime=reg_str,
-            ts=ts_val,
+            ts=_clean_snapshot_ts(data),
             funding_rate=safe_float(data.get("funding_rate"), default=None),
             taker_ratio_5m=safe_pos_float(data.get("taker_ratio_5m"), default=None),
             taker_ratio_1h=safe_pos_float(data.get("taker_ratio_1h"), default=None),

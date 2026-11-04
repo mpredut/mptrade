@@ -11,10 +11,12 @@ from binance_api import bapi_trades as apitrades
 from botcore import (
     _parse_bool_flag,
     load_dotenv as _load_dotenv,
+    normalize_epoch_sec,
     parse_dotenv,
     parse_ratio_or_pct as _parse_mt_ratio,
     required_bool_env,
     required_float_env,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -1363,9 +1365,9 @@ def _evaluate_mt_reentry(
             print("No sell_price !!!!!")
         return True
     sell_price = sell_price_f
-    sell_time_f = safe_pos_float(sell_time, default=None)
+    sell_time_f = normalize_epoch_sec(sell_time, default=None)
     if sell_time_f is not None:
-        sell_time = sell_time_f / 1000.0 if sell_time_f > 1e11 else sell_time_f
+        sell_time = sell_time_f
     if (
         sell_time
         and symbol not in _LAST_EXIT_KIND
@@ -1496,12 +1498,7 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     if maxage_trade_s is None:
         maxage_trade_s = _def_maxage_s
 
-    raw_now = safe_pos_float(now_fn(), default=None)
-    if raw_now is None:
-        raw_now = time.time()
-    elif raw_now > 1e11:
-        raw_now /= 1000.0
-    current_time_s = int(raw_now)
+    current_time_s = int(resolve_now_ts(now_fn()))
     trade_orders_buy = _coerce_order_list(inst.orders("BUY", maxage_trade_s))
     trade_orders_sell = _coerce_order_list(inst.orders("SELL", maxage_trade_s))
     if not (trade_orders_buy or trade_orders_sell):

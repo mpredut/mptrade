@@ -22,6 +22,7 @@ from botcore import (
     exact_pos_int as _safe_pos_int,
     float_env,
     int_env,
+    normalize_epoch_sec,
     obj_attr as _alert_attr,
     parse_dotenv,
     safe_float,
@@ -803,12 +804,10 @@ class AlertNotifier:
         if value is None or isinstance(value, bool):
             return "N/A"
         if isinstance(value, (int, float)):
-            vf = safe_pos_float(value, default=None)
+            vf = normalize_epoch_sec(value, default=None)
             if vf is None:
                 return str(value)
             try:
-                if vf > 1e11:
-                    vf /= 1000.0
                 return datetime.fromtimestamp(vf).strftime(fmt)
             except Exception:
                 return str(value)

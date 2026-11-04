@@ -342,9 +342,7 @@ def load_symbol_microstructure(
                 if not prefer_freshest:
                     return d, cand
                 ts_raw = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
-                ts_v = safe_pos_float(ts_raw, default=0.0) or 0.0
-                if ts_v > 1e11:
-                    ts_v /= 1000.0
+                ts_v = normalize_epoch_sec(safe_pos_float(ts_raw, default=0.0) or 0.0, default=0.0)
                 if best_d is None or ts_v > best_ts:
                     best_d, best_cand, best_ts = d, cand, ts_v
         return best_d, best_cand
@@ -455,7 +453,7 @@ def ensure_fresh_symbol_microstructure(
             OrderbookDepthCollector(cache_dir=cache_dir).fetch(sym_u)
         except Exception:
             pass
-    if include_derivatives and _needs_fetch("derivatives_telemetry_", None):
+    if include_derivatives and _needs_fetch("derivatives_telemetry_", max_age_whale_sec):
         try:
             from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 
@@ -555,7 +553,9 @@ def enrich_24h_and_microstructure(
     from instruments_config import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
-        ensure_fresh_symbol_microstructure(cache_dir, hl_sym, now_ts=now_ts, include_derivatives=True)
+        ensure_fresh_symbol_microstructure(
+            cache_dir, hl_sym, now_ts=now_ts, max_age_ob_sec=180.0, max_age_whale_sec=360.0, include_derivatives=True
+        )
         if hl_sym not in prices_and_trends and (
             any(canonical_base_asset(k) == hl_base for k in prices_and_trends)
             or load_symbol_microstructure(cache_dir, hl_sym, _rj)
@@ -732,6 +732,17 @@ def enrich_24h_and_microstructure(
                         vals_5d.append(post_rth_px_override)
                     if len(vals_5d) >= 2:
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
+                    if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
+                        try:
+                            from state_io import save_json_state
+
+                            if pts_24h:
+                                p24_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+                                save_json_state(p24_eq_path, {"items": {sym: pts_24h}})
+                            p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
+                            save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
+                        except Exception:
+                            pass
             except Exception:
                 pass
         if m24:
@@ -739,9 +750,14 @@ def enrich_24h_and_microstructure(
             if post_rth_px_override is not None:
                 recalculate_live_price_geometry(prices_and_trends[sym], post_rth_px_override)
 
-        if sym.upper() in ("HYPEUSD", "TAOUSD", "ADAUSD"):
+        if not is_eq_sym and "USD" in compatible_quote_suffixes(sym):
             ensure_fresh_symbol_microstructure(
-                cache_dir, sym.upper(), now_ts=now_ts, max_age_ob_sec=180.0, max_age_whale_sec=360.0
+                cache_dir,
+                sym.upper(),
+                now_ts=now_ts,
+                max_age_ob_sec=180.0,
+                max_age_whale_sec=360.0,
+                include_derivatives=True,
             )
         if m_info := load_symbol_microstructure(cache_dir, sym, _rj):
             is_usd_sym = "USD" in compatible_quote_suffixes(sym)

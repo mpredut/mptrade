@@ -10,6 +10,17 @@ from typing import Any, Callable, Optional, Tuple
 
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
+from .order_ohlc_utils import (
+    _clean_single_order_id,
+    clean_order_id,
+    clean_order_id_str,
+    extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+    normalize_side,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -563,21 +574,4 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                             final, reason, asset,
                             scale_applied=scale_applied, applied_scale=applied_scale)
 
-
-# Keep at bottom of module: providers.base imports compute_fills_cost_basis /
-# decide_quantity / remaining_average_cost / venue_fee_cap_quantity from
-# providers.quantity at import time, so importing providers.quantity first
-# (e.g. market_monitor/alerts_config.py) requires our public exports to be
-# bound before triggering providers.base initialization.
-from .base import (  # noqa: E402
-    _clean_single_order_id,
-    clean_order_id,
-    clean_order_id_str,
-    extract_order_fee,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-    extract_timestamp_ms,
-    normalize_side,
-)
 

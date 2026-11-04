@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     are_close,
+    normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -151,10 +152,9 @@ class PositionSnapshot(PriceGeometrySnapshot):
         self.symbol = _clean_symbol_str(self.symbol)
         for attr in ("current_price", "avg_buy_price"):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=0.0))
-        for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
+        for attr in ("net_qty", "sellable_qty", "vol_1h"):
             setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
-        if self.current_time_s > 1e11:
-            self.current_time_s /= 1000.0
+        self.current_time_s = normalize_epoch_sec(getattr(self, "current_time_s", 0.0), default=0.0, allow_zero=True) or 0.0
         for attr in ("sma_value", "window_move_pct"):
             setattr(self, attr, safe_float(getattr(self, attr, None), default=None))
         if self.shadow_prices is None or isinstance(self.shadow_prices, (bool, str, bytes, dict)) or not hasattr(self.shadow_prices, "__iter__"):
@@ -242,14 +242,11 @@ class ReentrySnapshot(PriceGeometrySnapshot):
     def __post_init__(self) -> None:
         self.symbol = _clean_symbol_str(self.symbol)
         self.current_price = safe_pos_float(self.current_price, default=0.0)
-        for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough", "last_sell_time_s"):
+        for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough"):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=None))
-        if self.last_sell_time_s is not None and self.last_sell_time_s > 1e11:
-            self.last_sell_time_s /= 1000.0
-        for attr in ("current_time_s", "vol_1h"):
-            setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
-        if self.current_time_s > 1e11:
-            self.current_time_s /= 1000.0
+        self.last_sell_time_s = normalize_epoch_sec(getattr(self, "last_sell_time_s", None), default=None)
+        self.vol_1h = safe_nonneg_float(getattr(self, "vol_1h", 0.0), default=0.0)
+        self.current_time_s = normalize_epoch_sec(getattr(self, "current_time_s", 0.0), default=0.0, allow_zero=True) or 0.0
         if self.last_exit_kind is not None:
             if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
                 self.last_exit_kind = None

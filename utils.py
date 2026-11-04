@@ -122,11 +122,9 @@ def timeMsToHMS(timestamp_ms):
 
 @lru_cache(maxsize=256)
 def timeToHMS(timestamp_sec):
-    ts_f = botcore.safe_nonneg_float(timestamp_sec, default=None)
+    ts_f = botcore.normalize_epoch_sec(timestamp_sec, default=None, allow_zero=True)
     if ts_f is None:
         return "N/A"
-    if ts_f > 1e11:
-        ts_f /= 1000.0
     try:
         return datetime.fromtimestamp(ts_f).strftime('%H:%M:%S')
     except (TypeError, ValueError, OverflowError, OSError):

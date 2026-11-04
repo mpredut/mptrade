@@ -41,6 +41,7 @@ from intelligence.external.collectors.base_collector import (
     _cached_registry_specs,
     _clean_dict_float,
     _clean_snapshot_symbol,
+    _clean_snapshot_ts,
     _extract_base_asset,
     _fetch_hyperliquid_asset_ctx,
     _has_hyperliquid_instrument,
@@ -91,9 +92,6 @@ class OrderbookSnapshot:
         d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth * (1.0 / 1.5), 2) if ask_depth > 0.0 else 0.0)
         raw_imb_val = data.get("imbalance_ratio") if data.get("imbalance_ratio") is not None else data.get("ob_imbalance")
         imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True, clamp=True)
-        ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
-        if ts_val > 1e11:
-            ts_val /= 1000.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             mid_price=mid_price,
@@ -104,7 +102,7 @@ class OrderbookSnapshot:
             largest_bid_wall_price=_clean_dict_float(data, "largest_bid_wall_price", 0.0, "bid_wall_px", nonneg=True),
             largest_ask_wall_usd=_clean_dict_float(data, "largest_ask_wall_usd", 0.0, "ask_wall_usd", nonneg=True),
             largest_ask_wall_price=_clean_dict_float(data, "largest_ask_wall_price", 0.0, "ask_wall_px", nonneg=True),
-            ts=ts_val,
+            ts=_clean_snapshot_ts(data),
             best_bid=best_bid,
             best_ask=best_ask,
             spread_bps=spread_bps,

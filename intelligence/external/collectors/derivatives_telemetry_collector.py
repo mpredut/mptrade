@@ -15,6 +15,7 @@ from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
     _clean_dict_float,
     _clean_snapshot_symbol,
+    _clean_snapshot_ts,
     _extract_base_asset,
     _resolve_binance_lookup_symbol,
     _resolve_configured_venue,
@@ -56,16 +57,13 @@ class DerivativesTelemetry:
             round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0,
         )
         ann_pct = _clean_dict_float(data, "funding_annualized_pct", round(fr * 3.0 * 365.0 * 100.0, 2))
-        ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
-        if ts_val > 1e11:
-            ts_val /= 1000.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             funding_rate=fr,
             predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0, "pred_funding_rate"),
             open_interest=_clean_dict_float(data, "open_interest", 0.0, nonneg=True),
             open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
-            ts=ts_val,
+            ts=_clean_snapshot_ts(data),
             mark_price=mark_px,
             index_price=idx_px,
             perp_spot_basis_bps=basis_bps,

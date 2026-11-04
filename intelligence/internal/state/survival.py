@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
 from binance_api.market_data import fetch_ohlc_candles
 from botcore import (
     _parse_bool_flag,
+    normalize_epoch_sec,
     resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
@@ -63,10 +64,10 @@ def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarr
     for c in candles:
         if not isinstance(c, dict):
             continue
-        tf = safe_pos_float(c.get("timestamp"), default=None)
+        tf = normalize_epoch_sec(c.get("timestamp"), default=None)
         pf = safe_pos_float(c.get("close"), default=None)
         if tf is not None and pf is not None:
-            ts_list.append(tf / 1000.0 if tf > 1e11 else tf)
+            ts_list.append(tf)
             px_list.append(pf)
     if len(ts_list) < 50 and "PYTEST_CURRENT_TEST" not in os.environ:
         try:
@@ -107,7 +108,7 @@ def block_slopes(ts, px, window_h, step_h):
     clean_ts, clean_px = _coerce_xy_pairs(
         ts,
         px,
-        lambda v: (tf / 1000.0 if tf > 1e11 else tf) if (tf := safe_pos_float(v, default=None)) is not None else None,
+        lambda v: normalize_epoch_sec(v, default=None),
         lambda v: safe_pos_float(v, default=None),
     )
     if len(clean_ts) < 5:
@@ -354,10 +355,8 @@ def estimate_T(
 
     ent = _lookup_t_cache_entry(cache, symbol)
     if ent:
-        ts_val = safe_pos_float(ent.get("ts"), default=None)
+        ts_val = normalize_epoch_sec(ent.get("ts"), default=None)
         if ts_val is not None:
-            if ts_val > 1e11:
-                ts_val /= 1000.0
             now_curr = time.time()
             if -60.0 <= (now_curr - ts_val) < ttl_f * 86400.0:
                 return ent

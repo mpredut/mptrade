@@ -32,6 +32,61 @@ def _silent(*_args, **_kwargs):
     return None
 
 
+def build_replay_summary(
+    *,
+    realized: float,
+    net: float,
+    fees: float,
+    total: float,
+    final_upnl: float,
+    cycles: int,
+    wins: int,
+    open_qty: float,
+    fills: int,
+    ambiguous_bars: int,
+    initial_capital: float,
+    account_currency: str,
+    equity_curve: list[float],
+    exposure: list[bool],
+    trade_pnls: list[float],
+    turnover_notional: float,
+    bar_minutes: float | None = None,
+    periods_per_year: float | None = None,
+    extra_fields: dict | None = None,
+) -> dict:
+    """Calculate standardized performance metrics and build the rounded replay summary dict."""
+    if periods_per_year is None and bar_minutes:
+        periods_per_year = 365.0 * 24 * 60 / bar_minutes
+    performance = calculate_performance_metrics(
+        equity_curve,
+        initial_capital=initial_capital,
+        periods_per_year=periods_per_year,
+        exposure=exposure,
+        trade_pnls=trade_pnls,
+        turnover_notional=turnover_notional,
+    )
+    rounded = round_metric
+    result = {
+        "realized": rounded(realized),
+        "net": rounded(net),
+        "fees": rounded(fees),
+        "total": rounded(total),
+        "final_upnl": rounded(final_upnl),
+        "cycles": int(cycles),
+        "wins": int(wins),
+        "maxdd": rounded(performance["max_drawdown_abs"]),
+        "open_qty": rounded(open_qty),
+        "fills": int(fills),
+        "ambiguous_bars": int(ambiguous_bars),
+        "initial_capital": rounded(initial_capital),
+        "account_currency": account_currency,
+    }
+    if extra_fields:
+        result.update(extra_fields)
+    result.update({key: rounded(value) for key, value in performance.items()})
+    return result
+
+
 class _ReplayClient:
     """Lightweight replay venue client without unittest.mock call-recording overhead."""
 
@@ -300,39 +355,32 @@ def _run_once(
 
     qty = strategy.s["qty"]
     final_upnl = (float(ohlc[-1][3]) - strategy.s["cost"] / qty) * qty if qty > 1e-12 else 0.0
-    periods_per_year = 365.0 * 24 * 60 / bar_minutes if bar_minutes else None
-    performance = calculate_performance_metrics(
-        equity_curve,
+    result = build_replay_summary(
+        realized=strategy.s["realized_gross"],
+        net=strategy.s["realized_net"],
+        fees=strategy.s["fees_total"],
+        total=strategy.s["realized_net"] + final_upnl,
+        final_upnl=final_upnl,
+        cycles=strategy.s.get("cycle", 1) - cycle0,
+        wins=wins,
+        open_qty=qty,
+        fills=fill_count,
+        ambiguous_bars=ambiguous_bars,
         initial_capital=initial_capital,
-        periods_per_year=periods_per_year,
+        account_currency=params.currency,
+        equity_curve=equity_curve,
         exposure=exposure,
         trade_pnls=trade_pnls,
         turnover_notional=turnover_notional,
+        bar_minutes=bar_minutes,
     )
-    rounded = round_metric
-    result = {
-        "realized": rounded(strategy.s["realized_gross"]),
-        "net": rounded(strategy.s["realized_net"]),
-        "fees": rounded(strategy.s["fees_total"]),
-        "total": rounded(strategy.s["realized_net"] + final_upnl),
-        "final_upnl": rounded(final_upnl),
-        "cycles": strategy.s.get("cycle", 1) - cycle0,
-        "wins": wins,
-        "maxdd": rounded(performance["max_drawdown_abs"]),
-        "open_qty": rounded(qty),
-        "fills": fill_count,
-        "ambiguous_bars": ambiguous_bars,
-        "initial_capital": rounded(initial_capital),
-        "account_currency": params.currency,
-        **{key: rounded(value) for key, value in performance.items()},
-    }
     if include_decision_trace:
         result["decision_trace"] = decision_trace
     if cash is not None:
         result["funding"] = {
             "initial_cash": initial_cash,
-            "final_cash": rounded(cash),
-            "minimum_cash": rounded(min_cash),
+            "final_cash": round_metric(cash),
+            "minimum_cash": round_metric(min_cash),
             "refused_buys": cash_refusals,
         }
     global _LAST_REPLAY_DIAG

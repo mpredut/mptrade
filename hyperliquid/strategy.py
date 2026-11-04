@@ -39,7 +39,7 @@ from common import (
 from notify import notify
 from providers.base import _clean_single_order_id, normalize_scalar_order_id
 from state_io import load_json_state, save_json_state
-from strategies.base_spot_mixin import load_common_core_strat_env, sanitize_common_spot_state
+from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token as _safe_state_token
 from hl_client import HLClient
 from market_data import get_price
@@ -218,7 +218,13 @@ def _sanitize_state(raw: dict) -> dict:
     return merged
 
 
-class Strategy:
+class Strategy(BaseSpotMixin):
+    _exit_manager_mode = "spot"
+    _cost_state_key = "cost"
+    _spent_state_key = "spent"
+    _qty_eps = 1e-12
+    _sanitize_state_dict = staticmethod(_sanitize_state)
+
     def __init__(self, client: HLClient | None, coin: str, params: StratParams,
                  dry_run: bool = True, desktop: bool = False, leverage: int = 1,
                  initial_state: dict | None = None, replay_mode: bool = False):
@@ -276,21 +282,11 @@ class Strategy:
             log(f"  ! [STRAT] cannot save: {e}")
 
     # -- helpers ---------------------------------------------------------------
-    def _avg(self) -> float | None:
-        return self.s["cost"] / self.s["qty"] if self.s["qty"] > 1e-12 else None
-
-    def _sz_for(self, amount: float, price: float) -> float:
-        return round(amount / price, self.sz_dec) if price > 0 else 0.0
-
     def _open_pending(self) -> bool:
         return any(o["role"] == "open" for o in self.s["orders"])
 
     def _close_order(self) -> dict | None:
         return next((o for o in self.s["orders"] if o["role"] == "close"), None)
-
-    def _remove(self, o: dict) -> None:
-        if o in self.s["orders"]:
-            self.s["orders"].remove(o)
 
     # -- placement -------------------------------------------------------------
     def _place(self, role: str, sz: float, px: float, kind: str, amount: float = 0.0) -> None:
@@ -309,10 +305,10 @@ class Strategy:
         side = self.open_side if role == "open" else self.close_side
         reduce_only = (role == "close")
         if self.dry_run or self.replay_mode:
-            self._paper_seq += 1
+            oid_paper = self._next_paper_order_id()
             if not self.replay_mode:
                 log(f"  [STRAT] [PAPER] {role.upper()}({side}) {kind} {sz} @ {px:.4f} {self.ccy}")
-            self.s["orders"].append({"oid": f"PAPER-{self._paper_seq}", "role": role, "side": side,
+            self.s["orders"].append({"oid": oid_paper, "role": role, "side": side,
                                      "sz": sz, "px": px, "amount": amount, "kind": kind, "ts": time.time()})
             return
         ok, oid, msg = self.client.place_limit(self.coin, side == "buy", sz, px, reduce_only=reduce_only)
@@ -541,12 +537,10 @@ class Strategy:
                     except Exception as e:
                         log(f"  ! [STRAT] failed to cancel leftover order {o.get('oid')}: {e}")
                         remaining_orders.append(o)
-            preserved = {
-                k: self.s.get(k, 0) for k in ("realized_gross", "realized_net", "fees_total", "cycles_completed", "wins")
-            }
-            next_cycle = self.s.get("cycle", 1) + 1
-            self.s = _new_state()
-            self.s.update(preserved, cycle=next_cycle, orders=remaining_orders)
+            self._reset_cycle_state(
+                ("realized_gross", "realized_net", "fees_total", "cycles_completed", "wins"),
+                orders=remaining_orders,
+            )
             if not self.replay_mode:
                 log(f"  [STRAT] === ciclu inchis, reincep (ciclu {self.s['cycle']}) ===")
 

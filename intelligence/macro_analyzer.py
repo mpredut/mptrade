@@ -41,6 +41,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     run_daemon_loop,
     safe_int,
+    safe_nonneg_ts,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat,
@@ -109,16 +110,12 @@ class MacroAnalyzer:
         )
         self.llm_advisor = self.gemini_advisor = self.sentiment_advisor
 
-        cached_geo_ts = safe_pos_float(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
-        if cached_geo_ts > 1e11:
-            cached_geo_ts /= 1000.0
-        cached_adv_ts = safe_pos_float(
+        cached_geo_ts = safe_nonneg_ts(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
+        cached_adv_ts = safe_nonneg_ts(
             obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts")
             or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0),
             0.0,
         )
-        if cached_adv_ts > 1e11:
-            cached_adv_ts /= 1000.0
         self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
         self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts
         self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
@@ -154,12 +151,8 @@ class MacroAnalyzer:
         body: str,
         skip_notify: bool = False,
     ) -> None:
-        last_notif = safe_pos_float(getattr(self, ts_attr, 0.0), 0.0)
-        if last_notif > 1e11:
-            last_notif /= 1000.0
-        assessment_ts = safe_pos_float(assessment_ts, eval_now)
-        if assessment_ts > 1e11:
-            assessment_ts /= 1000.0
+        last_notif = safe_nonneg_ts(getattr(self, ts_attr, 0.0), 0.0)
+        assessment_ts = safe_nonneg_ts(assessment_ts, eval_now) or eval_now
         is_fresh = assessment_ts > last_notif or (eval_now < last_notif)
         elapsed = eval_now - last_notif
         min_itv = min(eff_interval_sec if eff_interval_sec > 0 else fallback_interval_sec, 3600.0)
@@ -379,14 +372,10 @@ class MacroAnalyzer:
                 adv_ok = self.assess_market_advisor(force=force, now=current_ts)
             except TypeError:
                 adv_ok = self.assess_market_advisor(force=force)
-            adv_last_eval = safe_pos_float(getattr(self.sentiment_advisor, "_last_eval_ts", None), 0.0)
-            if adv_last_eval > 1e11:
-                adv_last_eval /= 1000.0
-            adv_cached_ts = safe_pos_float(
+            adv_last_eval = safe_nonneg_ts(getattr(self.sentiment_advisor, "_last_eval_ts", None), 0.0)
+            adv_cached_ts = safe_nonneg_ts(
                 obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"), 0.0
             )
-            if adv_cached_ts > 1e11:
-                adv_cached_ts /= 1000.0
             if adv_ok and (adv_last_eval <= 0.0 or adv_last_eval >= current_ts or adv_cached_ts >= current_ts):
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts

@@ -434,12 +434,8 @@ class CacheManagerInterface(ABC):
             raise account_cache_health.AccountCacheNotReady(reason)
         try:
             items, fetchtime, rest_sync_cursor, counts = (
-                read_recovering_previous(
-                    self.filename,
-                    lambda candidate_path: self._read_legacy_order_snapshot_strict(
-                        legacy_meta, path=candidate_path
-                    ),
-                    backup_path=backup_path,
+                self._read_snapshot_recovering_previous_locked(
+                    self._read_legacy_order_snapshot_strict, legacy_meta
                 )
             )
             with self.lock:
@@ -708,17 +704,24 @@ class CacheManagerInterface(ABC):
         self._discard_generation_file(self._previous_generation_path())
         return None, False
 
-    def _save_account_order_snapshot(self):
-        """Commit Order snapshot and its manifest under the generation lock."""
+    def _with_generation_lock_bool(
+        self, fn, label: str, *, mark_rewrite_on_error: bool = False
+    ) -> bool:
         try:
             with self._generation_lock():
-                return self._save_account_order_snapshot_generation_locked()
+                return fn()
         except Exception as exc:
-            print(
-                f"[{self.cls_name}][Error] lock Order snapshot "
-                f"{self.filename}: {exc}"
-            )
+            if mark_rewrite_on_error:
+                self._legacy_jsonl_needs_rewrite = True
+            print(f"[{self.cls_name}][Error] lock {label} {self.filename}: {exc}")
             return False
+
+    def _save_account_order_snapshot(self):
+        """Commit Order snapshot and its manifest under the generation lock."""
+        return self._with_generation_lock_bool(
+            self._save_account_order_snapshot_generation_locked,
+            "Order snapshot",
+        )
 
     def _save_account_order_snapshot_generation_locked(self):
         """Write Order data and manifest while retaining the prior certified generation."""
@@ -968,17 +971,10 @@ class CacheManagerInterface(ABC):
 
     def _save_account_trade_append(self):
         """Commit Trade data and its manifest under the generation lock."""
-        try:
-            with self._generation_lock():
-                return (
-                    self._save_account_trade_append_if_current_generation_locked()
-                )
-        except Exception as exc:
-            print(
-                f"[{self.cls_name}][Error] lock Trade append "
-                f"{self.filename}: {exc}"
-            )
-            return False
+        return self._with_generation_lock_bool(
+            self._save_account_trade_append_if_current_generation_locked,
+            "Trade append",
+        )
 
     def _save_account_trade_append_if_current_generation_locked(self):
         """Reject stale memory, then commit while the generation lock is held."""
@@ -1205,24 +1201,23 @@ class CacheManagerInterface(ABC):
             reader_reason=self._account_reader_reason(),
         )
 
-    def _read_order_snapshot_recovering_previous_locked(self, metadata):
-        """Read an Order snapshot against ``metadata``, restoring ``.previous`` if needed."""
+    def _read_snapshot_recovering_previous_locked(self, reader_fn, metadata):
         return read_recovering_previous(
             self.filename,
-            lambda candidate_path: self._read_order_snapshot_strict(
-                metadata, path=candidate_path
-            ),
+            lambda candidate_path: reader_fn(metadata, path=candidate_path),
             backup_path=self._previous_generation_path(),
+        )
+
+    def _read_order_snapshot_recovering_previous_locked(self, metadata):
+        """Read an Order snapshot against ``metadata``, restoring ``.previous`` if needed."""
+        return self._read_snapshot_recovering_previous_locked(
+            self._read_order_snapshot_strict, metadata
         )
 
     def _read_trade_snapshot_recovering_previous_locked(self, metadata):
         """Read a Trade snapshot against ``metadata``, restoring ``.previous`` if needed."""
-        return read_recovering_previous(
-            self.filename,
-            lambda candidate_path: self._read_trade_snapshot_strict(
-                metadata, path=candidate_path
-            ),
-            backup_path=self._previous_generation_path(),
+        return self._read_snapshot_recovering_previous_locked(
+            self._read_trade_snapshot_strict, metadata
         )
 
     def _ensure_order_version(self, required_version):
@@ -1605,16 +1600,11 @@ class CacheManagerInterface(ABC):
 
     def _compact_account_trade_jsonl(self):
         """Rewrite Trade data and its manifest as one cross-process generation."""
-        try:
-            with self._generation_lock():
-                return self._compact_account_trade_jsonl_generation_locked()
-        except Exception as exc:
-            self._legacy_jsonl_needs_rewrite = True
-            print(
-                f"[{self.cls_name}][Error] lock Trade generation "
-                f"{self.filename}: {exc}"
-            )
-            return False
+        return self._with_generation_lock_bool(
+            self._compact_account_trade_jsonl_generation_locked,
+            "Trade generation",
+            mark_rewrite_on_error=True,
+        )
 
     def _compact_account_trade_jsonl_generation_locked(self):
         """Rewrite Trade data while retaining the prior certified generation."""
@@ -2778,6 +2768,25 @@ class Cache365PriceManager(Cache24PriceManager):
             self._rest_sync_cursor_per_symbol,
         ) = state
 
+    def _write_unpersisted_memory_tail_locked(
+        self, target, original_cache, original_persisted_counts, *, min_ts_ms: int = 0
+    ) -> bool:
+        wrote = False
+        for symbol, items in original_cache.items():
+            start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
+            for item in items[start:]:
+                if min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms:
+                    target.write(_jsonl_line(symbol, item))
+                wrote = True
+        return wrote
+
+    def _write_current_meta_locked(self) -> bool:
+        return self._write_meta({
+            "counts": dict(self._persisted_counts),
+            "fetchtime": dict(self.fetchtime_per_symbol),
+            "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
+        })
+
     def maintain_append_persist(self):
         """Prune the full disk archive with bounded memory, then reload its recent tail."""
         if not self.save_state:
@@ -2814,21 +2823,15 @@ class Cache365PriceManager(Cache24PriceManager):
                             target.write(line if line.endswith("\n") else line + "\n")
                         else:
                             changed = True
-                    for symbol, items in original_cache.items():
-                        start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
-                        for item in items[start:]:
-                            if self._entry_timestamp_ms(item) >= cutoff_ms:
-                                target.write(_jsonl_line(symbol, item))
-                            changed = True
+                    if self._write_unpersisted_memory_tail_locked(
+                        target, original_cache, original_persisted_counts, min_ts_ms=cutoff_ms
+                    ):
+                        changed = True
                 self._reload_and_merge_timestamps_locked(
                     original_fetchtimes, original_rest_cursors
                 )
                 if changed:
-                    if not self._write_meta({
-                        "counts": dict(self._persisted_counts),
-                        "fetchtime": dict(self.fetchtime_per_symbol),
-                        "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
-                    }):
+                    if not self._write_current_meta_locked():
                         self._restore_memory_state_locked(original_state)
                         self._restore_previous_generation(backup_path)
                         backup_path = None
@@ -2890,18 +2893,13 @@ class Cache365PriceManager(Cache24PriceManager):
                     target.write(decoded_tail)
                     if decoded_tail and not decoded_tail.endswith("\n"):
                         target.write("\n")
-                    for symbol, items in original_cache.items():
-                        start = min(max(0, original_persisted_counts.get(symbol, 0)), len(items))
-                        for item in items[start:]:
-                            target.write(_jsonl_line(symbol, item))
+                    self._write_unpersisted_memory_tail_locked(
+                        target, original_cache, original_persisted_counts
+                    )
                 self._reload_and_merge_timestamps_locked(
                     original_fetchtimes, original_rest_cursors
                 )
-                meta_ok = self._write_meta({
-                    "counts": dict(self._persisted_counts),
-                    "fetchtime": dict(self.fetchtime_per_symbol),
-                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
-                })
+                meta_ok = self._write_current_meta_locked()
             except Exception as exc:
                 builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
                 meta_ok = False
@@ -3654,6 +3652,15 @@ class CacheFactory:
 
             return cls._instances[name]
 
+    @staticmethod
+    def _clear_bapi_trade_manager_ref(trade_mgr) -> None:
+        if trade_mgr is None:
+            return
+        import sys as _sys
+        _bapi_tr = _sys.modules.get("binance_api.bapi_trades")
+        if _bapi_tr is not None and getattr(_bapi_tr, "cache_trade_manager", None) is trade_mgr:
+            _bapi_tr.cache_trade_manager = None
+
     @classmethod
     def shutdown_all(cls, timeout=5.0):
         """Stop every factory-owned synchronization loop and clear the registry."""
@@ -3700,10 +3707,7 @@ class CacheFactory:
                 and getattr(short_trend, "thread", None) is None
             ):
                 _short_trend_instance = None
-            import sys as _sys
-            _bapi_tr = _sys.modules.get("binance_api.bapi_trades")
-            if _bapi_tr is not None and getattr(_bapi_tr, "cache_trade_manager", None) is trade_mgr:
-                _bapi_tr.cache_trade_manager = None
+            cls._clear_bapi_trade_manager_ref(trade_mgr)
             return all(results) if results else True
 
     @classmethod
@@ -3728,10 +3732,7 @@ class CacheFactory:
             if name == "CurrentPrice" and value is _current_price_instance and stopped:
                 _current_price_instance = None
             if name == "Trade" and stopped:
-                import sys as _sys
-                _bapi_tr = _sys.modules.get("binance_api.bapi_trades")
-                if _bapi_tr is not None and getattr(_bapi_tr, "cache_trade_manager", None) is value:
-                    _bapi_tr.cache_trade_manager = None
+                cls._clear_bapi_trade_manager_ref(value)
             return stopped
         
 def get_cache_manager(name, symbols=None, *, start_sync=True):

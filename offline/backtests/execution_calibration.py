@@ -6,14 +6,18 @@ import re
 import statistics
 from typing import Iterable
 
-from botcore import _parse_bool_flag, safe_float as _f
+from botcore import (
+    _parse_bool_flag,
+    clean_finite_floats as _clean_finite_floats,
+    normalize_epoch_sec,
+    safe_float as _f,
+)
 from cachepaths import normalize_venue_name
 from providers.base import normalize_side
 
 
 def _ts_sec(val: object, default: float = 0.0) -> float:
-    res = _f(val, default)
-    return res / 1000.0 if res > 1e11 else res
+    return normalize_epoch_sec(val, default=default, allow_zero=True) or default
 
 
 _as_bool = _parse_bool_flag
@@ -34,12 +38,6 @@ def _client_order_id_valid(venue: object, client_order_id: object) -> bool | Non
     if pattern is None:
         return None
     return bool(pattern.fullmatch(str(client_order_id or "")))
-
-
-def _clean_finite_floats(values: Iterable[object] | None) -> list[float]:
-    if not values or isinstance(values, (str, bytes, bool)):
-        return []
-    return [vf for value in values if (vf := _f(value, default=None)) is not None]
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:

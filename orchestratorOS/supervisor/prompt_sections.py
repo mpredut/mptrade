@@ -298,10 +298,19 @@ def _format_sre_and_fleet_section(
             for p in sensors.fleet_processes
             if p.get("is_running") and not p.get("heartbeat_fresh", True)
         ]
+        hb_summary = (
+            f" | STALE HEARTBEAT: {stale_p}"
+            if stale_p
+            else (
+                " | No running heartbeats (all fleet processes stopped)"
+                if not running_p
+                else (" | All running heartbeats fresh" if stopped_p else " | All heartbeats fresh")
+            )
+        )
         lines.append(
             f"\n### 2B. FLEET PROCESSES & BOT HEARTBEATS (procs.conf): {len(running_p)}/{len(sensors.fleet_processes)} running"
             + (f" | STOPPED: {stopped_p}" if stopped_p else "")
-            + (f" | STALE HEARTBEAT: {stale_p}" if stale_p else " | All heartbeats fresh")
+            + hb_summary
         )
 
     if sensors.system_and_vpn:

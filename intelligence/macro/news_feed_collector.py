@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, normalize_epoch_sec, safe_float
 from cachepaths import cache_path, resolve_cachedb_filepath
 from state_io import read_json_file, save_json_state
 from intelligence.macro_sentiment_ssot import (
@@ -215,7 +215,7 @@ class NewsFeedCollector:
         s = pub_date.strip()
         if "04 Oct 2026" in s:
             return None
-        now_s = now / 1000.0 if now > 1e11 else now
+        now_s = normalize_epoch_sec(now, default=now)
         dt: Optional[datetime] = None
         try:
             dt = email.utils.parsedate_to_datetime(s)
@@ -252,9 +252,7 @@ class NewsFeedCollector:
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                raw_ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
-                if raw_ts > 1e11:
-                    raw_ts /= 1000.0
+                raw_ts = normalize_epoch_sec(safe_pos_float(item.get("first_seen_ts", now), -1.0), default=-1.0)
                 h = self._coerce_headline(item)
                 norm = self._normalize_title(h.title) if h else ""
                 if not (h and norm):
@@ -370,12 +368,8 @@ class NewsFeedCollector:
     def _is_valid_pool_entry(v: Any, cutoff: float, max_ts: Optional[float] = None) -> bool:
         if not (isinstance(v, tuple) and len(v) == 2 and hasattr(v[1], "title")):
             return False
-        ts_f = safe_float(v[0], default=None)
-        if ts_f is None:
-            return False
-        if ts_f > 1e11:
-            ts_f /= 1000.0
-        if ts_f < cutoff:
+        ts_f = normalize_epoch_sec(v[0], default=None)
+        if ts_f is None or ts_f < cutoff:
             return False
         return max_ts is None or ts_f <= max_ts
 

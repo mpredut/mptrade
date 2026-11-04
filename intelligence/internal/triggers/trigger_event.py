@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict, Optional
 
 
-from botcore import safe_pos_float
+from botcore import normalize_epoch_sec, safe_pos_float
 from providers.base import normalize_side
 
 
@@ -82,7 +82,7 @@ class TriggerEvent:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> "TriggerEvent":
         """Build a directional ENTRY/BUY (bull) or EXIT/SELL (bear) TriggerEvent."""
-        ts_clean = ts / 1000.0 if (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 1e11) else ts
+        ts_clean = normalize_epoch_sec(ts, default=ts, allow_zero=True) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else ts
         return cls(
             action=TriggerAction.ENTRY if is_bull else TriggerAction.EXIT,
             side=TriggerSide.BUY if is_bull else TriggerSide.SELL,

@@ -81,9 +81,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         )
         raw_sum = data.get("summary")
         sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
-        ts_val = ts_override if ts_override is not None else safe_nonneg_ts(data.get("ts", 0.0), 0.0)
-        if ts_val > 1e11:
-            ts_val /= 1000.0
+        ts_val = safe_nonneg_ts(ts_override if ts_override is not None else data.get("ts", 0.0), 0.0)
         raw_conf = data.get("confidence", 0.5)
         return SentimentAdvisorAssessment(
             market_bias=normalize_market_bias(data.get("market_bias"), default="NEUTRAL"),

@@ -124,9 +124,7 @@ def collect_macro_benchmarks_snapshot(
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
-    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
-    if eff_now > 1e11:
-        eff_now /= 1000.0
+    eff_now = normalize_epoch_sec(safe_pos_float(now_ts, default=None) or _time.time(), default=_time.time())
     _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
@@ -140,11 +138,11 @@ def collect_macro_benchmarks_snapshot(
             meta = res.get("meta") if isinstance(res.get("meta"), dict) else {}
             ts_list = res.get("timestamp") if isinstance(res.get("timestamp"), list) else []
             q_list = (res.get("indicators") or {}).get("quote") or [{}]
-            q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_list[0], dict) else {}
+            q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_obj := q_list[0], dict) else {}
             closes = q_obj.get("close") if isinstance(q_obj.get("close"), list) else []
             pts = sorted(
                 (
-                    (ts_f / 1000.0 if ts_f > 1e11 else ts_f, c_f)
+                    (normalize_epoch_sec(ts_f, default=ts_f), c_f)
                     for ts, c in zip(ts_list, closes)
                     if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
                 ),
@@ -274,7 +272,7 @@ def harvest_macro_and_news_sensors(
     cache_dir: str, now_ts: float, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
-    now_ts = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
+    now_ts = normalize_epoch_sec(now_ts, default=0.0)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
 

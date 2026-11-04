@@ -32,6 +32,7 @@ from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
     clean_symbol_key,
+    normalize_epoch_sec,
     normalize_order_side,
     obj_attr,
     resolve_now_ts,
@@ -135,10 +136,7 @@ class CompositeMarketIntelligence:
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
         side = normalize_order_side(side)
         if now is not None:
-            now_norm = safe_pos_float(now, default=None)
-            if now_norm is not None and now_norm > 1e11:
-                now_norm /= 1000.0
-            now = now_norm
+            now = normalize_epoch_sec(now, default=None)
         _qlimit2_group = {"g_qlimit2", "internal_quant_limit", "quantitative", "qlimit", "g_qlimit", "gf", "financial", "all", "*"}
         parabolic_only_bypass = (
             ("parabolic_surge" in raw_bypass_tokens)
