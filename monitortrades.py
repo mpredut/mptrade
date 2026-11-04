@@ -473,6 +473,7 @@ def _record_pending_exit(
     symbol: str, inst: Any, kind: str, current_time_s: float, sellable_qty: float, current_price: float,
     outcome_ctx: dict, default_intent_id: Optional[str] = None, client_order_id: Optional[str] = None,
     prev_tp_state: Optional[dict] = None, prev_sl_state: Optional[dict] = None,
+    prev_hard_tp_last: Optional[float] = None, restore_hard_tp_last: bool = False,
 ):
     """Record an in-flight exit whose outcome is unknown/in-flight and update state."""
     pending_rec = {
@@ -486,6 +487,8 @@ def _record_pending_exit(
         pending_rec["prev_tp_state"] = dict(prev_tp_state)
     if prev_sl_state:
         pending_rec["prev_sl_state"] = dict(prev_sl_state)
+    if restore_hard_tp_last:
+        pending_rec["prev_hard_tp_last"] = prev_hard_tp_last
     _PENDING_STOP_EXIT[symbol] = pending_rec
     _resolve_exit(symbol, inst, kind=kind, clear_pending=False)
 
@@ -660,13 +663,19 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
 
 
 def _restore_pending_exit_state(symbol: str, pending_stop: dict):
-    """Restore TP trend-ride or SL bounce state saved before an ambiguous exit submission."""
+    """Restore TP trend-ride, SL bounce, or Hard-TP cooldown state saved before an ambiguous exit submission."""
     prev_tp = pending_stop.get("prev_tp_state")
     if prev_tp and symbol not in _TP_RIDE_STATE:
         _TP_RIDE_STATE[symbol] = dict(prev_tp)
     prev_sl = pending_stop.get("prev_sl_state")
     if prev_sl and symbol not in _SL_BOUNCE_STATE:
         _SL_BOUNCE_STATE[symbol] = dict(prev_sl)
+    if "prev_hard_tp_last" in pending_stop:
+        prev_htp = safe_pos_float(pending_stop.get("prev_hard_tp_last"), default=None)
+        if prev_htp is not None:
+            _hard_tp_last[symbol] = prev_htp
+        else:
+            _hard_tp_last.pop(symbol, None)
 
 
 def _is_pending_exit_active(
@@ -779,11 +788,14 @@ def _evaluate_hard_take_profit(
         _resolve_exit(symbol, inst, kind="TP")
         return True
     if hard_tp_outcome_ctx.get("state") == "unknown":
+        prev_hard_tp = safe_pos_float(_hard_tp_last.get(symbol), default=None)
         _hard_tp_last[symbol] = current_time_s
         _record_pending_exit(
             symbol, inst, "TP", current_time_s, hard_qty, snapshot.current_price,
             hard_tp_outcome_ctx, default_intent_id=f"mt_htp_{symbol}_{int(current_time_s)}",
             prev_tp_state=_TP_RIDE_STATE.pop(symbol, None),
+            prev_hard_tp_last=prev_hard_tp,
+            restore_hard_tp_last=True,
         )
         return True
     return False
@@ -1550,6 +1562,10 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             _LAST_EXIT_KIND.pop(symbol, None)
             _REENTRY_DONE_SELL_TIME.pop(symbol, None)
             _save_mt_state()
+
+    if symbol in _PENDING_STOP_EXIT and _is_untradable_dust(inst, symbol, sellable_qty, current_price, min_qty):
+        print(f"[{symbol}] Pending Stop-Loss resolved: position is closed or below min_qty/min_notional.")
+        _resolve_exit(symbol, inst)
 
     position_closed_by_sell = (
         bool(trade_orders_sell)

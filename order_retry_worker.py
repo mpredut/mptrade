@@ -21,6 +21,7 @@ from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    normalize_epoch_sec,
     required_float_env,
     safe_float,
     safe_int,
@@ -69,7 +70,7 @@ class _PersistentQuarantineSet(set):
 
     def _path(self) -> str:
         return os.path.join(
-            os.path.dirname(os.path.abspath(oq.QUEUE_FILE)),
+            os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
             "order_retry_quarantine_alerts.json",
         )
 
@@ -676,8 +677,8 @@ def _resolve_display_assets(symbol):
 
 def _format_ts(ts):
     """Format a POSIX timestamp in local YYYY-MM-DD HH:MM:SS, or N/A."""
-    val = safe_pos_float(ts, default=None)
-    if val is None:
+    val = normalize_epoch_sec(ts, default=None, allow_iso=True)
+    if val is None or val <= 0:
         return "N/A"
     try:
         return datetime.fromtimestamp(val).strftime("%Y-%m-%d %H:%M:%S")
@@ -1014,7 +1015,10 @@ def _alert_giveups(records, now):
                 "ttl_sec": oq.resolve_record_ttl(rec),
             })
         digest = IncidentDigest(
-            os.path.join(os.path.dirname(oq.QUEUE_FILE), "order_retry_giveup_alerts.json"),
+            os.path.join(
+                os.path.dirname(os.path.abspath(str(oq.resolve_cachedb_filepath(oq.QUEUE_FILE)))),
+                "order_retry_giveup_alerts.json",
+            ),
             GIVEUP_SUMMARY_SEC,
         )
         for report in digest.collect(events, now=now):

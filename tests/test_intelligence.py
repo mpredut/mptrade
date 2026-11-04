@@ -4354,6 +4354,93 @@ def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_sh
     assert saved_calls == [True]
 
 
+def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_path, monkeypatch):
+    import monitororder
+    import monitortrades
+    import order_retry_worker as orw
+    from trailing_core import TrailingCore
+
+    # 1. order_retry_worker._format_ts normalizes millisecond and ISO-8601 timestamps
+    assert orw._format_ts(1700000000000) != "N/A"
+    assert orw._format_ts("2025-01-15T12:00:00Z") != "N/A"
+
+    # 2. _PersistentQuarantineSet._path uses resolve_cachedb_filepath(QUEUE_FILE)
+    monkeypatch.setenv("MPTRADE_CACHEDB_DIR", str(tmp_path))
+    qset = orw._PersistentQuarantineSet("test_key")
+    assert os.path.dirname(qset._path()) == str(tmp_path)
+
+    # 3. TrailingCore does not spam trend deferral or skip finalizing exit_sold_qty when flat at price <= stop_at
+    skip_calls = []
+
+    class _FlatAdapter:
+        def price(self, pair):
+            return 90.0
+
+        def free_qty(self, asset):
+            return 0.0
+
+        def total_qty(self, asset):
+            return 0.0
+
+        def trend(self, pair):
+            return 1.0
+
+        def log_skip_sell_trend(self, *args):
+            skip_calls.append(args)
+
+    tc = TrailingCore(
+        _FlatAdapter(),
+        log=lambda _: None,
+        enabled=True,
+        state_file=str(tmp_path / "trail_state.json"),
+        min_notional=10.0,
+        rebuy_enabled=True,
+        rebuy_bounce_pct=2.0,
+        rebuy_skip_if_trend_down=False,
+        sell_skip_if_trend_up=True,
+    )
+    state = {
+        "BTC": {
+            "peak": 100.0,
+            "is_flat": False,
+            "exit_sold_qty": 0.5,
+            "exit_sold_cost": 48.0,
+        }
+    }
+    tc._process("BTC", "BTC", "BTCUSDC", 5.0, state)
+    assert skip_calls == []
+    assert state["BTC"]["is_flat"] is True
+    assert state["BTC"]["rebuy"]["qty"] == 0.5
+    assert state["BTC"]["rebuy"]["sell_price"] == 96.0
+    assert "exit_sold_qty" not in state["BTC"]
+
+    # 4. monitororder.reset_monitororder_state_for_test clears initial_prices
+    monitororder.initial_prices["123"] = 100.0
+    monitororder.reset_monitororder_state_for_test()
+    assert len(monitororder.initial_prices) == 0
+
+    # 5. monitortrades._restore_pending_exit_state restores _hard_tp_last when a pending Hard-TP order is canceled
+    monitortrades._hard_tp_last["BTCUSDC"] = 1000.0
+    monitortrades._record_pending_exit(
+        "BTCUSDC",
+        None,
+        "TP",
+        2000.0,
+        0.5,
+        110.0,
+        {"reason": "timeout"},
+        default_intent_id="mt_htp_BTCUSDC_2000",
+        prev_hard_tp_last=1000.0,
+        restore_hard_tp_last=True,
+    )
+    monitortrades._hard_tp_last["BTCUSDC"] = 2000.0
+    monitortrades._restore_pending_exit_state("BTCUSDC", monitortrades._PENDING_STOP_EXIT["BTCUSDC"])
+    assert monitortrades._hard_tp_last["BTCUSDC"] == 1000.0
+    monitortrades._PENDING_STOP_EXIT.pop("BTCUSDC", None)
+    monitortrades._hard_tp_last.pop("BTCUSDC", None)
+
+
+
 
 
 

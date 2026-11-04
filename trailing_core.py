@@ -547,7 +547,13 @@ class TrailingCore:
 
         # Emergency crash circuit breaker (zona de avarie) — brute force exit with bounded trend deferral.
         # Extreme crash protection is decoupled from profit warm-up.
-        if should_sell(price, st["peak"], trail):
+        can_sell = has_pos or (
+            self.enabled
+            and callable(getattr(self.a, "unlock_qty", None))
+            and not _parse_bool_flag(st.get("is_flat"), default=False)
+            and safe_nonneg_float(st.get("exit_sold_qty", 0.0)) <= 0
+        )
+        if can_sell and should_sell(price, st["peak"], trail):
             if self.sell_skip_if_trend_up and self._safe_trend(pair) > 0:
                 now_ts = time.time()
                 defer_start = safe_pos_float(st.get("sell_defer_started_at"), default=None)
@@ -568,38 +574,41 @@ class TrailingCore:
                 st.pop("warmup_at", None)
                 # Emergency stop triggered: attempt to unlock coins locked in resting TP orders
                 unlock_getter = getattr(self.a, "unlock_qty", None)
+                unlock_failed = False
                 if unlock_getter is not None and callable(unlock_getter):
                     try:
                         if unlock_getter(pair):
                             free = self._safe_free_qty(asset)
                     except Exception:
-                        pass
-                if free * price < self.min_notional:
-                    return                                        # nothing to sell even after unlock attempt
+                        unlock_failed = True
+                if free * price >= self.min_notional:
+                    if "target_exit_qty" not in st or safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
+                        total_pos = self._remaining_qty(asset) or free
+                        st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
 
-                if "target_exit_qty" not in st or safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
-                    total_pos = self._remaining_qty(asset) or free
-                    st["target_exit_qty"] = round(total_pos * self.sell_fraction, 8)
-
-                target_rem = max(
-                    0.0,
-                    safe_nonneg_float(st.get("target_exit_qty", 0.0))
-                    - safe_nonneg_float(st.get("exit_sold_qty", 0.0)),
-                )
-                sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
-                if sell_qty * price >= self.min_notional:
-                    res = self.a.execute_sell(
-                        key, asset, pair, sell_qty, price, st["peak"], trail,
-                        self._pending_persist(state, st),
+                    target_rem = max(
+                        0.0,
+                        safe_nonneg_float(st.get("target_exit_qty", 0.0))
+                        - safe_nonneg_float(st.get("exit_sold_qty", 0.0)),
                     )
-                    if getattr(res, "outcome", None) == "refused" and safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
-                        st.pop("target_exit_qty", None)
-            else:
-                if free * price < self.min_notional:
+                    sell_qty = round(min(free, target_rem) if target_rem > 0 else (free * self.sell_fraction), 8)
+                    if sell_qty * price >= self.min_notional:
+                        res = self.a.execute_sell(
+                            key, asset, pair, sell_qty, price, st["peak"], trail,
+                            self._pending_persist(state, st),
+                        )
+                        if getattr(res, "outcome", None) == "refused" and safe_nonneg_float(st.get("exit_sold_qty")) <= 0:
+                            st.pop("target_exit_qty", None)
                     return
-                sell_qty = round(free * self.sell_fraction, 8)
-                self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
-            return
+                if unlock_failed or (self._remaining_qty(asset) or free) * price >= self.min_notional:
+                    return                                        # nothing free to sell after unlock attempt
+            else:
+                if free * price >= self.min_notional:
+                    sell_qty = round(free * self.sell_fraction, 8)
+                    self.a.log_dry_sell(key, asset, pair, sell_qty, price, st["peak"], trail)
+                    return
+                if (self._remaining_qty(asset) or free) * price >= self.min_notional:
+                    return
 
         st.pop("sell_defer_started_at", None)
         if safe_nonneg_float(st.get("exit_sold_qty")) <= 0:

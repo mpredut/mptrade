@@ -180,6 +180,7 @@ def reset_monitororder_state_for_test():
     _notified_placed_order_ids.clear()
     _notified_expired_order_ids.clear()
     _derived_replacement_order_ids.clear()
+    initial_prices.clear()
     initial_sell_prices.clear()
     initial_buy_prices.clear()
     _monitororder_initialized = False
