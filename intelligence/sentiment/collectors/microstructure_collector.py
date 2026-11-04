@@ -1068,6 +1068,23 @@ def enrich_24h_and_microstructure(
                 pass
         if m24:
             _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
+            if (
+                is_eq_sym
+                and post_rth_px_override is None
+                and matched_series_24h
+                and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
+                and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+            ):
+                for k_stale_s in (
+                    "slope_90s",
+                    "growth_90s",
+                    "trend_90s",
+                    "slope_3_7m",
+                    "growth_3_7m",
+                    "trend_3_7m",
+                    "gradient_recent_fast",
+                ):
+                    prices_and_trends[sym].pop(k_stale_s, None)
             if post_rth_px_override is not None:
                 recalculate_live_price_geometry(prices_and_trends[sym], post_rth_px_override)
 

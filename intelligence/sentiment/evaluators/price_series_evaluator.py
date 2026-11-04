@@ -827,7 +827,7 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
             if (ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10) and (
-                has_sub3m_cadence or win_sec >= 9000.0 or raw_g * raw_s >= 0.0
+                has_sub3m_cadence or (raw_g * raw_s > 0.0) or (abs(raw_s) <= 1e-12 and abs(raw_g) <= 1e-12)
             ):
                 out[g_key] = g_v
             out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)

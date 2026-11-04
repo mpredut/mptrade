@@ -595,13 +595,19 @@ def get_excluded_reference_sources() -> Tuple[str, ...]:
 
 
 def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any = "") -> bool:
-    """Return True if a headline originates from a static reference/encyclopedia domain (e.g. Britannica, Wikipedia)."""
+    """Return True if a headline originates from a static reference/encyclopedia domain or first-person advice column."""
+    title_s = str(title or "").strip()
+    title_l = title_s.lower()
+    if title_l and re.search(
+        r"^['‘\"].*['’\"]:\s*i(?:['’]m|['’]ve|\s+have|\s+am)\b|\b(?:should i stop going|annuity sales pitch|what politician speaks for me)\b",
+        title_l,
+    ):
+        return True
     excluded = get_excluded_reference_sources()
     if not excluded:
         return False
     src_l = str(source or "").strip().lower()
     url_l = str(url or "").strip().lower()
-    title_s = str(title or "").strip()
     pub_sfx = ""
     if " - " in title_s:
         pub_sfx = title_s.rsplit(" - ", 1)[-1].strip().lower()

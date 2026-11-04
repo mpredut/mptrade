@@ -4587,6 +4587,39 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert pt_at["RGNT_US_EQ"]["slope_3_7m"] < 0.0
     assert pt_at["RGNT_US_EQ"]["kalman_vel"] < 0.0
 
+    # - Exclude first-person reader-advice columns, suppress non-zero growth_15m when slope_15m == 0 on 5m-bar series,
+    #   and clamp LONG_SWEEP_MAGNET_DOWN to BALANCED_LIQ_MAGNET during aggressive_buying + SYNCHRONIZED_SPOT_PERP_BUYING
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_liquidation_clusters
+
+    assert is_excluded_reference_news_item(
+        "‘It’s good to be old’: I’ve been invited to a dozen free meals that turn into annuity sales pitches. Should I stop going?",
+        "MarketWatch.com - Top Stories",
+    ) is True
+    assert is_excluded_reference_news_item(
+        "‘I have no financial safety net’: I’m 66, rely on Social Security and have $500 in savings. What politician speaks for me?",
+        "MarketWatch.com - Top Stories",
+    ) is True
+
+    rgnt_flat_15m = [
+        [now_ms_w3 - (12 - i) * 300_000, 1.37]
+        for i in range(9)
+    ] + [
+        [now_ms_w3 - 900_000, 1.32],
+        [now_ms_w3 - 600_000, 1.36],
+        [now_ms_w3, 1.32],
+    ]
+    rgnt_flat_slopes = _compute_short_slopes_from_series(rgnt_flat_15m)
+    assert rgnt_flat_slopes["slope_15m"] == 0.0
+    assert "growth_15m" not in rgnt_flat_slopes
+
+    tao_liq = compute_liquidation_clusters(
+        {"price": 234.2, "vol_1h_pct": 0.7381, "kalman_vel": 0.08066, "chg_15m_pct": 0.17, "val_px": 219.6, "vah_px": 235.77, "low_24h": 217.6, "high_24h": 239.8},
+        {"oi_usd": 53_372_124.26, "whale_long_pct": 0.7639, "bid_wall_px": 233.6, "ask_wall_px": 234.6, "taker_buy_sell_ratio": 1.0172, "ob_imbalance": 0.586, "cvd_regime": "aggressive_buying", "spot_perp_flow_regime": "SYNCHRONIZED_SPOT_PERP_BUYING"},
+    )
+    assert tao_liq["liq_magnet_bias"] != "LONG_SWEEP_MAGNET_DOWN"
+
+
 
 
 

@@ -286,6 +286,22 @@ def compute_liquidation_clusters(
         "SHORT_SQUEEZE_MAGNET_UP" if short_gravity > long_gravity * 1.15
         else ("LONG_SWEEP_MAGNET_DOWN" if long_gravity > short_gravity * 1.15 else "BALANCED_LIQ_MAGNET")
     )
+    cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
+    sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
+    if (
+        liq_magnet_bias == "LONG_SWEEP_MAGNET_DOWN"
+        and cvd_reg == "aggressive_buying"
+        and chg_15m_v >= 0.05
+        and kalman_vel > 0.0
+        and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
+    ) or (
+        liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
+        and cvd_reg == "aggressive_market_dumps"
+        and chg_15m_v <= -0.05
+        and kalman_vel < 0.0
+        and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
+    ):
+        liq_magnet_bias = "BALANCED_LIQ_MAGNET"
     return {
         "long_liq_px": long_liq_px, "long_liq_usd": long_liq_usd, "long_liq_dist_pct": long_liq_dist_pct,
         "short_liq_px": short_liq_px, "short_liq_usd": short_liq_usd, "short_liq_dist_pct": short_liq_dist_pct,
