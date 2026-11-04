@@ -81,6 +81,8 @@ def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
     import sys as _sys
 
     for _mod_name in (
+        "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+        "intelligence.sentiment.guards.high_stake_guard",
         "intelligence.sentiment.collectors.macro_telemetry_collector",
         "intelligence.macro_sentiment_ssot",
     ):

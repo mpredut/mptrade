@@ -2066,6 +2066,166 @@ def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_
     assert loaded_h.title == "ECB holds rates steady"
 
 
+def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases(tmp_path, monkeypatch):
+    import json
+    import intelligence.external.collectors.derivatives_telemetry_collector as dt_mod
+    import intelligence.external.collectors.whale_positioning_collector as wp_mod
+    import intelligence.external.guards.smart_stop_loss_guard as ssl_mod
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as pt_mod
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector
+
+    # 1. collect_pretrade_telemetry handles None values in m24/btc_m24/liq_c and forwards monkeypatched read_json_cached
+    now_ts = 1710000000.0
+    virtual_files = {
+        str(tmp_path / "cache_current_price.json"): {"items": {"ETHUSDC": 2500.0, "BTCUSDC": 85000.0}},
+        str(tmp_path / "orderbook_depth_ETHUSDC.json"): {
+            "symbol": "ETHUSDC",
+            "imbalance_ratio": 0.65,
+            "spread_bps": 1.2,
+            "depth_1pct_bid_usd": 400000.0,
+            "depth_1pct_ask_usd": 200000.0,
+            "mid_price": 2500.0,
+        },
+        str(tmp_path / "cache_order.json"): {
+            "items": {
+                "ETHUSDC": [
+                    {
+                        "orderId": "o_eth_1",
+                        "symbol": "ETHUSDC",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "price": 2480.0,
+                        "executedQty": 0.5,
+                        "time": int((now_ts - 600) * 1000),
+                    }
+                ]
+            }
+        },
+    }
+    monkeypatch.setattr(pt_mod, "read_json_cached", lambda path, **kw: virtual_files.get(str(path)), raising=False)
+    monkeypatch.setattr(
+        pt_mod,
+        "load_symbol_price_series",
+        lambda cdir, sym, **kw: ([[now_ts * 1000 - 60000, 2490.0], [now_ts * 1000, 2500.0]], []),
+    )
+    monkeypatch.setattr(
+        pt_mod,
+        "compute_24h_price_metrics",
+        lambda ser: {
+            "chg_15m_pct": None,
+            "chg_30m_pct": 0.5,
+            "chg_1h_pct": None,
+            "chg_3h_pct": 1.2,
+            "low_24h": 2400.0,
+            "high_24h": 2550.0,
+            "pos_24h_pct": None,
+            "poc_px": 2495.0,
+            "poc_dist_pct": None,
+            "val_px": 2450.0,
+            "val_dist_pct": None,
+            "vah_px": 2520.0,
+            "vah_dist_pct": None,
+        },
+    )
+    monkeypatch.setattr(
+        pt_mod,
+        "compute_liquidation_clusters",
+        lambda p_est, m_info: {
+            "long_liq_px": 2350.0,
+            "short_liq_px": 2650.0,
+            "long_liq_usd": None,
+            "long_liq_dist_pct": None,
+            "short_liq_usd": 500000.0,
+            "short_liq_dist_pct": 6.0,
+            "liq_magnet_bias": "SHORT",
+        },
+    )
+    telem = pt_mod.collect_pretrade_telemetry("ETHUSDC", cachedb_dir=str(tmp_path))
+    assert "24h Multi-Horizon Price Evolution" in telem
+    assert "24h Volume Profile (POC / Value Area)" in telem
+    assert "Orderbook Bid-Ask Spread" in telem
+    assert "Liquidation Clusters (LONG vs SHORT)" in telem
+    assert "Recent Venue Fills" in telem
+
+    # 2. _DiskBackedSymbolCollector._fetch_json_dict wraps list responses for Hyperliquid info URLs when fetch_public_json is monkeypatched
+    monkeypatch.setattr(
+        dt_mod,
+        "fetch_public_json",
+        lambda url, **kw: (
+            [{"universe": [{"name": "HYPE"}]}, [{"funding": "0.0002", "openInterest": "1000", "markPx": "25.0", "oraclePx": "25.0"}]]
+            if "metaAndAssetCtxs" in url
+            else {}
+        ),
+    )
+    dt_col = dt_mod.DerivativesTelemetryCollector(cache_dir=str(tmp_path))
+    hl_tel = dt_col._fetch_hyperliquid_derivatives("HYPEUSDC", now=now_ts)
+    assert hl_tel is not None
+    assert hl_tel.open_interest_usd == pytest.approx(25000.0)
+
+    # WhalePositioningCollector._resolve_cached_funding_rate honors monkeypatched read_json_dict
+    monkeypatch.setattr(
+        wp_mod,
+        "read_json_dict",
+        lambda path, **kw: {"ts": now_ts - 10.0, "funding_rate": -0.0003},
+    )
+    wp_col = wp_mod.WhalePositioningCollector(cache_dir=str(tmp_path))
+    assert wp_col._resolve_cached_funding_rate("BTCUSDC", now=now_ts) == pytest.approx(-0.0003)
+
+    # 3. BybitLiquidationCollector sanitizes malformed rows and supports explicit `now` in get_signal / capitulation_ratio
+    bybit_col = BybitLiquidationCollector()
+    bybit_col._events["BTCUSDT"] = [  # type: ignore[assignment]
+        (now_ts - 30.0, "LONG", 120000.0),
+        (now_ts - 20.0, "INVALID_SIDE", 999999.0),
+        (now_ts - 10.0, "SHORT", None),  # type: ignore[list-item]
+        (now_ts - 600.0, "LONG", 60000.0),
+    ]
+    sig = bybit_col.get_signal("BTCUSDT", window_sec=120.0, now=now_ts)
+    assert sig["long_liq_usd"] == pytest.approx(120000.0)
+    assert sig["short_liq_usd"] == pytest.approx(0.0)
+    cap_r = bybit_col.capitulation_ratio("BTCUSDT", window_sec=120.0, baseline_sec=3600.0, now=now_ts)
+    assert cap_r == pytest.approx((120000.0 / 120.0) / (180000.0 / 3600.0))
+
+    # 4. FearGreedCollector.parse_payload honors now_ts when timestamp is absent
+    fg_snap = FearGreedCollector.parse_payload({"data": [{"value": "20", "value_classification": "Extreme Fear"}]}, now_ts=now_ts)
+    assert fg_snap is not None
+    assert fg_snap.timestamp == pytest.approx(now_ts)
+
+    # 5. SmartStopLossGuard._load_grace_state honors now_ts and microstructure alias keys; WhaleAccumulationTrigger honors alias keys
+    ssl_file = tmp_path / "smart_sl_iter56.json"
+    ssl_file.write_text(
+        json.dumps({"SOLUSDC": {"start_ts": now_ts - 40.0, "initial_loss_pct": 3.2, "lost_threshold_pct": 3.0, "provider": "binance"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ssl_mod, "_SMART_SL_STATE_FILE", str(ssl_file))
+    ssl_mod._GRACE_TRACKER.clear()
+    ssl_mod._LOADED_STATE_FILE_KEY = None
+    ssl_guard = ssl_mod.SmartStopLossGuard(mode="enforce", grace_seconds=120.0)
+    should_exec, reason, meta = ssl_guard.evaluate(
+        "SOLUSDC",
+        0.031,
+        0.030,
+        now=now_ts,
+        provider="binance",
+        whale_snapshot={"whale_long_pct": 65.0, "taker_buy_sell_ratio": 0.95},
+        orderbook_snapshot={"ob_imbalance": 0.75, "bid_wall_usd": 600000.0},
+    )
+    assert should_exec is False
+    assert "grace_active" in reason
+    assert meta["grace_elapsed_sec"] == pytest.approx(40.0)
+
+    wat = WhaleAccumulationTrigger()
+    ev = wat.evaluate(
+        "SOLUSDC",
+        150.0,
+        snapshot={"whale_long_pct": 68.0, "taker_buy_sell_ratio": 1.35, "oi_1h_chg_pct": 1.5, "divergence_regime": "accumulation"},
+        now=now_ts,
+    )
+    assert ev is not None
+    assert ev.reason == "whale_aggressive_accumulation"
+
+
 if __name__ == "__main__":
     unittest.main()
 

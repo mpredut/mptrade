@@ -47,7 +47,7 @@ class FearGreedCollector(CachedHttpJsonCollector):
         super().__init__(cache_ttl_sec, 900.0, endpoint_url, get_fear_greed_endpoint_url)
 
     @staticmethod
-    def parse_payload(payload: Dict[str, Any]) -> Optional[FearGreedSnapshot]:
+    def parse_payload(payload: Dict[str, Any], *, now_ts: Optional[float] = None) -> Optional[FearGreedSnapshot]:
         """Parse raw JSON response payload into a FearGreedSnapshot."""
         data = payload.get("data") if isinstance(payload, dict) else None
         if not data or not isinstance(data, list) or not isinstance(data[0], dict):
@@ -60,7 +60,7 @@ class FearGreedCollector(CachedHttpJsonCollector):
         val = max(0, min(100, int(round(val_f))))
         raw_cls = current.get("value_classification")
         classification = raw_cls.strip() if isinstance(raw_cls, str) and raw_cls.strip() else "Neutral"
-        ts = extract_timestamp_s(current) or time.time()
+        ts = extract_timestamp_s(current) or resolve_now_ts(now_ts)
         history = [
             max(0, min(100, int(round(v_f))))
             for item in data
@@ -79,4 +79,4 @@ class FearGreedCollector(CachedHttpJsonCollector):
         )
 
     def _parse_fetched_payload(self, data: Any, now: float) -> Optional[FearGreedSnapshot]:
-        return self.parse_payload(data)
+        return self.parse_payload(data, now_ts=now)

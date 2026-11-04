@@ -176,6 +176,8 @@ def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..
         getattr(cls, "__module__", ""),
         "intelligence.external.collectors.orderbook_depth_collector",
         "intelligence.external.collectors.orderbook_depth",
+        "intelligence.external.collectors.base_collector",
+        "intelligence.macro_sentiment_ssot",
     ):
         if mod_name and (mod := sys.modules.get(mod_name)) is not None:
             cand = getattr(mod, attr_name, None)
@@ -406,11 +408,8 @@ class _DiskBackedSymbolCollector:
         user_agent: str = "mptrade-intelligence/1.0",
     ) -> Dict[str, Any]:
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
-        if (
-            fetch_fn is fetch_public_json
-            and isinstance(url, str)
-            and url.startswith("https://api.hyperliquid.xyz/info?")
-        ):
+        is_hl_info = isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?")
+        if fetch_fn is fetch_public_json and is_hl_info:
             import urllib.parse as _urlparse
 
             q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
@@ -423,10 +422,10 @@ class _DiskBackedSymbolCollector:
             raw_data = cls._post_hyperliquid_info(
                 q_params, timeout=timeout, user_agent=user_agent
             )
-            if isinstance(raw_data, list):
-                return {"result_list": raw_data}
         else:
             raw_data = fetch_fn(url, timeout=timeout, user_agent=user_agent)
+        if is_hl_info and isinstance(raw_data, list):
+            return {"result_list": raw_data}
         if not isinstance(raw_data, dict):
             raise ValueError(f"Unexpected {label} payload for {lookup_sym}: {type(raw_data).__name__}")
         return raw_data

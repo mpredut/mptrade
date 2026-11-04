@@ -201,34 +201,34 @@ def collect_pretrade_telemetry(
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         if m24:
             h_parts = [
-                f"{lbl}={float(m24.get(k, 0)):+.2f}%"
+                f"{lbl}={safe_float(m24.get(k), 0.0):+.2f}%"
                 for lbl, k, req in (
                     ("1m", "chg_1m_pct", False), ("3m", "chg_3m_pct", False), ("5m", "chg_5m_pct", False),
                     ("15m", "chg_15m_pct", True), ("30m", "chg_30m_pct", True), ("1h", "chg_1h_pct", True), ("3h", "chg_3h_pct", True),
                     ("6h", "chg_6h_pct", False), ("12h", "chg_12h_pct", False), ("24h", "chg_24h_pct", False),
                 )
-                if req or (k in m24 and m24.get(k) is not None)
+                if req or safe_float(m24.get(k), default=None) is not None
             ]
             rng_str = f"24h Range=[${m24.get('low_24h')}, ${m24.get('high_24h')}]"
             geom_parts = [
-                f"{g_lbl}={float(m24[g_k]):+.2f}%" if g_signed else f"{g_lbl}={m24[g_k]}%"
+                f"{g_lbl}={g_val:+.2f}%" if g_signed else f"{g_lbl}={m24[g_k]}%"
                 for g_lbl, g_k, g_signed in (
                     ("pos", "pos_24h_pct", False), ("dd_high", "dd_24h_high_pct", True),
                     ("bounce_low", "bounce_24h_low_pct", True), ("span", "span_24h_pct", False),
                 )
-                if m24.get(g_k) is not None
+                if (g_val := safe_float(m24.get(g_k), default=None)) is not None
             ]
             if geom_parts:
                 rng_str += f" ({', '.join(geom_parts)})"
-            if m24.get("recent_tape_15m"):
-                rng_str += f", tape_15m=[{', '.join(m24['recent_tape_15m'])}]"
+            if isinstance(m24.get("recent_tape_15m"), (list, tuple)) and m24["recent_tape_15m"]:
+                rng_str += f", tape_15m=[{', '.join(str(x) for x in m24['recent_tape_15m'])}]"
             telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
             if m24.get("poc_px") is not None:
                 vp_src_s = f", vp_source={m24['vp_source']}" if m24.get("vp_source") else ""
                 telemetry["24h Volume Profile (POC / Value Area)"] = (
-                    f"POC=${m24.get('poc_px')} ({float(m24.get('poc_dist_pct', 0.0)):+.2f}%), "
-                    f"VAL=${m24.get('val_px')} ({float(m24.get('val_dist_pct', 0.0)):+.2f}%), "
-                    f"VAH=${m24.get('vah_px')} ({float(m24.get('vah_dist_pct', 0.0)):+.2f}%), "
+                    f"POC=${m24.get('poc_px')} ({safe_float(m24.get('poc_dist_pct'), 0.0):+.2f}%), "
+                    f"VAL=${m24.get('val_px')} ({safe_float(m24.get('val_dist_pct'), 0.0):+.2f}%), "
+                    f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
                     f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}{vp_src_s}"
                 )
             btc_m24: Dict[str, Any] = {}
@@ -239,26 +239,27 @@ def collect_pretrade_telemetry(
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
                 if btc_m24:
                     vs_parts = [
-                        f"{h_lbl}={float(m24[h_k]) - float(btc_m24[h_k]):+.2f}%"
+                        f"{h_lbl}={m_v - b_v:+.2f}%"
                         for h_lbl, h_k in (
                             ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
                             ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
                         )
-                        if h_k in m24 and h_k in btc_m24
+                        if (m_v := safe_float(m24.get(h_k), default=None)) is not None
+                        and (b_v := safe_float(btc_m24.get(h_k), default=None)) is not None
                     ]
                     cross_btc = compute_cross_btc_metrics(alt_series_24h, btc_series_24h)
                     cross_parts = [
-                        f"{c_lbl}={float(cross_btc[c_k]):+.2f}%" if c_signed else f"{c_lbl}={cross_btc[c_k]}%"
+                        f"{c_lbl}={c_val:+.2f}%" if c_signed else f"{c_lbl}={cross_btc[c_k]}%"
                         for c_lbl, c_k, c_signed in (
                             ("alt_btc_pos_24h", "alt_btc_pos_24h_pct", False),
                             ("alt_btc_dd_high", "alt_btc_dd_24h_high_pct", True),
                             ("alt_btc_bounce_low", "alt_btc_bounce_24h_low_pct", True),
                         )
-                        if cross_btc.get(c_k) is not None
+                        if (c_val := safe_float(cross_btc.get(c_k), default=None)) is not None
                     ]
                     for sc_lbl, sc_k in (("beta", "beta_btc_24h"), ("corr", "corr_btc_24h")):
-                        if cross_btc.get(sc_k) is not None:
-                            cross_parts.append(f"{sc_lbl}={float(cross_btc[sc_k]):.2f}")
+                        if (sc_val := safe_float(cross_btc.get(sc_k), default=None)) is not None:
+                            cross_parts.append(f"{sc_lbl}={sc_val:.2f}")
                     if vs_parts or cross_parts:
                         rel_str = f"vs_btc({', '.join(vs_parts)})" if vs_parts else ""
                         if cross_parts:
@@ -271,7 +272,7 @@ def collect_pretrade_telemetry(
                 if b_struct:
                     telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
-        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, ob=ob_snap, deriv=f_snap, whale=w_snap)
+        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:
             if cur_m_info.get("spread_bps") is not None:
                 telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
@@ -301,7 +302,7 @@ def collect_pretrade_telemetry(
             liq_c = compute_liquidation_clusters(p_est, cur_m_info)
             if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
                 deep_parts = [
-                    f"deep_{s_lbl}=${liq_c[px_k]} (${liq_c.get(usd_k, 0):,.0f}, {float(liq_c.get(dist_k, 0.0)):+.2f}%)"
+                    f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
                     for s_lbl, px_k, usd_k, dist_k in (
                         ("LONG", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
                         ("SHORT", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
@@ -310,8 +311,8 @@ def collect_pretrade_telemetry(
                 ]
                 deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
                 telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
-                    f"LONG liq=${liq_c['long_liq_px']} (${liq_c.get('long_liq_usd', 0):,.0f}, {float(liq_c.get('long_liq_dist_pct', 0.0)):+.2f}%), "
-                    f"SHORT liq=${liq_c['short_liq_px']} (${liq_c.get('short_liq_usd', 0):,.0f}, {float(liq_c.get('short_liq_dist_pct', 0.0)):+.2f}%){deep_sfx}, "
+                    f"LONG liq=${liq_c['long_liq_px']} (${safe_float(liq_c.get('long_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('long_liq_dist_pct'), 0.0):+.2f}%), "
+                    f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
                     f"magnet={liq_c.get('liq_magnet_bias')}"
                 )
     except Exception:
@@ -333,7 +334,7 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        if fills := load_symbol_best_recent_fills(cachedb_dir, symbol, quote_variants):
+        if fills := load_symbol_best_recent_fills(cachedb_dir, symbol, quote_variants, _rj):
             lb, ls = fills.get("last_buy") or {}, fills.get("last_sell") or {}
             lb_by = f" (by={lb.get('actor_tag') or lb.get('actor')})" if (lb.get("actor_tag") or lb.get("actor")) else ""
             ls_by = f" (by={ls.get('actor_tag') or ls.get('actor')})" if (ls.get("actor_tag") or ls.get("actor")) else ""

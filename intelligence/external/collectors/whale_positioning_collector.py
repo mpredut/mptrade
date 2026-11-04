@@ -104,15 +104,18 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         if not cache_dir or not isinstance(symbol, str) or not symbol.strip():
             return 0.0
         try:
-            from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+            from intelligence.sentiment.collectors.microstructure_collector import (
+                _parse_ts_px_row,
+                load_symbol_price_series,
+            )
             series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper(), include_7d=False)
-            if len(series_24h) >= 2:
-                now_ms = float(series_24h[-1][0])
+            pts = [pt for row in (series_24h or ()) if (pt := _parse_ts_px_row(row)) is not None]
+            if len(pts) >= 2:
+                now_ms, latest_p = pts[-1]
                 target_ms = now_ms - 3_600_000.0
-                latest_p = float(series_24h[-1][1])
                 ref_p = next(
-                    (float(pt[1]) for pt in reversed(series_24h) if float(pt[0]) <= target_ms),
-                    float(series_24h[0][1]),
+                    (pt[1] for pt in reversed(pts) if pt[0] <= target_ms),
+                    pts[0][1],
                 )
                 if ref_p > 0:
                     return (latest_p - ref_p) / ref_p * 100.0
@@ -131,7 +134,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 if not (p := telemetry_cache_file_path(self.cache_dir, "derivatives_telemetry", s)):
                     continue
                 try:
-                    d = read_json_dict(p, default=None, recover_previous=True)
+                    d = self._read_disk_json(p)
                     if isinstance(d, dict) and is_cache_fresh(d.get("ts"), now_ts, max_age):
                         if (fr_val := safe_float(d.get("funding_rate"), default=None)) is not None:
                             return fr_val

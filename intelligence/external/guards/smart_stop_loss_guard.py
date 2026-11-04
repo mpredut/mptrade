@@ -99,7 +99,7 @@ _GRACE_FILE_MEMO: Dict[str, Tuple[tuple, Dict[str, Any]]] = {}
 _LOADED_STATE_FILE_KEY: Optional[Tuple[Any, ...]] = None
 
 
-def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
+def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
     global _LOADED_STATE_FILE_KEY
     if _GRACE_TRACKER or is_sim:
         return _GRACE_TRACKER
@@ -114,7 +114,7 @@ def _load_grace_state(*, is_sim: bool = False) -> Dict[str, Dict[str, Any]]:
     if _LOADED_STATE_FILE_KEY == file_key:
         return _GRACE_TRACKER
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
-    now_curr = time.time()
+    now_curr = _resolve_now(now_ts)
     clean_data = {
         norm_k: dict(v)
         for k, v in data.items()
@@ -146,8 +146,8 @@ def _save_grace_state() -> None:
         logger.warning("Could not persist smart stop-loss state: %s", e)
 
 
-def _clear_grace_entry(sym_key: str, *, is_sim: bool) -> None:
-    tracker = _load_grace_state(is_sim=is_sim)
+def _clear_grace_entry(sym_key: str, *, is_sim: bool, now_ts: Optional[float] = None) -> None:
+    tracker = _load_grace_state(is_sim=is_sim, now_ts=now_ts)
     if sym_key in tracker:
         grace_info = tracker.pop(sym_key, None)
         is_sim_eff = is_sim or _is_simulated_provider(grace_info.get("provider") if isinstance(grace_info, dict) else None)
@@ -304,7 +304,7 @@ class SmartStopLossGuard:
         meta["disaster_floor_pct"] = round(disaster_floor * 100.0, 3)
         if price_decrease >= disaster_floor:
             # Terminate grace immediately if active
-            _clear_grace_entry(sym_key, is_sim=is_sim)
+            _clear_grace_entry(sym_key, is_sim=is_sim, now_ts=now_ts)
             reason = f"hard_disaster_floor_breached (loss {price_decrease*100:.2f}% >= {disaster_floor*100:.2f}%)"
             print(f"🛑 [P2 · SMART-SL] EMERGENCY EXIT {sym_key}: {reason}")
             return True, reason, meta
@@ -323,12 +323,17 @@ class SmartStopLossGuard:
             else (None if is_sim else fetch_guard_snapshot(get_orderbook_collector(), sym_key, now=now_ts, allow_network=False))
         )
 
-        top_long_pct = safe_float(_obj_attr(w_snap, "top_traders_long_pct", 0.50), 0.50) if w_snap else 0.50
+        raw_top_long = _obj_attr(w_snap, "top_traders_long_pct", _obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
+        top_long_pct = safe_float(raw_top_long, 0.50)
+        if 1.0 < top_long_pct <= 100.0:
+            top_long_pct /= 100.0
         taker_ratio = safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
         raw_div_reg = _obj_attr(w_snap, "divergence_regime", None) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
-        imbalance = safe_float(_obj_attr(ob_snap, "imbalance_ratio", 0.50), 0.50) if ob_snap else 0.50
-        bid_wall = safe_float(_obj_attr(ob_snap, "largest_bid_wall_usd", 0.0), 0.0) if ob_snap else 0.0
+        raw_imb = _obj_attr(ob_snap, "imbalance_ratio", _obj_attr(ob_snap, "ob_imbalance", 0.50)) if ob_snap else 0.50
+        imbalance = safe_float(raw_imb, 0.50)
+        raw_bid_wall = _obj_attr(ob_snap, "largest_bid_wall_usd", _obj_attr(ob_snap, "bid_wall_usd", 0.0)) if ob_snap else 0.0
+        bid_wall = safe_float(raw_bid_wall, 0.0)
 
         meta.update({
             "top_long_pct": round(top_long_pct * 100.0, 1),
@@ -340,7 +345,7 @@ class SmartStopLossGuard:
 
         # 4. Crash / Active Cascade Detection: dumping with heavy momentum
         if taker_ratio < 0.70 and divergence_regime == "aggressive_shorting":
-            _clear_grace_entry(sym_key, is_sim=is_sim)
+            _clear_grace_entry(sym_key, is_sim=is_sim, now_ts=now_ts)
             reason = f"active_crash_cascade (taker_ratio={taker_ratio:.2f}, regime={divergence_regime})"
             print(f"🛑 [P2 · SMART-SL] {sym_key}: {reason} -> executing stop-loss without delay")
             return True, reason, meta
@@ -350,7 +355,7 @@ class SmartStopLossGuard:
         has_absorption = taker_ratio >= self.min_taker_ratio or imbalance >= 0.70 or bid_wall >= 500_000.0
 
         if is_whale_supported and has_absorption:
-            tracker = _load_grace_state(is_sim=is_sim)
+            tracker = _load_grace_state(is_sim=is_sim, now_ts=now_ts)
             active_grace = tracker.get(sym_key) if isinstance(tracker.get(sym_key), dict) else None
             if active_grace is not None:
                 existing_start = safe_float(active_grace.get("start_ts"), -1.0)
@@ -428,7 +433,7 @@ class SmartStopLossGuard:
             return True, reason, meta
 
         # Microstructure not supportive of wick bounce
-        _clear_grace_entry(sym_key, is_sim=is_sim)
+        _clear_grace_entry(sym_key, is_sim=is_sim, now_ts=now_ts)
         return True, "microstructure_not_supportive", meta
 
     def on_recovered(
@@ -449,8 +454,9 @@ class SmartStopLossGuard:
         sym_key = clean_guard_symbol_key(symbol)
         if not sym_key:
             return False
+        now_ts = _resolve_now(now)
         is_sim_call = _is_simulated_provider(provider)
-        tracker = _load_grace_state(is_sim=is_sim_call)
+        tracker = _load_grace_state(is_sim=is_sim_call, now_ts=now_ts)
         grace_info = tracker.pop(sym_key, None)
         if not isinstance(grace_info, dict):
             return False
@@ -459,7 +465,6 @@ class SmartStopLossGuard:
             _save_grace_state()
         if _is_buy_price_changed(grace_info.get("buy_price"), buy_price):
             return False
-        now_ts = _resolve_now(now)
         price_decrease, lost_threshold = safe_float(price_decrease, 0.0), safe_float(lost_threshold, 0.0)
         start_ts = safe_float(grace_info.get("start_ts"), -1.0)
         if start_ts < 0.0 or start_ts > now_ts + 5.0 or (elapsed := max(0.0, now_ts - start_ts)) > 3600.0:

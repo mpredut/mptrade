@@ -59,9 +59,17 @@ class WhaleAccumulationTrigger:
         if snapshot is None:
             return None
 
-        top_long_pct = safe_float(snap_attr(snapshot, "top_traders_long_pct", None), default=None)
+        raw_long_pct = snap_attr(snapshot, "top_traders_long_pct", None)
+        if raw_long_pct is None:
+            raw_long_pct = snap_attr(snapshot, "whale_long_pct", None)
+        top_long_pct = safe_float(raw_long_pct, default=None)
+        if top_long_pct is not None and 1.0 < top_long_pct <= 100.0:
+            top_long_pct /= 100.0
         taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio", None), default=None)
-        oi_chg = safe_float(snap_attr(snapshot, "open_interest_1h_change_pct", None), default=None)
+        raw_oi_chg = snap_attr(snapshot, "open_interest_1h_change_pct", None)
+        if raw_oi_chg is None:
+            raw_oi_chg = snap_attr(snapshot, "oi_1h_chg_pct", None)
+        oi_chg = safe_float(raw_oi_chg, default=None)
         raw_regime = snap_attr(snapshot, "divergence_regime", "neutral")
         regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
         if top_long_pct is None or taker_ratio is None or oi_chg is None:

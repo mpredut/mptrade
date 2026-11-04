@@ -216,17 +216,25 @@ class BybitLiquidationCollector:
     ) -> Tuple[float, float, int, int, float]:
         long_usd = short_usd = last_ts = 0.0
         long_n = short_n = 0
-        for ts, side, notional in items:
-            if safe_float(ts, default=None) is None or ts < cutoff or (max_ts is not None and ts > max_ts):
+        for row in items:
+            if not isinstance(row, (list, tuple)) or len(row) < 3:
                 continue
-            if require_pos_notional and safe_pos_float(notional, default=None) is None:
+            ts, side, notional = row[0], row[1], row[2]
+            ts_f = safe_float(ts, default=None)
+            if ts_f is None or ts_f < cutoff or (max_ts is not None and ts_f > max_ts):
                 continue
-            last_ts = max(last_ts, ts)
-            if side == "LONG":
-                long_usd += notional
+            notional_f = safe_pos_float(notional, default=None)
+            if notional_f is None:
+                continue
+            side_norm = side if side in ("LONG", "SHORT") else _normalize_liq_side(side)
+            if side_norm not in ("LONG", "SHORT"):
+                continue
+            last_ts = max(last_ts, ts_f)
+            if side_norm == "LONG":
+                long_usd += notional_f
                 long_n += 1
             else:
-                short_usd += notional
+                short_usd += notional_f
                 short_n += 1
         return long_usd, short_usd, long_n, short_n, last_ts
 
@@ -264,12 +272,17 @@ class BybitLiquidationCollector:
             last_event_ts=last_ts,
         )
 
-    def get_signal(self, symbol: str, window_sec: float = 300.0) -> Dict[str, float]:
+    def get_signal(
+        self,
+        symbol: str,
+        window_sec: float = 300.0,
+        now: Optional[float] = None,
+    ) -> Dict[str, float]:
         """Aggregate liquidations for ``symbol`` over the last ``window_sec`` as a dict."""
         symbol_str = str(symbol or "").strip().upper()
         sym_clean = clean_symbol_key(symbol_str)
         eff_win = safe_pos_float(window_sec, 300.0)
-        now = time.time()
+        now_ts = safe_pos_float(now, default=None) or time.time()
         with self._lock:
             items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol_str) or ())
             if not items and symbol_str:
@@ -277,7 +290,7 @@ class BybitLiquidationCollector:
                     if cand_items := casefold_get(self._events, cand):
                         items = list(cand_items)
                         break
-        long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(items, now - eff_win)
+        long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(items, now_ts - eff_win, max_ts=now_ts + 5.0)
         return {
             "symbol": symbol_str,
             "window_sec": eff_win,
@@ -286,7 +299,7 @@ class BybitLiquidationCollector:
             "long_count": long_n,
             "short_count": short_n,
             "net_usd": short_usd - long_usd,
-            "age_sec": max(0.0, now - last_ts) if last_ts else float("inf"),
+            "age_sec": max(0.0, now_ts - last_ts) if last_ts else float("inf"),
         }
 
     def capitulation_ratio(
@@ -294,12 +307,14 @@ class BybitLiquidationCollector:
         symbol: str,
         window_sec: float = 120.0,
         baseline_sec: float = 3600.0,
+        now: Optional[float] = None,
     ) -> float:
         """Intensity of recent LONG-liquidation burst relative to baseline rate."""
         eff_win = safe_pos_float(window_sec, 120.0)
         eff_base = max(safe_pos_float(baseline_sec, 3600.0), eff_win)
-        recent = self.get_signal(symbol, eff_win)["long_liq_usd"]
-        base = self.get_signal(symbol, eff_base)["long_liq_usd"]
+        now_ts = safe_pos_float(now, default=None) or time.time()
+        recent = self.get_signal(symbol, eff_win, now=now_ts)["long_liq_usd"]
+        base = self.get_signal(symbol, eff_base, now=now_ts)["long_liq_usd"]
         recent_rate = recent / max(eff_win, 1.0)
         base_rate = base / max(eff_base, 1.0)
         return recent_rate / base_rate if base_rate > 0 else 0.0
