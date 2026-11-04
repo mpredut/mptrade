@@ -820,6 +820,7 @@ def reconcile_sibling_flow_and_liq_regimes(
             continue
         prim_mag = prim_m.get("liq_magnet_bias")
         prim_cvd_reg = prim_m.get("cvd_regime")
+        prim_cvd_15m = safe_float(prim_m.get("cvd_15m_usd"), None)
         prim_flow_reg = prim_m.get("spot_perp_flow_regime")
         sp_vals = [safe_float(m_s.get("spot_cvd_15m_usd"), None) for _, m_s in non_div]
         has_pos_sp = any(v is not None and v > 0.0 for v in sp_vals)
@@ -832,9 +833,15 @@ def reconcile_sibling_flow_and_liq_regimes(
         for _, m_sib in non_div:
             if prim_mag and m_sib.get("liq_magnet_bias"):
                 m_sib["liq_magnet_bias"] = prim_mag
-            if prim_cvd_reg and m_sib.get("cvd_regime"):
+            sib_cvd_15m = safe_float(m_sib.get("cvd_15m_usd"), None)
+            same_cvd_sign = (
+                prim_cvd_15m is None
+                or sib_cvd_15m is None
+                or (prim_cvd_15m * sib_cvd_15m) >= 0.0
+            )
+            if prim_cvd_reg and m_sib.get("cvd_regime") and same_cvd_sign:
                 m_sib["cvd_regime"] = prim_cvd_reg
-            if unified_flow_reg and m_sib.get("spot_perp_flow_regime"):
+            if unified_flow_reg and m_sib.get("spot_perp_flow_regime") and same_cvd_sign:
                 m_sib["spot_perp_flow_regime"] = unified_flow_reg
             if m_sib.get("spot_perp_flow_regime") == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE":
                 m_sib["cvd_regime"] = "spot_absorbing"

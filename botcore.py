@@ -13,6 +13,7 @@ is shared, and venue shims only re-export the JSON/form helpers defined here.
 """
 from __future__ import annotations
 
+import configparser
 import fcntl
 import json
 import math
@@ -61,7 +62,43 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
     _LOCKS[name] = fd   # retain the reference so the lock lasts until process exit
 
 
-def _dotenv_pairs(path: str) -> tuple[list[tuple[str, str]], bool]:
+def parse_dotenv_line(raw: str, *, strict: bool = False) -> tuple[str, str] | None:
+    """Parse a single ``KEY=VALUE`` (or ``export KEY=VALUE``) line, stripping inline comments and outer quotes."""
+    if not isinstance(raw, str):
+        return None
+    line = (raw.split("#", 1)[0] if strict else raw).strip()
+    if not line or line.startswith("#"):
+        return None
+    if "=" not in line:
+        if strict:
+            raise ValueError(f"Malformed configuration line missing '=': {raw.rstrip()!r}")
+        return None
+    if line.startswith("export "):
+        line = line[len("export "):]
+    key, _, val = line.partition("=")
+    key = key.strip()
+    if not key:
+        if strict:
+            raise ValueError(f"Empty configuration key in line: {raw.rstrip()!r}")
+        return None
+    val = val.strip()
+    if val.startswith(('"', "'")):
+        q = val[0]
+        close_idx = val.find(q, 1)
+        if close_idx != -1:
+            tail = val[close_idx + 1:].strip()
+            if not tail or tail.startswith("#"):
+                val = val[1:close_idx]
+            else:
+                val = val.strip('"').strip("'")
+        else:
+            val = val.strip('"').strip("'")
+    else:
+        val = val.split("#", 1)[0].strip()
+    return key, val
+
+
+def _dotenv_pairs(path: str | os.PathLike, *, strict: bool = False) -> tuple[list[tuple[str, str]], bool]:
     """Parse shared dotenv syntax once and report whether the file was read successfully."""
     if not path or isinstance(path, (bool, int)):
         return [], False
@@ -74,29 +111,9 @@ def _dotenv_pairs(path: str) -> tuple[list[tuple[str, str]], bool]:
         with open(path, "r", encoding="utf-8") as f:
             pairs = []
             for raw in f:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                if line.startswith("export "):
-                    line = line[len("export "):]
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip()
-                # Strip inline comments and outer quotes safely.
-                if val.startswith(('"', "'")):
-                    q = val[0]
-                    close_idx = val.find(q, 1)
-                    if close_idx != -1:
-                        tail = val[close_idx + 1:].strip()
-                        if not tail or tail.startswith("#"):
-                            val = val[1:close_idx]
-                        else:
-                            val = val.strip('"').strip("'")
-                    else:
-                        val = val.strip('"').strip("'")
-                else:
-                    val = val.split("#")[0].strip()
-                pairs.append((key, val))
+                parsed = parse_dotenv_line(raw, strict=strict)
+                if parsed is not None:
+                    pairs.append(parsed)
         return pairs, True
     except OSError as e:
         log(f"  ! cannot read {path}: {e}")
@@ -162,13 +179,14 @@ def _parse_bool_flag(val, default: bool | None = False):
     return fb
 
 
-def load_dotenv(path: str = ".env", override: bool = False) -> None:
-    """Load KEY=VALUE entries from .env without overriding the existing environment (unless override=True)."""
+def load_dotenv(path: str | os.PathLike | None = None, override: bool = False) -> None:
+    """Load KEY=VALUE entries from ``path`` (defaulting to root ``config.env`` when ``None``) without overriding existing env."""
+    target = _ROOT_CONFIG_PATH if path is None else os.fspath(path)
     override = _parse_bool_flag(override, False)
-    pairs, loaded = _dotenv_pairs(path)
+    pairs, loaded = _dotenv_pairs(target)
     if not loaded:
         return
-    is_root = os.path.abspath(path) == _ROOT_CONFIG_PATH
+    is_root = os.path.abspath(target) == _ROOT_CONFIG_PATH
     for key, value in pairs:
         if not key:
             continue
@@ -182,10 +200,14 @@ def load_dotenv(path: str = ".env", override: bool = False) -> None:
                 os.environ[key] = value
                 _ROOT_CONFIG_KEYS.discard(key)
                 _ROOT_CONFIG_VALUES.pop(key, None)
-    _log_dotenv_loaded_once(path, override=bool(override))
+    _log_dotenv_loaded_once(target, override=bool(override))
 
 
-def load_env_stack(env_file: str, config_name: str = "config.env", override: bool = False) -> None:
+def load_env_stack(
+    env_file: str | os.PathLike | None = None,
+    config_name: str | os.PathLike = "config.env",
+    override: bool = False,
+) -> None:
     """Load secrets/overrides and the adjacent versioned configuration.
 
     Local venue configurations take precedence over any globally loaded root config.env.
@@ -196,8 +218,14 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
       4. Global root config.env defaults
     """
     override = _parse_bool_flag(override, False)
-    env_path = os.path.abspath(env_file)
-    cfg_path = os.path.join(os.path.dirname(env_path), config_name)
+    eff_env = os.path.join(_REPO_ROOT, ".env") if env_file is None else os.fspath(env_file)
+    env_path = os.path.abspath(eff_env)
+    cfg_str = os.fspath(config_name) if config_name else "config.env"
+    cfg_path = (
+        os.path.abspath(cfg_str)
+        if (os.path.isabs(cfg_str) or os.path.dirname(cfg_str))
+        else os.path.join(os.path.dirname(env_path), cfg_str)
+    )
 
     # Process keys are those in os.environ that were NOT set (or were modified since being set) by root config.env
     unmodified_root_keys = {k for k in tuple(_ROOT_CONFIG_KEYS) if _is_unmodified_root_key(k)}
@@ -229,11 +257,45 @@ def load_env_stack(env_file: str, config_name: str = "config.env", override: boo
         _log_dotenv_loaded_once(env_path, override=bool(override))
 
 
-def parse_dotenv(path: str) -> dict[str, str]:
-    """Parse dotenv into a dictionary without changing os.environ.
-    This keeps configuration separate when multiple assets run in the same process."""
-    pairs, _ = _dotenv_pairs(path)
-    return dict(pairs)
+def load_root_config(*, include_secrets: bool = False, override: bool = False) -> None:
+    """Load repository root ``config.env`` (and root ``.env`` when ``include_secrets=True``) via the canonical SSOT."""
+    if include_secrets:
+        load_env_stack(os.path.join(_REPO_ROOT, ".env"), _ROOT_CONFIG_PATH, override=override)
+    else:
+        load_dotenv(_ROOT_CONFIG_PATH, override=override)
+
+
+def parse_dotenv(
+    path: str | os.PathLike,
+    *,
+    upper_keys: bool = False,
+    lower_keys: bool = False,
+    coerce_bools: bool = False,
+    coerce_floats: bool = False,
+    strict: bool = False,
+) -> dict[str, object]:
+    """Parse a ``KEY=VALUE`` dotenv/conf file into a dictionary without changing ``os.environ``."""
+    pairs, _ = _dotenv_pairs(path, strict=strict)
+    out: dict[str, object] = {}
+    for k, v in pairs:
+        if not k:
+            continue
+        key = k.upper() if upper_keys else (k.lower() if lower_keys else k)
+        val: object = v
+        if coerce_bools:
+            v_low = v.strip().lower()
+            bool_true = {"true", "yes", "on"} if coerce_floats else {"true", "1", "yes", "on"}
+            bool_false = {"false", "no", "off"} if coerce_floats else {"false", "0", "no", "off"}
+            if v_low in bool_true:
+                val = True
+            elif v_low in bool_false:
+                val = False
+        if coerce_floats and isinstance(val, str):
+            fv = safe_float(val, default=None)
+            if fv is not None:
+                val = fv
+        out[key] = val
+    return out
 
 
 def safe_float(val: object, default: float | None = 0.0) -> float | None:
@@ -685,7 +747,7 @@ def http_post_form(
     return http_request("POST", url, headers=headers, form=data)
 
 
-def fetch_public_json(
+def _fetch_public_json_impl(
     url: str,
     *,
     timeout: float = 5.0,
@@ -700,6 +762,9 @@ def fetch_public_json(
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
         return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+
+fetch_public_json = globals().get("fetch_public_json") or _fetch_public_json_impl
 
 
 def fetch_json_post(
@@ -785,18 +850,51 @@ def is_us_rth_open(now_ts: float | None = None) -> bool:
     return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
 
 
-def parse_env_file(env_path: str) -> dict[str, str]:
+_INI_CONFIG_CACHE: dict[str, tuple[tuple[int, int], configparser.ConfigParser]] = (
+    globals().get("_INI_CONFIG_CACHE") or {}
+)
+_INI_CONFIG_LOCK = globals().get("_INI_CONFIG_LOCK") or threading.RLock()
+
+
+def load_ini_config(
+    path: str | os.PathLike,
+    *,
+    must_exist: bool = True,
+    inline_comments: bool = True,
+) -> configparser.ConfigParser:
+    """Load and cache an INI ``.conf`` file by ``(mtime_ns, size)`` using ``ConfigParser(interpolation=None)``."""
+    if isinstance(path, bool) or not isinstance(path, (str, os.PathLike)) or not str(path).strip():
+        raise ValueError(f"Invalid INI configuration path: {path!r}")
+    abs_path = os.path.abspath(os.fspath(path))
+    if not os.path.exists(abs_path):
+        if must_exist:
+            raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
+        return configparser.ConfigParser(
+            interpolation=None,
+            inline_comment_prefixes=("#", ";") if inline_comments else (),
+        )
+    st = os.stat(abs_path)
+    sig = (st.st_mtime_ns, st.st_size)
+    with _INI_CONFIG_LOCK:
+        cached = _INI_CONFIG_CACHE.get(abs_path)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+        cp = configparser.ConfigParser(
+            interpolation=None,
+            inline_comment_prefixes=("#", ";") if inline_comments else (),
+        )
+        with open(abs_path, "r", encoding="utf-8") as handle:
+            cp.read_file(handle)
+        lru_dict_put(_INI_CONFIG_CACHE, abs_path, (sig, cp), 64)
+        return cp
+
+
+def parse_env_file(env_path: str | os.PathLike) -> dict[str, str]:
     """Parse a key=value env/conf file into an uppercase-keyed dictionary without mutating os.environ."""
-    if not env_path or not os.path.exists(env_path):
-        return {}
-    try:
-        raw = parse_dotenv(env_path)
-        return {k.upper(): v for k, v in raw.items() if k}
-    except Exception:
-        return {}
+    return parse_dotenv(env_path, upper_keys=True)  # type: ignore[return-value]
 
 
-def load_env_file_defaults(env_path: str) -> dict[str, str]:
+def load_env_file_defaults(env_path: str | os.PathLike) -> dict[str, str]:
     """Parse an env file and set non-STRAT_* keys in os.environ via setdefault."""
     parsed = parse_env_file(env_path)
     for key_u, val in parsed.items():
@@ -805,17 +903,25 @@ def load_env_file_defaults(env_path: str) -> dict[str, str]:
     return parsed
 
 
-def load_key_value_conf(workspace_dir: str, root_dir: str = _REPO_ROOT) -> dict[str, str]:
-    """Load key=value settings from order_guard.conf / config.env / .env (root_dir overlaid by workspace_dir)."""
+def load_key_value_conf(
+    workspace_dir: str | os.PathLike = _REPO_ROOT,
+    root_dir: str | os.PathLike = _REPO_ROOT,
+    *,
+    filenames: tuple[str, ...] = ("order_guard.conf", "config.env", ".env"),
+    lower_values: bool = False,
+) -> dict[str, str]:
+    """Load key=value settings from ``filenames`` (``root_dir`` overlaid by ``workspace_dir``)."""
     conf: dict[str, str] = {}
-    eff_root = root_dir or _REPO_ROOT
+    eff_root = os.fspath(root_dir) if root_dir else _REPO_ROOT
+    ws_str = os.fspath(workspace_dir) if workspace_dir else ""
     search_dirs = [eff_root]
-    if workspace_dir and os.path.abspath(workspace_dir) != os.path.abspath(eff_root):
-        search_dirs.append(workspace_dir)
+    if ws_str and os.path.abspath(ws_str) != os.path.abspath(eff_root):
+        search_dirs.append(ws_str)
     for base_dir in search_dirs:
-        for fname in ("order_guard.conf", "config.env", ".env"):
-            for k_u, v_s in parse_env_file(os.path.join(base_dir, fname)).items():
-                conf[k_u.lower()] = v_s
+        for fname in filenames:
+            for k_l, v_s in parse_dotenv(os.path.join(base_dir, fname), lower_keys=True).items():
+                val_str = str(v_s).strip().strip("\"'")
+                conf[k_l] = val_str.lower() if lower_values else str(v_s)
     return conf
 
 

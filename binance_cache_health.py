@@ -34,7 +34,7 @@ from state_io import atomic_write_json, read_json_dict, read_text_file, read_tex
 
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_ROOT, "config.env"))
+load_dotenv()
 
 
 def _positive_finite(value: float, name: str) -> float:

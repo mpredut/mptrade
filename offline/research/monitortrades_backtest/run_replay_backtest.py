@@ -63,8 +63,9 @@ FEE_PCT = 0.1
 
 def _live_mt_params(section):
     """Read the CURRENT mt.* parameters from a section of instruments.conf."""
-    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-    cp.read(os.path.join(ROOT, "instruments.conf"), encoding="utf-8")
+    from botcore import load_ini_config
+
+    cp = load_ini_config(os.path.join(ROOT, "instruments.conf"), must_exist=False)
     if section not in cp:
         return {}
     return {k: v for k, v in cp[section].items() if k.startswith("mt.") or k.startswith("trailing.")}

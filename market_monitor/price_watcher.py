@@ -30,7 +30,7 @@ from botcore import load_env_stack, required_bool_env, required_env, safe_int, s
 from cachepaths import cache_path
 from market_monitor.alerts_config import load_config
 
-load_env_stack(os.path.join(_ROOT, ".env"))
+load_env_stack()
 ALERT_NEW_COIN = required_bool_env("ALERT_NEW_COIN")
 
 # Price alerts route to their dedicated ntfy topic, passed explicitly to the batch

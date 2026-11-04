@@ -79,7 +79,7 @@ def _touch_rtrade_heartbeat(*, force=False, now=None):
         )
 
 
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
+_load_dotenv()
 
 WAIT_FOR_ORDER = required_float_env("RTRADE_WAIT_FOR_ORDER_SEC")
 MIN_adjustment_percent = required_float_env("RTRADE_MIN_ADJUSTMENT_PCT")

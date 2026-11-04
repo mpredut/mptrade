@@ -223,6 +223,43 @@ class NumericCoercionHelpersTest(unittest.TestCase):
             self.assertEqual(ts, 123456.78)
             self.assertTrue(Path(hb_path).exists())
 
+    def test_unified_config_env_and_ini_parsers(self):
+        self.assertEqual(botcore.parse_dotenv_line("export FOO = 'bar' # comment"), ("FOO", "bar"))
+        self.assertIsNone(botcore.parse_dotenv_line("# comment only", strict=True))
+        with self.assertRaises(ValueError):
+            botcore.parse_dotenv_line("NO_EQUALS_SIGN", strict=True)
+        with self.assertRaises(ValueError):
+            botcore.parse_dotenv_line("=missing_key", strict=True)
+
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / "sample.env"
+            env_path.write_text(
+                "export Alpha=true # inline\nBeta=12.5\nGamma='hello'\n",
+                encoding="utf-8",
+            )
+            parsed_upper = botcore.parse_dotenv(env_path, upper_keys=True)
+            self.assertEqual(parsed_upper, {"ALPHA": "true", "BETA": "12.5", "GAMMA": "hello"})
+
+            parsed_lower_coerced = botcore.parse_dotenv(
+                env_path, lower_keys=True, coerce_bools=True, coerce_floats=True
+            )
+            self.assertEqual(
+                parsed_lower_coerced,
+                {"alpha": True, "beta": 12.5, "gamma": "hello"},
+            )
+
+            ini_path = Path(directory) / "sample.conf"
+            ini_path.write_text("[sec]\nkey = val1 # inline\n", encoding="utf-8")
+            cp1 = botcore.load_ini_config(ini_path)
+            self.assertEqual(cp1.get("sec", "key"), "val1")
+            cp2 = botcore.load_ini_config(ini_path)
+            self.assertIs(cp1, cp2)
+
+            ini_path.write_text("[sec]\nkey = val_updated_longer\n", encoding="utf-8")
+            cp3 = botcore.load_ini_config(ini_path)
+            self.assertEqual(cp3.get("sec", "key"), "val_updated_longer")
+            self.assertIsNot(cp1, cp3)
+
 
 class BoundNotifierTest(unittest.TestCase):
     def test_explicit_symbol_then_environment_priority_then_fallback(self):

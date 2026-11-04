@@ -194,38 +194,47 @@ def compute_volume_profile_metrics(
         hvn2_px: Optional[float] = None
         lvn_px: Optional[float] = None
         profile_shape = "UNIMODAL"
-        sep_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and bin_vols[i] > 0.0]
+        sep_cands: list[Tuple[int, int]] = []
+        for i in range(n_bins):
+            if abs(i - poc_idx) < 2 or bin_vols[i] <= 0.0:
+                continue
+            cand_px_i = bin_px_sums[i] / bin_vols[i]
+            if poc_raw > 0.0 and abs(cand_px_i - poc_raw) / poc_raw < 0.005:
+                continue
+            lo_b, hi_b = min(poc_idx, i), max(poc_idx, i)
+            valley_indices = list(range(lo_b + 1, hi_b))
+            if not valley_indices:
+                continue
+            lvn_i = min(valley_indices, key=lambda k: (smoothed_vols[k], bin_vols[k]))
+            if smoothed_vols[lvn_i] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[i]):
+                sep_cands.append((i, lvn_i))
         if sep_cands:
-            hvn2_idx = max(sep_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
+            hvn2_idx, lvn_idx = max(sep_cands, key=lambda pair: (smoothed_vols[pair[0]], bin_vols[pair[0]]))
             if smoothed_vols[poc_idx] > 0.0 and smoothed_vols[hvn2_idx] >= 0.60 * smoothed_vols[poc_idx]:
                 hvn2_raw = (
                     bin_px_sums[hvn2_idx] / bin_vols[hvn2_idx]
                     if bin_vols[hvn2_idx] > 0.0
                     else (low_px + (hvn2_idx + 0.5) * bin_w)
                 )
-                lo_b, hi_b = min(poc_idx, hvn2_idx), max(poc_idx, hvn2_idx)
-                valley_indices = list(range(lo_b + 1, hi_b))
-                if valley_indices:
-                    lvn_idx = min(valley_indices, key=lambda i: (smoothed_vols[i], bin_vols[i]))
-                    lvn_raw = (
-                        bin_px_sums[lvn_idx] / bin_vols[lvn_idx]
-                        if bin_vols[lvn_idx] > 0.0
-                        else (low_px + (lvn_idx + 0.5) * bin_w)
-                    )
-                    eff_dec_tmp = _auto_px_decimals(cur_px, decimals)
-                    hvn2_px = round(hvn2_raw, eff_dec_tmp)
-                    lvn_px = round(lvn_raw, eff_dec_tmp)
-                    if (
-                        smoothed_vols[hvn2_idx] >= 0.68 * smoothed_vols[poc_idx]
-                        and smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
-                    ):
-                        profile_shape = "BIMODAL"
-                    if smoothed_vols[hvn2_idx] >= 0.85 * smoothed_vols[poc_idx]:
-                        ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
-                        if abs(ref_center - hvn2_raw) < abs(ref_center - poc_raw):
-                            poc_raw, hvn2_raw = hvn2_raw, poc_raw
-                            poc_idx, hvn2_idx = hvn2_idx, poc_idx
-                            hvn2_px = round(hvn2_raw, eff_dec_tmp)
+                lvn_raw = (
+                    bin_px_sums[lvn_idx] / bin_vols[lvn_idx]
+                    if bin_vols[lvn_idx] > 0.0
+                    else (low_px + (lvn_idx + 0.5) * bin_w)
+                )
+                eff_dec_tmp = _auto_px_decimals(cur_px, decimals)
+                hvn2_px = round(hvn2_raw, eff_dec_tmp)
+                lvn_px = round(lvn_raw, eff_dec_tmp)
+                if (
+                    smoothed_vols[hvn2_idx] >= 0.68 * smoothed_vols[poc_idx]
+                    and smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
+                ):
+                    profile_shape = "BIMODAL"
+                if smoothed_vols[hvn2_idx] >= 0.85 * smoothed_vols[poc_idx]:
+                    ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
+                    if abs(ref_center - hvn2_raw) < abs(ref_center - poc_raw):
+                        poc_raw, hvn2_raw = hvn2_raw, poc_raw
+                        poc_idx, hvn2_idx = hvn2_idx, poc_idx
+                        hvn2_px = round(hvn2_raw, eff_dec_tmp)
         target_vol = total_vol * max(0.50, min(0.90, float(value_area_pct)))
         acc_vol, val_idx, vah_idx = bin_vols[poc_idx], poc_idx, poc_idx
 
@@ -263,12 +272,6 @@ def compute_volume_profile_metrics(
             out_vp["sec_poc_px"] = hvn2_px
         if lvn_px is not None:
             out_vp["lvn_px"] = lvn_px
-        if "sec_poc_px" not in out_vp:
-            sec_cands = [i for i in range(n_bins) if abs(i - poc_idx) >= 2 and smoothed_vols[i] >= smoothed_vols[poc_idx] * 0.70 and bin_vols[i] > 0.0]
-            if sec_cands:
-                sec_idx = max(sec_cands, key=lambda i: (smoothed_vols[i], bin_vols[i]))
-                sec_raw = bin_px_sums[sec_idx] / bin_vols[sec_idx] if bin_vols[sec_idx] > 0 else (low_px + (sec_idx + 0.5) * bin_w)
-                out_vp["sec_poc_px"] = round(sec_raw, eff_dec)
         return out_vp
     except Exception:
         return {}

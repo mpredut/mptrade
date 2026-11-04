@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] Orch
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 import botcore
-botcore.load_dotenv(os.path.join(ROOT_DIR, "config.env"))
+botcore.load_root_config()
 from cachepaths import organize_cachedb_subdomains, resolve_cachedb_filepath
 from notify_engine.server import NotificationServer
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -142,10 +142,7 @@ class BotManager:
             config_env_path = os.path.join(ROOT_DIR, "config.env")
             if os.path.exists(config_env_path):
                 try:
-                    pairs, ok = botcore._dotenv_pairs(config_env_path)
-                    if ok:
-                        for k, v in pairs:
-                            fresh_env[k] = v
+                    fresh_env.update(botcore.parse_dotenv(config_env_path))
                 except Exception as env_err:
                     logging.warning(f"Could not parse fresh config.env for {name}: {env_err}")
             venv_bin = os.path.join(ROOT_DIR, self.venv, "bin")

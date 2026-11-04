@@ -40,7 +40,7 @@ from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
+_load_dotenv()
 
 # Intentionally retained dead code for reference: an alternative shared-memory
 # IPC approach for trends instead of the current priceanalysis.json file.

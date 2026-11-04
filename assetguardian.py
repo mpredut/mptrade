@@ -33,7 +33,7 @@ from botcore import (
     _parse_bool_flag,
     clamp_float,
     exact_nonneg_int,
-    load_dotenv as _load_dotenv,
+    load_root_config,
     required_env,
     required_float_env,
     required_int_env,
@@ -45,7 +45,7 @@ from botcore import (
     validate_required_env_keys,
 )
 from cachepaths import cache_path
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
+load_root_config()
 
 REQUIRED_CONFIG_KEYS = (
     "AG_CHECK_INTERVAL_SEC", "AG_REFERENCE_MINUTES_BACK", "AG_BUY_USE_CASH_RATIO",

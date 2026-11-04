@@ -22,7 +22,7 @@ import time
 import contextlib
 import configparser
 
-from botcore import exact_pos_int, safe_pos_float
+from botcore import exact_pos_int, load_ini_config, safe_pos_float
 from .cooldown import Cooldown
 from providers.base import (
     _clean_single_order_id,
@@ -37,10 +37,8 @@ CONF_FILE = os.path.join(BASE_DIR, "trade_cooldown.conf")      # tracked text/IN
 
 def _load_cooldown_sec() -> int:
     """Strictly read mandatory ``[cooldown] default_sec`` from ``trade_cooldown.conf``."""
-    if not os.path.exists(CONF_FILE):
-        raise FileNotFoundError(f"Missing mandatory configuration file: {CONF_FILE}")
-    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-    if not cp.read(CONF_FILE, encoding="utf-8"):
+    cp = load_ini_config(CONF_FILE, must_exist=True, inline_comments=True)
+    if not cp.sections():
         raise ValueError(f"Failed to read mandatory configuration file: {CONF_FILE}")
     if not cp.has_option("cooldown", "default_sec"):
         raise KeyError(f"Missing required [cooldown] default_sec in {CONF_FILE}")

@@ -52,7 +52,7 @@ def _disabled() -> bool:
 
 def load_env() -> None:
     """Load config.env (versioned) and .env (secrets) without overriding the process env."""
-    load_env_stack(os.path.join(ROOT_DIR, ".env"))
+    load_env_stack()
 
 
 def email_mirrored_topics() -> set[str]:

@@ -27,7 +27,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, load_key_value_conf, parse_dotenv, safe_pos_float, safe_pos_int
 from cachepaths import resolve_cachedb_filepath
 from state_io import save_json_state
 from orchestratorOS.lib.technical_repair_ssot import (
@@ -155,16 +155,12 @@ class FleetHealthMonitor:
 
     def get_autonomous_modes(self) -> Dict[str, str]:
         """Extracts operational mode settings strictly from order_guard.conf."""
-        modes: Dict[str, str] = {}
-        search_dirs = [ROOT_DIR]
-        if os.path.abspath(self.workspace_dir) != os.path.abspath(ROOT_DIR):
-            search_dirs.append(self.workspace_dir)
-        for base_dir in search_dirs:
-            conf_file = os.path.join(base_dir, "order_guard.conf")
-            if os.path.exists(conf_file):
-                parsed = parse_dotenv(conf_file)
-                for k, v in parsed.items():
-                    modes[k.strip().lower()] = v.strip().strip("\"'").lower()
+        modes = load_key_value_conf(
+            self.workspace_dir,
+            ROOT_DIR,
+            filenames=("order_guard.conf",),
+            lower_values=True,
+        )
         if "supervisor_mode" not in modes:
             raise KeyError("Missing required 'supervisor_mode' in order_guard.conf")
         return modes

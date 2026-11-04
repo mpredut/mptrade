@@ -42,7 +42,7 @@ from botcore import (
 
 _safe_pos_float = safe_pos_float
 
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
+_load_dotenv()
 
 MAX_PROC = required_float_env("MONITOR_MAX_PROC")
 monitor_interval = 3.7

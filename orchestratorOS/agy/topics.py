@@ -31,7 +31,7 @@ from botcore import (
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 
-load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+load_dotenv()
 from orchestratorOS.agy.paths import (
     expand_config_path,
     resolve_bot_cli_base,

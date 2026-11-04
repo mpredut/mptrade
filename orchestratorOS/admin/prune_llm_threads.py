@@ -28,7 +28,7 @@ from botcore import (  # noqa: E402
     safe_nonneg_int,
 )
 
-load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+load_dotenv()
 
 from orchestratorOS.agy.paths import resolve_bot_cli_base, resolve_ui_cli_base  # noqa: E402
 from orchestratorOS.agy.summary_store import (  # noqa: E402

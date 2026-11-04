@@ -29,7 +29,7 @@ _REPO = Path(__file__).resolve().parent.parent   # verify_tools/ -> repository r
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 from botcore import load_env_stack, required_int_env  # noqa: E402
-load_env_stack(str(_REPO / ".env"))
+load_env_stack()
 
 HOST = os.environ.get("MONITOR_HOST")  # no default: an address must be configured
 try:

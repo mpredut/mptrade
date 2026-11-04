@@ -71,7 +71,7 @@ from providers.base import (
 )
 
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
+_load_dotenv()
 
 # Dynamic window bounds for on-demand short-trend queries over Cache24.
 CM_DYNAMIC_WINDOW_MIN_SEC = required_float_env("CM_DYNAMIC_WINDOW_MIN_SEC")

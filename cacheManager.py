@@ -79,7 +79,7 @@ from botcore import (
     touch_module_heartbeat,
 )
 _CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
+_load_dotenv()
 
 CM_RETENTION_DAYS = required_float_env("CM_RETENTION_DAYS")
 CM_RETENTION_CHECK_INTERVAL_SEC = required_float_env("CM_RETENTION_CHECK_INTERVAL_SEC")

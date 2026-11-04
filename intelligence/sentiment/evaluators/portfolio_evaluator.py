@@ -644,15 +644,20 @@ def reconcile_venue_cycles_with_recent_orders(
                     or safe_pos_float(c_dict.get("last_buy_price"), default=None)
                 )
                 if ref_avg is not None and ref_avg > 0.0:
-                    if sell_p < ref_avg * 0.995 and str(c_dict.get("last_exit_kind") or "").strip().upper() in ("", "TP"):
+                    cur_kind = str(c_dict.get("last_exit_kind") or "").strip().upper()
+                    is_newer_partial_sell = rem_q > 1e-6 and ls_ts_ms > 0.0 and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                    replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
+                    if sell_p < ref_avg * 0.995 and cur_kind in replaceable_kinds:
                         c_dict["last_exit_kind"] = "REDUCE"
-                    elif sell_p >= ref_avg * 1.001 and not c_dict.get("last_exit_kind"):
+                    elif sell_p >= ref_avg * 1.001 and (not cur_kind or (is_newer_partial_sell and cur_kind == "STOP")):
                         c_dict["last_exit_kind"] = "TP"
 
             if already_deducted_partial:
                 if ls_px > 0:
                     cyc["last_sell_price"] = round(ls_px, avg_dec)
                     _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
+                if len(buys_after) >= 2 and not cyc.get("dca_buys"):
+                    cyc["dca_buys"] = len(buys_after) - 1
                 continue
             if not entry_ts_ms or cyc.get("resting_orders"):
                 continue

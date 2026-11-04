@@ -24,7 +24,9 @@ from botcore import (
     build_heartbeat_payload,
     clean_json_value,
     evaluate_heartbeat_files_freshness,
+    load_ini_config,
     obj_attr,
+    parse_dotenv_line,
     parse_notify_enabled_flag,
     resolve_patched_attr,
     safe_float,
@@ -463,19 +465,18 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
             elif cfg_name in ("order_guard.conf", "config.env"):
                 seen_keys: Dict[str, str] = {}
                 for idx, raw_l in enumerate(raw_lines, start=1):
-                    if not (line := raw_l.split("#", 1)[0].strip()):
+                    try:
+                        parsed_kv = parse_dotenv_line(raw_l, strict=True)
+                    except ValueError:
+                        line = raw_l.split("#", 1)[0].strip()
+                        if "=" not in line:
+                            issues.append(f"{cfg_name}:{idx} malformed line missing '=': {line[:60]!r}")
+                        else:
+                            issues.append(f"{cfg_name}:{idx} empty key name")
                         continue
-                    if "=" not in line:
-                        issues.append(f"{cfg_name}:{idx} malformed line missing '=': {line[:60]!r}")
-                        continue
-                    k, v = line.split("=", 1)
-                    k_raw = k.strip()
-                    if k_raw.startswith("export "):
-                        k_raw = k_raw[len("export "):].strip()
-                    if not (k_clean := k_raw.lower()):
-                        issues.append(f"{cfg_name}:{idx} empty key name")
-                    else:
-                        seen_keys[k_clean] = v.strip().strip("\"'")
+                    if parsed_kv is not None:
+                        k_raw, v_clean = parsed_kv
+                        seen_keys[k_raw.lower()] = v_clean
                 if cfg_name == "order_guard.conf":
                     for mode_key in ("supervisor_mode", "llm_guard_mode", "autonomous_trading_mode"):
                         if (m_val := seen_keys.get(mode_key, "").lower()) and m_val not in ("enforce", "shadow", "off"):
@@ -498,13 +499,12 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
             elif cfg_name == "macro_intelligence.conf":
                 import configparser
 
-                cp = configparser.ConfigParser(interpolation=None)
                 try:
-                    cp.read_string("".join(raw_lines), source=cfg_name)
+                    cp = load_ini_config(cfg_path, must_exist=True)
                     for req_sec in ("feeds", "cache_files", "intervals", "taxonomies", "sessions"):
                         if not cp.has_section(req_sec):
                             issues.append(f"macro_intelligence.conf missing required [{req_sec}] section")
-                except configparser.Error as cp_exc:
+                except (configparser.Error, OSError, ValueError) as cp_exc:
                     issues.append(f"macro_intelligence.conf parse error: {cp_exc}")
         except Exception as exc:
             issues.append(f"{cfg_name} read error: {exc}")

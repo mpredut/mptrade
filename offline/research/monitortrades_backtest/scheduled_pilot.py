@@ -676,8 +676,8 @@ def main():
         if proposals and _parse_bool_flag(os.environ.get("PILOT_NOTIFY_PROPOSALS"), False):
             # notify user that new proposals are available to review and apply
             try:
-                load_dotenv(os.path.join(ROOT, ".env"))
-                load_dotenv(os.path.join(ROOT, "config.env"))
+                from botcore import load_env_stack
+                load_env_stack()
                 import alertnotifiers as alert
                 lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
                          for p in proposals]

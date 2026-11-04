@@ -12,7 +12,7 @@ import pandas as pd
 from botcore import load_env_stack, safe_nonneg_int, safe_pos_float
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_env_stack(os.path.join(_ROOT, ".env"))
+load_env_stack()
 
 # CoinMarketCap credential sourced from environment (CMC_API_KEY)
 API_KEY_CMC = os.environ.get("CMC_API_KEY", "").split("#", 1)[0].strip()

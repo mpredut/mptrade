@@ -88,7 +88,7 @@ import instrument as _instrument_preload  # noqa: F401 — preload with core mod
 
 _parse_finite_float = safe_float
 
-load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+load_dotenv()
 
 logger = logging.getLogger("orchestratorOS.supervisor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

@@ -50,7 +50,7 @@ from botcore import (
 from cachepaths import cache_path, get_cachedb_dir
 from instrument_registry import tracked_price_instruments
 
-_load_dotenv(os.path.join(ROOT, "config.env"))
+_load_dotenv()
 CM_LONG_ARCHIVE_MONTHS = required_float_env("CM_LONG_ARCHIVE_MONTHS")
 CM_LONG_ARCHIVE_SAMPLE_SEC = required_float_env("CM_LONG_ARCHIVE_SAMPLE_SEC")
 CM_LONG_ARCHIVE_FLUSH_SEC = required_float_env("CM_LONG_ARCHIVE_FLUSH_SEC")

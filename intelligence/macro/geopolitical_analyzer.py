@@ -35,7 +35,7 @@ from cachepaths import cache_path
 from state_io import read_json_dict, save_json_state
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+load_dotenv()
 
 logger = logging.getLogger("intelligence.macro.geopolitical_analyzer")
 

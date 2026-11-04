@@ -37,8 +37,7 @@ from botcore import (exact_nonneg_int, exact_pos_int, load_dotenv as _load_doten
                      required_bool_env, required_float_env, required_int_env,
                      safe_nonneg_float, safe_pos_float, sanitize_pipe_field,
                      touch_module_heartbeat)
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "config.env"))
+_load_dotenv()
 
 
 TIME_SLEEP_GET_PRICE = 0.8       # Nominal price-collection sleep interval in seconds.

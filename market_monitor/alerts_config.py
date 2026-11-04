@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 
-from botcore import _parse_bool_flag, exact_int, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, exact_int, parse_dotenv_line, safe_float, safe_pos_float
 from cachepaths import cache_symbol_variants, canonical_base_asset
 from instrument_registry import casefold_get
 from providers.quantity import resolve_assets
@@ -59,13 +59,13 @@ def load_config(path: str) -> dict:
     cfg: dict = {"alert_config": {"per_coin": {}}}
     ac = cfg["alert_config"]
     for raw in read_text_lines(path, keepends=True):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+        try:
+            parsed_line = parse_dotenv_line(raw, strict=True)
+        except ValueError as exc:
+            raise ValueError(f"Malformed alert configuration line: {raw.rstrip()!r}") from exc
+        if parsed_line is None:
             continue
-        if "=" not in line:
-            raise ValueError(f"Malformed alert configuration line: {raw.rstrip()!r}")
-        key, _, val = line.partition("=")
-        key, val = key.strip(), val.strip()
+        key, val = parsed_line
         key_low = key.lower()
         try:
             if key_low == "discover_new_coins":

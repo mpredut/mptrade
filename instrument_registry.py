@@ -9,13 +9,14 @@ from pathlib import Path
 import configparser
 import re
 
-from botcore import safe_float
+from botcore import load_ini_config, lru_dict_put, safe_float
 from cachepaths import normalize_venue_name
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
 ROLES = {"mt", "tradeall_fire", "kalman_primary", "trailing", "assetguardian",
          "archive", "rtrade", "force_sell"}
+_REGISTRY_CACHE: dict = {}
 
 
 def casefold_get(mapping: object, key: object, default=None):
@@ -95,16 +96,18 @@ class InstrumentSpec:
 
 
 def load_registry(path=None):
-    """Validate the complete registry before returning any instrument."""
+    """Validate the complete registry before returning any instrument (cached by mtime_ns + size)."""
     if isinstance(path, bool):
         raise ValueError(f"Invalid registry path: {path!r}")
     if isinstance(path, str):
         path = path.strip() or None
     path = Path(path) if path is not None else DEFAULT_PATH
-    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-    # read_file propagates missing files, permissions, and malformed configuration.
-    with path.open(encoding="utf-8") as handle:
-        cp.read_file(handle)
+    st = path.stat()
+    cache_key = (str(path.resolve()), st.st_mtime_ns, st.st_size)
+    cached = _REGISTRY_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+    cp = load_ini_config(path, must_exist=True, inline_comments=True)
     if not cp.sections():
         raise ValueError(f"Instrument registry contains no sections: {path}")
     result, seen = {}, set()
@@ -145,7 +148,8 @@ def load_registry(path=None):
                 raise ValueError(f"instruments.conf [{name}]: trailing.pct must be in (0, 100)")
             spec.rebuy_mode()   # required: per-coin re-buy switch (on/off/auto)
         result[name] = spec
-    return result
+    lru_dict_put(_REGISTRY_CACHE, cache_key, result, 16)
+    return dict(result)
 
 
 def select_instruments(provider=None, role=None, *, path=None, only_enabled=True):

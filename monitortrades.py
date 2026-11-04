@@ -77,7 +77,7 @@ from strategies.position_exit_manager import (
 import symbols as sym
 import utils as u
 
-_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.env"))
+_load_dotenv()
 
 MT_ARE_CLOSE_TOLERANCE_PCT = required_float_env("MT_ARE_CLOSE_TOLERANCE_PCT")
 MT_MAIN_LOOP_SLEEP_SEC = required_float_env("MT_MAIN_LOOP_SLEEP_SEC")

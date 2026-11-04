@@ -55,7 +55,7 @@ from providers.strategy_executor import OrderStatus
 from state_io import atomic_write_jsonl, read_text_file, read_text_lines
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-_load_dotenv(os.path.join(_ROOT, "config.env"))
+_load_dotenv()
 
 RETRY_ENABLED = required_bool_env("RETRY_ENABLED")
 RETRY_INTERVAL_SEC = required_float_env("RETRY_INTERVAL_SEC")

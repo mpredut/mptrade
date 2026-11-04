@@ -6,6 +6,8 @@ from botcore import _parse_bool_flag, parse_dotenv, safe_pos_float
 
 # Configuration cache.
 config_cache = {}
+_CONFIG_MTIME: tuple[float, float] = (-1.0, -1.0)
+_CONFIG_LAST_CHECK: float = 0.0
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_ENV_PATH = os.path.join(ROOT_DIR, "config.env")
@@ -15,30 +17,24 @@ CONFIG_TXT_PATH = os.path.join(ROOT_DIR, "config.txt")
 _parse_bool = _parse_bool_flag
 
 
+def _file_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path) if path and os.path.exists(path) else -1.0
+    except OSError:
+        return -1.0
+
+
 def _read_properties_file(path: str) -> dict:
     if not path or isinstance(path, (bool, int)):
         return {}
-    try:
-        if not os.path.exists(path):
-            return {}
-        raw = parse_dotenv(path)
-        out = {}
-        for k, v in raw.items():
-            if isinstance(v, str):
-                b = _parse_bool_flag(v, default=None)
-                out[k] = b if b is not None else v
-            else:
-                out[k] = v
-        return out
-    except Exception:
-        return {}
+    return parse_dotenv(path, coerce_bools=True)
 
 
 def load_config():
     """
     Load configuration from config.env (and legacy config.txt if present) and refresh cache.
     """
-    global config_cache
+    global config_cache, _CONFIG_MTIME, _CONFIG_LAST_CHECK
     new_config = {}
 
     # 1. Load from centralized config.env
@@ -66,6 +62,8 @@ def load_config():
     if "trade_enabled" not in new_config:
         new_config["trade_enabled"] = True
 
+    _CONFIG_MTIME = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
+    _CONFIG_LAST_CHECK = time.time()
     config_cache = new_config
 
 
@@ -85,8 +83,13 @@ def config_watcher(interval=5 * 60):  # 5 minutes
 
 def is_trade_enabled():
     """
-    Return whether cached ``trade_enabled`` is true.
+    Return whether cached ``trade_enabled`` is true (with on-demand mtime hot-reload every 5s).
     """
+    now_ts = time.time()
+    if not (0.0 <= (now_ts - _CONFIG_LAST_CHECK) < 5.0):
+        cur_mtime = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
+        if cur_mtime != _CONFIG_MTIME:
+            load_config()
     return _parse_bool(config_cache.get("trade_enabled", True), default=True)
 
 

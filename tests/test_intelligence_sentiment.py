@@ -3540,4 +3540,79 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     )
     assert age_sfx == ", age=180m"
 
+    # Bugs 29, 30 & 31:
+    # - compute_volume_profile_metrics omits sec_poc_px/lvn_px when secondary cluster is <0.5% from POC or lacks a >=10% valley
+    # - reconcile_venue_cycles_with_recent_orders replaces stale prior-cycle STOP with REDUCE and syncs dca_buys on already-deducted partial sells
+    # - load_symbol_microstructure selects freshest whale_snapshot across variants while keeping venue-specific orderbook_depth
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_profile_metrics
 
+    unimodal_plateau = (
+        [[now_ms - (40 - i) * 60_000, 226.45 + (i % 3) * 0.05] for i in range(20)]
+        + [[now_ms - (20 - i) * 60_000, 227.15 + (i % 3) * 0.05] for i in range(20)]
+    )
+    vp_uni = compute_volume_profile_metrics(unimodal_plateau)
+    assert vp_uni.get("profile_shape") == "UNIMODAL"
+    assert vp_uni.get("sec_poc_px") is None
+    assert vp_uni.get("lvn_px") is None
+
+    rgnt_cycs = {
+        "RGNT_US_EQ": {
+            "qty": 122.51,
+            "cost_usd": 173.96,
+            "avg_cost_px": 1.42,
+            "entry_price": 1.42,
+            "_entry_ts_ms": now_ms - 86400_000 * 20,
+            "_last_sell_ts_ms": now_ms - 86400_000 * 20,
+            "last_buy_price": 1.38,
+            "last_sell_price": 1.37,
+            "last_exit_kind": "STOP",
+            "dca_buys": 0,
+        }
+    }
+    rgnt_ro = {
+        "t212": {
+            "RGNT_US_EQ": {
+                "last_buy": {"price": 1.38, "qty": 72.14, "ts_ms": now_ms - 3600_000 * 20},
+                "last_sell": {"price": 1.37, "qty": 36.26, "ts_ms": now_ms - 3600_000 * 50},
+                "recent_buys": [
+                    {"price": 1.38, "qty": 32.6, "ts_ms": now_ms - 3600_000 * 44},
+                    {"price": 1.38, "qty": 72.14, "ts_ms": now_ms - 3600_000 * 20},
+                ],
+                "recent_sells": [
+                    {"price": 1.37, "qty": 36.26, "ts_ms": now_ms - 3600_000 * 50},
+                ],
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        rgnt_cycs,
+        rgnt_ro,
+        {("t212", "RGNT_US_EQ"): 122.51},
+        {"RGNT_US_EQ": {"price": 1.415}},
+    )
+    assert rgnt_cycs["RGNT_US_EQ"]["last_exit_kind"] == "REDUCE"
+    assert rgnt_cycs["RGNT_US_EQ"]["dca_buys"] == 1
+
+    tao_cache = tmp_path / "tao_micro"
+    tao_cache.mkdir(parents=True, exist_ok=True)
+    (tao_cache / "orderbook_depth_TAOUSD.json").write_text(
+        json.dumps({"symbol": "TAOUSD", "mid_price": 223.35, "best_bid": 223.13, "best_ask": 223.57, "spread_bps": 19.7}),
+        encoding="utf-8",
+    )
+    (tao_cache / "whale_snapshot_TAOUSD.json").write_text(
+        json.dumps({"symbol": "TAOUSD", "ts": 1000.0, "taker_buy_sell_ratio": 0.5035, "taker_buy_vol_usd": 588000.0, "taker_sell_vol_usd": 1169000.0}),
+        encoding="utf-8",
+    )
+    (tao_cache / "whale_snapshot_TAOUSDC.json").write_text(
+        json.dumps({"symbol": "TAOUSDC", "ts": 2000.0, "taker_buy_sell_ratio": 1.4839, "taker_buy_vol_usd": 926000.0, "taker_sell_vol_usd": 624000.0}),
+        encoding="utf-8",
+    )
+    m_tao = load_symbol_microstructure(str(tao_cache), "TAOUSD")
+    assert m_tao is not None
+    assert m_tao["spread_bps"] == 19.7
+    assert m_tao["taker_buy_sell_ratio"] == 1.4839
+    assert m_tao["cvd_15m_usd"] > 0

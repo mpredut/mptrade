@@ -24,7 +24,7 @@ from botcore import (
 
 _ROOT                     = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_LOG_FOLDER       = os.path.join(_ROOT, "logger")
-load_dotenv(os.path.join(_ROOT, "config.env"))
+load_dotenv()
 _DEFAULT_MAX_SIZE = required_int_env("LOG_MAX_FOLDER_BYTES")
 _DEFAULT_CHECK_EVERY = required_int_env("LOG_CHECK_EVERY_WRITES")
 _DEFAULT_MIN_FREE_PERCENT = required_float_env("LOG_MIN_FREE_PERCENT")

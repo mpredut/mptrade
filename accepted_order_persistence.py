@@ -6,12 +6,11 @@ import time
 from datetime import datetime
 
 import alertnotifiers as alert
-from botcore import load_dotenv, required_float_env, required_int_env, safe_float
+from botcore import load_root_config, required_float_env, required_int_env, safe_float
 from providers.base import _clean_single_order_id as _clean_id
 
 
-_ROOT = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(_ROOT, "config.env"))
+load_root_config()
 
 ACCEPTED_TRACKING_PERSIST_ATTEMPTS = required_int_env(
     "ACCEPTED_TRACKING_PERSIST_ATTEMPTS")

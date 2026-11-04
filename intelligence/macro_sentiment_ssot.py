@@ -59,6 +59,7 @@ from botcore import (
     fetch_public_json as _fetch_public_json,
     is_cache_fresh,
     is_interval_due,
+    load_ini_config,
     normalize_epoch_sec,
     obj_attr,
     obj_float,
@@ -167,22 +168,10 @@ def load_macro_intelligence_config(config_path: Optional[str] = None) -> configp
     """Load ``macro_intelligence.conf`` with automatic mtime-based hot reload."""
     target = config_path or os.environ.get("MACRO_INTELLIGENCE_CONF") or DEFAULT_MACRO_CONFIG_PATH
     try:
-        mtime = os.path.getmtime(target) if os.path.exists(target) else 0.0
-    except OSError:
-        mtime = 0.0
-
-    cached_parser = _CONFIG_CACHE.get("parser")
-    if cached_parser is not None and _CONFIG_CACHE.get("path") == target and _CONFIG_CACHE.get("mtime") == mtime:
-        return cached_parser
-
-    parser = configparser.ConfigParser(interpolation=None)
-    if os.path.exists(target):
-        try:
-            parser.read(target, encoding="utf-8")
-        except Exception as exc:
-            logger.warning("Failed reading %s: %s", target, exc)
-    _CONFIG_CACHE.update(path=target, mtime=mtime, parser=parser)
-    return parser
+        return load_ini_config(target, must_exist=False, inline_comments=True)
+    except Exception as exc:
+        logger.warning("Failed reading %s: %s", target, exc)
+        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
 
 
 def _cfg_str(section: str, key: str, fallback: str = "", config_path: Optional[str] = None) -> str:

@@ -19,10 +19,7 @@ done
 # 1. Rotate continuous stream logs via logrotate
 POLICY="$ROOT/config.env"
 if [ -r "$POLICY" ]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$POLICY"
-    set +a
+    load_root_env_sh
     LOGROTATE="$(command -v logrotate || echo /usr/sbin/logrotate)"
     if [ -x "$LOGROTATE" ]; then
         CONF="$(mktemp)"

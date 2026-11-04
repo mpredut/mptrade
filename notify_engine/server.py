@@ -72,7 +72,7 @@ def _clean_str(val: Any, default: str = "", *, strip: bool = False) -> str:
 
 
 def _ensure_env_loaded() -> None:
-    load_env_stack(os.path.join(ROOT_DIR, ".env"))
+    load_env_stack()
 
 
 def resolve_topic(category: str) -> str:

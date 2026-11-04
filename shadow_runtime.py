@@ -19,15 +19,9 @@ def prepare_shadow_runtime(root: str, *module_dirs: str) -> None:
 
 def load_shadow_environment(env_path: str, config_path: str | None = None) -> None:
     """Load a shadow runner with the same environment precedence as its live bot."""
-    env_path = os.path.abspath(env_path)
-    config_path = os.path.abspath(
-        config_path or os.path.join(os.path.dirname(env_path), "config.env")
-    )
-    if os.path.dirname(config_path) == os.path.dirname(env_path):
-        load_env_stack(env_path, os.path.basename(config_path))
-        return
-    load_dotenv(env_path)
-    load_dotenv(config_path)
+    env_abs = os.path.abspath(env_path)
+    cfg_abs = os.path.abspath(config_path or os.path.join(os.path.dirname(env_abs), "config.env"))
+    load_env_stack(env_abs, cfg_abs)
 
 
 def require_shadow_interval(interval: int, expected: int, label: str) -> None:

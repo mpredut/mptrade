@@ -36,7 +36,7 @@ def _watchdog_event(title, message):
 
 def load_env():
     """Load .env (gitignored secrets) + config.env (versioned) from the repository root."""
-    load_env_stack(str(ROOT / ".env"))
+    load_env_stack()
 
 
 def load_state(state_file):

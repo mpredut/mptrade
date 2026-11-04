@@ -42,7 +42,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(_ROOT_DIR, "config.env"))
+load_dotenv()
 
 logger = logging.getLogger("intelligence.daemon")
 _as_bool = _parse_bool_flag
@@ -215,7 +215,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        load_dotenv("config.env")
+        load_dotenv()
     except Exception:
         pass
 

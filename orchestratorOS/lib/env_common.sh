@@ -62,3 +62,17 @@ env_get() {  # $1=KEY [$2=DEFAULT]
   echo "${val:-$default}"
 }
 
+# SSOT helper: safely export root config.env (and optionally .env when --with-secrets is passed)
+load_root_env_sh() {
+  local with_secrets=0
+  [ "${1:-}" = "--with-secrets" ] && with_secrets=1
+  set -a
+  # shellcheck disable=SC1091
+  [ -r "$ROOT/config.env" ] && . "$ROOT/config.env"
+  if [ "$with_secrets" -eq 1 ] && [ -r "$ROOT/.env" ]; then
+    # shellcheck disable=SC1091
+    . "$ROOT/.env"
+  fi
+  set +a
+}
+

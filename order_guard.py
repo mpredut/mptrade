@@ -272,12 +272,7 @@ def _load_margins():
         _MARGINS_FILE_MTIME = mtime
         return _MARGINS
     _MARGINS_FILE_MTIME = mtime
-    raw = parse_dotenv(path)
-    m: Dict[str, Any] = {}
-    for k, v in raw.items():
-        k_clean = k.strip().lower()
-        fv = safe_float(v, default=None)
-        m[k_clean] = fv if fv is not None else v
+    m: Dict[str, Any] = parse_dotenv(path, lower_keys=True, coerce_floats=True)
     missing = sorted(_REQUIRED_ORDER_GUARD_KEYS - set(m.keys()))
     if missing:
         if _MARGINS is not None and _parse_bool_flag(os.environ.get("BACKTEST_MODE")):
