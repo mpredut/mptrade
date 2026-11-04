@@ -284,6 +284,11 @@ def _sanitize_t212_state(st: dict) -> dict:
                 market=_parse_bool_flag(ps.get("market"), False),
                 level=_clean_pos_float(ps.get("level")),
             )
+            if "ts" in ps_copy and ps_copy.get("ts") is not None:
+                ps_ts = _clean_nonneg_float(ps_copy.get("ts"), 0.0)
+                if ps_ts > 1e11:
+                    ps_ts /= 1000.0
+                ps_copy["ts"] = ps_ts
             if "portfolio_fill_observed" in ps_copy:
                 ps_copy["portfolio_fill_observed"] = _parse_bool_flag(ps_copy.get("portfolio_fill_observed"), False)
             st["pending_submit"] = ps_copy
@@ -310,7 +315,10 @@ def _sanitize_t212_state(st: dict) -> dict:
             if "amount" in o_copy and o_copy.get("amount") is not None:
                 o_copy["amount"] = _clean_pos_float(o_copy.get("amount"))
             if "ts" in o_copy and o_copy.get("ts") is not None:
-                o_copy["ts"] = _clean_nonneg_float(o_copy.get("ts"), 0.0)
+                o_ts = _clean_nonneg_float(o_copy.get("ts"), 0.0)
+                if o_ts > 1e11:
+                    o_ts /= 1000.0
+                o_copy["ts"] = o_ts
             if "intent_id" in o_copy:
                 o_copy["intent_id"] = T212Client._clean_order_id(o_copy.get("intent_id"))
             for bk in ("cancel_requested", "dca_counted"):
@@ -333,6 +341,8 @@ def _sanitize_t212_state(st: dict) -> dict:
     for k in ("buy_backoff_until", "locked_zero_until", "tr_fail_until", "sl_fail_until"):
         if k in st:
             cleaned = _clean_nonneg_float(st.get(k), -1.0)
+            if cleaned > 1e11:
+                cleaned /= 1000.0
             if cleaned >= 0.0:
                 st[k] = cleaned
             else:
@@ -340,11 +350,14 @@ def _sanitize_t212_state(st: dict) -> dict:
     if "tp_fail_until" in st:
         raw_fails = st.get("tp_fail_until")
         if isinstance(raw_fails, dict):
-            st["tp_fail_until"] = {
-                str(fk): _clean_nonneg_float(fv, 0.0)
-                for fk, fv in raw_fails.items()
-                if _clean_nonneg_float(fv, -1.0) > 0.0
-            }
+            clean_fails = {}
+            for fk, fv in raw_fails.items():
+                cv = _clean_nonneg_float(fv, -1.0)
+                if cv > 0.0:
+                    if cv > 1e11:
+                        cv /= 1000.0
+                    clean_fails[str(fk)] = cv
+            st["tp_fail_until"] = clean_fails
         else:
             st.pop("tp_fail_until", None)
     return st
@@ -599,7 +612,9 @@ class Strategy(BaseSpotMixin):
         saved_orders = list(self.s.get("orders") or [])
         saved_pending_submit = self.s.get("pending_submit") if keep_pending_submit else None
         was_sl = bool(
-            self.s.get("sl_pending") or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
+            self.s.get("sl_pending")
+            or self.s.get("sl_pending_exit")
+            or str(exit_kind or "").strip().upper() in {"SL", "TR", "STOP"}
         )
         nxt = self._reset_cycle_state(
             ("realized_pnl_usd", "realized_net_usd", "fees_usd"),
@@ -650,7 +665,12 @@ class Strategy(BaseSpotMixin):
             is_flat = self.s["qty"] <= 1e-9
             is_dust_exit = (
                 self._is_dust(self.s["qty"], price)
-                and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
+                and (
+                    all_tp_sold
+                    or self.s.get("sl_pending")
+                    or self.s.get("sl_pending_exit")
+                    or not self.p.tp_ladder
+                )
             )
             if is_flat or is_dust_exit:
                 self._close_cycle(price, exit_kind=order.get("kind"))
@@ -1113,10 +1133,20 @@ class Strategy(BaseSpotMixin):
         is_dust = self._is_dust(real_qty, real_avg or price)
         cycle_closed = (is_flat and prev_qty > 1e-9) or (
             prev_qty > 1e-9 and is_dust and not self._has_open("SELL")
-            and (all_tp_sold or self.s.get("sl_pending") or not self.p.tp_ladder)
+            and (
+                all_tp_sold
+                or self.s.get("sl_pending")
+                or self.s.get("sl_pending_exit")
+                or not self.p.tp_ladder
+            )
         )
         if cycle_closed:
-            self._close_cycle(self.s.get("last_sell_price") or price, keep_pending_submit=True)
+            exit_kind = (pending_for_fill or {}).get("kind") if isinstance(pending_for_fill, dict) else None
+            self._close_cycle(
+                self.s.get("last_sell_price") or price,
+                keep_pending_submit=True,
+                exit_kind=exit_kind,
+            )
         return True
 
     # -- Protective Exits & Decision Step --------------------------------------

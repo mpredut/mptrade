@@ -125,6 +125,8 @@ def timeToHMS(timestamp_sec):
     ts_f = botcore.safe_nonneg_float(timestamp_sec, default=None)
     if ts_f is None:
         return "N/A"
+    if ts_f > 1e11:
+        ts_f /= 1000.0
     try:
         return datetime.fromtimestamp(ts_f).strftime('%H:%M:%S')
     except (TypeError, ValueError, OverflowError, OSError):

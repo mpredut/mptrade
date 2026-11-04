@@ -49,7 +49,8 @@ def _extract_price_sequence(prices: Sequence[float]) -> Optional[Sequence[float]
                 return None
         return prices
     try:
-        if len(prices) > 0 and isinstance(prices[0], (list, tuple)):
+        first_item = next((x for x in prices if x is not None), None) if len(prices) > 0 else None
+        if isinstance(first_item, (list, tuple)):
             pts_with_ts = []
             pts_only = []
             all_have_ts = True
@@ -73,10 +74,11 @@ def _extract_price_sequence(prices: Sequence[float]) -> Optional[Sequence[float]
                     pf = safe_pos_float(item, default=None)
                     if pf is not None:
                         pts_only.append(pf)
-            if all_have_ts and len(pts_with_ts) == len(pts_only) and len(pts_with_ts) > 1:
+            if len(pts_with_ts) > 1 and (all_have_ts or len(pts_with_ts) >= 20):
                 if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
                     pts_with_ts.sort(key=lambda x: x[0])
-                return [p for _, p in pts_with_ts]
+                if all_have_ts or len(pts_with_ts) == len(pts_only):
+                    return [p for _, p in pts_with_ts]
             return pts_only
     except TypeError:
         return None

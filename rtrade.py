@@ -273,13 +273,27 @@ class _LivePairVenue:
             self._known_tickets.append(ticket)
         return ticket
 
-    def _ticket_from_pending(self, pending, pair_id):
+    def _ticket_from_pending(self, pending, pair_id, *, status=None):
         order_id = extract_order_id(pending.get("order_id"), default=None)
         if not order_id:
             return None
-        ticket_price = _finite_pos_float(
-            pending.get("submitted_price") or pending.get("requested_price"), 0.0
-        ) or _finite_pos_float(self.current_price(), 0.0)
+        implied_px = 0.0
+        if status is not None:
+            fq = _finite_pos_float(getattr(status, "filled_qty", None), default=None)
+            fc = _finite_pos_float(getattr(status, "cost", None), default=None)
+            if fq is not None and fc is not None:
+                implied_px = _finite_pos_float(fc / fq, 0.0)
+        ticket_price = (
+            _finite_pos_float(
+                pending.get("submitted_price") or pending.get("requested_price") or pending.get("price"), 0.0
+            )
+            or implied_px
+            or _finite_pos_float(self.current_price(), 0.0)
+        )
+        if ticket_price <= 0:
+            raise _IntentRecoveryPending(
+                f"intent {pending.get('kind')}:{pending.get('side')} has an order_id but no available reference price"
+            )
         kind = pending.get("kind")
         rev = self._limit_revision(kind)
         if rev is None:
@@ -342,18 +356,28 @@ class _LivePairVenue:
         pending = dict(stored)
         side = str(pending.get("side") or record["start_side"]).upper()
         kind = str(pending.get("kind") or "limit")
-        requested_qty = pending.get("requested_qty", pending.get("qty"))
+        requested_qty = pending.get("requested_qty", pending.get("qty", record.get("qty")))
         requested_price = pending.get("requested_price", pending.get("price"))
+        req_qty_f = _finite_pos_float(requested_qty, default=None)
+        if req_qty_f is None:
+            raise ValueError(f"invalid requested_qty in rtrade intent {kind}:{side}")
+        req_px_f = None if requested_price is None else _finite_pos_float(requested_price, default=None)
+        if requested_price is not None and req_px_f is None:
+            raise ValueError(f"invalid requested_price in rtrade intent {kind}:{side}")
+        raw_created = pending.get("created_at") or record.get("created_ts")
+        created_f = _finite_pos_float(raw_created, default=None)
+        if created_f is not None and created_f > 1e11:
+            created_f /= 1000.0
         pending.update({
             "intent_id": pending.get("intent_id") or self._intent_id(record["pair_id"], side, kind),
             "client_order_id": pending["client_order_id"],
             "symbol": pending.get("symbol") or record["symbol"],
             "side": side,
             "kind": kind,
-            "requested_qty": float(requested_qty),
-            "requested_price": None if requested_price is None else float(requested_price),
+            "requested_qty": req_qty_f,
+            "requested_price": req_px_f,
             "attempt": safe_pos_int(pending.get("attempt"), default=1),
-            "created_at": float(pending.get("created_at") or record.get("created_ts") or time.time()),
+            "created_at": created_f if created_f is not None else time.time(),
             "lookup_misses": safe_nonneg_int(pending.get("lookup_misses"), default=0),
             "pair_id": pending.get("pair_id") or record["pair_id"],
         })
@@ -425,7 +449,7 @@ class _LivePairVenue:
         if result.status is None:
             raise _IntentRecoveryPending(f"intent {kind}:{side} has an order_id but no available status")
 
-        ticket = self._ticket_from_pending(result.intent, pair_id)
+        ticket = self._ticket_from_pending(result.intent, pair_id, status=result.status)
         snapshot = PairOrderSnapshot(
             status=result.status.status,
             filled_qty=result.status.filled_qty,
@@ -1302,6 +1326,10 @@ class TradingBot:
 
     @staticmethod
     def _default_recovered_state(record) -> dict:
+        created_ts = _finite_pos_float(record.get("created_ts"), default=None)
+        if created_ts is not None and created_ts > 1e11:
+            created_ts /= 1000.0
+        now_s = time.time()
         return {
             "pair_id": record["pair_id"],
             "qty": record["qty"],
@@ -1309,7 +1337,7 @@ class TradingBot:
             "phase": "quoting",
             "reason": "recovered_by_client_order_id",
             "shock": False,
-            "elapsed_sec": max(0.0, time.time() - float(record.get("created_ts") or time.time())),
+            "elapsed_sec": max(0.0, now_s - (created_ts if created_ts is not None else now_s)),
             "first_fill_elapsed_sec": None,
             "first_fill_side": None,
             "stop_order_id": None,

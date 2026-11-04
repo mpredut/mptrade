@@ -315,14 +315,19 @@ class BaseSpotMixin:
         """Return the current timestamp honoring custom clock or simulated time in replay mode."""
         clock = getattr(self, "_clock", None)
         if callable(clock):
-            return float(clock())
+            val = float(clock())
+            return val / 1000.0 if val > 1e11 else val
         if getattr(self, "replay_mode", False):
             sim_ts = getattr(self, "_simulated_ts", None)
             if sim_ts is not None:
                 return sim_ts
             sp = getattr(self, "_shadow_prices", None)
-            return sp[-1][0] if sp else 0.0
-        return float(self._mod_global("time", time).time())
+            if sp:
+                val = safe_nonneg_float(sp[-1][0], 0.0) or 0.0
+                return val / 1000.0 if val > 1e11 else val
+            return 0.0
+        val = float(self._mod_global("time", time).time())
+        return val / 1000.0 if val > 1e11 else val
 
     def set_simulated_time(self, ts: float | None) -> None:
         """Explicitly set simulated timestamp for replay and backtesting drivers."""
@@ -514,9 +519,17 @@ class BaseSpotMixin:
         sp = getattr(self, "_shadow_prices", None)
         if not sp or (n_sp := len(sp)) < 20:
             return None
-        if self.replay_mode:
+        t0_raw, tn_raw = sp[0][0], sp[-1][0]
+        if (
+            self.replay_mode
+            and isinstance(t0_raw, (int, float))
+            and isinstance(tn_raw, (int, float))
+            and 0.0 <= t0_raw <= 1e11
+            and 0.0 < tn_raw <= 1e11
+            and tn_raw > t0_raw
+        ):
             cache_key = (
-                n_sp, round(sp[-1][0] - sp[0][0], 3),
+                n_sp, round(tn_raw - t0_raw, 3),
                 sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1],
             )
             if getattr(self, "_shadow_vol_cache_key", None) == cache_key:
@@ -525,17 +538,36 @@ class BaseSpotMixin:
                 self._shadow_vol_cache_key = cache_key
                 self._shadow_vol_cache_val = val = BaseSpotMixin._SHADOW_VOL_CACHE[cache_key]
                 return val
-        mean_dt = (sp[-1][0] - sp[0][0]) / (n_sp - 1)
+            mean_dt = (tn_raw - t0_raw) / (n_sp - 1)
+            pts = list(sp)
+            rets = [
+                math.log(pts[i][1] / pts[i - 1][1])
+                for i in range(1, n_sp)
+                if 0.0 < pts[i - 1][1] < float("inf") and 0.0 < pts[i][1] < float("inf")
+            ]
+            val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
+            if val is not None:
+                self._shadow_vol_cache_key = cache_key
+                self._shadow_vol_cache_val = val
+                self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
+            return val
+        clean_pts = []
+        for item in sp:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                tf = safe_nonneg_float(item[0], default=None)
+                pf = safe_pos_float(item[1], default=None)
+                if tf is not None and pf is not None:
+                    clean_pts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+        n_clean = len(clean_pts)
+        if n_clean < 20:
+            return None
+        if any(clean_pts[i][0] > clean_pts[i + 1][0] for i in range(n_clean - 1)):
+            clean_pts.sort(key=lambda x: x[0])
+        mean_dt = (clean_pts[-1][0] - clean_pts[0][0]) / (n_clean - 1)
         if mean_dt <= 0:
             return None
-        pts = list(sp)
-        rets = [math.log(pts[i][1] / pts[i - 1][1]) for i in range(1, n_sp) if pts[i - 1][1] > 0 and pts[i][1] > 0]
-        val = self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
-        if val is not None and self.replay_mode:
-            self._shadow_vol_cache_key = cache_key
-            self._shadow_vol_cache_val = val
-            self._cache_store(BaseSpotMixin._SHADOW_VOL_CACHE, cache_key, val)
-        return val
+        rets = [math.log(clean_pts[i][1] / clean_pts[i - 1][1]) for i in range(1, n_clean)]
+        return self._scaled_log_return_vol_pct(rets, 3600.0 / mean_dt)
 
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay."""
@@ -773,6 +805,8 @@ class BaseSpotMixin:
 
         if not is_spot:
             last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
+            if last_sell_ts is not None and last_sell_ts > 1e11:
+                last_sell_ts /= 1000.0
             if self.p.reentry_ttl_hours > 0 and last_sell_ts:
                 if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
                     self.s.pop("sl_rebuy", None)

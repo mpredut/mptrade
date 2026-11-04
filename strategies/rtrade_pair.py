@@ -25,6 +25,9 @@ from providers.base import _clean_single_order_id, normalize_side
 
 _MAX_LIMIT_REVISION = 1_000_000
 _TERMINAL_PHASES = {"complete", "expired", "failed", "hard_stop"}
+_VALID_PHASES = _TERMINAL_PHASES | {
+    "idle", "startup_recovery", "quoting", "exposed", "closing", "stopping", "hard_stop_recovery",
+}
 _TERMINAL_ORDER_STATUSES = {"closed", "canceled", "expired"}
 _clean_pair_id = _clean_single_order_id
 _clean_ticket_order_id = _clean_single_order_id
@@ -375,17 +378,22 @@ class PairCoordinator:
             raw_phase is None
             or isinstance(raw_phase, (bool, dict, list, tuple, set, frozenset))
             or not str(raw_phase).strip()
-            or str(raw_phase).strip().lower() in {"nan", "none", "null", "inf", "-inf", "+inf"}
         ):
             raise ValueError("invalid rtrade checkpoint phase")
-        obj.phase = str(raw_phase).strip()
+        norm_phase = str(raw_phase).strip().lower()
+        if norm_phase not in _VALID_PHASES:
+            raise ValueError("invalid rtrade checkpoint phase")
+        obj.phase = norm_phase
         obj.reason = _clean_optional_reason(state.get("reason"), "reason")
         obj.shock = _parse_bool_flag(state.get("shock", False), default=False)
         raw_elapsed = state.get("elapsed_sec")
         elapsed_f = 0.0 if raw_elapsed is None else safe_float(raw_elapsed, default=None)
         if elapsed_f is None:
             raise ValueError("invalid rtrade checkpoint elapsed_sec")
-        obj.started_at = clock() - max(0.0, elapsed_f)
+        now_f = safe_float(clock(), default=None)
+        if now_f is None:
+            raise ValueError("the rtrade clock must be finite")
+        obj.started_at = now_f - max(0.0, elapsed_f)
         ff_elapsed = state.get("first_fill_elapsed_sec")
         if ff_elapsed is None:
             obj.first_fill_at = None

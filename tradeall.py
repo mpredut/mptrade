@@ -401,11 +401,24 @@ class TrendState:
         self._last_attempt_up_ts = None
         self._last_attempt_down_ts = None
 
+    @staticmethod
+    def _norm_ts(ts):
+        if ts is None:
+            return None
+        f = safe_nonneg_float(ts, default=None)
+        if f is None:
+            return None
+        return f / 1000.0 if f > 1e11 else f
+
+    def _now_sec(self):
+        val = self._norm_ts(self._now())
+        return val if val is not None else time.time()
+
     def start_trend(self, new_state):
         assert new_state in ['UP', 'DOWN', 'HOLD'], "Invalid trend state"
         self.old_state = self.state
         self.state = new_state
-        self.start_time = self._now()
+        self.start_time = self._now_sec()
         self.last_confirmation_time = self.start_time
         self.confirm_count = 1
         self.end_time = None
@@ -426,41 +439,45 @@ class TrendState:
         setattr(self, attr, getattr(self, attr) + 1)
 
     def can_retry_fire(self, direction):
-        last = self._last_attempt_up_ts if direction == 'UP' else self._last_attempt_down_ts
+        last = self._norm_ts(self._last_attempt_up_ts if direction == 'UP' else self._last_attempt_down_ts)
         if last is None:
             return True
-        elapsed = self._now() - last
+        elapsed = self._now_sec() - last
         return elapsed < 0 or elapsed >= FIRE_MIN_RETRY_INTERVAL_SEC
 
     def mark_fire_attempt(self, direction):
-        setattr(self, "_last_attempt_up_ts" if direction == "UP" else "_last_attempt_down_ts", self._now())
+        setattr(self, "_last_attempt_up_ts" if direction == "UP" else "_last_attempt_down_ts", self._now_sec())
 
     def confirm_trend(self):
         assert self.start_time is not None, "Trend must be started before confirming"
-        self.last_confirmation_time = self._now()
+        self.last_confirmation_time = self._now_sec()
         self.confirm_count += 1
         print(f"{self.confirm_count} times trend confirmed: {self.state} at {u.timeToHMS(self.last_confirmation_time)}")
         return self.confirm_count
 
     def get_confirmed_trend_duration(self):
-        if self.start_time is None or self.last_confirmation_time is None:
+        st = self._norm_ts(self.start_time)
+        lct = self._norm_ts(self.last_confirmation_time)
+        if st is None or lct is None:
             raise ValueError("Start and confirmation time must be set")
-        if self.last_confirmation_time <= self.start_time:
+        if lct <= st:
             raise ValueError("Start time must be before confirmation time")
-        return self.last_confirmation_time - self.start_time
+        return lct - st
 
     def get_started_trend_time(self):
-        if self.start_time is None:
+        st = self._norm_ts(self.start_time)
+        if st is None:
             return 0
-        return self._now() - self.start_time
+        return self._now_sec() - st
 
 
     def is_trend_fresh(self, fresh_trend_time=None):
         if fresh_trend_time is None:
             fresh_trend_time = self.fresh_trend_time
-        assert self.start_time is not None, "Trend must be started before checking freshness"
+        st = self._norm_ts(self.start_time)
+        assert st is not None, "Trend must be started before checking freshness"
 
-        elapsed_time = self._now() - self.start_time
+        elapsed_time = self._now_sec() - st
         if elapsed_time < fresh_trend_time:
             return True
 
@@ -470,9 +487,11 @@ class TrendState:
 
 
     def is_trend_a_minim_validated(self) :
-        if self.start_time is None or self.last_confirmation_time is None:
+        st = self._norm_ts(self.start_time)
+        lct = self._norm_ts(self.last_confirmation_time)
+        if st is None or lct is None:
             return False
-        return (self.last_confirmation_time - self.start_time > TREND_MIN_VALIDATED_SECONDS
+        return (lct - st > TREND_MIN_VALIDATED_SECONDS
                 and self.confirm_count > TREND_MIN_VALIDATED_CONFIRMS)
 
     def is_trend_consistent_validated(self) :
@@ -497,8 +516,9 @@ class TrendState:
     def check_trend_expiration(self):
         if self.expired:
             return True
-        if self.last_confirmation_time:
-            time_since_last_confirmation = self._now() - self.last_confirmation_time
+        lct = self._norm_ts(self.last_confirmation_time)
+        if lct:
+            time_since_last_confirmation = self._now_sec() - lct
             if time_since_last_confirmation > self.expiration_trend_time:
                 print(f"Trend expired: {self.state}. Time since last confirmation: {time_since_last_confirmation} seconds")
                 self.end_trend()
@@ -742,6 +762,7 @@ class TrendCoordinator:
         if min_i is None or max_i is None or min_i > max_i:
             raise ValueError("TrendCoordinator intervals must satisfy 0 < min <= max")
         self.symbols = list(dict.fromkeys(symbols))
+        self._canonical_symbols = {str(s).strip().upper(): s for s in self.symbols}
         self.instant_mgr = instant_mgr
         self.current_price_mgr = current_price_mgr
         self.min_interval = min_i
@@ -787,17 +808,26 @@ class TrendCoordinator:
                 if c24 is not None:
                     c24.subscribe_price(self)
 
+    def _resolve_symbol(self, symbol: str) -> str:
+        if isinstance(symbol, str):
+            canon = self._canonical_symbols.get(symbol.strip().upper())
+            if canon is not None:
+                return canon
+        return _resolve_tradeall_symbol(symbol)
+
     # Cache24 subscriber signal wakes evaluation.
     def on_price_update(self, symbol: str, ts_ms: int, price: float) -> None:
+        sym = self._resolve_symbol(symbol)
         with self._lock:
-            if symbol not in self._dirty:
+            if sym not in self._dirty:
                 return
-            self._dirty[symbol] = True
+            self._dirty[sym] = True
         self._event.set()
 
     # -- Decide whether the symbol is due for evaluation. ----------------------
     def _is_due(self, symbol, now):
-        elapsed = now - self._last_eval[symbol]
+        symbol = self._resolve_symbol(symbol)
+        elapsed = now - self._last_eval.get(symbol, 0.0)
         if elapsed < 0:
             self._last_eval[symbol] = 0.0
             elapsed = now
@@ -808,6 +838,19 @@ class TrendCoordinator:
         return dirty and elapsed >= self.min_interval   # floor
 
     def evaluate(self, symbol):
+        symbol = self._resolve_symbol(symbol)
+        if symbol not in self.trend_states:
+            self.trend_states[symbol] = TrendState(
+                max_duration_seconds=2.5 * 60 * 60,
+                expiration_trend_time=2.7 * 60,
+                fresh_trend_time=3.7 * 60,
+            )
+        if symbol not in self.trend_states_big:
+            self.trend_states_big[symbol] = TrendState(
+                max_duration_seconds=3 * 60 * 60,
+                expiration_trend_time=2.7 * 60,
+                fresh_trend_time=3.7 * 60,
+            )
         get_entry = getattr(self.current_price_mgr, "get_price", None)
         if callable(get_entry):
             entry = get_entry(symbol)

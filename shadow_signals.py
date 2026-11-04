@@ -196,6 +196,14 @@ class KalmanStateTracker:
                big_prices, big_sample_rate: float) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
+        if isinstance(symbol, str):
+            norm_sym = symbol.strip().upper()
+            if norm_sym:
+                if symbol != norm_sym and symbol in self._state and norm_sym not in self._state:
+                    self._state[norm_sym] = self._state.pop(symbol)
+                elif symbol != norm_sym and symbol in self._state:
+                    self._state.pop(symbol, None)
+                symbol = norm_sym
         ts_f = normalize_epoch_sec(ts, allow_zero=True)
         price_f = safe_pos_float(price, default=None)
         if ts_f is None or price_f is None:

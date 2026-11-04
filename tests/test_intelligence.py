@@ -3635,6 +3635,126 @@ def test_iter69_spot_engine_sma_zero_ms_timestamps_and_monitororder_initial_pric
     assert monitororder.initial_sell_prices[555] == pytest.approx(100.0)
 
 
+def test_iter70_t212_state_ms_shadow_vol_tradeall_and_rtrade_recovery():
+    import importlib.util
+    import os
+    from types import SimpleNamespace
+    import utils as u
+    import shadow_signals
+    import tradeall
+    from intelligence.internal.state.volatility import calculate_volatility_1h
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+    from strategies.spot_engine import Strategy as SpotStrategy, StratParams as SpotParams
+
+    # 1. utils.timeToHMS normalizes millisecond timestamps (> 1e11) instead of returning N/A
+    assert u.timeToHMS(1700000000000.0) == u.timeToHMS(1700000000.0)
+    assert u.timeToHMS(1700000000000.0) != "N/A"
+
+    # 2. tradeall.TrendState normalizes millisecond clock values (> 1e11) for freshness/expiration/cooldown
+    now_ms = [1700000000000.0]
+    ts = tradeall.TrendState(
+        max_duration_seconds=3600,
+        expiration_trend_time=120,
+        fresh_trend_time=200,
+        now_fn=lambda: now_ms[0],
+    )
+    ts.start_trend("UP")
+    assert ts.start_time == pytest.approx(1700000000.0)
+    now_ms[0] = (1700000000.0 + 30.0) * 1000.0
+    ts.confirm_trend()
+    assert ts.is_trend_fresh() is True
+    assert ts.check_trend_expiration() is False
+    assert ts.get_confirmed_trend_duration() == pytest.approx(30.0)
+
+    # 3. shadow_signals.KalmanStateTracker.update normalizes symbol case and migrates existing _state entry
+    tracker = shadow_signals.KalmanStateTracker(state_path=None, compute_vol=False)
+    tracker._state["btcusdc"] = {"kalman_trend": 1, "ts": 1700000000.0}
+    tracker.update("btcusdc", 1700000060.0, 100.0, 0.1, [100.0, 100.5], 1.0)
+    assert "BTCUSDC" in tracker._state
+    assert "btcusdc" not in tracker._state
+
+    # 4. BaseSpotMixin._shadow_vol_1h normalizes ms timestamps (> 1e11), descending order, and ignores inf prices
+    class _DummyExec:
+        def pair_precision(self, pair):
+            return SimpleNamespace(price_decimals=2, volume_decimals=4, order_min=0.001, base_asset="BTC")
+
+    strat = SpotStrategy(_DummyExec(), "BTCUSDC", SpotParams.from_dict({}), dry_run=True, replay_mode=True)
+    pts_sec = [(1700000000.0 + i * 60.0, 100.0 + (i % 3) * 0.5) for i in range(25)]
+    strat._shadow_prices = list(pts_sec)
+    vol_sec = strat._shadow_vol_1h()
+    assert vol_sec is not None and vol_sec > 0.0
+
+    # Millisecond descending shadow prices with a corrupted +inf row produce the exact same volatility
+    pts_ms_desc = [((t * 1000.0), p) for t, p in reversed(pts_sec)] + [(1700009999000.0, float("inf"))]
+    strat._shadow_prices = pts_ms_desc
+    vol_ms = strat._shadow_vol_1h()
+    assert vol_ms == pytest.approx(vol_sec)
+
+    # calculate_volatility_1h handles leading None before (ts, price) tuples
+    assert calculate_volatility_1h([None] + pts_ms_desc[:-1], 60.0) == pytest.approx(
+        calculate_volatility_1h(pts_sec, 60.0)
+    )
+
+    # 5. 212trading _sanitize_t212_state normalizes ms timestamps on orders, pending_submit, and backoff/fail_until keys
+    import sys
+    t212_spec = importlib.util.spec_from_file_location(
+        "t212_strategy_iter70",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading", "strategy.py"),
+    )
+    t212_mod = importlib.util.module_from_spec(t212_spec)
+    sys.modules["t212_strategy_iter70"] = t212_mod
+    try:
+        t212_spec.loader.exec_module(t212_mod)
+    finally:
+        sys.modules.pop("t212_strategy_iter70", None)
+    sanitized = t212_mod._sanitize_t212_state(
+        {
+            "buy_backoff_until": 1700000500000.0,
+            "locked_zero_until": 1700000600000.0,
+            "tr_fail_until": 1700000700000.0,
+            "sl_fail_until": 1700000800000.0,
+            "tp_fail_until": {"5.0": 1700000900000.0},
+            "pending_submit": {
+                "side": "BUY",
+                "qty": 1.0,
+                "limit": 100.0,
+                "intent_id": "intent-1",
+                "ts": 1700000100000.0,
+            },
+            "orders": [
+                {"id": "ord-1", "side": "BUY", "qty": 1.0, "limit": 100.0, "ts": 1700000200000.0}
+            ],
+        }
+    )
+    assert sanitized["buy_backoff_until"] == pytest.approx(1700000500.0)
+    assert sanitized["locked_zero_until"] == pytest.approx(1700000600.0)
+    assert sanitized["tr_fail_until"] == pytest.approx(1700000700.0)
+    assert sanitized["sl_fail_until"] == pytest.approx(1700000800.0)
+    assert sanitized["tp_fail_until"]["5.0"] == pytest.approx(1700000900.0)
+    assert sanitized["pending_submit"]["ts"] == pytest.approx(1700000100.0)
+    assert sanitized["orders"][0]["ts"] == pytest.approx(1700000200.0)
+
+    # 6. PairCoordinator.from_state normalizes phase case, rejects unknown phases, and validates finite clock
+    base_state = {
+        "pair_id": "p1",
+        "qty": 1.0,
+        "start_side": "BUY",
+        "phase": "STOPPING",
+        "tickets": [vars(OrderTicket("o1", "SELL", 95.0, 1.0))],
+        "snapshots": {"o1": vars(OrderSnapshot(status="open", filled_qty=0.0, cost=0.0, fee=0.0))},
+    }
+    pol = PairPolicy(adjustment_fraction=0.01)
+    pc = PairCoordinator.from_state(object(), pol, base_state, clock=lambda: 10.0)
+    assert pc.phase == "stopping"
+    assert pc.stop_ticket is not None and pc.stop_ticket.order_id == "o1"
+
+    with pytest.raises(ValueError, match="invalid rtrade checkpoint phase"):
+        PairCoordinator.from_state(object(), pol, dict(base_state, phase="bogus_phase"), clock=lambda: 10.0)
+
+    with pytest.raises(ValueError, match="clock must be finite"):
+        PairCoordinator.from_state(object(), pol, base_state, clock=lambda: float("nan"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
