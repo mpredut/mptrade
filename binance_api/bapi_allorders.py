@@ -10,7 +10,7 @@ from binance.exceptions import BinanceAPIException
 
 # MYLIB
 from .bapi_client import client
-import symbols as sym
+import instrument_registry as sym
 from botcore import (
     exact_pos_int,
     safe_nonneg_float,

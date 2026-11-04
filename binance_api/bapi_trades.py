@@ -7,7 +7,7 @@ from state_io import atomic_write_json, load_json_state
 
 # Repository imports.
 import utils as u
-import symbols as sym
+import instrument_registry as sym
 from botcore import exact_nonneg_int, safe_nonneg_float, safe_pos_float, safe_nonneg_int
 from . import bapi as api
 from . import bapi_allorders as apiorders

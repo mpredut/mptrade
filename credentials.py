@@ -17,9 +17,9 @@ from botcore import load_dotenv
 _existing_keys = sys.modules.get("keys")
 _keys_blocked = (
     _existing_keys is not None
-    and "keys.apikeys" not in sys.modules
+    and not hasattr(_existing_keys, "__path__")
     and not getattr(_existing_keys, "_is_credentials_shim", False)
-)
+) or ("keys" in sys.modules and _existing_keys is None)
 if not _keys_blocked:
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 

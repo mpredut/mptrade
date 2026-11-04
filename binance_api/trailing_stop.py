@@ -358,7 +358,7 @@ def main() -> int:
 
     from binance_api import bapi as api
     from providers.market_api import api as po   # single guarded .place() proxy; formerly bapi_placeorder
-    import symbols as sym
+    import instrument_registry as sym
     ts = TrailingStop(api, po, sym)
     return ts.dispatch_cli(args)
 

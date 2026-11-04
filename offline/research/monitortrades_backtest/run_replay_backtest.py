@@ -43,8 +43,11 @@ from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_fl
 
 from cachepaths import cache_path
 from instrument_registry import select_instruments
-from providers.replay_clock import backtest_isolation_context
-from providers.replay_provider import ReplayMarketDataProvider, load_price_series
+from providers.replay_provider import (
+    ReplayMarketDataProvider,
+    backtest_isolation_context,
+    load_price_series,
+)
 from providers.market_api import MarketApi
 from instrument import Instrument
 import monitortrades as mt

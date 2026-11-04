@@ -26,7 +26,6 @@ import order_guard as _og
 import pricewindow as pw
 
 import cacheManager as cm
-import symbols as sym
 from instrument_registry import casefold_get, symbols_for
 
 # Load tunable parameters from the versioned, secret-free config before reading
@@ -179,7 +178,7 @@ BUY_TIERS = _build_dynamic_buy_tiers()
 SELL_TIERS = _build_dynamic_sell_tiers()
 GUARDED_BUY_THRESHOLD = min((t for t, _ in BUY_TIERS), default=None)
 TRACKED_SYMBOLS = tuple(symbols_for("binance", "assetguardian"))
-LEGACY_BUY_SYMBOL = sym.btcsymbol
+LEGACY_BUY_SYMBOL = TRACKED_SYMBOLS[0] if TRACKED_SYMBOLS else "BTCUSDC"
 ORDER_MISSING_CONFIRMATIONS = _required_int_config("AG_ORDER_MISSING_CONFIRMATIONS")
 
 

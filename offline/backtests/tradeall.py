@@ -32,7 +32,7 @@ import tradeall as ta  # We reuse PriceWindow/WindowAnalyzer/TrendState/logic (A
 # `_SimClock` alias is kept for any existing external reference (offline/research/*.py).
 from botcore import safe_nonneg_float, safe_pos_float
 from providers.base import normalize_side
-from providers.replay_clock import SimClock as _SimClock, backtest_isolation_context  # noqa: F401
+from providers.replay_provider import SimClock as _SimClock, backtest_isolation_context  # noqa: F401
 from state_io import atomic_write_json, read_json_dict, read_jsonl_dicts
 from cachepaths import cache_path, cache_symbol_variants, legacy_filenames_for, migrate_legacy_filename_if_needed
 from instrument_registry import casefold_get

@@ -819,8 +819,8 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         summ = bybit_col.get_summary("BTCUSDT")
         self.assertEqual(summ.short_liq_usd, 200.0)
 
-        # 16. symbols.validate_params rejects booleans, NaN, and inf; bapi.get_account_assets_balances rejects non-finite/negative/bool
-        import symbols as sym_mod
+        # 16. instrument_registry.validate_params rejects booleans, NaN, and inf; bapi.get_account_assets_balances rejects non-finite/negative/bool
+        import instrument_registry as sym_mod
         for bad_val in (True, False, float("nan"), float("inf"), float("-inf"), 0, -1):
             with self.assertRaises(ValueError):
                 sym_mod.validate_params("BUY", SYMBOL, price=bad_val, qty=1.0)

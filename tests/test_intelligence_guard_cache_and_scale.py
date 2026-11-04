@@ -9680,7 +9680,7 @@ def test_iteration80_protobuf_summary_store_and_overnight_monitor_safety(tmp_pat
 def test_iteration81_protobuf_self_heal_agy_store_fix_and_config_safety(monkeypatch):
     """Verify Iteration 81 protobuf corrupted-blob self-healing, agy_store_fix NaN/missing-file resilience, and config._parse_bool safety."""
     import pytest
-    import config
+    import botcore as config
     from orchestratorOS.agy import protobuf
     from orchestratorOS.admin import agy_store_fix
 
@@ -15763,8 +15763,8 @@ def test_iteration161_state_io_accepted_persistence_and_market_regime_hygiene(tm
 
 def test_iteration162_botcore_config_symbols_and_instrument_registry_hygiene(tmp_path, monkeypatch):
     import botcore
-    import config as cfg
-    import symbols as sym
+    import botcore as cfg
+    import instrument_registry as sym
     import instrument_registry as ir
 
     # 1. botcore: load_dotenv(override="false") does not overwrite existing os.environ
@@ -16033,7 +16033,7 @@ def test_iteration166_pricewindow_bapi_ws_health_and_bapi_trades_hygiene():
 
 
 def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
-    import symbols as sym_mod
+    import instrument_registry as sym_mod
     from binance_api import bapi_placeorder as bpo
     from binance_api import bapi_ws as bws
 
@@ -16075,7 +16075,7 @@ def test_iteration167_symbols_bapi_placeorder_and_bapi_ws_hygiene(monkeypatch):
 
 def test_iteration168_providers_filters_quantity_http_config_and_outcomes_hygiene(tmp_path, monkeypatch):
     from decimal import Decimal
-    import config as cfg_mod
+    import botcore as cfg_mod
     import order_outcomes_log as ool
     from providers import binance_filters as bf
     from providers import http_resilience as hr

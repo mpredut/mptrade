@@ -15,7 +15,7 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
-import symbols as sym
+import instrument_registry as sym
 
 from .bapi_client import client
 from . import bapi_ws

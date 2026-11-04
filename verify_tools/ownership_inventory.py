@@ -130,35 +130,30 @@ def _split_symbol(symbol: str, base: str = "", quote: str = "") -> tuple[str, st
 
 
 def _python_symbols(root: Path) -> tuple[list[str], str]:
-    """Read constants without importing `symbols.py` or triggering its API side effects."""
-    path = root / "symbols.py"
-    if not path.exists():
-        return [], ""
-    values = {}
-    tree = ast.parse(read_text_file(path))
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
+    """Read configured Binance symbols and rtrade symbol from `instruments.conf`."""
+    syms: list[str] = []
+    tao = ""
+    conf_path = root / "instruments.conf"
+    if conf_path.exists():
         try:
-            values[target.id] = ast.literal_eval(node.value)
-        except (ValueError, TypeError):
-            continue
-    syms = list(values.get("symbols") or [])
-    tao = str(values.get("taosymbol") or "")
-    if not syms:
-        try:
-            conf_path = root / "instruments.conf"
-            if conf_path.exists():
-                syms = symbols_for("binance", path=conf_path)
-                try:
-                    tao = single_symbol_for("binance", "rtrade", path=conf_path)
-                except Exception:
-                    tao = "TAOUSDC" if "TAOUSDC" in syms else ""
+            syms = symbols_for("binance", path=conf_path)
+            try:
+                tao = single_symbol_for("binance", "rtrade", path=conf_path)
+            except Exception:
+                tao = "TAOUSDC" if "TAOUSDC" in syms else ""
         except Exception:
-            pass
+            parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
+            parser.read(conf_path, encoding="utf-8")
+            for section in parser.sections():
+                vals = parser[section]
+                if normalize_venue_name(vals.get("provider", "")) == "binance" and _truthy(vals.get("enabled"), True):
+                    s = vals.get("symbol", "").strip()
+                    if s and s not in syms:
+                        syms.append(s)
+                    if _truthy(vals.get("role.rtrade")) and s:
+                        tao = s
+            if not tao and "TAOUSDC" in syms:
+                tao = "TAOUSDC"
     return syms, tao
 
 

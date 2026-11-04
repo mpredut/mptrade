@@ -26,7 +26,7 @@ import websockets
 
 from typing import Dict, Optional, Set, Callable
 
-import symbols as sym
+import instrument_registry as sym
 import utils as u
 from botcore import (
     _parse_bool_flag,

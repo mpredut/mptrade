@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set
 from urllib.parse import quote
 from abc import ABC, abstractmethod
 
-import symbols as sym
+import instrument_registry as sym
 from binance_api import bapi as api
 from botcore import exact_pos_int, required_env, safe_pos_float, safe_pos_int
 from cachepaths import cache_path, normalize_venue_name

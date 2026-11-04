@@ -9,7 +9,6 @@ import cacheManager as cm
 from intelligence.internal.state.volatility import get_kalman_state_path
 import order_retry
 import utils as u
-import symbols as sym
 from instrument_registry import casefold_get, select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
@@ -986,7 +985,13 @@ class TrendCoordinator:
 
 
 if __name__ == "__main__":
-    trades = apitrades.get_my_trades_24(order_type=None, symbol=sym.btcsymbol, days_ago=0, limit=1000)
+    _main_symbols = symbols_for("binance")
+    trades = apitrades.get_my_trades_24(
+        order_type=None,
+        symbol=_main_symbols[0] if _main_symbols else "BTCUSDC",
+        days_ago=0,
+        limit=1000,
+    )
     print(f" --------- {len(trades)}")
     print(f" my trades of today : {trades}")
 
@@ -1009,7 +1014,7 @@ if __name__ == "__main__":
     instant_mgr.start_computation(cache24_managers, current_price_mgr)
 
     coordinator = TrendCoordinator(
-        symbols=sym.symbols,
+        symbols=_main_symbols,
         instant_mgr=instant_mgr,
         current_price_mgr=current_price_mgr,
         cache24_managers=cache24_managers,

@@ -29,9 +29,8 @@ from providers.base import (                         # noqa: E402
     extract_timestamp_ms,
 )
 from providers.market_api import api as mkt          # noqa: E402  (facada singleton)
-import symbols as sym                        # noqa: E402
 
-HYPE = sym.hypesymbol                        # "HYPEUSDC"
+HYPE = "HYPEUSDC"
 MAXAGE = 17 * 24 * 3600
 failures = []
 
@@ -52,10 +51,10 @@ def main():
     print("==== RUTARE pe symbol (Binance ramane default) ====")
     check("HYPEUSDC -> Hyperliquid", mkt.provider_name_for(HYPE) == "Hyperliquid",
           mkt.provider_name_for(HYPE))
-    check("BTCUSDC  -> Binance", mkt.provider_name_for(sym.btcsymbol) == "Binance",
-          mkt.provider_name_for(sym.btcsymbol))
-    check("TAOUSDC  -> Binance", mkt.provider_name_for(sym.taosymbol) == "Binance",
-          mkt.provider_name_for(sym.taosymbol))
+    check("BTCUSDC  -> Binance", mkt.provider_name_for("BTCUSDC") == "Binance",
+          mkt.provider_name_for("BTCUSDC"))
+    check("TAOUSDC  -> Binance", mkt.provider_name_for("TAOUSDC") == "Binance",
+          mkt.provider_name_for("TAOUSDC"))
     check("asset HYPE -> Hyperliquid", mkt.provider_name_for("HYPE") == "Hyperliquid",
           mkt.provider_name_for("HYPE"))
     check("asset BTC  -> Binance (default)", mkt.provider_name_for("BTC") == "Binance",

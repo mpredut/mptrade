@@ -15,9 +15,8 @@ if _ROOT not in sys.path:
 ### my import
 from botcore import clean_finite_floats as _clean_finite_floats, safe_float, safe_pos_int
 from cachepaths import cache_symbol_variants
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, symbols_for
 from state_io import atomic_write_json
-import symbols as sym
 import cacheManager as cm
 
 
@@ -364,7 +363,7 @@ def run_for_symbols(symbols: List[str],
 
 if __name__ == "__main__":
    
-    symbols = sym.symbols
+    symbols = symbols_for("binance")
 
     # 2) Run the pipeline.
     res = run_for_symbols(

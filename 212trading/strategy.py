@@ -59,9 +59,7 @@ from strategies.state_store import (
 from strategies.position_exit_manager import (
     PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction, ReentrySnapshot,
 )
-import order_lifecycle as _order_lifecycle
 from order_lifecycle import restore_cancelled_orders
-sys.modules.setdefault("order_rollback", _order_lifecycle)
 from intelligence.internal.state.volatility import (
     resolve_cached_volatility_1h, resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )

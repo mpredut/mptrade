@@ -36,7 +36,7 @@ from offline.backtests.execution import (
     validate_ohlc_bars,
 )
 from offline.backtests.metrics import calculate_performance_metrics, round_metric
-from providers.replay_clock import SimClock as _SimClock
+from providers.replay_provider import SimClock as _SimClock
 from strategies.spot_replay import build_replay_summary
 
 

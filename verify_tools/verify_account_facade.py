@@ -30,10 +30,10 @@ from providers.base import (                         # noqa: E402
     extract_timestamp_ms,
 )
 from providers.market_api import api as mkt                     # noqa: E402  (facada singleton)
-import symbols as sym                                 # noqa: E402
+from instrument_registry import symbols_for                     # noqa: E402
 
 MAXAGE = 17 * 24 * 3600   # ca trade_watch.position (referinta botului)
-SYMBOLS = [sym.taosymbol, sym.btcsymbol]
+SYMBOLS = symbols_for("binance")
 import utils  # noqa: E402 — base_asset centralizat in utils (28 iul)
 base_of = utils.base_asset
 

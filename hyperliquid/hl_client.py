@@ -32,7 +32,7 @@ safe_float = _common_mod.safe_float
 safe_pos_float = _common_mod.safe_pos_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
 from instrument_registry import casefold_get
-from providers.http_resilience import mount_connect_retry
+from providers.base import mount_connect_retry
 
 try:
     import eth_account

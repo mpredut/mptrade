@@ -160,7 +160,7 @@ class BinanceProvider(MarketDataProvider):
 
     def execution_enabled(self) -> bool:
         """Return the authoritative Binance live-order feature gate."""
-        import config as cfg
+        import botcore as cfg
         return bool(cfg.is_trade_enabled())
 
     def reconciliation_capabilities(self) -> OrderReconciliationCapabilities:

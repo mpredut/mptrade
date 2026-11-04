@@ -6,7 +6,7 @@ import threading
 from binance.client import Client
 from botcore import exact_pos_int, safe_nonneg_float
 import credentials as _credentials
-from providers.http_resilience import mount_connect_retry
+from providers.base import mount_connect_retry
 
 ####MYLIB
 _client = None

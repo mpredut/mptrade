@@ -234,7 +234,6 @@ quote=USDC
 enabled=no
 mt.gain=9
 """)
-    _write_inv(root, "symbols.py", "symbols=[]\ntaosymbol='TAOUSDC'\n")
     _write_inv(root, "binance_api/trailing.conf", "TRAILING_ENABLED=false\n")
     return root
 
@@ -301,7 +300,6 @@ class OwnershipInventoryTest(unittest.TestCase):
 tradeall.py|x||tradeall|||fleet
 monitortrades.py|x||monitortrades|||fleet
 """)
-        _write_inv(root, "symbols.py", "symbols=['BTCUSDC']\ntaosymbol='TAOUSDC'\n")
         _write_inv(root, "instruments.conf", """
 [BINANCE_BTC]
 provider=binance

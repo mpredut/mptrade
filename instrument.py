@@ -38,7 +38,7 @@ import order_guard
 import order_lifecycle as _outcomes_log
 import order_lifecycle as accepted_order_persistence
 import order_retry
-import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
+import lock.cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 
 
 _EXECUTION_AUDIT = ExecutionAudit()

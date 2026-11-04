@@ -9,7 +9,7 @@ from binance.exceptions import BinanceAPIException
 # Project imports.
 from notify_engine import alertnotifiers as alert
 import utils as u
-import symbols as sym
+import instrument_registry as sym
 from binance_api import bapi as api
 from binance_api import order_id_context as rc
 from providers.base import (
@@ -28,7 +28,7 @@ from providers.market_api import api as mkt  # Single guarded proxy (Instrument.
 from providers.strategy_executor import SubmissionRefused
 import order_retry
 import order_lifecycle as accepted_order_persistence
-import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
+import lock.cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
     float_env,
     load_dotenv as _load_dotenv,

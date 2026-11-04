@@ -76,7 +76,7 @@ from strategies.position_exit_manager import (
     PositionSnapshot,
     ReentrySnapshot,
 )
-import symbols as sym
+import instrument_registry as sym
 import utils as u
 
 _load_dotenv()

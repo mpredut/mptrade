@@ -38,13 +38,13 @@ from instrument_registry import casefold_get, tracked_price_instruments
 import cacheintegrity as _cache_integrity
 from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
-from binance_api import bapi_ws_health as _bapi_ws_health
+_bapi_ws_health = _bapi_ws_bridge
 from lock import FileLock
 import binance_cache_health as account_cache_health
 
 #my imports
 import utils as u
-import symbols as sym
+import instrument_registry as sym
 from binance_api import bapi as api
 # Safe market-data facade import: market_api imports binance_api.bapi without importing
 # cacheManager, so it does not close a cycle. The trend chain's current price passes

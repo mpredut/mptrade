@@ -6,6 +6,7 @@ the file explicitly; long-running processes adopt configuration at restart.
 """
 from dataclasses import asdict, dataclass
 import glob
+import math
 import os
 from pathlib import Path
 import configparser
@@ -637,7 +638,128 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     return float("nan")
 
 
+# ─── Binance Symbol Validation & Precision Helpers ───────────────────────────
+
+def __getattr__(name: str):
+    if name == "symbols":
+        return symbols_for("binance")
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def _get_client():
+    from binance_api.bapi_client import client
+    return client
+
+
+def _normalize_ordertype(order_type):
+    if isinstance(order_type, str):
+        s = order_type.strip().upper()
+        if s in ("B", "BUY", "BID", "LONG"):
+            return "BUY"
+        if s in ("S", "SELL", "ASK", "SHORT"):
+            return "SELL"
+        return s
+    return order_type
+
+
+def _normalize_symbol(symbol):
+    if isinstance(symbol, str):
+        s = symbol.strip().upper()
+        cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
+        if s in cur_symbols:
+            return s
+        s_clean = s.replace("/", "")
+        if s_clean in cur_symbols:
+            return s_clean
+        for cfg_sym in cur_symbols:
+            if isinstance(cfg_sym, str) and cfg_sym.upper() in (s, s_clean):
+                return cfg_sym
+    return symbol
+
+
+def validate_ordertype(order_type):
+    norm_type = _normalize_ordertype(order_type)
+    if norm_type not in [None, "BUY", "SELL"]:
+        raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL' or None.")
+
+
+def validate_symbols(symbol):
+    cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
+    norm_sym = _normalize_symbol(symbol)
+    if norm_sym not in cur_symbols:
+        raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {cur_symbols}.")
+
+
+def validate_params(order_type, symbol, price=1, qty=1):
+    norm_type = _normalize_ordertype(order_type)
+    if norm_type not in ["BUY", "SELL"]:
+        raise ValueError(f"Invalid order_type '{order_type}'. It must be either 'BUY' or 'SELL'.")
+
+    if safe_pos_float(price, default=None) is None:
+        raise ValueError(f"Invalid price '{price}'. Price must be a positive number.")
+
+    if safe_pos_float(qty, default=None) is None:
+        raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
+
+    cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
+    norm_sym = _normalize_symbol(symbol)
+    if norm_sym not in cur_symbols:
+        raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {cur_symbols}.")
+
+
+def get_binance_symbols(keysearch):
+    try:
+        exchange_info = _get_client().get_exchange_info()
+        if not isinstance(exchange_info, dict) or not isinstance(exchange_info.get("symbols"), list):
+            print("Number of symbols on Binance: 0")
+            return
+        raw_symbols = exchange_info["symbols"]
+        print(f"Number of symbols on Binance: {len(raw_symbols)}")
+
+        all_symbols = [
+            str(s["symbol"])
+            for s in raw_symbols
+            if isinstance(s, dict) and s.get("symbol")
+        ]
+        if keysearch:
+            key_up = str(keysearch).upper()
+            matching_symbols = [symbol for symbol in all_symbols if key_up in symbol]
+            print(f"Symbols containing '{keysearch}': {matching_symbols}")
+        else:
+            print(f"All symbols: {all_symbols}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+def get_quantity_precision(symbol):
+    if not symbol or isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+        return 8
+    try:
+        info = _get_client().get_symbol_info(symbol.strip().upper())
+        if not isinstance(info, dict) or not isinstance(info.get("filters"), list):
+            return 8
+        for f in info["filters"]:
+            if isinstance(f, dict) and f.get("filterType") == "LOT_SIZE":
+                step_size = safe_pos_float(f.get("stepSize"), default=None)
+                if step_size is not None:
+                    return max(0, int(round(-math.log10(step_size), 0)))
+    except Exception as e:
+        print(f"Error getting quantity precision: {e}")
+    return 8
+
+
+def validate_binance_api_keys():
+    try:
+        _get_client().get_account()
+        print("The API keys are valid!")
+        return True
+    except Exception as e:
+        print(f"Error validating API keys: {e}")
+        return False
+
+
 register_module_aliases(__name__, "instruments_config")
+register_module_aliases(__name__, "symbols")
 
 
 if __name__ == "__main__":

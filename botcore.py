@@ -1654,6 +1654,112 @@ def require_shadow_interval(interval: int, expected: int, label: str) -> None:
         raise ValueError(f"{label} accepts only the native {expected}m interval")
 
 
+# ─── Global trade_enabled Configuration Cache & Watcher (consolidated from config.py) ───
+
+config_cache: dict = {}
+_CONFIG_MTIME: tuple[float, float] = (-1.0, -1.0)
+_CONFIG_LAST_CHECK: float = 0.0
+
+CONFIG_ENV_PATH = os.path.join(_REPO_ROOT, "config.env")
+CONFIG_TXT_PATH = os.path.join(_REPO_ROOT, "config.txt")
+
+_parse_bool = _parse_bool_flag
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path) if path and os.path.exists(path) else -1.0
+    except OSError:
+        return -1.0
+
+
+def _read_properties_file(path: str) -> dict:
+    if not path or isinstance(path, (bool, int)):
+        return {}
+    return parse_dotenv(path, coerce_bools=True)
+
+
+def load_config():
+    """Load configuration from config.env (and legacy config.txt if present) and refresh cache."""
+    global config_cache, _CONFIG_MTIME, _CONFIG_LAST_CHECK
+    new_config = {}
+
+    env_file_settings = _read_properties_file(CONFIG_ENV_PATH)
+    for k, v in env_file_settings.items():
+        if isinstance(k, str) and k.lower() == "trade_enabled" and str(v).strip() != "":
+            new_config["trade_enabled"] = _parse_bool(v, default=True)
+
+    txt_settings = _read_properties_file(CONFIG_TXT_PATH)
+    for k, v in txt_settings.items():
+        if k.lower() == "trade_enabled":
+            if str(v).strip() != "":
+                new_config["trade_enabled"] = _parse_bool(v, default=True)
+        else:
+            new_config[k.lower()] = v
+
+    env_trade = os.environ.get("TRADE_ENABLED")
+    if env_trade is not None and env_trade.strip() != "":
+        new_config["trade_enabled"] = _parse_bool(env_trade, default=True)
+
+    if "trade_enabled" not in new_config:
+        new_config["trade_enabled"] = True
+
+    _CONFIG_MTIME = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
+    _CONFIG_LAST_CHECK = _time.time()
+    config_cache = new_config
+
+
+_watcher_stop_event = threading.Event()
+
+
+def config_watcher(interval=5 * 60):
+    """Periodically monitor configuration and reload the cache."""
+    wait_sec = safe_pos_float(interval, default=5.0 * 60.0)
+    while not _watcher_stop_event.is_set():
+        load_config()
+        if _watcher_stop_event.wait(wait_sec):
+            break
+
+
+def is_trade_enabled() -> bool:
+    """Return whether cached ``trade_enabled`` is true (with on-demand mtime hot-reload every 5s)."""
+    now_ts = _time.time()
+    if not (0.0 <= (now_ts - _CONFIG_LAST_CHECK) < 5.0):
+        cur_mtime = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
+        if cur_mtime != _CONFIG_MTIME:
+            load_config()
+    return _parse_bool(config_cache.get("trade_enabled", True), default=True)
+
+
+watcher_thread = None
+
+
+def start_config_watcher():
+    global watcher_thread
+    if watcher_thread and watcher_thread.is_alive():
+        return
+    _watcher_stop_event.clear()
+    watcher_thread = threading.Thread(
+        target=config_watcher,
+        name="start_config_watcher",
+        daemon=True,
+    )
+    watcher_thread.start()
+    print("Config watcher started.")
+
+
+def stop_config_watcher():
+    global watcher_thread
+    _watcher_stop_event.set()
+    if watcher_thread:
+        watcher_thread.join(timeout=2.0)
+        watcher_thread = None
+        print("Config watcher stopped.")
+
+
+load_config()
+
+
 def register_module_aliases(module_name: str, *aliases: str) -> None:
     """Bind ``aliases`` in ``sys.modules`` (and parent package attributes) to ``sys.modules[module_name]``."""
     self_mod = sys.modules.get(module_name)
@@ -1692,6 +1798,8 @@ _MERGED_MODULE_TARGETS = {
     "providers.binance_filters": "providers.quantity",
     "providers.http_resilience": "providers.base",
     "providers.replay_clock": "providers.replay_provider",
+    "config": "botcore",
+    "symbols": "instrument_registry",
 }
 
 
@@ -1762,9 +1870,11 @@ class _MergedModuleAliasFinder:
             return None
         if fullname in ("keys", "keys.apikeys"):
             existing_keys = sys.modules.get("keys")
+            if "keys" in sys.modules and existing_keys is None:
+                return None
             if (
                 existing_keys is not None
-                and "keys.apikeys" not in sys.modules
+                and not hasattr(existing_keys, "__path__")
                 and not getattr(existing_keys, "_is_credentials_shim", False)
             ):
                 return None
@@ -1779,6 +1889,9 @@ class _MergedModuleAliasFinder:
 
 if not any(getattr(f, "__name__", "") == "_MergedModuleAliasFinder" or isinstance(f, _MergedModuleAliasFinder) for f in sys.meta_path):
     sys.meta_path.append(_MergedModuleAliasFinder())
+
+
+register_module_aliases(__name__, "config")
 
 
 

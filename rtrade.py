@@ -34,7 +34,7 @@ from botcore import (
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
 from instrument_registry import single_symbol_for
-from lock import trade_cooldown
+from lock import cooldown as trade_cooldown
 from market_regime import MarketRegimeDecision
 from order_retry import (
     StrategyExecutorLifecycleApi,

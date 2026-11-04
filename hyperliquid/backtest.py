@@ -75,7 +75,7 @@ def precompute_signal(closes, ts, source, fast, slow, band, win_h, step_h):
         return ["__any__"] * len(closes)         # gate disabled
     detect_fn = None
     if src == "analysis":
-        detect_fn = _load_hl_local("price_analysis").detect_long_term_trend
+        detect_fn = _load_hl_local("signals").detect_long_term_trend
     for i in range(len(closes)):
         if src == "analysis":
             res = detect_fn(ts[:i+1], closes[:i+1], win_h, step_h)

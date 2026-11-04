@@ -185,14 +185,9 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_symbols_facade_constants_and_dynamic_lookup(self):
-        import symbols as sym
-        self.assertEqual(sym.btcsymbol, "BTCUSDC")
-        self.assertEqual(sym.taosymbol, "TAOUSDC")
-        self.assertEqual(sym.arbsymbol, "ARBUSDC")
-        self.assertEqual(sym.hypesymbol, "HYPEUSDC")
+        import instrument_registry as sym
         self.assertEqual(sym.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC"])
-        self.assertEqual(sym.forcesellsymbol, ["BTCUSDC", "TAOUSDC"])
-        self.assertEqual(getattr(sym, "btcsymbol"), "BTCUSDC")
+        self.assertEqual(sym.symbols_for("binance", "force_sell"), ["BTCUSDC", "TAOUSDC"])
         with self.assertRaises(AttributeError):
             getattr(sym, "nonexistentsymbol")
 
@@ -318,11 +313,11 @@ def test_one_new_section_reaches_real_consumers_without_source_edits(tmp_path):
         import instrument_registry as registry
         registry.DEFAULT_PATH = Path(sys.argv[1])
         assert not any(name in sys.modules for name in ("keys", "providers", "binance.client"))
-        import symbols, tradeall, assetguardian
+        import tradeall, assetguardian
         from binance_api import trailing_stop, bapi_client
         from instruments_config import load_for
-        assert "TESTUSDC" in symbols.symbols
-        assert "TESTUSDC" in symbols.forcesellsymbol
+        assert "TESTUSDC" in registry.symbols
+        assert "TESTUSDC" in registry.symbols_for("binance", "force_sell")
         assert "TESTUSDC" in tradeall.TRADEALL_FIRE_SYMBOLS
         assert "TESTUSDC" in tradeall.KALMAN_PRIMARY_SYMBOLS
         assert tradeall._kalman_gate_blocks("TESTUSDC", "BUY") == (False, "off", None)

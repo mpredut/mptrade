@@ -2184,7 +2184,7 @@ def durable_intents_lock(intents_file: str):
     The crypto and share executors run as separate cron processes whose cycles can overlap; without this lock
     one process's load -> append -> save silently drops the other's intents (lost update).
     """
-    from lock.file_lock import FileLock
+    from lock.cooldown import FileLock
 
     key = generation_lock_path(str(resolve_cachedb_filepath(os.fspath(intents_file))))
     depths = getattr(_INTENTS_LOCK_LOCAL, "depths", None)

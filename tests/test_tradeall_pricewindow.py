@@ -23,17 +23,12 @@ _mock_bapi.cancel_order      = MagicMock(return_value=True)
 _mock_bapi.cancel_expired_orders = MagicMock()
 _mock_bapi.client            = MagicMock()
 
-_mock_sym = MagicMock()
-_mock_sym.symbols   = ["BTCUSDT"]
-_mock_sym.btcsymbol = "BTCUSDT"
-_mock_sym.validate_ordertype = MagicMock()
 _mock_market_api = MagicMock()
 _mock_market_api.api = _mock_bapi
 
 _IMPORT_MOCKS = dict([
     ("bapi",            _mock_bapi),
     ("binance_api.bapi", _mock_bapi),
-    ("symbols",         _mock_sym),
     ("bapi_trades",     MagicMock(**{"get_my_trades_24.return_value": []})),
     ("binance_api.bapi_trades", MagicMock(**{"get_my_trades_24.return_value": []})),
     ("bapi_allorders",  MagicMock()),

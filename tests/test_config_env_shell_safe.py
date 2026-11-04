@@ -18,7 +18,7 @@ def test_config_env_sources_under_set_u_with_empty_environment():
 
 
 def test_config_module_parses_falsy_trade_enabled_fail_closed(tmp_path, monkeypatch):
-    import config
+    import botcore as config
 
     env_file = tmp_path / "config.env"
     txt_file = tmp_path / "config.txt"

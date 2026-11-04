@@ -10,8 +10,8 @@ from binance.exceptions import BinanceAPIException
 #### MYLIB
 import order_guard
 import order_lifecycle as _outcomes_log
-import symbols as sym
-import config as cfg
+import instrument_registry as sym
+import botcore as cfg
 import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests
 _ = pa
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, revoke_guard_bypass
@@ -28,12 +28,13 @@ from providers.base import (
     extract_timestamp_ms,
     resolve_market_flag,
 )
-from providers.binance_filters import (
+from providers.quantity import (
     BinanceFilterError,
     BinanceOrderRules,
+    balance_cap_quantity,
     binance_filter_refusal_reason,
+    fee_cap_quantity,
 )
-from providers.quantity import balance_cap_quantity, fee_cap_quantity
 from providers.strategy_executor import SubmissionRefused
 import binance_cache_health
 
