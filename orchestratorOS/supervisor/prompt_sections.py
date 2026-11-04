@@ -22,6 +22,9 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_microstructure_cvd,
     round_opt_px as _round_opt_px,
 )
+from intelligence.sentiment.evaluators.microstructure_evaluator import (
+    reconcile_sibling_flow_and_liq_regimes,
+)
 from intelligence.sentiment.collectors.portfolio_collector import (
     resolve_symbol_price as _resolve_symbol_price,
     resolve_venue_fee_and_limits,
@@ -677,6 +680,28 @@ def _format_microstructure_section(
             for lk, lv in liq_lazy.items():
                 if minfo.get(lk) is None:
                     minfo[lk] = lv
+        if any(
+            other_s != sym
+            and isinstance(other_m, dict)
+            and canonical_base_asset(other_s) == b_canon_3b
+            and "USD" in compatible_quote_suffixes(other_s)
+            for other_s, other_m in microstructure.items()
+        ):
+            sib_view: Dict[str, Any] = {sym: minfo}
+            for other_s, other_m in microstructure.items():
+                if (
+                    other_s != sym
+                    and isinstance(other_m, dict)
+                    and canonical_base_asset(other_s) == b_canon_3b
+                    and "USD" in compatible_quote_suffixes(other_s)
+                ):
+                    o_copy = dict(other_m)
+                    o_p = prices_and_trends.get(other_s) if isinstance(prices_and_trends.get(other_s), dict) else p_ctx
+                    enrich_microstructure_cvd(o_copy, o_p)
+                    if o_copy.get("liq_magnet_bias") is None:
+                        o_copy.update(compute_liquidation_clusters(o_p, o_copy))
+                    sib_view[other_s] = o_copy
+            reconcile_sibling_flow_and_liq_regimes(sib_view, prices_and_trends)
         d1_b = _parse_finite_float(minfo.get("depth_1pct_bid_usd"), 0.0)
         d1_a = _parse_finite_float(minfo.get("depth_1pct_ask_usd"), 0.0)
         depth_1pct_sfx = (

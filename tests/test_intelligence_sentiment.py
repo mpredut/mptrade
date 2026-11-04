@@ -2541,6 +2541,93 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     )
     assert "RESTING_IN_BOOK" in sec_3c_fallback
 
+    # 13. Sibling microstructure flow/liq reconciliation, squeeze-vs-dump guard, and T212 chart includePrePost
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        reconcile_sibling_flow_and_liq_regimes,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    contradictory_hype = {
+        "ob_imbalance": 0.65,
+        "bid_depth_usd": 500000.0,
+        "ask_depth_usd": 250000.0,
+        "taker_buy_vol_usd": 30000.0,
+        "taker_sell_vol_usd": 95000.0,
+        "cvd_15m_usd": -65000.0,
+        "cvd_5m_usd": -25000.0,
+        "cvd_1h_usd": -120000.0,
+        "funding_rate": -0.0002,
+    }
+    enrich_microstructure_cvd(contradictory_hype, {"price": 34.4, "chg_15m_pct": -0.3})
+    assert contradictory_hype["cvd_regime"] == "aggressive_market_dumps"
+    assert contradictory_hype["spot_perp_flow_regime"] != "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+
+    sib_micro = {
+        "HYPEUSDC": {
+            "ob_mid_price": 34.45,
+            "ob_imbalance": 0.34,
+            "bid_depth_usd": 146000.0,
+            "ask_depth_usd": 286000.0,
+            "spot_cvd_15m_usd": -183600.0,
+            "cvd_15m_usd": -9600.0,
+            "cvd_regime": "balanced_flow",
+            "spot_perp_flow_regime": "RETAIL_PERP_LONG_TRAP",
+            "liq_magnet_bias": "BALANCED_LIQ_MAGNET",
+            "funding_rate": 0.00005,
+        },
+        "HYPEUSD": {
+            "ob_mid_price": 34.44,
+            "ob_imbalance": 0.67,
+            "bid_depth_usd": 470000.0,
+            "ask_depth_usd": 230000.0,
+            "spot_cvd_15m_usd": 230800.0,
+            "cvd_15m_usd": -9600.0,
+            "cvd_regime": "aggressive_market_dumps",
+            "spot_perp_flow_regime": "SYNCHRONIZED_SPOT_PERP_BUYING",
+            "liq_magnet_bias": "LONG_SWEEP_MAGNET_DOWN",
+            "funding_rate": 0.00005,
+        },
+    }
+    sib_pt = {
+        "HYPEUSDC": {"price": 34.45, "chg_15m_pct": 0.38},
+        "HYPEUSD": {"price": 34.44, "chg_15m_pct": 0.40},
+    }
+    reconcile_sibling_flow_and_liq_regimes(sib_micro, sib_pt)
+    assert sib_micro["HYPEUSDC"]["spot_perp_flow_regime"] == "BALANCED_CROSS_VENUE_FLOW"
+    assert sib_micro["HYPEUSD"]["spot_perp_flow_regime"] == "BALANCED_CROSS_VENUE_FLOW"
+    assert sib_micro["HYPEUSDC"]["liq_magnet_bias"] == sib_micro["HYPEUSD"]["liq_magnet_bias"]
+    assert sib_micro["HYPEUSDC"]["cvd_regime"] == sib_micro["HYPEUSD"]["cvd_regime"]
+
+    sec_3b_text = "\n".join(_format_microstructure_section(sib_micro, sib_pt))
+    assert "RETAIL_PERP_LONG_TRAP" not in sec_3b_text
+    assert "SYNCHRONIZED_SPOT_PERP_BUYING" not in sec_3b_text
+
+    from botcore import load_local_module
+
+    md_mod = load_local_module(
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "212trading"),
+        "market_data",
+    )
+    captured_urls: list[str] = []
+
+    def _fake_http_get(url: str, **_kwargs):
+        captured_urls.append(url)
+        return (
+            200,
+            b'{"chart": {"result": [{"timestamp": [1700000000], "indicators": {"quote": [{"close": [207.61], "open": [207.5], "high": [207.7], "low": [207.4], "volume": [1000]}]}}]}}',
+        )
+
+    orig_http_get = md_mod.http_get
+    try:
+        md_mod.http_get = _fake_http_get
+        _meta, bars = md_mod._chart("NVDA", "5d", "5m")
+    finally:
+        md_mod.http_get = orig_http_get
+    assert len(bars) == 1 and bars[0][1] == 207.61
+    assert captured_urls and "includePrePost=true" in captured_urls[0]
+
+
+
 
 
 

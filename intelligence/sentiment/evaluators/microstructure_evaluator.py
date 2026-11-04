@@ -135,18 +135,24 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             minfo["perp_spot_basis_bps"] = round(funding_r * 10000.0 * 1.5, 2)
 
     is_multi_horizon_selloff = cvd_usd < 0.0 and cvd_5m < 0.0 and cvd_1h < 0.0 and funding_r >= 0.0
+    is_absorbing_cvd = minfo.get("cvd_regime") == "spot_absorbing"
     strong_spot_absorption = (
-        spot_cvd >= max(abs(cvd_usd) * 0.45, 5000.0)
+        is_absorbing_cvd
+        and spot_cvd >= max(abs(cvd_usd) * 0.45, 5000.0)
         and (ob_imb >= 0.58 or funding_r < 0.0 or chg_15m >= 0.15)
         and (not is_multi_horizon_selloff or chg_15m >= 0.05)
     )
+    strong_perp_trap = (
+        spot_cvd <= -max(abs(cvd_usd) * 0.25, 5000.0)
+        and (ob_imb <= 0.44 or chg_15m <= 0.02)
+    )
     if spot_cvd > 0.0 and cvd_usd < 0.0 and funding_r <= 0.0001 and strong_spot_absorption:
         minfo["spot_perp_flow_regime"] = "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
-    elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25:
+    elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25 and strong_perp_trap:
         minfo["spot_perp_flow_regime"] = "RETAIL_PERP_LONG_TRAP"
-    elif spot_cvd > 0.0 and cvd_usd > 0.0:
+    elif spot_cvd > 0.0 and cvd_usd > 0.0 and (ob_imb >= 0.54 or spot_cvd >= max(abs(cvd_usd) * 0.15, 5000.0)):
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_BUYING"
-    elif spot_cvd < 0.0 and cvd_usd < 0.0:
+    elif spot_cvd < 0.0 and cvd_usd < 0.0 and (ob_imb <= 0.46 or abs(spot_cvd) >= max(abs(cvd_usd) * 0.15, 5000.0)) and not is_absorbing_cvd:
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_SELLING"
     else:
         minfo["spot_perp_flow_regime"] = "BALANCED_CROSS_VENUE_FLOW"
@@ -767,7 +773,71 @@ def sync_sibling_symbol_telemetry(
             p_match.setdefault("spread_bps", minfo["spread_bps"])
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
 
+    reconcile_sibling_flow_and_liq_regimes(microstructure, prices_and_trends)
     update_microstructure_cycle_deltas(cache_dir, microstructure, now_ts=now_ts)
+
+
+def reconcile_sibling_flow_and_liq_regimes(
+    microstructure: Dict[str, Any],
+    prices_and_trends: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Ensure non-diverged USD-family sibling symbols share consistent cross-venue flow, CVD, and liquidation magnet regimes."""
+    if not isinstance(microstructure, dict) or len(microstructure) < 2:
+        return
+    pt_map = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+    usd_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    for msym, minfo in microstructure.items():
+        if isinstance(minfo, dict) and "USD" in compatible_quote_suffixes(msym):
+            usd_groups.setdefault(canonical_base_asset(msym), []).append((msym, minfo))
+    for _, grp in usd_groups.items():
+        if len(grp) < 2:
+            continue
+        grp.sort(
+            key=lambda kv: (
+                0 if str(kv[0]).upper().endswith("USDC") else 1,
+                -((safe_nonneg_float(kv[1].get("bid_depth_usd"), 0.0) or 0.0) + (safe_nonneg_float(kv[1].get("ask_depth_usd"), 0.0) or 0.0)),
+                str(kv[0]).upper(),
+            )
+        )
+        prim_sym, prim_m = grp[0]
+        prim_p_dict = casefold_get(pt_map, prim_sym)
+        prim_px = (
+            safe_pos_float(prim_m.get("ob_mid_price"), default=None)
+            or safe_pos_float(prim_p_dict.get("price") if isinstance(prim_p_dict, dict) else None, default=None)
+            or 0.0
+        )
+        non_div = [
+            (s, m)
+            for s, m in grp
+            if not _prices_diverged(
+                prim_px,
+                safe_pos_float(m.get("ob_mid_price"), default=None)
+                or safe_pos_float((casefold_get(pt_map, s) or {}).get("price") if isinstance(casefold_get(pt_map, s), dict) else None, default=None)
+                or 0.0,
+            )
+        ]
+        if len(non_div) < 2:
+            continue
+        prim_mag = prim_m.get("liq_magnet_bias")
+        prim_cvd_reg = prim_m.get("cvd_regime")
+        prim_flow_reg = prim_m.get("spot_perp_flow_regime")
+        sp_vals = [safe_float(m_s.get("spot_cvd_15m_usd"), None) for _, m_s in non_div]
+        has_pos_sp = any(v is not None and v > 0.0 for v in sp_vals)
+        has_neg_sp = any(v is not None and v < 0.0 for v in sp_vals)
+        unified_flow_reg = (
+            "BALANCED_CROSS_VENUE_FLOW"
+            if (has_pos_sp and has_neg_sp) or prim_flow_reg == "BALANCED_CROSS_VENUE_FLOW"
+            else prim_flow_reg
+        )
+        for _, m_sib in non_div:
+            if prim_mag and m_sib.get("liq_magnet_bias"):
+                m_sib["liq_magnet_bias"] = prim_mag
+            if prim_cvd_reg and m_sib.get("cvd_regime"):
+                m_sib["cvd_regime"] = prim_cvd_reg
+            if unified_flow_reg and m_sib.get("spot_perp_flow_regime"):
+                m_sib["spot_perp_flow_regime"] = unified_flow_reg
+            if m_sib.get("spot_perp_flow_regime") == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE":
+                m_sib["cvd_regime"] = "spot_absorbing"
 
 
 __all__ = [
@@ -780,6 +850,7 @@ __all__ = [
     "compute_liquidation_clusters",
     "enrich_cross_venue_trends",
     "enrich_microstructure_cvd",
+    "reconcile_sibling_flow_and_liq_regimes",
     "sync_sibling_symbol_telemetry",
     "update_microstructure_cycle_deltas",
 ]

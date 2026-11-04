@@ -31,6 +31,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    reconcile_sibling_flow_and_liq_regimes,
     update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
@@ -524,14 +525,18 @@ def enrich_24h_and_microstructure(
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
+    t212_seeded_from_cache: set[str] = set()
     for _, ticker in _iter_t212_state_files(workspace_dir):
         cached_pos = cached_bals.get(f"pos:t212:{ticker}")
         cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
+        had_live_px = ticker in prices_and_trends and (safe_pos_float(prices_and_trends[ticker].get("price"), default=0.0) or 0.0) > 0.0
         t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
         if cached_t212_px is not None and (
             ticker not in inst_by_sym or (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0
         ):
             t_entry["price"] = cached_t212_px
+            if not had_live_px or ticker not in inst_by_sym:
+                t212_seeded_from_cache.add(ticker)
     from instruments_config import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
@@ -652,19 +657,30 @@ def enrich_24h_and_microstructure(
                     ]
                 if pts_5d:
                     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
-                    if chart_px > 0.0 and (not is_t212_inst or sym_px_cur <= 0.0 or abs(sym_px_cur - chart_px) < 1e-4):
+                    now_ms_i = int(now_ts * 1000)
+                    chart_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                    if chart_px > 0.0 and (
+                        not is_t212_inst
+                        or sym in t212_seeded_from_cache
+                        or sym_px_cur <= 0.0
+                        or abs(sym_px_cur - chart_px) < 1e-4
+                        or (chart_bar_fresh and abs(sym_px_cur - chart_px) > chart_px * 0.0025)
+                    ):
                         prices_and_trends[sym]["price"] = chart_px
                         sym_px_cur = chart_px
                     cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
                     pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
                     if len(pts_24h) < 10:
                         pts_24h = list(pts_5d[-78:])
-                    if pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4:
-                        now_ms_i = int(now_ts * 1000)
-                        if (now_ms_i - pts_24h[-1][0]) <= 20 * 60 * 1000:
-                            pts_24h = list(pts_24h) + [[now_ms_i, round(sym_px_cur, 4)]]
-                        else:
-                            pts_24h = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *pts_24h[-1][2:]]]
+                    if (
+                        pts_24h
+                        and chart_bar_fresh
+                        and sym not in t212_seeded_from_cache
+                        and sym_px_cur > 0
+                        and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
+                        and 1e-4 < abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) <= pts_24h[-1][1] * 0.0025
+                    ):
+                        pts_24h = list(pts_24h) + [[now_ms_i, round(sym_px_cur, 4)]]
                     if m24 := (compute_24h_price_metrics(pts_24h) or {}):
                         matched_series_24h = pts_24h
                     vals_5d = [pt[1] for pt in pts_5d]
@@ -782,6 +798,7 @@ __all__ = [
     "load_symbol_price_series",
     "pct_delta",
     "range_position_pct",
+    "reconcile_sibling_flow_and_liq_regimes",
     "round_opt_px",
     "update_microstructure_cycle_deltas",
 ]
