@@ -29,7 +29,17 @@ from typing import Optional
 
 import pricewindow as pw
 import utils as u
-from botcore import diff_percent, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import (
+    diff_percent,
+    load_dotenv as _load_dotenv,
+    required_env,
+    required_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+    split_csv,
+)
 from cachepaths import (
     CACHEDB_SUBDOMAINS,
     cache_path,
@@ -58,6 +68,19 @@ from providers.base import (
     normalize_timestamp_ms,
 )
 
+_CONFIG_ROOT = os.path.dirname(os.path.abspath(__file__))
+_load_dotenv(os.path.join(_CONFIG_ROOT, "config.env"))
+
+# Dynamic window bounds for on-demand short-trend queries over Cache24.
+CM_DYNAMIC_WINDOW_MIN_SEC = required_float_env("CM_DYNAMIC_WINDOW_MIN_SEC")
+CM_DYNAMIC_WINDOW_MAX_SEC = required_float_env("CM_DYNAMIC_WINDOW_MAX_SEC")
+# Windows pre-published by the cacheManager writer into cache_short_trend.json["dynamic"]
+# and cachedb/24trend/live_<SYMBOL>.json so reader processes (e.g. rtrade) have O(1)
+# access without needing an in-process Cache24 subscription.
+CM_PUBLISHED_TREND_WINDOWS_SEC = [
+    float(part) for part in split_csv(required_env("CM_PUBLISHED_TREND_WINDOWS_SEC"))
+]
+
 _cm = sys.modules.get("cacheManager")
 if _cm is None or not hasattr(_cm, "CacheManagerInterface"):
     _main_mod = sys.modules.get("__main__")
@@ -68,19 +91,6 @@ if _cm is None or not hasattr(_cm, "CacheManagerInterface"):
         import cacheManager as _cm
 
 CacheManagerInterface = _cm.CacheManagerInterface
-
-# Dynamic window bounds for on-demand short-trend queries over Cache24.
-CM_DYNAMIC_WINDOW_MIN_SEC = 5.0
-CM_DYNAMIC_WINDOW_MAX_SEC = 24.0 * 3600.0
-# Windows pre-published by the cacheManager writer into cache_short_trend.json["dynamic"]
-# and cachedb/24trend/live_<SYMBOL>.json so reader processes (e.g. rtrade) have O(1)
-# access without needing an in-process Cache24 subscription.
-CM_PUBLISHED_TREND_WINDOWS_SEC = (
-    90.0,                     # 90s fast momentum window (TAOUSDC)
-    float(round(3.7 * 60)),   # 222s primary momentum window
-    15.0 * 60.0,              # 900s rtrade regime / trend filter window
-    2.5 * 3600.0,             # 9000s secondary macro trend window
-)
 
 # A poll deadline prevents the loop from waiting on one slow provider call. The
 # provider's own network timeout still owns the worker lifecycle.

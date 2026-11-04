@@ -367,17 +367,20 @@ def clean_json_value(val: object) -> object:
     return val
 
 
+def _clean_env_str(val: object) -> str:
+    """Strip inline `#` comment and surrounding whitespace from a raw env value."""
+    if val is None or isinstance(val, bool):
+        return ""
+    return str(val).split("#", 1)[0].strip()
+
+
 def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
     """Read a float from os.environ or an injected dictionary, ignoring inline comments.
     Supports both float_env(key, env_dict) and float_env(key, default_val)."""
     if env is not None and not hasattr(env, "get"):
-        default = env
-        env = None
+        default, env = env, None
     src = os.environ if env is None else env
-    val = src.get(key)
-    if val is None or isinstance(val, bool):
-        return default
-    raw = str(val).split("#", 1)[0].strip()
+    raw = _clean_env_str(src.get(key))
     return safe_float(raw, default=default) if raw else default
 
 
@@ -390,13 +393,9 @@ def int_env(key: str, env: dict | int | None = None, default: int | None = None)
     """Read an integer from os.environ or an injected dictionary, ignoring inline comments.
     Supports both int_env(key, env_dict) and int_env(key, default_val)."""
     if env is not None and not hasattr(env, "get"):
-        default = env
-        env = None
+        default, env = env, None
     src = os.environ if env is None else env
-    val = src.get(key)
-    if val is None or isinstance(val, bool):
-        return default
-    raw = str(val).split("#", 1)[0].strip()
+    raw = _clean_env_str(src.get(key))
     return exact_int(raw, default=default) if raw else default
 
 
@@ -406,7 +405,7 @@ def required_env(key: str, env: dict | None = None) -> str:
     val = src.get(key)
     if isinstance(val, bool):
         raise ValueError(f"Invalid mandatory setting: {key}={val!r}")
-    raw = "" if val is None else str(val).split("#", 1)[0].strip()
+    raw = _clean_env_str(val)
     if not raw:
         raise ValueError(f"Missing or empty mandatory setting: {key}")
     return raw
@@ -420,7 +419,7 @@ def defined_env(key: str, env: dict | None = None) -> str:
     val = src[key]
     if isinstance(val, bool):
         raise ValueError(f"Invalid setting: {key}={val!r}")
-    return "" if val is None else str(val).split("#", 1)[0].strip()
+    return _clean_env_str(val)
 
 
 def required_float_env(key: str, env: dict | None = None) -> float:
@@ -464,10 +463,7 @@ def optional_env(key: str, default: str | dict | None = "", env: dict | None = N
         env, default = default, ""
     default_str = "" if default is None else str(default)
     src = os.environ if env is None else env
-    val = src.get(key)
-    if val is None or isinstance(val, bool):
-        return default_str
-    raw = str(val).split("#", 1)[0].strip()
+    raw = _clean_env_str(src.get(key))
     return raw if raw else default_str
 
 

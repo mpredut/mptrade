@@ -39,9 +39,27 @@ sys.path.insert(0, ROOT)
 
 import cacheManager as cm
 from binance_api import bapi_ws
-from botcore import safe_pos_float, single_instance, touch_module_heartbeat
+from botcore import (
+    load_dotenv as _load_dotenv,
+    required_float_env,
+    safe_pos_float,
+    single_instance,
+    touch_module_heartbeat,
+)
 from cachepaths import cache_path, get_cachedb_dir
 from instrument_registry import tracked_price_instruments
+
+_load_dotenv(os.path.join(ROOT, "config.env"))
+CM_LONG_ARCHIVE_MONTHS = required_float_env("CM_LONG_ARCHIVE_MONTHS")
+CM_LONG_ARCHIVE_SAMPLE_SEC = required_float_env("CM_LONG_ARCHIVE_SAMPLE_SEC")
+CM_LONG_ARCHIVE_FLUSH_SEC = required_float_env("CM_LONG_ARCHIVE_FLUSH_SEC")
+for _name, _value in (
+    ("CM_LONG_ARCHIVE_MONTHS", CM_LONG_ARCHIVE_MONTHS),
+    ("CM_LONG_ARCHIVE_SAMPLE_SEC", CM_LONG_ARCHIVE_SAMPLE_SEC),
+    ("CM_LONG_ARCHIVE_FLUSH_SEC", CM_LONG_ARCHIVE_FLUSH_SEC),
+):
+    if _value <= 0:
+        raise ValueError(f"{_name} must be positive")
 
 CACHEDB_DIR = get_cachedb_dir()
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,24}$")
@@ -109,11 +127,11 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--symbols", default=None,
                     help="explicit override; otherwise use instruments.conf role.archive")
-    p.add_argument("--months", type=float, default=cm.CM_LONG_ARCHIVE_MONTHS,
+    p.add_argument("--months", type=float, default=CM_LONG_ARCHIVE_MONTHS,
                     help="retention in months (default from config.env)")
-    p.add_argument("--sync-ts", type=float, default=cm.CM_LONG_ARCHIVE_SAMPLE_SEC,
+    p.add_argument("--sync-ts", type=float, default=CM_LONG_ARCHIVE_SAMPLE_SEC,
                     help="nominal sampling cadence (default from config.env)")
-    p.add_argument("--save-every", type=float, default=cm.CM_LONG_ARCHIVE_FLUSH_SEC,
+    p.add_argument("--save-every", type=float, default=CM_LONG_ARCHIVE_FLUSH_SEC,
                     help="disk flush cadence (default from config.env)")
     args = p.parse_args()
     all_archive_syms, _nb_archive_syms, nb_providers = tracked_price_instruments(

@@ -7147,7 +7147,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert "px=85.33" in s_3c
     assert "locked_base_qty=2" in s_3c
     assert "locked_quote_usd=$261.20" in s_3c
-    assert "max_buy=$13.77, locked_quote_usd=$261.2, replace_max_buy=$273.66" in s_3c
+    assert "max_buy=$13.77, replace_max_buy=$273.66" in s_3c
 
     # 4. Macro Economic Calendar sensor in Section 1 (next_high_impact_event countdown + live macro headlines)
     from datetime import datetime, timezone

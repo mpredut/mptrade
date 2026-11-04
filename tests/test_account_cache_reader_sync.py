@@ -459,7 +459,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         periodic_attempted_generation = threading.Event()
         periodic_done = threading.Event()
         errors = []
-        real_generation_lock = writer._trade_generation_lock
+        real_generation_lock = writer._generation_lock
 
         def generation_owner():
             try:
@@ -497,7 +497,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         )
         try:
             with patch.object(
-                    writer, "_trade_generation_lock",
+                    writer, "_generation_lock",
                     side_effect=observed_generation_lock):
                 periodic_thread.start()
                 self.assertTrue(periodic_attempted_generation.wait(10))
@@ -809,7 +809,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
         writer.save_state = True
         self.assertTrue(writer.save_state_to_file())
         old_version = writer._persisted_data_version
-        backup_path = writer._stage_previous_trade_generation()
+        backup_path = writer._stage_previous_generation()
 
         changed = {**first, "price": "200"}
         with cm.atomic_write(writer.filename) as handle:
@@ -925,7 +925,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
         def migrate_and_append():
             try:
-                with winner._trade_generation_lock():
+                with winner._generation_lock():
                     winner_locked.set()
                     if not allow_winner.wait(10):
                         raise RuntimeError("test did not release migration")
@@ -1601,7 +1601,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
                 self.assertFalse(writer.save_state_to_file())
 
             self.assertFalse(
-                os.path.exists(writer._order_previous_generation_path())
+                os.path.exists(writer._previous_generation_path())
             )
             restarted_writer = cm.CacheOrderManager(
                 3600, ["BTCUSDC"], writer.filename, api_client=cm.api
@@ -1632,7 +1632,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
 
             # Stage .previous and overwrite main file with v2 while leaving .meta at v1.
             cm.atomic_snapshot_file(
-                writer.filename, writer._order_previous_generation_path()
+                writer.filename, writer._previous_generation_path()
             )
             v2_items = {"BTCUSDC": [first_order, second_order]}
             v2_ft = {"BTCUSDC": now_ms + 1000}
@@ -1657,7 +1657,7 @@ class AccountCacheReaderSyncTest(unittest.TestCase):
             )
             restarted_reader.ensure_persisted_version(v1)
             self.assertFalse(
-                os.path.exists(writer._order_previous_generation_path())
+                os.path.exists(writer._previous_generation_path())
             )
             self.assertEqual(
                 [int(o["orderId"]) for o in restarted_reader.cache["BTCUSDC"]],

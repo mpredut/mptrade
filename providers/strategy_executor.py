@@ -62,7 +62,7 @@ class SubmissionOutcome:
         if self.order_id is None or (isinstance(self.order_id, str) and not self.order_id.strip()):
             order_id = None
         else:
-            order_id = _clean_single_order_id(self.order_id)
+            order_id = clean_order_id(self.order_id)
             if order_id is None:
                 raise ValueError(f"invalid order_id in SubmissionOutcome: {self.order_id!r}")
         if self.state == "accepted" and not order_id:
@@ -242,7 +242,7 @@ def reconciliation_capabilities_of(provider) -> OrderReconciliationCapabilities:
     return capabilities
 
 
-from .base import _clean_single_order_id, extract_order_id, extract_orig_qty  # noqa: E402
+from .base import clean_order_id, extract_order_id, extract_orig_qty  # noqa: E402
 
 # Compatibility alias retained for existing imports.
 extract_order_qty = extract_orig_qty

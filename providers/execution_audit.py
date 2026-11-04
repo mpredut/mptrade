@@ -21,6 +21,7 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
     conf_or_override,
     exact_pos_int,
     float_env,
@@ -34,6 +35,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
+    clean_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -43,7 +45,7 @@ from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, generation_lock_path, load_json_state, read_jsonl_dicts, save_json_state
 from .base import (
     _UNFILLED_ORDER_STATUSES,
-    _clean_single_order_id,
+    clean_order_id,
     extract_client_order_id,
     extract_executed_qty,
     extract_order_id,
@@ -54,6 +56,8 @@ from .base import (
     normalize_timestamp_ms,
     resolve_order_actor,
 )
+
+_clean_single_order_id = clean_order_id
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
@@ -114,7 +118,7 @@ def intent_client_order_id(venue: str, intent_id: str) -> Optional[str]:
     """
     if isinstance(intent_id, (bool, list, tuple, dict, set, frozenset)):
         return None
-    raw = _clean_single_order_id(intent_id)
+    raw = clean_order_id(intent_id)
     if not raw:
         return None
     match = _UUID_HEX_SUFFIX.search(raw)
@@ -146,7 +150,7 @@ def ai_intent_client_order_id(intent_id: Any) -> Optional[str]:
 
 def venue_native_client_order_ids(client_order_id: Any) -> set[str]:
     """Return the lowercase venue-native forms of one durable client ID (Binance raw, Kraken UUID hex, HL cloid)."""
-    raw = _clean_single_order_id(client_order_id)
+    raw = clean_order_id(client_order_id)
     if not raw:
         return set()
     out = {raw.lower()}
@@ -238,11 +242,11 @@ class AuditedStrategyExecutor:
     def _norm_symbol_key(symbol: object) -> str:
         if symbol is None or isinstance(symbol, bool):
             return ""
-        return canonical_symbol_key(symbol) or str(symbol).strip().upper().replace("/", "").replace("-", "").replace("_", "")
+        return canonical_symbol_key(symbol) or clean_symbol_key(symbol)
 
     @staticmethod
     def _norm_order_id_key(order_id: object) -> str:
-        return _clean_single_order_id(order_id) or ""
+        return clean_order_id(order_id) or ""
 
     @staticmethod
     def _lru_put(cache: OrderedDict, key: Any, value: Any) -> None:
@@ -402,7 +406,7 @@ class AuditedStrategyExecutor:
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Delegate deterministic recovery without inventing audit acceptance."""
-        clean_cid = _clean_single_order_id(client_order_id)
+        clean_cid = clean_order_id(client_order_id)
         if not clean_cid:
             raise ProviderError("client_order_id is required")
         lookup = getattr(self._executor, "order_by_client_id", None)
@@ -616,7 +620,7 @@ def reconcile_intents_from_execution_audit(
         for item in intents
         if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list)
         for raw_oid in item["canceled_prior_open_orders"]
-        if (oid_s := _clean_single_order_id(raw_oid))
+        if (oid_s := clean_order_id(raw_oid))
     }
     updated = False
     failed_by_id: dict[str, dict[str, Any]] = {}
@@ -634,7 +638,7 @@ def reconcile_intents_from_execution_audit(
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
             if not exec_pay.get("reconciled_terminal"):
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
-                item_oid = _clean_single_order_id(extract_order_id(exec_pay, default=None))
+                item_oid = clean_order_id(extract_order_id(exec_pay, default=None))
                 has_fill_metrics = (
                     extract_executed_qty(exec_pay, default=0.0) > 0.0
                     and extract_order_price(exec_pay, default=0.0) > 0.0
@@ -954,7 +958,7 @@ def _resolve_intent_execution_details(
             min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
             last_fill = None
             for cand_f in fill_cands:
-                f_oid = _clean_single_order_id(cand_f.get("order_id"))
+                f_oid = clean_order_id(cand_f.get("order_id"))
                 if order_id is not None and f_oid:
                     if f_oid == str(order_id):
                         last_fill = cand_f
@@ -1350,8 +1354,6 @@ def extract_intent_order_type(data: dict[str, Any]) -> str:
 
 def parse_intent_confidence(raw_conf: Any, default: float = 0.0) -> float:
     """Parse confidence into [0.0, 1.0], normalizing percentage strings or 1..100 values."""
-    from intelligence.macro_sentiment_ssot import clean_scale
-
     return clean_scale(raw_conf, default, allow_percent=True)
 
 
