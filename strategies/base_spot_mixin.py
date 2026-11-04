@@ -352,7 +352,7 @@ class BaseSpotMixin:
     def _reset_cycle_state(self, preserved_keys: tuple[str, ...], **extra_fields: Any) -> int:
         """Reset ``self.s`` via module ``_new_state()``, incrementing ``cycle`` and preserving cumulative keys."""
         preserved = {k: self.s.get(k, 0) for k in preserved_keys}
-        next_cycle = self.s.get("cycle", 1) + 1
+        next_cycle = (safe_pos_int(self.s.get("cycle"), default=1) or 1) + 1
         self.s = self._mod_global("_new_state")()
         self.s.update(preserved, cycle=next_cycle, **extra_fields)
         return next_cycle
@@ -857,8 +857,11 @@ class BaseSpotMixin:
         mgr.config.reentry_hybrid_enabled = self.p.reentry_hybrid_enabled
         mgr.config.reentry_peak_relative = self.p.reentry_peak_relative
 
+        raw_exit_kind = self.s.get("last_exit_kind")
+        norm_exit_kind = "" if isinstance(raw_exit_kind, bool) else str(raw_exit_kind or "").strip().upper()
+        is_stop_exit = norm_exit_kind in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"}
         if is_spot:
-            last_kind = self.s.get("last_exit_kind")
+            last_kind = "STOP" if is_stop_exit else (norm_exit_kind or None)
             mgr.config.reentry_bear_bounce_pct = vol_pct_to_ratio(self.p.reentry_bear_bounce_pct)
             mgr.config.reentry_sl_bounce_pct = vol_pct_to_ratio(self.p.reentry_sl_bounce_pct)
             needs_reentry_regime = bool(
@@ -874,7 +877,7 @@ class BaseSpotMixin:
             trend_up = self._is_trend_up(regime) if (needs_reentry_regime or self.p.reentry_bear_bounce_pct > 0) else False
             trend_down = self._is_trend_down(regime) if needs_reentry_regime else False
         else:
-            last_kind = "STOP" if self.s.get("last_exit_kind") == "STOP" else "TP"
+            last_kind = "STOP" if is_stop_exit else "TP"
             mgr.config.reentry_sl_bounce_pct = (
                 vol_pct_to_ratio(self.p.sl_rebuy_bounce_pct)
                 if self.p.sl_rebuy_enabled
@@ -1065,7 +1068,7 @@ class BaseSpotMixin:
                     continue
                 status_log_fn(price)
                 _delay()
-            if getattr(self, "_state_save_failed", False):
+            if getattr(self, "_state_write_failed", False) or getattr(self, "_state_save_failed", False):
                 self._save()
         except KeyboardInterrupt:
             self._log_msg("  [STRAT] stopped manually.")

@@ -302,8 +302,10 @@ def _same_deferred_stream(left, right):
     provider_matches = not left_provider or not right_provider or left_provider == right_provider
     left_sym = _canonical_queue_symbol(left.get("symbol"))
     right_sym = _canonical_queue_symbol(right.get("symbol"))
-    left_kind = str(left.get("kind") or "").strip() or None
-    right_kind = str(right.get("kind") or "").strip() or None
+    left_pk = left.get("place_kwargs") if isinstance(left.get("place_kwargs"), dict) else {}
+    right_pk = right.get("place_kwargs") if isinstance(right.get("place_kwargs"), dict) else {}
+    left_kind = str(left.get("kind") or left_pk.get("kind") or "").strip() or None
+    right_kind = str(right.get("kind") or right_pk.get("kind") or "").strip() or None
     return bool(
         provider_matches
         and left_sym
@@ -1288,13 +1290,14 @@ def resolve_accepted_order(symbol, order_id) -> bool:
 
             audit = ExecutionAudit()
             for rec in removed_records:
+                rec_pk = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
                 audit.record(
                     "order_terminal",
                     intent_id=str(rec.get("intent_id") or f"outbox-{rec.get('id')}"),
                     venue=str(rec.get("provider_name") or "routed"),
                     symbol=str(rec.get("symbol") or target_sym),
                     side=str(rec.get("side") or "").lower() or None,
-                    kind=rec.get("kind"),
+                    kind=rec.get("kind") or rec_pk.get("kind"),
                     client_order_id=_record_client_order_id(rec),
                     order_id=rec.get("order_id") or target_oid,
                     revision=rec.get("revision"),

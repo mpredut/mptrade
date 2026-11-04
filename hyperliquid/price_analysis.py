@@ -67,7 +67,7 @@ def analyze(client, coin: str) -> dict | None:
         t_ms = safe_pos_float(c.get("t"), default=None)
         c_v = safe_pos_float(c.get("c"), default=None)
         if t_ms is not None and c_v is not None:
-            pts.append((t_ms / 1000.0, c_v))
+            pts.append((t_ms / 1000.0 if t_ms >= 1e11 else t_ms, c_v))
     if len(pts) < window_hours:
         return None
     ts = [p[0] for p in pts]

@@ -390,13 +390,24 @@ def _infer_mt_exit_kind(
     lost_threshold: float,
     last_exit_kind_map: dict,
 ) -> str:
-    latest_sell = trade_orders_sell[0] if isinstance(trade_orders_sell[0], dict) else {}
+    latest_sell = (
+        trade_orders_sell[0]
+        if isinstance(trade_orders_sell, (list, tuple)) and trade_orders_sell and isinstance(trade_orders_sell[0], dict)
+        else {}
+    )
     latest_sell_kind = str(latest_sell.get("kind") or "").strip().upper()
     is_ai_sell = resolve_order_actor(latest_sell) == "AI" or latest_sell_kind.startswith("AI_")
-    if is_ai_sell and latest_sell_kind not in ("STOP", "SL", "AI_STOP_LOSS"):
-        last_exit_kind_map.pop(symbol, None)
+    if is_ai_sell and latest_sell_kind not in ("STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"):
+        if isinstance(last_exit_kind_map, dict):
+            last_exit_kind_map.pop(symbol, None)
         return "SELL"
-    explicit_exit_kind = last_exit_kind_map.get(symbol) or (latest_sell_kind or None)
+    raw_explicit = (last_exit_kind_map.get(symbol) if isinstance(last_exit_kind_map, dict) else None) or (latest_sell_kind or None)
+    if raw_explicit and str(raw_explicit).strip().upper() in ("STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"):
+        explicit_exit_kind = "STOP"
+        if isinstance(last_exit_kind_map, dict):
+            last_exit_kind_map[symbol] = "STOP"
+    else:
+        explicit_exit_kind = raw_explicit
     if (
         not explicit_exit_kind
         and position_closed_by_sell
@@ -404,17 +415,21 @@ def _infer_mt_exit_kind(
         and buy_price
         and sell_time >= buy_time
     ):
-        cycle_buy_px = float(
-            position.get("last_cycle_buy_price")
-            or position.get("active_average_buy_price")
-            or buy_price
-            or 0.0
+        pos_dict = position if isinstance(position, dict) else {}
+        bp_f = safe_pos_float(buy_price, default=0.0) or 0.0
+        cycle_buy_px = (
+            safe_pos_float(pos_dict.get("last_cycle_buy_price"), default=None)
+            or safe_pos_float(pos_dict.get("active_average_buy_price"), default=None)
+            or bp_f
         )
-        ref_buy_px = (cycle_buy_px or float(buy_price)) if tp_ref == "average" else float(buy_price)
-        tol_factor = 1.0 - min(lost_threshold * 0.25, 0.002)
-        if sell_price < float(buy_price) * tol_factor and sell_price < ref_buy_px * tol_factor:
+        ref_buy_px = (cycle_buy_px or bp_f) if tp_ref == "average" else bp_f
+        lost_f = safe_nonneg_float(lost_threshold, default=0.0) or 0.0
+        tol_factor = 1.0 - min(lost_f * 0.25, 0.002)
+        sell_px_f = safe_pos_float(sell_price, default=None)
+        if sell_px_f is not None and bp_f > 0 and sell_px_f < bp_f * tol_factor and sell_px_f < ref_buy_px * tol_factor:
             explicit_exit_kind = "STOP"
-            last_exit_kind_map[symbol] = "STOP"
+            if isinstance(last_exit_kind_map, dict):
+                last_exit_kind_map[symbol] = "STOP"
     return "SELL" if (is_ai_sell and explicit_exit_kind != "STOP") else (explicit_exit_kind or "SELL")
 
 
@@ -446,26 +461,33 @@ def _update_mt_reentry_state(
             reentry_state_map.pop(symbol, None)
             if isinstance(last_exit_kind_map, dict):
                 last_exit_kind_map.pop(symbol, None)
+    cp_f = safe_pos_float(current_price, default=None)
+    sp_f = safe_pos_float(sell_price, default=cp_f)
+    if cp_f is None:
+        cp_f = sp_f if sp_f is not None else 0.0
+    if sp_f is None:
+        sp_f = cp_f
     if not prev_reentry_state:
         prev_reentry_state = {
-            "trough": min(sell_price, current_price),
-            "peak": max(sell_price, current_price),
-            "peak_bounce": current_price,
+            "trough": min(sp_f, cp_f),
+            "peak": max(sp_f, cp_f),
+            "peak_bounce": cp_f,
             "started_at": current_time_s,
             "sell_time": sell_time_clean,
         }
     else:
         if sell_time_clean is not None and safe_pos_float(prev_reentry_state.get("sell_time"), default=None) is None:
             prev_reentry_state["sell_time"] = sell_time_clean
-        prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sell_price, current_price))
-        prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=current_price)
-        if current_price < prev_trough:
-            prev_reentry_state["trough"] = current_price
-            prev_reentry_state["peak_bounce"] = current_price
-        else:
-            prev_reentry_state["trough"] = min(prev_trough, current_price)
-            prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, current_price)
-        prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sell_price, current_price))
-        prev_reentry_state["peak"] = max(prev_peak, current_price)
+        prev_trough = safe_pos_float(prev_reentry_state.get("trough"), default=min(sp_f, cp_f))
+        prev_peak_bounce = safe_pos_float(prev_reentry_state.get("peak_bounce"), default=cp_f)
+        if cp_f > 0:
+            if cp_f < prev_trough:
+                prev_reentry_state["trough"] = cp_f
+                prev_reentry_state["peak_bounce"] = cp_f
+            else:
+                prev_reentry_state["trough"] = min(prev_trough, cp_f)
+                prev_reentry_state["peak_bounce"] = max(prev_peak_bounce, cp_f)
+            prev_peak = safe_pos_float(prev_reentry_state.get("peak"), default=max(sp_f, cp_f))
+            prev_reentry_state["peak"] = max(prev_peak, cp_f)
     reentry_state_map[symbol] = dict(prev_reentry_state)
     return prev_reentry_state

@@ -145,15 +145,22 @@ def update_post_sell_anchors(
     track_stop_sl_low: bool = False,
 ) -> float | None:
     """Resolve ``last_sell_price`` and update ``post_sell_peak`` / ``post_sell_trough`` (and optional ``sl_low``)."""
+    if not isinstance(state, dict):
+        return None
     lsp = safe_pos_float(state.get("last_sell_price"), None)
     if not lsp and include_last_sell_alias:
         lsp = safe_pos_float(state.get("last_sell"), None)
     if not lsp:
         return None
-    state["post_sell_peak"] = max(safe_pos_float(state.get("post_sell_peak"), lsp), price)
-    state["post_sell_trough"] = min(safe_pos_float(state.get("post_sell_trough"), lsp), price)
-    if track_stop_sl_low and state.get("last_exit_kind") == "STOP":
-        state["sl_low"] = min(safe_pos_float(state.get("sl_low"), price), price)
+    px_f = safe_pos_float(price, None)
+    if px_f is None:
+        return lsp
+    state["post_sell_peak"] = max(safe_pos_float(state.get("post_sell_peak"), lsp), px_f)
+    state["post_sell_trough"] = min(safe_pos_float(state.get("post_sell_trough"), lsp), px_f)
+    raw_kind = state.get("last_exit_kind")
+    exit_kind_u = "" if isinstance(raw_kind, bool) else str(raw_kind or "").strip().upper()
+    if track_stop_sl_low and exit_kind_u in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"}:
+        state["sl_low"] = min(safe_pos_float(state.get("sl_low"), px_f), px_f)
     return lsp
 
 

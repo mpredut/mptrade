@@ -1036,7 +1036,7 @@ class PositionExitManager:
         trough, peak = state["trough"], state["peak"]
 
         # Case 2: Post-STOP Re-entry (Bounce Trough Mirror)
-        if last_kind == "STOP" and self.config.reentry_sl_bounce_pct > 0:
+        if last_kind in {"STOP", "SL", "STOP_LOSS", "AI_STOP_LOSS"} and self.config.reentry_sl_bounce_pct > 0:
             if (
                 self.config.reentry_post_stop_cooldown_sec > 0
                 and sell_time_s is not None and now > 0

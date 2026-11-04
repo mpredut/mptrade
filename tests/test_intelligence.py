@@ -4954,6 +4954,121 @@ def test_iter82_late_intelligence_scale_retry_worker_kind_and_guard_hierarchy(mo
     assert stats["SELL"]["trade_count"] == 1
 
 
+def test_iter83_mt_exit_kind_stop_variants_state_store_and_price_analysis_ms():
+    from strategies.mt_position_accounting import _infer_mt_exit_kind, _update_mt_reentry_state
+    from strategies.state_store import update_post_sell_anchors
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, ReentryAction, ReentrySnapshot
+    import order_retry
+    import priceAnalysis
+
+    # 1. _infer_mt_exit_kind handles AI_STOP_LOSS / SL / STOP_LOSS and empty trade_orders_sell safely
+    exit_map = {}
+    assert _infer_mt_exit_kind(
+        "TAOUSDC",
+        [{"kind": "AI_STOP_LOSS", "actor": "AI"}],
+        position_closed_by_sell=True,
+        buy_price=300.0,
+        sell_price=280.0,
+        buy_time=1000.0,
+        sell_time=2000.0,
+        position={},
+        tp_ref="last",
+        lost_threshold=0.05,
+        last_exit_kind_map=exit_map,
+    ) == "STOP"
+    assert exit_map.get("TAOUSDC") == "STOP"
+
+    exit_map2 = {}
+    assert _infer_mt_exit_kind(
+        "TAOUSDC",
+        [],
+        position_closed_by_sell=True,
+        buy_price=300.0,
+        sell_price=280.0,
+        buy_time=1000.0,
+        sell_time=2000.0,
+        position={"last_cycle_buy_price": float("nan"), "active_average_buy_price": 300.0},
+        tp_ref="average",
+        lost_threshold=0.05,
+        last_exit_kind_map=exit_map2,
+    ) == "STOP"
+
+    re_map = {}
+    st_re = _update_mt_reentry_state("TAOUSDC", 280.0, float("nan"), 2000, 1990.0, re_map)
+    assert st_re["trough"] == pytest.approx(280.0)
+    assert st_re["peak"] == pytest.approx(280.0)
+
+    # 2. update_post_sell_anchors ignores non-positive/NaN price and tracks sl_low for SL/AI_STOP_LOSS
+    st_store = {"last_sell_price": 100.0, "last_exit_kind": "ai_stop_loss"}
+    assert update_post_sell_anchors(st_store, 92.0, track_stop_sl_low=True) == pytest.approx(100.0)
+    assert st_store["sl_low"] == pytest.approx(92.0)
+    assert st_store["post_sell_trough"] == pytest.approx(92.0)
+    # Invalid price (None / 0 / NaN) must not corrupt anchors
+    assert update_post_sell_anchors(st_store, 0.0, track_stop_sl_low=True) == pytest.approx(100.0)
+    assert update_post_sell_anchors(st_store, float("nan"), track_stop_sl_low=True) == pytest.approx(100.0)
+    assert st_store["sl_low"] == pytest.approx(92.0)
+    assert st_store["post_sell_trough"] == pytest.approx(92.0)
+
+    # 3. PositionExitManager.evaluate_reentry treats AI_STOP_LOSS / SL as post-STOP bounce gate
+    mgr = PositionExitManager(config=PositionExitConfig(reentry_sl_bounce_pct=0.05, reentry_drop_pct=0.02))
+    snap_sl = ReentrySnapshot(
+        symbol="TAOUSDC",
+        current_price=93.0,
+        last_sell_price=100.0,
+        last_exit_kind="AI_STOP_LOSS",
+        post_sell_trough=90.0,
+        current_time_s=2000.0,
+        last_sell_time_s=1900.0,
+    )
+    dec_sl = mgr.evaluate_reentry(snap_sl)
+    assert dec_sl.action == ReentryAction.WAIT
+    assert "post_stop_bounce_waiting" in dec_sl.reason
+
+    # 4. order_retry._same_deferred_stream distinguishes different place_kwargs["kind"] when top-level kind is None
+    left_rec = {
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "kind": None,
+        "lifecycle": "submit_pending",
+        "last_failure_reason": "trend_deferred",
+        "place_kwargs": {"kind": "TP"},
+    }
+    right_rec = {
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "kind": None,
+        "lifecycle": "submit_pending",
+        "last_failure_reason": "trend_deferred",
+        "place_kwargs": {"kind": "STOP"},
+    }
+    same_rec = {
+        "symbol": "TAO/USDC",
+        "side": "SELL",
+        "kind": "TP",
+        "lifecycle": "submit_pending",
+        "last_failure_reason": "trend_deferred",
+        "place_kwargs": {},
+    }
+    assert order_retry._same_deferred_stream(left_rec, right_rec) is False
+    assert order_retry._same_deferred_stream(left_rec, same_rec) is True
+
+    # 5. priceAnalysis.detect_long_term_trend and format_timestamp handle millisecond timestamps
+    base_sec = 1700000000.0
+    ts_ms = [(base_sec + i * 3600.0) * 1000.0 for i in range(60)]
+    px_up = [100.0 + i * 1.5 for i in range(60)]
+    trend_res = priceAnalysis.detect_long_term_trend(
+        ts_ms, px_up, window_hours=24, step_hours=8, min_consecutive_blocks=3, mk_alpha=None
+    )
+    assert trend_res is not None
+    assert trend_res["direction"] == "up"
+    assert trend_res["duration_seconds"] >= 36 * 3600.0
+    fmt_ms = priceAnalysis.format_timestamp(1700000000000.0)
+    fmt_sec = priceAnalysis.format_timestamp(1700000000.0)
+    assert fmt_ms == fmt_sec
+    assert not fmt_ms.startswith("1970-")
+
+
+
 
 
 

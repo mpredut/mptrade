@@ -194,18 +194,17 @@ def _load_sorted_price_series(
     data: List[Tuple[int, float]] = priceLstFor(symbol)
     if len(data) < 2:
         return None
-    data = sorted(data, key=lambda x: x[0])
+    norm_data = [(ts / 1000.0 if ts >= 1e11 else float(ts), p) for ts, p in data]
+    norm_data.sort(key=lambda x: x[0])
     if lookback_days is not None:
         cutoff_timestamp = time.time() - (lookback_days * 86400)
-        data = [(ts, p) for ts, p in data if (ts / 1000.0 if ts > 1e11 else ts) > cutoff_timestamp]
-        if len(data) < 2:
+        norm_data = [(ts, p) for ts, p in norm_data if ts > cutoff_timestamp]
+        if len(norm_data) < 2:
             if log_insufficient:
                 print(f"[{symbol}] Not enough data in the last {lookback_days} days")
             return None
-    timestamps, prices = zip(*data)
+    timestamps, prices = zip(*norm_data)
     ts_arr = np.array(timestamps, dtype=float)
-    if ts_arr[-1] > 1e11:
-        ts_arr = ts_arr / 1000.0
     px_arr = np.array(prices, dtype=float)
     return ts_arr, px_arr
 
@@ -447,6 +446,8 @@ def format_duration(seconds):
 def format_timestamp(ts):
     """Convert a timestamp to a human-readable representation."""
     ts_f = safe_nonneg_float(ts, default=0.0)
+    if ts_f >= 1e11:
+        ts_f /= 1000.0
     try:
         return datetime.fromtimestamp(ts_f).strftime('%Y-%m-%d %H:%M:%S')
     except (ValueError, OSError, OverflowError):
@@ -582,6 +583,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
     n_pts = len(timestamps)
     if n_pts < 2:
         return None
+    if np.any(timestamps >= 1e11):
+        timestamps = np.where(timestamps >= 1e11, timestamps / 1000.0, timestamps)
     if np.any(np.diff(timestamps) < 0):
         order = np.argsort(timestamps, kind="mergesort")
         timestamps = timestamps[order]
