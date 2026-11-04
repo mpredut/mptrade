@@ -892,6 +892,13 @@ def test_canonical_package1_unified_primitives():
     assert cachedb_root_for_file("/tmp/cachedb/trends/cache_trend.json") == "/tmp/cachedb"
     assert cachedb_root_for_file("/tmp/cachedb/system/heartbeat/hb.json") == "/tmp/cachedb"
 
+    import importlib
+    pre_reload_resolve = botcore.resolve_patched_attr
+    pre_unset = botcore._UNSET
+    importlib.reload(botcore)
+    assert botcore._UNSET is pre_unset
+    assert pre_reload_resolve("NONEXISTENT_ATTR", 42, modules=("botcore",)) == 42
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,8 +30,8 @@ from zoneinfo import ZoneInfo
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
 
-_LOCKS: dict = {}   # retain open lock fds for process lifetime; prevent garbage collection
-_LOG_LOCK = threading.RLock()
+_LOCKS: dict = globals().get("_LOCKS") or {}   # retain open lock fds for process lifetime; prevent garbage collection
+_LOG_LOCK = globals().get("_LOG_LOCK") or threading.RLock()
 
 
 def log(msg: str) -> None:
@@ -561,7 +561,7 @@ def env_values_map(folder: str | os.PathLike, names: tuple[str, ...] | list[str]
     return out
 
 
-_UNSET = object()
+_UNSET = globals().get("_UNSET") or object()
 
 
 def bool_env(
@@ -861,7 +861,7 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     raise ValueError(f"Invalid {label} {raw!r}")
 
 
-_LOCAL_MODULE_LOCK = threading.RLock()
+_LOCAL_MODULE_LOCK = globals().get("_LOCAL_MODULE_LOCK") or threading.RLock()
 
 
 def ensure_local_module_priority(directory: str, *module_names: str) -> None:
@@ -1027,9 +1027,9 @@ def touch_heartbeat_file(
     return now_m
 
 
-_MODULE_HEARTBEAT_LOCK = threading.Lock()
-_MODULE_HEARTBEAT_LAST_TS: dict[str, float] = {}
-_MODULE_HEARTBEAT_META: dict[str, dict[str, object]] = {}
+_MODULE_HEARTBEAT_LOCK = globals().get("_MODULE_HEARTBEAT_LOCK") or threading.Lock()
+_MODULE_HEARTBEAT_LAST_TS: dict[str, float] = globals().get("_MODULE_HEARTBEAT_LAST_TS") or {}
+_MODULE_HEARTBEAT_META: dict[str, dict[str, object]] = globals().get("_MODULE_HEARTBEAT_META") or {}
 
 
 def touch_module_heartbeat(
