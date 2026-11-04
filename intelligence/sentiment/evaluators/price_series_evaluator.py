@@ -881,7 +881,7 @@ def _apply_24h_series_enrichment(
         for kk, kv in k_fb.items():
             if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                 entry[kk] = kv
-    if not is_eq and series_24h:
+    if series_24h:
         s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)
         s_15m = safe_float(entry.get("slope_15m"), default=None)
         stale_short_cache = (

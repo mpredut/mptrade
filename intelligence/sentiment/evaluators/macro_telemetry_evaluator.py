@@ -375,7 +375,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
     ) or (
         is_neutral_posture
         and (
-            (live_cvd is not None and live_cvd >= 5_000_000.0)
+            (live_cvd is not None and live_cvd >= 5_000_000.0 and (live_tr is None or live_tr >= 1.25))
             or (live_tr is not None and live_tr >= 1.35 and (live_cvd is None or live_cvd >= 2_500_000.0))
             or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h >= 1.35 and live_cvd_1h is not None and live_cvd_1h >= 5_000_000.0)
         )
@@ -396,7 +396,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
     ) or (
         is_neutral_posture
         and (
-            (live_cvd is not None and live_cvd <= -5_000_000.0)
+            (live_cvd is not None and live_cvd <= -5_000_000.0 and (live_tr is None or live_tr <= 0.75))
             or (live_tr is not None and live_tr <= 0.65 and (live_cvd is None or live_cvd <= -2_500_000.0))
             or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h <= 0.72 and (live_cvd_1h is None or live_cvd_1h <= -5_000_000.0))
         )

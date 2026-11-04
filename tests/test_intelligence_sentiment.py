@@ -4134,3 +4134,58 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert pt_ag["ADAUSD"]["high_7d"] == 0.214343
     assert pt_ag["ADAUSD"]["low_7d"] == 0.18252
     assert "_partial_7d_span_ms" not in pt_ag["ADAUSD"]
+
+    # Wave 3: lowest_buy_px <= last_buy_px when LIFO pops dip buy + stale >14d open_lots ignored; va_pos_pct clamped [-100, 200]; sparse horizon dedup
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from intelligence.sentiment.evaluators.price_series_evaluator import _build_vp_position_dict, compute_24h_price_metrics
+
+    pos_w3 = [
+        {"venue": "binance", "symbol": "TAOUSDC", "free_base": 6.0, "price": 233.6},
+        {"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.01, "price": 80100.0},
+    ]
+    now_ms_w3 = 1_793_800_000_000
+    ro_w3 = {
+        "binance": {
+            "TAOUSDC": {
+                "last_action_side": "SELL",
+                "active_avg_buy_px": 248.3,
+                "last_buy": {"price": 220.0, "qty": 2.27, "ts_ms": now_ms_w3 - 3600_000},
+                "last_sell": {"price": 238.4, "qty": 4.19, "ts_ms": now_ms_w3 - 1800_000},
+                "recent_buys": [{"price": 221.0, "qty": 2.11}, {"price": 220.0, "qty": 2.27}],
+                "open_lots": [{"lot_id": "L1", "qty": 6.0, "entry_px": 232.3, "ts_ms": now_ms_w3 - 7200_000}],
+            },
+            "BTCUSDC": {
+                "last_action_side": "SELL",
+                "active_avg_buy_px": 77959.9,
+                "last_buy": {"price": 77578.56, "qty": 0.00644, "ts_ms": now_ms_w3 - 3600_000},
+                "recent_buys": [{"price": 77208.59, "qty": 0.00014}, {"price": 77578.56, "qty": 0.00644}],
+                "open_lots": [
+                    {"lot_id": "L0", "qty": 0.0001, "entry_px": 62805.19, "ts_ms": now_ms_w3 - 30 * 86400 * 1000},
+                    {"lot_id": "L2", "qty": 0.01, "entry_px": 77352.51, "ts_ms": now_ms_w3 - 7200_000},
+                ],
+            },
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_w3,
+        {"TAOUSDC": {"price": 233.6}, "BTCUSDC": {"price": 80100.0}},
+        {},
+        ro_w3,
+        {},
+        {},
+        {},
+        {},
+        {},
+    )
+    assert pos_w3[0]["lowest_buy_px"] == 220.0
+    assert pos_w3[1]["lowest_buy_px"] == 77352.51
+
+    vp_gap = _build_vp_position_dict(134.45, 141.18, 140.36, 142.47)
+    assert vp_gap["va_pos_pct"] == -100.0
+
+    # Sparse overnight gap between -3h and -13h in a >=25 point series: 6h and 12h would hit the same bar at -13h
+    sparse_pts = [[now_ms_w3 - 24 * 3600_000 + i * 1800_000, 100.0 + i * 0.1] for i in range(23)]  # -24h .. -13h
+    sparse_pts += [[now_ms_w3 - 180 * 60_000 + i * 10 * 60_000, 105.0 + i * 0.1] for i in range(19)]  # -3h .. now
+    m24_sparse = compute_24h_price_metrics(sparse_pts)
+    assert "chg_6h_pct" in m24_sparse
+    assert "chg_12h_pct" not in m24_sparse
