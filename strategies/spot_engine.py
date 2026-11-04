@@ -15,7 +15,7 @@ from collections import deque
 from dataclasses import dataclass, fields as _dc_fields
 from typing import Callable
 
-from alertnotifiers import bind_notify
+from notify_engine.alertnotifiers import bind_notify
 from botcore import (
     _parse_bool_flag, are_close, log, defined_env, normalize_epoch_sec,
     require_finite_float, require_int, required_env,

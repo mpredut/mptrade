@@ -159,7 +159,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 9999}) as mock_place, \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
             # Only order 504 (TA_) was canceled and replaced!
@@ -187,7 +187,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 8888}) as mock_place, \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
 
             mock_cancel.assert_called_once_with("TAOUSDC", 601)
@@ -316,7 +316,7 @@ class TestMonitororderProtectsOtherBots(unittest.TestCase):
              patch.object(monitororder.api, "cancel_order", return_value=True) as mock_cancel, \
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", terminal=False)), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": 7777}) as mock_place, \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("BTCUSDC", "BUY")
             mock_cancel.assert_called_once_with("BTCUSDC", 701)
             mock_place.assert_called_once()

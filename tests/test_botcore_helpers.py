@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import alertnotifiers
+from notify_engine import alertnotifiers
 import botcore
 from botcore import load_env_stack, parse_dotenv
 from cachepaths import (

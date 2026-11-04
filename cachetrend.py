@@ -126,14 +126,7 @@ class CacheLongTrendManager(CacheManagerInterface):
     def __init__(self, sync_ts, symbols, filename, api_client=None, read_only=False):
         if api_client is None:
             api_client = _cm_attr("api", None)
-        super().__init__(
-            sync_ts,
-            symbols,
-            filename,
-            append_mode=False,
-            api_client=api_client,
-            read_only=read_only,
-        )
+        super().__init__(sync_ts, symbols, filename, append_mode=False, api_client=api_client, read_only=read_only)
 
     def rebuild_fetchtimes(self):
         last_times = defaultdict(int)
@@ -141,23 +134,12 @@ class CacheLongTrendManager(CacheManagerInterface):
             if not isinstance(items, (list, tuple)):
                 continue
             for item in items:
-                if not isinstance(item, dict):
-                    continue
-                ts_sec = extract_timestamp_s(item, default=0.0) or 0.0
-                if ts_sec <= 0:
-                    continue
-                ts = int(ts_sec * 1000)
-                if ts > last_times[symbol]:
-                    last_times[symbol] = ts
-        for symbol in last_times:
-            last_times[symbol] = max(0, last_times[symbol] - 60_000)
-        return dict(last_times)
+                if isinstance(item, dict) and (ts_sec := extract_timestamp_s(item, default=0.0) or 0.0) > 0:
+                    last_times[symbol] = max(last_times[symbol], int(ts_sec * 1000))
+        return {sym: max(0, ts - 60_000) for sym, ts in last_times.items()}
 
     def get_remote_items(self, symbol, startTime):
-        config_root = _cm_attr(
-            "_CONFIG_ROOT",
-            os.path.dirname(os.path.abspath(__file__)),
-        )
+        config_root = _cm_attr("_CONFIG_ROOT", os.path.dirname(os.path.abspath(__file__)))
         default_root = os.path.dirname(os.path.abspath(__file__))
         if os.path.abspath(config_root) == os.path.abspath(default_root):
             trend_filename = cache_path("priceanalysis.json")
@@ -170,13 +152,11 @@ class CacheLongTrendManager(CacheManagerInterface):
         if not os.path.exists(trend_filename) and not os.path.exists(previous_generation_path(trend_filename)):
             print(f"[{self.cls_name}] File {trend_filename} does not exist.")
             return []
-
         try:
             data = read_json_dict(trend_filename, recover_previous=True)
         except Exception as exc:
             print(f"[{self.cls_name}] Could not read {trend_filename}: {exc}")
             return []
-
         if not isinstance(data, dict):
             return []
         matched_cand, val = _find_by_symbol_variant(data, symbol, allow_none=True)
@@ -188,12 +168,7 @@ CacheLongTrend = CacheLongTrendManager
 
 def _short_trend_symbol_variants(symbol) -> list:
     """Return ordered symbol candidates (exact symbol first, then cross-venue aliases)."""
-    return cache_symbol_variants(
-        symbol,
-        include_original=True,
-        include_base=True,
-        quotes=("USDC", "USDT", "USD"),
-    )
+    return cache_symbol_variants(symbol, include_original=True, include_base=True, quotes=("USDC", "USDT", "USD"))
 
 
 _MISSING_VARIANT = object()
@@ -1973,14 +1948,11 @@ class KrakenPriceStream(_VenuePriceStreamBase):
             self._ws_pairs.append(ws_pair)
         self._pair_to_symbol[ws_pair.upper()] = sym
         self._pair_to_symbol[clean_symbol_key(sym)] = sym
-        if split and split[0] in ("BTC", "XBT"):
-            for b_alias in ("BTC", "XBT"):
-                self._pair_to_symbol[f"{b_alias}/{split[1]}"] = sym
-                self._pair_to_symbol[f"{b_alias}{split[1]}"] = sym
-        elif split and split[0] in ("DOGE", "XDG"):
-            for d_alias in ("DOGE", "XDG"):
-                self._pair_to_symbol[f"{d_alias}/{split[1]}"] = sym
-                self._pair_to_symbol[f"{d_alias}{split[1]}"] = sym
+        for alias_group in (("BTC", "XBT"), ("DOGE", "XDG")):
+            if split and split[0] in alias_group:
+                for alias in alias_group:
+                    self._pair_to_symbol[f"{alias}/{split[1]}"] = sym
+                    self._pair_to_symbol[f"{alias}{split[1]}"] = sym
 
     def add_symbol(self, symbol: str) -> bool:
         norm_s = self._norm_ws_symbol(symbol)
@@ -2175,31 +2147,20 @@ def _start_nonbinance_trend_poller(
         enable_ws = _parse_bool_flag(start_ws, default=False)
 
     ws_streams = []
-    if enable_ws:
-        hl_syms = [
-            s for s in symbols
-            if normalize_venue_name(bindings[s.upper()], default="") == "hyperliquid"
-        ]
-        krk_syms = [
-            s for s in symbols
-            if normalize_venue_name(bindings[s.upper()], default="") == "kraken"
-        ]
-        if hl_syms and hasattr(cpm, "on_items_update"):
-            hl_ws = HyperliquidPriceStream(hl_syms, market_api=getattr(cpm, "market_api", None))
-            if hasattr(cpm, "attach_ws_manager"):
-                cpm.attach_ws_manager(hl_ws)
-            else:
-                hl_ws.subscribe(cpm)
-            hl_ws.start(name="HyperliquidPriceWS", daemon=True)
-            ws_streams.append(hl_ws)
-        if krk_syms and hasattr(cpm, "on_items_update"):
-            krk_ws = KrakenPriceStream(krk_syms)
-            if hasattr(cpm, "attach_ws_manager"):
-                cpm.attach_ws_manager(krk_ws)
-            else:
-                krk_ws.subscribe(cpm)
-            krk_ws.start(name="KrakenPriceWS", daemon=True)
-            ws_streams.append(krk_ws)
+    if enable_ws and hasattr(cpm, "on_items_update"):
+        for venue_key, ws_name, build_ws in (
+            ("hyperliquid", "HyperliquidPriceWS", lambda syms: HyperliquidPriceStream(syms, market_api=getattr(cpm, "market_api", None))),
+            ("kraken", "KrakenPriceWS", KrakenPriceStream),
+        ):
+            v_syms = [s for s in symbols if normalize_venue_name(bindings[s.upper()], default="") == venue_key]
+            if v_syms:
+                ws_inst = build_ws(v_syms)
+                if hasattr(cpm, "attach_ws_manager"):
+                    cpm.attach_ws_manager(ws_inst)
+                else:
+                    ws_inst.subscribe(cpm)
+                ws_inst.start(name=ws_name, daemon=True)
+                ws_streams.append(ws_inst)
 
     pool = _futures.ThreadPoolExecutor(
         max_workers=max(2, len(symbols)), thread_name_prefix="NBTrendFetch"

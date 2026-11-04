@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "verify_tools"))
 
-from alertnotifiers import AlertNotifier  # noqa: E402
+from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from gen_alert_thresholds import FLOOR, thresholds_from_prices  # noqa: E402
 from market_monitor.alerts_config import load_config, resolve  # noqa: E402
 from market_monitor.new_coins_discovery import (  # noqa: E402
@@ -458,8 +458,6 @@ class TestNewCoinsDiscovery(unittest.TestCase):
             self.assertEqual(mgr.cleanup_old_symbols(max_age_days=7), [])
 
     def test_format_ntfy_url_canonicalization(self):
-        from alertnotifiers import format_ntfy_url
-
         self.assertEqual(format_ntfy_url("my_alerts"), "https://ntfy.sh/my_alerts")
         self.assertEqual(format_ntfy_url("/slash_topic"), "https://ntfy.sh/slash_topic")
         self.assertEqual(format_ntfy_url("https://custom.ntfy.lan/topic"), "https://custom.ntfy.lan/topic")

@@ -5,7 +5,7 @@ import os
 import time
 from typing import Any, Dict, Optional, Tuple
 
-import alertnotifiers as alert
+from notify_engine import alertnotifiers as alert
 from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_trades as apitrades
 from botcore import (

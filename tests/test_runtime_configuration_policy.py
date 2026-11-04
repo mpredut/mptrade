@@ -2,8 +2,14 @@ from pathlib import Path
 import subprocess
 import re
 
+from verify_tools.direct_order_api_inventory import inventory, scan_direct_calls
+
 
 ROOT = Path(__file__).resolve().parents[1]
+TEXT_SUFFIXES = {
+    ".conf", ".csv", ".env", ".html", ".ini", ".json", ".md", ".ps1",
+    ".py", ".service", ".sh", ".toml", ".txt", ".yaml", ".yml",
+}
 
 
 def test_market_alerts_and_hyperliquid_provider_use_shared_env_stack():
@@ -129,3 +135,46 @@ def test_live_venue_credentials_use_complete_profile_resolver():
     for relative in files:
         text = (ROOT / relative).read_text(encoding="utf-8")
         assert "_credentials(" in text
+
+
+def test_production_direct_order_boundaries_match_reviewed_allowlist():
+    report = inventory()
+    assert report["unapproved"] == []
+    assert report["stale_allowlist"] == []
+
+
+def test_new_direct_submit_is_detected(tmp_path: Path):
+    path = tmp_path / "new_strategy.py"
+    path.write_text(
+        "def trade(client):\n    return client.order_market_buy(symbol='BTCUSDC', quantity=1)\n",
+        encoding="utf-8",
+    )
+    calls = scan_direct_calls(tmp_path)
+    assert {(call.path, call.function, call.method) for call in calls} == {
+        ("new_strategy.py", "trade", "order_market_buy"),
+    }
+
+
+def _tracked_text_files():
+    output = subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=ROOT,
+    ).decode("utf-8")
+    for relative in output.split("\0"):
+        if not relative:
+            continue
+        path = ROOT / relative
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in TEXT_SUFFIXES or path.name in {
+            ".gitattributes", ".gitignore", "submit",
+        }:
+            yield path
+
+
+def test_tracked_text_files_use_unix_line_endings():
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in _tracked_text_files()
+        if b"\r" in path.read_bytes()
+    ]
+    assert offenders == [], f"tracked text files contain CR/CRLF: {offenders}"

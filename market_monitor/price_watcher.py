@@ -25,7 +25,7 @@ from market_monitor.pricefetcher import create_cachePriceAll
 
 # Alert orchestration formerly lived in ``run_price_monitor.py``.
 from market_monitor.new_coins_discovery import NewCoinsMonitor, NewCoinsFactory, MAX_NEW_COINS_TO_TRACK
-from alertnotifiers import AlertNotifier, format_ntfy_url
+from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url
 from botcore import load_env_stack, required_bool_env, required_env, safe_int, safe_nonneg_float, touch_module_heartbeat
 from cachepaths import cache_path
 from market_monitor.alerts_config import load_config

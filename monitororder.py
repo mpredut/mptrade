@@ -7,7 +7,7 @@ from collections import OrderedDict
 from binance.exceptions import BinanceAPIException
 
 # Project imports.
-import alertnotifiers as alert
+from notify_engine import alertnotifiers as alert
 import utils as u
 import symbols as sym
 from binance_api import bapi as api

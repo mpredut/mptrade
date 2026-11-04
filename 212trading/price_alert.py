@@ -25,7 +25,7 @@ from botcore import ensure_local_module_priority  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from ipo_common import _parse_bool_flag, load_t212_environment, log, safe_pos_float  # noqa: E402
 from market_data import get_price_usd  # noqa: E402
-from alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
+from notify_engine.alertnotifiers import AlertNotifier, format_ntfy_url  # noqa: E402
 from state_io import atomic_write_json, read_json_dict  # noqa: E402
 
 

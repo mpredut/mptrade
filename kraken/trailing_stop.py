@@ -17,7 +17,7 @@ HYPE cache_short_trend data. Configuration is in kraken/trailing.conf.
 
 The trailing and re-buy state machine is in trailing_core.TrailingCore and shared
 with Binance. This module is only the Kraken ADAPTER for provider-specific API,
-logging, and notifications. See kraken/test_trailing_kraken.py.
+logging, and notifications. See tests/test_trailing_kraken.py.
 
   python3 trailing_stop.py        # loop (enabled in trailing.conf)
   python3 trailing_stop.py --once                              # one check

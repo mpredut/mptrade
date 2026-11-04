@@ -2,7 +2,7 @@
 
 **Data**: 07 Octombrie 2026  
 **Status**: Documentație oficială de producție  
-**Componente cheie**: `globaltelemetry_collector.py`, `macro_analyzer.py`, `qlimit_order_guard.py`, `external_order_guard.py`, `llm_order_guard.py`, `profit_order_guard.py`, `order_guard.py`, `guard_hierarchy.py`, `intelligence/`
+**Componente cheie**: `intelligence/globaltelemetry_collector.py`, `intelligence/macro_analyzer.py`, `qlimit_order_guard.py`, `external_order_guard.py`, `llm_order_guard.py`, `order_guard.py`, `guard_hierarchy.py`, `intelligence/`
 
 ---
 

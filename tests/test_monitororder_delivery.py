@@ -214,13 +214,13 @@ def test_crash_after_accepted_replacement_is_reconciled_without_resubmit():
 
 
 def test_rtrade_order_placement_does_not_emit_launched_notification():
-    with patch("alertnotifiers.notify") as alert_mock:
+    with patch("notify_engine.alertnotifiers.notify") as alert_mock:
         monitororder._notify_order_launched("TAOUSDC", "BUY", "rt-1", 255.5, 1.9, owner="rtrade")
     alert_mock.assert_not_called()
 
 
 def test_tradeall_order_placement_emits_launched_notification():
-    with patch("alertnotifiers.notify") as alert_mock:
+    with patch("notify_engine.alertnotifiers.notify") as alert_mock:
         monitororder._notify_order_launched("TAOUSDC", "BUY", "ta-1", 255.5, 1.9, owner="tradeall")
     alert_mock.assert_called_once()
     assert alert_mock.call_args.kwargs["source"] == "monitororder"
@@ -234,7 +234,7 @@ class TestMonitororderNotifications(unittest.TestCase):
             1002: {"price": 81000.0, "quantity": 0.2, "remainingQty": 0.2},
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.warmup_open_orders()
             mock_notify.assert_not_called()
             self.assertIn("1001", monitororder._notified_placed_order_ids)
@@ -249,7 +249,7 @@ class TestMonitororderNotifications(unittest.TestCase):
         }
         with patch.object(monitororder.api, "get_open_orders", return_value=open_orders), \
              patch.object(monitororder.api, "get_current_price", return_value=250.0), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             mock_notify.assert_called_once_with(
                 title="📝 BUY TAOUSDC @ 283.92",
@@ -279,7 +279,7 @@ class TestMonitororderNotifications(unittest.TestCase):
              patch.object(monitororder.mkt, "order_status", return_value=MagicMock(venue_status="CANCELED", filled_qty=0.0)), \
              patch.object(monitororder.mkt, "place", return_value=replacement_order), \
              patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             monitororder.monitor_open_orders_by_type("BTCUSDC", "SELL")
             self.assertEqual(mock_notify.call_count, 1)
             self.assertIn("3001", mock_notify.call_args[1]["body"])
@@ -430,7 +430,7 @@ class TestOrderRetryTTL:
              patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
              patch.object(monitororder.mkt, "place", side_effect=fake_place), \
              patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "BUY")
         assert len(placed) == 1
         assert abs(placed[0][2] - (0.1999 * 0.999)) < 1e-9
@@ -459,7 +459,7 @@ class TestOrderRetryTTL:
              patch.object(monitororder.mkt, "order_status", return_value=oq.OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
              patch.object(monitororder.mkt, "place", side_effect=fake_place), \
              patch.object(monitororder.accepted_order_persistence, "complete_accepted_claim", return_value=True), \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("ARBUSDC", "SELL")
         assert len(placed) == 1
         assert abs(placed[0][2] - (0.1999 * 1.001)) < 1e-9
@@ -556,7 +556,7 @@ class TestOrderRetryTTL:
              patch.object(monitororder.api, "cancel_order", return_value=True), \
              patch.object(monitororder.mkt, "order_status", return_value=OrderStatus("canceled", 0.0, 0.0, 0.0, venue_status="CANCELED")), \
              patch.object(monitororder.mkt, "place", return_value={"orderId": "711457501"}), \
-             patch("alertnotifiers.notify"):
+             patch("notify_engine.alertnotifiers.notify"):
             monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
             tracked = oq.load_all()
             assert len(tracked) == 1

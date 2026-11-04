@@ -237,20 +237,20 @@ To ensure that `order_guard.py` evaluates external orderbook and derivatives gua
 - **Macro News Shield**: Polled every 300s (`cachedb/geopolitical_threat_state.json`).
 - **Heartbeat**: Atomically recorded to `cachedb/intelligence_daemon.heartbeat` and supervised under `procs.conf` fleet manifest.
 
-### 6.2 Diagnostic CLI (`intelligence_cli.py`)
+### 6.2 Diagnostic CLI (`intelligence/cli.py`)
 Provides operators with complete visibility into real-time multi-pillar state, guard simulations, and daemon health:
 ```bash
 # Full multi-pillar inspection report
-./myenv/bin/python3 intelligence_cli.py --symbol BTCUSDC
+./myenv/bin/python3 -m intelligence.cli --symbol BTCUSDC
 
 # Daemon operational status & snapshot age
-./myenv/bin/python3 intelligence_cli.py --daemon-status
+./myenv/bin/python3 -m intelligence.cli --daemon-status
 
 # Simulate guard execution for a prospective order
-./myenv/bin/python3 intelligence_cli.py --test-guard --side BUY --symbol BTCUSDC --qty 0.1 --notional 250
+./myenv/bin/python3 -m intelligence.cli --test-guard --side BUY --symbol BTCUSDC --qty 0.1 --notional 250
 
 # Machine-readable JSON output for automated health probes
-./myenv/bin/python3 intelligence_cli.py --symbol BTCUSDC --json
+./myenv/bin/python3 -m intelligence.cli --symbol BTCUSDC --json
 ```
 
 ---

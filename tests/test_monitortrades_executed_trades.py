@@ -30,7 +30,7 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             },
         ]
         with patch.object(mt.apitrades, "get_trade_orders", return_value=historical_trades), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
 
@@ -57,7 +57,7 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
         }
 
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, initial_trades + [new_trade], initial_trades + [new_trade]]), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             # 1. Warm-up
             mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
             mock_notify.assert_not_called()
@@ -100,7 +100,7 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
             },
         ]
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=[initial_trades, partial_fills]), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             # Warm-up with empty
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()
@@ -118,7 +118,7 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
 
     def test_api_error_handled_gracefully(self):
         with patch.object(mt.apitrades, "get_trade_orders", side_effect=RuntimeError("API timeout")), \
-             patch("alertnotifiers.notify") as mock_notify:
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
             # Should not raise
             mt.check_and_notify_executed_trades(symbols_list=["BTCUSDC"])
             mock_notify.assert_not_called()

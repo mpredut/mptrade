@@ -386,8 +386,14 @@ def compute_enterprise_portfolio_risk_metrics(
             is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
             beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
             corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
-            vol_1h = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=1.0) or 1.0
-            daily_vol_pct = min(25.0, max(0.8, vol_1h * math.sqrt(24.0)))
+            vol_1h_raw = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=None)
+            if vol_1h_raw is not None:
+                daily_vol_pct = min(25.0, max(0.8, vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)))
+            elif is_eq:
+                span_7d = safe_pos_float(_resolve_p_metric("span_7d_pct"), default=None)
+                daily_vol_pct = min(25.0, max(0.8, (span_7d / (2.0 * math.sqrt(5.0))) if span_7d is not None else 2.2))
+            else:
+                daily_vol_pct = min(25.0, max(0.8, 1.0 * math.sqrt(24.0)))
             pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
 
     for c_key, c in vq_cash.items():
@@ -441,8 +447,13 @@ def compute_enterprise_portfolio_risk_metrics(
     portfolio_btc_beta = round(beta_adj_usd / unified_nav, 2)
 
     corr_map: Dict[str, float] = {base: round(corr_v, 2) for base, _, _, corr_v, _ in pos_exposures if base != "BTC"}
-    non_btc_corrs = [c for b, _, _, c, _ in pos_exposures if b != "BTC"]
-    avg_corr_24h = round(sum(non_btc_corrs) / len(non_btc_corrs), 2) if non_btc_corrs else (1.0 if pos_exposures else 0.0)
+    non_btc_pairs = [(val_u, c) for b, val_u, _, c, _ in pos_exposures if b != "BTC"]
+    non_btc_val_sum = sum(v for v, _ in non_btc_pairs)
+    avg_corr_24h = (
+        round(sum(v * c for v, c in non_btc_pairs) / non_btc_val_sum, 2)
+        if non_btc_val_sum > 0.0
+        else (1.0 if pos_exposures else 0.0)
+    )
 
     var_cov_sum = 0.0
     for i, (base_i, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
@@ -590,6 +601,10 @@ def build_cross_market_context(
                 and not (k == "kalman_vel" and abs(sf_v) < 1e-12)
             },
         }
+        if pinfo.get("pos_24h_pct") is None and not is_sub24h_dup_7d:
+            for k7 in ("pos_7d_pct", "low_7d", "high_7d"):
+                if pinfo.get(k7) is not None:
+                    eq_entry[k7] = pinfo[k7]
         if t_cyc:
             eq_entry["t212_cycle"] = {
                 k: t_cyc.get(k)

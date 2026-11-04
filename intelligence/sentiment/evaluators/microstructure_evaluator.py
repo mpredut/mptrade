@@ -417,6 +417,7 @@ def update_microstructure_cycle_deltas(
         else None
     )
     mhist: Dict[str, Any] = dict(raw_mh) if isinstance(raw_mh, dict) else {}
+    orig_mhist: Dict[str, Any] = dict(mhist)
     mhist_dirty = False
 
     def _clean_hist_list(raw_seq: Any) -> List[Dict[str, Any]]:
@@ -443,10 +444,13 @@ def update_microstructure_cycle_deltas(
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
             continue
-        h_list = _clean_hist_list(casefold_get(mhist, msym))
+        own_h_list = _clean_hist_list(casefold_get(orig_mhist, msym))
+        h_list = own_h_list
+        used_variant_hist = False
         if not h_list:
             for ck in cache_symbol_variants(msym, include_base=True):
-                if h_list := _clean_hist_list(casefold_get(mhist, ck)):
+                if h_list := _clean_hist_list(casefold_get(orig_mhist, ck)):
+                    used_variant_hist = True
                     break
         ref_snap: Optional[Dict[str, Any]] = next(
             (s for s in reversed(h_list) if 330.0 <= (eff_now - float(s["ts"])) <= 7200.0),
@@ -459,7 +463,11 @@ def update_microstructure_cycle_deltas(
             ref_snap = h_list[0]
         if isinstance(ref_snap, dict):
             delta_d: Dict[str, Any] = {"dt_min": round((eff_now - float(ref_snap["ts"])) / 60.0, 1)}
-            if cur_ob is not None and (p_ob := clean_scale(ref_snap.get("ob_imbalance"), default=None, allow_percent=True)) is not None:
+            if (
+                not used_variant_hist
+                and cur_ob is not None
+                and (p_ob := clean_scale(ref_snap.get("ob_imbalance"), default=None, allow_percent=True)) is not None
+            ):
                 delta_d["ob_imbalance_delta"] = round(cur_ob - p_ob, 4)
                 delta_d["prev_ob_imbalance"] = round(p_ob, 4)
             p_cvd = _resolve_non_static_prev_metric(
@@ -486,7 +494,7 @@ def update_microstructure_cycle_deltas(
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
             if len(delta_d) > 1:
                 minfo["cycle_delta"] = delta_d
-        if not h_list or (eff_now - float(h_list[-1]["ts"])) >= 60.0:
+        if not own_h_list or (eff_now - float(own_h_list[-1]["ts"])) >= 60.0:
             new_rec: Dict[str, Any] = {"ts": round(eff_now, 2)}
             for k_rec, v_rec, dec_r in (
                 ("ob_imbalance", cur_ob, 4),
@@ -497,7 +505,7 @@ def update_microstructure_cycle_deltas(
             ):
                 if v_rec is not None:
                     new_rec[k_rec] = round(v_rec, dec_r)
-            mhist[msym] = [x for x in h_list if eff_now - float(x["ts"]) <= 14400.0][-11:] + [new_rec]
+            mhist[msym] = [x for x in own_h_list if eff_now - float(x["ts"]) <= 14400.0][-11:] + [new_rec]
             mhist_dirty = True
     if mhist_dirty and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb):
         try:
@@ -722,8 +730,14 @@ def sync_sibling_symbol_telemetry(
                     pinfo["price"] = sib_pinfo["price"]
                     p_px = s_px
                 px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px, s_px)
+                has_own_vp = pinfo.get("poc_px") is not None
+                has_own_bottom = pinfo.get("bottom_structure_6h") is not None
                 for k, v in sib_pinfo.items():
                     if v is None or k == "price" or (px_diverged and k in range_bound_keys):
+                        continue
+                    if has_own_vp and k in ("sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source"):
+                        continue
+                    if has_own_bottom and k in ("prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct"):
                         continue
                     if k not in pinfo or pinfo.get(k) is None:
                         pinfo[k] = v

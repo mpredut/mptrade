@@ -9,7 +9,7 @@ logic lives here; each provider remains a thin ADAPTER that performs only its ow
 API calls (price, balance, sell, buy, trend, notify) and provider-specific logging.
 
 Behavior is IDENTICAL to the pre-extraction implementation, as covered by
-tests/test_trailing_stop.py and kraken/test_trailing_kraken.py. Those unchanged
+tests/test_trailing_stop.py and tests/test_trailing_kraken.py. Those unchanged
 tests exercise the TrailingStop and KrakenTrailing adapters through the same
 state machine, which is now centralized here.
 

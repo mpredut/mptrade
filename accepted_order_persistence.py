@@ -5,7 +5,7 @@ import os
 import time
 from datetime import datetime
 
-import alertnotifiers as alert
+from notify_engine import alertnotifiers as alert
 from botcore import load_root_config, required_float_env, required_int_env, safe_float
 from providers.base import _clean_single_order_id as _clean_id
 

@@ -234,11 +234,10 @@ def _validate_config():
     _validate_tier_table(SELL_TIERS, "AG_SELL_TIERS", exact_sum=True)
     if SELL_REARM_GROWTH_PERCENT <= 0 or SELL_REARM_GROWTH_PERCENT >= SELL_TIERS[0][0]:
         raise ValueError("AG_SELL_REARM_GROWTH_PCT must be > 0 and below the first SELL threshold")
-    if ORDER_MAX_AGE_SECONDS <= 0:
-        raise ValueError("AG_ORDER_MAX_AGE_SEC must be finite and > 0")
     if ORDER_MISSING_CONFIRMATIONS <= 0:
         raise ValueError("AG_ORDER_MISSING_CONFIRMATIONS must be an integer and > 0")
     for value, name in (
+        (ORDER_MAX_AGE_SECONDS, "AG_ORDER_MAX_AGE_SEC"),
         (RECOVERY_RESET_PERCENT, "AG_RECOVERY_RESET_PCT"),
         (NEAR_TRIGGER_SECONDS, "AG_NEAR_TRIGGER_SEC"),
         (ACTIVE_TRIGGER_SECONDS, "AG_ACTIVE_TRIGGER_SEC"),
@@ -251,24 +250,23 @@ def _validate_config():
     ):
         if value <= 0:
             raise ValueError(f"{name} must be finite and > 0")
-    if not 0 < PORTFOLIO_SELL_ALLOCATION <= 1:
-        raise ValueError("AG_PORTFOLIO_SELL_ALLOCATION must be in (0, 1]")
-    if not 0 < PORTFOLIO_SELL_MAX_DISCOUNT <= 0.50:
-        raise ValueError("AG_PORTFOLIO_SELL_MAX_DISCOUNT must be in (0, 0.50]")
+    for val, hi, name in (
+        (PORTFOLIO_SELL_ALLOCATION, 1.0, "AG_PORTFOLIO_SELL_ALLOCATION"),
+        (PORTFOLIO_SELL_MAX_DISCOUNT, 0.50, "AG_PORTFOLIO_SELL_MAX_DISCOUNT"),
+        (P3B_SELL_DEFENSIVE_MAX_DISCOUNT, 0.50, "AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT"),
+        (P3B_BUY_ACCUMULATE_MAX_DISCOUNT, 0.50, "AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT"),
+        (P3B_BUY_DEFENSIVE_MAX_PENALTY, 1.0, "AG_P3B_BUY_DEFENSIVE_MAX_PENALTY"),
+    ):
+        if not 0 < val <= hi:
+            raise ValueError(f"{name} must be in (0, {hi:.2f}]" if hi < 1.0 else f"{name} must be in (0, 1.0]")
     if PORTFOLIO_ASSET_MIN_GROWTH_PERCENT <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError("AG_PORTFOLIO_ASSET_MIN_GROWTH_PCT must be above AG_SELL_REARM_GROWTH_PCT")
-    if not 0 < P3B_SELL_DEFENSIVE_MAX_DISCOUNT <= 0.50:
-        raise ValueError("AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT must be in (0, 0.50]")
     if not 0 < P3B_SELL_TRIM_MAX_DISCOUNT <= P3B_SELL_DEFENSIVE_MAX_DISCOUNT:
         raise ValueError("AG_P3B_SELL_TRIM_MAX_DISCOUNT must be in (0, AG_P3B_SELL_DEFENSIVE_MAX_DISCOUNT]")
     if SELL_TIERS[0][0] * (1.0 - P3B_SELL_DEFENSIVE_MAX_DISCOUNT) <= SELL_REARM_GROWTH_PERCENT:
         raise ValueError("Compressed first SELL tier must remain above AG_SELL_REARM_GROWTH_PCT")
-    if not 0 < P3B_BUY_ACCUMULATE_MAX_DISCOUNT <= 0.50:
-        raise ValueError("AG_P3B_BUY_ACCUMULATE_MAX_DISCOUNT must be in (0, 0.50]")
     if BUY_TIERS[0][0] * (1.0 - P3B_BUY_ACCUMULATE_MAX_DISCOUNT) <= RECOVERY_RESET_PERCENT:
         raise ValueError("Compressed first BUY tier must remain above AG_RECOVERY_RESET_PCT")
-    if not 0 < P3B_BUY_DEFENSIVE_MAX_PENALTY <= 1.0:
-        raise ValueError("AG_P3B_BUY_DEFENSIVE_MAX_PENALTY must be in (0, 1.0]")
 
 
 _validate_config()
@@ -954,32 +952,26 @@ def _buy_remaining_cash(state, threshold, allocation):
     target_cash = initial_cash * BUY_USE_CASH_RATIO * float(allocation)
     raw_spent_map = state.get("spent_quote_by_tier")
     spent_map = dict(raw_spent_map) if isinstance(raw_spent_map, dict) else {}
-    prior_spent = max(0.0, _finite_float(
-        spent_map.get(
-            _tier_key(threshold))) or 0.0)
+    prior_spent = max(0.0, _finite_float(spent_map.get(_tier_key(threshold))) or 0.0)
     return max(0.0, target_cash - prior_spent), target_cash, prior_spent
 
 
 def _ag_client_order_id(prefix, kind, symbol, anchor_ts, threshold, attempt):
-    raw = (
-        f"assetguardian:{kind}:{symbol}:{anchor_ts}:"
-        f"{float(threshold):g}:{int(attempt)}")
+    raw = f"assetguardian:{kind}:{symbol}:{anchor_ts}:{float(threshold):g}:{int(attempt)}"
     return prefix + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:29]
 
 
 def _sell_client_order_id(symbol, state, threshold, attempt):
-    return _ag_client_order_id(
-        "AGS", "sell", symbol, state.get("trough_ts"), threshold, attempt)
+    return _ag_client_order_id("AGS", "sell", symbol, state.get("trough_ts"), threshold, attempt)
 
 
 def _buy_client_order_id(symbol, state, threshold, attempt):
-    return _ag_client_order_id(
-        "AGB", "buy", symbol, state.get("peak_ts"), threshold, attempt)
+    return _ag_client_order_id("AGB", "buy", symbol, state.get("peak_ts"), threshold, attempt)
 
 
 def _finalize_terminal_campaign_state(
-        symbol, kind, state, pending, threshold, status, filled_qty, cost_val, fee_val,
-        *, dust_completed=False):
+    symbol, kind, state, pending, threshold, status, filled_qty, cost_val, fee_val, *, dust_completed=False
+):
     if (status.status == "closed" and filled_qty > 0) or dust_completed:
         completed = _completed_tier_values(state)
         completed.add(threshold)
@@ -1000,10 +992,9 @@ def _finalize_terminal_campaign_state(
     state.pop("pending", None)
     _save_symbol_campaign(symbol, kind, state)
     print(
-        f"[{symbol}] {kind.upper()} tier terminal: threshold={threshold:g}% "
-        f"status={status.status} orderId={pending.get('order_id')} "
-        f"filled={filled_qty:.8f} cost={cost_val:.8f} "
-        f"fee={fee_val:.8f}")
+        f"[{symbol}] {kind.upper()} tier terminal: threshold={threshold:g}% status={status.status} "
+        f"orderId={pending.get('order_id')} filled={filled_qty:.8f} cost={cost_val:.8f} fee={fee_val:.8f}"
+    )
     return state
 
 
@@ -1016,8 +1007,8 @@ def _record_terminal_buy(symbol, state, status):
         return state
 
     key = _tier_key(threshold)
-    raw_spent_by_tier = state.get("spent_quote_by_tier")
-    spent_by_tier = dict(raw_spent_by_tier) if isinstance(raw_spent_by_tier, dict) else {}
+    raw_spent = state.get("spent_quote_by_tier")
+    spent_by_tier = dict(raw_spent) if isinstance(raw_spent, dict) else {}
     prior_spent = safe_nonneg_float(spent_by_tier.get(key), default=0.0)
     filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
     cost_val = safe_nonneg_float(status.cost, default=0.0)
@@ -1027,9 +1018,7 @@ def _record_terminal_buy(symbol, state, status):
 
     state = dict(state)
     state["spent_quote_by_tier"] = spent_by_tier
-    state["total_spent_quote"] = (
-        safe_nonneg_float(state.get("total_spent_quote"), default=0.0)
-        + executed_quote)
+    state["total_spent_quote"] = safe_nonneg_float(state.get("total_spent_quote"), default=0.0) + executed_quote
     allocation = _finite_float(pending.get("allocation"), positive=True)
     initial_cash = _finite_float(state.get("initial_cash"), positive=True)
     target_cash = (
@@ -1042,10 +1031,10 @@ def _record_terminal_buy(symbol, state, status):
         and spent_by_tier[key] > 0
         and (target_cash - spent_by_tier[key]) <= max(1e-9, target_cash * 0.02)
     )
-
     return _finalize_terminal_campaign_state(
         symbol, "buy", state, pending, threshold, status, filled_qty, cost_val, fee_val,
-        dust_completed=dust_completed)
+        dust_completed=dust_completed,
+    )
 
 
 def _record_terminal_sell(symbol, state, status):
@@ -1057,45 +1046,36 @@ def _record_terminal_sell(symbol, state, status):
         return state
 
     key = _tier_key(threshold)
-    raw_filled_by_tier = state.get("filled_qty_by_tier")
-    filled_by_tier = dict(raw_filled_by_tier) if isinstance(raw_filled_by_tier, dict) else {}
+    raw_filled = state.get("filled_qty_by_tier")
+    filled_by_tier = dict(raw_filled) if isinstance(raw_filled, dict) else {}
     prior_filled = safe_nonneg_float(filled_by_tier.get(key), default=0.0)
     filled_qty = safe_nonneg_float(status.filled_qty, default=0.0)
     filled_by_tier[key] = prior_filled + filled_qty
 
     state = dict(state)
     state["filled_qty_by_tier"] = filled_by_tier
-    state["total_filled_qty"] = (
-        safe_nonneg_float(state.get("total_filled_qty"), default=0.0)
-        + filled_qty)
+    state["total_filled_qty"] = safe_nonneg_float(state.get("total_filled_qty"), default=0.0) + filled_qty
     allocation = _finite_float(pending.get("allocation"), positive=True)
     if allocation is None:
-        for t_thr, t_alloc in SELL_TIERS:
-            if abs(float(t_thr) - float(threshold)) <= 1e-9:
-                allocation = float(t_alloc)
-                break
-        if (
-            allocation is None
-            and abs(float(threshold) - float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)) <= 1e-9
-        ):
-            allocation = float(PORTFOLIO_SELL_ALLOCATION)
+        allocation = next(
+            (float(t_alloc) for t_thr, t_alloc in SELL_TIERS if abs(float(t_thr) - float(threshold)) <= 1e-9),
+            float(PORTFOLIO_SELL_ALLOCATION)
+            if abs(float(threshold) - float(PORTFOLIO_ASSET_MIN_GROWTH_PERCENT)) <= 1e-9
+            else None,
+        )
     initial_qty = _finite_float(state.get("initial_qty"), positive=True)
-    target_qty = (
-        initial_qty * allocation
-        if initial_qty is not None and allocation is not None
-        else None
-    )
+    target_qty = initial_qty * allocation if initial_qty is not None and allocation is not None else None
     dust_completed = (
         target_qty is not None
         and filled_by_tier[key] > 0
         and (target_qty - filled_by_tier[key]) <= max(1e-12, target_qty * 0.02)
     )
-
     cost_val = safe_nonneg_float(status.cost, default=0.0)
     fee_val = safe_nonneg_float(status.fee, default=0.0)
     return _finalize_terminal_campaign_state(
         symbol, "sell", state, pending, threshold, status, filled_qty, cost_val, fee_val,
-        dust_completed=dust_completed)
+        dust_completed=dust_completed,
+    )
 
 
 def _campaign_pending_persistor(symbol, kind, state):
@@ -1404,8 +1384,9 @@ def _safe_tier_attempt(attempts_map, key):
 
 
 def _submit_campaign_tier(
-        symbol, kind, state, threshold, requested_qty, requested_price,
-        client_id_fn, intent_kind, metadata, refusal_reason, submit_fn):
+    symbol, kind, state, threshold, requested_qty, requested_price,
+    client_id_fn, intent_kind, metadata, refusal_reason, submit_fn,
+):
     side_label = kind.upper()
     key = _tier_key(threshold)
     raw_attempts = state.get("attempts_by_tier")
@@ -1416,15 +1397,9 @@ def _submit_campaign_tier(
     state = dict(state)
     state["attempts_by_tier"] = attempts
     intent = ORDER_LIFECYCLE.new_intent(
-        intent_id=client_order_id,
-        client_order_id=client_order_id,
-        symbol=symbol,
-        side=side_label,
-        requested_qty=requested_qty,
-        requested_price=requested_price,
-        kind=intent_kind,
-        attempt=attempt,
-        metadata=metadata,
+        intent_id=client_order_id, client_order_id=client_order_id, symbol=symbol,
+        side=side_label, requested_qty=requested_qty, requested_price=requested_price,
+        kind=intent_kind, attempt=attempt, metadata=metadata,
     )
     box, persist = _campaign_pending_persistor(symbol, kind, state)
     _LAST_SUBMIT_OUTCOME.clear()
@@ -1432,16 +1407,11 @@ def _submit_campaign_tier(
     def _submit():
         resp = submit_fn(client_order_id)
         if resp is False and not _LAST_SUBMIT_OUTCOME.get("state"):
-            _LAST_SUBMIT_OUTCOME.update(
-                accepted=False, state="refused", reason=refusal_reason)
+            _LAST_SUBMIT_OUTCOME.update(accepted=False, state="refused", reason=refusal_reason)
         return propagate_submission_refusal(resp, _LAST_SUBMIT_OUTCOME)
 
     try:
-        result = ORDER_LIFECYCLE.submit(
-            intent,
-            persist=persist,
-            submit=_submit,
-        )
+        result = ORDER_LIFECYCLE.submit(intent, persist=persist, submit=_submit)
     except Exception as exc:
         print(f"[{symbol}] {side_label} tracked submit failed before/around submit: {exc}")
         return False

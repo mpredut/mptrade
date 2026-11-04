@@ -26,7 +26,7 @@ flowchart TD
 
     subgraph ChokePoint ["3. Unified Linear Choke Point: Instrument.place()"]
         KRAKEN & HL & BINANCE & T212 --> PLACE["🎯 Instrument.place()\n(Single Linear Dispatch Choke Point)"]
-        PLACE --> STAGE1["Stage 1: Deterministic Math Margin Check\n(G_PROF: profit_order_guard.py)"]
+        PLACE --> STAGE1["Stage 1: Deterministic Math Margin Check\n(G_PROF: order_guard.profit_guard)"]
         STAGE1 --> STAGE2["Stage 2: Dynamic Sizing & Gauss/Weibull Limits\n(G_QLIMIT1 & G_QLIMIT2: qlimit_order_guard.py)"]
         STAGE2 --> STAGE3["Stage 3: External Microstructure & AI Fortress\n(order_guard.py - 0 ms local & AI)"]
     end
@@ -89,7 +89,7 @@ All order generation flows pass through the 3-stage pipeline in [`instrument.py`
 | Category & Codes | Coordinator Module | Latency | LLM Status | Enforced Policies & Safeguards |
 | :--- | :--- | :--- | :--- | :--- |
 | **`GO` (`GO1`) & `GT` (`GT_S`, `GT_M`, `GT_L`)** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) / [`market_regime.py`](file:///home/predut/mptrade/market_regime.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **`GO1` (`daily_limit`):** Blocks orders when rolling 24h trade count limit is reached.<br>**`GT_S` / `GT_M` / `GT_L`:** Multi-horizon Kalman & linear regression trend regime guards (5m short, 1h medium, 24h long). |
-| **`G_PROF`** | [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **Mathematical Profit Margin (`math_profit`):** Protects sells from executing below historical buy anchor and prevents buys above active-cycle sell anchor. |
+| **`G_PROF`** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **Mathematical Profit Margin (`math_profit`):** Protects sells from executing below historical buy anchor and prevents buys above active-cycle sell anchor. |
 | **`G_QLIMIT` (`G_QLIMIT1`, `G_QLIMIT2`)** | [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py) | **0 ms** (in-memory) | 🚫 **NO LLM** | **`G_QLIMIT1` (`quantity_policy`):** 24h Gaussian persistence weight curve ($0 \dots 1.4 \times T$) & dynamic sizing.<br>**`G_QLIMIT2` (`internal_quant_limit`):** Anti-FOMO Parabolic Surge/Dump (2h window) + Asymmetric Weibull Survival Exhaustion ($S(t) = \exp(-(t/\lambda)^k)$ beyond Gaussian horizon $1.4 \times T$). |
 | **`GI` (`GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`)** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | **0 ms** (local cache) | 🚫 **NO LLM** | **`GI_OBOOK` (`orderbook_wall`):** Vetoes/defers orders facing overhead ask/bid walls > \$1,000,000 or severe book imbalance.<br>**`GI_WHALE` (`whale_flow`):** Evaluates whale OI divergence & taker flow supremacy; blocks liquidation cascades or downscales size.<br>**`GI_FUNDING` (`funding_crowding`):** Downscales/defers orders when perpetual funding rate is overcrowded. |
 | **`GLLM` (`GLLM1`, `GLLM2`, `GLLM3`)** | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py) | **`GLLM1`: 10–15 s**<br>**`GLLM2/3`: < 1 ms** (cache) | 🤖 **ACTIVE & ASYNC LLM** | **`GLLM1` (`llm_high_stake`):** Pre-trade Gemini LLM vetting for large BUY/SELL orders ($\ge 700\text{ EUR/USD}$) + post-stop re-entry bounce check.<br>**`GLLM2` (`llm_sentiment`):** 3h background LLM synthesis of Fear & Greed + Market Breadth (`sentiment_advisor.py`).<br>**`GLLM3` (`llm_geopolitical`):** 4.5h background + event-driven LLM geopolitical shock shield (`geopolitical_guard.py`). |
@@ -215,8 +215,8 @@ PROCS.CONF
     ├── rtrade                    (rtrade.py)
     ├── price_watcher            (market_monitor/price_watcher.py)
     ├── order_retry               (order_retry_worker.py)
-    ├── globaltelemetry_collector (globaltelemetry_collector.py)
-    └── macro_analyzer            (macro_analyzer.py)
+    ├── globaltelemetry_collector (intelligence/globaltelemetry_collector.py)
+    └── macro_analyzer            (intelligence/macro_analyzer.py)
 ```
 
 ---

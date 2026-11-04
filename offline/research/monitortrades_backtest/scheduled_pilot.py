@@ -451,7 +451,7 @@ def _restart_monitortrades():
 
 def _notify_change(full_key, symbol, old_value, new_value, winner_val, entry):
     try:
-        import alertnotifiers as alert
+        from notify_engine import alertnotifiers as alert
         body = (f"{full_key}: {old_value} -> {new_value} "
                 f"(a backtest winner confirmed on 2 windows: {winner_val}, "
                 f"averaged with the old value)")
@@ -678,7 +678,7 @@ def main():
             try:
                 from botcore import load_env_stack
                 load_env_stack()
-                import alertnotifiers as alert
+                from notify_engine import alertnotifiers as alert
                 lines = [f"{p['full_key']}: {p['current_on_dev']} -> winner {p['winner_value']}"
                          for p in proposals]
                 alert.notify(title=f"Backtest: {len(proposals)} new config proposal(s)",

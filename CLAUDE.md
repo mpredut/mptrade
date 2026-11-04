@@ -26,7 +26,7 @@ Two consequences worth remembering, both learned the hard way:
   nothing to do with the file you edited.
 - **patterns that match log or alert text are a separate case, and stay BILINGUAL.**
   `verify_tools/watchdogfor_anomaly.py` (the auth and blind regexes) and
-  `alertnotifiers.py` (`_URGENT_MARKERS`, `_GUARD_MARKERS`, `_OPS_MARKERS`) keep their
+  `notify_engine/alertnotifiers.py` (`_URGENT_MARKERS`, `_GUARD_MARKERS`, `_OPS_MARKERS`) keep their
   Romanian alternatives DELIBERATELY — owner's decision. The code is English, but a log
   line or an alert title could still be written in Romanian by mistake, and an
   English-only pattern would then fail silently: the watchdog would stop firing, and the

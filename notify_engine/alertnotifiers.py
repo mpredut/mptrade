@@ -8,6 +8,7 @@ import re
 import subprocess
 subprocess = subprocess  # Kept at module namespace for monkeypatching in tests
 import sys
+sys.modules.setdefault("alertnotifiers", sys.modules[__name__])
 import time
 from datetime import datetime, timezone
 from pathlib import Path

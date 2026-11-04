@@ -316,35 +316,22 @@ class _LivePairVenue:
         client_id = rtrade_client_order_id(pair_id, side, store_kind)
         intent = self.order_lifecycle.new_intent(
             intent_id=self._intent_id(pair_id, side, store_kind),
-            client_order_id=client_id,
-            symbol=self.symbol,
-            side=side,
-            requested_qty=qty,
-            requested_price=price,
-            kind=store_kind,
-            attempt=attempt,
-            metadata={"pair_id": pair_id, "limit_revision": int(revision)},
+            client_order_id=client_id, symbol=self.symbol, side=side,
+            requested_qty=qty, requested_price=price, kind=store_kind,
+            attempt=attempt, metadata={"pair_id": pair_id, "limit_revision": int(revision)},
         )
         persist = self._persist_callback(pair_id, side, store_kind, requested_qty=qty)
         outcome_context = {}
 
         def submit_once():
             response = mkt.place(
-                self.symbol,
-                side,
-                price,
-                qty,
-                force=False,
-                cancelorders=False,
-                hours=hours,
-                smart=False,
+                self.symbol, side, price, qty,
+                force=False, cancelorders=False, hours=hours, smart=False,
                 cooldown_pair_id=pair_id,
                 bypass_guards={"G_PROF", "GLLM1"} if RTRADE_BYPASS_PROFIT_GUARD else {"GLLM1"},
                 allow_math_reference_sell=bool(RTRADE_BYPASS_PROFIT_GUARD and side == "SELL"),
-                caller_owns_retry=True,
-                motivation="rtrade_pair_quote",
-                client_order_id=client_id,
-                _outcome_context=outcome_context,
+                caller_owns_retry=True, motivation="rtrade_pair_quote",
+                client_order_id=client_id, _outcome_context=outcome_context,
                 cache_permit=cache_permit,
             )
             return propagate_submission_refusal(response, outcome_context)
@@ -911,29 +898,18 @@ def _followup_force(symbol, side):
 
 
 _TERMINAL_QTY_OR_LIMIT_REFUSALS = frozenset({
-    "qty_zero_after_weight",
-    "qty_zero_after_policy",
-    "below_min_notional",
-    "insufficient_funds",
-    "balance_unavailable",
-    "medium_trend_qty_zero",
-    "daily_limit",
+    "qty_zero_after_weight", "qty_zero_after_policy", "below_min_notional",
+    "insufficient_funds", "balance_unavailable", "medium_trend_qty_zero", "daily_limit",
 })
 
 _TERMINAL_UNFILLED_REFUSALS = _TERMINAL_QTY_OR_LIMIT_REFUSALS | frozenset({
-    "profit_guard",
-    "trend_deferred",
-    "medium_trend_deferred",
-    "aborted_by_caller",
+    "profit_guard", "trend_deferred", "medium_trend_deferred", "aborted_by_caller",
 })
 
 
 def _is_terminal_unfilled_refusal(refusal_reason) -> bool:
-    if not refusal_reason:
-        return False
-    return (
-        refusal_reason in _TERMINAL_UNFILLED_REFUSALS
-        or is_terminal_filter_refusal(refusal_reason)
+    return bool(refusal_reason) and (
+        refusal_reason in _TERMINAL_UNFILLED_REFUSALS or is_terminal_filter_refusal(refusal_reason)
     )
 
 
@@ -989,16 +965,14 @@ class TradingBot:
 
     def mark_buy_filled(self, filled_buy_price=None):
         with self.lock:
-            self.buy_filled = True
-            self.sell_filled = False
+            self.buy_filled, self.sell_filled = True, False
             if filled_buy_price:
                 self.filled_buy_price = filled_buy_price
             return self.filled_buy_price
 
     def mark_sell_filled(self, filled_sell_price=None):
         with self.lock:
-            self.buy_filled = False
-            self.sell_filled = True
+            self.buy_filled, self.sell_filled = False, True
             if filled_sell_price:
                 self.filled_sell_price = filled_sell_price
             return self.filled_sell_price
@@ -1309,12 +1283,9 @@ class TradingBot:
             adjustment_fraction=(
                 self.DEFAULT_ADJUSTMENT_PERCENT if adjustment_fraction is None else adjustment_fraction
             ),
-            quote_ttl_sec=WAIT_FOR_ORDER,
-            poll_sec=RTRADE_PAIR_POLL_SEC,
-            fast_fill_ratio=RTRADE_FAST_FILL_RATIO,
-            min_edge_fraction=RTRADE_MIN_EDGE_PCT,
-            shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT,
-            hard_stop_fraction=RTRADE_HARD_STOP_PCT,
+            quote_ttl_sec=WAIT_FOR_ORDER, poll_sec=RTRADE_PAIR_POLL_SEC,
+            fast_fill_ratio=RTRADE_FAST_FILL_RATIO, min_edge_fraction=RTRADE_MIN_EDGE_PCT,
+            shock_hard_stop_fraction=RTRADE_SHOCK_HARD_STOP_PCT, hard_stop_fraction=RTRADE_HARD_STOP_PCT,
         )
 
     @staticmethod
@@ -1328,21 +1299,12 @@ class TradingBot:
         created_ts = normalize_epoch_sec(record.get("created_ts"), default=None)
         now_s = time.time()
         return {
-            "pair_id": record["pair_id"],
-            "qty": record["qty"],
-            "start_side": record["start_side"],
-            "phase": "quoting",
-            "reason": "recovered_by_client_order_id",
-            "shock": False,
+            "pair_id": record["pair_id"], "qty": record["qty"], "start_side": record["start_side"],
+            "phase": "quoting", "reason": "recovered_by_client_order_id", "shock": False,
             "elapsed_sec": max(0.0, now_s - (created_ts if created_ts is not None else now_s)),
-            "first_fill_elapsed_sec": None,
-            "first_fill_side": None,
-            "stop_order_id": None,
-            "limit_revisions": {"BUY": 0, "SELL": 0},
-            "hard_stop_revision": 0,
-            "hard_stop_reason": None,
-            "tickets": [],
-            "snapshots": {},
+            "first_fill_elapsed_sec": None, "first_fill_side": None, "stop_order_id": None,
+            "limit_revisions": {"BUY": 0, "SELL": 0}, "hard_stop_revision": 0,
+            "hard_stop_reason": None, "tickets": [], "snapshots": {},
         }
 
     def _adopt_pair_record(self, venue, pair_store, policy: PairPolicy, record, *, retry_label: str = ""):

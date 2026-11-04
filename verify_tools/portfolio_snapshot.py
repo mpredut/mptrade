@@ -24,7 +24,7 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 with contextlib.redirect_stdout(io.StringIO()):
-    from alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
+    from notify_engine.alertnotifiers import AlertNotifier, _external_notifications_disabled, format_ntfy_url  # noqa: E402
     from botcore import _parse_bool_flag, load_env_stack, load_local_module, parse_dotenv, required_float_env, safe_float  # noqa: E402
     from kraken.kraken_client import KrakenClient  # noqa: E402
     os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")

@@ -68,95 +68,40 @@ from llm_order_guard import _GEO_SHADOW_NOTIFY_COOLDOWN as _SHADOW_NOTIFY_COOLDO
 
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
-    "default",
-    "binance",
-    "kraken",
-    "default_window_h",
-    "kraken_window_h",
-    "default_weight_proxy",
-    "binance_weight_proxy",
-    "kraken_weight_proxy",
-    "default_chop_weight",
-    "binance_chop_weight",
-    "kraken_chop_weight",
-    "default_max_daily_trades",
-    "default_antispam_sec",
-    "default_safeback_sec",
-    "default_buy_reference",
-    "binance_buy_reference",
-    "kraken_buy_reference",
-    "default_sell_reference",
-    "binance_sell_reference",
-    "kraken_sell_reference",
-    "assetguardian_buy_reference",
-    "assetguardian_sell_reference",
-    "monitortrades_buy_reference",
-    "monitortrades_sell_reference",
-    "tradeall_buy_reference",
-    "tradeall_sell_reference",
-    "rtrade_buy_reference",
-    "rtrade_sell_reference",
-    "dynamic_window_favorable_h",
-    "dynamic_window_flat_h",
-    "dynamic_window_adverse_h",
+    "default", "binance", "kraken", "default_window_h", "kraken_window_h",
+    "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy",
+    "default_chop_weight", "binance_chop_weight", "kraken_chop_weight",
+    "default_max_daily_trades", "default_antispam_sec", "default_safeback_sec",
+    "default_buy_reference", "binance_buy_reference", "kraken_buy_reference",
+    "default_sell_reference", "binance_sell_reference", "kraken_sell_reference",
+    "assetguardian_buy_reference", "assetguardian_sell_reference",
+    "monitortrades_buy_reference", "monitortrades_sell_reference",
+    "tradeall_buy_reference", "tradeall_sell_reference",
+    "rtrade_buy_reference", "rtrade_sell_reference",
+    "dynamic_window_favorable_h", "dynamic_window_flat_h", "dynamic_window_adverse_h",
     "regime_context_max_age_sec",
     # Pillar 1: Internal Quantitative Mathematical Guards
-    "internal_guard_mode",
-    "intelligence_guards_mode",
-    "parabolic_surge_pct",
-    "parabolic_pullback_pct",
-    "weibull_exhaustion_policy",
-    "weibull_exhausted_scale",
+    "internal_guard_mode", "intelligence_guards_mode", "parabolic_surge_pct",
+    "parabolic_pullback_pct", "weibull_exhaustion_policy", "weibull_exhausted_scale",
     "weibull_p90_days",
     # Pillar 2: External Microstructure & Derivatives Flow Guards
-    "external_guard_mode",
-    "whale_guard_mode",
-    "severe_cascade_oi_pct",
-    "min_taker_ratio",
-    "taker_downscale_threshold",
-    "taker_downscaled_scale",
-    "orderbook_wall_guard_mode",
-    "whale_wall_usd_limit",
-    "min_buy_imbalance",
-    "max_sell_imbalance",
-    "high_stake_min_notional_usd",
-    "funding_guard_mode",
-    "funding_max_long_rate",
-    "funding_min_short_rate",
-    "funding_crowding_policy",
-    "funding_crowded_scale",
+    "external_guard_mode", "whale_guard_mode", "severe_cascade_oi_pct", "min_taker_ratio",
+    "taker_downscale_threshold", "taker_downscaled_scale", "orderbook_wall_guard_mode",
+    "whale_wall_usd_limit", "min_buy_imbalance", "max_sell_imbalance",
+    "high_stake_min_notional_usd", "funding_guard_mode", "funding_max_long_rate",
+    "funding_min_short_rate", "funding_crowding_policy", "funding_crowded_scale",
     # Pillar 2 Sub-Module: Smart Stop-Loss
-    "smart_sl_mode",
-    "smart_sl_max_threshold_pct",
-    "smart_sl_grace_seconds",
-    "smart_sl_disaster_buffer_pct",
-    "smart_sl_min_whale_long_pct",
-    "smart_sl_min_taker_ratio",
+    "smart_sl_mode", "smart_sl_max_threshold_pct", "smart_sl_grace_seconds",
+    "smart_sl_disaster_buffer_pct", "smart_sl_min_whale_long_pct", "smart_sl_min_taker_ratio",
     # Pillar 3: AI Intelligence High-Stake Guard & Post-Stop Re-entry
-    "llm_guard_mode",
-    "llm_timeout_sec",
-    "llm_fallback",
-    "post_stop_reentry_mode",
-    "post_stop_reentry_timeout_sec",
-    "post_stop_reentry_fallback",
-    "post_stop_reentry_notify",
-    "post_stop_reentry_cache_ttl_sec",
-    "macro_advisor_interval_sec",
-    "macro_llm_interval_sec",
-    # Pillar 4 & Global
-    "geopolitical_guard_mode",
-    "shadow_notify",
-    # Autonomous AI Supervisor & Trading Gateway
-    "supervisor_mode",
-    "supervisor_notify",
-    "autonomous_trading_mode",
-    "autonomous_trading_max_notional_usd",
-    "autonomous_trading_min_notional_usd",
-    "autonomous_trading_min_confidence",
-    "autonomous_trading_notify",
-    # Guard bypass configuration
-    "default_bypass_guards",
-    "binance_bypass_guards",
+    "llm_guard_mode", "llm_timeout_sec", "llm_fallback", "post_stop_reentry_mode",
+    "post_stop_reentry_timeout_sec", "post_stop_reentry_fallback", "post_stop_reentry_notify",
+    "post_stop_reentry_cache_ttl_sec", "macro_advisor_interval_sec", "macro_llm_interval_sec",
+    # Pillar 4 & Global + Autonomous AI Supervisor & Trading Gateway + Bypass
+    "geopolitical_guard_mode", "shadow_notify", "supervisor_mode", "supervisor_notify",
+    "autonomous_trading_mode", "autonomous_trading_max_notional_usd",
+    "autonomous_trading_min_notional_usd", "autonomous_trading_min_confidence",
+    "autonomous_trading_notify", "default_bypass_guards", "binance_bypass_guards",
     "kraken_bypass_guards",
 })
 
@@ -164,29 +109,17 @@ VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dy
 VALID_GUARD_MODES = frozenset({"off", "shadow", "enforce"})
 
 _GUARD_MODE_KEYS = (
-    "internal_guard_mode",
-    "intelligence_guards_mode",
-    "external_guard_mode",
-    "whale_guard_mode",
-    "orderbook_wall_guard_mode",
-    "funding_guard_mode",
-    "smart_sl_mode",
-    "llm_guard_mode",
-    "post_stop_reentry_mode",
-    "geopolitical_guard_mode",
-    "supervisor_mode",
-    "autonomous_trading_mode",
+    "internal_guard_mode", "intelligence_guards_mode", "external_guard_mode",
+    "whale_guard_mode", "orderbook_wall_guard_mode", "funding_guard_mode",
+    "smart_sl_mode", "llm_guard_mode", "post_stop_reentry_mode",
+    "geopolitical_guard_mode", "supervisor_mode", "autonomous_trading_mode",
 )
 
 _MODULE_REFERENCE_KEYS = frozenset({
-    "assetguardian_buy_reference",
-    "assetguardian_sell_reference",
-    "monitortrades_buy_reference",
-    "monitortrades_sell_reference",
-    "tradeall_buy_reference",
-    "tradeall_sell_reference",
-    "rtrade_buy_reference",
-    "rtrade_sell_reference",
+    "assetguardian_buy_reference", "assetguardian_sell_reference",
+    "monitortrades_buy_reference", "monitortrades_sell_reference",
+    "tradeall_buy_reference", "tradeall_sell_reference",
+    "rtrade_buy_reference", "rtrade_sell_reference",
 })
 
 _DISCRETE_POLICY_SETS: Dict[str, frozenset] = {
@@ -1354,33 +1287,27 @@ def _record_context_suggested_scale(
     """Update `_suggested_scale_by_side` and (for BUY) `suggested_scale` on `regime_context`."""
     if regime_context is None:
         return
-    if isinstance(regime_context, dict):
-        scales_by_side = regime_context.get("_suggested_scale_by_side")
-        if not isinstance(scales_by_side, dict):
-            scales_by_side = {}
-        curr_side = scales_by_side.get(side)
-        if not only_if_smaller or curr_side is None or scale < curr_side:
-            scales_by_side[side] = scale
-        regime_context["_suggested_scale_by_side"] = scales_by_side
-        if side == "BUY":
-            curr = regime_context.get("suggested_scale")
-            if not only_if_smaller or curr is None or scale < curr:
-                regime_context["suggested_scale"] = scale
-                regime_context[reason_attr] = reason
-        return
+    is_dict = isinstance(regime_context, dict)
     try:
-        scales_by_side = getattr(regime_context, "_suggested_scale_by_side", None)
+        scales_by_side = obj_attr(regime_context, "_suggested_scale_by_side")
         if not isinstance(scales_by_side, dict):
             scales_by_side = {}
         curr_side = scales_by_side.get(side)
         if not only_if_smaller or curr_side is None or scale < curr_side:
             scales_by_side[side] = scale
-        object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
+        if is_dict:
+            regime_context["_suggested_scale_by_side"] = scales_by_side
+        else:
+            object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
         if side == "BUY":
-            curr = getattr(regime_context, "suggested_scale", None)
+            curr = obj_attr(regime_context, "suggested_scale")
             if not only_if_smaller or curr is None or scale < curr:
-                object.__setattr__(regime_context, "suggested_scale", scale)
-                object.__setattr__(regime_context, reason_attr, reason)
+                if is_dict:
+                    regime_context["suggested_scale"] = scale
+                    regime_context[reason_attr] = reason
+                else:
+                    object.__setattr__(regime_context, "suggested_scale", scale)
+                    object.__setattr__(regime_context, reason_attr, reason)
     except Exception:
         pass
 

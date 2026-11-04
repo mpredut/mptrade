@@ -46,6 +46,7 @@ from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, generation_lock_path, load_json_state, read_jsonl_dicts, save_json_state
 from .base import (
+    MarketDataProvider,
     _UNFILLED_ORDER_STATUSES,
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,
@@ -429,16 +430,10 @@ class AuditedStrategyExecutor:
     def free_balance(self, asset: str):
         return self._executor.free_balance(asset)
 
-    def preflight_order(self, symbol: str, side: str, qty: float,
-                        price=None, *, market: bool = False,
-                        kind: Optional[str] = None) -> Any:
+    def preflight_order(self, symbol: str, side: str, qty: float, price=None, *, market: bool = False, kind: Optional[str] = None) -> Any:
         """Run the adapter's optional preflight before a submit is audited."""
         preflight = getattr(self._executor, "preflight_order", None)
-        if callable(preflight):
-            return preflight(
-                symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind,
-            )
-        return None
+        return preflight(symbol, side, qty, price, market=_parse_bool_flag(market, False), kind=kind) if callable(preflight) else None
 
     def ohlc_closes(self, symbol: str, interval_min: int):
         return self._executor.ohlc_closes(symbol, interval_min)
@@ -447,105 +442,72 @@ class AuditedStrategyExecutor:
     def _inner(self):
         return self._executor
 
+    def _call_opt(self, attr: str, *args: Any, default: Any = None, **kwargs: Any) -> Any:
+        reader = getattr(self._executor, attr, None)
+        return reader(*args, **kwargs) if callable(reader) else default
+
+    def _call_trend_opt(self, attr: str, symbol: str, max_age_sec: float) -> tuple[bool, Any]:
+        reader = getattr(self._executor, attr, None)
+        if not callable(reader):
+            return False, None
+        try:
+            return True, reader(symbol, max_age_sec=max_age_sec)
+        except TypeError:
+            return True, reader(symbol)
+
     def open_orders(self, symbol: str):
-        reader = getattr(self._executor, "open_orders", None)
-        return reader(symbol) if callable(reader) else []
+        return self._call_opt("open_orders", symbol, default=[])
 
     def get_orders(self, symbol: str, side: Optional[str] = None, lookback: Optional[float] = None):
-        reader = getattr(self._executor, "get_orders", None)
-        return reader(symbol, side, lookback) if callable(reader) else []
+        return self._call_opt("get_orders", symbol, side, lookback, default=[])
 
     def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0):
-        reader = getattr(self._executor, "trend_snapshot", None)
-        if not callable(reader):
-            return None
-        try:
-            return reader(symbol, max_age_sec=max_age_sec)
-        except TypeError:
-            return reader(symbol)
+        return self._call_trend_opt("trend_snapshot", symbol, max_age_sec)[1]
 
     def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
-        reader = getattr(self._executor, "trend", None)
-        if callable(reader):
-            try:
-                raw = reader(symbol, max_age_sec=max_age_sec)
-            except TypeError:
-                raw = reader(symbol)
-            return safe_float(raw, default=0.0)
-        return 0.0
+        ok, raw = self._call_trend_opt("trend", symbol, max_age_sec)
+        return safe_float(raw, default=0.0) if ok else 0.0
 
     def trend_direction(self, symbol: str, max_age_sec: float = 15.0) -> Optional[str]:
-        reader = getattr(self._executor, "trend_direction", None)
-        if callable(reader):
-            try:
-                return reader(symbol, max_age_sec=max_age_sec)
-            except TypeError:
-                return reader(symbol)
-        from .base import MarketDataProvider
-
-        return MarketDataProvider.trend_direction(self, symbol, max_age_sec=max_age_sec)
+        ok, raw = self._call_trend_opt("trend_direction", symbol, max_age_sec)
+        return raw if ok else MarketDataProvider.trend_direction(self, symbol, max_age_sec=max_age_sec)
 
     def get_orderbook(self, symbol: str, limit: int = 200):
-        reader = getattr(self._executor, "get_orderbook", None)
-        return reader(symbol, limit) if callable(reader) else None
+        return self._call_opt("get_orderbook", symbol, limit)
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
-        reader = getattr(self._executor, "position_cost_basis", None)
-        return reader(symbol, held_qty, since_s) if callable(reader) else None
+        return self._call_opt("position_cost_basis", symbol, held_qty, since_s)
 
     def get_ssot_cached_price(self, symbol: str, max_age_sec: float = 12.0) -> Optional[float]:
-        reader = getattr(self._executor, "get_ssot_cached_price", None)
-        return reader(symbol, max_age_sec=max_age_sec) if callable(reader) else None
+        return self._call_opt("get_ssot_cached_price", symbol, max_age_sec=max_age_sec)
 
-    def get_ssot_price_history(
-        self,
-        symbol: str,
-        lookback_hours: float,
-        max_latest_age_sec: float = 120.0,
-    ) -> Optional[list[dict]]:
-        reader = getattr(self._executor, "get_ssot_price_history", None)
-        return reader(symbol, lookback_hours, max_latest_age_sec=max_latest_age_sec) if callable(reader) else None
+    def get_ssot_price_history(self, symbol: str, lookback_hours: float, max_latest_age_sec: float = 120.0) -> Optional[list[dict]]:
+        return self._call_opt("get_ssot_price_history", symbol, lookback_hours, max_latest_age_sec=max_latest_age_sec)
 
     def _pair_precision_attr(self, symbol: str, attr: str, default: Any = None) -> Any:
-        from .base import MarketDataProvider
-
         return MarketDataProvider._pair_precision_attr(self, symbol, attr, default)
 
     def round_quantity(self, symbol: str, qty: float) -> float:
         fn = getattr(self._executor, "round_quantity", None)
-        if callable(fn):
-            return fn(symbol, qty)
-        from .base import MarketDataProvider
-
-        return MarketDataProvider.round_quantity(self, symbol, qty)
+        return fn(symbol, qty) if callable(fn) else MarketDataProvider.round_quantity(self, symbol, qty)
 
     round_amount = round_quantity
 
     def round_price(self, symbol: str, price: float) -> float:
         fn = getattr(self._executor, "round_price", None)
-        if callable(fn):
-            return fn(symbol, price)
-        from .base import MarketDataProvider
-
-        return MarketDataProvider.round_price(self, symbol, price)
+        return fn(symbol, price) if callable(fn) else MarketDataProvider.round_price(self, symbol, price)
 
     def min_order_qty(self, symbol: str) -> float:
         fn = getattr(self._executor, "min_order_qty", None)
         if callable(fn):
             return safe_nonneg_float(fn(symbol), default=0.0) or 0.0
-        from .base import MarketDataProvider
-
         return MarketDataProvider.min_order_qty(self, symbol)
 
     def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
         fn = getattr(self._executor, "strategy_dry_run", None)
         if callable(fn):
             return bool(fn(force_paper, strategy_execute))
-        from .base import MarketDataProvider
-
-        return MarketDataProvider.resolve_strategy_dry_run(
-            force_paper, strategy_execute, self.execution_enabled()
-        )
+        return MarketDataProvider.resolve_strategy_dry_run(force_paper, strategy_execute, self.execution_enabled())
 
     def ohlc_series(self, symbol: str, interval_min: int):
         """Preserve optional candle timestamps without expanding the protocol."""
@@ -1890,6 +1852,19 @@ def validate_and_build_intent_dict(
     return rec
 
 
+def _intent_order_ids(item: dict[str, Any]) -> set[str]:
+    ids: set[str] = set(intent_venue_client_order_ids(item))
+    oid_rec = extract_order_id(item.get("execution_payload"), default="")
+    if oid_rec:
+        ids.add(str(oid_rec))
+    for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
+        if isinstance(h_entry, dict):
+            h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
+            if h_oid:
+                ids.add(str(h_oid))
+    return ids
+
+
 def collect_known_ai_order_ids(
     intents: Any,
     initial_ids: Optional[set[str]] = None,
@@ -1901,17 +1876,8 @@ def collect_known_ai_order_ids(
     if not isinstance(intents, list):
         return ai_oids
     for item in intents:
-        if not isinstance(item, dict):
-            continue
-        ai_oids.update(intent_venue_client_order_ids(item))
-        oid_rec = extract_order_id(item.get("execution_payload"), default="")
-        if oid_rec:
-            ai_oids.add(str(oid_rec))
-        for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
-            if isinstance(h_entry, dict):
-                h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
-                if h_oid:
-                    ai_oids.add(str(h_oid))
+        if isinstance(item, dict):
+            ai_oids.update(_intent_order_ids(item))
     return ai_oids
 
 
@@ -2013,16 +1979,7 @@ def find_duplicate_ai_open_limit_order(
                                 break
                 if p_sug is None or p_clamp is None:
                     continue
-                item_ids: set[str] = set(intent_venue_client_order_ids(item))
-                oid_rec = extract_order_id(item.get("execution_payload"), default="")
-                if oid_rec:
-                    item_ids.add(str(oid_rec))
-                for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
-                    if isinstance(h_entry, dict):
-                        h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
-                        if h_oid:
-                            item_ids.add(str(h_oid))
-                for k in item_ids:
+                for k in _intent_order_ids(item):
                     if k:
                         intent_notional_by_id[k] = (p_sug, p_clamp)
                         intent_notional_by_id[k.lower()] = (p_sug, p_clamp)

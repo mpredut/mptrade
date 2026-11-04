@@ -171,8 +171,8 @@ run result belongs to change verification, not this status document.
    - **Status**: Empirically validated across historical ticks (+$5,484 preserved on BTC/TAO) and 30,000 parity trials. Driven by existing production price windows and Kalman series.
    - **Readiness**: Active enforcement enabled on Binance (`intelligence_guards_mode = enforce` in `order_guard.conf`). Anti-FOMO parabolic surge guard and Weibull aging trend downscales are live.
 2. **Pillar 2 (External Microstructure: Orderbook Walls & Whale Divergence)**:
-   - **Status**: Wired into `order_guard` with local non-blocking reads (`allow_network=False`), continuously fed by `intelligence_daemon.py`.
-   - **Rollout Rule**: Keep in `shadow` mode (`shadow_notify = 1`) for a 24-48h burn-in period while the daemon runs, confirming persistent snapshot freshness in `cachedb/` via `intelligence_cli.py --daemon-status` before switching to `enforce`.
+   - **Status**: Wired into `order_guard` with local non-blocking reads (`allow_network=False`), continuously fed by `intelligence/daemon.py` (`intelligence/globaltelemetry_collector.py`).
+   - **Rollout Rule**: Keep in `shadow` mode (`shadow_notify = 1`) for a 24-48h burn-in period while the daemon runs, confirming persistent snapshot freshness in `cachedb/` via `python -m intelligence.cli --daemon-status` before switching to `enforce`.
 3. **Pillars 3 & 4 (Gemini High-Stake & Macro Geopolitical Shield)**:
    - **Status**: Evaluated in `shadow` mode with push notifications on `ntfy`.
    - **Rollout Rule**: High-stake guard applies exclusively to orders $\ge 1,000$ EUR. Geopolitical Shield remains observational with phone alerts until event telemetry is collected.

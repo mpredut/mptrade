@@ -16,7 +16,7 @@
 flowchart TD
     Order["🎯 NEW ORDER INTENT (BUY / SELL)\nChoke Point: order_guard.py"] --> GO["🛡 GO1 & GT_S / GT_M / GT_L\nOperational Daily Limit & Multi-Horizon Trend\n⚡ 0 ms | 🚫 NO LLM"]
     
-    GO -- Passed --> GPROF["🛡 G_PROF: profit_order_guard.py\nMathematical Profit Margin Reference\n⚡ 0 ms | 🚫 NO LLM"]
+    GO -- Passed --> GPROF["🛡 G_PROF: order_guard.profit_guard\nMathematical Profit Margin Reference\n⚡ 0 ms | 🚫 NO LLM"]
     GPROF -- Margin Violated --> VetoProf["⛔ VETO_STOP (Below Anchor / Basis)"]
     GPROF -- Passed --> P1["🛡 G_QLIMIT1 & G_QLIMIT2: qlimit_order_guard.py\nGaussian 24h Weight + Parabolic Surge + Weibull Exhaustion\n⚡ 0 ms | 🚫 NO LLM"]
     
@@ -43,7 +43,7 @@ To ensure absolute transparency between microsecond execution and qualitative re
 | Category & Guard Code | Coordinator Module | LLM Status | Execution Latency | Frequency / Cadence |
 | :--- | :--- | :--- | :--- | :--- |
 | **`GO1`, `GT_S`, `GT_M`, `GT_L`** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) / [`market_regime.py`](file:///home/predut/mptrade/market_regime.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
-| **`G_PROF`** | [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
+| **`G_PROF`** | [`order_guard.py`](file:///home/predut/mptrade/order_guard.py) | 🚫 **NO LLM** (Pure Math) | $0\text{ ms}$ (In-memory) | Every single order intent |
 | **`G_QLIMIT1`, `G_QLIMIT2`** | [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py) | 🚫 **NO LLM** (Gaussian + Weibull) | $0\text{ ms}$ (In-memory) | Every single order intent |
 | **`GI_OBOOK`, `GI_WHALE`, `GI_FUNDING`** | [`external_order_guard.py`](file:///home/predut/mptrade/external_order_guard.py) | 🚫 **NO LLM** (Pure Microstructure) | $0\text{ ms}$ (Local cache) | Every BUY & large SELL ($\ge \$700$) |
 | **`GLLM3`** (`llm_geopolitical`) | [`llm_order_guard.py`](file:///home/predut/mptrade/llm_order_guard.py)<br>↳ [`geopolitical_guard.py`](file:///home/predut/mptrade/intelligence/macro/geopolitical_guard.py) | 🤖 **BACKGROUND LLM** | $< 1\text{ ms}$ at pre-trade | Asynchronous cycle: **Every 4.5 hours** |
@@ -55,12 +55,12 @@ To ensure absolute transparency between microsecond execution and qualitative re
 ## 3. Category-by-Category Detailed Architecture
 
 ### Category `G_PROF` & `G_QLIMIT`: Profit Margin & Quantitative Limits (Internal)
-* **Files:** [`profit_order_guard.py`](file:///home/predut/mptrade/profit_order_guard.py), [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py)
+* **Files:** [`order_guard.py`](file:///home/predut/mptrade/order_guard.py), [`qlimit_order_guard.py`](file:///home/predut/mptrade/qlimit_order_guard.py)
 * **Role:** Internal mathematical invariants, capital preservation, quantitative sizing limits.
 * **LLM:** 🚫 **NO LLM** — Deterministic math, $0\text{ ms}$.
 * **Guards & Triggers:**
   1. `GO1` (`daily_limit_guard`): Rolling 24h trade count limit per symbol.
-  2. `G_PROF` (`profit_order_guard.py`): Mathematical profit reference floor against historical buys (for SELL) and active-cycle sells (for BUY).
+  2. `G_PROF` (`order_guard.profit_guard`): Mathematical profit reference floor against historical buys (for SELL) and active-cycle sells (for BUY).
   3. `G_QLIMIT1` (`check_qlimit1_weight_limit`): 24h Gaussian persistence curve ($w(t) = \exp(-\frac{(t-\mu)^2}{2\sigma^2})$ over $0 \dots 1.4 \times T$) scaling allowed daily order volume.
   4. `G_QLIMIT2` (`check_qlimit2_order_guards`):
      - `ParabolicSurgeGuard`: Anti-FOMO 2h vertical surge/dump detector.

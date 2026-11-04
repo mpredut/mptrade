@@ -64,7 +64,6 @@ Repository = "https://github.com/mariusv/binance-trading-bot.git"
 [tool.setuptools]
 py-modules = [
     "active_intents",
-    "alertnotifiers",
     "assetguardian",
     "binance_cache_health",
     "botcore",
@@ -75,14 +74,11 @@ py-modules = [
     "config",
     "credentials",
     "external_order_guard",
-    "globaltelemetry_collector",
     "guard_hierarchy",
     "instrument",
     "instrument_registry",
     "instruments_config",
-    "intelligence_daemon",
     "llm_order_guard",
-    "macro_analyzer",
     "liquidation_signal",
     "log",
     "market_regime",

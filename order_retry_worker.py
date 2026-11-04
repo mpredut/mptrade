@@ -17,7 +17,7 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import alertnotifiers as alert
+from notify_engine import alertnotifiers as alert
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,

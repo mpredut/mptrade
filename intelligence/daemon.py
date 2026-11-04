@@ -19,6 +19,10 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
 from botcore import _parse_bool_flag, load_dotenv, required_float_env, single_instance
 from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
 from intelligence.macro.news_feed_collector import NewsFeedCollector

@@ -1515,7 +1515,7 @@ class MonitorTradesFinancialCharacterization(unittest.TestCase):
 
             with (
                 patch.object(mt.apitrades, "get_trade_orders", side_effect=_fake_get_trade_orders),
-                patch("alertnotifiers.notify") as mock_notify,
+                patch("notify_engine.alertnotifiers.notify") as mock_notify,
             ):
                 # Run 1: SYM1 warms up, SYM2 fails
                 mt.check_and_notify_executed_trades(symbols_list=["SYM1", "SYM2"])

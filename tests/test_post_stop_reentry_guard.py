@@ -298,7 +298,7 @@ def test_decision_caching_and_notify_cooldown():
         notify_enabled=True,
         cache_ttl_sec=600.0,
     )
-    with patch("alertnotifiers.notify") as mock_notify:
+    with patch("notify_engine.alertnotifiers.notify") as mock_notify:
         dec1 = guard.check(
             symbol="ARBUSDC",
             current_price=0.1930,
