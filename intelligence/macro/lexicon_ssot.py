@@ -235,7 +235,7 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     if not (combined_words & _NON_CRISIS_ATTACK_CONTEXT_WORDS):
         return False
-    other_stems = crisis_stems - {"attack"}
+    other_stems = crisis_stems - {"attack", "kill"}
     if any(_token_matches_crisis_stem(w, other_stems) for w in kw_words):
         return False
     if text_words and any(_token_matches_crisis_stem(w, other_stems) for w in text_words):

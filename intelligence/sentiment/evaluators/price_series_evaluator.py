@@ -62,17 +62,40 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
     mkey = _series_memo_key(series)
     if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
         return cached
-    pts: List[Tuple[float, float]] = []
+    pts_vol: List[Tuple[float, float, Optional[float]]] = []
     prev_t = -1.0
     is_sorted = True
+    has_pos_vol = False
     for row in series:
         if (pt := _parse_ts_px_row(row)) is not None:
             if pt[0] < prev_t:
                 is_sorted = False
             prev_t = pt[0]
-            pts.append(pt)
+            vol_v: Optional[float] = None
+            if isinstance(row, (list, tuple)) and len(row) >= 3:
+                vol_v = safe_float(row[2], default=None)
+                if vol_v is not None and vol_v > 0.0:
+                    has_pos_vol = True
+            pts_vol.append((pt[0], pt[1], vol_v))
     if not is_sorted:
-        pts.sort(key=lambda x: x[0])
+        pts_vol.sort(key=lambda x: x[0])
+    if has_pos_vol and len(pts_vol) >= 3:
+        pts: List[Tuple[float, float]] = [(pts_vol[0][0], pts_vol[0][1])]
+        for idx in range(1, len(pts_vol) - 1):
+            t_cur, p_cur, v_cur = pts_vol[idx]
+            if v_cur is not None and v_cur <= 0.0:
+                p_prev, p_next = pts[-1][1], pts_vol[idx + 1][1]
+                if (
+                    min(p_prev, p_next, p_cur) > 0.0
+                    and abs(p_cur - p_prev) / p_prev > 0.04
+                    and abs(p_cur - p_next) / p_next > 0.04
+                    and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
+                ):
+                    continue
+            pts.append((t_cur, p_cur))
+        pts.append((pts_vol[-1][0], pts_vol[-1][1]))
+    else:
+        pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
     if mkey is not None:
         if len(_SORTED_TS_PX_MEMO) >= 32:
             _SORTED_TS_PX_MEMO.clear()
@@ -146,7 +169,27 @@ def compute_volume_profile_metrics(
                         timed_rows.append((pt[0], pt[1], safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0))
                 elif not isinstance(row, (list, tuple)) and (px_f := safe_pos_float(row, 0.0)) > 0.0:
                     scalar_rows.append(px_f)
-            raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])] if timed_rows else [(px_f, 0.0) for px_f in scalar_rows]
+            if timed_rows:
+                s_rows = sorted(timed_rows, key=lambda x: x[0])
+                if any(v > 0.0 for _, _, v in s_rows) and len(s_rows) >= 3:
+                    clean_rows = [s_rows[0]]
+                    for idx in range(1, len(s_rows) - 1):
+                        _, p_c, v_c = s_rows[idx]
+                        if v_c <= 0.0:
+                            p_prv, p_nxt = clean_rows[-1][1], s_rows[idx + 1][1]
+                            if (
+                                min(p_prv, p_nxt, p_c) > 0.0
+                                and abs(p_c - p_prv) / p_prv > 0.04
+                                and abs(p_c - p_nxt) / p_nxt > 0.04
+                                and abs(p_nxt - p_prv) / min(p_prv, p_nxt) <= 0.035
+                            ):
+                                continue
+                        clean_rows.append(s_rows[idx])
+                    clean_rows.append(s_rows[-1])
+                    s_rows = clean_rows
+                raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in s_rows]
+            else:
+                raw_pairs = [(px_f, 0.0) for px_f in scalar_rows]
             has_real_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0) >= max(4, len(raw_pairs) // 4)
 
         samples: list[Tuple[float, float]] = []
@@ -376,12 +419,16 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 low_6h = min(prior_low, recent_low)
                 dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
                 pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
-                if dd_low_6h <= -2.0 and pos_6h <= 0.65 and prior_low > 0.0 and recent_low > 0.0:
+                if dd_low_6h <= -1.75 and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
                     eff_dec = _auto_px_decimals(cur_px)
                     if recent_low < prior_low and cur_px > prior_low:
                         out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
                         out["reclaim_above_prior_low_pct"] = pct_delta(cur_px, prior_low)
-                    elif recent_low >= prior_low and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5 and cur_px > recent_low * 1.002:
+                    elif (
+                        recent_low >= prior_low
+                        and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5
+                        and (cur_px > recent_low * 1.002 or (recent_low > prior_low * 1.002 and cur_px >= recent_low))
+                    ):
                         out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
                         out["higher_low_vs_prior_pct"] = pct_delta(recent_low, prior_low)
                     elif recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5:

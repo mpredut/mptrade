@@ -4382,3 +4382,68 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert pt_sib_90s["TAOUSDC"]["growth_90s"] == 0.00043
     assert pt_sib_90s["TAOUSDC"]["gradient_recent_fast"] == -0.0026
 
+    # Bugs 63, 64 & 65:
+    # - load_symbol_price_series falls back to dense (>10 pts in 24h) cache_watcher_all_price.json when cache_24_price/archive are absent
+    # - enrich_24h_and_microstructure populates 24h Volume Profile, slopes, and vol_1h_pct for SPCX_US_EQ from dense cache_watcher_all_price.json
+    # - collect_pretrade_telemetry loads cache_kalman_price.json into t_entry for liquidation cluster velocity tilt
+    cdir_64 = tmp_path / "cachedb_64"
+    cdir_64.mkdir(exist_ok=True)
+    spcx_dense_watcher = [[now_ms_w3 - (30 - i) * 3600_000, 148.58 - i * 0.25] for i in range(31)]
+    (cdir_64 / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"SPCX": spcx_dense_watcher}}),
+        encoding="utf-8",
+    )
+    s24_64, v7d_64 = load_symbol_price_series(str(cdir_64), "SPCX_US_EQ")
+    assert len(s24_64) >= 24
+    assert len(v7d_64) >= 24
+    pt_64 = {"SPCX_US_EQ": {"price": 138.36}}
+    enrich_24h_and_microstructure(str(cdir_64), str(tmp_path), pt_64, {}, {}, {}, now_ms_w3 / 1000.0)
+    assert pt_64["SPCX_US_EQ"].get("poc_px") is not None
+    assert pt_64["SPCX_US_EQ"].get("slope_15m") is not None
+    assert pt_64["SPCX_US_EQ"].get("vol_1h_pct") is not None
+    (cdir_64 / "venue_balances_state.json").write_text(
+        json.dumps({"pos:trading212:SPCX_US_EQ": {"symbol": "SPCX_US_EQ", "price": 138.36, "qty": 1.0}}),
+        encoding="utf-8",
+    )
+    pt_spcx_64 = collect_pretrade_telemetry("SPCX_US_EQ", cachedb_dir=str(cdir_64))
+    assert "24h Multi-Horizon Price Evolution" in pt_spcx_64
+    assert "24h Volume Profile (POC / Value Area)" in pt_spcx_64
+    assert "7d Price Range & Swing Structure" in pt_spcx_64
+
+    # Wave 11: Discrepancies AN, AP, AQ
+    # - Discrepancy AP: grizzly bear attack headline with "killed" excluded from [HIGH-SEV] crisis keywords
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
+
+    assert filter_valid_severity_keywords(
+        ["attack"],
+        title="Mother and daughter both killed in grizzly bear attack, Canadian authorities confirm - The Guardian",
+    ) == ()
+
+    # - Discrepancy AQ: zero-volume interior synthetic spike bar filtered out in _extract_sorted_ts_px and compute_volume_profile_metrics
+    rgnt_series = [
+        [now_ms_w3 - 40 * 60_000, 1.35, 210.0],
+        [now_ms_w3 - 35 * 60_000, 1.355, 180.0],
+        [now_ms_w3 - 30 * 60_000, 1.36, 300.0],
+        [now_ms_w3 - 26 * 60_000, 1.36, 144.0],
+        [now_ms_w3 - 16 * 60_000, 1.2635, 0.0],  # zero-volume synthetic outlier bar (-7.1% spike)
+        [now_ms_w3 - 11 * 60_000, 1.355, 439.0],
+        [now_ms_w3, 1.32, 0.0],
+    ]
+    rgnt_m24 = compute_24h_price_metrics(rgnt_series)
+    assert rgnt_m24["low_24h"] == 1.32
+    assert rgnt_m24["chg_15m_pct"] < 0.0
+
+    # - Discrepancy AN: BTCUSDC HIGHER_LOW_DOUBLE_BOTTOM preserved during 1h support retest (cur_px >= recent_low > prior_low * 1.002)
+    btc_hl_retest = [
+        [now_ms_w3 - 300 * 60_000, 80455.0],
+        [now_ms_w3 - 240 * 60_000, 78950.0],
+        [now_ms_w3 - 180 * 60_000, 79600.0],
+        [now_ms_w3 - 45 * 60_000, 80200.0],
+        [now_ms_w3 - 20 * 60_000, 79890.07],
+        [now_ms_w3, 79989.95],
+    ]
+    btc_m24_hl = compute_24h_price_metrics(btc_hl_retest)
+    assert btc_m24_hl.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
+    assert btc_m24_hl.get("higher_low_vs_prior_pct") == 1.19
+
+
