@@ -134,6 +134,22 @@ class CompositeMarketIntelligence:
         recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
         side = normalize_order_side(side)
+        if now is not None:
+            now_norm = safe_pos_float(now, default=None)
+            if now_norm is not None and now_norm > 1e11:
+                now_norm /= 1000.0
+            now = now_norm
+        _qlimit2_group = {"g_qlimit2", "internal_quant_limit", "quantitative", "qlimit", "g_qlimit", "gf", "financial", "all", "*"}
+        parabolic_only_bypass = (
+            ("parabolic_surge" in raw_bypass_tokens)
+            and ("weibull_exhaustion" not in raw_bypass_tokens)
+            and not bool(raw_bypass_tokens & _qlimit2_group)
+        )
+        weibull_only_bypass = (
+            ("weibull_exhaustion" in raw_bypass_tokens)
+            and ("parabolic_surge" not in raw_bypass_tokens)
+            and not bool(raw_bypass_tokens & _qlimit2_group)
+        )
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:
@@ -171,7 +187,7 @@ class CompositeMarketIntelligence:
                 return veto
 
         # 2. Parabolic Surge Guard (Anti-FOMO)
-        if not _is_bypassed("G_QLIMIT2", "parabolic_guard", "parabolicsurgeguard"):
+        if not (not weibull_only_bypass and _is_bypassed("G_QLIMIT2", "parabolic_guard", "parabolicsurgeguard", "parabolic_surge")):
             parabolic_dec = self.parabolic_guard.check(
                 symbol, side, price, price_history=price_history, volatility_1h_pct=volatility_1h_pct, now=now
             )
@@ -180,7 +196,7 @@ class CompositeMarketIntelligence:
 
         # 3. Weibull Trend Exhaustion Guard (G_QLIMIT2)
         dur_sec = safe_pos_float(trend_duration_seconds, 0.0)
-        if dur_sec > 0.0 and not _is_bypassed("G_QLIMIT2", "exhaustion_guard", "weibullexhaustionguard"):
+        if dur_sec > 0.0 and not (not parabolic_only_bypass and _is_bypassed("G_QLIMIT2", "exhaustion_guard", "weibullexhaustionguard", "weibull_exhaustion")):
             surv = get_trend_survival_metrics(symbol, dur_sec)
             qlimit1_active = not _is_bypassed("G_QLIMIT1", "qlimit1", "gaussian_horizon")
             inferred_trend_dir = (

@@ -3368,6 +3368,114 @@ def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_o
     assert geo_ok is True and geo_scale == pytest.approx(1.0)
 
 
+def test_iter67_pricewindow_sample_rate_cachetrend_ms_and_composite_granular_qlimit2(tmp_path, monkeypatch):
+    from pricewindow import IncrementalTrendBuffer, PriceWindow
+    from cachetrend import CacheShortTrendManager
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    import qlimit_order_guard
+
+    # 1. PriceWindow._sample_rate_from_entries handles both seconds and milliseconds timestamps identically
+    entries_sec = [[1700000000.0 + i * 10.0, 100.0 + i] for i in range(10)]
+    entries_ms = [[(1700000000.0 + i * 10.0) * 1000.0, 100.0 + i] for i in range(10)]
+    assert PriceWindow._sample_rate_from_entries(entries_sec) == pytest.approx(10.0)
+    assert PriceWindow._sample_rate_from_entries(entries_ms) == pytest.approx(10.0)
+
+    # 2. IncrementalTrendBuffer.step_wols_slope handles overflow power gracefully without returning NaN
+    buf = IncrementalTrendBuffer()
+    for i in range(10):
+        buf.append(100.0 + i, 1700000000.0 + i * 10.0)
+    slope_overflow = buf.step_wols_slope(0, 9, power=1e6)
+    assert slope_overflow == 0.0
+
+    # 3. CacheShortTrendManager._snap_ts_ms, _snapshot_is_usable, and _normalize_dynamic_window_request normalize ms timestamps
+    assert CacheShortTrendManager._snap_ts_ms({"ts": 1700000000.0}) == 1700000000000
+    assert CacheShortTrendManager._snap_ts_ms({"ts": 1700000000000.0}) == 1700000000000
+    snap_sec = {"ts": 1700000000.0, "current_price": 50000.0}
+    snap_ms = {"ts": 1700000000000.0, "current_price": 50000.0}
+    assert CacheShortTrendManager._snapshot_is_usable(snap_sec, 1700000010000.0, 60.0) is True
+    assert CacheShortTrendManager._snapshot_is_usable(snap_ms, 1700000010.0, 60.0) is True
+    mgr = CacheShortTrendManager.__new__(CacheShortTrendManager)
+    norm_req = mgr._normalize_dynamic_window_request("BTCUSDC", 900.0, now=1700000010000.0)
+    assert norm_req is not None and norm_req[2] == pytest.approx(1700000010.0)
+
+    # 4. CompositeMarketIntelligence.evaluate_guards normalizes ms `now` and supports granular parabolic_surge vs weibull_exhaustion bypass
+    intel = CompositeMarketIntelligence(parabolic_surge_pct=4.0, exhaustion_policy="downscale", exhaustion_scale=0.25)
+    liq_col = BybitLiquidationCollector()
+    liq_col.record_event("BTCUSDC", "LONG", 600_000.0, ts=1700000000.0)
+    intel.cascade_guard.collector = liq_col
+    dec_casc = intel.evaluate_guards("BTCUSDC", "BUY", 80000.0, now=1700000010000.0)
+    assert not dec_casc.allowed
+    assert "active_long_liquidation_cascade" in dec_casc.reason
+    intel.cascade_guard.collector = None
+
+    monkeypatch.setattr(
+        "intelligence.composite.get_trend_survival_metrics",
+        lambda sym, dur: {"p90_days": 1.0, "median_days": 0.5, "gaussian_horizon_days": 0.7},
+    )
+    base_ts = 1700000000.0
+    surge_hist = [(base_ts, 80000.0), (base_ts + 60.0, 83000.0), (base_ts + 120.0, 86000.0)]
+    now_ms = (base_ts + 120.0) * 1000.0
+    # Bypassing only parabolic_surge lets WeibullExhaustionGuard downscale an exhausted 3-day trend
+    dec_para_only = intel.evaluate_guards(
+        "ETHUSDC",
+        "BUY",
+        86000.0,
+        price_history=surge_hist,
+        trend_duration_seconds=3.0 * 86400.0,
+        now=now_ms,
+        bypass_guards={"parabolic_surge"},
+    )
+    assert dec_para_only.allowed
+    assert dec_para_only.suggested_scale == pytest.approx(0.25)
+
+    # Bypassing only weibull_exhaustion still enforces ParabolicSurgeGuard
+    dec_weib_only = intel.evaluate_guards(
+        "ETHUSDC",
+        "BUY",
+        86000.0,
+        price_history=surge_hist,
+        trend_duration_seconds=3.0 * 86400.0,
+        now=now_ms,
+        bypass_guards={"weibull_exhaustion"},
+    )
+    assert not dec_weib_only.allowed
+
+    # Bypassing full G_QLIMIT2 bypasses both
+    dec_both = intel.evaluate_guards(
+        "ETHUSDC",
+        "BUY",
+        86000.0,
+        price_history=surge_hist,
+        trend_duration_seconds=3.0 * 86400.0,
+        now=now_ms,
+        bypass_guards={"G_QLIMIT2"},
+    )
+    assert dec_both.allowed and dec_both.suggested_scale == pytest.approx(1.0)
+
+    # Same granular behavior in qlimit_order_guard.check_qlimit2_order_guards
+    margins = {
+        "intelligence_guards_mode": "enforce",
+        "internal_guard_mode": "enforce",
+        "parabolic_surge_pct": 4.0,
+        "parabolic_pullback_pct": 1.5,
+        "weibull_exhaustion_policy": "downscale",
+        "weibull_exhausted_scale": 0.25,
+        "weibull_p90_days": 1.0,
+    }
+    q_ok, q_reason, q_scale = qlimit_order_guard.check_qlimit2_order_guards(
+        "ETHUSDC",
+        "BUY",
+        86000.0,
+        price_history=surge_hist,
+        trend_duration_seconds=3.0 * 86400.0,
+        margins=margins,
+        now=now_ms,
+        bypass_guards={"parabolic_surge"},
+    )
+    assert q_ok is True and q_scale == pytest.approx(0.25)
+
+
 if __name__ == "__main__":
     unittest.main()
 

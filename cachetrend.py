@@ -346,7 +346,9 @@ class CacheShortTrendManager(CacheManagerInterface):
             else snap.get("ts_fast")
         )
         ts_f = safe_pos_float(ts_val, default=None)
-        return int(ts_f * 1000) if ts_f is not None else None
+        if ts_f is None:
+            return None
+        return int(ts_f) if ts_f > 1e11 else int(ts_f * 1000)
 
     def rebuild_fetchtimes(self):
         last_times = {}
@@ -810,6 +812,8 @@ class CacheShortTrendManager(CacheManagerInterface):
             now = safe_pos_float(now, default=None)
             if now is None:
                 return None
+            if now > 1e11:
+                now /= 1000.0
         min_sec = _cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", CM_DYNAMIC_WINDOW_MIN_SEC)
         max_sec = _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC)
         clamped = min(max(req, min_sec), max_sec)
@@ -1437,6 +1441,10 @@ class CacheShortTrendManager(CacheManagerInterface):
         price = safe_pos_float(snap.get("current_price"), default=None)
         if now_f is None or max_age_f is None or observed_at is None or price is None:
             return False
+        if now_f > 1e11:
+            now_f /= 1000.0
+        if observed_at > 1e11:
+            observed_at /= 1000.0
         age = now_f - observed_at
         return -5.0 <= age <= max_age_f
 

@@ -107,8 +107,24 @@ def check_qlimit2_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
+    raw_bypass_tokens = GUARD_REGISTRY["G_QLIMIT2"]._coerce_bypass_set(bypass_guards) if bypass_guards else set()
+    _qlimit2_group = {"g_qlimit2", "internal_quant_limit", "quantitative", "qlimit", "g_qlimit", "gf", "financial", "all", "*"}
+    parabolic_only_bypass = (
+        ("parabolic_surge" in raw_bypass_tokens)
+        and ("weibull_exhaustion" not in raw_bypass_tokens)
+        and not bool(raw_bypass_tokens & _qlimit2_group)
+    )
+    weibull_only_bypass = (
+        ("weibull_exhaustion" in raw_bypass_tokens)
+        and ("parabolic_surge" not in raw_bypass_tokens)
+        and not bool(raw_bypass_tokens & _qlimit2_group)
+    )
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
-    if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
+    if (
+        "all" in bypassed
+        or "*" in bypassed
+        or (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
+    ):
         return True, "stop_loss_exempt", 1.0
 
     order_side = normalize_side(side)
@@ -154,7 +170,7 @@ def check_qlimit2_order_guards(
         except Exception:
             pass
 
-    if history and px_clean > 0.0:
+    if history and px_clean > 0.0 and not parabolic_only_bypass and not bool(raw_bypass_tokens & {"parabolic_guard", "parabolicsurgeguard"}):
         p_dec = p_guard.check(symbol, order_side, px_clean, price_history=history, now=now)
         if not p_dec.allowed:
             prefix = "[INTELLIGENCE_GUARD_SHADOW]" if mode == "shadow" else "[INTELLIGENCE_GUARD_ENFORCE]"
@@ -168,7 +184,7 @@ def check_qlimit2_order_guards(
         symbol, trend_duration_seconds, regime_context, fallback_resolver=_resolve_trend_duration
     )
 
-    if dur_sec > 0.0:
+    if dur_sec > 0.0 and not weibull_only_bypass and not bool(raw_bypass_tokens & {"exhaustion_guard", "weibullexhaustionguard"}):
         ctx_rt = obj_attr(regime_context, "resolved_trend") or obj_attr(regime_context, "regime")
         if explicit_duration_override and ctx_rt is None:
             trend_dir = None

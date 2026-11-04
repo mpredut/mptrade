@@ -510,8 +510,9 @@ class IncrementalTrendBuffer:
 
         if m <= _STEP_WOLS_DIRECT_MAX_STEPS or pwr not in (1.0, 2.0, 3.0):
             f = np.asarray(p[a: b + 1], dtype=np.float64)
-            w = np.arange(1, m + 1, dtype=np.float64) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=np.float64)
-            val = float(np.dot(w, np.diff(f)) / np.sum(w))
+            with np.errstate(over="ignore", invalid="ignore"):
+                w = np.arange(1, m + 1, dtype=np.float64) ** pwr if pwr != 1.0 else np.arange(1, m + 1, dtype=np.float64)
+                val = safe_float(np.dot(w, np.diff(f)) / np.sum(w), default=None)
         elif pwr == 1.0:
             # O(1) Linear Abel summation:
             # sum_{k=1..m} k (y_{a+k} - y_{a+k-1}) = m * dy_b - sum_{r=0..m-1} dy_{a+r}
@@ -519,7 +520,7 @@ class IncrementalTrendBuffer:
             a0, _, _ = self._raw_moment_range(a, b - 1)
             total = float(m) * (ref_last - y_ref) - a0
             s1 = 0.5 * float(m) * float(m + 1)
-            val = float(total / s1)
+            val = safe_float(total / s1, default=None)
         elif pwr == 2.0:
             # O(1) Quadratic Abel summation:
             # sum_{k=1..m} k^2 (y_{a+k} - y_{a+k-1}) = m^2 dy_b - sum_{r=0..m-1} (2r + 1) dy_{a+r}
@@ -530,7 +531,7 @@ class IncrementalTrendBuffer:
             m2 = float(m) ** 2
             total = m2 * (ref_last - y_ref) - sum_2r1
             s2 = (float(m) * float(m + 1) * float(2 * m + 1)) / 6.0
-            val = float(total / s2)
+            val = safe_float(total / s2, default=None)
         else:
             # O(1) Cubic Abel summation (p=3):
             y_ref = self.y_ref if self.y_ref is not None else 0.0
@@ -836,7 +837,7 @@ class PriceWindow:
                     continue
                 ts_f = safe_float(e[0], default=None)
                 if ts_f is not None:
-                    timestamps_sec.append(ts_f / 1000.0)
+                    timestamps_sec.append(ts_f / 1000.0 if ts_f > 1e11 else ts_f)
         except TypeError:
             return DEFAULT_SAMPLE_RATE_SEC
         if len(timestamps_sec) < 2:

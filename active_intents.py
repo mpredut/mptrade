@@ -38,7 +38,16 @@ DEFAULT_SOURCES = (
     StateSource("hyperliquid", "hyperliquid/.state_*.json"),
 )
 
-_TERMINAL = {"closed", "filled", "canceled", "cancelled", "expired", "rejected"}
+_TERMINAL = {
+    "closed",
+    "filled",
+    "canceled",
+    "cancelled",
+    "expired",
+    "rejected",
+    "refused",
+    "refused_before_submit",
+}
 _INVALID_SCALAR_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
 
 
@@ -91,8 +100,12 @@ def _intent_row(row: dict, *, owner: str, source: str, location: str,
     side_str = normalize_side(side)
     if side_str not in {"BUY", "SELL"}:
         return None
+    for status_field in ("last_status", "status", "lifecycle", "submission_outcome", "submit_status"):
+        field_val = _first(row, status_field)
+        if field_val is not None and str(field_val).strip().lower() in _TERMINAL:
+            return None
     status = str(_first(
-        row, "submission_outcome", "lifecycle", "last_status", "status",
+        row, "last_status", "status", "lifecycle", "submission_outcome", "submit_status",
     ) or ("accepted" if order_id else "pending")).strip().lower()
     terminal_payload = row.get("terminal_status")
     if isinstance(terminal_payload, dict):
@@ -195,8 +208,8 @@ def _build_summary(intents: list[dict], exposures: list[dict]) -> dict:
     for it in intents:
         sym = it.get("symbol") or "UNKNOWN"
         side = (it.get("side") or "").upper()
-        req_qty = safe_float(it.get("requested_qty"), default=0.0)
-        exec_qty = safe_float(it.get("executed_qty"), default=0.0)
+        req_qty = safe_nonneg_float(it.get("requested_qty"), default=0.0) or 0.0
+        exec_qty = safe_nonneg_float(it.get("executed_qty"), default=0.0) or 0.0
         unfilled = max(0.0, req_qty - exec_qty)
         price_val = safe_pos_float(it.get("requested_price"), default=None)
         notional = (unfilled * price_val) if price_val is not None else 0.0
@@ -293,6 +306,8 @@ def format_summary(result: dict) -> str:
                 parts.append(f"BUY ${buy_v:.2f}")
             if sell_v:
                 parts.append(f"SELL ${sell_v:.2f}")
+            if not parts:
+                parts.append("$0.00")
             lines.append(f"  - {sym}: {', '.join(parts)}")
     else:
         lines.append("  (none)")

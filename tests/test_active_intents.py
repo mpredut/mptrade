@@ -198,4 +198,60 @@ def test_normalizes_px_sz_filled_sz_side_and_venue_aliases(tmp_path):
     assert result["summary"]["pending_notional"]["total_buy"] == 200.0
 
 
+def test_iter67_terminal_shadowing_refused_status_negative_exec_qty_and_zero_notional_summary(tmp_path):
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    _write(
+        outbox,
+        [
+            # Order where submission_outcome remained 'accepted' but last_status is 'canceled' -> terminal, must be excluded
+            {
+                "intent_id": "term-shadow-1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "requested_price": 60000.0,
+                "submission_outcome": "accepted",
+                "last_status": "canceled",
+            },
+            # Order refused pre-submit -> terminal, must be excluded
+            {
+                "intent_id": "refused-1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "requested_price": 60000.0,
+                "submission_outcome": "refused",
+                "submit_status": "refused_before_submit",
+            },
+            # Active order with partial status and corrupt negative executed_qty -> status='partial', unfilled clamped to req_qty
+            {
+                "intent_id": "active-partial-1",
+                "symbol": "ETHUSDC",
+                "side": "BUY",
+                "qty": 2.0,
+                "executed_qty": -1.0,
+                "requested_price": 3000.0,
+                "submission_outcome": "accepted",
+                "last_status": "partial",
+            },
+            # Active order with no price -> 0 notional, format_summary prints $0.00 instead of empty colon
+            {
+                "intent_id": "active-noprice-1",
+                "symbol": "SOLUSDC",
+                "side": "SELL",
+                "qty": 5.0,
+                "lifecycle": "pending",
+            },
+        ],
+        lines=True,
+    )
+    result = build_active_intent_index(str(tmp_path))
+    by_id = {row["intent_id"]: row for row in result["intents"]}
+    assert set(by_id.keys()) == {"active-partial-1", "active-noprice-1"}
+    assert by_id["active-partial-1"]["status"] == "partial"
+    assert result["summary"]["pending_notional"]["by_symbol"]["ETHUSDC"]["buy"] == 6000.0
+    formatted = format_summary(result)
+    assert "SOLUSDC: $0.00" in formatted
+
+
 
