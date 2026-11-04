@@ -45,25 +45,37 @@ DEFAULT_SYMBOLS = ["BTC", "TAO", "HYPE"]
 # ============================================
 
 class PricePlatformInterface(ABC):
+    _supported_symbols: Set[str]
+    _last_refresh: float = 0.0
+    _refresh_interval: float = 0.0
+
     @abstractmethod
     def get_price(self, symbol: str) -> Optional[float]:
         pass
-    
-    @abstractmethod
-    def supports_symbol(self, symbol: str) -> bool:
-        pass
-    
-    @abstractmethod
-    def get_available_symbols(self) -> Set[str]:
-        pass
-    
+
     @property
     @abstractmethod
     def platform_name(self) -> str:
         pass
-    
-    def refresh_symbols(self):
+
+    def _can_refresh_symbols(self) -> bool:
+        return self._refresh_interval > 0
+
+    def _load_symbols(self):
         pass
+
+    def refresh_symbols(self):
+        if self._can_refresh_symbols() and time.time() - self._last_refresh > self._refresh_interval:
+            self._load_symbols()
+
+    def get_available_symbols(self) -> Set[str]:
+        self.refresh_symbols()
+        return getattr(self, "_supported_symbols", set()).copy()
+
+    def supports_symbol(self, symbol: str) -> bool:
+        if not self._can_refresh_symbols():
+            return False
+        return self._supports_in_set(symbol, getattr(self, "_supported_symbols", set()))
 
     def _supports_in_set(self, symbol: str, symbols_set: Set[str]) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
@@ -160,15 +172,7 @@ class BinancePricePlatform(PricePlatformInterface):
             "SOLUSDC": "SOLUSDC", "ADAUSDC": "ADAUSDC", "DOGEUSDC": "DOGEUSDC",
             "XRPUSDC": "XRPUSDC", "TAOUSDC": "TAOUSDC", "ARBUSDC": "ARBUSDC"
         }
-    
-    def refresh_symbols(self):
-        if time.time() - self._last_refresh > self._refresh_interval:
-            self._load_symbols()
-    
-    def get_available_symbols(self) -> Set[str]:
-        self.refresh_symbols()
-        return self._supported_symbols.copy()
-    
+
     def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
         if not isinstance(symbol, str) or not symbol.strip():
             return None
@@ -247,18 +251,7 @@ class HyperliquidPricePlatform(PricePlatformInterface):
             if not self._supported_symbols:
                 self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC", "TAO", "ARB", "DOGE"}
             self._last_refresh = time.time()
-    
-    def refresh_symbols(self):
-        if time.time() - self._last_refresh > self._refresh_interval:
-            self._load_symbols()
-    
-    def get_available_symbols(self) -> Set[str]:
-        self.refresh_symbols()
-        return self._supported_symbols.copy()
-    
-    def supports_symbol(self, symbol: str) -> bool:
-        return self._supports_in_set(symbol, self._supported_symbols)
-    
+
     def get_price(self, symbol: str) -> Optional[float]:
         try:
             if not isinstance(symbol, str) or not symbol.strip():
@@ -375,18 +368,8 @@ class CoinMarketCapPricePlatform(PricePlatformInterface):
             print(f"[CMCPlatform] Warning loading symbols: {e}")
             self._last_refresh = time.time()  # Do not retest immediately; honour _refresh_interval.
 
-    def refresh_symbols(self):
-        if self.api_key and time.time() - self._last_refresh > self._refresh_interval:
-            self._load_symbols()
-    
-    def get_available_symbols(self) -> Set[str]:
-        self.refresh_symbols()
-        return self._supported_symbols.copy()
-    
-    def supports_symbol(self, symbol: str) -> bool:
-        if not self.api_key:
-            return False
-        return self._supports_in_set(symbol, self._supported_symbols)
+    def _can_refresh_symbols(self) -> bool:
+        return bool(self.api_key)
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
         if not isinstance(data, dict):
@@ -467,13 +450,11 @@ class StockYahooPricePlatform(PricePlatformInterface):
             for t in src
             if isinstance(t, str) and t.strip()
         }
+        self._supported_symbols = self._symbols
 
     @property
     def platform_name(self) -> str:
         return "Yahoo"
-
-    def get_available_symbols(self) -> Set[str]:
-        return self._symbols.copy()
 
     def supports_symbol(self, symbol: str) -> bool:
         # Accept only configured tickers; do not divert crypto or make a network call here.

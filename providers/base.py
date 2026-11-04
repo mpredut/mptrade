@@ -166,6 +166,15 @@ class MarketDataProvider(ABC):
         """Reject a symbol incompatible with this configured provider instance."""
         return None
 
+    def _ensure_client_lock(self):
+        lock = getattr(self, "_client_lock", None)
+        if lock is None:
+            import threading
+
+            lock = threading.RLock()
+            self._client_lock = lock
+        return lock
+
     @property
     @abstractmethod
     def name(self) -> str:

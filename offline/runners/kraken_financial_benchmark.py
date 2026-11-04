@@ -18,8 +18,8 @@ if str(ROOT) not in sys.path:
 
 from botcore import safe_int, safe_nonneg_float, safe_pos_float  # noqa: E402
 from state_io import atomic_write_json, atomic_write_text, read_json_file  # noqa: E402
-from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
+from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.comparison import format_number as _format  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402

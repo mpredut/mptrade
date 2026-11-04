@@ -140,3 +140,18 @@ def classify_hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -
     if h_f < lo_f:
         return "mean_reverting"
     return "random_walk"
+
+
+mann_kendall = calculate_mann_kendall
+hurst_rs = calculate_hurst_exponent
+
+
+def hurst_regime(h: float | None, lo: float = 0.45, hi: float = 0.55) -> str:
+    """Classify Hurst exponent into legacy regime strings."""
+    regime = classify_hurst_regime(h, lo=lo, hi=hi)
+    return {
+        "unknown": "necunoscut",
+        "mean_reverting": "mean-reverting",
+        "random_walk": "random-walk",
+    }.get(regime, regime)
+

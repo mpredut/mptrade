@@ -752,6 +752,28 @@ class TrailingAdapterBase:
         mod_globals = getattr(type(self).__init__, "__globals__", {}) or {}
         return mod_globals.get(name, default)
 
+    def trail_pct_for(self, symbol: str) -> float:
+        raw_default = self._module_attr("DEFAULT_TRAIL_PCT", None)
+        default_pct = safe_pos_float(raw_default, default=float(raw_default)) if raw_default is not None else None
+        if not isinstance(symbol, bool) and isinstance(symbol, str) and symbol.strip():
+            trail_map = self._module_attr("TRAIL_PCT")
+            val = self._lookup_symbol_entry(
+                trail_map,
+                symbol,
+                predicate=lambda v: safe_pos_float(v, default=None) is not None,
+            )
+            if val is not None:
+                return float(safe_pos_float(val, default=val))
+        if default_pct is not None:
+            return float(default_pct)
+        raise KeyError(symbol)
+
+    def _submit_and_clear_if_refused(self, intent, persist, submit_fn):
+        result = self.order_lifecycle.submit(intent, persist=persist, submit=submit_fn)
+        if result.outcome == "refused":
+            persist(None)
+        return result
+
     def rebuy_enabled_for(self, symbol: str) -> bool:
         """Per-coin re-buy switch (registry trailing.rebuy: on/off/auto), falling back to REBUY_ENABLED."""
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():

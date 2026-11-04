@@ -27,6 +27,9 @@ from botcore import (  # noqa: E402,F401  (re-export compatibility)
     exact_int, exact_pos_int, exact_nonneg_int,
     now_str,
 )
+from notify_engine.alertnotifiers import bind_notify  # noqa: E402
+
+notify = bind_notify(("SYMBOL_LABEL", "HL_COIN"), "HL")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 

@@ -71,7 +71,7 @@ def _cmd_status(client: HLClient, params: DNParams) -> int:
 def _cmd_watch(client: HLClient, params: DNParams, desktop: bool, once: bool = False) -> int:
     """Read-only monitor of the REAL position: ZERO orders, only reads and alerts.
     Safe to run alongside the server bot for redundant supervision."""
-    from notify import notify
+    from common import notify
     log("=== DN MONITOR (read-only — it places NO orders) ===")
     log(f"    coin={params.coin}  checks every {params.check_minutes} min  alerts: liquidation<{params.liq_alert_pct}%, delta, negative funding, position gone")
     armed = {"liq": True, "delta": True, "fund": True, "gone": True}

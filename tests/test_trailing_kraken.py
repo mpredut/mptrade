@@ -21,8 +21,7 @@ from kraken_common import parse_dotenv  # noqa: E402
 import kraken_xstock_watch as xw  # noqa: E402
 import kraken.trailing_stop as ts_mod
 from kraken.trailing_stop import KrakenTrailing, should_sell
-
-_xstock_strategy = load_local_module(_KRAKEN_DIR, "strategy", module_key="kraken_xstock_strategy_under_test")
+from strategies import spot_engine as _xstock_strategy
 
 
 class FakeK:

@@ -27,7 +27,7 @@ if _ROOT not in sys.path:
 from kraken.backtest import _bt_params, fetch_candles, simulate
 from kraken.kraken_common import safe_float, safe_int, safe_pos_float
 from kraken.market_data import fetch_ohlc_candles
-from kraken import replay as rp
+from strategies import spot_replay as rp
 from offline.backtests.metrics import buy_hold_pct as bh
 
 

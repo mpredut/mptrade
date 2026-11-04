@@ -43,7 +43,12 @@ T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
 
 
 def _resolve_facade_attr(name: str, current: Any, default: Any) -> Any:
-    return resolve_patched_attr(name, default, local_val=current, modules=("forecast.trend_survival",))
+    return resolve_patched_attr(
+        name,
+        default,
+        local_val=current,
+        modules=("intelligence.internal.state.survival", "forecast.trend_survival"),
+    )
 
 
 def _effective_t_cache_file() -> str:

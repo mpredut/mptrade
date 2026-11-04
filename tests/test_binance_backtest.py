@@ -12,8 +12,12 @@ from binance_api.market_data import (
     interval_to_binance_str,
     parse_interval_minutes,
 )
-from binance_api.replay import make_binance_replay_adapter, StratParams, run_replay
-from kraken.replay import make_kraken_replay_adapter
+from strategies.spot_replay import (
+    StratParams,
+    make_binance_replay_adapter,
+    make_kraken_replay_adapter,
+    run_replay,
+)
 from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
 from offline.backtests.metrics import validate_replay_metrics
 

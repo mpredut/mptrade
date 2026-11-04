@@ -28,10 +28,9 @@ for _p in (_HL_DIR, _ROOT_DIR):
 
 from botcore import _parse_bool_flag, safe_float, safe_pos_float
 from common import (
-    log, now_str, required_env, defined_env, required_float_env,
+    log, notify, now_str, required_env, defined_env, required_float_env,
     required_int_env, required_bool_env,
 )
-from notify import notify
 from hl_client import HLClient
 from state_io import atomic_write_json, load_json_state
 

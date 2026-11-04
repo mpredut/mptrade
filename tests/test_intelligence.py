@@ -2227,7 +2227,6 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
 
 
 def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision(tmp_path, monkeypatch):
-    import forecast.trend_survival as fts_mod
     from intelligence.composite import CompositeMarketIntelligence
     from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
     from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
@@ -2359,19 +2358,19 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
     assert v_flat == 0.0
     assert v_spike is not None and v_spike > 50.0
 
-    # 5. survival respects monkeypatches on forecast.trend_survival and ignores n=0 cached entries for gaussian_horizon_days
+    # 5. survival respects monkeypatches on survival module and ignores n=0 cached entries for gaussian_horizon_days
     t_cache_file = tmp_path / "cache_T_iter57.json"
     t_cache_file.write_text(
         json.dumps({"NEWCOINUSDC": {"T": 14, "n": 0, "w": 0.0, "median_d": None, "p90_d": None, "ts": fixed_now}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(fts_mod, "T_CACHE_FILE", str(t_cache_file))
+    monkeypatch.setattr(surv_mod, "T_CACHE_FILE", str(t_cache_file))
     surv_mod._T_CACHE_FILE_MEMO.clear()
     m_zero_n = surv_mod.get_trend_survival_metrics("NEWCOINUSDC", trend_duration_seconds=86400.0)
     assert m_zero_n["gaussian_horizon_days"] is None
     assert m_zero_n["T"] == pytest.approx(8.0)
 
-    monkeypatch.setattr(fts_mod, "estimate_T", lambda sym: {"T": 9.5, "n": 12, "median_d": 3.5, "p90_d": 8.0})
+    monkeypatch.setattr(surv_mod, "estimate_T", lambda sym: {"T": 9.5, "n": 12, "median_d": 3.5, "p90_d": 8.0})
     m_net = surv_mod.get_trend_survival_metrics("UNLISTEDCOIN", trend_duration_seconds=86400.0, allow_network=True)
     assert m_net["T"] == pytest.approx(9.5)
     assert m_net["gaussian_horizon_days"] == pytest.approx(round(9.5 * 1.4, 4))

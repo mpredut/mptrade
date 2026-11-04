@@ -136,10 +136,12 @@ def test_spot_replay_adapters_ssot():
     """All spot replay adapters delegate to strategies.spot_replay.make_spot_replay_adapter."""
     import importlib.util
     from pathlib import Path
-    from binance_api.replay import make_binance_replay_adapter
-    from kraken.replay import make_kraken_replay_adapter
     from strategies.spot_engine import StratParams
-    from strategies.spot_replay import make_spot_replay_adapter
+    from strategies.spot_replay import (
+        make_binance_replay_adapter,
+        make_kraken_replay_adapter,
+        make_spot_replay_adapter,
+    )
 
     hl_path = Path(__file__).resolve().parents[1] / "hyperliquid" / "replay.py"
     spec = importlib.util.spec_from_file_location("hl_replay_ssot_test", str(hl_path))
@@ -505,9 +507,9 @@ def test_backtest_suppresses_real_gemini_and_notifications(monkeypatch):
 
 
 def test_kraken_continuous_grid_load_asset_prewarms_trend_series(tmp_path, monkeypatch):
-    """kraken.replay exports prewarm_trend_series and kraken_continuous_grid.grid.load_asset succeeds over >WARM bars."""
+    """spot_replay exports prewarm_trend_series and kraken_continuous_grid.grid.load_asset succeeds over >WARM bars."""
     import offline.research.kraken_continuous_grid.grid as kgrid
-    from kraken import replay as krp
+    from strategies import spot_replay as krp
 
     assert hasattr(krp, "prewarm_trend_series")
     csv_path = tmp_path / "TEST_240m.csv"
@@ -6590,7 +6592,7 @@ def test_load_venue_module_ssot_stratparams_from_dict_and_hl_candles_validation(
     from offline.backtests.evaluation import load_venue_module
     from offline.runners.fetch_hyperliquid_candles import _parse_intervals, validate_continuity
     from strategies.spot_engine import StratParams as SpotStratParams
-    from binance_api import replay as binance_replay
+    from strategies import spot_replay as binance_replay
 
     # 1. load_venue_module loads hyperliquid and 212trading modules without mutating sys.path
     orig_path = list(sys.path)
@@ -6765,8 +6767,8 @@ def test_t212_backtest_simulate_trail_and_calibrate_audit_fmt():
 
 def test_replay_align_exports_grid_replay_vol_chronos_and_sim_normalize(monkeypatch):
     """Verify align_spot_interval_params re-exports, kraken_continuous_grid interval alignment, vol_chronos list/inf handling, and PriceWindow.normalize_indices."""
-    from kraken import replay as kraken_rp
-    from binance_api import replay as binance_rp
+    from strategies import spot_replay as kraken_rp
+    from strategies import spot_replay as binance_rp
     from offline.research.kraken_continuous_grid import grid as kgrid
     from offline.research.ml_forecast import vol_chronos
     from offline.simulations.sim import PriceWindow

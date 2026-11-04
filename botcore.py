@@ -1002,11 +1002,9 @@ _AMBIGUOUS_LOCAL_MODULES = (
     "market_data",
     "replay",
     "common",
-    "notify",
     "hl_client",
     "t212_client",
     "ipo_common",
-    "ipo_notify",
 )
 
 

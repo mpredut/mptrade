@@ -32,18 +32,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from kraken.kraken_common import (
-        _parse_bool_flag, exact_pos_int, log, load_env_stack, optional_env, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, notify, optional_env, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
-    from kraken.notify import notify
     from kraken.kraken_client import KrakenClient, KrakenError
     from kraken.market_data import is_pair_status_tradable
 except ImportError:
     from kraken_common import (
-        _parse_bool_flag, exact_pos_int, log, load_env_stack, optional_env, single_instance, required_env,
+        _parse_bool_flag, exact_pos_int, log, load_env_stack, notify, optional_env, single_instance, required_env,
         required_float_env, required_bool_env, safe_float, safe_pos_float, safe_nonneg_float,
     )
-    from notify import notify
     from kraken_client import KrakenClient, KrakenError
     from market_data import is_pair_status_tradable
 from botcore import touch_module_heartbeat
@@ -462,10 +460,7 @@ def run_trial(client: KrakenClient, desktop: bool) -> int:
             except (OSError, TypeError, ValueError):
                 pass
         if trial_pair:                                           # remove the bot's paper state
-            try:
-                from kraken.strategy import state_path_for
-            except ImportError:
-                from strategy import state_path_for
+            from strategies.spot_engine import state_path_for
             sp = state_path_for(trial_pair)
             if os.path.exists(sp):
                 os.remove(sp)

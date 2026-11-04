@@ -37,13 +37,9 @@ if _ROOT not in sys.path:
 if _HERE not in sys.path:
     sys.path.append(_HERE)
 
-from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, required_bool_env,  # noqa: E402
+from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, notify, required_bool_env,  # noqa: E402
                            required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float)
 from kraken_client import KrakenClient  # noqa: E402
-try:
-    from kraken.notify import notify  # noqa: E402
-except ImportError:
-    from notify import notify  # noqa: E402
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
     COST_BASIS_LOOKBACK_S as _COST_BASIS_LOOKBACK_S,
@@ -176,21 +172,6 @@ class KrakenTrailing(TrailingAdapterBase):
             missing_confirmations=2, retry_on_lookup_error=False,
             max_age_seconds=180,
         )
-
-    def trail_pct_for(self, asset: str) -> float:
-        default_pct = safe_pos_float(
-            self._module_attr("DEFAULT_TRAIL_PCT", DEFAULT_TRAIL_PCT),
-            default=float(DEFAULT_TRAIL_PCT),
-        )
-        if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
-            return default_pct
-        trail_map = self._module_attr("TRAIL_PCT", TRAIL_PCT)
-        val = self._lookup_symbol_entry(
-            trail_map,
-            asset,
-            predicate=lambda v: safe_pos_float(v, default=None) is not None,
-        )
-        return float(safe_pos_float(val, default=default_pct)) if val is not None else default_pct
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:
@@ -380,16 +361,14 @@ class KrakenTrailing(TrailingAdapterBase):
                 intent["requested_qty"] = qty
                 intent["submitted_qty"] = qty
 
-        result = self.order_lifecycle.submit(
-            intent, persist=persist,
-            submit=lambda: self.executor.submit_order_with_intent(
+        return self._submit_and_clear_if_refused(
+            intent,
+            persist,
+            lambda: self.executor.submit_order_with_intent(
                 intent["intent_id"], pair, side.lower(), qty, price,
                 market=market, kind=kind,
                 client_order_id=intent["client_order_id"]),
         )
-        if result.outcome == "refused":
-            persist(None)
-        return result
 
     # -- one step / loop -------------------------------------------------------
     def check_once(self) -> None:

@@ -58,16 +58,6 @@ class SpotModuleBoundaryTest(unittest.TestCase):
                 initial_state=spot_engine._new_state(),
             )
 
-    def test_legacy_kraken_module_reexports_canonical_engine(self):
-        path = os.path.join(ROOT, "kraken", "strategy.py")
-        spec = importlib.util.spec_from_file_location("legacy_kraken_strategy", path)
-        legacy = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(legacy)
-
-        self.assertIs(legacy.Strategy, spot_engine.Strategy)
-        self.assertIs(legacy.StratParams, spot_engine.StratParams)
-        self.assertEqual(legacy._new_state(), spot_engine._new_state())
-
     def test_default_state_path_stays_in_legacy_kraken_directory(self):
         expected = os.path.join(ROOT, "kraken", ".state_HYPEUSD.json")
         self.assertEqual(spot_engine.state_path_for("HYPE/USD"), expected)

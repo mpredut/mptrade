@@ -231,11 +231,7 @@ class KrakenProvider(MarketDataProvider):
     def _client(self):
         if self._cli is not None:
             return self._cli
-        lock = getattr(self, "_client_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            self._client_lock = lock
-        with lock:
+        with self._ensure_client_lock():
             if self._cli is not None:
                 return self._cli
             KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
@@ -273,11 +269,7 @@ class KrakenProvider(MarketDataProvider):
         fb = getattr(self, "_bot_fallback_cli", None)
         if fb is not None:
             return fb
-        lock = getattr(self, "_client_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            self._client_lock = lock
-        with lock:
+        with self._ensure_client_lock():
             fb = getattr(self, "_bot_fallback_cli", None)
             if fb is not None:
                 return fb

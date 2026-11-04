@@ -105,7 +105,7 @@ py-modules = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["212trading*", "binance_api*", "forecast*", "lock*", "providers*", "shmem*", "strategies*"]
+include = ["212trading*", "binance_api*", "lock*", "providers*", "shmem*", "strategies*"]
 exclude = [
     "tests*",
     "__pycache__*",

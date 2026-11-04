@@ -23,15 +23,14 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import ensure_local_module_priority  # noqa: E402
-ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "market_data", "t212_client")
+ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from ipo_common import (
-    log as _log, are_close, required_env, required_float_env,
+    log as _log, notify, are_close, required_env, required_float_env,
     required_int_env, required_bool_env, _parse_bool_flag, safe_float,
     safe_pos_float, safe_nonneg_float, exact_int, exact_pos_int, exact_nonneg_int,
     normalize_epoch_sec,
 )
-from ipo_notify import notify
 from market_data import get_eur_usd, get_usd_ron, get_price_usd, t212_to_yahoo, trend_slope_pct
 from t212_client import T212Client
 from providers.base import (
@@ -42,6 +41,7 @@ from providers.strategy_executor import OrderNotFound, ProviderError
 from providers.t212_provider import T212Provider, _t212_tickers_match
 from strategies.base_spot_mixin import (
     BaseSpotMixin,
+    SpotParamsMixin,
     load_common_core_strat_env,
     load_common_mhdpa_env,
     parse_max_dca_buys_env,
@@ -146,7 +146,7 @@ def adapt_ladder_rungs(
 
 
 @dataclass
-class StratParams:
+class StratParams(SpotParamsMixin):
     currency: str
     entry_amount: float
     entry_discount_pct: float
@@ -200,11 +200,6 @@ class StratParams:
         "validity": "DAY", "enable_takeprofit": True, "order_ttl_min": 10.0,
         "stop_loss_pct": 10.0,
     }
-
-    @classmethod
-    def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
-        """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":

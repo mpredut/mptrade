@@ -23,6 +23,9 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from ipo_common im
     exact_int, exact_pos_int, exact_nonneg_int, normalize_epoch_sec, resolve_now_ts,
     is_us_rth_open,
 )
+from notify_engine.alertnotifiers import bind_notify  # noqa: E402
+
+notify = bind_notify(("SYMBOL_LABEL", "YAHOO_SYMBOL"), "STOCK")
 
 
 def load_t212_market_data():

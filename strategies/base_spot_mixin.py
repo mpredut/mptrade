@@ -27,9 +27,19 @@ from intelligence.internal.state.volatility import (
 from providers.base import clean_order_id as _clean_order_id, normalize_side
 from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
-    JsonStateStore, build_strategy_exit_manager,
+    JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
+
+
+class SpotParamsMixin:
+    """Shared from_dict constructor for spot and T212 StratParams dataclasses."""
+
+    @classmethod
+    def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False):
+        """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
+        return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
+
 
 
 def load_common_core_strat_env(env: dict | None, *, include_entry_dca: bool = True) -> dict[str, Any]:

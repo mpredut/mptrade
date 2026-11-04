@@ -23,9 +23,9 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
-from kraken import replay as kraken_replay
 from state_io import atomic_write_json, atomic_write_text, read_json_file, read_text_file
 from strategies.spot_engine import StratParams
+from strategies import spot_replay as kraken_replay
 from strategies.spot_replay import align_spot_interval_params
 from offline.backtests.datasets import load_dataset
 from offline.backtests.walk_forward import walk_forward_splits

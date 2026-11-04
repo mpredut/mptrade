@@ -22,3 +22,6 @@ from botcore import (  # noqa: E402,F401  (re-export: compat `from common import
     exact_int, exact_pos_int, exact_nonneg_int,
     now_str,
 )
+from notify_engine.alertnotifiers import bind_notify  # noqa: E402
+
+notify = bind_notify(("SYMBOL_LABEL", "KRAKEN_PAIR"), "CRYPTO")

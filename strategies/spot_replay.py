@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import sys
+from unittest.mock import MagicMock
 
 from botcore import safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from offline.backtests.execution import (
@@ -23,6 +25,7 @@ from offline.backtests.execution import (
 from offline.backtests.metrics import calculate_performance_metrics, round_metric
 from providers.strategy_executor import PairPrecision
 from strategies import spot_engine as _strat
+from strategies.spot_engine import StratParams, Strategy, notify
 
 _REPLAY_PRECISION = PairPrecision(5, 8, 0.0, "REPLAY")
 _LAST_REPLAY_DIAG: dict = {}
@@ -421,6 +424,21 @@ def make_spot_replay_adapter(
         )
 
     return _adapter
+
+
+def make_kraken_replay_adapter(params: StratParams, fee_pct: float = 0.25, **kwargs):
+    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
+
+
+def make_binance_replay_adapter(params: StratParams, fee_pct: float = 0.10, **kwargs):
+    """Return a generic ReplayFunction compatible with evaluation.py walk-forward benchmarks."""
+    return make_spot_replay_adapter(params, fee_pct=fee_pct, **kwargs)
+
+
+sys.modules.setdefault("kraken.replay", sys.modules[__name__])
+sys.modules.setdefault("binance_api.replay", sys.modules[__name__])
+
 
 
 def align_spot_interval_params(params, bar_minutes: float | int | None):

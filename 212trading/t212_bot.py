@@ -32,22 +32,20 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import ensure_local_module_priority, touch_module_heartbeat  # noqa: E402
-ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "listing_watcher", "strategy", "t212_client")
+ensure_local_module_priority(_HERE, "ipo_common", "listing_watcher", "strategy", "t212_client")
 try:
     from .ipo_common import (  # noqa: E402
-        bool_env, load_t212_environment, log, optional_env, parse_dotenv, single_instance,
+        bool_env, load_t212_environment, log, notify, optional_env, parse_dotenv, single_instance,
         required_env, required_float_env, required_bool_env,
     )
-    from .ipo_notify import notify  # noqa: E402
     from .listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
     from .strategy import Strategy, StratParams  # noqa: E402
     from .t212_client import T212Client  # noqa: E402
 except ImportError:
     from ipo_common import (  # noqa: E402
-        bool_env, load_t212_environment, log, optional_env, parse_dotenv, single_instance,
+        bool_env, load_t212_environment, log, notify, optional_env, parse_dotenv, single_instance,
         required_env, required_float_env, required_bool_env,
     )
-    from ipo_notify import notify  # noqa: E402
     from listing_watcher import verify_instrument_isin, wait_for_launch  # noqa: E402
     from strategy import Strategy, StratParams  # noqa: E402
     from t212_client import T212Client  # noqa: E402

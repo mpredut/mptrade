@@ -28,15 +28,14 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 from botcore import ensure_local_module_priority  # noqa: E402
-ensure_local_module_priority(_HERE, "common", "notify", "hl_client", "market_data", "signals")
+ensure_local_module_priority(_HERE, "common", "hl_client", "market_data", "signals")
 
 from common import (
     _parse_bool_flag, exact_pos_int,
-    log, are_close, load_env_stack, required_env, required_float_env,
+    log, are_close, load_env_stack, notify, required_env, required_float_env,
     required_int_env, required_bool_env, safe_float, safe_int,
     safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
-from notify import notify
 from providers.base import _clean_single_order_id, normalize_scalar_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, sanitize_common_spot_state

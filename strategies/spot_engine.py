@@ -39,9 +39,11 @@ from intelligence.internal.state.volatility import (
 )
 
 from . import spot_rules as sr
-from .base_spot_mixin import BaseSpotMixin, load_common_core_strat_env, load_common_mhdpa_env, sanitize_common_spot_state
+from .base_spot_mixin import (
+    BaseSpotMixin, SpotParamsMixin, load_common_core_strat_env, load_common_mhdpa_env, sanitize_common_spot_state,
+)
 from .state_store import (
-    JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
+    JsonStateStore, build_strategy_exit_manager,
     clean_nonneg_float as _clean_nonneg_float, clean_pos_float as _clean_pos_float,
     compute_adaptive_reentry_pullback_pct, find_open_order,
     state_path_for as _shared_state_path_for, update_post_sell_anchors,
@@ -65,7 +67,7 @@ def state_path_for(pair: str, state_dir: str | None = None) -> str:
 
 
 @dataclass
-class StratParams:
+class StratParams(SpotParamsMixin):
     currency: str
     entry_amount: float
     entry_discount_pct: float
@@ -253,11 +255,6 @@ class StratParams:
         "takeprofit_pct": 5.0, "max_budget": 500.0, "max_dca_buys": 10,
         "enable_takeprofit": True, "order_ttl_min": 120.0,
     }
-
-    @classmethod
-    def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False) -> "StratParams":
-        """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
-        return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "StratParams":

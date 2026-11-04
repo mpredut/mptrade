@@ -15,7 +15,7 @@ import unittest
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from forecast.trend_stats import mann_kendall, hurst_rs, hurst_regime  # noqa: E402
+from intelligence.internal.state.persistence import mann_kendall, hurst_rs, hurst_regime  # noqa: E402
 from priceAnalysis import detect_long_term_trend  # noqa: E402
 
 H = 3600.0

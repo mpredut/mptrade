@@ -326,7 +326,7 @@ def test_hyperliquid_ambiguous_bars_and_execution_model():
 def test_validate_replay_metrics_across_all_venues():
     from offline.backtests.metrics import validate_replay_metrics
     from strategies.spot_engine import StratParams as KrakenStratParams
-    import kraken.replay as kr_replay
+    from strategies import spot_replay as kr_replay
     import importlib.util
 
     t212_spec = importlib.util.spec_from_file_location(

@@ -41,24 +41,23 @@ if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 ensure_local_module_priority(
     _HERE,
-    "ipo_common", "ipo_notify", "listing_watcher", "market_data",
+    "ipo_common", "listing_watcher", "market_data",
     "t212_client", "order_manager", "strategy",
 )
 
 try:
     from .ipo_common import (
-        load_t212_environment, log, now_str, float_env, optional_env, required_env,
+        load_t212_environment, log, notify, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
     from .listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
     from .market_data import check_market, t212_to_yahoo
     from .t212_client import T212Client
-    from .ipo_notify import notify
     from .order_manager import resolve_quantity, place_order_with_retry
     from .strategy import Strategy, StratParams
 except ImportError:
     from ipo_common import (
-        load_t212_environment, load_t212_market_data, log, now_str, float_env, optional_env, required_env,
+        load_t212_environment, load_t212_market_data, log, notify, now_str, float_env, optional_env, required_env,
         required_float_env, required_bool_env, resolve_cli_arg,
     )
     from listing_watcher import in_market_window, verify_instrument_isin, wait_for_launch
@@ -69,7 +68,6 @@ except ImportError:
         check_market = _md_mod.check_market
         t212_to_yahoo = _md_mod.t212_to_yahoo
     from t212_client import T212Client
-    from ipo_notify import notify
     from order_manager import resolve_quantity, place_order_with_retry
     from strategy import Strategy, StratParams
 

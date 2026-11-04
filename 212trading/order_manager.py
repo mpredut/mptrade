@@ -22,20 +22,18 @@ _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 from botcore import ensure_local_module_priority, sanitize_identifier  # noqa: E402
-ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "market_data", "t212_client")
+ensure_local_module_priority(_HERE, "ipo_common", "market_data", "t212_client")
 
 from state_io import atomic_write_json, previous_generation_path, read_json_dict
 from providers.base import extract_order_id, extract_order_side
 from providers.t212_provider import _t212_tickers_match
 
 try:
-    from .ipo_common import load_t212_market_data, log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
-    from .ipo_notify import notify
+    from .ipo_common import load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     from .market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     from .t212_client import T212Client
 except ImportError:
-    from ipo_common import load_t212_market_data, log, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
-    from ipo_notify import notify
+    from ipo_common import load_t212_market_data, log, notify, now_str, safe_float, safe_pos_float, safe_nonneg_float, safe_int, safe_nonneg_int
     try:
         from market_data import get_usd_ron, get_price_usd, t212_to_yahoo
     except ImportError:

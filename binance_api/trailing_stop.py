@@ -168,19 +168,6 @@ class TrailingStop(TrailingAdapterBase):
             max_age_seconds=180,
         )
 
-    def trail_pct_for(self, symbol: str) -> float:
-        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
-            raise KeyError(symbol)
-        trail_map = self._module_attr("TRAIL_PCT", TRAIL_PCT)
-        val = self._lookup_symbol_entry(
-            trail_map,
-            symbol,
-            predicate=lambda v: safe_pos_float(v, default=None) is not None,
-        )
-        if val is not None:
-            return float(safe_pos_float(val, default=val))
-        raise KeyError(symbol)
-
     def _long_trend_up(self, symbol: str) -> bool:
         """Compare a fresh price with a complete, contiguous closed-day SMA.
 
@@ -352,16 +339,7 @@ class TrailingStop(TrailingAdapterBase):
                 _outcome_context=outcome_context)
             return propagate_submission_refusal(response, outcome_context)
 
-        result = self.order_lifecycle.submit(
-            intent, persist=persist, submit=submit_once)
-        if result.outcome == "refused":
-            # No venue order exists; clear the lifecycle slot so the strategy can
-            # make a fresh decision on a later tick instead of entering recovery.
-            persist(None)
-        return result
-
-    def log_item_error(self, key, e) -> None:
-        self.log(f"  ! [TRAIL] {key}: {e}")
+        return self._submit_and_clear_if_refused(intent, persist, submit_once)
 
     def run(self):
         mode = "⚠ ACTIVE (it really sells)" if self.enabled else "DRY RUN (it only logs)"

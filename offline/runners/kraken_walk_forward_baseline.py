@@ -24,8 +24,8 @@ if str(ROOT) not in sys.path:
 from botcore import _parse_bool_flag, safe_nonneg_float  # noqa: E402
 from state_io import atomic_write_json  # noqa: E402
 from kraken import market_data as kraken_market_data  # noqa: E402
-from kraken import replay as kraken_replay  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
+from strategies import spot_replay as kraken_replay  # noqa: E402
 from strategies.spot_replay import align_spot_interval_params  # noqa: E402
 from offline.backtests.datasets import (  # noqa: E402
     dataset_metadata,

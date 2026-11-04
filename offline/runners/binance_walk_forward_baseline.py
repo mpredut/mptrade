@@ -17,8 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from botcore import safe_nonneg_float
 from binance_api.market_data import fetch_ohlc_candles
-from binance_api.replay import make_binance_replay_adapter, StratParams
-from strategies.spot_replay import align_spot_interval_params
+from strategies.spot_replay import StratParams, align_spot_interval_params, make_binance_replay_adapter
 from offline.backtests.datasets import (
     load_dataset as load_frozen_dataset,
     save_dataset as save_frozen_dataset,

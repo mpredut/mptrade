@@ -120,11 +120,7 @@ class T212Provider(MarketDataProvider):
     def _client(self):
         if self._cli is not None:
             return self._cli
-        lock = getattr(self, "_client_lock", None)
-        if lock is None:
-            lock = threading.RLock()
-            self._client_lock = lock
-        with lock:
+        with self._ensure_client_lock():
             if self._cli is not None:
                 return self._cli
             # importlib accepts the historical folder name without global sys.path

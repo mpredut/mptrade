@@ -14,25 +14,8 @@ sys.path.insert(0, os.path.join(ROOT, "kraken"))
 sys.path.insert(0, ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
-# T212, Kraken and Hyperliquid expose generic modules named `strategy`,
-# `market_data` and `notify`. Build the replay's Kraken import graph in isolation
-# so full-suite collection order cannot substitute another venue's strategy.
-_COLLIDING_MODULES = ("strategy", "market_data", "notify")
-_PRELOADED_MODULES = {
-    name: sys.modules.pop(name) for name in _COLLIDING_MODULES if name in sys.modules
-}
-try:
-    _SPEC = importlib.util.spec_from_file_location(
-        "kraken_replay_under_test", os.path.join(ROOT, "kraken", "replay.py")
-    )
-    rp = importlib.util.module_from_spec(_SPEC)
-    sys.modules[_SPEC.name] = rp
-    _SPEC.loader.exec_module(rp)
-    strat = rp._strat
-finally:
-    for _name in _COLLIDING_MODULES:
-        sys.modules.pop(_name, None)
-    sys.modules.update(_PRELOADED_MODULES)
+from strategies import spot_replay as rp
+strat = rp._strat
 
 
 def _series():

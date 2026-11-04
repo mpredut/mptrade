@@ -30,7 +30,7 @@ from offline.backtests.metrics import (
     run_tp_drop_sl_sweep,
 )
 from botcore import exact_nonneg_int, load_dotenv, parse_dotenv, safe_float, safe_pos_float
-from kraken import replay as rp
+from strategies import spot_replay as rp
 from kraken.market_data import fetch_ohlc_candles
 
 

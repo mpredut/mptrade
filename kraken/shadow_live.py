@@ -219,10 +219,7 @@ def _merge_forward_history(pair: str, interval: int, anchor: int, fetched):
 
 
 def _get_replay_module():
-    try:
-        from kraken import replay as rp
-    except ImportError:
-        import replay as rp
+    from strategies import spot_replay as rp
     return rp
 
 
