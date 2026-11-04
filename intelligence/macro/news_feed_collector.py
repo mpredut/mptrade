@@ -235,6 +235,8 @@ class NewsFeedCollector:
         retention_sec = self._retention_window_sec()
         try:
             data = read_json_file(hist_file, default=None, recover_previous=True)
+            if isinstance(data, dict):
+                data = data.get("items") if isinstance(data.get("items"), list) else data.get("headlines")
             if not isinstance(data, list):
                 return
             for item in data:

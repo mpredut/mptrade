@@ -1919,6 +1919,153 @@ def test_iter54_breadth_vol_share_intent_timestamp_iso_ms_and_evaluator_sanitiza
     assert m_arb.get("cross_venue_peer") == "BTCUSD"
 
 
+def test_iter55_geopolitical_fallback_lexicon_dir_guard_cache_notional_and_news_history_dict(tmp_path, monkeypatch):
+    import json
+    import intelligence.macro.geopolitical_analyzer as geo_mod
+    import intelligence.sentiment.sentiment_advisor as sa_mod
+    import intelligence.sentiment.guards.high_stake_guard as hsg_mod
+    from intelligence.macro.lexicon_ssot import update_dynamic_lexicon
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+
+    # 1. GeopoliticalThreatAnalyzer.assess passes state_cache_dir and now_ts to has_acute_shock_keywords on LLM fallback
+    now_ts = 1710000000.0
+    update_dynamic_lexicon(
+        [],
+        new_acute_terms=["quasarcollapse"],
+        cache_dir=str(tmp_path),
+        now_ts=now_ts - 60.0,
+    )
+    monkeypatch.setattr(geo_mod, "query_topic_json", lambda *a, **kw: None, raising=False)
+    analyzer = geo_mod.GeopoliticalThreatAnalyzer(state_file=str(tmp_path / "geo_state.json"))
+    snap = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Breaking: sudden quasarcollapse rattles global liquidity",
+                source="reuters",
+                pub_date="Wed, 13 Mar 2024 12:00:00 GMT",
+                url="https://example.com/quasar",
+                matched_keywords=("quasarcollapse",),
+                is_high_severity=True,
+            ),
+        ),
+        total_fetched=1,
+        high_severity_count=1,
+        has_critical_shock_keywords=True,
+        ts=now_ts - 30.0,
+    )
+    assessment = analyzer.assess(snap, now_ts=now_ts)
+    assert assessment.threat_level == "CRITICAL_SHOCK"
+    assert assessment.risk_score == pytest.approx(0.9)
+    assert assessment.is_fallback is True
+
+    # 2. SentimentAdvisor.review honors monkeypatched query_topic_json & record_dynamic_crisis_terms_from_assessment,
+    # and formats BTC Intraday Structure cleanly when series < 18h (chg_24h_pct absent) and trailing row is malformed
+    captured_prompts = []
+    recorded_lexicon = []
+
+    def fake_sa_query(client, topic, prompt, **kwargs):
+        captured_prompts.append(prompt)
+        return {
+            "market_bias": "BEARISH",
+            "risk_level": "HIGH",
+            "confidence": 0.85,
+            "summary": "Elevated macro volatility after liquidity sweep",
+            "key_risks": ["funding stress"],
+            "recommended_action": "DEFENSIVE",
+        }
+
+    monkeypatch.setattr(sa_mod, "query_topic_json", fake_sa_query, raising=False)
+    monkeypatch.setattr(
+        sa_mod,
+        "record_dynamic_crisis_terms_from_assessment",
+        lambda *a, **kw: recorded_lexicon.append((a, kw)) or (),
+        raising=False,
+    )
+    price_file = tmp_path / "cache_24_price_BTCUSDC.json"
+    price_file.write_text(
+        json.dumps(
+            [
+                [now_ts - 3600, 84000.0],
+                [now_ts - 1800, 85000.0],
+                ["bad_ts", None],
+            ]
+        ),
+        encoding="utf-8",
+    )
+    advisor = sa_mod.SentimentAdvisor(cache_file=str(tmp_path / "sent_state.json"))
+    view = advisor.review(now_ts=now_ts)
+    assert view is not None
+    assert view.risk_level == "HIGH"
+    assert len(captured_prompts) == 1
+    assert "- BTC Intraday Structure: price=$85000.00" in captured_prompts[0]
+    assert len(recorded_lexicon) == 1
+
+    # 3. HighStakeGuard & PostStopReentryGuard update metadata["notional_eur"] on enforce-mode cache hit
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    from intelligence.sentiment.guards.post_stop_reentry_guard import clear_post_stop_reentry_cache
+    clear_post_stop_reentry_cache()
+    llm_calls = []
+
+    def fake_guard_query(client, topic, prompt, **kwargs):
+        llm_calls.append(prompt)
+        return {"decision": "APPROVED", "confidence": 0.9, "reason": "ok", "suggested_scale": 1.0}
+
+    monkeypatch.setattr(hsg_mod, "query_topic_json", fake_guard_query, raising=False)
+    hsg = hsg_mod.HighStakeGuard(
+        gemini_client=object(),
+        min_notional_eur=500.0,
+        mode="enforce",
+        notify_enabled=False,
+        cache_ttl_sec=300,
+    )
+    d1 = hsg.check("BTCUSDC", "BUY", 85000.0, 0.01, notional_eur=510.0, telemetry={}, now=now_ts)
+    d2 = hsg.check("BTCUSDC", "BUY", 85000.0, 0.01, notional_eur=545.0, telemetry={}, now=now_ts)  # same $100 bucket (510//100 == 545//100 == 5)
+    assert len(llm_calls) == 1
+    assert d1.metadata["notional_eur"] == pytest.approx(510.0)
+    assert d2.metadata["notional_eur"] == pytest.approx(545.0)
+
+    psg = PostStopReentryGuard(
+        gemini_client=object(),
+        mode="enforce",
+        notify_enabled=False,
+        cache_ttl_sec=300,
+    )
+    p1 = psg.check("ETHUSDC", 2420.0, 2400.0, 2350.0, 0.02, notional_eur=300.0, last_sell_time_s=now_ts - 1800.0, telemetry={}, now=now_ts)
+    p2 = psg.check("ETHUSDC", 2420.0, 2400.0, 2350.0, 0.02, notional_eur=750.0, last_sell_time_s=now_ts - 1800.0, telemetry={}, now=now_ts)
+    assert len(llm_calls) == 2
+    assert p1.metadata["notional_eur"] == pytest.approx(300.0)
+    assert p2.metadata["notional_eur"] == pytest.approx(750.0)
+
+    # 4. NewsFeedCollector._load_history unwraps dict-shaped {"items": [...]} payloads
+    import time as _time
+    recent_ts = _time.time() - 60.0
+    hist_file = tmp_path / "news_feed_collect.json"
+    hist_file.write_text(
+        json.dumps(
+            {
+                "updated_at": recent_ts,
+                "items": [
+                    {
+                        "title": "ECB holds rates steady",
+                        "source": "ecb",
+                        "pub_date": "",
+                        "url": "https://example.com/ecb",
+                        "matched_keywords": [],
+                        "is_high_severity": False,
+                        "first_seen_ts": recent_ts,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    collector = NewsFeedCollector(history_file=str(hist_file))
+    assert len(collector._history) == 1
+    loaded_h = next(iter(collector._history.values()))[1]
+    assert loaded_h.title == "ECB holds rates steady"
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -665,9 +665,12 @@ class CachedTopicAssessmentAgent:
         subtitle: Optional[str] = None,
         timeout_sec: float = 120.0,
     ) -> Optional[Dict[str, Any]]:
-        from intelligence.sentiment.gemini_client import query_topic_json
+        from intelligence.sentiment.gemini_client import query_topic_json as _default_query_topic_json
 
-        return query_topic_json(
+        _query_fn = _resolve_daemon_helper(
+            "query_topic_json", _default_query_topic_json, _default_query_topic_json, self.__class__.__module__
+        )
+        return _query_fn(
             self.gemini_client,
             self.TOPIC_KEY,
             prompt,
@@ -686,9 +689,17 @@ class CachedTopicAssessmentAgent:
         is_acute_shock: bool = False,
     ) -> Any:
         if record_crisis_terms and (crisis_summary or crisis_items):
-            from intelligence.macro.lexicon_ssot import record_dynamic_crisis_terms_from_assessment
+            from intelligence.macro.lexicon_ssot import (
+                record_dynamic_crisis_terms_from_assessment as _default_record_crisis_terms,
+            )
 
-            record_dynamic_crisis_terms_from_assessment(
+            _record_fn = _resolve_daemon_helper(
+                "record_dynamic_crisis_terms_from_assessment",
+                _default_record_crisis_terms,
+                _default_record_crisis_terms,
+                self.__class__.__module__,
+            )
+            _record_fn(
                 crisis_summary,
                 crisis_items,
                 is_acute_shock=is_acute_shock,

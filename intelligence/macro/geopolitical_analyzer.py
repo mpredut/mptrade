@@ -261,7 +261,11 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             timeout_sec=120.0,
         )
         if not resp or not isinstance(resp, dict):
-            has_acute_phrase = has_acute_shock_keywords([str(obj_attr(h, "title", None) or "") for h in high_sev])
+            has_acute_phrase = has_acute_shock_keywords(
+                [str(obj_attr(h, "title", None) or "") for h in high_sev],
+                cache_dir=state_cache_dir,
+                now_ts=now,
+            )
             if self._cached_assessment is not None and not self._cached_assessment.is_fallback and not has_acute_phrase:
                 return self._commit_assessment(
                     GeopoliticalThreatAssessment(

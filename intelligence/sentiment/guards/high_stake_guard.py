@@ -198,7 +198,13 @@ class PreTradeLLMGuardBase:
                     if isinstance(getattr(cached_dec, "shadow_decision", None), GuardDecision)
                     else cached_dec
                 )
-                return self._wrap_shadow_decision(base_dec, notional) if self.mode == "shadow" else base_dec
+                if self.mode == "shadow":
+                    return self._wrap_shadow_decision(base_dec, notional)
+                if isinstance(getattr(base_dec, "metadata", None), dict) and base_dec.metadata.get("notional_eur") != notional:
+                    from dataclasses import replace as _dc_replace
+
+                    return _dc_replace(base_dec, metadata={**base_dec.metadata, "notional_eur": notional})
+                return base_dec
 
         _sub_mod = sys.modules.get(self.__class__.__module__)
         _telem_fn = collect_pretrade_telemetry
@@ -237,6 +243,17 @@ class PreTradeLLMGuardBase:
             _cand_query = getattr(_sub_mod, "query_topic_json", None)
             if callable(_cand_query) and _cand_query is not _default_query_topic_json:
                 _query_fn = _cand_query
+        if _query_fn is _default_query_topic_json:
+            for _q_mod_name in (
+                "intelligence.sentiment.guards.high_stake_guard",
+                "intelligence.sentiment.gemini_client",
+                "intelligence.macro_sentiment_ssot",
+            ):
+                _qm = sys.modules.get(_q_mod_name)
+                _cand_query = getattr(_qm, "query_topic_json", None) if _qm is not None else None
+                if callable(_cand_query) and _cand_query is not _default_query_topic_json:
+                    _query_fn = _cand_query
+                    break
 
         prompt = f"{build_prompt_fn(context_str)}\n\n{LLM_GUARD_JSON_SCHEMA_FOOTER}"
         valid_resp = _query_fn(

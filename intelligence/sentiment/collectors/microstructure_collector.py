@@ -171,7 +171,8 @@ def load_symbol_price_series(
         return cur_ser
 
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
-    _rj = _resolve_read_json_cached()
+    _rj_cand = _resolve_read_json_cached()
+    _rj = read_json_recovering if _rj_cand is _default_read_json_cached else _rj_cand
     p0: Optional[Tuple[float, float]] = None
     p1: Optional[Tuple[float, float]] = None
     span_24h_ms = 0.0

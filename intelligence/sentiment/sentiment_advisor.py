@@ -129,23 +129,39 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             cache_dir = os.path.dirname(os.path.abspath(self._effective_cache_file()))
             if any(
                 os.path.exists(os.path.join(cache_dir, fn))
-                for fn in ("cache_24_price_BTCUSDC.json", "cache_24_price_BTCUSDT.json")
+                for fn in (
+                    "price_24h_BTCUSDC.json",
+                    "price_24h_BTCUSDT.json",
+                    "cache_24_price_BTCUSDC.json",
+                    "cache_24_price_BTCUSDT.json",
+                )
             ):
                 from intelligence.sentiment.collectors.microstructure_collector import (
+                    _parse_ts_px_row,
                     compute_24h_price_metrics,
                     load_symbol_price_series,
                 )
+                from intelligence.macro_sentiment_ssot import safe_float, safe_pos_float
 
                 btc_pts, _ = load_symbol_price_series(cache_dir, "BTCUSDC", include_7d=False)
                 btc_m = compute_24h_price_metrics(btc_pts) if btc_pts else {}
                 if btc_m:
                     b_struct = str(btc_m.get("bottom_structure_6h") or "NONE")
-                    last_px = float(btc_pts[-1][1]) if btc_pts else 0.0
+                    last_px = next(
+                        (pt[1] for row in reversed(btc_pts or ()) if (pt := _parse_ts_px_row(row)) is not None),
+                        safe_pos_float(btc_m.get("high_24h"), default=0.0) or 0.0,
+                    )
+                    chg_24h_v = safe_float(btc_m.get("chg_24h_pct"), default=0.0) or 0.0
+                    pos_24h_v = safe_float(btc_m.get("pos_24h_pct"), default=50.0)
+                    if pos_24h_v is None:
+                        pos_24h_v = 50.0
+                    p6h_lo_v = safe_pos_float(btc_m.get("prior_6h_low_px"), default=0.0) or 0.0
+                    r1h_lo_v = safe_pos_float(btc_m.get("recent_1h_low_px"), default=0.0) or 0.0
                     prompt_context.append(
                         f"- BTC Intraday Structure: price=${last_px:.2f} "
-                        f"({float(btc_m.get('chg_24h_pct', 0.0)):+.2f}% 24h, range_pos={float(btc_m.get('pos_24h_pct', 50.0)):.0f}%), "
+                        f"({chg_24h_v:+.2f}% 24h, range_pos={pos_24h_v:.0f}%), "
                         f"bottom_structure_6h={b_struct} "
-                        f"(prior_6h_low=${float(btc_m.get('prior_6h_low_px') or 0.0):.2f}, 1h_low=${float(btc_m.get('recent_1h_low_px') or 0.0):.2f})"
+                        f"(prior_6h_low=${p6h_lo_v:.2f}, 1h_low=${r1h_lo_v:.2f})"
                     )
         except Exception:
             pass
