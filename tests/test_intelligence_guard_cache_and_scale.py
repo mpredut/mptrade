@@ -3962,7 +3962,7 @@ def test_iteration17_price_history_now_liquidation_cascade_now_composite_gemini_
             {
                 "market_bias": "CAUTION",
                 "risk_level": "HIGH",
-                "confidence": 9.9,  # out of [0, 1] range -> fallback to 0.5
+                "confidence": 999.0,  # out of [0, 100] range -> fallback to 0.5
                 "summary": "recovered sentiment",
                 "key_risks": ["macro"],
                 "recommended_action": "DEFENSIVE",
