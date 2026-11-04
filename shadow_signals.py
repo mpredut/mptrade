@@ -225,9 +225,15 @@ class KalmanStateTracker:
             fed = self._fed_prices.setdefault(symbol, [])
             if kf is None:
                 kf = self._kalman[symbol] = KalmanTrend(qr=KALMAN_QR, gap_reset_sec=GAP_RESET_SEC)
-                if isinstance(big_prices, (list, tuple)) and len(big_prices) >= 2:
+                if (
+                    big_prices is not None
+                    and not isinstance(big_prices, (str, bytes, dict))
+                    and hasattr(big_prices, "__len__")
+                    and len(big_prices) >= 2
+                ):
+                    seq_prices = big_prices if isinstance(big_prices, (list, tuple)) else list(big_prices)
                     step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
-                    raw_hist = big_prices[-1 - step_n :: -step_n][:60]
+                    raw_hist = seq_prices[-1 - step_n :: -step_n][:60]
                     hist_pts = [
                         (steps_back, p_h)
                         for steps_back, raw_p in enumerate(raw_hist, start=1)

@@ -4660,3 +4660,20 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "7d=" in rel_69
     assert "5m=-0.22%" in rel_69
 
+    # Wave 13: Discrepancies AV & AW
+    from collections import deque
+    import shadow_signals as ss_aw
+
+    # AV: On FOMC day (2026-11-05 at 00:05 EET = 2026-11-04 22:05 UTC), upcoming_windows includes the 21:00 EET FOMC window
+    cal_av = resolve_macro_economic_calendar(datetime(2026, 11, 4, 22, 5, 0, tzinfo=timezone.utc).timestamp())
+    assert cal_av["fomc_today"] is True
+    assert any("FOMC Rate Decision" in w for w in cal_av["upcoming_windows"])
+
+    # AW: KalmanStateTracker.update warm-starts from a collections.deque big_prices (PriceWindow.prices)
+    tracker_aw = ss_aw.KalmanStateTracker(state_path=None, compute_vol=False)
+    deque_prices_aw = deque(220.0 + i * 0.005 for i in range(3600))
+    k_aw = tracker_aw.update("TAOUSDC", 1_793_830_000.0, 238.0, epsilon=0.05, big_prices=deque_prices_aw, big_sample_rate=1.0)
+    assert k_aw["kalman_vel"] > 0.0
+    assert k_aw["kalman_vel_std"] < 5.0
+
+
