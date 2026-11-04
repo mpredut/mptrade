@@ -37,13 +37,13 @@ class OrderbookWallGuard:
             min_buy_imbalance,
             default=0.25,
             min_positive=True,
-            allow_percent=isinstance(min_buy_imbalance, str),
+            allow_percent=True,
         )
         self.max_sell_imbalance = clean_scale(
             max_sell_imbalance,
             default=0.75,
             min_positive=True,
-            allow_percent=isinstance(max_sell_imbalance, str),
+            allow_percent=True,
         )
         self.whale_wall_usd_limit = safe_pos_float(whale_wall_usd_limit, default=1_000_000.0) or 1_000_000.0
 

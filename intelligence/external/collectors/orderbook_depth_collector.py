@@ -90,11 +90,10 @@ class OrderbookSnapshot:
         d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth * (1.0 / 1.5), 2) if bid_depth > 0.0 else 0.0)
         d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth * (1.0 / 1.5), 2) if ask_depth > 0.0 else 0.0)
         raw_imb_val = data.get("imbalance_ratio") if data.get("imbalance_ratio") is not None else data.get("ob_imbalance")
-        if isinstance(raw_imb_val, str) and raw_imb_val.strip().endswith("%"):
-            imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True)
-        else:
-            imb_raw = _clean_dict_float(data, "imbalance_ratio", 0.5, "ob_imbalance")
-            imb_clean = min(1.0, max(0.0, imb_raw))
+        imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True)
+        ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
+        if ts_val > 1e11:
+            ts_val /= 1000.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             mid_price=mid_price,
@@ -105,7 +104,7 @@ class OrderbookSnapshot:
             largest_bid_wall_price=_clean_dict_float(data, "largest_bid_wall_price", 0.0, "bid_wall_px", nonneg=True),
             largest_ask_wall_usd=_clean_dict_float(data, "largest_ask_wall_usd", 0.0, "ask_wall_usd", nonneg=True),
             largest_ask_wall_price=_clean_dict_float(data, "largest_ask_wall_price", 0.0, "ask_wall_px", nonneg=True),
-            ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
+            ts=ts_val,
             best_bid=best_bid,
             best_ask=best_ask,
             spread_bps=spread_bps,

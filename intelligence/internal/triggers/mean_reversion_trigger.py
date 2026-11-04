@@ -101,6 +101,8 @@ class MeanReversionTrigger:
     def update(self, symbol: str, timestamp: float, price: float) -> TriggerEvent:
         """Feed latest price and return current TriggerEvent."""
         ts_clean = safe_float(timestamp, default=0.0) or 0.0
+        if ts_clean > 1e11:
+            ts_clean /= 1000.0
         price_f = safe_pos_float(price, default=None)
         if price_f is None:
             return TriggerEvent(

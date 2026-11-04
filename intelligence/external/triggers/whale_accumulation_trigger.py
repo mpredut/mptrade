@@ -72,7 +72,9 @@ class WhaleAccumulationTrigger:
         if raw_oi_chg is None:
             raw_oi_chg = snap_attr(snapshot, "oi_1h_chg_pct", None)
         oi_chg = safe_float(raw_oi_chg, default=None)
-        raw_regime = snap_attr(snapshot, "divergence_regime", "neutral")
+        raw_regime = snap_attr(snapshot, "divergence_regime", None)
+        if raw_regime is None:
+            raw_regime = snap_attr(snapshot, "div_regime", "neutral")
         regime_str = raw_regime.strip() if isinstance(raw_regime, str) and raw_regime.strip() else "neutral"
         if top_long_pct is None or taker_ratio is None or oi_chg is None:
             return None

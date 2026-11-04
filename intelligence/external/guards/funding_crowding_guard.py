@@ -44,7 +44,7 @@ class FundingCrowdingGuard:
             crowded_scale,
             default=0.50,
             min_positive=True,
-            allow_percent=isinstance(crowded_scale, str),
+            allow_percent=True,
         )
 
     def check(

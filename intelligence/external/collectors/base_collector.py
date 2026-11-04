@@ -169,8 +169,17 @@ def round_spread_bps(
     return round(sp, 4 if sp < 0.1 else 2) if sp is not None else None
 
 
+_ORIG_MODULE_FNS: Dict[str, Callable[..., Any]] = {
+    "fetch_public_json": fetch_public_json,
+    "read_json_dict": read_json_dict,
+    "read_json_dict_recovering": read_json_dict_recovering,
+    "save_json_state": save_json_state,
+}
+
+
 def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..., Any]) -> Callable[..., Any]:
     """Resolve a helper function from the concrete collector's module or `orderbook_depth_collector` if monkeypatched."""
+    orig_fn = _ORIG_MODULE_FNS.get(attr_name, default_fn)
     cls = cls_or_self if isinstance(cls_or_self, type) else type(cls_or_self)
     for mod_name in (
         getattr(cls, "__module__", ""),
@@ -181,7 +190,7 @@ def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..
     ):
         if mod_name and (mod := sys.modules.get(mod_name)) is not None:
             cand = getattr(mod, attr_name, None)
-            if callable(cand) and cand is not default_fn:
+            if callable(cand) and cand is not orig_fn:
                 return cand
     return default_fn
 
@@ -240,7 +249,7 @@ class _DiskBackedSymbolCollector:
 
     def _read_disk_json(self, path: str) -> Optional[Dict[str, Any]]:
         read_fn = _resolve_module_fn(self, "read_json_dict", read_json_dict)
-        if read_fn is not read_json_dict:
+        if read_fn is not _ORIG_MODULE_FNS["read_json_dict"]:
             return read_fn(path, default=None, recover_previous=True)
         rec_fn = _resolve_module_fn(self, "read_json_dict_recovering", read_json_dict_recovering)
         return rec_fn(path, default=None)
@@ -409,7 +418,7 @@ class _DiskBackedSymbolCollector:
     ) -> Dict[str, Any]:
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
         is_hl_info = isinstance(url, str) and url.startswith("https://api.hyperliquid.xyz/info?")
-        if fetch_fn is fetch_public_json and is_hl_info:
+        if fetch_fn is _ORIG_MODULE_FNS["fetch_public_json"] and is_hl_info:
             import urllib.parse as _urlparse
 
             q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
@@ -442,9 +451,17 @@ class _DiskBackedSymbolCollector:
     ) -> Tuple[Dict[str, Any], List[Any]]:
         fetch_fn = _resolve_module_fn(cls, "fetch_public_json", fetch_public_json)
         rows = fetch_fn(url, timeout=timeout, user_agent=user_agent)
-        if not isinstance(rows, list) or not rows or not isinstance(rows[-1], dict):
+        if not isinstance(rows, list) or not rows:
             raise ValueError(f"Empty {label} response for {lookup_sym}")
-        return rows[-1], rows
+        dict_rows = [r for r in rows if isinstance(r, dict)]
+        if not dict_rows:
+            raise ValueError(f"Empty {label} response for {lookup_sym}")
+        if len(dict_rows) >= 2:
+            ts_vals = [safe_float(r.get("timestamp") if r.get("timestamp") is not None else r.get("ts"), default=None) for r in dict_rows]
+            if all(t is not None for t in ts_vals) and any(ts_vals[i] > ts_vals[i + 1] for i in range(len(ts_vals) - 1)):
+                dict_rows = [r for _, r in sorted(zip(ts_vals, dict_rows), key=lambda pair: pair[0])]
+                rows = dict_rows
+        return dict_rows[-1], rows
 
     def _fetch_hyperliquid_asset_ctx(
         self,

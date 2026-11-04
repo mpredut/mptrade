@@ -47,7 +47,7 @@ class WhaleDivergenceGuard:
             taker_downscaled_scale,
             default=0.50,
             min_positive=True,
-            allow_percent=isinstance(taker_downscaled_scale, str),
+            allow_percent=True,
         )
 
     def check(
@@ -73,7 +73,10 @@ class WhaleDivergenceGuard:
                 reason="no_whale_snapshot_data",
             )
 
-        regime = str(snap_attr(snapshot, "divergence_regime") or "neutral").strip().lower()
+        raw_reg = snap_attr(snapshot, "divergence_regime")
+        if raw_reg is None:
+            raw_reg = snap_attr(snapshot, "div_regime")
+        regime = str(raw_reg or "neutral").strip().lower()
         raw_oi_1h = snap_attr(snapshot, "open_interest_1h_change_pct")
         if raw_oi_1h is None:
             raw_oi_1h = snap_attr(snapshot, "oi_1h_chg_pct")

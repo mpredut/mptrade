@@ -56,7 +56,9 @@ _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 
 def _resolve_now(now: Optional[float]) -> float:
     f = safe_nonneg_float(now, default=None)
-    return f if f is not None else time.time()
+    if f is None:
+        return time.time()
+    return f / 1000.0 if f > 1e11 else f
 
 
 def _effective_smart_sl_state_file() -> str:
@@ -117,12 +119,12 @@ def _load_grace_state(*, is_sim: bool = False, now_ts: Optional[float] = None) -
     # Sanitize: purge any ancient, unphysical, or expired entries (> 3600s old or start_ts < 1e9)
     now_curr = _resolve_now(now_ts)
     clean_data = {
-        norm_k: dict(v)
+        norm_k: dict(v, start_ts=sts_sec)
         for k, v in data.items()
         if isinstance(v, dict)
         and (sts := safe_float(v.get("start_ts"), None)) is not None
-        and sts > 1_000_000_000
-        and -5.0 <= (now_curr - sts) < 3600.0
+        and (sts_sec := (sts / 1000.0 if sts > 1e11 else sts)) > 1_000_000_000
+        and -5.0 <= (now_curr - sts_sec) < 3600.0
         and (norm_k := clean_guard_symbol_key(k))
     }
     _GRACE_TRACKER.clear()
@@ -327,7 +329,7 @@ class SmartStopLossGuard:
         raw_top_long = _obj_attr(w_snap, "top_traders_long_pct", _obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
         top_long_pct = clean_scale(raw_top_long, default=0.50, allow_percent=True)
         taker_ratio = safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
-        raw_div_reg = _obj_attr(w_snap, "divergence_regime", None) if w_snap else None
+        raw_div_reg = _obj_attr(w_snap, "divergence_regime", _obj_attr(w_snap, "div_regime", None)) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
         raw_imb = _obj_attr(ob_snap, "imbalance_ratio", _obj_attr(ob_snap, "ob_imbalance", 0.50)) if ob_snap else 0.50
         imbalance = clean_scale(raw_imb, default=0.50, allow_percent=True)
@@ -358,6 +360,9 @@ class SmartStopLossGuard:
             active_grace = tracker.get(sym_key) if isinstance(tracker.get(sym_key), dict) else None
             if active_grace is not None:
                 existing_start = safe_float(active_grace.get("start_ts"), -1.0)
+                if existing_start > 1e11:
+                    existing_start /= 1000.0
+                    active_grace["start_ts"] = existing_start
                 if (
                     existing_start < 0.0
                     or existing_start > now_ts + 5.0
@@ -466,6 +471,8 @@ class SmartStopLossGuard:
             return False
         price_decrease, lost_threshold = safe_float(price_decrease, 0.0), safe_float(lost_threshold, 0.0)
         start_ts = safe_float(grace_info.get("start_ts"), -1.0)
+        if start_ts > 1e11:
+            start_ts /= 1000.0
         if start_ts < 0.0 or start_ts > now_ts + 5.0 or (elapsed := max(0.0, now_ts - start_ts)) > 3600.0:
             return False
 

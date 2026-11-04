@@ -75,13 +75,14 @@ class TriggerEvent:
         price: float,
         strength: float,
         ts: float,
-        reason_bull: str,
-        reason_bear: str,
+        reason_bull: str = "",
+        reason_bear: str = "",
         velocity: Optional[float] = None,
         confidence: Optional[float] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> "TriggerEvent":
         """Build a directional ENTRY/BUY (bull) or EXIT/SELL (bear) TriggerEvent."""
+        ts_clean = ts / 1000.0 if (isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 1e11) else ts
         return cls(
             action=TriggerAction.ENTRY if is_bull else TriggerAction.EXIT,
             side=TriggerSide.BUY if is_bull else TriggerSide.SELL,
@@ -89,7 +90,7 @@ class TriggerEvent:
             symbol=symbol,
             price=price,
             strength=strength,
-            ts=ts,
+            ts=ts_clean,
             velocity=velocity,
             confidence=confidence,
             reason=reason_bull if is_bull else reason_bear,

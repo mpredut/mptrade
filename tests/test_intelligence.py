@@ -3085,6 +3085,140 @@ def test_iter64_breadth_rotation_fields_taxonomy_spaces_and_ms_timestamps(tmp_pa
     assert sa._cached_assessment is not None and sa._cached_assessment.confidence == pytest.approx(0.80)
 
 
+def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_timestamps(monkeypatch, tmp_path):
+    import json
+    import numpy as np
+    from intelligence.internal.state.volatility import calculate_volatility_1h
+    from intelligence.internal.state.persistence import calculate_mann_kendall
+    from intelligence.internal.state.survival import block_slopes, episodes
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerEvent
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.macro.lexicon_ssot import (
+        demote_dynamic_acute_terms,
+        has_acute_shock_keywords,
+        load_dynamic_lexicon,
+        update_dynamic_lexicon,
+    )
+
+    # 1. calculate_volatility_1h handles 2D (ts, price) arrays and unsorted (ts, price) tuples identically to 1D prices
+    px_1d = [100.0 + 0.5 * i + ((-1) ** i) * 0.2 for i in range(20)]
+    pairs_asc = [(1700000000.0 + i * 60.0, p) for i, p in enumerate(px_1d)]
+    pairs_desc = list(reversed(pairs_asc))
+    v_1d = calculate_volatility_1h(px_1d, 60.0)
+    v_2d = calculate_volatility_1h(np.asarray(pairs_asc, dtype=float), 60.0)
+    v_desc = calculate_volatility_1h(pairs_desc)
+    assert v_1d > 0.0
+    assert v_2d == pytest.approx(v_1d)
+    assert v_desc == pytest.approx(v_1d)
+
+    # 2. calculate_mann_kendall sorts descending (ts, price) sequences chronologically so Z sign is preserved
+    s_asc, z_asc, p_asc = calculate_mann_kendall(pairs_asc)
+    s_desc, z_desc, p_desc = calculate_mann_kendall(pairs_desc)
+    assert s_asc == s_desc > 0
+    assert z_asc > 0.0
+    assert z_desc == pytest.approx(z_asc)
+    assert p_desc == pytest.approx(p_asc)
+
+    # 3. survival.block_slopes and episodes normalize millisecond timestamps without hanging
+    t_sec = np.array([1700000000.0 + i * 3600.0 for i in range(30)], dtype=float)
+    t_ms = t_sec * 1000.0
+    px_surv = np.array([100.0 + i * 0.5 for i in range(30)], dtype=float)
+    bt_s, bs_s = block_slopes(t_sec, px_surv, window_h=6.0, step_h=2.0)
+    bt_m, bs_m = block_slopes(t_ms, px_surv, window_h=6.0, step_h=2.0)
+    assert len(bt_s) == len(bt_m) > 0
+    assert np.allclose(bt_s, bt_m)
+    assert np.allclose(bs_s, bs_m)
+    ep_asc = episodes(bt_s * 1000.0, bs_s, 0.0001)
+    ep_desc = episodes(bt_s[::-1] * 1000.0, bs_s[::-1], 0.0001)
+    assert ep_asc == ep_desc
+
+    # 4. Internal triggers and WeibullExhaustionGuard normalize ms timestamps and percentage scales
+    eg = WeibullExhaustionGuard(exhausted_scale=25)
+    assert eg.exhausted_scale == pytest.approx(0.25)
+    gt = LinearGradientTrigger(strength_threshold=2.0)
+    _, ev_gt = gt.evaluate("BTCUSDC", price=105.0, gradient=0.005, epsilon=0.001, ts=1700000000000.0)
+    assert ev_gt is not None and ev_gt.ts == pytest.approx(1700000000.0)
+    mrt = MeanReversionTrigger(mode="pb", bb_period=3, bb_k=1.0)
+    mrt.update("BTCUSDC", 1700000000000.0, 100.0)
+    mrt.update("BTCUSDC", 1700000000000.0, 101.0)
+    ev_mr = mrt.update("BTCUSDC", 1700000000000.0, 80.0)
+    assert ev_mr is not None and ev_mr.ts == pytest.approx(1700000000.0)
+    ev_dir = TriggerEvent.directional(True, source="test", symbol="BTCUSDC", price=100.0, strength=1.0, ts=1700000000000.0, reason_bull="bull", reason_bear="bear")
+    assert ev_dir.ts == pytest.approx(1700000000.0)
+
+    # 5. _DiskBackedSymbolCollector._fetch_latest_json_row sorts descending rows by timestamp
+    monkeypatch.setattr(
+        "intelligence.external.collectors.base_collector.fetch_public_json",
+        lambda url, **kw: [
+            {"timestamp": 1700000300000, "val": "newest"},
+            {"timestamp": 1700000000000, "val": "oldest"},
+        ],
+    )
+    latest_row, sorted_rows = _DiskBackedSymbolCollector._fetch_latest_json_row("https://example.com", "test", "BTCUSDT")
+    assert latest_row["val"] == "newest"
+    assert [r["val"] for r in sorted_rows] == ["oldest", "newest"]
+
+    # 6. External snapshots and guards normalize millisecond timestamps, numeric percentages, and div_regime alias
+    ob_s = OrderbookSnapshot.from_dict({"symbol": "BTCUSDC", "imbalance_ratio": 65, "timestamp": 1700000000000})
+    assert ob_s.imbalance_ratio == pytest.approx(0.65)
+    assert ob_s.ts == pytest.approx(1700000000.0)
+
+    dt_s = DerivativesTelemetry.from_dict({"symbol": "BTCUSDC", "funding_rate": 0.0001, "timestamp": 1700000000000})
+    assert dt_s.ts == pytest.approx(1700000000.0)
+
+    wp_s = WhalePositioningSnapshot.from_dict({"symbol": "BTCUSDC", "div_regime": "short_covering", "whale_long_pct": 68, "timestamp": 1700000000000})
+    assert wp_s.divergence_regime == "short_covering"
+    assert wp_s.top_traders_long_pct == pytest.approx(0.68)
+    assert wp_s.ts == pytest.approx(1700000000.0)
+
+    wdg = WhaleDivergenceGuard(taker_downscaled_scale=50)
+    assert wdg.taker_downscaled_scale == pytest.approx(0.50)
+    assert not wdg.check("BTCUSDC", "BUY", snapshot={"div_regime": "short_covering", "oi_1h_chg_pct": -1.5}).allowed
+
+    owg = OrderbookWallGuard(min_buy_imbalance=25, max_sell_imbalance=75)
+    assert owg.min_buy_imbalance == pytest.approx(0.25)
+    assert owg.max_sell_imbalance == pytest.approx(0.75)
+
+    fcg = FundingCrowdingGuard(crowded_scale=50)
+    assert fcg.crowded_scale == pytest.approx(0.50)
+
+    wat = WhaleAccumulationTrigger()
+    ev_wa = wat.evaluate(
+        "BTCUSDC",
+        100.0,
+        snapshot={"whale_long_pct": 65, "taker_buy_sell_ratio": 1.4, "oi_1h_chg_pct": 1.2, "div_regime": "accumulation"},
+        now=1700000000000.0,
+    )
+    assert ev_wa is not None and ev_wa.metadata["regime"] == "accumulation"
+
+    # 7. lexicon_ssot normalizes ms timestamps and supports single string / NewsHeadline objects in has_acute_shock_keywords
+    lex_path = tmp_path / "macro_lexicon_collect.json"
+    lex_path.write_text(
+        json.dumps({"entries": {"missile strike": {"ts": 1700000000000, "tier": "acute"}}}),
+        encoding="utf-8",
+    )
+    loaded_lex = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1700000100.0)
+    assert "missile strike" in loaded_lex["acute_shock_phrases"]
+    assert has_acute_shock_keywords("Breaking: missile strike reported", cache_dir=str(tmp_path), now_ts=1700000100.0)
+    assert has_acute_shock_keywords([{"title": "Breaking: missile strike reported"}], cache_dir=str(tmp_path), now_ts=1700000100.0)
+    assert demote_dynamic_acute_terms(cache_dir=str(tmp_path), now_ts=1700000100.0) is True
+    loaded_after = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1700000100.0)
+    assert "missile strike" in loaded_after["high_severity_terms"]
+    assert "missile strike" not in loaded_after["acute_shock_phrases"]
+    update_dynamic_lexicon(["sanctions package"], cache_dir=str(tmp_path), now_ts=1700000200000.0)
+    assert "sanctions package" in load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1700000250.0)["high_severity_terms"]
+
+
 if __name__ == "__main__":
     unittest.main()
 

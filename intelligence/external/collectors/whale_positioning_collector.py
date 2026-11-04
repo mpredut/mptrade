@@ -61,17 +61,13 @@ class WhalePositioningSnapshot:
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> WhalePositioningSnapshot:
         if not isinstance(data, dict):
             data = {}
-        raw_reg = data.get("divergence_regime")
+        raw_reg = data.get("divergence_regime") if data.get("divergence_regime") is not None else data.get("div_regime")
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         raw_long_val = data.get("top_traders_long_pct") if data.get("top_traders_long_pct") is not None else data.get("whale_long_pct")
-        if isinstance(raw_long_val, str) and raw_long_val.strip().endswith("%"):
-            long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True)
-        else:
-            long_pct_raw = _clean_dict_float(data, "top_traders_long_pct", 0.5, "whale_long_pct", nonneg=True)
-            if 5.0 <= long_pct_raw <= 100.0:
-                long_pct_clean = round(long_pct_raw / 100.0, 4)
-            else:
-                long_pct_clean = min(1.0, max(0.0, long_pct_raw))
+        long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True)
+        ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
+        if ts_val > 1e11:
+            ts_val /= 1000.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             top_traders_long_ratio=_clean_dict_float(data, "top_traders_long_ratio", 1.0, "whale_long_ratio", nonneg=True),
@@ -82,7 +78,7 @@ class WhalePositioningSnapshot:
             open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
             open_interest_1h_change_pct=_clean_dict_float(data, "open_interest_1h_change_pct", 0.0, "oi_1h_chg_pct"),
             divergence_regime=reg_str,
-            ts=_clean_dict_float(data, "ts", 0.0, nonneg=True),
+            ts=ts_val,
             funding_rate=safe_float(data.get("funding_rate"), default=None),
             taker_ratio_5m=safe_pos_float(data.get("taker_ratio_5m"), default=None),
             taker_ratio_1h=safe_pos_float(data.get("taker_ratio_1h"), default=None),
@@ -254,7 +250,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             url_top = f"https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol={lookup_sym}&period=5m&limit=2"
             latest_top, _ = self._fetch_latest_json_row(url_top, "topLongShortPositionRatio", lookup_sym)
             top_ratio = _clean_dict_float(latest_top, "longShortRatio", 1.0)
-            top_long_pct = _clean_dict_float(latest_top, "longAccount", 0.5)
+            top_long_pct = clean_scale(latest_top.get("longAccount"), default=0.5, allow_percent=True)
 
             # 2. Taker Buy/Sell Volume Ratio (48x5m = 4h multi-horizon 5m/15m/1h/4h rolling windows for live CVD / taker flow)
             url_taker = f"https://fapi.binance.com/futures/data/takerlongshortRatio?symbol={lookup_sym}&period=5m&limit=48"

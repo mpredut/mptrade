@@ -29,8 +29,63 @@ def _std_to_vol1h_pct(std: float, sample_rate_sec: float) -> float:
     return 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
 
-def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> Optional[float]:
+def _extract_price_sequence(prices: Sequence[float]) -> Optional[Sequence[float]]:
+    """Normalize 1D price sequences or 2D (ts, price) sequences into a 1D price sequence."""
+    if prices is None or isinstance(prices, (bool, str, bytes)):
+        return None
+    if np is not None and isinstance(prices, np.ndarray):
+        if prices.dtype == bool:
+            return None
+        if prices.ndim == 2 and prices.shape[1] >= 2:
+            try:
+                arr2 = prices[:, :2].astype(float, copy=False)
+                ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
+                valid_ts = np.isfinite(ts_col) & (ts_col > 0)
+                if np.all(valid_ts) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
+                    order = np.argsort(ts_col, kind="mergesort")
+                    return arr2[order, 1]
+                return arr2[:, 1]
+            except (TypeError, ValueError):
+                return None
+        return prices
+    try:
+        if len(prices) > 0 and isinstance(prices[0], (list, tuple)):
+            pts_with_ts = []
+            pts_only = []
+            all_have_ts = True
+            for item in prices:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    tf = safe_pos_float(item[0], default=None)
+                    pf = safe_pos_float(item[1], default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+                        if tf is not None:
+                            pts_with_ts.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                        else:
+                            all_have_ts = False
+                elif isinstance(item, (list, tuple)) and len(item) == 1:
+                    all_have_ts = False
+                    pf = safe_pos_float(item[0], default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+                else:
+                    all_have_ts = False
+                    pf = safe_pos_float(item, default=None)
+                    if pf is not None:
+                        pts_only.append(pf)
+            if all_have_ts and len(pts_with_ts) == len(pts_only) and len(pts_with_ts) > 1:
+                if any(pts_with_ts[i][0] > pts_with_ts[i + 1][0] for i in range(len(pts_with_ts) - 1)):
+                    pts_with_ts.sort(key=lambda x: x[0])
+                return [p for _, p in pts_with_ts]
+            return pts_only
+    except TypeError:
+        return None
+    return prices
+
+
+def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60.0) -> Optional[float]:
     """Estimate one-sigma hourly volatility percentage from scaled log returns."""
+    prices = _extract_price_sequence(prices)  # type: ignore[assignment]
     if prices is None or isinstance(prices, (bool, str, bytes)):
         return None
     sr_f = safe_pos_float(sample_rate_sec, default=None)

@@ -33,6 +33,8 @@ class LinearGradientTrigger:
             return "unknown", None
         price, gradient, epsilon = price_f, grad_f, eps_f
         ts_f = safe_pos_float(ts, default=0.0) or 0.0
+        if ts_f > 1e11:
+            ts_f /= 1000.0
 
         strength = abs(gradient) / epsilon
         regime = "sideways"

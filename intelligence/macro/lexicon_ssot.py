@@ -316,6 +316,8 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
             if _is_noise_dynamic_keyword(t_clean, stopwords):
                 continue
             ts = safe_float(meta.get("ts") if isinstance(meta, dict) else meta, 0.0)
+            if ts > 1e11:
+                ts /= 1000.0
             tier = str(meta.get("tier", "high")).lower() if isinstance(meta, dict) else "high"
             if ts > 0.0 and (now - ts) <= ttl:
                 valid_rows.append((ts, idx, t_clean, tier))
@@ -367,8 +369,10 @@ def update_dynamic_lexicon(
                     pruned_existing = True
                     continue
                 ts = safe_float(v.get("ts"), 0.0)
+                if ts > 1e11:
+                    ts /= 1000.0
                 if ts > 0.0 and (now - ts) <= ttl:
-                    existing_entries[k_clean] = dict(v)
+                    existing_entries[k_clean] = dict(v, ts=ts)
                 else:
                     pruned_existing = True
             else:
@@ -430,10 +434,12 @@ def demote_dynamic_acute_terms(
             changed = True
             continue
         ts = safe_float(v.get("ts"), 0.0)
+        if ts > 1e11:
+            ts /= 1000.0
         if ts <= 0.0 or (now - ts) > ttl:
             changed = True
             continue
-        entry = dict(v)
+        entry = dict(v, ts=ts)
         if str(entry.get("tier", "high")).lower() == "acute":
             entry["tier"] = "high"
             changed = True
@@ -737,13 +743,19 @@ def has_high_severity_keywords(
 
 
 def has_acute_shock_keywords(
-    texts: Sequence[str],
+    texts: Sequence[Any],
     cache_dir: Optional[str] = None,
     now_ts: Optional[float] = None,
 ) -> bool:
     """Return True if any headline in ``texts`` contains an active acute systemic shock phrase."""
+    if not texts:
+        return False
     phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=now_ts)
-    return any(any(p in (t or "").lower() for p in phrases) for t in texts)
+    items = (texts,) if isinstance(texts, str) else texts
+    return any(
+        any(p in str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower() for p in phrases)
+        for t in items
+    )
 
 
 import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402

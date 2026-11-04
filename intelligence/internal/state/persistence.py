@@ -23,23 +23,40 @@ def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
             return np.empty(0, dtype=float)
         if prices.dtype.kind in ("f", "i", "u"):
             if prices.ndim == 2 and prices.shape[1] >= 2:
-                arr = prices[:, 1].astype(float, copy=False).ravel()
+                arr2 = prices[:, :2].astype(float, copy=False)
+                ts_col = np.where(arr2[:, 0] > 1e11, arr2[:, 0] / 1000.0, arr2[:, 0])
+                if np.all(np.isfinite(ts_col) & (ts_col > 0)) and len(ts_col) > 1 and np.any(np.diff(ts_col) < 0):
+                    arr2 = arr2[np.argsort(ts_col, kind="mergesort")]
+                arr = arr2[:, 1].ravel()
             else:
                 arr = prices.astype(float, copy=False).ravel()
             return arr[np.isfinite(arr)]
     vals = []
+    ts_vals = []
+    all_have_ts = True
     try:
         for p in prices:
-            raw_p = (
-                p[1]
-                if isinstance(p, (list, tuple)) and len(p) >= 2
-                else (p[0] if isinstance(p, (list, tuple)) and len(p) == 1 else p)
-            )
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                tf = safe_pos_float(p[0], default=None)
+                pf = safe_float(p[1], default=None)
+                if pf is not None:
+                    vals.append(pf)
+                    if tf is not None:
+                        ts_vals.append((tf / 1000.0 if tf > 1e11 else tf, pf))
+                    else:
+                        all_have_ts = False
+                continue
+            all_have_ts = False
+            raw_p = p[0] if isinstance(p, (list, tuple)) and len(p) == 1 else p
             pf = safe_float(raw_p, default=None)
             if pf is not None:
                 vals.append(pf)
     except TypeError:
         pass
+    if all_have_ts and len(ts_vals) == len(vals) and len(ts_vals) > 1:
+        if any(ts_vals[i][0] > ts_vals[i + 1][0] for i in range(len(ts_vals) - 1)):
+            ts_vals.sort(key=lambda x: x[0])
+        vals = [px for _, px in ts_vals]
     return np.asarray(vals, dtype=float)
 
 
