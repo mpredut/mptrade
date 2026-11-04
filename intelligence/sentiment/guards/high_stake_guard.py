@@ -210,6 +210,7 @@ class PreTradeLLMGuardBase:
             for _mod_name in (
                 "intelligence.sentiment.collectors.macro_telemetry_collector",
                 "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+                "intelligence.macro_sentiment_ssot",
             ):
                 _m = sys.modules.get(_mod_name)
                 _cand_telem = getattr(_m, "collect_pretrade_telemetry", None) if _m is not None else None

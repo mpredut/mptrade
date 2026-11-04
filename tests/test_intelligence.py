@@ -1430,6 +1430,104 @@ def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluato
     assert pt_map["SOLUSDC"].get("high_7d") == 160.0
 
 
+def test_iter50_t212_order_status_quantity_imports_cachetrend_monkeypatch_and_collector_forwarding(monkeypatch, tmp_path):
+    import pytest
+    import cacheManager as cm
+    import cachetrend
+    import intelligence.macro_sentiment_ssot as ssot_mod
+    from intelligence.sentiment.collectors import (
+        macro_telemetry_collector as mtc_mod,
+        microstructure_collector as msc_mod,
+        pretrade_telemetry_collector as ptc_mod,
+    )
+    from providers.strategy_executor import ProviderError
+    from providers.t212_provider import T212Provider
+
+    # 1. T212Provider.order_status rejects empty-string fill fields and falls back from fee=None to commission
+    class _FakeT212Client:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def get_order_status(self, oid):
+            return self._payload
+
+    prov = T212Provider(client=_FakeT212Client({
+        "status": "FILLED",
+        "ticker": "NVDA_US_EQ",
+        "filledQuantity": "",
+        "filledValue": 100.0,
+    }))
+    with pytest.raises(ProviderError, match="invalid fill values"):
+        prov.order_status("NVDA_US_EQ", "101")
+
+    prov_comm = T212Provider(client=_FakeT212Client({
+        "status": "FILLED",
+        "ticker": "NVDA_US_EQ",
+        "filledQuantity": 2.0,
+        "filledValue": 250.0,
+        "fee": None,
+        "commission": 0.75,
+    }))
+    st = prov_comm.order_status("NVDA_US_EQ", "102")
+    assert st.status == "closed"
+    assert st.filled_qty == 2.0
+    assert st.cost == 250.0
+    assert st.fee == 0.75
+
+    # 2. cachetrend._cm_attr respects monkeypatches on cachetrend even when cacheManager is loaded
+    assert hasattr(cm, "CM_LONG_ARCHIVE_MONTHS")
+    assert hasattr(cm, "CM_LONG_ARCHIVE_SAMPLE_SEC")
+    assert hasattr(cm, "CM_LONG_ARCHIVE_FLUSH_SEC")
+    monkeypatch.setattr(cachetrend, "CM_DYNAMIC_WINDOW_MIN_SEC", 42.5)
+    assert cachetrend._cm_attr("CM_DYNAMIC_WINDOW_MIN_SEC", 14.0) == 42.5
+
+    # 3. _filter_ohlc_closes_since handles None closes/timestamps and non-numeric values safely
+    class _MalformedSeries:
+        timestamps = [None, "bad", 1700001000.0, 1700002000.0]
+        closes = [10.0, 20.0, "nan", 125.5]
+
+    class _NoneClosesSeries:
+        timestamps = [1700001000.0]
+        closes = None
+
+    assert msc_mod._filter_ohlc_closes_since(_MalformedSeries(), 1700000000.0) == [125.5]
+    assert msc_mod._filter_ohlc_closes_since(_NoneClosesSeries(), 1700000000.0) == []
+
+    # 4. Pretrade/macro/microstructure collectors forward monkeypatches from intelligence.macro_sentiment_ssot
+    seen_paths = []
+
+    def _custom_read_json(path):
+        seen_paths.append(str(path))
+        if str(path).endswith("orderbook_depth_BTCUSDC.json"):
+            return {"symbol": "BTCUSDC", "bid_depth_usd": 50000.0, "ask_depth_usd": 40000.0, "mid_price": 65000.0}
+        return None
+
+    monkeypatch.setattr(ssot_mod, "read_json_cached", _custom_read_json)
+    assert ptc_mod._resolve_read_json_cached() is _custom_read_json
+    assert msc_mod._resolve_read_json_cached() is _custom_read_json
+    m_loaded = msc_mod.load_symbol_microstructure(str(tmp_path), "BTCUSDC")
+    assert isinstance(m_loaded, dict) and m_loaded.get("ob_mid_price") == 65000.0
+
+    saved_macro = []
+    monkeypatch.setattr(
+        ssot_mod,
+        "fetch_public_json",
+        lambda url, **kw: {
+            "chart": {
+                "result": [{
+                    "meta": {"regularMarketPrice": 500.0, "regularMarketChangePercent": 1.25},
+                    "timestamp": [1700000000, 1700003600],
+                    "indicators": {"quote": [{"close": [495.0, 500.0]}]},
+                }]
+            }
+        } if "finance.yahoo.com" in str(url) else {},
+    )
+    monkeypatch.setattr(ssot_mod, "save_json_state", lambda path, data, **kw: saved_macro.append((path, data)))
+    snap_macro = mtc_mod.collect_macro_benchmarks_snapshot(str(tmp_path), now_ts=1700003600.0, persist=True)
+    assert isinstance(snap_macro, dict) and snap_macro["items"]["SPY"]["price"] == 500.0
+    assert len(saved_macro) == 1
+
+
 if __name__ == "__main__":
     unittest.main()
 

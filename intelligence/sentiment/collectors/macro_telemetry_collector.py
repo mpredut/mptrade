@@ -88,14 +88,30 @@ from providers.execution_audit import (
     summarize_recent_ai_intents,
 )
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
+    read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
     read_last_jsonl_dict,
     resolve_cachedb_filepath,
-    save_json_state,
+    save_json_state as _default_save_json_state,
 )
 
+_default_fetch_public_json = fetch_public_json
+read_json_cached = _default_read_json_cached
+save_json_state = _default_save_json_state
+
 logger = logging.getLogger("intelligence.sentiment.macro_telemetry_collector")
+
+
+def _resolve_macro_ssot_attr(name: str, local_val: Any, default_val: Any) -> Any:
+    if local_val is not default_val and callable(local_val):
+        return local_val
+    import sys as _sys
+
+    _ssot = _sys.modules.get("intelligence.macro_sentiment_ssot")
+    _cand = getattr(_ssot, name, None) if _ssot is not None else None
+    if callable(_cand) and _cand is not default_val:
+        return _cand
+    return local_val
 
 
 def collect_macro_benchmarks_snapshot(
@@ -108,7 +124,7 @@ def collect_macro_benchmarks_snapshot(
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
-    _fetch = fetch_fn or fetch_public_json
+    _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
         try:
@@ -228,7 +244,8 @@ def collect_macro_benchmarks_snapshot(
     payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
     if persist and cache_dir:
         try:
-            save_json_state(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
+            _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+            _save_fn(os.path.join(cache_dir, "macro_benchmarks_collect.json"), payload, indent=2)
         except Exception:
             pass
     return payload
@@ -238,7 +255,8 @@ def _read_first_cached_dict(
     cache_dir: str, group_key: str, default_file: str, read_json_fn: Any = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Read the first non-empty dict matching `get_cache_filenames(group_key)` (or `default_file`) in `cache_dir`."""
-    return read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn=read_json_cached if read_json_fn is None else read_json_fn)
+    eff_rj = _resolve_macro_ssot_attr("read_json_cached", read_json_cached, _default_read_json_cached) if read_json_fn is None else read_json_fn
+    return read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn=eff_rj)
 
 
 def harvest_macro_and_news_sensors(

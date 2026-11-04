@@ -10,6 +10,16 @@ from typing import Any, Callable, Optional, Tuple
 
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
+from .base import (
+    _clean_single_order_id,
+    clean_order_id,
+    extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+    normalize_side,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -562,16 +572,4 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
                             final, reason, asset,
                             scale_applied=scale_applied, applied_scale=applied_scale)
-
-
-from .base import (  # noqa: E402
-    _clean_single_order_id,
-    clean_order_id,
-    extract_order_fee,
-    extract_order_price,
-    extract_order_qty,
-    extract_order_side,
-    extract_timestamp_ms,
-    normalize_side,
-)
 

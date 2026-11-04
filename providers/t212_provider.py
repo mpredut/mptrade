@@ -428,9 +428,12 @@ class T212Provider(MarketDataProvider):
 
         if any(isinstance(raw.get(k), bool) for k in ("filledQuantity", "filledValue", "fee", "commission")):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
-        fq_f = safe_float(raw.get("filledQuantity") or 0.0, default=None)
-        fv_f = safe_float(raw.get("filledValue") or 0.0, default=None)
-        fee = safe_nonneg_float(raw.get("fee", raw.get("commission", 0.0)) or 0.0, default=None)
+        raw_fq = raw.get("filledQuantity")
+        raw_fv = raw.get("filledValue")
+        raw_fee = raw.get("fee") if raw.get("fee") is not None else raw.get("commission")
+        fq_f = safe_float(0.0 if raw_fq is None else raw_fq, default=None)
+        fv_f = safe_float(0.0 if raw_fv is None else raw_fv, default=None)
+        fee = safe_nonneg_float(0.0 if raw_fee is None else raw_fee, default=None)
         if fq_f is None or fv_f is None or fee is None:
             raise ProviderError(f"order_status({order_id}): invalid fill values")
         filled_qty = abs(fq_f)

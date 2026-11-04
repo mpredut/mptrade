@@ -61,12 +61,52 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 )
 from instrument_registry import casefold_get
 from state_io import (
-    read_json_dict_recovering as read_json_cached,
+    read_json_dict_recovering as _default_read_json_cached,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
 )
 
+read_json_cached = _default_read_json_cached
+
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
+
+
+def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
+    if read_json_fn is not None and callable(read_json_fn):
+        return read_json_fn
+    if callable(read_json_cached) and read_json_cached is not _default_read_json_cached:
+        return read_json_cached
+    import sys as _sys
+
+    for _mod_name in (
+        "intelligence.sentiment.collectors.macro_telemetry_collector",
+        "intelligence.macro_sentiment_ssot",
+    ):
+        _mod = _sys.modules.get(_mod_name)
+        _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
+        if callable(_cand) and _cand is not _default_read_json_cached:
+            return _cand
+    return read_json_cached
+
+
+def _filter_ohlc_closes_since(
+    series_obj: Any,
+    cutoff_ts: float,
+    max_ts: Optional[float] = None,
+) -> List[float]:
+    ts_seq = getattr(series_obj, "timestamps", None) or ()
+    cl_seq = getattr(series_obj, "closes", None) or ()
+    if not isinstance(ts_seq, (list, tuple)) or not isinstance(cl_seq, (list, tuple)):
+        return []
+    out: List[float] = []
+    for raw_ts, raw_px in zip(ts_seq, cl_seq):
+        ts_v = safe_pos_float(raw_ts, default=None)
+        px_v = safe_pos_float(raw_px, default=None)
+        if ts_v is None or px_v is None:
+            continue
+        if ts_v >= cutoff_ts and (max_ts is None or ts_v <= max_ts):
+            out.append(px_v)
+    return out
 
 
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
@@ -129,6 +169,7 @@ def load_symbol_price_series(
         return cur_ser
 
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
+    _rj = _resolve_read_json_cached()
     p0: Optional[Tuple[float, float]] = None
     p1: Optional[Tuple[float, float]] = None
     span_24h_ms = 0.0
@@ -136,7 +177,7 @@ def load_symbol_price_series(
         for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _extract_cached_items_series(read_json_cached(p24_path), cands)
+            ser = _extract_cached_items_series(_rj(p24_path), cands)
             if len(ser) >= 2:
                 series_24h = list(ser) if not series_24h else _prepend_older_non_diverged_points(series_24h, ser)
                 p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
@@ -156,7 +197,7 @@ def load_symbol_price_series(
             return []
         try:
             if arch_path.endswith(".json"):
-                aser = _extract_cached_items_series(read_json_cached(arch_path), cands)
+                aser = _extract_cached_items_series(_rj(arch_path), cands)
                 return list(aser) if len(aser) >= 2 else []
             parsed_rows = []
             for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
@@ -277,7 +318,7 @@ def load_symbol_microstructure(
     whale: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
-    read_json_fn = read_json_cached if read_json_fn is None else read_json_fn
+    read_json_fn = _resolve_read_json_cached(read_json_fn)
     sym_cands = cache_symbol_variants(sym, include_base=True)
 
     def _first_telemetry_dict(prefix: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -413,7 +454,7 @@ def discover_reference_microstructure_symbols(
     """Discover additional microstructure symbols on disk not yet represented in `microstructure`."""
     if not cache_dir or not os.path.isdir(cache_dir):
         return []
-    _rj = read_json_cached if read_json_fn is None else read_json_fn
+    _rj = _resolve_read_json_cached(read_json_fn)
     covered_micro_bases = {canonical_base_asset(k) for k in microstructure}
     ref_micro_syms: List[str] = []
     for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
@@ -460,7 +501,7 @@ def enrich_24h_and_microstructure(
     read_json_fn: Any = None,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
-    _rj = read_json_fn or read_json_cached
+    _rj = _resolve_read_json_cached(read_json_fn)
     btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
@@ -539,13 +580,16 @@ def enrich_24h_and_microstructure(
                                 m24 = m24_full
                     if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                         s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
-                        s60_ts = getattr(s60, "timestamps", ()) or ()
-                        vals_7d = [float(px) for ts, px in zip(s60_ts, getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
-                        if s60_ts and (float(s60_ts[-1]) - float(s60_ts[0])) < 5 * 86400.0:
+                        s60_ts = [
+                            ts_v for raw_ts in (getattr(s60, "timestamps", None) or ())
+                            if (ts_v := safe_pos_float(raw_ts, default=None)) is not None
+                        ]
+                        vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
+                        if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
                             try:
                                 s240 = ohlc_fn(sym, 240)
-                                first_s60 = float(s60_ts[0]) - 1800.0
-                                older_7d = [float(px) for ts, px in zip(getattr(s240, "timestamps", ()), getattr(s240, "closes", ())) if cutoff_7d <= ts <= first_s60 and float(px) > 0]
+                                first_s60 = s60_ts[0] - 1800.0
+                                older_7d = _filter_ohlc_closes_since(s240, cutoff_7d, max_ts=first_s60)
                                 if older_7d:
                                     vals_7d = older_7d + vals_7d
                             except Exception:
@@ -662,7 +706,7 @@ def enrich_24h_and_microstructure(
                             ser_24h.append([int(now_ts * 1000), ref_px])
                         if len(vals_7d) < 2:
                             s60, cutoff_7d = krk_p.ohlc_series(msym, 60), now_ts - 7 * 86400.0
-                            vals_7d = [float(px) for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
+                            vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
                     except Exception:
                         pass
                 if ref_px is None and ser_24h:

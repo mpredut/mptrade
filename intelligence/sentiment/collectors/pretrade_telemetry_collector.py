@@ -30,6 +30,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_microstructure_cvd,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    _parse_ts_px_row,
     _prices_diverged,
     apply_short_trend_item,
     compute_24h_price_metrics,
@@ -49,6 +50,7 @@ def _resolve_read_json_cached() -> Callable[[str], Any]:
     for _mod_name in (
         "intelligence.sentiment.collectors.macro_telemetry_collector",
         "intelligence.sentiment.guards.high_stake_guard",
+        "intelligence.macro_sentiment_ssot",
     ):
         _mod = _sys.modules.get(_mod_name)
         _fn = getattr(_mod, "read_json_cached", None) if _mod is not None else None
@@ -278,7 +280,8 @@ def collect_pretrade_telemetry(
             if d1_b > 0.0 or d1_a > 0.0:
                 slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
                 telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
-            cur_px_est = safe_pos_float(alt_series_24h[-1][1], default=0.0) if alt_series_24h else 0.0
+            last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
+            cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
             if not cur_px_est or cur_px_est <= 0.0:
                 cur_px_est = next(
                     (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),

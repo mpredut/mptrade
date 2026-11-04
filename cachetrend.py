@@ -96,9 +96,21 @@ CacheManagerInterface = _cm.CacheManagerInterface
 # provider's own network timeout still owns the worker lifecycle.
 _NB_FETCH_DEADLINE_SEC = 8
 
+_ORIG_CACHETREND_ATTRS = {
+    "_CONFIG_ROOT": _CONFIG_ROOT,
+    "CM_DYNAMIC_WINDOW_MIN_SEC": CM_DYNAMIC_WINDOW_MIN_SEC,
+    "CM_DYNAMIC_WINDOW_MAX_SEC": CM_DYNAMIC_WINDOW_MAX_SEC,
+    "CM_PUBLISHED_TREND_WINDOWS_SEC": CM_PUBLISHED_TREND_WINDOWS_SEC,
+    "atomic_write_json": atomic_write_json,
+}
+
 
 def _cm_attr(name: str, default=None):
-    """Resolve an attribute from ``cacheManager`` if loaded, allowing test monkeypatching."""
+    """Resolve an attribute from ``cachetrend`` (when monkeypatched) or ``cacheManager`` if loaded."""
+    if name in _ORIG_CACHETREND_ATTRS:
+        local_val = globals().get(name)
+        if local_val is not _ORIG_CACHETREND_ATTRS[name]:
+            return local_val
     mod = sys.modules.get("cacheManager") or _cm
     if mod is not None and hasattr(mod, name):
         return getattr(mod, name)

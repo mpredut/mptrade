@@ -87,10 +87,13 @@ from state_io import (
     discard_generation_file,
     read_json_dict,
     read_json_dict_cached,
-    read_json_dict_recovering,
+    read_json_dict_recovering as _default_read_json_dict_recovering,
     read_text_lines,
     save_json_state,
 )
+
+read_json_dict_recovering = _default_read_json_dict_recovering
+read_json_cached = _default_read_json_dict_recovering
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +430,14 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # 5. Unified Cached Telemetry & Assessment Loaders (SSOT)
 # ============================================================================
 
+def _resolve_ssot_json_reader(read_json_fn: Any = None) -> Callable[[str], Any]:
+    if callable(read_json_fn):
+        return read_json_fn
+    if callable(read_json_cached) and read_json_cached is not _default_read_json_dict_recovering:
+        return read_json_cached
+    return read_json_dict_recovering
+
+
 def read_first_cached_dict(
     cache_dir: str,
     group_key: str = "",
@@ -434,7 +445,7 @@ def read_first_cached_dict(
     read_json_fn: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Read and return the first non-empty cached dict and its path from candidate filenames."""
-    reader = read_json_fn if callable(read_json_fn) else read_json_dict_recovering
+    reader = _resolve_ssot_json_reader(read_json_fn)
     candidates = (*(get_cache_filenames(group_key) if group_key else ()), *extra_filenames)
     for fname in dict.fromkeys(f for f in candidates if f):
         path = os.path.join(cache_dir, fname)
@@ -458,11 +469,12 @@ def load_cached_fear_greed_snapshot(
     """Load cached Fear & Greed snapshot using configured candidate filenames."""
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
 
+    reader = _resolve_ssot_json_reader()
     eval_now = resolve_now_ts(now_ts)
     for fg_fname in get_cache_filenames("fear_greed_files"):
         fg_path = os.path.join(cache_dir, fg_fname)
         try:
-            fg_data = read_json_dict_recovering(fg_path)
+            fg_data = reader(fg_path)
             if not isinstance(fg_data, dict) or not fg_data:
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
@@ -506,11 +518,12 @@ def load_cached_market_breadth_snapshot(
             and s_clean.isascii()
         )
 
+    reader = _resolve_ssot_json_reader()
     eval_now = resolve_now_ts(now_ts)
     for mb_fname in get_cache_filenames("market_breadth_files"):
         mb_path = os.path.join(cache_dir, mb_fname)
         try:
-            mb_data = read_json_dict_recovering(mb_path)
+            mb_data = reader(mb_path)
             if not isinstance(mb_data, dict) or not mb_data:
                 continue
             raw_adv = mb_data.get("advancing_count") if mb_data.get("advancing_count") is not None else mb_data.get("advancing")
@@ -540,12 +553,13 @@ def load_cached_whale_telemetry(
     symbols: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
+    reader = _resolve_ssot_json_reader()
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (list(symbols) if symbols else ["BTCUSDC"]):
         for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
             safe_sym = clean_symbol_key(cand_sym)
             if safe_sym:
-                cand_w = read_json_dict_recovering(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
+                cand_w = reader(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
                 if isinstance(cand_w, dict) and cand_w:
                     return cand_w
     return None
