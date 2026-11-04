@@ -503,6 +503,7 @@ class _LivePairVenue:
         hard_stop_revision = self._parse_bounded_revision(
             0 if raw_hs_rev is None else raw_hs_rev, int_err=f"invalid hard-stop revision: {raw_hs_rev!r}"
         )
+        best_stop_revision = hard_stop_revision if merged.get("stop_order_id") is not None else -1
         recovery_pending = False
         pending_hard_stop = False
 
@@ -527,7 +528,8 @@ class _LivePairVenue:
                         if str(ticket.get("order_id")) == str(order_id):
                             ticket["revision"] = represented_revision
                             break
-                if stop_revision is not None:
+                if stop_revision is not None and stop_revision >= best_stop_revision:
+                    best_stop_revision = stop_revision
                     merged["stop_order_id"] = str(order_id)
                     merged["phase"] = "stopping"
                 continue
@@ -548,7 +550,8 @@ class _LivePairVenue:
                 tickets.append(vars(ticket).copy())
                 represented.add(order_id)
             snapshots[order_id] = vars(snapshot).copy()
-            if stop_revision is not None:
+            if stop_revision is not None and stop_revision >= best_stop_revision:
+                best_stop_revision = stop_revision
                 merged["stop_order_id"] = order_id
                 merged["phase"] = "stopping"
                 merged["hard_stop_reason"] = merged.get("hard_stop_reason") or "inventory_hard_stop"

@@ -4540,6 +4540,118 @@ def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_sc
     assert dec_sell.final_qty == 0.10
 
 
+def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypatch):
+    import assetguardian as ag
+    from rtrade_pair_store import RTradePairStore
+    from strategies.rtrade_pair import OrderSnapshot, OrderTicket, PairCoordinator, PairPolicy
+
+    # 1. PairCoordinator startup_recovery completes round when both BUY and SELL legs filled
+    class _StubVenue:
+        def __init__(self):
+            self.statuses = {
+                "L1": OrderSnapshot(status="closed", filled_qty=1.0, cost=99.36, fee=0.01),
+                "L2": OrderSnapshot(status="closed", filled_qty=1.0, cost=100.64, fee=0.01),
+            }
+            self.recovery_blocked = False
+
+        def current_price(self):
+            return 100.0
+
+        def order_status(self, oid):
+            return self.statuses[oid]
+
+        def cancel(self, oid):
+            return True
+
+        def recover_pair_intents(self, _pair_id):
+            return [
+                (OrderTicket(order_id="L2", side="SELL", price=100.64, qty=1.0), self.statuses["L2"], "limit"),
+            ]
+
+    venue = _StubVenue()
+    policy = PairPolicy(adjustment_fraction=0.0064)
+    coord = PairCoordinator(
+        venue,
+        qty=1.0,
+        policy=policy,
+        start_side="BUY",
+        clock=lambda: 0.0,
+        sleeper=lambda _s: None,
+        pair_id_factory=lambda: "pair-79",
+    )
+    coord.pair_id = "pair-79"
+    coord.phase = "startup_recovery"
+    coord.reason = "sell_recovery_pending"
+    coord.tickets = [OrderTicket(order_id="L1", side="BUY", price=99.36, qty=1.0, active=False, pair_id="pair-79")]
+    coord.snapshots = {"L1": venue.statuses["L1"]}
+    out = coord.step(now=2.0)
+    assert out.phase == "complete"
+    assert out.terminal is True
+    assert out.reason is None
+    assert out.first_fill_side == "BOTH"
+
+    # 2. PairCoordinator._recover_persisted_intents does not prematurely set phase="stopping" while blocked
+    venue2 = _StubVenue()
+    venue2.statuses["S0"] = OrderSnapshot(status="canceled", filled_qty=0.4, cost=38.0, fee=0.01)
+    venue2.recovery_blocked = True
+    venue2.recover_pair_intents = lambda _pid: [
+        (OrderTicket(order_id="S0", side="SELL", price=95.0, qty=1.0), venue2.statuses["S0"], "hard_stop"),
+    ]
+    coord2 = PairCoordinator(
+        venue2,
+        qty=1.0,
+        policy=policy,
+        start_side="BUY",
+        clock=lambda: 0.0,
+        sleeper=lambda _s: None,
+        pair_id_factory=lambda: "pair-79b",
+    )
+    coord2.pair_id = "pair-79b"
+    coord2.phase = "hard_stop_recovery"
+    coord2.reason = "hard_stop_recovery_pending"
+    coord2.tickets = [
+        OrderTicket(order_id="L1", side="BUY", price=99.36, qty=1.0, active=False, pair_id="pair-79b"),
+        OrderTicket(order_id="S0", side="SELL", price=95.0, qty=1.0, active=False, pair_id="pair-79b"),
+    ]
+    coord2.snapshots = {"L1": venue2.statuses["L1"], "S0": venue2.statuses["S0"]}
+    coord2.stop_ticket = coord2.tickets[-1]
+    out2 = coord2.step(now=3.0)
+    assert out2.phase == "hard_stop_recovery"
+    assert out2.reason == "hard_stop_recovery_pending"
+
+    # 3. PairCoordinator.from_state does not fall back to limit ticket when explicit stop_order_id is missing from tickets
+    state_stop = coord2.export_state()
+    state_stop["phase"] = "stopping"
+    state_stop["stop_order_id"] = "999999"
+    state_stop["tickets"] = [vars(coord2.tickets[0]).copy()]
+    restored = PairCoordinator.from_state(venue2, policy, state_stop)
+    assert restored.stop_ticket is None
+
+    # 4. RTradePairStore._resolved_lock_path uses resolve_cachedb_filepath
+    (tmp_path / "state").mkdir(exist_ok=True)
+    store = RTradePairStore(str(tmp_path / "rtrade_pairs_state.json"))
+    assert store._resolved_lock_path() == str(tmp_path / "state" / "rtrade_pairs_state.json.lock")
+    store.begin("TAOUSDC", "pair-store-79", "BUY", 1.0)
+    assert len(store.active("TAOUSDC")) == 1
+
+    # 5. assetguardian._resolve_blocking_sell_orders retains order when cancel returns False and resolves accepted order on True
+    ag._rtrade_sell_block_since["TAOUSDC"] = 100.0
+    monkeypatch.setattr(ag.time, "time", lambda: 100.0 + ag.RTRADE_BLOCK_CANCEL_SECONDS + 5.0)
+    resolved_oids = []
+    monkeypatch.setattr(ag, "resolve_accepted_order", lambda sym, oid: resolved_oids.append((sym, oid)))
+    rtrade_sell = {"orderId": "777", "clientOrderId": "RT_777", "side": "SELL", "status": "NEW"}
+    monkeypatch.setattr(ag.mkt, "cancel_order", lambda *_a, **_kw: False)
+    rem_false = ag._resolve_blocking_sell_orders("TAOUSDC", [rtrade_sell])
+    assert len(rem_false) == 1
+    assert resolved_oids == []
+
+    monkeypatch.setattr(ag.mkt, "cancel_order", lambda *_a, **_kw: True)
+    rem_true = ag._resolve_blocking_sell_orders("TAOUSDC", [rtrade_sell])
+    assert rem_true == []
+    assert resolved_oids == [("TAOUSDC", "777")]
+
+
+
 
 
 

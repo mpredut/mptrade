@@ -437,7 +437,7 @@ class PairCoordinator:
             next((t for t in obj.tickets if t.order_id == clean_stop_oid), None)
             if clean_stop_oid is not None else None
         )
-        if obj.stop_ticket is None and obj.phase == "stopping" and obj.tickets:
+        if obj.stop_ticket is None and clean_stop_oid is None and obj.phase == "stopping" and obj.tickets:
             obj.stop_ticket = obj.tickets[-1]
         stored_limit_revisions = state.get("limit_revisions")
         if stored_limit_revisions is None:
@@ -513,10 +513,10 @@ class PairCoordinator:
             stop_revision = self._intent_revision(kind, "hard_stop")
             if stop_revision is not None:
                 existing.revision = stop_revision
+                if self.stop_ticket is None or stop_revision >= self.hard_stop_revision:
+                    self.stop_ticket = existing
                 self.hard_stop_revision = max(self.hard_stop_revision, stop_revision)
-                self.stop_ticket = existing
                 self.hard_stop_reason = self.hard_stop_reason or "inventory_hard_stop"
-                self.phase = "stopping"
         blocked = getattr(self.venue, "pair_recovery_blocked", None)
         if callable(blocked):
             return not bool(blocked(self.pair_id))
@@ -815,7 +815,8 @@ class PairCoordinator:
             raise ValueError("the rtrade clock must be finite")
         self._refresh()
         bq, bc, _bf, sq, sc, _sf = self._totals()
-        self._record_first_fill(now, bq, sq)
+        if self.phase != "startup_recovery":
+            self._record_first_fill(now, bq, sq)
         net = bq - sq
 
         if self.phase == "startup_recovery":
@@ -825,9 +826,14 @@ class PairCoordinator:
                 if ticket.active and self._cancel_and_reconcile(ticket)[1] is not None:
                     return self.outcome()
             bq, bc, _bf, sq, sc, _sf = self._totals()
+            self._record_first_fill(now, bq, sq)
             net = bq - sq
             if abs(net) <= 1e-8:
-                self.phase = "failed"
+                if bq > 0 and sq > 0:
+                    self.phase = "complete"
+                    self.reason = None
+                else:
+                    self.phase = "failed"
                 return self.outcome()
             self.phase = "exposed"
 

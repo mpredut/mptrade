@@ -250,8 +250,16 @@ class RTradePairStore:
             eff_path, data, sort_keys=True, separators=(",", ":"),
         )
 
+    def _resolved_lock_path(self):
+        if not self.lock_path:
+            return None
+        if self.path and self.lock_path == f"{self.path}.lock":
+            return f"{resolve_cachedb_filepath(self.path)}.lock"
+        return str(resolve_cachedb_filepath(self.lock_path))
+
     def mutate(self, fn):
-        lock_ctx = FileLock(self.lock_path) if self.lock_path else self._mem_lock
+        resolved_lock = self._resolved_lock_path()
+        lock_ctx = FileLock(resolved_lock) if resolved_lock else self._mem_lock
         with lock_ctx:
             data = self._read()
             result = fn(data["pairs"])
@@ -402,7 +410,8 @@ class RTradePairStore:
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return []
         sym_key = canonical_symbol_key(symbol)
-        lock_ctx = FileLock(self.lock_path) if self.lock_path else self._mem_lock
+        resolved_lock = self._resolved_lock_path()
+        lock_ctx = FileLock(resolved_lock) if resolved_lock else self._mem_lock
         with lock_ctx:
             pairs = self._read().get("pairs", {})
         return [

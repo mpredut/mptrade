@@ -16,7 +16,7 @@ from providers.base import (
 )
 from providers.market_api import api as mkt   # Single guarded proxy (Instrument.place).
 from providers.execution_audit import ExecutionAudit
-from order_retry import propagate_submission_refusal
+from order_retry import propagate_submission_refusal, resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
@@ -1249,11 +1249,18 @@ def _resolve_blocking_sell_orders(symbol, open_sells):
             remaining.append(order)
             continue
         try:
-            mkt.cancel_order(symbol, oid, provider_name="binance")
+            if mkt.cancel_order(symbol, oid, provider_name="binance") is False:
+                print(f"[{symbol}] Preemptive cancel of blocking rtrade SELL order {oid} returned False.")
+                remaining.append(order)
+                continue
             print(
                 f"[{symbol}] Preemptively canceled blocking rtrade SELL order {oid} "
                 f"(cid={extract_client_order_id(order, default='')}) after {elapsed:.1f}s."
             )
+            try:
+                resolve_accepted_order(symbol, oid)
+            except Exception:
+                pass
         except Exception as exc:
             print(f"[{symbol}] Failed to cancel blocking rtrade SELL order {oid}: {exc}")
             remaining.append(order)
