@@ -3254,10 +3254,14 @@ def test_batch9_hardening(tmp_path):
 
 
 def test_batch10_archive_hardening(tmp_path):
+    from botcore import _REPO_ROOT, load_local_module
     from market_regime import MarketRegimeEvaluator, MarketRegimeService
-    from archive.market_regime_backtest import evaluate_forward_classifications
-    from archive.monitortrades_legacy import ProcentDistributor, adjust_monitor_interval
-    from archive.tradeCacheManager import TradeCacheManager
+
+    arch_dir = os.path.join(_REPO_ROOT, "archive")
+    evaluate_forward_classifications = load_local_module(arch_dir, "market_regime_backtest").evaluate_forward_classifications
+    mt_leg = load_local_module(arch_dir, "monitortrades_legacy")
+    ProcentDistributor, adjust_monitor_interval = mt_leg.ProcentDistributor, mt_leg.adjust_monitor_interval
+    TradeCacheManager = load_local_module(arch_dir, "tradeCacheManager").TradeCacheManager
 
     evaluator = MarketRegimeEvaluator()
     bull = evaluator.evaluate({"gradient_recent": 0.6, "epsilon": 0.1})
