@@ -423,13 +423,26 @@ _CITED_TAKER_RATIO_RE = re.compile(
 
 
 def parse_cited_taker_ratio(text: Any) -> Optional[float]:
-    """Extract a cited BTC taker buy/sell ratio from an advisor summary string."""
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string, preferring overall/15m over 5m/1h sub-horizons."""
     if not isinstance(text, str) or not text:
         return None
-    m_tr = _CITED_TAKER_RATIO_RE.search(text)
-    if not m_tr:
-        return None
-    return safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
+    best_rank = -1
+    best_val: Optional[float] = None
+    for m_tr in _CITED_TAKER_RATIO_RE.finditer(text):
+        val = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
+        if val is None:
+            continue
+        prefix = text[max(0, m_tr.start() - 24) : m_tr.start()].lower()
+        if re.search(r"\b(?:overall|15m)\s*$", prefix):
+            rank = 2
+        elif re.search(r"\b(?:1m|3m|5m|1h|4h)\s*$", prefix):
+            rank = 0
+        else:
+            rank = 1
+        if rank > best_rank:
+            best_rank = rank
+            best_val = val
+    return best_val
 
 
 def compute_dynamic_sentiment_interval(

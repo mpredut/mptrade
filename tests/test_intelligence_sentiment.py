@@ -4329,3 +4329,56 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "slope_90s" not in slopes_eq_live
     assert "slope_3_7m" in slopes_eq_live and "growth_3_7m" not in slopes_eq_live
     assert "slope_15m" in slopes_eq_live and "growth_15m" in slopes_eq_live
+
+    # Wave 9: parse_cited_taker_ratio prefers overall/15m over 5m sub-horizon and 3m horizon does not steal -6.4m 5m bar
+    sa_overall_vs_5m = {
+        "directional_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 17.3,
+        "summary": "BTC holding above $80k (5m taker ratio 1.35, +$13.9M 5m CVD; overall taker ratio recovering to 0.95).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_overall_vs_5m,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.36, "cvd_15m_usd": 21_030_000.0, "taker_ratio_1h": 0.96, "cvd_1h_usd": -10_750_000.0}},
+    )
+    assert "advisor ratio=0.95" in sa_overall_vs_5m.get("live_flow_divergence", "")
+    assert "advisor ratio=1.35" not in sa_overall_vs_5m.get("live_flow_divergence", "")
+
+    eq_5m_1m37 = [
+        [now_ms_w3 - int((16.37 - 5.0 * idx) * 60_000), round(200.0 + idx * 0.25, 2)]
+        for idx in range(-30, 4)
+    ]
+    eq_5m_1m37[-4] = [now_ms_w3 - int(16.37 * 60_000), 202.12]
+    eq_5m_1m37[-3] = [now_ms_w3 - int(11.37 * 60_000), 202.35]
+    eq_5m_1m37[-2] = [now_ms_w3 - int(6.37 * 60_000), 202.21]
+    eq_5m_1m37[-1] = [now_ms_w3 - int(1.37 * 60_000), 202.12]
+    m24_1m37 = compute_24h_price_metrics(eq_5m_1m37 + [[now_ms_w3, 202.14]])
+    assert "chg_1m_pct" in m24_1m37 and "chg_5m_pct" in m24_1m37 and "chg_3m_pct" not in m24_1m37
+
+    # Wave 10: Discrepancies AL & AM (LIVE_15M_BOUNCE_VS_1H_SELL at 1h_tr=0.93/cvd_1h=-19.10M, _fmt_slope_val 5e-9 precision, sibling 90s sync)
+    from orchestratorOS.supervisor.prompt_sections import _fmt_slope_val
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
+
+    sa_al = {
+        "directional_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 11.3,
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_al,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.30, "cvd_15m_usd": 27_520_000.0, "taker_ratio_1h": 0.93, "cvd_1h_usd": -19_100_000.0}},
+    )
+    assert sa_al.get("live_flow_divergence", "").startswith("LIVE_15M_BOUNCE_VS_1H_SELL")
+
+    assert _fmt_slope_val(2.68e-08, 5) == "+2.68e-08"
+    assert _fmt_slope_val(4.97e-10, 5) == "+0.00000"
+
+    pt_sib_90s = {
+        "TAOUSDC": {"price": 232.9, "slope_90s": 0.0, "growth_90s": 0.0, "gradient_recent_fast": 0.0},
+        "TAOUSD": {"price": 232.8628, "slope_90s": -0.00195, "growth_90s": 0.00043, "gradient_recent_fast": -0.0026},
+    }
+    sync_sibling_symbol_telemetry(pt_sib_90s, {})
+    assert pt_sib_90s["TAOUSDC"]["slope_90s"] == -0.00195
+    assert pt_sib_90s["TAOUSDC"]["growth_90s"] == 0.00043
+    assert pt_sib_90s["TAOUSDC"]["gradient_recent_fast"] == -0.0026
+

@@ -321,7 +321,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         seen_sample_tms: set[float] = set()
         dedup_sparse_samples = len(clean_series) >= 12
         for key, mins, min_span_ms, max_gap_mins in (
-            ("chg_1m_pct", 1.0, 60000.0, 2.5), ("chg_3m_pct", 3.0, 180000.0, 4.0), ("chg_5m_pct", 5.0, 300000.0, 6.0),
+            ("chg_1m_pct", 1.0, 60000.0, 1.8), ("chg_3m_pct", 3.0, 180000.0, 1.8), ("chg_5m_pct", 5.0, 300000.0, 4.5),
             ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
             ("chg_3h_pct", 180.0, 0.0, 0.0), ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
@@ -350,7 +350,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     continue
                 if span_ms < m_off * 60000.0:
                     continue
-                max_tape_gap = 4.5 if m_off == 5.0 else (2.0 if m_off == 1.0 else max(3.0, m_off * 0.5))
+                max_tape_gap = 4.5 if m_off == 5.0 else (1.8 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
                 t_tap, p_tap = _sample_at(m_off)
                 if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
                     continue
