@@ -4619,7 +4619,44 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     )
     assert tao_liq["liq_magnet_bias"] != "LONG_SWEEP_MAGNET_DOWN"
 
-
-
-
+    # Bugs 69 & 71:
+    # - Bug 69: collect_pretrade_telemetry applies BTCUSDC ob_mid_price geometry to btc_m24 and includes 7d in vs_btc(...)
+    # - Bug 71: apply_live_24trend_windows falls back growth_90s (<5e-8) to non-zero 90s slope_full (>=5e-8) so g_coeff(90s=...) is not +0.00000
+    ada_71: dict = {}
+    apply_live_24trend_windows(
+        ada_71,
+        {"90": {"slope_full": 1.5096658654566196e-06, "growth_coefficient": 4.599450542363896e-08}},
+    )
+    assert _fmt_slope_val(ada_71["growth_90s"]) == "+1.51e-06"
+    assert _fmt_slope_val(4.97e-10) == "+0.00000"
+    cdir_69 = tmp_path / "cachedb_69"
+    cdir_69.mkdir(exist_ok=True)
+    btc_24_69 = [[int((now_at - (24 * 12 - i) * 300) * 1000), 77000.0] for i in range(24 * 12)] + [
+        [int(now_at * 1000), 76990.51]
+    ]
+    tao_24_69 = [[int((now_at - (24 * 12 - i) * 300) * 1000), 224.0] for i in range(24 * 12)] + [
+        [int(now_at * 1000), 223.40]
+    ]
+    btc_365_69 = [[int((now_at - (7 * 24 - i) * 3600) * 1000), 80850.0] for i in range(7 * 24)] + [
+        [int(now_at * 1000), 76990.51]
+    ]
+    tao_365_69 = [[int((now_at - (7 * 24 - i) * 3600) * 1000), 257.70] for i in range(7 * 24)] + [
+        [int(now_at * 1000), 223.40]
+    ]
+    (cdir_69 / "cache_24_price_BTCUSDC.json").write_text(json.dumps({"items": {"BTCUSDC": btc_24_69}}), encoding="utf-8")
+    (cdir_69 / "cache_24_price_TAOUSDC.json").write_text(json.dumps({"items": {"TAOUSDC": tao_24_69}}), encoding="utf-8")
+    (cdir_69 / "cache_365_price_BTCUSDC.json").write_text(json.dumps({"items": {"BTCUSDC": btc_365_69}}), encoding="utf-8")
+    (cdir_69 / "cache_365_price_TAOUSDC.json").write_text(json.dumps({"items": {"TAOUSDC": tao_365_69}}), encoding="utf-8")
+    (cdir_69 / "orderbook_depth_BTCUSDC.json").write_text(
+        json.dumps({"mid_price": 76958.975, "best_bid": 76958.97, "best_ask": 76958.98, "spread_bps": 0.0013}),
+        encoding="utf-8",
+    )
+    (cdir_69 / "orderbook_depth_TAOUSDC.json").write_text(
+        json.dumps({"mid_price": 223.40, "best_bid": 223.30, "best_ask": 223.50, "spread_bps": 8.95}),
+        encoding="utf-8",
+    )
+    pt_tao_69 = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_69))
+    rel_69 = pt_tao_69.get("Relative Strength vs BTC (24h Benchmark)", "")
+    assert "7d=" in rel_69
+    assert "5m=-0.22%" in rel_69
 

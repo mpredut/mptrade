@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, Optional
 
-from botcore import extract_current_price_item
+from botcore import extract_current_price_item, load_local_module
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -19,6 +19,7 @@ from intelligence.macro_sentiment_ssot import (
     read_first_cached_dict,
     resolve_read_json_cached,
     safe_float,
+    safe_nonneg_float,
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
@@ -246,7 +247,50 @@ def collect_pretrade_telemetry(
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
         if not cur_px_est or cur_px_est <= 0.0:
             cur_px_est = live_cur_px
-        elif str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and last_alt_pt is not None:
+        if (
+            not m24
+            and str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+            and "PYTEST_CURRENT_TEST" not in os.environ
+        ):
+            try:
+                import time as _pt_time
+
+                ws_root = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
+                if not os.path.exists(os.path.join(ws_root, "212trading", "market_data.py")):
+                    ws_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                _chart_fn = load_local_module(os.path.join(ws_root, "212trading"), "market_data")._chart
+                chart_res = _chart_fn(str(symbol).strip().upper().split("_", 1)[0], rng="5d", interval="5m")
+                pts_5d_eq = []
+                if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
+                    pts_5d_eq = sorted(
+                        (
+                            (
+                                [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                                if len(bar) >= 3
+                                else [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                            )
+                            for bar in chart_res[1]
+                            if isinstance(bar, (list, tuple))
+                            and len(bar) >= 2
+                            and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                            and (px_f := safe_pos_float(bar[1], default=None)) is not None
+                        ),
+                        key=lambda pt: pt[0],
+                    )
+                if pts_5d_eq:
+                    cutoff_eq_ms = int((_pt_time.time() - 86400.0) * 1000)
+                    pts_24_eq = [pt for pt in pts_5d_eq if pt[0] >= cutoff_eq_ms]
+                    if len(pts_24_eq) < 10:
+                        pts_24_eq = list(pts_5d_eq[-78:])
+                    alt_series_24h = list(pts_24_eq)
+                    arch_vals_7d = [pt[1] for pt in pts_5d_eq]
+                    m24 = compute_24h_price_metrics(alt_series_24h) or {}
+                    last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
+                    if (not cur_px_est or cur_px_est <= 0.0) and last_alt_pt is not None:
+                        cur_px_est = last_alt_pt[1]
+            except Exception:
+                pass
+        if str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and last_alt_pt is not None:
             import time as _pt_time
 
             now_ms_eq = int(_pt_time.time() * 1000)
@@ -357,6 +401,8 @@ def collect_pretrade_telemetry(
                 if m24:
                     recalculate_live_price_geometry(m24, ob_mid_est)
 
+        btc_m24: Dict[str, Any] = {}
+        btc_vals_7d: list = []
         if m24:
             has_any_m24_h = any(
                 safe_float(m24.get(k), default=None) is not None
@@ -398,12 +444,24 @@ def collect_pretrade_telemetry(
                     f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
                     f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}{shape_s}{vp_src_s}"
                 )
-            btc_m24: Dict[str, Any] = {}
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
-                btc_series_24h, _ = load_symbol_price_series(
-                    cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False
+                btc_series_24h, btc_vals_7d = load_symbol_price_series(
+                    cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
                 )
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
+                if btc_m24 and btc_series_24h:
+                    btc_last_pt = _parse_ts_px_row(btc_series_24h[-1])
+                    btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
+                    btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
+                    if (
+                        btc_ob_mid is not None
+                        and btc_last_pt is not None
+                        and btc_last_pt[1] > 0.0
+                        and abs(btc_ob_mid - btc_last_pt[1]) / max(btc_ob_mid, btc_last_pt[1]) <= 0.01
+                    ):
+                        recalculate_live_price_geometry(btc_m24, btc_ob_mid)
+                        if btc_vals_7d and not _prices_diverged(btc_ob_mid, safe_float(btc_vals_7d[-1], 0.0)):
+                            btc_vals_7d = list(btc_vals_7d) + [btc_ob_mid]
                 if btc_m24:
                     vs_parts = [
                         f"{h_lbl}={m_v - b_v:+.2f}%"
@@ -504,6 +562,35 @@ def collect_pretrade_telemetry(
             and (m7d.get("low_7d"), m7d.get("high_7d")) == (m24.get("low_24h"), m24.get("high_24h"))
         )
         if m7d and not is_sub24h_dup_7d:
+            if (
+                "Relative Strength vs BTC (24h Benchmark)" in telemetry
+                and telemetry["Relative Strength vs BTC (24h Benchmark)"].startswith("vs_btc(")
+            ):
+                eff_btc_vals_7d = list(btc_vals_7d)
+                if isinstance(w_data, dict) and isinstance(w_items_b := w_data.get("items"), dict):
+                    w_btc = casefold_get(w_items_b, "BTCUSDC")
+                    if isinstance(w_btc, (list, tuple)) and len(w_btc) >= 2:
+                        wb0, wb1 = _parse_ts_px_row(w_btc[0]), _parse_ts_px_row(w_btc[-1])
+                        if wb0 is not None and wb1 is not None and (wb1[0] - wb0[0]) >= 5 * 86400 * 1000:
+                            w_b_vals = [
+                                px_b for pt in w_btc
+                                if isinstance(pt, (list, tuple)) and len(pt) > 1 and (px_b := safe_pos_float(pt[1], default=None)) is not None
+                            ]
+                            if len(w_b_vals) >= 2:
+                                eff_btc_vals_7d = w_b_vals
+                btc_m7d = compute_7d_range_metrics(eff_btc_vals_7d, decimals=6) if len(eff_btc_vals_7d) >= 2 else {}
+                if btc_m7d and btc_m24.get("low_24h") is not None and btc_m24.get("high_24h") is not None:
+                    btc_m7d["low_24h"], btc_m7d["high_24h"] = btc_m24["low_24h"], btc_m24["high_24h"]
+                    recalculate_live_price_geometry(
+                        btc_m7d,
+                        safe_pos_float(btc_vals_7d[-1], 0.0) if btc_vals_7d else (safe_pos_float(eff_btc_vals_7d[-1], 0.0) or 0.0),
+                    )
+                m7_chg = safe_float(m7d.get("chg_7d_pct"), default=None)
+                b7_chg = safe_float((btc_m7d or {}).get("chg_7d_pct"), default=None)
+                if m7_chg is not None and b7_chg is not None:
+                    telemetry["Relative Strength vs BTC (24h Benchmark)"] = telemetry[
+                        "Relative Strength vs BTC (24h Benchmark)"
+                    ].replace(")", f", 7d={m7_chg - b7_chg:+.2f}%)", 1)
             m7d_fmt = m7d
             p7_parts = [
                 f"7d={safe_float(m7d_fmt.get('chg_7d_pct'), 0.0):+.2f}%",
@@ -702,7 +789,7 @@ def collect_pretrade_telemetry(
                     f"magnet={liq_c.get('liq_magnet_bias')}"
                 )
         if has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
-            _fmt_s = lambda v: f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}"
+            _fmt_s = lambda v: "+0.00000" if abs(v) < 5e-8 else (f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}")
             s90_v = safe_float(t_entry.get("slope_90s"), default=None)
             s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
             slope_parts = [

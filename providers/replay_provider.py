@@ -46,6 +46,7 @@ def backtest_isolation_context(quiet: bool = False):
     if quiet:
         try:
             import log
+
             log.disable_print()
         except Exception:
             pass
@@ -63,6 +64,7 @@ def backtest_isolation_context(quiet: bool = False):
         if quiet:
             try:
                 import log
+
                 log.enable_print()
             except Exception:
                 pass

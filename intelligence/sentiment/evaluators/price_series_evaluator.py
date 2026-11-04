@@ -687,7 +687,10 @@ def apply_short_trend_item(
             entry[s_key] = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
             entry[t_key] = w_dict.get("final_trend", trend)
         if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
+            g_val = w_dict.get("growth_coefficient")
+            if is_90 and abs(safe_float(g_val, 0.0)) < 5e-8 and abs(s_90 := safe_float(w_dict.get("slope_full"), 0.0)) >= 5e-8:
+                g_val = s_90
+            entry[g_key] = g_val
     return True
 
 
@@ -729,7 +732,10 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
             if w_dict.get("final_trend") is not None:
                 entry[t_key] = w_dict.get("final_trend")
         if w_dict.get("growth_coefficient") is not None:
-            entry[g_key] = w_dict.get("growth_coefficient")
+            g_val = w_dict.get("growth_coefficient")
+            if wk == "90" and abs(safe_float(g_val, 0.0)) < 5e-8 and abs(s_90 := safe_float(w_dict.get("slope_full"), 0.0)) >= 5e-8:
+                g_val = s_90
+            entry[g_key] = g_val
 
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
