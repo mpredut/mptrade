@@ -8,6 +8,7 @@ Analyzes the top 1-2% of the bid/ask order book:
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -241,10 +242,16 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                         )
                         deep_book = MarketDataProvider.normalize_orderbook_payload(deep_raw)
                         if isinstance(deep_book, dict):
-                            min_b_px = bids[-1][0]
-                            max_a_px = asks[-1][0]
-                            bids = list(bids) + [lv for lv in (deep_book.get("bids") or ()) if lv[0] < min_b_px]
-                            asks = list(asks) + [lv for lv in (deep_book.get("asks") or ()) if lv[0] > max_a_px]
+                            if bids[-1][0] > mid * 0.99:
+                                min_b_px = bids[-1][0]
+                                b_step = 10.0 ** (math.floor(math.log10(min_b_px)) - sig_figs + 1) if min_b_px > 0 else 0.0
+                                b_cutoff = (math.floor(min_b_px / b_step + 1e-9) * b_step - b_step * 1e-6) if b_step > 0 else min_b_px
+                                bids = list(bids) + [lv for lv in (deep_book.get("bids") or ()) if lv[0] < b_cutoff]
+                            if asks[-1][0] < mid * 1.01:
+                                max_a_px = asks[-1][0]
+                                a_step = 10.0 ** (math.floor(math.log10(max_a_px)) - sig_figs + 1) if max_a_px > 0 else 0.0
+                                a_cutoff = (math.ceil(max_a_px / a_step - 1e-9) * a_step + a_step * 1e-6) if a_step > 0 else max_a_px
+                                asks = list(asks) + [lv for lv in (deep_book.get("asks") or ()) if lv[0] > a_cutoff]
                     except Exception:
                         pass
 
@@ -266,7 +273,11 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                             wall_nt_usd, wall_nt_px = val, p
                     if (p >= bound_1pct) if is_bid else (p <= bound_1pct):
                         depth_1pct += val
-                if wall_nt_usd > 0.0:
+                if (
+                    wall_nt_usd > 0.0
+                    and (wall_nt_usd >= self.whale_wall_usd or max_usd < self.whale_wall_usd)
+                    and (wall_nt_usd >= 5000.0 or max_usd < 5000.0)
+                ):
                     return depth_usd, depth_1pct, wall_nt_usd, wall_nt_px
                 return depth_usd, depth_1pct, max_usd, max_px
 

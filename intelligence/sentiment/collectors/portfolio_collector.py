@@ -807,8 +807,13 @@ def load_symbol_best_recent_fills(
     from instrument_registry import casefold_get
 
     _rj = read_json_fn or read_json_cached
-    intents_raw = read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
+    intents_path = os.path.join(cachedb_dir, "autonomous_trade_intents_state.json")
+    intents_raw = _rj(intents_path) if (read_json_fn is not None and read_json_fn is not read_json_cached) else None
+    if intents_raw is None:
+        intents_raw = read_json_recovering(intents_path)
     known_ai_oids = collect_known_ai_order_ids(intents_raw)
+    if isinstance(intents_raw, dict):
+        intents_raw = intents_raw.get("intents")
     ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
     audit_origin_map = _load_recent_audit_origins(cachedb_dir)
     fills: Optional[Dict[str, Any]] = None

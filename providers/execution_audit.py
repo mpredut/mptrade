@@ -796,8 +796,10 @@ def reconcile_intents_from_execution_audit(
     return updated
 
 
-def _filter_intents_by_scope(intents_data: list[dict[str, Any]], scope: str) -> list[dict[str, Any]]:
+def _filter_intents_by_scope(intents_data: Any, scope: str) -> list[dict[str, Any]]:
     """Filter intent records to those matching the requested asset scope ('crypto', 'equities', or 'all')."""
+    if isinstance(intents_data, dict):
+        intents_data = intents_data.get("intents")
     if not isinstance(intents_data, list):
         return []
     scope_norm = str(scope or "all").strip().lower()
@@ -842,7 +844,12 @@ def _resolve_intent_execution_details(
         or safe_pos_float(last_hist.get("notional_usd"), default=None)
         or extract_notional_fn(i, default=None)
     )
-    ts_val = safe_float(i.get("timestamp"), 0.0)
+    ts_raw = (
+        i.get("timestamp")
+        if i.get("timestamp") is not None
+        else (i.get("executed_at") or i.get("executed_ts") or i.get("created_at"))
+    )
+    ts_val = safe_float(ts_raw, 0.0)
     order_id = extract_order_id(exec_pay, default=None) or extract_order_id(
         last_hist.get("order_id") or last_hist.get("payload"), default=None
     )
@@ -1070,7 +1077,7 @@ def _resolve_intent_execution_details(
         "filled_qty": round(eff_qty, 8) if eff_qty is not None and eff_qty > 0 else None,
         "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
         "slippage_bps": slippage_bps,
-        "ts": i.get("timestamp"),
+        "ts": ts_raw,
         "ts_val": ts_val,
     }
 
@@ -1808,6 +1815,8 @@ def collect_known_ai_order_ids(
 ) -> set[str]:
     """Collect venue order IDs (``execution_payload`` / ``history``) and venue-native AI client IDs across intents."""
     ai_oids: set[str] = set(initial_ids or ())
+    if isinstance(intents, dict):
+        intents = intents.get("intents")
     if not isinstance(intents, list):
         return ai_oids
     for item in intents:

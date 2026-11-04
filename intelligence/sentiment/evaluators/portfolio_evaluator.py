@@ -171,7 +171,10 @@ def extract_symbol_recent_fills(
             if str(it_oid) in valid_oids:
                 continue
         i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
-        i_ts_s = safe_pos_float(it.get("timestamp") or it.get("executed_ts"), default=0.0) or 0.0
+        i_ts_s = safe_pos_float(
+            it.get("timestamp") or it.get("executed_ts") or it.get("executed_at") or it.get("created_at"),
+            default=0.0,
+        ) or 0.0
         if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
             continue
         i_sym = str(it.get("symbol") or exec_pay.get("symbol") or exec_pay.get("ticker") or "").strip().upper()

@@ -246,6 +246,7 @@ def harvest_macro_and_news_sensors(
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     _rj = read_json_fn or read_json_recovering
+    _rj_any = read_json_recovering if _rj is read_json_cached else _rj
 
     def _with_age_min(payload: Dict[str, Any], fpath: str, *, is_fear_greed: bool = False) -> Dict[str, Any]:
         enriched = dict(payload)
@@ -340,7 +341,9 @@ def harvest_macro_and_news_sensors(
 
     breaking_news: List[Dict[str, Any]] = []
     valid_news: List[Dict[str, Any]] = []
-    if isinstance(news_data := _rj(os.path.join(cache_dir, "news_feed_collect.json")), list) and news_data:
+    news_raw = _rj_any(os.path.join(cache_dir, "news_feed_collect.json"))
+    news_data = (news_raw.get("items") or news_raw.get("headlines")) if isinstance(news_raw, dict) else news_raw
+    if isinstance(news_data, list) and news_data:
         for item in news_data:
             if not isinstance(item, dict) or not item.get("title"):
                 continue
@@ -500,6 +503,7 @@ def populate_market_and_portfolio_snapshot(
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
     _rj = read_json_fn or read_json_recovering
+    _rj_any = read_json_recovering if _rj is read_json_cached else _rj
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
         setattr(snapshot, attr, val)
@@ -520,11 +524,16 @@ def populate_market_and_portfolio_snapshot(
     if callable(load_intents_fn := getattr(intent_gateway, "load_all_intents", None)):
         try:
             loaded = load_intents_fn()
+            if isinstance(loaded, dict):
+                loaded = loaded.get("intents")
             intents_data = loaded if isinstance(loaded, list) else None
         except Exception:
             intents_data = None
     if intents_data is None:
-        intents_data = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+        raw_intents = _rj_any(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+        if isinstance(raw_intents, dict):
+            raw_intents = raw_intents.get("intents")
+        intents_data = raw_intents if isinstance(raw_intents, list) else None
     known_ai_oids = collect_known_ai_order_ids(intents_data)
     gw_max_usd = safe_pos_float(getattr(intent_gateway, "max_notional_usd", None), default=2000.0) or 2000.0
 

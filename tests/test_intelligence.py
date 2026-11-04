@@ -895,6 +895,115 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     assert ssot.write_daemon_heartbeat is daemon_ssot.write_daemon_heartbeat
 
 
+def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_bucket_dedup(tmp_path, monkeypatch):
+    """Verify dict-wrapped intents unwrapping, read_json_cached list-root fallback, whale wall preservation, and nSigFigs bucket dedup."""
+    import json
+    from types import SimpleNamespace
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        harvest_macro_and_news_sensors,
+        populate_market_and_portfolio_snapshot,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
+    from providers.execution_audit import (
+        _filter_intents_by_scope,
+        collect_known_ai_order_ids,
+        extract_intent_notional,
+        summarize_recent_ai_intents,
+    )
+    from state_io import read_json_dict_recovering as read_json_cached
+
+    now_ts = 1_780_000_000.0
+    intents_payload = {
+        "intents": [
+            {
+                "intent_id": "ai-hl-1",
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "decision": "BUY",
+                "order_type": "LIMIT",
+                "status": "EXECUTED",
+                "created_at": now_ts - 120.0,
+                "executed_at": now_ts - 60.0,
+                "notional_usd": 300.0,
+                "execution_payload": {"orderId": "998877", "status": "FILLED", "avgPrice": "85.50", "executedQty": "3.5"},
+            }
+        ]
+    }
+    assert "998877" in collect_known_ai_order_ids(intents_payload)
+    assert len(_filter_intents_by_scope(intents_payload, "crypto")) == 1
+    assert len(summarize_recent_ai_intents(intents_payload, "crypto", now_ts, extract_intent_notional)) == 1
+
+    (tmp_path / "autonomous_trade_intents_state.json").write_text(json.dumps(intents_payload), encoding="utf-8")
+    (tmp_path / "news_feed_collect.json").write_text(
+        json.dumps([{"title": "Federal Reserve signals steady policy rate path", "source": "Reuters", "first_seen_ts": now_ts - 60.0}]),
+        encoding="utf-8",
+    )
+
+    fills = load_symbol_best_recent_fills(str(tmp_path), "HYPEUSDC", ["HYPEUSDC", "HYPE"])
+    assert isinstance(fills, dict)
+    assert (fills.get("last_buy") or {}).get("actor") == "AI"
+    assert (fills.get("last_buy") or {}).get("price") == 85.5
+
+    _, breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, read_json_fn=read_json_cached)
+    assert len(breaking) == 1
+    assert "Federal Reserve" in breaking[0]["title"]
+
+    snap_obj = SimpleNamespace(
+        breaking_news=[],
+        prices_and_trends={},
+        microstructure={},
+        portfolio_summary={},
+    )
+    gw_stub = SimpleNamespace(load_all_intents=lambda: intents_payload, max_notional_usd=2000.0)
+    populate_market_and_portfolio_snapshot(
+        snap_obj,
+        cache_dir=str(tmp_path),
+        workspace_dir=str(tmp_path),
+        logs_dirs=[str(tmp_path)],
+        intent_gateway=gw_stub,
+        scope="crypto",
+        now_ts=now_ts,
+        read_json_fn=read_json_cached,
+    )
+    assert len(snap_obj.breaking_news) == 1
+    assert len(snap_obj.portfolio_summary.get("recent_ai_intents") or []) == 1
+
+    # OrderbookDepthCollector: preserve >= whale_wall_usd wall inside 10 bps & avoid nSigFigs boundary bucket double-count
+    ob_col = OrderbookDepthCollector(whale_wall_usd=500_000.0, cache_ttl_sec=60.0, cache_dir=None)
+
+    def _fake_hl_book(url, label, lookup_sym, **kwargs):
+        if "nSigFigs=4" in url:
+            return {
+                "levels": [
+                    # 85.74 coarse bucket overlaps fine 85.742 bid; 85.20 is clean deeper level
+                    [{"px": "85.74", "sz": "900.0"}, {"px": "85.20", "sz": "200.0"}],
+                    # 85.77 coarse bucket overlaps fine 85.763 ask; 86.20 has only $862 dust
+                    [{"px": "85.77", "sz": "900.0"}, {"px": "86.20", "sz": "10.0"}],
+                ]
+            }
+        return {
+            "levels": [
+                # Massive $600k whale wall at 85.742 (<10 bps from mid ~85.751)
+                [{"px": "85.750", "sz": "100.0"}, {"px": "85.742", "sz": "7000.0"}],
+                # $50k ask wall at 85.763 (<10 bps from mid) vs $862 dust at 86.20
+                [{"px": "85.752", "sz": "100.0"}, {"px": "85.763", "sz": "600.0"}],
+            ]
+        }
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_hl_book)
+    ob_snap = ob_col.fetch("HYPEUSDC", allow_network=True, now=now_ts)
+    assert ob_snap is not None
+    # Whale wall ($600k >= $500k threshold) at 85.742 is preserved over $17,040 order at 85.20
+    assert ob_snap.largest_bid_wall_price == 85.742
+    assert ob_snap.largest_bid_wall_usd > 500_000.0
+    # Ask wall ($51.4k >= $5k) at 85.763 is preserved over $862 (< $5k) dust at 86.20
+    assert ob_snap.largest_ask_wall_price == 85.763
+    # Overlapping boundary buckets 85.74 (bid) and 85.77 (ask) were excluded from depth_usd
+    expected_bid_depth = 85.750 * 100.0 + 85.742 * 7000.0 + 85.20 * 200.0
+    assert abs(ob_snap.bid_depth_usd - expected_bid_depth) < 1.0
+
+
 if __name__ == "__main__":
     unittest.main()
 
