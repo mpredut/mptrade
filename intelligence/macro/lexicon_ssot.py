@@ -599,7 +599,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     title_s = str(title or "").strip()
     title_l = title_s.lower()
     if title_l and re.search(
-        r"^['‘\"].*['’\"]:\s*i(?:['’]m|['’]ve|\s+have|\s+am)\b|\b(?:should i stop going|annuity sales pitch|what politician speaks for me)\b",
+        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me)\b",
         title_l,
     ):
         return True

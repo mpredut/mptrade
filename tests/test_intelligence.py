@@ -5333,6 +5333,38 @@ def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes
     assert "15m=-" in slopes_str
 
 
+def test_iter11_cited_taker_buying_ratio_and_first_person_plural_advice_column_exclusion():
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import enrich_sentiment_advisor_live_flow_divergence
+
+    summary_ax = (
+        "Risk assets and crypto are staging a strong intraday relief bounce with BTC reclaiming $77,600 (+2.58%) "
+        "and altcoins outperforming as aggressive Asian session taker buying accelerates (2.3903 ratio, 5m ratio 4.2228, "
+        "$124.2M buy vs $52.0M sell), while heavy Binance top-trader long positioning (66.05% long, 1.95 ratio) caps upside."
+    )
+    assert parse_cited_taker_ratio(summary_ax) == 2.3903
+    sa_ax = {
+        "recommended_action": "HOLD",
+        "directional_bias": "NEUTRAL",
+        "age_min": 24.8,
+        "summary": summary_ax,
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_ax,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.0922, "cvd_15m_usd": 4_700_000.0}},
+    )
+    assert "LIVE_FLOW_FADE" in str(sa_ax.get("live_flow_divergence", ""))
+    assert "2.39" in str(sa_ax.get("live_flow_divergence", ""))
+
+    headline_ay = (
+        "‘It seems bizarre’: We’re in our 80s with $950,000 in traditional IRAs. "
+        "Why is our adviser pushing Roth conversions? - MarketWatch"
+    )
+    assert is_excluded_reference_news_item(headline_ay, "MarketWatch", "https://news.google.com/rss/articles/123") is True
+
+
+
 
 
 

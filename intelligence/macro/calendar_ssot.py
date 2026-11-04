@@ -424,7 +424,7 @@ def resolve_macro_economic_calendar(
 _CITED_TAKER_RATIO_RE = re.compile(
     r"(?:([0-9]+\.[0-9]+)\s*(?:taker[\s_]+(?:buy[/_]sell[\s_]+)?|buy[/_]sell[\s_]+)ratio"
     r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)[\s_]+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy[/_]sell[\s_]+)?ratio|\))(?![0-9%]))",
+    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity))?|(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity))(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratio|\))(?![0-9%]))",
     re.IGNORECASE,
 )
 
