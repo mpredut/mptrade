@@ -194,6 +194,7 @@ class TestBinanceTransientBalanceSoftSkip(unittest.TestCase):
         """Verify place_order_mechanics does not reject order if get_free_balance fails when _balance_verified is True."""
         with patch.object(po.api, "get_free_balance", return_value=None), \
              patch.object(po.api, "get_current_price", return_value=100.0), \
+             patch.object(po.client, "get_symbol_info", return_value={}), \
              patch("providers.binance_filters.BinanceOrderRules.from_symbol_info") as mock_rules_info, \
              patch.object(po, "_submit_binance_order", return_value={"orderId": 9999}) as mock_submit:
 
@@ -215,6 +216,7 @@ class TestBinanceTransientBalanceSoftSkip(unittest.TestCase):
         """Verify BinanceProvider.place_order passes _balance_verified through to mechanics."""
         with patch.object(po.api, "get_free_balance", return_value=None), \
              patch.object(po.api, "get_current_price", return_value=100.0), \
+             patch.object(po.client, "get_symbol_info", return_value={}), \
              patch("providers.binance_filters.BinanceOrderRules.from_symbol_info") as mock_rules_info, \
              patch.object(po, "_submit_binance_order", return_value={"orderId": 8888}) as mock_submit:
 

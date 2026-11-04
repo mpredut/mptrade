@@ -625,7 +625,7 @@ def normalize_open_order(
     )
     rec = {
         "venue": venue,
-        "symbol": symbol,
+        "symbol": symbol or str(order.get("symbol") or "").strip().upper(),
         "side": extract_order_side(order) or str(order.get("side") or order.get("type") or "").upper(),
         "order_type": str(raw_otype).strip().upper() or "LIMIT",
         "order_id": str(oid) if oid is not None else None,
@@ -935,8 +935,9 @@ def parse_ohlc_interval_minutes(
             cleaned = cleaned.lower()
         if cleaned in lookup:
             return lookup[cleaned]
-        if cleaned.isascii() and cleaned.isdigit():
-            val = int(cleaned)
+        digits = cleaned[1:] if cleaned.startswith("+") else cleaned
+        if digits.isascii() and digits.isdigit():
+            val = int(digits)
             if val <= 0:
                 raise ValueError(f"interval must be positive: {interval}")
             return val

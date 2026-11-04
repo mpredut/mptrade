@@ -183,6 +183,13 @@ def extract_symbol_recent_fills(
         exec_q = extract_executed_qty(exec_pay, default=0.0) or extract_executed_qty(it, default=0.0) or 0.0
         exec_p = extract_order_price(exec_pay, default=0.0) or extract_order_price(it, default=0.0) or safe_pos_float(it.get("executed_avg_price"), default=0.0) or 0.0
         exec_st = str(exec_pay.get("status") or it.get("exchange_status") or "").strip().upper()
+        has_explicit_exec_q = (
+            any(k in exec_pay or k in it for k in (*_EXEC_QTY_KEYS, "filled"))
+            or str(exec_pay.get("msg") or "").strip().lower().startswith("filled ")
+        )
+        is_confirmed_fill = exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED") or (
+            has_explicit_exec_q and exec_st not in _UNFILLED_ORDER_STATUSES
+        )
         sym_matches_target = bool(
             fallback_sym
             and i_sym
@@ -196,7 +203,7 @@ def extract_symbol_recent_fills(
         )
         if (
             sym_matches_target
-            and exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED")
+            and is_confirmed_fill
             and exec_q > 0.0
             and exec_p > 0.0
             and (not valid or i_ts_s >= max_valid_ts_s - 60.0)

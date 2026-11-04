@@ -1004,6 +1004,102 @@ def test_iter44_intents_dict_unwrap_read_json_cached_and_orderbook_wall_and_buck
     assert abs(ob_snap.bid_depth_usd - expected_bid_depth) < 1.0
 
 
+def test_iter45_hl_spot_fallbacks_portfolio_per_symbol_fills_and_interval_plus_sign(tmp_path):
+    """Verify HLClient spot_meta empty-dict fallback & suffix stripping, per-symbol audit/intent fills in harvest_recent_orders_and_enrich_positions, chronological open-order audit timestamps, and '+60' OHLC interval parsing."""
+    from types import SimpleNamespace
+    from providers.hyperliquid_provider import _hl_client_module
+    from providers.base import normalize_open_order, parse_ohlc_interval_minutes
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _load_open_order_timestamps,
+        harvest_recent_orders_and_enrich_positions,
+    )
+
+    HLClient = _hl_client_module().HLClient
+    # 1. HLClient.resolve_spot_pair & sz_decimals handle empty spot_meta() and /USDC or USDC suffixes
+    hl = HLClient.__new__(HLClient)
+    hl._meta_cache = {}
+    hl.info = SimpleNamespace(
+        spot_meta=lambda: {},
+        name_to_coin={"HYPE/USDC": "@107"},
+        coin_to_asset={"@107": 10107},
+        asset_to_sz_decimals={10107: 2},
+    )
+    assert hl.resolve_spot_pair("HYPE") == "@107"
+    assert hl.resolve_spot_pair("HYPE/USDC") == "@107"
+    assert hl.resolve_spot_pair("HYPEUSDC") == "@107"
+    assert hl.sz_decimals("HYPE/USDC") == 2
+    assert hl.sz_decimals("HYPEUSDC") == 2
+
+    # 2. parse_ohlc_interval_minutes("+60") and normalize_open_order fallback symbol
+    assert parse_ohlc_interval_minutes("+60") == 60
+    norm_oo = normalize_open_order({"orderId": 42, "symbol": "btcusdc", "side": "BUY", "price": 90000.0, "origQty": 0.1}, venue="binance")
+    assert norm_oo is not None and norm_oo["symbol"] == "BTCUSDC"
+
+    # 3. _load_open_order_timestamps does not short-circuit when cached_bals is non-empty and preserves earliest audit ts
+    (tmp_path / "execution_audit_001.jsonl").write_text(
+        json.dumps({"ts": 1700001000.0, "event": "submit_accepted", "order_id": "oid_span_1"}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "execution_audit_002.jsonl").write_text(
+        json.dumps({"ts": 1700002000.0, "event": "order_status", "order_id": "oid_span_1"}) + "\n",
+        encoding="utf-8",
+    )
+    ts_map = _load_open_order_timestamps(
+        str(tmp_path),
+        {"open_orders:binance:BTCUSDC": [{"order_id": "preexisting_oid", "created_ts": 1700000500.0}]},
+    )
+    assert ts_map.get("preexisting_oid") == 1700000500.0
+    assert ts_map.get("oid_span_1") == 1700001000.0
+
+    # 4. harvest_recent_orders_and_enrich_positions populates per-symbol audit/AI fills even when another symbol is already in venue_recent_orders
+    (tmp_path / "cache_trade_t212.json").write_text(
+        json.dumps({
+            "items": {
+                "AAPL": [{"orderId": "t212_aapl_1", "side": "BUY", "price": 220.0, "qty": 1.0, "timestamp": 1700001000000, "status": "FILLED"}],
+            }
+        }),
+        encoding="utf-8",
+    )
+    ai_intents = [
+        {
+            "intent_id": "ai_nvda_1",
+            "venue": "t212",
+            "symbol": "NVDA",
+            "action": "BUY",
+            "status": "EXECUTED",
+            "executed_at": 1700001500.0,
+            "notional_usd": 540.0,
+            "execution_payload": {"orderId": "t212_nvda_1", "price": 135.0, "executedQty": 4.0},
+        },
+        {
+            "intent_id": "ai_sol_1",
+            "venue": "binance",
+            "symbol": "SOLUSDC",
+            "action": "BUY",
+            "status": "EXECUTED",
+            "executed_at": 1700001600.0,
+            "notional_usd": 360.0,
+            "execution_payload": {"orderId": "bin_sol_1", "price": 180.0, "executedQty": 2.0},
+        },
+    ]
+    recent_orders = harvest_recent_orders_and_enrich_positions(
+        str(tmp_path),
+        {},
+        [],
+        {},
+        {},
+        {},
+        {},
+        known_ai_order_ids={"t212_nvda_1", "bin_sol_1"},
+        ai_intents=ai_intents,
+    )
+    assert "AAPL" in recent_orders
+    assert "NVDA" in recent_orders
+    assert (recent_orders["NVDA"].get("last_buy") or {}).get("price") == 135.0
+    assert "SOLUSDC" in recent_orders
+    assert (recent_orders["SOLUSDC"].get("last_buy") or {}).get("price") == 180.0
+
+
 if __name__ == "__main__":
     unittest.main()
 

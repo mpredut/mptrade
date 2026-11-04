@@ -205,19 +205,25 @@ class _LazyClientProxy:
         return getattr(target, name)
 
     def __setattr__(self, name, value):
-        if getattr(value, "_is_lazy_client_stub", False):
+        if getattr(value, "__dict__", {}).get("_is_lazy_client_stub") is True:
             self.__dict__.pop(name, None)
-        elif _client is not None:
-            setattr(_client, name, value)
+            if _client is not None:
+                _client.__dict__.pop(name, None)
         else:
             object.__setattr__(self, name, value)
+            if _client is not None:
+                setattr(_client, name, value)
 
     def __delattr__(self, name):
+        found = False
         if name in self.__dict__:
             object.__delattr__(self, name)
-        elif _client is not None:
-            delattr(_client, name)
-        else:
+            found = True
+        if _client is not None and (name in _client.__dict__ or hasattr(type(_client), name)):
+            if name in _client.__dict__:
+                delattr(_client, name)
+            found = True
+        if not found and not hasattr(Client, name):
             raise AttributeError(name)
 
 

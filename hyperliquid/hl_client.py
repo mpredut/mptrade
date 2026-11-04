@@ -203,13 +203,28 @@ class HLClient:
                     self._meta_cache[a["name"]] = a
         return self._meta_cache
 
+    @staticmethod
+    def _strip_spot_quote_suffix(coin: str) -> str:
+        u = coin.upper()
+        if u.endswith("/USDC") and len(coin) > 5:
+            return coin[:-5].strip()
+        if u.endswith("USDC") and len(coin) > 4:
+            return coin[:-4].strip()
+        return coin
+
     def sz_decimals(self, coin: str) -> int:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             raise HLError(f"Missing size precision metadata for {coin}")
         coin = coin.strip()
+        base_coin = self._strip_spot_quote_suffix(coin)
+        cand_coins = (coin,) if base_coin.casefold() == coin.casefold() else (coin, base_coin)
         meta = None
         try:
-            meta = casefold_get(self._meta(), coin)
+            meta_map = self._meta()
+            for cand in cand_coins:
+                meta = casefold_get(meta_map, cand)
+                if meta is not None:
+                    break
         except Exception:  # noqa: BLE001
             meta = None
         dec_i = _exact_int_in_range(meta.get("szDecimals") if isinstance(meta, dict) else None, 0, 18)
@@ -217,11 +232,11 @@ class HLClient:
             return dec_i
         try:
             spot_meta = self.info.spot_meta() if hasattr(self.info, "spot_meta") else {}
-            coin_cf = coin.casefold()
+            cand_cfs = {c.casefold() for c in cand_coins}
             for token in (spot_meta or {}).get("tokens", []):
                 if (
                     isinstance(token, dict)
-                    and str(token.get("name") or "").casefold() == coin_cf
+                    and str(token.get("name") or "").casefold() in cand_cfs
                     and "szDecimals" in token
                 ):
                     tdec_i = _exact_int_in_range(token["szDecimals"], 0, 18)
@@ -233,13 +248,20 @@ class HLClient:
             coin_to_asset = getattr(self.info, "coin_to_asset", None)
             asset_to_sz = getattr(self.info, "asset_to_sz_decimals", None)
             if isinstance(coin_to_asset, dict) and isinstance(asset_to_sz, dict):
-                asset_id = casefold_get(coin_to_asset, coin)
+                asset_id = None
+                for cand in cand_coins:
+                    asset_id = casefold_get(coin_to_asset, cand)
+                    if asset_id is not None:
+                        break
                 if asset_id is None:
                     name_to_coin = getattr(self.info, "name_to_coin", None)
                     if isinstance(name_to_coin, dict):
-                        mapped = casefold_get(name_to_coin, f"{coin}/USDC") or casefold_get(name_to_coin, coin)
-                        if isinstance(mapped, str):
-                            asset_id = casefold_get(coin_to_asset, mapped)
+                        for cand in cand_coins:
+                            mapped = casefold_get(name_to_coin, f"{cand}/USDC") or casefold_get(name_to_coin, cand)
+                            if isinstance(mapped, str):
+                                asset_id = casefold_get(coin_to_asset, mapped)
+                                if asset_id is not None:
+                                    break
                 if asset_id in asset_to_sz:
                     adec_i = _exact_int_in_range(asset_to_sz[asset_id], 0, 18)
                     if adec_i is not None:
@@ -368,26 +390,32 @@ class HLClient:
         if isinstance(token, bool) or not isinstance(token, str) or not token.strip():
             return None
         token = token.strip()
+        base_token = self._strip_spot_quote_suffix(token)
+        cand_tokens = (token,) if base_token.casefold() == token.casefold() else (token, base_token)
         try:
             m = self.info.spot_meta()
-            if not isinstance(m, dict):
-                return None
-            tokens = {
-                t.get("name"): t.get("index")
-                for t in (m.get("tokens") or [])
-                if isinstance(t, dict)
-            }
-            ti, usdc = casefold_get(tokens, token), casefold_get(tokens, "USDC")
-            if ti is None or usdc is None:
-                return None
-            for u in (m.get("universe") or []):
-                if isinstance(u, dict) and u.get("tokens") == [ti, usdc]:
-                    return u.get("name")
+            if isinstance(m, dict):
+                tokens = {
+                    t.get("name"): t.get("index")
+                    for t in (m.get("tokens") or [])
+                    if isinstance(t, dict)
+                }
+                usdc = casefold_get(tokens, "USDC")
+                ti = None
+                for cand in cand_tokens:
+                    ti = casefold_get(tokens, cand)
+                    if ti is not None:
+                        break
+                if ti is not None and usdc is not None:
+                    for u in (m.get("universe") or []):
+                        if isinstance(u, dict) and u.get("tokens") == [ti, usdc]:
+                            return u.get("name")
         except Exception as e:  # noqa: BLE001
             log(f"  ! resolve_spot_pair({token}) failed: {e}")
-            name_to_coin = getattr(self.info, "name_to_coin", None)
-            if isinstance(name_to_coin, dict):
-                mapped = casefold_get(name_to_coin, f"{token}/USDC")
+        name_to_coin = getattr(self.info, "name_to_coin", None)
+        if isinstance(name_to_coin, dict):
+            for cand in cand_tokens:
+                mapped = casefold_get(name_to_coin, f"{cand}/USDC") or casefold_get(name_to_coin, cand)
                 if isinstance(mapped, str) and mapped.strip():
                     return mapped.strip()
         return None

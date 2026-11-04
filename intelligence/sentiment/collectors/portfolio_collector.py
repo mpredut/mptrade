@@ -113,13 +113,16 @@ def _iter_audit_dir_file_batches(
         return []
     abs_cache = os.path.abspath(cache_dir)
     batches: List[List[str]] = []
+    seen_dirs: set[str] = set()
     for d in (
+        cache_dir,
         os.path.join(os.path.dirname(abs_cache), "logger", "execution_audit"),
         os.path.join(os.path.dirname(os.path.dirname(abs_cache)), "logger", "execution_audit"),
-        cache_dir,
     ):
-        if not os.path.isdir(d):
+        abs_d = os.path.abspath(d)
+        if abs_d in seen_dirs or not os.path.isdir(d):
             continue
+        seen_dirs.add(abs_d)
         try:
             files = sorted(
                 (os.path.join(d, f) for f in os.listdir(d) if f.startswith("execution_audit") and f.endswith(".jsonl")),
@@ -196,14 +199,16 @@ def _load_open_order_timestamps(cache_dir: Optional[str], cached_bals: Dict[str,
                 for cid_v in intent_venue_client_order_ids(it):
                     if cid_v:
                         out.setdefault(cid_v, it_ts)
-    for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=True):
+    for files in _iter_audit_dir_file_batches(cache_dir, max_files=2, newest_first=False):
+        found_in_batch = False
         for fpath in files:
             for rec in read_tail_jsonl_dicts(fpath, limit=None, max_bytes=512 * 1024):
                 if (rec_ts := safe_pos_float(rec.get("ts"), default=None)) is not None:
                     for id_k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                         if kv := str(rec.get(id_k) or "").strip():
                             out.setdefault(kv, rec_ts)
-        if out:
+                            found_in_batch = True
+        if found_in_batch:
             break
     return out
 
@@ -900,19 +905,24 @@ def harvest_recent_orders_and_enrich_positions(
                     _record_venue_fills("hyperliquid", sym, fills)
         except Exception:
             pass
-    for fallback_venue in ("hyperliquid", "t212"):
-        if not venue_recent_orders[fallback_venue] and cache_dir:
-            fb_ai_intents = _venue_intents(fallback_venue)
-            audit_by_sym = _load_audit_terminal_orders(cache_dir, fallback_venue)
-            intent_syms = {
-                str(it.get("symbol") or "").strip().upper()
-                for it in (fb_ai_intents or ())
-                if isinstance(it, dict) and str(it.get("symbol") or "").strip()
-            }
-            for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
-                o_list = audit_by_sym.get(sym_fb, [])
-                if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=fb_ai_intents, symbol=sym_fb):
-                    _record_venue_fills(fallback_venue, sym_fb, fills)
+    for fallback_venue in ("binance", "kraken", "hyperliquid", "t212"):
+        fb_ai_intents = _venue_intents(fallback_venue)
+        audit_by_sym = (
+            _load_audit_terminal_orders(cache_dir, fallback_venue)
+            if cache_dir and fallback_venue in ("hyperliquid", "t212")
+            else {}
+        )
+        intent_syms = {
+            str(it.get("symbol") or "").strip().upper()
+            for it in (fb_ai_intents or ())
+            if isinstance(it, dict) and str(it.get("symbol") or "").strip()
+        }
+        for sym_fb in sorted(set(audit_by_sym.keys()) | intent_syms):
+            if _first_variant_dict(venue_recent_orders[fallback_venue], cache_symbol_variants(sym_fb, include_base=True)) is not None:
+                continue
+            o_list = audit_by_sym.get(sym_fb, [])
+            if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=fb_ai_intents, symbol=sym_fb):
+                _record_venue_fills(fallback_venue, sym_fb, fills)
     live_held_by_venue_sym: Dict[tuple[str, str], float] = {}
     for pos_item in tradable_positions:
         if isinstance(pos_item, dict):
