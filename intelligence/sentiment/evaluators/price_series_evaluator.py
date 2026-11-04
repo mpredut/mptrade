@@ -342,11 +342,20 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             if h15 > l15 > 0:
                 out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
                 out["span_15m_pct"] = pct_delta(h15, l15)
-            tape_pts = [
-                f"{lbl}:{f'{round(cur_px if m_off == 0.0 else _sample_at(m_off)[1], eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}"
-                for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now"))
-                if m_off == 0.0 or (span_ms >= m_off * 60000.0 and _has_sample_near(m_off, max(3.0, m_off * 0.5)))
-            ]
+            tape_pts: list[str] = []
+            seen_tape_tms: set[float] = set()
+            for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now")):
+                if m_off == 0.0:
+                    tape_pts.append(f"now:{f'{round(cur_px, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
+                    continue
+                if span_ms < m_off * 60000.0:
+                    continue
+                max_tape_gap = 4.5 if m_off == 5.0 else (2.0 if m_off == 1.0 else max(3.0, m_off * 0.5))
+                t_tap, p_tap = _sample_at(m_off)
+                if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
+                    continue
+                seen_tape_tms.add(t_tap)
+                tape_pts.append(f"{lbl}:{f'{round(p_tap, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
         if span_ms >= 3600000.0 * 2.0:
@@ -708,23 +717,30 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     t_now, p_now = pts[-1]
     out: Dict[str, Any] = {}
     seen_slope_ref_t: set[float] = set()
+    has_sub3m_cadence = len(pts) < 10 or any(
+        0.0 < (b[0] - a[0]) < 180.0 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:])
+    )
     for win_sec, win_min, s_key, t_key, g_key in (
         (90.0, 1.5, "slope_90s", "trend_90s", "growth_90s"),
         (222.0, 3.7, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
         (900.0, 15.0, "slope_15m", "trend_15m", "growth_15m"),
         (9000.0, 150.0, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
     ):
+        if win_sec <= 90.0 and not has_sub3m_cadence:
+            continue
         target_t = t_now - win_sec
-        cands = [pt for pt in pts[:-1] if pt[0] not in seen_slope_ref_t] if len(pts) >= 10 else pts[:-1]
+        if len(pts) >= 10:
+            min_age_sec = 0.0 if win_sec <= 90.0 else (30.0 if (win_sec <= 222.0 and not has_sub3m_cadence) else win_sec * 0.5)
+            max_age_sec = 150.0 if win_sec <= 90.0 else (win_sec * 4.0 if win_sec < 9000.0 else float("inf"))
+            cands = [
+                pt for pt in pts[:-1]
+                if pt[0] not in seen_slope_ref_t and min_age_sec <= (t_now - pt[0]) <= max_age_sec
+            ]
+        else:
+            cands = pts[:-1]
         if not cands:
             continue
         ref_t, ref_p = min(cands, key=lambda item: abs(item[0] - target_t))
-        max_age_sec = 200.0 if win_sec <= 90.0 else win_sec * 4.0
-        if len(pts) >= 10 and (
-            (win_sec < 9000.0 and (t_now - ref_t) > max_age_sec)
-            or (win_sec > 90.0 and (t_now - ref_t) < win_sec * 0.5)
-        ):
-            continue
         seen_slope_ref_t.add(ref_t)
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
@@ -738,7 +754,8 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             g_v = (float(f"{raw_g:.2e}") if 0.0 < abs(raw_g) < 1e-4 else round(raw_g, 6)) + 0.0
             win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
-            out[g_key] = g_v
+            if ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10:
+                out[g_key] = g_v
             out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)
     if "slope_3_7m" in out:
         out["gradient_recent_fast"] = out["slope_3_7m"]

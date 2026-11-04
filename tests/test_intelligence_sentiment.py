@@ -4304,3 +4304,28 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "3.7m=+0.00000" not in pt_rgnt.get("Dynamic Multi-Window Slopes", "")
     assert "15m=+0.00000" not in pt_rgnt.get("Dynamic Multi-Window Slopes", "")
     assert "2.5h=" in pt_rgnt.get("Dynamic Multi-Window Slopes", "")
+
+    # Wave 8: 5m OHLC bars + live tick deduplicate tape_15m (-3m vs -1m) and do not fabricate 90s slope or duplicate growth_3_7m
+    from intelligence.sentiment.evaluators.price_series_evaluator import _compute_short_slopes_from_series
+
+    eq_5m_bars = [
+        [now_ms_w3 - (18.5 - 5.0 * idx) * 60_000, round(200.0 + idx * 0.25, 2)]
+        for idx in range(-30, 4)
+    ]
+    eq_5m_bars[-4] = [now_ms_w3 - int(18.5 * 60_000), 202.27]
+    eq_5m_bars[-3] = [now_ms_w3 - int(13.5 * 60_000), 202.14]
+    eq_5m_bars[-2] = [now_ms_w3 - int(8.5 * 60_000), 202.10]
+    eq_5m_bars[-1] = [now_ms_w3 - int(3.5 * 60_000), 202.41]
+    eq_5m_live = eq_5m_bars + [[now_ms_w3, 202.44]]
+    m24_eq_live = compute_24h_price_metrics(eq_5m_live)
+    assert m24_eq_live.get("recent_tape_15m") == [
+        "-15m:202.27",
+        "-10m:202.14",
+        "-5m:202.1",
+        "-3m:202.41",
+        "now:202.44",
+    ]
+    slopes_eq_live = _compute_short_slopes_from_series(eq_5m_live)
+    assert "slope_90s" not in slopes_eq_live
+    assert "slope_3_7m" in slopes_eq_live and "growth_3_7m" not in slopes_eq_live
+    assert "slope_15m" in slopes_eq_live and "growth_15m" in slopes_eq_live
