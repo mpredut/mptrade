@@ -19,6 +19,7 @@ import statistics
 import time
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
     exact_nonneg_int,
     normalize_epoch_sec,
     obj_attr,
@@ -42,6 +43,7 @@ from guard_hierarchy import (
     is_category_bypassed,
     make_intel_cache_key,
     normalize_bypassed_guards,
+    resolve_qlimit2_sub_bypasses,
 )
 from intelligence.macro_sentiment_ssot import (
     lookup_symbol_cache_items,
@@ -1292,7 +1294,7 @@ def _record_context_suggested_scale(
         scales_by_side = obj_attr(regime_context, "_suggested_scale_by_side")
         if not isinstance(scales_by_side, dict):
             scales_by_side = {}
-        curr_side = scales_by_side.get(side)
+        curr_side = clean_scale(scales_by_side.get(side), default=None, allow_percent=True)
         if not only_if_smaller or curr_side is None or scale < curr_side:
             scales_by_side[side] = scale
         if is_dict:
@@ -1300,7 +1302,7 @@ def _record_context_suggested_scale(
         else:
             object.__setattr__(regime_context, "_suggested_scale_by_side", scales_by_side)
         if side == "BUY":
-            curr = obj_attr(regime_context, "suggested_scale")
+            curr = clean_scale(obj_attr(regime_context, "suggested_scale"), default=None, allow_percent=True)
             if not only_if_smaller or curr is None or scale < curr:
                 if is_dict:
                     regime_context["suggested_scale"] = scale
@@ -1363,6 +1365,18 @@ def _merge_guard_scale(
     return effective_scale, active_reason
 
 
+def _normalize_intel_bypass_with_qlimit2_subs(bypass_guards: Any) -> tuple[set[str], bool, bool]:
+    _, parabolic_only, weibull_only = resolve_qlimit2_sub_bypasses(bypass_guards)
+    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+    if parabolic_only:
+        bypassed.difference_update({"g_qlimit2", "internal_quant_limit", "quantitative", "weibull_exhaustion", "exhaustion_guard", "weibullexhaustionguard"})
+        bypassed.add("parabolic_surge")
+    elif weibull_only:
+        bypassed.difference_update({"g_qlimit2", "internal_quant_limit", "quantitative", "parabolic_surge", "parabolic_guard", "parabolicsurgeguard"})
+        bypassed.add("weibull_exhaustion")
+    return bypassed, parabolic_only, weibull_only
+
+
 def check_intelligence_guards(
     provider,
     symbol: str,
@@ -1390,7 +1404,7 @@ def check_intelligence_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+    bypassed, parabolic_only_bypass, weibull_only_bypass = _normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
@@ -1480,7 +1494,7 @@ def check_intelligence_guards(
     active_reason = static_reason
 
     # 1. Dynamic G_QLIMIT2 re-evaluation (ParabolicSurgeGuard + WeibullExhaustionGuard) when cached
-    if was_cached and not GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
+    if was_cached and not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):
         from qlimit_order_guard import check_qlimit2_order_guards
         q_ok, q_reason, q_scale = check_qlimit2_order_guards(
             symbol=symbol,
@@ -1544,7 +1558,7 @@ def _evaluate_intelligence_guards_raw(
     now: Optional[float] = None,
     bypass_guards: Optional[set[str]] = None,
 ) -> tuple[bool, str, float]:
-    bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+    bypassed, parabolic_only_bypass, weibull_only_bypass = _normalize_intel_bypass_with_qlimit2_subs(bypass_guards)
     if "all" in bypassed or "*" in bypassed:
         return True, "stop_loss_exempt", 1.0
 
@@ -1565,7 +1579,7 @@ def _evaluate_intelligence_guards_raw(
     active_reason = "ok"
 
     # 1. Internal Quantitative Mathematical Guards (G_QLIMIT2: Parabolic Surge, Weibull Exhaustion)
-    if not GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed):
+    if not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):
         from qlimit_order_guard import check_qlimit2_order_guards
         int_ok, int_reason, int_scale = check_qlimit2_order_guards(
             symbol=symbol,

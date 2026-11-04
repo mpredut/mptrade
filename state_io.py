@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 try:
@@ -93,9 +94,15 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
     finally:
         shutil.rmtree(staging_directory, ignore_errors=True)
         try:
+            now_s = time.time()
             for entry in os.listdir(directory):
                 if entry != os.path.basename(staging_directory) and entry.startswith(prefix):
-                    shutil.rmtree(os.path.join(directory, entry), ignore_errors=True)
+                    cand_path = os.path.join(directory, entry)
+                    try:
+                        if os.path.isdir(cand_path) and (now_s - os.path.getmtime(cand_path)) > 60.0:
+                            shutil.rmtree(cand_path, ignore_errors=True)
+                    except OSError:
+                        pass
         except OSError:
             pass
 

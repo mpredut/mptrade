@@ -526,8 +526,16 @@ _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (
 def make_intel_cache_key(side: str, bypassed: set[str]) -> tuple[str, frozenset[str]]:
     """Build the canonical (side, bypassed_intel_codes) cache key for MarketRegimeContext."""
     side_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
-    return (
-        side_norm,
-        frozenset(code for code in _RAW_INTEL_CACHE_CODES if GUARD_REGISTRY[code].is_bypassed(bypassed)),
-    )
+    _, parabolic_only, weibull_only = resolve_qlimit2_sub_bypasses(bypassed)
+    codes = {
+        code
+        for code in _RAW_INTEL_CACHE_CODES
+        if GUARD_REGISTRY[code].is_bypassed(bypassed)
+        and not (code == "G_QLIMIT2" and (parabolic_only or weibull_only))
+    }
+    if parabolic_only:
+        codes.add("G_QLIMIT2:PARABOLIC")
+    elif weibull_only:
+        codes.add("G_QLIMIT2:WEIBULL")
+    return (side_norm, frozenset(codes))
 

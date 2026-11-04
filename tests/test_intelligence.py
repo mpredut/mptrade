@@ -4180,6 +4180,59 @@ def test_iter74_resolve_patched_attr_qlimit2_sub_bypasses_and_ssot_fills_freshes
     assert kp.read_ssot_fills_cache("BTCUSD", str(fills_path), max_stale_sec=90.0) is None
 
 
+def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_items(tmp_path):
+    import os
+    import time
+    import types
+    import cachetrend
+    import order_guard
+    from guard_hierarchy import make_intel_cache_key
+    from state_io import atomic_snapshot_file
+
+    # 1. make_intel_cache_key distinguishes parabolic-only, weibull-only, and full G_QLIMIT2 bypasses
+    k_para = make_intel_cache_key("BUY", {"parabolic_surge"})
+    k_weib = make_intel_cache_key("BUY", {"weibull_exhaustion"})
+    k_both = make_intel_cache_key("BUY", {"G_QLIMIT2"})
+    assert k_para != k_weib
+    assert k_para != k_both
+    assert k_weib != k_both
+
+    # 2. _normalize_intel_bypass_with_qlimit2_subs retains check_qlimit2_order_guards when only one sub-guard is bypassed
+    norm, p_only, w_only = order_guard._normalize_intel_bypass_with_qlimit2_subs({"parabolic_surge"})
+    assert p_only is True and w_only is False and "parabolic_surge" in norm and "weibull_exhaustion" not in norm
+    norm_all, p_all, w_all = order_guard._normalize_intel_bypass_with_qlimit2_subs({"G_QLIMIT2"})
+    assert p_all is False and w_all is False and "g_qlimit2" in norm_all
+
+    # 3. _record_context_suggested_scale handles string / percent / NaN existing scales without TypeError
+    ctx = types.SimpleNamespace(
+        suggested_scale="80%",
+        _suggested_scale_by_side={"BUY": float("nan")},
+    )
+    order_guard._record_context_suggested_scale(ctx, "BUY", 0.5, "test_scale", only_if_smaller=True)
+    assert ctx.suggested_scale == 0.5
+    assert ctx._suggested_scale_by_side["BUY"] == 0.5
+
+    # 4. cachetrend._find_by_symbol_variant searches wrapped {"items": {...}} dictionaries
+    found = cachetrend._find_by_symbol_variant({"items": {"BTCUSDT": [1, 2, 3]}}, "BTCUSDT")
+    assert found == ("BTCUSDT", [1, 2, 3])
+
+    # 5. atomic_snapshot_file only cleans up stale (>60s) leftover staging directories, preserving active ones
+    src = tmp_path / "src.json"
+    src.write_text("{}", encoding="utf-8")
+    dest = tmp_path / "snap.json"
+    active_dir = tmp_path / ".snap.json.999999.active"
+    stale_dir = tmp_path / ".snap.json.888888.stale"
+    active_dir.mkdir()
+    stale_dir.mkdir()
+    old_ts = time.time() - 120.0
+    os.utime(stale_dir, (old_ts, old_ts))
+
+    atomic_snapshot_file(str(src), str(dest))
+    assert dest.exists()
+    assert active_dir.exists()
+    assert not stale_dir.exists()
+
+
 
 
 
