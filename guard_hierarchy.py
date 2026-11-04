@@ -21,6 +21,7 @@ from typing import Any
 _CATEGORY_SHORTCUTS: dict[str, str] = {
     "go": "operational",
     "gt": "trend",
+    "g_prof": "profit",
     "g_qlimit": "qlimit",
     "gf": "financial",
     "gi": "intelligence",
@@ -405,9 +406,38 @@ def normalize_bypassed_guards(
 
 def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     """Remove a specific guard from an expanded bypass set while preserving sibling category tokens."""
-    g = GUARD_REGISTRY.get(code)
-    if g is None or not isinstance(bypassed, set):
+    if not isinstance(bypassed, set) or not code or isinstance(code, bool):
         return
+    code_str = str(code).strip()
+    g = GUARD_REGISTRY.get(code_str.upper())
+    if g is None:
+        code_low = code_str.lower()
+        g = next(
+            (inst for inst in GUARD_INSTANCES if inst.canonical == code_low or code_low in inst.aliases),
+            None,
+        )
+    if g is None:
+        return
+
+    # Normalize existing tokens in-place to lowercase so case-insensitive matches are cleanly removed
+    lowered_existing = {str(t).strip().lower() for t in bypassed if t is not None and not isinstance(t, bool)}
+    bypassed.clear()
+    bypassed.update(lowered_existing)
+
+    # 1. If master bypass ('all' or '*') was active, expand all sibling guards before revoking target
+    if bypassed.intersection({"all", "*"}):
+        for s in GUARD_INSTANCES:
+            if s.code != g.code:
+                bypassed.add(s.code.lower())
+        bypassed.difference_update({"all", "*"})
+
+    # 2. If composite 'profit_guard' (G_PROF + G_QLIMIT1) was active and target is one of them, preserve sibling
+    if g.code in ("G_PROF", "G_QLIMIT1") and "profit_guard" in bypassed:
+        sibling_code = "g_qlimit1" if g.code == "G_PROF" else "g_prof"
+        bypassed.add(sibling_code)
+        bypassed.discard("profit_guard")
+
+    # 3. If composite 'financial' ('gf') category was active, preserve sibling financial guards
     if g in GUARD_CATEGORIES.get("financial", ()):
         if bypassed.intersection({"financial", "gf"}):
             bypassed.update(
@@ -416,9 +446,15 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
                 if s.code != g.code
             )
         bypassed.difference_update({"financial", "gf"})
+
+    # 4. If target's category bypass was active, preserve sibling guards in that category
     cat_shortcuts = {sc for sc, cat in _CATEGORY_SHORTCUTS.items() if cat == g.category}
     cat_tokens = {g.category} | cat_shortcuts
-    if bypassed.intersection(cat_tokens):
+    if g.category == "llm":
+        cat_active = _is_llm_category_bypass(bypassed)
+    else:
+        cat_active = bool(bypassed.intersection(cat_tokens))
+    if cat_active:
         bypassed.update(
             s.code.lower()
             for s in GUARD_CATEGORIES.get(g.category, ())
@@ -427,7 +463,12 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     bypassed.difference_update(g.aliases)
     bypassed.discard(g.canonical)
     bypassed.discard(g.code.lower())
-    bypassed.difference_update(cat_tokens)
+    if g.category == "llm":
+        bypassed.discard("gllm")
+        if cat_active or g.code == "GLLM1":
+            bypassed.discard("llm")
+    else:
+        bypassed.difference_update(cat_tokens)
 
 
 def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
@@ -450,8 +491,9 @@ _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (
 
 def make_intel_cache_key(side: str, bypassed: set[str]) -> tuple[str, frozenset[str]]:
     """Build the canonical (side, bypassed_intel_codes) cache key for MarketRegimeContext."""
+    side_norm = str(side or "").strip().upper() if not isinstance(side, bool) else ""
     return (
-        side,
+        side_norm,
         frozenset(code for code in _RAW_INTEL_CACHE_CODES if GUARD_REGISTRY[code].is_bypassed(bypassed)),
     )
 

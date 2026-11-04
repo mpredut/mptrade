@@ -145,7 +145,7 @@ def check_external_order_guards(
         use_brake_value_in_title: bool = False,
     ) -> Optional[Tuple[bool, str, float]]:
         nonlocal effective_scale, active_reason
-        d_scale = _clean_scale(getattr(dec, "suggested_scale", 1.0))
+        d_scale = _clean_scale(getattr(dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
         if not dec.allowed or dec.brake_action in (BrakeAction.DEFER_WAIT, BrakeAction.DOWNSCALE_QTY):
             prefix = f"[{log_tag}_GUARD_SHADOW]" if mode == "shadow" else f"[{log_tag}_GUARD_ENFORCE]"
             scale_sfx = f", suggested_scale={d_scale}" if log_scale else ""
@@ -240,10 +240,11 @@ def check_external_order_guards(
 def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
     try:
+        from intelligence.internal.guards.guard_decision import normalize_guard_mode
         from order_guard import _load_margins, resolve_effective_bypass_guards
         m = _load_margins()
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):
-            if str(m.get(mode_key, "enforce")).strip().lower() != "enforce":
+            if normalize_guard_mode(m.get(mode_key, "enforce"), default="enforce") != "enforce":
                 return False
         bypassed = resolve_effective_bypass_guards(venue, bypass_guards=bypass_guards, margins=m)
         if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypassed) or "all" in bypassed or "*" in bypassed:
@@ -259,18 +260,20 @@ def evaluate_whale_spread_flow(
     *,
     bypass_guards: Any = None,
     enforced: Optional[bool] = None,
+    venue: str = "binance",
+    now: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating a spread round."""
     side_u = normalize_side(side)
     if side_u not in {"BUY", "SELL"}:
         return False, "ok"
-    if not (is_gi_whale_enforced(bypass_guards) if enforced is None else enforced):
+    if not (is_gi_whale_enforced(bypass_guards, venue=venue) if enforced is None else enforced):
         return False, "gi_whale_bypassed_or_off"
     try:
         collector = get_whale_collector()
         if collector is None:
             return False, "no_collector"
-        snap = fetch_guard_snapshot(collector, symbol, allow_network=False)
+        snap = fetch_guard_snapshot(collector, symbol, now=resolve_now_ts(now) if now is not None else None, allow_network=False)
         if snap is None:
             return False, "no_snapshot"
         ratio = safe_pos_float(obj_attr(snap, "taker_buy_sell_ratio"), 0.0) or 0.0
@@ -278,11 +281,14 @@ def evaluate_whale_spread_flow(
         if raw_oi is None:
             raw_oi = obj_attr(snap, "oi_1h_chg_pct")
         oi_pct = safe_float(raw_oi, default=0.0) or 0.0
-        div_regime = obj_attr(snap, "divergence_regime") or obj_attr(snap, "div_regime")
+        raw_reg = obj_attr(snap, "divergence_regime")
+        if raw_reg is None:
+            raw_reg = obj_attr(snap, "div_regime")
+        div_regime = str(raw_reg or "").strip().lower()
         if side_u == "BUY":
             if 0.0 < ratio < 0.80:
                 return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"
-            if div_regime == "aggressive_shorting":
+            if div_regime in ("aggressive_shorting", "short_building"):
                 return True, f"aggressive_shorting_divergence (OI={oi_pct:+.1f}%)"
         else:
             if ratio > 1.25:
@@ -300,14 +306,16 @@ def resolve_whale_spread_adjustment(
     *,
     bypass_guards: Any = None,
     enforced: Optional[bool] = None,
+    venue: str = "binance",
+    now: Optional[float] = None,
 ) -> float:
     """Widen grid quote adjustment when moderate taker flow pressure exists."""
-    if not (is_gi_whale_enforced(bypass_guards) if enforced is None else enforced):
+    if not (is_gi_whale_enforced(bypass_guards, venue=venue) if enforced is None else enforced):
         return base_adjustment
     try:
         collector = get_whale_collector()
         if collector is not None:
-            snap = fetch_guard_snapshot(collector, symbol, allow_network=False)
+            snap = fetch_guard_snapshot(collector, symbol, now=resolve_now_ts(now) if now is not None else None, allow_network=False)
             ratio = (safe_pos_float(obj_attr(snap, "taker_buy_sell_ratio"), 0.0) or 0.0) if snap is not None else 0.0
             if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
                 base_f = safe_float(base_adjustment, default=None)

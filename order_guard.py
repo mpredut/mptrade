@@ -568,6 +568,8 @@ def symbol_regime_context(
     now_ts = safe_nonneg_float(now, default=None)
     if now_ts is None:
         now_ts = time.time()
+    elif now_ts > 1e11:
+        now_ts /= 1000.0
     decision = symbol_regime(
         symbol,
         provider=provider,
@@ -1277,25 +1279,40 @@ def _read_cached_price_history(
         return None
     win_sec = safe_pos_float(window_seconds, 7200.0)
     now_ts = safe_pos_float(now, default=None) or time.time()
+    if now_ts > 1e11:
+        now_ts /= 1000.0
     cachedb_dir = _resolve_cachedb_dir()
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
     cand_symbols = cache_symbol_variants(symbol, include_base=True)
 
     def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+        if isinstance(item, dict):
+            ts_raw = safe_pos_float(
+                item.get("ts") if item.get("ts") is not None else item.get("timestamp"),
+                default=None,
+            )
+            px = safe_pos_float(
+                item.get("price") if item.get("price") is not None else item.get("close"),
+                default=None,
+            )
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            ts_raw = safe_pos_float(item[0], default=None)
+            px = safe_pos_float(item[1], default=None)
+        else:
             return None
-        ts_raw = safe_pos_float(item[0], default=None)
-        px = safe_pos_float(item[1], default=None)
         if ts_raw is None or px is None:
             return None
         return (ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw), px
 
     def _extract_valid_ticks(raw_items: Any) -> None:
         if isinstance(raw_items, list) and len(raw_items) > 512:
+            first_tick = next((t for x in raw_items[:16] if (t := _parse_tick(x)) is not None), None)
+            last_tick = next((t for x in reversed(raw_items[-16:]) if (t := _parse_tick(x)) is not None), None)
+            iter_seq = raw_items if (first_tick and last_tick and first_tick[0] > last_tick[0]) else reversed(raw_items)
             tail_buf: List[Tuple[float, float]] = []
             older_streak = 0
-            for item in reversed(raw_items):
+            for item in iter_seq:
                 parsed = _parse_tick(item)
                 if parsed is None:
                     continue
@@ -1309,6 +1326,8 @@ def _read_cached_price_history(
                 if ts_sec <= (now_ts + 5.0):
                     tail_buf.append((ts_sec, px))
             tail_buf.reverse()
+            if len(tail_buf) > 1 and any(tail_buf[i][0] > tail_buf[i + 1][0] for i in range(len(tail_buf) - 1)):
+                tail_buf.sort(key=lambda pair: pair[0])
             history.extend(tail_buf)
             return
 
@@ -1318,6 +1337,8 @@ def _read_cached_price_history(
                 ts_sec, px = parsed
                 if cutoff_ts <= ts_sec <= (now_ts + 5.0):
                     history.append((ts_sec, px))
+        if len(history) > 1 and any(history[i][0] > history[i + 1][0] for i in range(len(history) - 1)):
+            history.sort(key=lambda pair: pair[0])
 
     p24_paths = list(dict.fromkeys(
         os.path.join(cachedb_dir, f"cache_24_price_{cand}.json")
@@ -1326,15 +1347,18 @@ def _read_cached_price_history(
     ))
     for p_path in (*p24_paths, os.path.join(cachedb_dir, "cache_watcher_all_price.json")):
         data = _read_json_recovering(p_path)
-        if not isinstance(data, dict):
+        if not isinstance(data, (dict, list)):
             continue
         try:
-            items_map = data.get("items", {})
-            raw_items = (
-                items_map
-                if isinstance(items_map, list)
-                else lookup_symbol_cache_items(items_map, su, cand_keys=cand_symbols)
-            )
+            if isinstance(data, list):
+                raw_items = data
+            else:
+                items_map = data.get("items", {})
+                raw_items = (
+                    items_map
+                    if isinstance(items_map, list)
+                    else lookup_symbol_cache_items(items_map, su, cand_keys=cand_symbols)
+                )
             _extract_valid_ticks(raw_items)
             if history:
                 break

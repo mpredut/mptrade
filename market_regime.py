@@ -133,9 +133,13 @@ class MarketRegimeContext:
         current_time = time.time() if now is None else safe_float(now, default=None)
         if current_time is None:
             return False
+        if current_time > 100_000_000_000:
+            current_time /= 1000.0
 
         # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
         eval_at = safe_pos_float(self.evaluated_at, default=None)
+        if eval_at is not None and eval_at > 100_000_000_000:
+            eval_at /= 1000.0
         if eval_at is None or eval_at > (current_time + 1.0):
             return False
 
@@ -229,6 +233,8 @@ class MarketRegimeContext:
             if (evaluated_at is None or isinstance(evaluated_at, bool))
             else safe_float(evaluated_at, default=0.0)
         )
+        if eval_ts > 100_000_000_000:
+            eval_ts /= 1000.0
         dur_s = (
             0.0
             if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool))
@@ -346,6 +352,10 @@ class MarketRegimeEvidence:
         obs_f = safe_float(self.observed_at, default=None)
         if eval_f is None or obs_f is None:
             return None
+        if eval_f > 100_000_000_000:
+            eval_f /= 1000.0
+        if obs_f > 100_000_000_000:
+            obs_f /= 1000.0
         return safe_float(eval_f - obs_f, default=None)
 
     @property
@@ -716,7 +726,7 @@ class MarketRegimeService:
     def resolve(self, provider, symbol: str, *, horizon="short", snapshot=None,
                 interval_min=None, window_seconds=None, allow_fallback=True,
                 snapshot_source="snapshot", snapshot_max_age_seconds=None,
-                ohlc_max_age_seconds=None):
+                ohlc_max_age_seconds=None, now=None):
         """Resolve the selected regime while preserving the legacy return type."""
         return self.resolve_with_evidence(
             provider,
@@ -729,6 +739,7 @@ class MarketRegimeService:
             snapshot_source=snapshot_source,
             snapshot_max_age_seconds=snapshot_max_age_seconds,
             ohlc_max_age_seconds=ohlc_max_age_seconds,
+            now=now,
         ).decision
 
     def resolve_with_evidence(
@@ -759,7 +770,7 @@ class MarketRegimeService:
         allow_fallback = _parse_bool_flag(allow_fallback, True)
         include_alternates = _parse_bool_flag(include_alternates, False)
         role = role.strip() if isinstance(role, str) and role.strip() else f"asset_{parsed.value}"
-        evaluated_at = time.time() if now is None else safe_pos_float(now, default=None)
+        evaluated_at = time.time() if now is None else self._pos_timestamp_seconds(now)
         if evaluated_at is None:
             raise ValueError("now must be a positive finite Unix timestamp")
 

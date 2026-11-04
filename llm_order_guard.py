@@ -129,7 +129,7 @@ def evaluate_high_stake_order_guard(
                 symbol, side, price, qty if qty is not None else 1.0,
                 notional_eur=computed_notional,
             )
-        g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0))
+        g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
         if valid_context:
             try:
                 g_tuple = (bool(g_dec.allowed), g_dec.reason, g_scale)
@@ -198,7 +198,7 @@ def evaluate_high_stake_order_guard(
     )
     if isinstance(cached_g_dec, (tuple, list)) and len(cached_g_dec) == 3 and llm_mode == "enforce":
         g_allowed, g_reason, raw_g_scale = cached_g_dec
-        g_scale = _clean_scale(raw_g_scale)
+        g_scale = _clean_scale(raw_g_scale, default=1.0, allow_percent=True)
         if not g_allowed or g_scale <= 0.0:
             return False, g_reason, 0.0
         if g_scale < 1.0:
@@ -216,8 +216,13 @@ def check_geopolitical_order_guards(
     *,
     margins: Optional[Dict[str, Any]] = None,
     now: Optional[float] = None,
+    bypass_guards: Optional[set[str]] = None,
 ) -> Tuple[bool, str, float]:
     """Evaluate pre-trade orders against published geopolitical threat assessment (GLLM3)."""
+    if bypass_guards:
+        bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards)
+        if "all" in bypassed or "*" in bypassed or GUARD_REGISTRY["GLLM3"].is_bypassed(bypassed):
+            return True, "stop_loss_exempt" if ("all" in bypassed or "*" in bypassed) else "ok", 1.0
     order_side = _normalize_side(side)
     if order_side != "BUY":
         return True, "not_buy_side", 1.0
@@ -240,7 +245,7 @@ def check_geopolitical_order_guards(
         cached_geo = GeopoliticalThreatAnalyzer()._cached_assessment
         if cached_geo is not None:
             geo_dec = GeopoliticalShockGuard().check(symbol, order_side, cached_geo)
-            geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0))
+            geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
             if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")
@@ -264,7 +269,7 @@ def check_geopolitical_order_guards(
                         if "(" in geo_dec.reason and geo_dec.reason.endswith(")"):
                             clean_summary = geo_dec.reason.split("(", 1)[1].rstrip(")")
                         raw_tl = obj_attr(cached_geo, "threat_level", "UNKNOWN")
-                        raw_rs = _pos_float(obj_attr(cached_geo, "risk_score", 0.0), 0.0)
+                        raw_rs = _clean_scale(obj_attr(cached_geo, "risk_score", 0.0), default=0.0, allow_percent=True)
                         notify(
                             title=geo_title,
                             body=f"Threat: {raw_tl} (Risk: {raw_rs:.2f}, Scale: {scale_pct}%)\n{clean_summary}",

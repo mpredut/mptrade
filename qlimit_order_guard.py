@@ -23,7 +23,7 @@ from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
 from intelligence.internal.state.survival import get_cached_t_entry
-from intelligence.macro_sentiment_ssot import obj_attr, safe_pos_float
+from intelligence.macro_sentiment_ssot import clean_scale, obj_attr, safe_pos_float
 from providers.base import normalize_side
 
 logger = logging.getLogger("qlimit_order_guard")
@@ -199,7 +199,7 @@ def check_qlimit2_order_guards(
             if mode == "enforce":
                 if not e_dec.allowed:
                     return False, e_dec.reason, 0.0
-                s_val = safe_pos_float(e_dec.suggested_scale, 0.0)
+                s_val = clean_scale(e_dec.suggested_scale, default=0.0, allow_percent=True)
                 if s_val <= 0.0:
                     return False, e_dec.reason, 0.0
                 effective_scale = min(effective_scale, min(1.0, s_val))

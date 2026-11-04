@@ -3219,8 +3219,158 @@ def test_iter65_internal_state_2d_series_external_snapshots_and_lexicon_ms_times
     assert "sanctions package" in load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=1700000250.0)["high_severity_terms"]
 
 
+def test_iter66_guard_bypass_revocation_market_regime_ms_now_and_price_history_order(tmp_path, monkeypatch):
+    import json
+    from guard_hierarchy import (
+        GUARD_REGISTRY,
+        make_intel_cache_key,
+        normalize_bypassed_guards,
+        revoke_guard_bypass,
+    )
+    from market_regime import MarketRegimeContext, MarketRegimeEvidence, MarketRegimeService
+    import order_guard
+    from external_order_guard import evaluate_whale_spread_flow, is_gi_whale_enforced
+    from llm_order_guard import check_geopolitical_order_guards, evaluate_high_stake_order_guard
+
+    def is_guard_bypassed(code: str, bypassed: set[str]) -> bool:
+        return GUARD_REGISTRY[code].is_bypassed(bypassed)
+
+    # 1. revoke_guard_bypass: GLLM1 alias "llm" must not accidentally bypass GLLM3 when revoking GLLM2
+    b_llm1 = normalize_bypassed_guards("GLLM1")
+    revoke_guard_bypass(b_llm1, "GLLM2")
+    assert is_guard_bypassed("GLLM1", b_llm1)
+    assert not is_guard_bypassed("GLLM2", b_llm1)
+    assert not is_guard_bypassed("GLLM3", b_llm1)
+
+    # 2. revoke_guard_bypass on "all" / "*" and "profit_guard" and mixed-case set
+    b_all = normalize_bypassed_guards("all")
+    revoke_guard_bypass(b_all, "G_QLIMIT1")
+    assert not is_guard_bypassed("G_QLIMIT1", b_all)
+    assert is_guard_bypassed("G_PROF", b_all)
+    assert is_guard_bypassed("GI_WHALE", b_all)
+
+    b_prof = normalize_bypassed_guards("profit_guard")
+    revoke_guard_bypass(b_prof, "G_QLIMIT1")
+    assert not is_guard_bypassed("G_QLIMIT1", b_prof)
+    assert is_guard_bypassed("G_PROF", b_prof)
+
+    b_case = {"G_QLIMIT1"}
+    revoke_guard_bypass(b_case, "g_qlimit1")
+    assert not is_guard_bypassed("G_QLIMIT1", b_case)
+
+    assert is_guard_bypassed("G_PROF", normalize_bypassed_guards("G_PROF"))
+    assert make_intel_cache_key("buy", set()) == ("BUY", frozenset())
+
+    # 3. MarketRegimeContext / MarketRegimeEvidence / MarketRegimeService with millisecond `now`
+    ctx = MarketRegimeContext.from_decision(
+        decision={"regime": "bull", "fresh": True, "source": "snapshot"},
+        evaluated_at=1700000000000.0,
+        symbol="BTCUSDC",
+    )
+    assert ctx.evaluated_at == pytest.approx(1700000000.0)
+    assert ctx.is_valid_for("BTCUSDC", max_age_seconds=60.0, now=1700000030000.0)
+    assert not ctx.is_valid_for("BTCUSDC", max_age_seconds=60.0, now=1700000090000.0)
+
+    ev = MarketRegimeEvidence(
+        role="asset",
+        family="price_trend",
+        classifier="snapshot",
+        provider="binance",
+        symbol="BTCUSDC",
+        decision=ctx.decision,
+        evaluated_at=1700000015000.0,
+        observed_at=1700000000000.0,
+    )
+    assert ev.age_seconds == pytest.approx(15.0)
+
+    svc = MarketRegimeService()
+    snap = {
+        "growth_coefficient": 0.005,
+        "epsilon": 0.001,
+        "n_samples": 30,
+        "window_seconds": 900.0,
+        "ts": 1700000000.0,
+    }
+    res = svc.resolve_with_evidence(
+        provider="binance",
+        symbol="BTCUSDC",
+        snapshot=snap,
+        now=1700000010000.0,
+        allow_fallback=False,
+    )
+    assert res.decision.regime == "bull"
+    assert res.decision.fresh is True
+    assert res.primary is not None and res.primary.age_seconds == pytest.approx(10.0)
+    assert svc.resolve(provider="binance", symbol="BTCUSDC", snapshot=snap, now=1700000010000.0, allow_fallback=False).regime == "bull"
+
+    # 4. order_guard._read_cached_price_history with millisecond `now` and >512 descending ticks
+    base_ts = 1700000000.0
+    # 600 ticks in descending order (newest first: base_ts + 599 down to base_ts)
+    ticks_desc = [
+        {"ts": base_ts + i, "price": 50000.0 + i * 10.0}
+        for i in range(599, -1, -1)
+    ]
+    price_file = tmp_path / "cache_24_price_BTCUSDC.json"
+    price_file.write_text(json.dumps({"items": ticks_desc}), encoding="utf-8")
+    monkeypatch.setattr(order_guard, "_resolve_cachedb_dir", lambda: str(tmp_path))
+
+    hist = order_guard._read_cached_price_history(
+        "BTCUSDC",
+        now=(base_ts + 600.0) * 1000.0,  # millisecond `now`
+        window_seconds=120.0,
+    )
+    assert len(hist) >= 100
+    assert hist[0][0] < hist[-1][0]
+    assert hist[-1][0] == pytest.approx(base_ts + 599.0)
+
+    # 5. evaluate_whale_spread_flow uppercase / short_building & percentage downscale in llm_order_guard
+    import external_order_guard
+    monkeypatch.setattr(external_order_guard, "get_whale_collector", lambda: object())
+    monkeypatch.setattr(
+        external_order_guard,
+        "fetch_guard_snapshot",
+        lambda collector, sym, **kw: {"div_regime": "SHORT_BUILDING", "oi_1h_chg_pct": 1.5, "whale_long_pct": 0.35},
+    )
+    ws_conflict, ws_reason = evaluate_whale_spread_flow(
+        "BTCUSDC",
+        "BUY",
+        enforced=True,
+        now=1700000010000.0,
+    )
+    assert ws_conflict is True
+    assert "aggressive_shorting_divergence" in ws_reason
+    assert not is_gi_whale_enforced(bypass_guards={"GI_WHALE"})
+
+    ctx_hs = MarketRegimeContext.from_decision(
+        decision={"regime": "bull", "fresh": True, "source": "snapshot"},
+        evaluated_at=1700000000.0,
+        symbol="BTCUSDC",
+    )
+    object.__setattr__(ctx_hs, "_gemini_evaluated_notional", 1000.0)
+    object.__setattr__(ctx_hs, "_gemini_decision", (True, "downscaled", 50))
+    hs_ok, hs_reason, hs_scale = evaluate_high_stake_order_guard(
+        symbol="BTCUSDC",
+        side="BUY",
+        price=50000.0,
+        qty=0.02,
+        computed_notional=1000.0,
+        regime_context=ctx_hs,
+        valid_context=True,
+        cache_key=("BUY", frozenset()),
+        margins={"llm_guard_mode": "enforce", "high_stake_min_notional_usd": 500.0},
+        bypassed=set(),
+        now=1700000010.0,
+        notify_on_eval=False,
+    )
+    assert hs_ok is True and hs_scale == pytest.approx(0.50)
+
+    geo_ok, geo_reason, geo_scale = check_geopolitical_order_guards("BTCUSDC", "BUY", bypass_guards={"GLLM3"})
+    assert geo_ok is True and geo_scale == pytest.approx(1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
