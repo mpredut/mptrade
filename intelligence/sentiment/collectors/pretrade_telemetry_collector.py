@@ -36,11 +36,29 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_cross_btc_metrics,
 )
 from instrument_registry import casefold_get
-from state_io import read_json_dict_recovering as read_json_cached
+from state_io import read_json_dict_recovering as _default_read_json_cached
+
+read_json_cached = _default_read_json_cached
+
+
+def _resolve_read_json_cached() -> Callable[[str], Any]:
+    if callable(read_json_cached) and read_json_cached is not _default_read_json_cached:
+        return read_json_cached
+    import sys as _sys
+
+    for _mod_name in (
+        "intelligence.sentiment.collectors.macro_telemetry_collector",
+        "intelligence.sentiment.guards.high_stake_guard",
+    ):
+        _mod = _sys.modules.get(_mod_name)
+        _fn = getattr(_mod, "read_json_cached", None) if _mod is not None else None
+        if callable(_fn) and _fn is not _default_read_json_cached:
+            return _fn
+    return read_json_cached
 
 
 def _read_first_cached_dict(cachedb_dir: str, group_key: str, fallback_fname: str) -> tuple[Optional[Dict[str, Any]], str]:
-    return read_first_cached_dict(cachedb_dir, group_key, fallback_fname, read_json_fn=read_json_cached)
+    return read_first_cached_dict(cachedb_dir, group_key, fallback_fname, read_json_fn=_resolve_read_json_cached())
 
 
 def collect_pretrade_telemetry(
@@ -50,6 +68,7 @@ def collect_pretrade_telemetry(
     cachedb_dir: str = "cachedb",
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
+    _rj = _resolve_read_json_cached()
     default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
         cachedb_dir = default_cdir
@@ -61,7 +80,7 @@ def collect_pretrade_telemetry(
     def _disk_telem(prefix: str) -> Optional[Dict[str, Any]]:
         variants = quote_variants if prefix == "orderbook_depth_" else sym_variants
         for cand in variants:
-            d = read_json_cached(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
+            d = _rj(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
             if isinstance(d, dict):
                 return d if d.get("symbol") else {**d, "symbol": cand}
         return None
@@ -172,7 +191,7 @@ def collect_pretrade_telemetry(
 
     # 4B. 24h Multi-Horizon Price Evolution & Dynamic Multi-Window Slopes (shared with Reconciler)
     try:
-        cur_p_data = read_json_cached(os.path.join(cachedb_dir, "cache_current_price.json"))
+        cur_p_data = _rj(os.path.join(cachedb_dir, "cache_current_price.json"))
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
         alt_series_24h, _ = load_symbol_price_series(
             cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=False
@@ -296,7 +315,7 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        if isinstance(st_data := read_json_cached(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
+        if isinstance(st_data := _rj(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
             st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
             if isinstance(tinfo := _first_variant_dict(st_items, sym_variants), dict):
                 t_entry: Dict[str, Any] = {}

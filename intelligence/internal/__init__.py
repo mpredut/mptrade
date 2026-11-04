@@ -1,60 +1,83 @@
 """Internal intelligence package for local price and statistical regime."""
 from __future__ import annotations
 
-from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
-from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger, KalmanTrend
-from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+import importlib
+from typing import TYPE_CHECKING, Any
 
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
-from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+if TYPE_CHECKING:
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state.persistence import (
+        calculate_hurst_exponent,
+        calculate_mann_kendall,
+        classify_hurst_regime,
+    )
+    from intelligence.internal.state.survival import estimate_T, get_trend_survival_metrics, hybrid_T
+    from intelligence.internal.state.volatility import (
+        adaptive_thresholds,
+        calculate_volatility_1h,
+        get_kalman_state_path,
+        resolve_cached_volatility_1h,
+        resolve_cached_volatility_1h_pct,
+        vol_1h_pct,
+        vol_pct_to_ratio,
+        vol_ratio_to_pct,
+    )
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrend, KalmanTrendTrigger
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
 
-from intelligence.internal.state.volatility import (
-    calculate_volatility_1h,
-    adaptive_thresholds,
-    vol_1h_pct,
-    vol_pct_to_ratio,
-    vol_ratio_to_pct,
-    get_kalman_state_path,
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-)
-from intelligence.internal.state.survival import get_trend_survival_metrics, estimate_T, hybrid_T
-from intelligence.internal.state.persistence import (
-    calculate_mann_kendall,
-    calculate_hurst_exponent,
-    classify_hurst_regime,
-)
+_LAZY_IMPORTS: dict[str, str] = {
+    "TriggerEvent": "intelligence.internal.triggers.trigger_event",
+    "TriggerAction": "intelligence.internal.triggers.trigger_event",
+    "TriggerSide": "intelligence.internal.triggers.trigger_event",
+    "KalmanTrendTrigger": "intelligence.internal.triggers.kalman_trigger",
+    "KalmanTrend": "intelligence.internal.triggers.kalman_trigger",
+    "LinearGradientTrigger": "intelligence.internal.triggers.gradient_trigger",
+    "MeanReversionTrigger": "intelligence.internal.triggers.mean_reversion_trigger",
+    "GuardDecision": "intelligence.internal.guards.guard_decision",
+    "BrakeAction": "intelligence.internal.guards.guard_decision",
+    "ParabolicSurgeGuard": "intelligence.internal.guards.parabolic_guard",
+    "WeibullExhaustionGuard": "intelligence.internal.guards.exhaustion_guard",
+    "NoiseFloorGuard": "intelligence.internal.guards.noise_guard",
+    "TrendSignificanceGuard": "intelligence.internal.guards.trend_significance_guard",
+    "calculate_volatility_1h": "intelligence.internal.state.volatility",
+    "adaptive_thresholds": "intelligence.internal.state.volatility",
+    "vol_1h_pct": "intelligence.internal.state.volatility",
+    "vol_pct_to_ratio": "intelligence.internal.state.volatility",
+    "vol_ratio_to_pct": "intelligence.internal.state.volatility",
+    "get_kalman_state_path": "intelligence.internal.state.volatility",
+    "resolve_cached_volatility_1h": "intelligence.internal.state.volatility",
+    "resolve_cached_volatility_1h_pct": "intelligence.internal.state.volatility",
+    "get_trend_survival_metrics": "intelligence.internal.state.survival",
+    "estimate_T": "intelligence.internal.state.survival",
+    "hybrid_T": "intelligence.internal.state.survival",
+    "calculate_mann_kendall": "intelligence.internal.state.persistence",
+    "calculate_hurst_exponent": "intelligence.internal.state.persistence",
+    "classify_hurst_regime": "intelligence.internal.state.persistence",
+}
 
-__all__ = [
-    "TriggerEvent",
-    "TriggerAction",
-    "TriggerSide",
-    "KalmanTrendTrigger",
-    "KalmanTrend",
-    "LinearGradientTrigger",
-    "MeanReversionTrigger",
-    "GuardDecision",
-    "BrakeAction",
-    "ParabolicSurgeGuard",
-    "WeibullExhaustionGuard",
-    "NoiseFloorGuard",
-    "TrendSignificanceGuard",
-    "calculate_volatility_1h",
-    "adaptive_thresholds",
-    "vol_1h_pct",
-    "vol_pct_to_ratio",
-    "vol_ratio_to_pct",
-    "get_kalman_state_path",
-    "resolve_cached_volatility_1h",
-    "resolve_cached_volatility_1h_pct",
-    "get_trend_survival_metrics",
-    "estimate_T",
-    "hybrid_T",
-    "calculate_mann_kendall",
-    "calculate_hurst_exponent",
-    "classify_hurst_regime",
-]
+_SUBMODULES = frozenset({"guards", "state", "triggers"})
+
+__all__ = list(_LAZY_IMPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    mod_name = _LAZY_IMPORTS.get(name)
+    if mod_name is not None:
+        val = getattr(importlib.import_module(mod_name), name)
+        globals()[name] = val
+        return val
+    if name in _SUBMODULES:
+        mod = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

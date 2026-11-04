@@ -148,8 +148,14 @@ def _should_poll_for_manager(cls_name):
 
 def _strict_int_field(val, *, min_value: int = 1) -> Optional[int]:
     """Validate and coerce an integer field without accepting booleans or fractional floats."""
-    if isinstance(val, bool) or (isinstance(val, float) and not val.is_integer()):
+    if isinstance(val, bool) or not isinstance(val, (int, float, str)):
         return None
+    if isinstance(val, float) and not val.is_integer():
+        return None
+    if isinstance(val, str):
+        cleaned = val.strip().lstrip("+-")
+        if not cleaned or not cleaned.isascii() or not cleaned.isdigit():
+            return None
     try:
         parsed = int(val)
     except (TypeError, ValueError, OverflowError):

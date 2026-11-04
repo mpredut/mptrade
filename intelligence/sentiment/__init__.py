@@ -25,50 +25,73 @@ Integrates sentiment telemetry, contrarian drivers, euphoric/panic brakes, and H
 
 from __future__ import annotations
 
-from intelligence.sentiment.gemini_client import (
-    GeminiClient,
-)
-from intelligence.sentiment.collectors.fear_greed_collector import (
-    FearGreedCollector,
-    FearGreedSnapshot,
-)
-from intelligence.sentiment.collectors.market_breadth_collector import (
-    MarketBreadthCollector,
-    MarketBreadthSnapshot,
-)
-from intelligence.sentiment.sentiment_advisor import (
-    SentimentAdvisor,
-    SentimentAdvisorAssessment,
-)
+import importlib
+from typing import TYPE_CHECKING, Any
 
-from intelligence.sentiment.triggers.sentiment_contrarian_trigger import (
-    SentimentContrarianTrigger,
-)
-from intelligence.sentiment.triggers.market_breadth_trigger import (
-    MarketBreadthTrigger,
-)
+if TYPE_CHECKING:
+    from intelligence.sentiment.collectors.fear_greed_collector import (
+        FearGreedCollector,
+        FearGreedSnapshot,
+    )
+    from intelligence.sentiment.collectors.market_breadth_collector import (
+        MarketBreadthCollector,
+        MarketBreadthSnapshot,
+    )
+    from intelligence.sentiment.gemini_client import (
+        GeminiClient,
+    )
+    from intelligence.sentiment.guards.extreme_greed_guard import (
+        ExtremeGreedGuard,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import (
+        HighStakeGuard,
+    )
+    from intelligence.sentiment.guards.panic_washout_guard import (
+        PanicWashoutGuard,
+    )
+    from intelligence.sentiment.sentiment_advisor import (
+        SentimentAdvisor,
+        SentimentAdvisorAssessment,
+    )
+    from intelligence.sentiment.triggers.market_breadth_trigger import (
+        MarketBreadthTrigger,
+    )
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import (
+        SentimentContrarianTrigger,
+    )
 
-from intelligence.sentiment.guards.extreme_greed_guard import (
-    ExtremeGreedGuard,
-)
-from intelligence.sentiment.guards.panic_washout_guard import (
-    PanicWashoutGuard,
-)
-from intelligence.sentiment.guards.high_stake_guard import (
-    HighStakeGuard,
-)
+_LAZY_IMPORTS: dict[str, str] = {
+    "GeminiClient": "intelligence.sentiment.gemini_client",
+    "FearGreedCollector": "intelligence.sentiment.collectors.fear_greed_collector",
+    "FearGreedSnapshot": "intelligence.sentiment.collectors.fear_greed_collector",
+    "MarketBreadthCollector": "intelligence.sentiment.collectors.market_breadth_collector",
+    "MarketBreadthSnapshot": "intelligence.sentiment.collectors.market_breadth_collector",
+    "SentimentAdvisor": "intelligence.sentiment.sentiment_advisor",
+    "SentimentAdvisorAssessment": "intelligence.sentiment.sentiment_advisor",
+    "SentimentContrarianTrigger": "intelligence.sentiment.triggers.sentiment_contrarian_trigger",
+    "MarketBreadthTrigger": "intelligence.sentiment.triggers.market_breadth_trigger",
+    "ExtremeGreedGuard": "intelligence.sentiment.guards.extreme_greed_guard",
+    "PanicWashoutGuard": "intelligence.sentiment.guards.panic_washout_guard",
+    "HighStakeGuard": "intelligence.sentiment.guards.high_stake_guard",
+}
 
-__all__ = [
-    "GeminiClient",
-    "FearGreedCollector",
-    "FearGreedSnapshot",
-    "MarketBreadthCollector",
-    "MarketBreadthSnapshot",
-    "SentimentAdvisor",
-    "SentimentAdvisorAssessment",
-    "SentimentContrarianTrigger",
-    "MarketBreadthTrigger",
-    "ExtremeGreedGuard",
-    "PanicWashoutGuard",
-    "HighStakeGuard",
-]
+_SUBMODULES = frozenset({"collectors", "evaluators", "gemini_client", "guards", "sentiment_advisor", "triggers"})
+
+__all__ = list(_LAZY_IMPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    mod_name = _LAZY_IMPORTS.get(name)
+    if mod_name is not None:
+        val = getattr(importlib.import_module(mod_name), name)
+        globals()[name] = val
+        return val
+    if name in _SUBMODULES:
+        mod = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

@@ -85,8 +85,10 @@ def trade_records_digest(
 
 
 def _strict_int_field(val: Any) -> int:
-    if isinstance(val, str) and not val.strip().removesuffix(".0").lstrip("+-").isdigit():
-        raise ValueError("invalid Trade row field type")
+    if isinstance(val, str):
+        cleaned = val.strip().removesuffix(".0").lstrip("+-")
+        if not cleaned or not cleaned.isascii() or not cleaned.isdigit():
+            raise ValueError("invalid Trade row field type")
     parsed = exact_int(val, default=None) if isinstance(val, (int, float, str)) else None
     if parsed is None:
         raise ValueError("invalid Trade row field type")
@@ -391,7 +393,10 @@ def read_trade_snapshot_strict(
     seen_ids: defaultdict[str, set[str]] = defaultdict(set)
     for symbol, item in records:
         normalized_symbol = str(symbol).upper()
-        trade_id = str(int(item["id"]))
+        try:
+            trade_id = str(_strict_int_field(item["id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
         if trade_id in seen_ids[normalized_symbol]:
             raise account_cache_health.AccountCacheNotReady(reader_reason)
         seen_ids[normalized_symbol].add(trade_id)
@@ -526,12 +531,12 @@ def validate_account_cache_state(
                     and str(item["symbol"]).upper() != symbol.upper()
                 ):
                     raise ValueError("Order row symbol differs from its bucket")
-                order_id = str(int(item["orderId"]))
+                order_id = str(_strict_int_field(item["orderId"]))
                 if order_id in order_ids:
                     raise ValueError(f"duplicate Order aggregate ID {order_id}")
                 order_ids.add(order_id)
                 for fill_id in item.get("_fillIds", []):
-                    fill_key = str(int(fill_id))
+                    fill_key = str(_strict_int_field(fill_id))
                     previous_order = fill_owners.get(fill_key)
                     if previous_order is not None:
                         raise ValueError(

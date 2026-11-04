@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any, Callable, Dict, Optional, Sequence
 
 from botcore import _parse_bool_flag, fetch_public_json
@@ -17,7 +18,9 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
     format_macro_benchmarks_summary_line, harvest_initial_prices_and_trends, harvest_macro_and_news_sensors,
     harvest_portfolio_and_venue_cycles, populate_market_and_portfolio_snapshot,
 )
-from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+    collect_pretrade_telemetry as _default_collect_pretrade_telemetry,
+)
 from intelligence.sentiment.collectors.microstructure_collector import (
     _MICRO_PRICE_ANCHOR_KEYS, _blend_structural_liq_anchor, _build_vp_position_dict,
     _compute_horizon_range_dict, _extract_cached_items_series, _first_variant_dict,
@@ -35,8 +38,15 @@ from intelligence.sentiment.collectors.portfolio_collector import (
     parse_venue_cycle_state, resolve_symbol_price, resolve_venue_fee_and_limits,
     set_pos_anchor, sync_sibling_symbol_telemetry,
 )
-from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
+from intelligence.sentiment.gemini_client import (
+    GeminiClient,
+    query_topic_json as _default_query_topic_json,
+)
 from orchestratorOS.agy.topics import topic_spec
+from state_io import read_json_dict_recovering as read_json_cached
+
+collect_pretrade_telemetry = _default_collect_pretrade_telemetry
+query_topic_json = _default_query_topic_json
 
 logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
@@ -190,13 +200,30 @@ class PreTradeLLMGuardBase:
                 )
                 return self._wrap_shadow_decision(base_dec, notional) if self.mode == "shadow" else base_dec
 
+        _sub_mod = sys.modules.get(self.__class__.__module__)
+        _telem_fn = collect_pretrade_telemetry
+        if _sub_mod is not None:
+            _cand_telem = getattr(_sub_mod, "collect_pretrade_telemetry", None)
+            if callable(_cand_telem) and _cand_telem is not _default_collect_pretrade_telemetry:
+                _telem_fn = _cand_telem
+        if _telem_fn is _default_collect_pretrade_telemetry:
+            for _mod_name in (
+                "intelligence.sentiment.collectors.macro_telemetry_collector",
+                "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+            ):
+                _m = sys.modules.get(_mod_name)
+                _cand_telem = getattr(_m, "collect_pretrade_telemetry", None) if _m is not None else None
+                if callable(_cand_telem) and _cand_telem is not _default_collect_pretrade_telemetry:
+                    _telem_fn = _cand_telem
+                    break
+
         effective_telemetry = (
             telemetry
             if isinstance(telemetry, dict)
             else (
-                collect_pretrade_telemetry(symbol, regime_context=regime_context, dur_sec=dur_sec)
+                _telem_fn(symbol, regime_context=regime_context, dur_sec=dur_sec)
                 if dur_sec is not None
-                else collect_pretrade_telemetry(symbol, regime_context=regime_context)
+                else _telem_fn(symbol, regime_context=regime_context)
             )
         )
         context_items = list(header_lines)
@@ -204,8 +231,14 @@ class PreTradeLLMGuardBase:
             context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
         context_str = "\n".join(context_items)
 
+        _query_fn = query_topic_json
+        if _sub_mod is not None:
+            _cand_query = getattr(_sub_mod, "query_topic_json", None)
+            if callable(_cand_query) and _cand_query is not _default_query_topic_json:
+                _query_fn = _cand_query
+
         prompt = f"{build_prompt_fn(context_str)}\n\n{LLM_GUARD_JSON_SCHEMA_FOOTER}"
-        valid_resp = query_topic_json(
+        valid_resp = _query_fn(
             self.gemini_client,
             self.TOPIC_KEY,
             prompt,

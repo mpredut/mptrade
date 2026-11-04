@@ -1,131 +1,148 @@
 """Root intelligence package unifying internal, external, sentiment, and macro geopolitical regimes."""
 from __future__ import annotations
 
-# Pillar 1: Internal dynamics (Regime, Kalman, Gradient, Weibull, Volatility)
-from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
-from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
-from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
-from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+import importlib
+from typing import TYPE_CHECKING, Any
 
-from intelligence.internal.guards.guard_decision import GuardDecision, BrakeAction
-from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
-from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
-from intelligence.internal.guards.noise_guard import NoiseFloorGuard
-from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+if TYPE_CHECKING:
+    from intelligence.composite import CompositeMarketIntelligence, MarketIntelligenceEvaluation
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector, WhalePositioningSnapshot
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.guard_decision import BrakeAction, GuardDecision
+    from intelligence.internal.guards.noise_guard import NoiseFloorGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall, classify_hurst_regime
+    from intelligence.internal.state.survival import estimate_T, get_trend_survival_metrics, hybrid_T
+    from intelligence.internal.state.volatility import (
+        adaptive_thresholds,
+        calculate_volatility_1h,
+        get_kalman_state_path,
+        resolve_cached_volatility_1h,
+        resolve_cached_volatility_1h_pct,
+        vol_1h_pct,
+        vol_pct_to_ratio,
+        vol_ratio_to_pct,
+    )
+    from intelligence.internal.triggers.gradient_trigger import LinearGradientTrigger
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
+    from intelligence.internal.triggers.mean_reversion_trigger import MeanReversionTrigger
+    from intelligence.internal.triggers.trigger_event import TriggerAction, TriggerEvent, TriggerSide
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, SentimentAdvisorAssessment
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
 
-from intelligence.internal.state.volatility import (
-    calculate_volatility_1h,
-    adaptive_thresholds,
-    vol_1h_pct,
-    vol_pct_to_ratio,
-    vol_ratio_to_pct,
-    get_kalman_state_path,
-    resolve_cached_volatility_1h,
-    resolve_cached_volatility_1h_pct,
-)
-from intelligence.internal.state.survival import get_trend_survival_metrics, estimate_T, hybrid_T
-from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent, classify_hurst_regime
+_LAZY_IMPORTS: dict[str, str] = {
+    # Pillar 1: Internal dynamics
+    "TriggerEvent": "intelligence.internal.triggers.trigger_event",
+    "TriggerAction": "intelligence.internal.triggers.trigger_event",
+    "TriggerSide": "intelligence.internal.triggers.trigger_event",
+    "KalmanTrendTrigger": "intelligence.internal.triggers.kalman_trigger",
+    "LinearGradientTrigger": "intelligence.internal.triggers.gradient_trigger",
+    "MeanReversionTrigger": "intelligence.internal.triggers.mean_reversion_trigger",
+    "GuardDecision": "intelligence.internal.guards.guard_decision",
+    "BrakeAction": "intelligence.internal.guards.guard_decision",
+    "ParabolicSurgeGuard": "intelligence.internal.guards.parabolic_guard",
+    "WeibullExhaustionGuard": "intelligence.internal.guards.exhaustion_guard",
+    "NoiseFloorGuard": "intelligence.internal.guards.noise_guard",
+    "TrendSignificanceGuard": "intelligence.internal.guards.trend_significance_guard",
+    "calculate_volatility_1h": "intelligence.internal.state.volatility",
+    "adaptive_thresholds": "intelligence.internal.state.volatility",
+    "vol_1h_pct": "intelligence.internal.state.volatility",
+    "vol_pct_to_ratio": "intelligence.internal.state.volatility",
+    "vol_ratio_to_pct": "intelligence.internal.state.volatility",
+    "get_kalman_state_path": "intelligence.internal.state.volatility",
+    "resolve_cached_volatility_1h": "intelligence.internal.state.volatility",
+    "resolve_cached_volatility_1h_pct": "intelligence.internal.state.volatility",
+    "get_trend_survival_metrics": "intelligence.internal.state.survival",
+    "estimate_T": "intelligence.internal.state.survival",
+    "hybrid_T": "intelligence.internal.state.survival",
+    "calculate_mann_kendall": "intelligence.internal.state.persistence",
+    "calculate_hurst_exponent": "intelligence.internal.state.persistence",
+    "classify_hurst_regime": "intelligence.internal.state.persistence",
+    # Pillar 2: External telemetry
+    "BybitLiquidationCollector": "intelligence.external.collectors.bybit_liquidations_collector",
+    "LiquidationSummary": "intelligence.external.collectors.bybit_liquidations_collector",
+    "DerivativesTelemetry": "intelligence.external.collectors.derivatives_telemetry_collector",
+    "DerivativesTelemetryCollector": "intelligence.external.collectors.derivatives_telemetry_collector",
+    "WhalePositioningSnapshot": "intelligence.external.collectors.whale_positioning_collector",
+    "WhalePositioningCollector": "intelligence.external.collectors.whale_positioning_collector",
+    "OrderbookSnapshot": "intelligence.external.collectors.orderbook_depth_collector",
+    "OrderbookDepthCollector": "intelligence.external.collectors.orderbook_depth_collector",
+    "LiquidationCapitulationTrigger": "intelligence.external.triggers.liquidation_trigger",
+    "WhaleAccumulationTrigger": "intelligence.external.triggers.whale_accumulation_trigger",
+    "LiquidationCascadeGuard": "intelligence.external.guards.cascade_guard",
+    "FundingCrowdingGuard": "intelligence.external.guards.funding_crowding_guard",
+    "WhaleDivergenceGuard": "intelligence.external.guards.whale_divergence_guard",
+    "OrderbookWallGuard": "intelligence.external.guards.orderbook_wall_guard",
+    # Pillar 3: Sentiment & LLM telemetry
+    "GeminiClient": "intelligence.sentiment.gemini_client",
+    "FearGreedCollector": "intelligence.sentiment.collectors.fear_greed_collector",
+    "FearGreedSnapshot": "intelligence.sentiment.collectors.fear_greed_collector",
+    "MarketBreadthCollector": "intelligence.sentiment.collectors.market_breadth_collector",
+    "MarketBreadthSnapshot": "intelligence.sentiment.collectors.market_breadth_collector",
+    "SentimentAdvisor": "intelligence.sentiment.sentiment_advisor",
+    "SentimentAdvisorAssessment": "intelligence.sentiment.sentiment_advisor",
+    "SentimentContrarianTrigger": "intelligence.sentiment.triggers.sentiment_contrarian_trigger",
+    "MarketBreadthTrigger": "intelligence.sentiment.triggers.market_breadth_trigger",
+    "ExtremeGreedGuard": "intelligence.sentiment.guards.extreme_greed_guard",
+    "PanicWashoutGuard": "intelligence.sentiment.guards.panic_washout_guard",
+    "HighStakeGuard": "intelligence.sentiment.guards.high_stake_guard",
+    # Macro Geopolitical & Energy Shock Shield
+    "NewsFeedCollector": "intelligence.macro.news_feed_collector",
+    "NewsFeedSnapshot": "intelligence.macro.news_feed_collector",
+    "NewsHeadline": "intelligence.macro.news_feed_collector",
+    "GeopoliticalThreatAnalyzer": "intelligence.macro.geopolitical_analyzer",
+    "GeopoliticalThreatAssessment": "intelligence.macro.geopolitical_analyzer",
+    "GeopoliticalShockGuard": "intelligence.macro.geopolitical_guard",
+    # Unified Coordinator
+    "CompositeMarketIntelligence": "intelligence.composite",
+    "MarketIntelligenceEvaluation": "intelligence.composite",
+}
 
-# Pillar 2: External telemetry (Whales, Liquidations, OI, Orderbook)
-from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
-from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
-from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
-from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot, OrderbookDepthCollector
+_SUBMODULES = frozenset({
+    "cli",
+    "composite",
+    "external",
+    "internal",
+    "macro",
+    "macro_sentiment_ssot",
+    "sentiment",
+})
 
-from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
-from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+__all__ = list(_LAZY_IMPORTS)
 
-from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
-from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
-from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 
-# Pillar 3: Sentiment & LLM telemetry (Fear & Greed, Market Breadth, Gemini Advisor & High-Stake Guard)
-from intelligence.sentiment.gemini_client import GeminiClient
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
-from intelligence.sentiment.sentiment_advisor import (
-    SentimentAdvisor,
-    SentimentAdvisorAssessment,
-)
-from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
-from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
-from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
-from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
-from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+def __getattr__(name: str) -> Any:
+    mod_name = _LAZY_IMPORTS.get(name)
+    if mod_name is not None:
+        val = getattr(importlib.import_module(mod_name), name)
+        globals()[name] = val
+        return val
+    if name in _SUBMODULES:
+        mod = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-# Macro Geopolitical & Energy Shock Shield (Black Swan Brake)
-from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot, NewsHeadline
-from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
-from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
 
-# Unified Coordinator
-from intelligence.composite import CompositeMarketIntelligence, MarketIntelligenceEvaluation
-
-__all__ = [
-    # Pillar 1
-    "TriggerEvent",
-    "TriggerAction",
-    "TriggerSide",
-    "KalmanTrendTrigger",
-    "LinearGradientTrigger",
-    "MeanReversionTrigger",
-    "GuardDecision",
-    "BrakeAction",
-    "ParabolicSurgeGuard",
-    "WeibullExhaustionGuard",
-    "NoiseFloorGuard",
-    "TrendSignificanceGuard",
-    "calculate_volatility_1h",
-    "adaptive_thresholds",
-    "vol_1h_pct",
-    "vol_pct_to_ratio",
-    "vol_ratio_to_pct",
-    "get_kalman_state_path",
-    "resolve_cached_volatility_1h",
-    "resolve_cached_volatility_1h_pct",
-    "get_trend_survival_metrics",
-    "estimate_T",
-    "hybrid_T",
-    "calculate_mann_kendall",
-    "calculate_hurst_exponent",
-    "classify_hurst_regime",
-    # Pillar 2
-    "BybitLiquidationCollector",
-    "LiquidationSummary",
-    "DerivativesTelemetry",
-    "DerivativesTelemetryCollector",
-    "WhalePositioningSnapshot",
-    "WhalePositioningCollector",
-    "OrderbookSnapshot",
-    "OrderbookDepthCollector",
-    "LiquidationCapitulationTrigger",
-    "WhaleAccumulationTrigger",
-    "LiquidationCascadeGuard",
-    "FundingCrowdingGuard",
-    "WhaleDivergenceGuard",
-    "OrderbookWallGuard",
-    # Pillar 3
-    "GeminiClient",
-    "FearGreedCollector",
-    "FearGreedSnapshot",
-    "MarketBreadthCollector",
-    "MarketBreadthSnapshot",
-    "SentimentAdvisor",
-    "SentimentAdvisorAssessment",
-    "SentimentContrarianTrigger",
-    "MarketBreadthTrigger",
-    "ExtremeGreedGuard",
-    "PanicWashoutGuard",
-    "HighStakeGuard",
-    # Macro Black Swan Shield
-    "NewsFeedCollector",
-    "NewsFeedSnapshot",
-    "NewsHeadline",
-    "GeopoliticalThreatAnalyzer",
-    "GeopoliticalThreatAssessment",
-    "GeopoliticalShockGuard",
-    # Coordinator
-    "CompositeMarketIntelligence",
-    "MarketIntelligenceEvaluation",
-]
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

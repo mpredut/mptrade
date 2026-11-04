@@ -1169,6 +1169,75 @@ def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_ca
     assert hl_btc_lim["min_qty"] == 0.00001
 
 
+def test_iter47_lazy_intelligence_imports_monkeypatch_forwarding_and_strict_int_fields(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+
+    import cacheManager
+    import cacheintegrity
+    import intelligence
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc
+    import intelligence.sentiment.guards.post_stop_reentry_guard as psrg
+
+    # 1. Importing macro_sentiment_ssot and GuardDecision works even when numpy is unavailable
+    code = (
+        "import sys; sys.modules['numpy'] = None; "
+        "import intelligence; "
+        "from intelligence.macro_sentiment_ssot import clean_symbol_key; "
+        "from intelligence.internal.guards.guard_decision import GuardDecision; "
+        "assert intelligence.GuardDecision is GuardDecision; "
+        "assert clean_symbol_key('tao/usdc') == 'TAOUSDC'"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert "KalmanTrendTrigger" in dir(intelligence)
+
+    # 2. PostStopReentryGuard respects monkeypatching on post_stop_reentry_guard module globals
+    psrg.clear_post_stop_reentry_cache()
+    seen_prompts = []
+    monkeypatch.setattr(psrg, "collect_pretrade_telemetry", lambda sym, **kw: {"CustomMetric": f"patched-{sym}"})
+    monkeypatch.setattr(
+        psrg,
+        "query_topic_json",
+        lambda client, topic, prompt, **kw: (
+            seen_prompts.append((topic, prompt)) or {"decision": "DOWNSCALE", "suggested_scale": 0.4, "reason": "cautious"}
+        ),
+    )
+    guard = psrg.PostStopReentryGuard(gemini_client=object(), notify_enabled=False, cache_ttl_sec=0.0)
+    dec = guard.check("TAOUSDC", current_price=410.0, last_sell_price=400.0, trough=380.0, bounce_pct=0.05)
+    assert len(seen_prompts) == 1
+    assert seen_prompts[0][0] == "guard_post_stop"
+    assert "CustomMetric: patched-TAOUSDC" in seen_prompts[0][1]
+    assert dec.suggested_scale == 0.4
+
+    # 3. collect_pretrade_telemetry respects monkeypatching read_json_cached on macro_telemetry_collector
+    monkeypatch.setattr(
+        mtc,
+        "read_json_cached",
+        lambda path: {"threat_level": "CRITICAL_PATCHED"} if "geopolitical_eval" in str(path) else None,
+    )
+    telem = ptc.collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert telem.get("Geopolitical Threat Level") == "CRITICAL_PATCHED"
+
+    # 4. _strict_int_field rejects bytes and non-ASCII digits and validate_account_cache_state handles '42.0'
+    assert cacheManager._strict_int_field(b"123", min_value=1) is None
+    assert cacheManager._strict_int_field("१२३", min_value=1) is None
+    assert cacheManager._strict_int_field("123", min_value=1) == 123
+    with pytest.raises(ValueError):
+        cacheintegrity._strict_int_field("१२३")
+    assert cacheintegrity._strict_int_field("42.0") == 42
+    cacheintegrity.validate_account_cache_state(
+        cls_name="CacheOrderManager",
+        is_trade_cache=False,
+        is_order_cache=True,
+        cache={"BTCUSDC": [{"symbol": "BTCUSDC", "orderId": "42.0", "_fillIds": ["7.0"]}]},
+        fetchtime_per_symbol={"BTCUSDC": 1700000000000},
+        rest_sync_cursor_per_symbol={},
+        is_valid_item_fn=lambda item: True,
+    )
+
+
 if __name__ == "__main__":
     unittest.main()
 

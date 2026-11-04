@@ -34,7 +34,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_ts,
     safe_pos_float,
 )
-from intelligence.sentiment.gemini_client import GeminiClient
+from intelligence.sentiment.gemini_client import GeminiClient, query_topic_json
 from intelligence.sentiment.guards.high_stake_guard import (
     DEFAULT_LLM_GUARD_CACHE_TTL_SEC,
     PreTradeLLMGuardBase,
