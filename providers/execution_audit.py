@@ -45,6 +45,8 @@ from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, generation_lock_path, load_json_state, read_jsonl_dicts, save_json_state
 from .base import (
     _UNFILLED_ORDER_STATUSES,
+    _parse_epoch_or_iso_s,
+    _ts_ms_to_s,
     clean_order_id,
     extract_client_order_id,
     extract_executed_qty,
@@ -888,12 +890,19 @@ def _resolve_intent_execution_details(
         or safe_pos_float(last_hist.get("notional_usd"), default=None)
         or extract_notional_fn(i, default=None)
     )
-    ts_raw = (
-        i.get("timestamp")
-        if i.get("timestamp") is not None
-        else (i.get("executed_at") or i.get("executed_ts") or i.get("created_at"))
-    )
-    ts_val = safe_float(ts_raw, 0.0)
+    ts_raw: Any = None
+    ts_val = 0.0
+    for _tk in ("timestamp", "executed_at", "executed_ts", "created_at", "ts"):
+        _cand_raw = i.get(_tk)
+        if _cand_raw is None:
+            continue
+        if ts_raw is None:
+            ts_raw = _cand_raw
+        _parsed_s = _parse_epoch_or_iso_s(_cand_raw)
+        if _parsed_s is not None and _parsed_s > 0.0:
+            ts_raw = _cand_raw
+            ts_val = _ts_ms_to_s(_parsed_s)
+            break
     order_id = extract_order_id(exec_pay, default=None) or extract_order_id(
         last_hist.get("order_id") or last_hist.get("payload"), default=None
     )

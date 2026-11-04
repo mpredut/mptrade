@@ -442,14 +442,20 @@ def compute_swing_wave_metrics(
 
 def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) -> Dict[str, Any]:
     """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
-    if not isinstance(vals, list) or len(vals) < 2 or vals[0] <= 0:
+    if not isinstance(vals, (list, tuple)):
+        return {}
+    clean_vals = [
+        v for item in vals
+        if (v := safe_pos_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, default=0.0) or 0.0) > 0.0
+    ]
+    if len(clean_vals) < 2:
         return {}
     eff_dec = decimals if decimals is not None else 6
-    cur_v = vals[-1]
+    cur_v = clean_vals[-1]
     return {
-        "chg_7d_pct": pct_delta(cur_v, vals[0]),
-        **_compute_horizon_range_dict(cur_v, round(min(vals), eff_dec), round(max(vals), eff_dec), "7d"),
-        **compute_swing_wave_metrics(vals, decimals=eff_dec),
+        "chg_7d_pct": pct_delta(cur_v, clean_vals[0]),
+        **_compute_horizon_range_dict(cur_v, round(min(clean_vals), eff_dec), round(max(clean_vals), eff_dec), "7d"),
+        **compute_swing_wave_metrics(clean_vals, decimals=eff_dec),
     }
 
 
@@ -470,6 +476,8 @@ def apply_short_trend_item(
     allow_price_update: bool = True,
 ) -> bool:
     """Populate short/dynamic trend slopes (90s, 3.7m, 15m, 2.5h) on a symbol telemetry dict from `cache_short_trend.json`."""
+    if not isinstance(entry, dict) or not isinstance(tinfo, dict):
+        return False
     dyn = tinfo.get("dynamic", {}) if isinstance(tinfo.get("dynamic"), dict) else {}
     wins = {wk: (dyn.get(wk) if isinstance(dyn.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
     if wins["222"].get("slope_full") is None:
@@ -507,6 +515,8 @@ def apply_short_trend_item(
 
 def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fallback_price: Any = None) -> None:
     """Overlay fresh 1-second sampled dynamic windows (90s, 3.7m, 15m, 2.5h) from `cachedb/24trend/live_<SYM>.json`."""
+    if not isinstance(entry, dict) or not isinstance(lt_win, dict):
+        return
     wins = {wk: (lt_win.get(wk) if isinstance(lt_win.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
     w90, w222, w900 = wins["90"], wins["222"] or wins["90"], wins["900"]
     wins["222"] = w222

@@ -155,11 +155,12 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         if eth_btc_chg is None and eth_chg is not None and btc_chg is not None and (100.0 + btc_chg) > 0.0:
             eth_btc_chg = round(((100.0 + eth_chg) / (100.0 + btc_chg) - 1.0) * 100.0, 2)
         total_vol_usd = sum(qv for _, _, qv in rows if qv > 0.0)
-        btc_share = round((btc_vol_usd / total_vol_usd) * 100.0, 2) if total_vol_usd > 0.0 and btc_vol_usd > 0.0 else None
-        eth_share = round((eth_vol_usd / total_vol_usd) * 100.0, 2) if total_vol_usd > 0.0 and eth_vol_usd > 0.0 else None
+        eff_total_vol = max(total_vol_usd, btc_vol_usd + eth_vol_usd)
+        btc_share = round((btc_vol_usd / eff_total_vol) * 100.0, 2) if eff_total_vol > 0.0 and btc_vol_usd > 0.0 else None
+        eth_share = round((eth_vol_usd / eff_total_vol) * 100.0, 2) if eff_total_vol > 0.0 and eth_vol_usd > 0.0 else None
         alt_share = (
-            round(max(0.0, total_vol_usd - btc_vol_usd - eth_vol_usd) / total_vol_usd * 100.0, 2)
-            if total_vol_usd > 0.0 and (btc_vol_usd > 0.0 or eth_vol_usd > 0.0)
+            round(max(0.0, eff_total_vol - btc_vol_usd - eth_vol_usd) / eff_total_vol * 100.0, 2)
+            if eff_total_vol > 0.0 and (btc_vol_usd > 0.0 or eth_vol_usd > 0.0)
             else None
         )
         rotation_regime: Optional[str] = None

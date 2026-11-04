@@ -28,6 +28,8 @@ from instrument_registry import casefold_get
 from providers.base import (
     _EXEC_QTY_KEYS,
     _UNFILLED_ORDER_STATUSES,
+    _parse_epoch_or_iso_s,
+    _ts_ms_to_s,
     aggregate_fills_by_order_id,
     extract_executed_qty,
     extract_order_id,
@@ -66,13 +68,21 @@ def parse_venue_cycle_state(
     include_meta: bool = False,
 ) -> Dict[str, Any]:
     """Normalize a venue cycle ``.state_*.json`` dict (Kraken, Hyperliquid, Trading212) into a uniform schema."""
+    st_data = st_data if isinstance(st_data, dict) else {}
     qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
     raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
     cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
     avg_cost = (
         round(cost / qty, avg_decimals)
         if qty > 1e-12 and cost > 0
-        else (round_opt_px(st_data.get("avg_cost") or st_data.get("avg_price") or st_data.get("entry_price"), avg_decimals) if qty > 1e-12 else None)
+        else (
+            round_opt_px(
+                st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price") or st_data.get("entry_price"),
+                avg_decimals,
+            )
+            if qty > 1e-12
+            else None
+        )
     )
     px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
     dd_pct = pct_delta(px_f, avg_cost) if avg_cost and px_f > 0 else None
@@ -171,10 +181,11 @@ def extract_symbol_recent_fills(
             if str(it_oid) in valid_oids:
                 continue
         i_side = extract_intent_side(it) or str(it.get("decision") or "").strip().upper()
-        i_ts_s = safe_pos_float(
-            it.get("timestamp") or it.get("executed_ts") or it.get("executed_at") or it.get("created_at"),
-            default=0.0,
-        ) or 0.0
+        i_ts_s = 0.0
+        for _tk in ("timestamp", "executed_ts", "executed_at", "created_at", "ts"):
+            if (_parsed_ts := _parse_epoch_or_iso_s(it.get(_tk))) is not None and _parsed_ts > 0.0:
+                i_ts_s = _ts_ms_to_s(_parsed_ts)
+                break
         if i_side not in ("BUY", "SELL") or i_ts_s <= 0.0:
             continue
         i_sym = str(it.get("symbol") or exec_pay.get("symbol") or exec_pay.get("ticker") or "").strip().upper()

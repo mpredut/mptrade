@@ -312,8 +312,11 @@ def compute_cross_venue_arb_metrics(
     prices_and_trends: Dict[str, Any],
 ) -> None:
     """Populate Cross-Venue Relative Value / Arbitrage Spread (`cross_venue_arb_bps`, `net_buy_edge_vs_peer_bps`, etc.) on `minfo`."""
+    if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
+        return
+    prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
     msym_quotes = compatible_quote_suffixes(msym)
-    own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price"), default=None)
+    own_px = safe_pos_float(minfo.get("ob_mid_price"), default=None) or safe_pos_float((p_match or {}).get("price") if isinstance(p_match, dict) else None, default=None)
     if not (own_px and own_px > 0.0 and "USD" in msym_quotes):
         return
     mbase = canonical_base_asset(msym)
@@ -333,9 +336,10 @@ def compute_cross_venue_arb_metrics(
         peer_v, _, peer_taker, peer_hsp = _infer_symbol_venue_and_fees_bps(peer_sym, peer_m)
         if peer_v == own_v:
             continue
+        peer_p_dict = casefold_get(prices_and_trends, peer_sym)
         peer_px = (
             safe_pos_float(peer_m.get("ob_mid_price"), default=None)
-            or safe_pos_float((prices_and_trends.get(peer_sym) or {}).get("price"), default=None)
+            or safe_pos_float(peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None, default=None)
         )
         if peer_px and peer_px > 0.0 and not _prices_diverged(own_px, peer_px):
             arb_bps = round(((own_px - peer_px) / peer_px) * 10000.0, 1)
@@ -517,7 +521,9 @@ def enrich_cross_venue_trends(
                 return parsed, False, item_ts
         return None, False, root_ts
 
-    for sym, entry in list(prices_and_trends.items()):
+    for sym, entry in list((prices_and_trends if isinstance(prices_and_trends, dict) else {}).items()):
+        if not isinstance(entry, dict):
+            continue
         sym_quotes = compatible_quote_suffixes(sym)
         cand_keys = tuple(cache_symbol_variants(sym, include_original=True, include_base=True))
         has_slopes = any(entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
@@ -647,6 +653,10 @@ def sync_sibling_symbol_telemetry(
     now_ts: Optional[float] = None,
 ) -> None:
     """Symmetric cross-venue & sibling symbol synchronization across Binance, Kraken, Hyperliquid, and T212/xStocks."""
+    if not isinstance(prices_and_trends, dict):
+        prices_and_trends = {}
+    if not isinstance(microstructure, dict):
+        microstructure = {}
     range_bound_keys = {
         "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct",
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
@@ -691,7 +701,7 @@ def sync_sibling_symbol_telemetry(
                 p_px_m = safe_float(pinfo.get("price"), 0.0)
                 s_ob_mid = safe_float(sib_micro.get("ob_mid_price"), 0.0) or safe_float(sib_pinfo.get("price") if isinstance(sib_pinfo, dict) else None, 0.0)
                 micro_px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px_m, s_ob_mid)
-                if sym not in microstructure:
+                if not isinstance(microstructure.get(sym), dict):
                     microstructure[sym] = {mk: mv for mk, mv in sib_micro.items() if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS)}
                 else:
                     sym_has_own_ob = (

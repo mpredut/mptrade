@@ -1829,8 +1829,99 @@ def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_
     assert build_cycle_fallback_prices(None, None) == {}
 
 
+def test_iter54_breadth_vol_share_intent_timestamp_iso_ms_and_evaluator_sanitization():
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_cross_venue_arb_metrics,
+        enrich_cross_venue_trends,
+        sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        parse_venue_cycle_state,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_live_24trend_windows,
+        apply_short_trend_item,
+        compute_7d_range_metrics,
+    )
+    from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+
+    # 1. MarketBreadthCollector.parse_tickers caps BTC/ETH volume share <= 100% even when sub-threshold BTC/ETH pairs exist
+    tickers = [
+        {"symbol": "BTCUSDC", "lastPrice": "85000", "priceChangePercent": "2.0", "quoteVolume": "10000000"},
+        {"symbol": "BTCUSDT", "lastPrice": "85000", "priceChangePercent": "2.0", "quoteVolume": "4500000"},  # < 5M min_vol
+        {"symbol": "ETHUSDC", "lastPrice": "2500", "priceChangePercent": "1.5", "quoteVolume": "6000000"},
+        {"symbol": "ETHUSDT", "lastPrice": "2500", "priceChangePercent": "1.5", "quoteVolume": "4800000"},  # < 5M min_vol
+        {"symbol": "SOLUSDC", "lastPrice": "180", "priceChangePercent": "3.0", "quoteVolume": "5000000"},
+        {"symbol": "XRPUSDC", "lastPrice": "2.2", "priceChangePercent": "1.0", "quoteVolume": "5000000"},
+        {"symbol": "ADAUSDC", "lastPrice": "0.8", "priceChangePercent": "-0.5", "quoteVolume": "5000000"},
+    ]
+    mb = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=5_000_000.0, now_ts=1700000000.0)
+    assert mb is not None
+    assert 0.0 <= mb.btc_vol_share_pct <= 100.0
+    assert 0.0 <= mb.eth_vol_share_pct <= 100.0
+    assert mb.btc_vol_share_pct + mb.eth_vol_share_pct <= 100.0
+
+    # 2. summarize_recent_ai_intents and extract_symbol_recent_fills handle empty timestamp, ISO-8601 strings, and ms epochs
+    now_s = 1700003600.0
+    intents = [
+        {
+            "intent_id": "iso_int_1",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "timestamp": "",
+            "executed_at": "2023-11-14T22:13:20Z",  # 1700000000.0
+            "suggested_notional_usd": 200.0,
+            "execution_payload": {"status": "FILLED", "executedQty": "0.0025", "price": "80000"},
+        },
+        {
+            "intent_id": "ms_int_2",
+            "venue": "binance",
+            "symbol": "ETHUSDC",
+            "decision": "SELL",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "timestamp": 1700001800000,  # ms epoch -> 1700001800.0 (age 0.5h)
+            "suggested_notional_usd": 250.0,
+            "execution_payload": {"status": "FILLED", "executedQty": "0.1", "price": "2500"},
+        },
+    ]
+    summaries = summarize_recent_ai_intents(intents, "crypto", now_s, extract_intent_notional)
+    by_sym = {s["symbol"]: s for s in summaries}
+    assert by_sym["BTCUSDC"]["age_h"] == pytest.approx(1.0)
+    assert by_sym["ETHUSDC"]["age_h"] == pytest.approx(0.5)
+
+    fills_iso = extract_symbol_recent_fills([], ai_intents=[intents[0]], symbol="BTCUSDC")
+    assert fills_iso is not None
+    assert fills_iso["last_buy"]["ts_ms"] == 1700000000000
+
+    # 3. parse_venue_cycle_state guards None and preserves avg_cost_px when re-parsing
+    assert parse_venue_cycle_state(None, "BTCUSDC", {})["qty"] == 0.0
+    reparsed = parse_venue_cycle_state({"qty": 2.0, "avg_cost_px": 150.5}, "SOLUSDC", {"SOLUSDC": {"price": 165.55}})
+    assert reparsed["avg_cost_px"] == pytest.approx(150.5)
+    assert reparsed["dd_pct"] == pytest.approx(10.0)
+
+    # 4. compute_7d_range_metrics sanitizes [ts, px] pairs, None, bool, and non-positive values; evaluators guard None
+    r7 = compute_7d_range_metrics([[1000, 100.0], None, False, -5.0, [2000, 120.0], 110.0])
+    assert r7["low_7d"] == pytest.approx(100.0)
+    assert r7["high_7d"] == pytest.approx(120.0)
+    assert r7["chg_7d_pct"] == pytest.approx(10.0)
+    assert apply_short_trend_item(None, None) is False
+    apply_live_24trend_windows(None, None)
+    enrich_cross_venue_trends({"BTCUSDC": None}, None, None, None, None, None, None)
+    sync_sibling_symbol_telemetry({"BTCUSDC": {"price": 85000.0}, "BTCUSD": {"price": 85010.0}}, {"BTCUSDC": None, "BTCUSD": {"ob_imbalance": 0.6}})
+    m_arb = {"ob_mid_price": 85000.0}
+    compute_cross_venue_arb_metrics("BTCUSDC", m_arb, None, {"BTCUSDC": m_arb, "BTCUSD": {}}, {"btcusd": {"price": 84900.0}})
+    assert m_arb.get("cross_venue_peer") == "BTCUSD"
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
