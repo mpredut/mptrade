@@ -126,7 +126,7 @@ def _fmt_liq_usd(val: Any) -> str:
 
 def _fmt_px(px_f: float, raw_px: Any = None) -> str:
     if px_f >= 1.0:
-        if px_f < 1000.0 and abs(px_f - round(px_f, 2)) >= 5e-4:
+        if px_f < 1000.0 and abs(px_f - round(px_f, 2)) >= 1e-5:
             return f"${px_f:,.4f}".rstrip("0").rstrip(".")
         return f"${px_f:,.2f}"
     if px_f > 0:
@@ -209,7 +209,9 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
     ai_gt_brake = _AI_BRAKE_MAP.get(raw_gt_brake.strip().upper(), raw_gt_brake)
     gt_line = (
         f"level={ai_gt_level}, risk_score={gt.get('risk_score', 'N/A')}, "
-        f"brake={ai_gt_brake}{_age_sfx(gt)} | summary={gt.get('summary', '')}"
+        f"brake={ai_gt_brake}{_age_sfx(gt)}"
+        + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
+        + f" | summary={gt.get('summary', '')}"
         if gt else "None"
     )
     lines = [
@@ -778,7 +780,7 @@ def _same_anchor_px(a: Any, b: Any) -> bool:
     if a is None or b is None:
         return False
     af, bf = _parse_finite_float(a, None), _parse_finite_float(b, None)
-    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 2e-4) if (af is not None and bf is not None) else (a == b)
+    return abs(af - bf) <= max(1e-6, max(abs(af), abs(bf)) * 1e-5) if (af is not None and bf is not None) else (a == b)
 
 
 def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0) -> str:
@@ -842,10 +844,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("step=", "step_size"),
         ("tick=", "tick_size"),
         ("max_buy=$", "effective_max_buy_usd"),
-        ("locked_quote_usd=$", "locked_quote_usd"),
         ("replace_max_buy=$", "replace_max_buy_usd"),
         ("max_sell=$", "effective_max_sell_usd"),
-        ("locked_base_qty=", "locked_base_qty"),
         ("replace_max_sell=$", "replace_max_sell_usd"),
     ):
         if eff_pos.get(lim_k) is not None:
