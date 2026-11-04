@@ -79,6 +79,7 @@ class T212Client:
         self._ord_cache: tuple[float, list] | None = None
         self._cash_cache: tuple[float, dict] | None = None
         self._hist_cache: tuple[float, list] | None = None
+        self._instr_cache: tuple[float, list] | None = None
         self._pf_ttl = safe_nonneg_float(
             required_float_env("T212_PORTFOLIO_TTL_SEC") if portfolio_ttl_sec is None else portfolio_ttl_sec,
             default=6.0,
@@ -147,7 +148,10 @@ class T212Client:
         self._fetch_fail.pop("_hist_cache", None)
         if self._shared_cache_enabled():
             try:
-                if os.path.exists(self._shared_cache_path):
+                payload = read_json_dict(self._shared_cache_path, default=None)
+                if isinstance(payload, dict) and "_instr_cache" in payload:
+                    atomic_write_json(self._shared_cache_path, {"_instr_cache": payload["_instr_cache"]})
+                elif os.path.exists(self._shared_cache_path):
                     os.remove(self._shared_cache_path)
             except Exception:
                 pass
@@ -210,30 +214,16 @@ class T212Client:
 
     # -- Instruments. ----------------------------------------------------------
     def list_instruments(self) -> list[dict] | None:
-        # Instrument metadata changes rarely; cache it to avoid expensive per-asset
-        # startup calls that trigger rate limits.
-        c = getattr(self, "_instr_cache", None)
-        if c and (time.monotonic() - c[0]) < 300:
-            return c[1]
-        status, body = http_get(f"{self.base}/equity/metadata/instruments", headers=self._headers())
-        if status == 429:
-            self.notify_rate_limit(max(5.0, self._pf_ttl))
-            log("  ! T212 rate limit (429)")
-            return None
-        if status in (401, 403):
-            log(f"  ! T212 auth failed ({status}) - check the key")
-            return None
-        if status != 200 or not body:
-            return None
-        try:
-            data = json.loads(body)
-            if not isinstance(data, list):
-                return None
-            clean = [i for i in data if isinstance(i, dict)]
-            self._instr_cache = (time.monotonic(), clean)
-            return clean
-        except ValueError:
-            return None
+        # Instrument metadata changes rarely; cache it across threads and restarts
+        # through the shared anti-stampede cache to avoid 1 req / 50s rate limits.
+        res = self._read_cached(
+            "_instr_cache",
+            "/equity/metadata/instruments",
+            "instruments metadata",
+            expect_type=list,
+            ttl_mult=50.0,
+        )
+        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def search_instruments(self, ticker_substr: str, name_patterns: tuple[str, ...]) -> list[dict] | None:
         """Search by ticker substring or name/shortName pattern."""
@@ -536,43 +526,55 @@ class T212Client:
         else:
             log(f"  ! T212 {what}: HTTP {status}")
 
-    def _peek_cached_locked(self, attr: str) -> tuple[bool, list | dict | None]:
-        c = getattr(self, attr)
+    def _peek_cached_locked(self, attr: str, eff_ttl: float | None = None) -> tuple[bool, list | dict | None]:
+        c = getattr(self, attr, None)
         now = time.monotonic()
-        if c and (now - c[0]) < self._pf_ttl:
+        ttl = self._pf_ttl if eff_ttl is None else eff_ttl
+        if c and (now - c[0]) < ttl:
             return True, c[1]
         fail_ts = self._fetch_fail.get(attr, 0.0)
         if (now - fail_ts) < self._pf_ttl:
-            return True, (c[1] if (c and (now - c[0]) < 60.0) else None)
+            stale_limit = max(60.0, ttl * 10.0)
+            return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
         return False, None
 
-    def _read_cached(self, attr: str, path: str, what: str) -> list | dict | None:
+    def _read_cached(
+        self,
+        attr: str,
+        path: str,
+        what: str,
+        *,
+        expect_type: type = list,
+        ttl_mult: float = 1.0,
+    ) -> list | dict | None:
         """GET through a TTL cache with double-checked anti-stampede locking.
 
         Without it, every asset thread crosses an expired TTL simultaneously and
         triggers near-simultaneous requests against roughly five-second limits.
         """
+        eff_ttl = max(self._pf_ttl, self._pf_ttl * safe_pos_float(ttl_mult, default=1.0))
+        stale_limit = max(60.0, eff_ttl * 10.0)
         with self._lock:
-            hit, val = self._peek_cached_locked(attr)
+            hit, val = self._peek_cached_locked(attr, eff_ttl)
             if hit:
                 return val
         with self._fetch_lock:
             with self._lock:   # Another thread may have refilled while this one waited.
-                hit, val = self._peek_cached_locked(attr)
+                hit, val = self._peek_cached_locked(attr, eff_ttl)
                 if hit:
                     return val
-            s_hit, s_val, s_age = self._read_shared_cache(attr, self._pf_ttl)
-            if s_hit and s_val is not None:
+            s_hit, s_val, s_age = self._read_shared_cache(attr, eff_ttl)
+            if s_hit and isinstance(s_val, expect_type):
                 with self._lock:
                     setattr(self, attr, (time.monotonic() - s_age, s_val))
                     self._fetch_fail.pop(attr, None)
                 return s_val
             status, body = http_get(f"{self.base}{path}", headers=self._headers_for_endpoint(attr))
             if status != 200 or not body:
-                s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, 60.0)
-                if s_fb_hit and s_fb_val is not None:
+                s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, stale_limit)
+                if s_fb_hit and isinstance(s_fb_val, expect_type):
                     with self._lock:
-                        setattr(self, attr, (time.monotonic() - min(s_fb_age, self._pf_ttl * 0.5), s_fb_val))
+                        setattr(self, attr, (time.monotonic() - min(s_fb_age, eff_ttl * 0.5), s_fb_val))
                         self._fetch_fail[attr] = time.monotonic()
                     return s_fb_val
                 if status == 429:
@@ -580,8 +582,8 @@ class T212Client:
                 self._log_read_fail(what, status)
                 with self._lock:
                     self._fetch_fail[attr] = time.monotonic()
-                    c = getattr(self, attr)
-                    if c and (time.monotonic() - c[0]) < 60.0:
+                    c = getattr(self, attr, None)
+                    if c and (time.monotonic() - c[0]) < stale_limit:
                         return c[1]
                 return None
             try:
@@ -591,6 +593,10 @@ class T212Client:
                 with self._lock:
                     self._fetch_fail[attr] = time.monotonic()
                 return None
+            if not isinstance(data, expect_type):
+                return None
+            if expect_type is list:
+                data = [item for item in data if isinstance(item, dict)]
             with self._lock:
                 setattr(self, attr, (time.monotonic(), data))
                 self._fetch_fail.pop(attr, None)
@@ -602,7 +608,7 @@ class T212Client:
 
         A brief shared TTL coalesces all asset-thread requests into one call.
         """
-        res = self._read_cached("_pf_cache", "/equity/portfolio", "portfolio")
+        res = self._read_cached("_pf_cache", "/equity/portfolio", "portfolio", expect_type=list)
         return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def list_active_orders(self) -> list[dict] | None:
@@ -612,10 +618,10 @@ class T212Client:
         reconciliation immediately sees new orders instead of incorrectly dropping
         them or marking a take-profit tranche as sold.
         """
-        res = self._read_cached("_ord_cache", "/equity/orders", "active orders")
+        res = self._read_cached("_ord_cache", "/equity/orders", "active orders", expect_type=list)
         return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""
-        res = self._read_cached("_cash_cache", "/equity/account/cash", "account cash")
+        res = self._read_cached("_cash_cache", "/equity/account/cash", "account cash", expect_type=dict)
         return res if isinstance(res, dict) else None

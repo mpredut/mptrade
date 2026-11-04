@@ -104,10 +104,11 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
             if not verify_isin(client, ticker, isin):
                 return  # invalid configuration: do not retry blindly
             if not skip_wait:
+                t_wait = time.monotonic()
                 ok = wait_for_launch(yahoo, label, interval, stop=STOP)
                 if not ok:
                     return  # stop requested
-                if not verify_isin(client, ticker, isin):
+                if (time.monotonic() - t_wait) >= interval * 0.5 and not verify_isin(client, ticker, isin):
                     return
             # Block in the strategy's self-healing loop. It returns only after an
             # unexpected stop, at which point verification and startup are retried.

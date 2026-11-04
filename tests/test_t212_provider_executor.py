@@ -521,6 +521,69 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(len(both_sleeps), 1)
             self.assertAlmostEqual(both_sleeps[0], 2.1, delta=0.2)
 
+    def test_list_instruments_shared_cache_and_429_negative_cache(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shared_path = os.path.join(tmpdir, "shared_t212.json")
+            c1 = t212_client.T212Client(
+                "demo-key",
+                "demo-secret",
+                env="demo",
+                min_gap_sec=0.0,
+                portfolio_ttl_sec=6.0,
+                order_min_gap_sec=0.0,
+            )
+            c1._shared_cache_path = shared_path
+            c1._enable_shared_disk_cache = True
+            calls = []
+
+            def fake_get(url, headers=None):
+                calls.append(url)
+                return 200, b'[{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}]'
+
+            with mock.patch.object(t212_client, "http_get", side_effect=fake_get), \
+                 mock.patch.object(t212_client, "http_post_json", return_value=(200, b'{"id": 99}')):
+                res1 = c1.list_instruments()
+                self.assertEqual(res1, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+                self.assertEqual(len(calls), 1)
+                # Placing an order invalidates order/portfolio caches but preserves _instr_cache on disk
+                c1.place_market_order("NVDA_US_EQ", 1.0)
+
+            c2 = t212_client.T212Client(
+                "demo-key",
+                "demo-secret",
+                env="demo",
+                min_gap_sec=0.0,
+                portfolio_ttl_sec=6.0,
+                order_min_gap_sec=0.0,
+            )
+            c2._shared_cache_path = shared_path
+            c2._enable_shared_disk_cache = True
+            with mock.patch.object(t212_client, "http_get", side_effect=AssertionError("should use shared disk cache")):
+                res2 = c2.list_instruments()
+                self.assertEqual(res2, [{"ticker": "NVDA_US_EQ", "isin": "US67066G1040"}])
+
+            # Negative cache on 429 prevents multi-thread stampede when cold
+            c3 = t212_client.T212Client(
+                "demo-key",
+                "demo-secret",
+                env="demo",
+                min_gap_sec=0.0,
+                portfolio_ttl_sec=6.0,
+                order_min_gap_sec=0.0,
+            )
+            c3._enable_shared_disk_cache = False
+            calls_429 = []
+
+            def fake_429(url, headers=None):
+                calls_429.append(url)
+                return 429, b'{"error": "rate limit"}'
+
+            with mock.patch.object(t212_client, "http_get", side_effect=fake_429):
+                self.assertIsNone(c3.list_instruments())
+                self.assertIsNone(c3.list_instruments())
+                self.assertEqual(len(calls_429), 1)
+
 
 
 if __name__ == "__main__":
