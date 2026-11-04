@@ -19,11 +19,10 @@ from typing import Optional, List
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from .base import (
     MarketDataProvider,
-    _clean_single_order_id,
-    _normalize_order,
     bool_env,
     env_value,
     env_values_map,
+    normalize_order,
     normalize_side,
     require_clean_order_id,
     resolve_market_flag,
@@ -279,7 +278,7 @@ class T212Provider(MarketDataProvider):
         if qty <= 0:
             return []
         offset_s = min(2 * 3600.0, since_val * 0.5)
-        return [_normalize_order({
+        return [normalize_order({
             "side": "BUY", "price": avg, "qty": qty,
             "timestamp": int((time.time() - offset_s) * 1000),  # Inside the window, not too recent.
         })]
@@ -376,9 +375,7 @@ class T212Provider(MarketDataProvider):
         del kind, client_order_id
         if not self._orders_live():
             raise ProviderError("T212_LIVE_ORDERS is not true; the real order is blocked")
-        qty = self.round_quantity(symbol, qty)
-        if qty <= 0:
-            raise ProviderError(f"submit_order({symbol}): invalid quantity {qty}")
+        qty = self._round_required_qty(symbol, qty, "submit_order")
         is_market = _parse_bool_flag(market, False) or price is None
         try:
             status, data = self._send_order(

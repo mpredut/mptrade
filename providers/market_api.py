@@ -22,7 +22,7 @@ from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_ve
 from instrument_registry import casefold_get
 from .base import (
     MarketDataProvider,
-    _normalize_order,
+    build_open_order_entry,
     clean_order_id,
     compute_fills_cost_basis,
     extract_order_fee,
@@ -30,6 +30,7 @@ from .base import (
     extract_order_qty,
     extract_order_side,
     extract_timestamp_ms,
+    normalize_order,
     normalize_side,
     require_clean_order_id,
     require_int_order_id,
@@ -219,7 +220,7 @@ class BinanceProvider(MarketDataProvider):
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
         # Preserve get_trade_orders side and age filtering, then normalize shape.
         raw = _get_allorders().get_trade_orders(side, symbol, since_s) or []
-        return [_normalize_order(o) for o in raw]
+        return [normalize_order(o) for o in raw]
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Use current immutable fills, not order aggregates or a BUY-only average."""
@@ -300,18 +301,19 @@ class BinanceProvider(MarketDataProvider):
                 raise ProviderError(f"open_orders({symbol}): boolean status/side field in order")
             clean_coid = _clean_client_order_id(order.get("clientOrderId"))
             side_norm = normalize_side(raw_side) or str(raw_side or "").strip().upper()
-            ord_entry = {
-                "orderId": str(oid_int),
-                "clientOrderId": clean_coid,
-                "side": side_norm,
-                "price": price_f,
-                "origQty": orig_f,
-                "executedQty": exec_f,
-                "status": str(raw_status or "NEW").strip().upper(),
-            }
-            if (ts_ms := extract_timestamp_ms(order, default=None)) is not None:
-                ord_entry["time"] = ts_ms
-            normalized.append(ord_entry)
+            normalized.append(
+                build_open_order_entry(
+                    order,
+                    order_id=str(oid_int),
+                    side=side_norm,
+                    price=price_f,
+                    orig_qty=orig_f,
+                    executed_qty=exec_f,
+                    client_order_id=clean_coid,
+                    has_explicit_coid=True,
+                    status=str(raw_status or "NEW").strip().upper(),
+                )
+            )
         return normalized
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
@@ -636,16 +638,7 @@ class BinanceProvider(MarketDataProvider):
 
     def cancel_order(self, symbol: str, order_id: str) -> None:
         oid = _parse_binance_order_id(order_id, f"cancel_order({order_id})")
-        try:
-            canceled = _get_bapi().cancel_order(symbol, oid)
-            if not canceled:
-                raise ProviderError(
-                    f"cancel_order({order_id}): the venue did not confirm the cancellation"
-                )
-        except ProviderError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"cancel_order({order_id}): {e}") from e
+        self._execute_confirmed_cancel(order_id, lambda: _get_bapi().cancel_order(symbol, oid))
 
 
 class MarketApi:

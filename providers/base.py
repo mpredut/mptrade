@@ -745,6 +745,57 @@ def aggregate_fills_by_order_id(
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 
+
+def build_open_order_entry(
+    raw: Any,
+    *,
+    order_id: Any,
+    side: str,
+    price: Optional[float],
+    orig_qty: float,
+    executed_qty: float,
+    client_order_id: Any = None,
+    has_explicit_coid: bool = False,
+    status: Optional[str] = None,
+    default_status: str = "NEW",
+    include_time: bool = True,
+    extra: Optional[dict] = None,
+) -> dict:
+    """Build a canonical Binance-shaped open order dictionary."""
+    coid = client_order_id if has_explicit_coid else extract_client_order_id(raw)
+    st_raw = status if status is not None else (raw.get("status") if isinstance(raw, dict) else None)
+    entry = {
+        "orderId": order_id,
+        "clientOrderId": coid,
+        "side": side,
+        "price": price,
+        "origQty": orig_qty,
+        "executedQty": executed_qty,
+        "status": str(st_raw or default_status).strip().upper(),
+    }
+    if include_time and isinstance(raw, dict):
+        if (ts_ms := extract_timestamp_ms(raw, default=None)) is not None:
+            entry["time"] = ts_ms
+    if extra:
+        entry.update(extra)
+    return entry
+
+
+def format_strategy_execution_mode(
+    observe_only: bool,
+    dry_run: bool,
+    *,
+    paper_label: str = "PAPER (no money)",
+    real_label: str = "⚠ REAL — REAL MONEY",
+) -> str:
+    """Format the standard operator banner string for bot execution mode."""
+    if _parse_bool_flag(observe_only, False):
+        return "OBSERVE ONLY (AI managed)"
+    if _parse_bool_flag(dry_run, True):
+        return paper_label
+    return real_label
+
+
 from .quantity import (  # noqa: E402
     compute_fills_cost_basis,
     decide_quantity,
@@ -1350,6 +1401,26 @@ class MarketDataProvider(ABC):
         return self.resolve_strategy_dry_run(
             force_paper, strategy_execute, self.execution_enabled()
         )
+
+    def _round_required_qty(self, symbol: str, qty: float, err_prefix: str = "submit_order") -> float:
+        """Round ``qty`` using ``round_quantity`` and raise ``ProviderError`` if non-positive."""
+        rounded = self.round_quantity(symbol, qty)
+        if rounded <= 0:
+            raise ProviderError(f"{err_prefix}({symbol}): invalid non-positive quantity qty={rounded}")
+        return rounded
+
+    @staticmethod
+    def _execute_confirmed_cancel(order_id: Any, cancel_fn: Any) -> None:
+        """Execute ``cancel_fn()`` and raise ``ProviderError`` unless cancellation is confirmed."""
+        try:
+            if not cancel_fn():
+                raise ProviderError(
+                    f"cancel_order({order_id}): the venue did not confirm the cancellation"
+                )
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"cancel_order({order_id}): {e}") from e
 
     def prepare_order_state(self) -> Any:
         """Synchronize provider state used by shared pre-submit policy checks."""

@@ -38,6 +38,7 @@ from .base import (
     _derive_128bit_client_order_id,
     aggregate_fills_by_order_id,
     bool_env,
+    build_open_order_entry,
     build_price_history_points,
     extract_client_order_id,
     extract_order_fee,
@@ -408,17 +409,19 @@ class HyperliquidProvider(MarketDataProvider):
                 if not oid_val:
                     continue
                 side = extract_order_side(o) or "SELL"
-                out.append({
-                    "orderId": oid_val,
-                    "clientOrderId": extract_client_order_id(o),
-                    "side": side,
-                    "price": price,
-                    "qty": sz,
-                    "origQty": orig_sz,
-                    "executedQty": exec_sz,
-                    "status": str(o.get("status") or "OPEN").upper(),
-                    "timestamp": extract_timestamp_ms(o),
-                })
+                out.append(
+                    build_open_order_entry(
+                        o,
+                        order_id=oid_val,
+                        side=side,
+                        price=price,
+                        orig_qty=orig_sz,
+                        executed_qty=exec_sz,
+                        default_status="OPEN",
+                        include_time=False,
+                        extra={"qty": sz, "timestamp": extract_timestamp_ms(o)},
+                    )
+                )
             return out
         except ProviderError:
             raise
@@ -669,9 +672,7 @@ class HyperliquidProvider(MarketDataProvider):
             is_market=eff_market,
             caller="submit_order",
         )
-        qty = self.round_quantity(symbol, qty)
-        if qty <= 0:
-            raise ProviderError(f"submit_order({symbol}): non-positive qty={qty}")
+        qty = self._round_required_qty(symbol, qty, "submit_order")
         self.preflight_order(
             symbol, side, qty, px, market=eff_market, kind=kind,
         )
@@ -904,13 +905,4 @@ class HyperliquidProvider(MarketDataProvider):
         if pair is None:
             raise ProviderError(
                 f"cancel_order({order_id}): pair unavailable")
-        try:
-            canceled = self._signer().cancel(pair, oid)
-            if not canceled:
-                raise ProviderError(
-                    f"cancel_order({order_id}): the venue did not confirm the cancellation"
-                )
-        except ProviderError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"cancel_order({order_id}): {e}") from e
+        self._execute_confirmed_cancel(order_id, lambda: self._signer().cancel(pair, oid))

@@ -32,6 +32,7 @@ from .base import (
     _normalize_order,
     aggregate_fills_by_order_id,
     bool_env,
+    build_open_order_entry,
     build_price_history_points,
     env_values_map,
     extract_client_order_id,
@@ -559,18 +560,17 @@ class KrakenProvider(MarketDataProvider):
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")
-            ord_entry = {
-                "orderId": clean_oid,
-                "clientOrderId": extract_client_order_id(raw),
-                "side": side,
-                "price": price,
-                "origQty": original_qty,
-                "executedQty": executed_qty,
-                "status": str(raw.get("status") or "open").upper(),
-            }
-            if (ts_ms := extract_timestamp_ms(raw, default=None)) is not None:
-                ord_entry["time"] = ts_ms
-            normalized.append(ord_entry)
+            normalized.append(
+                build_open_order_entry(
+                    raw,
+                    order_id=clean_oid,
+                    side=side,
+                    price=price,
+                    orig_qty=original_qty,
+                    executed_qty=executed_qty,
+                    default_status="OPEN",
+                )
+            )
         return normalized
 
     def _fills_from_api(self, symbol: str):
@@ -665,9 +665,7 @@ class KrakenProvider(MarketDataProvider):
             px_f = safe_pos_float(price, default=None)
             if px_f is None:
                 raise ProviderError(f"submit_order {symbol} {s}: invalid/non-positive price={price!r}")
-        qty = self.round_quantity(symbol, qty)
-        if qty <= 0:
-            raise ProviderError(f"submit_order {symbol} {s}: non-positive qty={qty}")
+        qty = self._round_required_qty(symbol, qty, f"submit_order {s}")
         try:
             order_kwargs = {"ordertype": ordertype, "validate": False}
             if client_order_id is not None:

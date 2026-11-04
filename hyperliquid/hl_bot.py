@@ -35,6 +35,7 @@ required_env = _common_mod.required_env
 required_bool_env = _common_mod.required_bool_env
 resolve_cli_arg = _common_mod.resolve_cli_arg
 from strategies.spot_engine import Strategy, StratParams
+from providers.base import format_strategy_execution_mode
 from providers.execution_audit import AuditedStrategyExecutor
 from providers.hyperliquid_provider import HyperliquidProvider, hl_strategy_dry_run
 
@@ -76,7 +77,7 @@ def main() -> int:
     )
     log("=== HL base v2 bot (spot_engine) ===")
     log(f"    token      : {token} (HYPE spot pe Hyperliquid)")
-    log(f"    execution  : {'OBSERVE ONLY (AI managed)' if observe_only else ('PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY')}")
+    log(f"    execution  : {format_strategy_execution_mode(observe_only, strat_dry)}")
     log("    engine     : strategies.spot_engine (IDENTICAL to kraken_bot)")
     Strategy(
         provider, token, StratParams.from_env(), dry_run=strat_dry,

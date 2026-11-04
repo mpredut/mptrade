@@ -630,6 +630,10 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(hl_cache_file, cache_path("cache_trade_hyperliquid.json"))
 
         # 5. Shared OHLC interval/window helpers, clamp_orderbook_limit & resolve_venue_instrument_spec
+        from providers.base import (
+            build_open_order_entry,
+            format_strategy_execution_mode,
+        )
         self.assertEqual(parse_ohlc_interval(" 1H "), (60, "1h"))
         self.assertEqual(parse_ohlc_interval(" 1M "), (43200, "1M"))
         self.assertEqual(parse_ohlc_interval_minutes("240"), 240)
@@ -640,6 +644,21 @@ class TestRebuyGuardsKraken(Base):
         self.assertEqual(MarketDataProvider.clamp_orderbook_limit(9999), 500)
         self.assertEqual(MarketDataProvider.clamp_orderbook_limit("bad"), 200)
         self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSD"))
+        oo_rec = build_open_order_entry(
+            {"cl_ord_id": "abc123", "status": "open", "time": 1700000000},
+            order_id="O1",
+            side="BUY",
+            price=25.0,
+            orig_qty=2.0,
+            executed_qty=0.5,
+        )
+        self.assertEqual(oo_rec["orderId"], "O1")
+        self.assertEqual(oo_rec["clientOrderId"], "abc123")
+        self.assertEqual(oo_rec["status"], "OPEN")
+        self.assertEqual(oo_rec["time"], 1700000000000)
+        self.assertEqual(format_strategy_execution_mode(True, True), "OBSERVE ONLY (AI managed)")
+        self.assertEqual(format_strategy_execution_mode(False, True), "PAPER (no money)")
+        self.assertEqual(format_strategy_execution_mode(False, False), "⚠ REAL — REAL MONEY")
 
 
 

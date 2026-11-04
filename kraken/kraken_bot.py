@@ -46,6 +46,7 @@ from strategies.spot_engine import Strategy, StratParams
 # Provider-agnostic path B requires the StrategyExecutor contract. Wrap the _BOT client
 # in KrakenProvider so Strategy shares its connection/nonce. Balance/find/price CLI
 # commands continue using KrakenClient directly.
+from providers.base import format_strategy_execution_mode  # noqa: E402
 from providers.kraken_provider import (  # noqa: E402
     KrakenProvider,
     kraken_strategy_dry_run,
@@ -131,7 +132,7 @@ def main() -> int:
     log(
         f"    credentials  : "
         f"{'yes' if optional_env('KRAKEN_API_KEY_BOT') else 'NO (public/paper only)'}")
-    log(f"    execution    : {'OBSERVE ONLY (AI managed)' if observe_only else ('PAPER (no money)' if strat_dry else '⚠ REAL — REAL MONEY')}")
+    log(f"    execution    : {format_strategy_execution_mode(observe_only, strat_dry)}")
     log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 
     # --- wait until the pair is LISTED and tradable, analogous to launch ---

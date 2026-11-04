@@ -52,6 +52,7 @@ except ImportError:
     from strategy import Strategy, StratParams  # noqa: E402
     from t212_client import T212Client  # noqa: E402
 from credentials import t212_credentials  # noqa: E402
+from providers.base import format_strategy_execution_mode  # noqa: E402
 
 STOP = threading.Event()
 
@@ -96,7 +97,9 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     if not strat_enabled:
         log(f"  ! [{name}] STRAT_ENABLED!=true — skipping (t212_bot only runs strategies)"); return
 
-    exec_mode_str = "OBSERVE ONLY (AI managed)" if observe_only else ("PAPER" if strat_dry else "⚠ REAL — MONEY")
+    exec_mode_str = format_strategy_execution_mode(
+        observe_only, strat_dry, paper_label="PAPER", real_label="⚠ REAL — MONEY"
+    )
     log(f"  ▶ [{label}] {ticker} | price through {yahoo} | {exec_mode_str} | poll {interval}s")
     while not STOP.is_set():
         try:
