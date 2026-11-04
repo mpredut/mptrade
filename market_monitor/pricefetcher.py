@@ -486,14 +486,15 @@ class StockYahooPricePlatform(PricePlatformInterface):
             if not isinstance(q, dict):
                 q = {}
             closes = [
-                cf for c in (q.get("close") or [])
+                round(cf, 4) for c in (q.get("close") or [])
                 if (cf := safe_pos_float(c, default=None)) is not None
             ]
             if closes:
                 return closes[-1]                      # freshest intraday bar
             meta = result.get("meta")
             price = meta.get("regularMarketPrice") if isinstance(meta, dict) else None  # metadata fallback
-            return safe_pos_float(price, default=None)
+            val = safe_pos_float(price, default=None)
+            return round(val, 4) if val is not None else None
         except Exception as e:
             print(f"[YahooPlatform] Warning for {symbol}: {e}")
             return None
