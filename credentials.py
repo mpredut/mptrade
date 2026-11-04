@@ -14,7 +14,13 @@ from collections.abc import Mapping, Sequence
 
 from botcore import load_dotenv
 
-if not ("keys" in sys.modules and "keys.apikeys" not in sys.modules):
+_existing_keys = sys.modules.get("keys")
+_keys_blocked = (
+    _existing_keys is not None
+    and "keys.apikeys" not in sys.modules
+    and not getattr(_existing_keys, "_is_credentials_shim", False)
+)
+if not _keys_blocked:
     load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 api_key = os.environ.get("BINANCE_API_KEY", "").strip()
@@ -22,11 +28,13 @@ api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
 # The Ed25519 stream key is distinct from the HMAC REST credential.
 api_key_ws = os.environ.get("BINANCE_API_KEY_WS", "").strip()
 
-if "keys" not in sys.modules:
-    _keys_pkg = types.ModuleType("keys")
-    _keys_pkg.__path__ = []
-    _keys_pkg.apikeys = sys.modules[__name__]
-    sys.modules["keys"] = _keys_pkg
+if not _keys_blocked:
+    if _existing_keys is None:
+        _existing_keys = types.ModuleType("keys")
+        _existing_keys.__path__ = []
+        _existing_keys._is_credentials_shim = True
+        sys.modules["keys"] = _existing_keys
+    _existing_keys.apikeys = sys.modules[__name__]
     sys.modules["keys.apikeys"] = sys.modules[__name__]
 
 

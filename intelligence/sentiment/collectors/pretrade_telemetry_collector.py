@@ -550,7 +550,7 @@ def collect_pretrade_telemetry(
                     apply_live_24trend_windows(t_entry, l24)
                     break
             k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_trend.json"))
-            if not isinstance(k_data, dict):
+            if not isinstance(k_data, dict) or not k_data:
                 k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_price.json"))
             if isinstance(k_data, dict):
                 k_items = k_data.get("items") if isinstance(k_data.get("items"), dict) else k_data

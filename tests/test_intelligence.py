@@ -5068,6 +5068,148 @@ def test_iter83_mt_exit_kind_stop_variants_state_store_and_price_analysis_ms():
     assert not fmt_ms.startswith("1970-")
 
 
+def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tmp_path, monkeypatch):
+    import importlib
+    import json
+    import sys
+    from types import SimpleNamespace
+    import botcore
+    from strategies.base_spot_mixin import BaseSpotMixin, SpotParamsMixin
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+
+    # 1. _MergedModuleAliasFinder resolves merged Package E module aliases even after sys.modules.pop
+    for alias in (
+        "accepted_order_persistence",
+        "order_outcomes_log",
+        "order_rollback",
+        "shadow_runtime",
+        "liquidation_signal",
+        "keys.apikeys",
+        "hyperliquid.price_analysis",
+        "price_analysis",
+    ):
+        sys.modules.pop(alias, None)
+    aop = importlib.import_module("accepted_order_persistence")
+    assert hasattr(aop, "complete_accepted_claim")
+    assert aop.__name__ == "order_lifecycle"
+
+    ool = importlib.import_module("order_outcomes_log")
+    assert hasattr(ool, "log_order_outcome")
+    assert ool.__name__ == "order_lifecycle"
+
+    sr = importlib.import_module("shadow_runtime")
+    assert hasattr(sr, "require_shadow_interval")
+    assert sr.__name__ == "botcore"
+
+    # 2. credentials reload refreshes keys.apikeys shim while preserving keys._is_credentials_shim
+    sys.modules.pop("keys.apikeys", None)
+    import credentials
+    importlib.reload(credentials)
+    assert sys.modules.get("keys.apikeys") is credentials
+    assert getattr(sys.modules.get("keys"), "_is_credentials_shim", False) is True
+
+    # 3. hyperliquid.signals reload updates price_analysis alias and get_signal honors monkeypatched signals.signal
+    import hyperliquid.signals as hl_sig
+    hl_sig_reloaded = importlib.reload(hl_sig)
+    assert sys.modules.get("price_analysis") is hl_sig_reloaded
+    assert sys.modules.get("hyperliquid.price_analysis") is hl_sig_reloaded
+    monkeypatch.setenv("SIGNAL_SOURCE", "analysis")
+    monkeypatch.setattr(hl_sig_reloaded, "signal", lambda client, coin: {"trend": "down", "confidence": 0.9, "source": "patched_after_reload"})
+    sig_res = hl_sig_reloaded.get_signal(object(), "ETH")
+    assert sig_res["trend"] == "down"
+    assert sig_res["source"] == "patched_after_reload"
+
+    # 4. SpotParamsMixin handles bool/None/string fields safely and BaseSpotMixin works without dca_vol_scale_k
+    class _DummyParams(SpotParamsMixin):
+        def __init__(self):
+            self.total_budget = True  # boolean must NOT be treated as positive float budget
+            self.alloc_pct = "50.0"
+            self.entry_pct = "10.0"
+            self.dca_pct = "20.0"
+            self.entry_amount = "25.0"
+            self.dca_amount = None
+            self.max_budget = None
+
+    dp = _DummyParams()
+    assert dp.pct_sizing_on() is False
+    assert dp.allocated_budget() == pytest.approx(0.0)
+    assert dp.effective_entry_amount() == pytest.approx(25.0)
+    assert dp.effective_dca_amount_base() == pytest.approx(0.0)
+
+    class _DummyStrat(BaseSpotMixin):
+        def __init__(self):
+            self.p = SimpleNamespace(
+                total_budget=0.0,
+                amount_usd=40.0,
+                dca_amount_usd=0.0,
+                dca_multiplier=None,
+                effective_dca_amount_base=lambda: 40.0,
+            )
+            self.client = SimpleNamespace()  # no ohlc_closes method (like T212 client)
+
+    ds = _DummyStrat()
+    assert ds._dca_vol_1h() is None
+    assert ds._trail_vol_1h() is None
+    assert ds._effective_dca_amount() == pytest.approx(40.0)
+
+    # 5. pretrade_telemetry_collector reads canonical cache_kalman_trend.json when cache_kalman_price.json is absent
+    cache_dir = tmp_path / "cachedb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "cache_kalman_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": {
+                        "kalman_vel": 1.25,
+                        "kalman_vel_std": 0.35,
+                        "kalman_trend": "UP",
+                        "vol_1h_pct": 2.1,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "orderbook_depth_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "mid_price": 400.0,
+                "best_bid": 399.9,
+                "best_ask": 400.1,
+                "spread_bps": 5.0,
+                "bid_depth_usd": 100000.0,
+                "ask_depth_usd": 100000.0,
+                "imbalance_ratio": 0.56,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "derivatives_telemetry_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "funding_rate": 0.0,
+                "open_interest_usd": 10000000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cache_dir / "whale_snapshot_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "top_traders_long_pct": 0.50,
+                "taker_buy_sell_ratio": 1.04,
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem = ptc.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cache_dir))
+    assert "SHORT_SQUEEZE_MAGNET_UP" in telem.get("Liquidation Clusters (LONG vs SHORT)", "")
+
+
+
 
 
 

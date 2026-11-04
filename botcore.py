@@ -1653,4 +1653,100 @@ def require_shadow_interval(interval: int, expected: int, label: str) -> None:
 sys.modules.setdefault("shadow_runtime", sys.modules[__name__])
 
 
+_MERGED_MODULE_TARGETS = {
+    "accepted_order_persistence": "order_lifecycle",
+    "order_outcomes_log": "order_lifecycle",
+    "order_rollback": "order_lifecycle",
+    "shadow_runtime": "botcore",
+    "liquidation_signal": "intelligence.external.collectors.bybit_liquidations_collector",
+    "hyperliquid.signals": "hyperliquid.signals",
+    "hyperliquid.price_analysis": "hyperliquid.signals",
+    "price_analysis": "hyperliquid.signals",
+    "keys": "credentials",
+    "keys.apikeys": "credentials",
+}
+
+
+class _MergedModuleAliasLoader:
+    def __init__(self, alias_name: str, target_name: str) -> None:
+        self.alias_name = alias_name
+        self.target_name = target_name
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        import importlib
+
+        if self.target_name == "hyperliquid.signals":
+            hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
+            is_reload = (
+                module is sys.modules.get("signals")
+                and getattr(module, "__mptrade_exec_done__", False)
+            )
+            target_mod = load_local_module(hl_dir, "signals", reload=is_reload)
+            for alias_k in ("signals", "hyperliquid.signals", "price_analysis", "hyperliquid.price_analysis"):
+                sys.modules[alias_k] = target_mod
+            hl_pkg = sys.modules.get("hyperliquid")
+            if hl_pkg is not None:
+                setattr(hl_pkg, "signals", target_mod)
+                setattr(hl_pkg, "price_analysis", target_mod)
+            sys.modules[self.alias_name] = target_mod
+            return
+
+        target_mod = importlib.import_module(self.target_name)
+        if self.alias_name == "keys":
+            keys_pkg = sys.modules.get("keys")
+            if keys_pkg is None or keys_pkg is module:
+                import types as _types
+
+                keys_pkg = _types.ModuleType("keys")
+                keys_pkg.__path__ = []
+                keys_pkg._is_credentials_shim = True
+            keys_pkg.apikeys = target_mod
+            sys.modules["keys"] = keys_pkg
+            sys.modules["keys.apikeys"] = target_mod
+            return
+        if self.alias_name == "keys.apikeys":
+            keys_pkg = sys.modules.get("keys")
+            if keys_pkg is not None:
+                keys_pkg.apikeys = target_mod
+        sys.modules[self.alias_name] = target_mod
+
+
+class _MergedModuleAliasFinder:
+    """Resolve Package E merged module names even before host import or after sys.modules.pop."""
+
+    @staticmethod
+    def find_spec(fullname: str, path=None, target=None):
+        target_name = _MERGED_MODULE_TARGETS.get(fullname)
+        if target_name is None and fullname == "signals" and target is not None:
+            target_file = getattr(target, "__file__", None)
+            hl_signals_file = os.path.join(_REPO_ROOT, "hyperliquid", "signals.py")
+            if isinstance(target_file, str) and os.path.abspath(target_file) == os.path.abspath(hl_signals_file):
+                target_name = "hyperliquid.signals"
+        if target_name is None:
+            return None
+        if fullname in ("keys", "keys.apikeys"):
+            existing_keys = sys.modules.get("keys")
+            if (
+                existing_keys is not None
+                and "keys.apikeys" not in sys.modules
+                and not getattr(existing_keys, "_is_credentials_shim", False)
+            ):
+                return None
+        import importlib.util
+
+        return importlib.util.spec_from_loader(
+            fullname,
+            _MergedModuleAliasLoader(fullname, target_name),
+            is_package=(fullname == "keys"),
+        )
+
+
+if not any(getattr(f, "__name__", "") == "_MergedModuleAliasFinder" or isinstance(f, _MergedModuleAliasFinder) for f in sys.meta_path):
+    sys.meta_path.append(_MergedModuleAliasFinder())
+
+
+
 

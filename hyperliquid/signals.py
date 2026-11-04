@@ -28,7 +28,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from botcore import load_local_module, normalize_epoch_sec, normalize_trend_direction  # noqa: E402
+from botcore import (  # noqa: E402
+    load_local_module,
+    normalize_epoch_sec,
+    normalize_trend_direction,
+    resolve_patched_attr,
+)
 from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
@@ -173,15 +178,22 @@ def _file_signal(path: str) -> dict:
     return {"trend": tr, "confidence": conf, "source": "file"}
 
 
+_DEFAULT_ANALYSIS_SIGNAL = signal
+
+
 def get_signal(client, coin: str) -> dict:
     src = required_env("SIGNAL_SOURCE").strip().lower()
     if src == "builtin":
         return _builtin_trend(client, coin)
     if src == "analysis":               # ported WMA/time-window slope analysis
-        try:
-            from price_analysis import signal as analysis_signal
-        except ImportError:
-            analysis_signal = signal
+        analysis_signal = resolve_patched_attr(
+            "signal",
+            signal,
+            local_val=signal,
+            defaults=(_DEFAULT_ANALYSIS_SIGNAL,),
+            modules=("price_analysis", "hyperliquid.price_analysis", __name__),
+            require_callable=True,
+        )
         return analysis_signal(client, coin)
     if src == "file":
         return _file_signal(required_env("SIGNAL_FILE"))
@@ -192,6 +204,12 @@ def get_signal(client, coin: str) -> dict:
 
 _self_mod = sys.modules.get(__name__)
 if _self_mod is not None:
-    sys.modules.setdefault("price_analysis", _self_mod)
-    sys.modules.setdefault("hyperliquid.price_analysis", _self_mod)
+    for _alias_k in ("price_analysis", "hyperliquid.price_analysis", "hyperliquid.signals"):
+        _prev_mod = sys.modules.get(_alias_k)
+        if _prev_mod is None or getattr(_prev_mod, "__file__", None) == __file__:
+            sys.modules[_alias_k] = _self_mod
+    _hl_pkg = sys.modules.get("hyperliquid")
+    if _hl_pkg is not None:
+        setattr(_hl_pkg, "price_analysis", _self_mod)
+        setattr(_hl_pkg, "signals", _self_mod)
 

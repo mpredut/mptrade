@@ -42,16 +42,26 @@ class SpotParamsMixin:
         return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
 
     def pct_sizing_on(self) -> bool:
-        return getattr(self, "total_budget", 0.0) > 0
+        return (safe_pos_float(getattr(self, "total_budget", 0.0), default=0.0) or 0.0) > 0.0
 
     def allocated_budget(self) -> float:
-        return self.total_budget * self.alloc_pct / 100.0 if self.pct_sizing_on() else self.max_budget
+        if self.pct_sizing_on():
+            tot = safe_pos_float(getattr(self, "total_budget", 0.0), default=0.0) or 0.0
+            alloc = safe_nonneg_float(getattr(self, "alloc_pct", 0.0), default=0.0) or 0.0
+            return tot * alloc / 100.0
+        return safe_nonneg_float(getattr(self, "max_budget", 0.0), default=0.0) or 0.0
 
     def effective_entry_amount(self) -> float:
-        return self.allocated_budget() * self.entry_pct / 100.0 if self.pct_sizing_on() else self.entry_amount
+        if self.pct_sizing_on():
+            epct = safe_nonneg_float(getattr(self, "entry_pct", 0.0), default=0.0) or 0.0
+            return self.allocated_budget() * epct / 100.0
+        return safe_nonneg_float(getattr(self, "entry_amount", 0.0), default=0.0) or 0.0
 
     def effective_dca_amount_base(self) -> float:
-        return self.allocated_budget() * self.dca_pct / 100.0 if self.pct_sizing_on() else self.dca_amount
+        if self.pct_sizing_on():
+            dpct = safe_nonneg_float(getattr(self, "dca_pct", 0.0), default=0.0) or 0.0
+            return self.allocated_budget() * dpct / 100.0
+        return safe_nonneg_float(getattr(self, "dca_amount", 0.0), default=0.0) or 0.0
 
     def effective_max_budget(self) -> float:
         return self.allocated_budget()
@@ -685,8 +695,8 @@ class BaseSpotMixin:
     def _effective_dca_amount(self) -> float:
         """Scale base DCA size by volatility when enabled, falling back during warm-up."""
         base = self._base_dca_amount()
-        k_val = safe_float(float(self.p.dca_vol_scale_k), default=0.0)
-        ref_val = safe_pos_float(float(self.p.dca_vol_ref), default=None)
+        k_val = safe_float(getattr(self.p, "dca_vol_scale_k", 0.0), default=0.0)
+        ref_val = safe_pos_float(getattr(self.p, "dca_vol_ref", None), default=None)
         if not k_val or ref_val is None:
             return base
         try:
@@ -786,12 +796,13 @@ class BaseSpotMixin:
 
     def _trail_vol_1h(self) -> float | None:
         """Return one-hour-normalized volatility at one OHLC cadence in live and replay."""
-        if self.replay_mode:
+        trail_itv = getattr(self.p, "tp_trail_vol_interval", None)
+        if getattr(self, "replay_mode", False):
             sp = getattr(self, "_shadow_prices", None)
             if not sp or (n_sp := len(sp)) < 20:
                 return None
             cache_key = (
-                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1], self.p.tp_trail_vol_interval,
+                n_sp, sp[0][1], sp[1][1], sp[n_sp >> 1][1], sp[-2][1], sp[-1][1], trail_itv,
             )
             if getattr(self, "_trail_vol_cache_key", None) == cache_key:
                 return self._trail_vol_cache_val
@@ -799,21 +810,25 @@ class BaseSpotMixin:
                 self._trail_vol_cache_key = cache_key
                 self._trail_vol_cache_val = val = BaseSpotMixin._TRAIL_VOL_CACHE[cache_key]
                 return val
-            val = self._hourly_vol_from_closes([price for _, price in sp], self.p.tp_trail_vol_interval)
+            val = self._hourly_vol_from_closes([price for _, price in sp], trail_itv)
             self._trail_vol_cache_key = cache_key
             self._trail_vol_cache_val = val
             return self._cache_store(BaseSpotMixin._TRAIL_VOL_CACHE, cache_key, val)
-        closes = self.client.ohlc_closes(self._symbol_id, self.p.tp_trail_vol_interval)
-        return self._hourly_vol_from_closes(closes, self.p.tp_trail_vol_interval)
+        if not hasattr(self.client, "ohlc_closes") or trail_itv is None:
+            return None
+        closes = self.client.ohlc_closes(self._symbol_id, trail_itv)
+        return self._hourly_vol_from_closes(closes, trail_itv)
 
     def _dca_vol_1h(self) -> float | None:
         """Return DCA volatility from OHLC at the same cadence in live and replay."""
-        closes = (
-            [price for _, price in getattr(self, "_shadow_prices", ())]
-            if self.replay_mode
-            else self.client.ohlc_closes(self._symbol_id, self.p.dca_vol_interval)
-        )
-        return self._hourly_vol_from_closes(closes, self.p.dca_vol_interval)
+        dca_itv = getattr(self.p, "dca_vol_interval", None)
+        if getattr(self, "replay_mode", False):
+            closes = [price for _, price in getattr(self, "_shadow_prices", ())]
+        elif hasattr(self.client, "ohlc_closes") and dca_itv is not None:
+            closes = self.client.ohlc_closes(self._symbol_id, dca_itv)
+        else:
+            return None
+        return self._hourly_vol_from_closes(closes, dca_itv)
 
     def _resolve_shadow_vol_1h_pct(self) -> float | None:
         if hasattr(self, "_shadow_vol_1h"):
