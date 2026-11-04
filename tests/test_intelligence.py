@@ -4650,6 +4650,89 @@ def test_iter79_rtrade_pair_recovery_and_assetguardian_cancel(tmp_path, monkeypa
     assert resolved_oids == [("TAOUSDC", "777")]
 
 
+def test_iter80_pricefetcher_refresh_and_kraken_trailing_unlock(monkeypatch, tmp_path):
+    import threading
+    from market_monitor.pricefetcher import PricePlatformInterface, CacheAllPriceFetcherManager
+    from kraken.trailing_stop import KrakenTrailing
+    import kraken.trailing_stop as kts_mod
+
+    # 1. PricePlatformInterface.supports_symbol refreshes before reading _supported_symbols when _load_symbols rebinds the set
+    class _RebindingPlatform(PricePlatformInterface):
+        def __init__(self):
+            self._supported_symbols = {"BTC"}
+            self._last_refresh = 0.0
+            self._refresh_interval = 10.0
+
+        @property
+        def platform_name(self) -> str:
+            return "RebindTest"
+
+        def _load_symbols(self):
+            self._supported_symbols = {"BTC", "NEWTOKEN"}
+            self._last_refresh = 9999999999.0
+
+        def get_price(self, symbol: str):
+            return 1.0
+
+    plat = _RebindingPlatform()
+    assert plat.supports_symbol("NEWTOKENUSDC") is True
+
+    # 2. CacheAllPriceFetcherManager.remove_symbol removes symbols case-insensitively across active sets and metadata
+    mgr = CacheAllPriceFetcherManager.__new__(CacheAllPriceFetcherManager)
+    mgr.lock = threading.Lock()
+    mgr.active_symbols = {"SPCX"}
+    mgr.symbols = ["SPCX"]
+    mgr.original_symbols = ["SPCX"]
+    mgr.symbol_added_time = {"SPCX": 100.0}
+    mgr.symbol_preferred_source = {"SPCX": "YahooFinance"}
+    assert mgr.remove_symbol("spcx", reason="test") is True
+    assert mgr.active_symbols == set()
+    assert mgr.symbols == []
+    assert mgr.original_symbols == []
+    assert mgr.symbol_added_time == {}
+    assert mgr.symbol_preferred_source == {}
+
+    # 3. KrakenTrailing.unlock_qty continues cancelling remaining open SELL orders when one cancel raises or returns count=0
+    class _MultiSellClient:
+        def __init__(self):
+            self.cancelled = []
+            self.held = 10.0
+
+        def _private(self, method, data=None):
+            if method == "BalanceEx":
+                return {"HYPE": {"balance": "10.0", "hold_trade": str(self.held)}}
+            return {}
+
+        def open_orders(self):
+            return {
+                "TX-FAIL": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
+                "TX-ZERO": {"descr": {"type": "sell", "pair": "HYPEUSD"}},
+                "TX-OK": {"descr": {"type": "sell", "pair": "HYPE/USD"}},
+            }
+
+        def cancel_order(self, txid):
+            self.cancelled.append(txid)
+            if txid == "TX-FAIL":
+                raise RuntimeError("transient cancel failure")
+            if txid == "TX-ZERO":
+                return {"count": 0}
+            self.held = 0.0
+            return {"count": 1}
+
+    cli = _MultiSellClient()
+    kt = KrakenTrailing(cli, log=lambda *_a: None, enabled=True, state_file=str(tmp_path / "kt.json"))
+    assert kt.begin_tick() is True
+    assert kt.free_qty("HYPE") == 0.0
+    assert kt.unlock_qty("HYPEUSD") is True
+    assert cli.cancelled == ["TX-FAIL", "TX-ZERO", "TX-OK"]
+    assert kt.free_qty("HYPE") == pytest.approx(10.0)
+
+    # 4. TrailingAdapterBase.trail_pct_for raises KeyError instead of ValueError or returning NaN on invalid DEFAULT_TRAIL_PCT
+    monkeypatch.setattr(kts_mod, "DEFAULT_TRAIL_PCT", "invalid_float")
+    with pytest.raises(KeyError):
+        kt.trail_pct_for("UNKNOWN_SYMBOL_XYZ")
+
+
 
 
 

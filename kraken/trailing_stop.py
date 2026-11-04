@@ -268,11 +268,24 @@ class KrakenTrailing(TrailingAdapterBase):
                 descr = raw_descr if isinstance(raw_descr, dict) else {}
                 ord_pair = str(descr.get("pair") or ord_info.get("pair") or "")
                 if extract_order_side(ord_info) == "SELL" and (ord_pair == pair or _kraken_pair_matches(pair, ord_pair)):
-                    self.client.cancel_order(txid)
+                    try:
+                        res = self.client.cancel_order(txid)
+                    except Exception as cancel_err:  # noqa: BLE001
+                        self.log(f"  ! [TRAIL-K] failed to cancel open order {txid} for {pair}: {cancel_err}")
+                        continue
+                    if res is False or (
+                        isinstance(res, dict)
+                        and "count" in res
+                        and safe_pos_float(res.get("count"), default=0.0) <= 0.0
+                    ):
+                        continue
                     cancelled_any = True
             if cancelled_any:
                 self._tick_balances = None
-                refreshed = self._balance_ex_map()
+                try:
+                    refreshed = self._balance_ex_map()
+                except Exception:  # noqa: BLE001
+                    refreshed = None
                 if refreshed is not None:
                     self._tick_balances = refreshed
             return cancelled_any

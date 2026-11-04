@@ -33,12 +33,11 @@ import glob
 import os
 import sys
 
-from botcore import ensure_local_module_priority, safe_pos_float
-
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
+from botcore import ensure_local_module_priority, safe_pos_float  # noqa: E402
 ensure_local_module_priority(
     _HERE,
     "ipo_common", "listing_watcher", "market_data",

@@ -75,6 +75,7 @@ class PricePlatformInterface(ABC):
     def supports_symbol(self, symbol: str) -> bool:
         if not self._can_refresh_symbols():
             return False
+        self.refresh_symbols()
         return self._supports_in_set(symbol, getattr(self, "_supported_symbols", set()))
 
     def _supports_in_set(self, symbol: str, symbols_set: Set[str]) -> bool:
@@ -759,24 +760,34 @@ class CacheAllPriceFetcherManager(CacheManagerInterface):
         if not isinstance(symbol, str) or not symbol.strip():
             return False
         symbol = symbol.strip()
+        sym_up = symbol.upper()
         with self.lock:
-            was_active = symbol in self.active_symbols
-            had_meta = (
-                symbol in self.symbol_added_time
-                or symbol in getattr(self, "symbol_preferred_source", {})
-            )
-            if not was_active and not had_meta:
+            pref_map = getattr(self, "symbol_preferred_source", {})
+            matching_keys = {
+                s for s in (
+                    set(self.active_symbols)
+                    | set(self.symbol_added_time.keys())
+                    | (set(pref_map.keys()) if isinstance(pref_map, dict) else set())
+                )
+                if isinstance(s, str) and (s == symbol or s.strip().upper() == sym_up)
+            }
+            if not matching_keys:
                 return False
-            while symbol in self.symbols:
-                self.symbols.remove(symbol)
-            while symbol in self.original_symbols:
-                self.original_symbols.remove(symbol)
-            self.active_symbols.discard(symbol)
-            # Clear auxiliary state too; otherwise ``cleanup_old_symbols`` repeatedly
-            # revisits the same symbol through ``symbol_added_time``.
-            self.symbol_added_time.pop(symbol, None)
-            if hasattr(self, "symbol_preferred_source"):
-                self.symbol_preferred_source.pop(symbol, None)
+            self.symbols = [
+                s for s in self.symbols
+                if not (isinstance(s, str) and (s in matching_keys or s.strip().upper() == sym_up))
+            ]
+            self.original_symbols = [
+                s for s in self.original_symbols
+                if not (isinstance(s, str) and (s in matching_keys or s.strip().upper() == sym_up))
+            ]
+            for k in matching_keys:
+                self.active_symbols.discard(k)
+                # Clear auxiliary state too; otherwise ``cleanup_old_symbols`` repeatedly
+                # revisits the same symbol through ``symbol_added_time``.
+                self.symbol_added_time.pop(k, None)
+                if isinstance(pref_map, dict):
+                    pref_map.pop(k, None)
             print(f"[Pricefetcher] ❌ Symbol removed: {symbol} {reason}")
             return True
 

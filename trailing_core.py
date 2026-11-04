@@ -754,7 +754,7 @@ class TrailingAdapterBase:
 
     def trail_pct_for(self, symbol: str) -> float:
         raw_default = self._module_attr("DEFAULT_TRAIL_PCT", None)
-        default_pct = safe_pos_float(raw_default, default=float(raw_default)) if raw_default is not None else None
+        default_pct = safe_pos_float(raw_default, default=None)
         if not isinstance(symbol, bool) and isinstance(symbol, str) and symbol.strip():
             trail_map = self._module_attr("TRAIL_PCT")
             val = self._lookup_symbol_entry(
