@@ -399,13 +399,15 @@ class HyperliquidProvider(MarketDataProvider):
                     if safe_float(o.get("limitPx"), default=None) is None:
                         continue
                 price = safe_nonneg_float(extract_order_price(o, default=0.0), default=None)
-                sz = safe_nonneg_float(o.get("sz", o.get("qty")), default=None)
+                raw_sz = o.get("sz") if o.get("sz") is not None else o.get("qty")
+                sz = safe_nonneg_float(raw_sz, default=None)
                 if price is None or sz is None:
                     continue
                 orig_sz = safe_nonneg_float(extract_orig_qty(o, default=sz), default=sz)
                 if orig_sz is None:
                     continue
-                exec_sz = safe_nonneg_float(o.get("executedQty", orig_sz - sz), default=0.0) or 0.0
+                raw_exec = o.get("executedQty")
+                exec_sz = safe_nonneg_float(raw_exec if raw_exec is not None else (orig_sz - sz), default=0.0) or 0.0
                 oid_val = extract_order_id(o, default=None)
                 if not oid_val:
                     continue
@@ -765,7 +767,7 @@ class HyperliquidProvider(MarketDataProvider):
             order = payload.get("order")
             if not isinstance(order, dict):
                 order = {}
-            oid = order.get("oid", payload.get("oid"))
+            oid = order.get("oid") if order.get("oid") is not None else payload.get("oid")
             clean_oid = extract_order_id(oid, default=None)
             if not clean_oid:
                 raise ProviderError(
@@ -855,7 +857,7 @@ class HyperliquidProvider(MarketDataProvider):
                     raw_fee = fee_info["fee"]
                     fee_token = fee_info["fee_asset"]
                 else:
-                    raw_fee_val = f.get("fee", f.get("commission", 0.0))
+                    raw_fee_val = f.get("fee") if f.get("fee") is not None else f.get("commission", 0.0)
                     raw_fee = safe_nonneg_float(raw_fee_val if raw_fee_val is not None else 0.0, default=None)
                     if isinstance(raw_fee_val, bool) or raw_fee is None:
                         raise ProviderError(f"order_status({order_id}): invalid fee value")

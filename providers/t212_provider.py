@@ -476,7 +476,7 @@ class T212Provider(MarketDataProvider):
         if filled_qty > 0 and cost <= 0:
             # Some legacy payloads expose execution price instead of filledValue.
             # Do not use limitPrice because it is not actual execution and distorts P&L.
-            fill_price = raw.get("fillPrice", raw.get("averagePrice"))
+            fill_price = raw.get("fillPrice") if raw.get("fillPrice") is not None else raw.get("averagePrice")
             fp_f = safe_float(fill_price, default=None)
             fp_val = abs(fp_f) if fp_f is not None else 0.0
             if safe_pos_float(fp_val, default=0.0) <= 0 or safe_pos_float(fp_val * filled_qty, default=None) is None:
@@ -485,7 +485,8 @@ class T212Provider(MarketDataProvider):
                 )
             cost = fp_val * filled_qty
 
-        orig_f = safe_float(raw.get("orderedQuantity", raw.get("quantity")), default=None)
+        raw_orig = raw.get("orderedQuantity") if raw.get("orderedQuantity") is not None else raw.get("quantity")
+        orig_f = safe_float(raw_orig, default=None)
         orig_qty = abs(orig_f) if orig_f is not None else None
 
         return OrderStatus(
@@ -544,14 +545,14 @@ class T212Provider(MarketDataProvider):
                 status_u = str(o.get("status") or "NEW").strip().upper()
                 if status_u in _STATUS_MAP:
                     continue
-                raw_qty = safe_float(o.get("orderedQuantity", o.get("quantity")), default=0.0)
+                raw_ord_qty = o.get("orderedQuantity") if o.get("orderedQuantity") is not None else o.get("quantity")
+                raw_qty = safe_float(raw_ord_qty, default=0.0)
                 side = normalize_side(o.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
-                px = safe_pos_float(
-                    o.get("limitPrice", o.get("stopPrice", o.get("price"))),
-                    default=None,
-                )
+                raw_px = next((o.get(k) for k in ("limitPrice", "stopPrice", "price") if o.get(k) is not None), None)
+                px = safe_pos_float(raw_px, default=None)
                 orig_q = abs(raw_qty)
-                exec_q = abs(safe_float(o.get("filledQuantity", o.get("executedQty")), default=0.0))
+                raw_exec_qty = o.get("filledQuantity") if o.get("filledQuantity") is not None else o.get("executedQty")
+                exec_q = abs(safe_float(raw_exec_qty, default=0.0))
                 oid = extract_order_id(o)
                 out.append({
                     "id": oid,

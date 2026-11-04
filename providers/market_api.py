@@ -1205,7 +1205,7 @@ class MarketApi:
             return provider.round_quantity(symbol, qty)
         if hasattr(provider, "round_amount"):
             return provider.round_amount(symbol, qty)
-        return safe_float(qty, default=0.0)
+        return safe_pos_float(qty, default=0.0)
 
     round_amount = round_quantity
 
@@ -1213,7 +1213,7 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         if hasattr(provider, "round_price"):
             return provider.round_price(symbol, price)
-        return safe_float(price, default=0.0)
+        return safe_pos_float(price, default=0.0)
 
     def place_order(self, symbol: str, side: str, price: float, qty: float,
                     force: bool = False, **kwargs):

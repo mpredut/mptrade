@@ -562,9 +562,10 @@ class KrakenProvider(MarketDataProvider):
             if side not in {"BUY", "SELL"}:
                 raise ProviderError(
                     f"open_orders({symbol}): an invalid side for {order_id}")
-            price = safe_nonneg_float(description.get("price", raw.get("price", 0.0)), default=None)
+            raw_px = description.get("price") if description.get("price") is not None else raw.get("price", 0.0)
+            price = safe_nonneg_float(raw_px, default=None)
             original_qty = safe_pos_float(raw.get("vol"), default=None)
-            executed_qty = safe_nonneg_float(raw.get("vol_exec", 0.0), default=None)
+            executed_qty = safe_nonneg_float(raw.get("vol_exec") if raw.get("vol_exec") is not None else 0.0, default=None)
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
                 raise ProviderError(
                     f"open_orders({symbol}): invalid quantities/price for {order_id}")

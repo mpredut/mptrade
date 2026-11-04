@@ -46,7 +46,7 @@ def _lifecycle_finite(raw, *, positive: bool = False):
 
 
 def _terminal_payload(status: OrderStatus, observed_at: float) -> dict:
-    return {
+    payload = {
         "status": status.status,
         "venue_status": status.venue_status,
         "filled_qty": status.filled_qty,
@@ -54,6 +54,9 @@ def _terminal_payload(status: OrderStatus, observed_at: float) -> dict:
         "fee": status.fee,
         "observed_at": observed_at,
     }
+    if status.orig_qty is not None:
+        payload["orig_qty"] = status.orig_qty
+    return payload
 
 
 def _status_from_terminal_payload(payload) -> Optional[OrderStatus]:
@@ -66,6 +69,7 @@ def _status_from_terminal_payload(payload) -> Optional[OrderStatus]:
             payload["cost"],
             payload["fee"],
             venue_status=payload.get("venue_status", ""),
+            orig_qty=payload.get("orig_qty"),
         )
     except (KeyError, TypeError, ValueError, OverflowError):
         return None

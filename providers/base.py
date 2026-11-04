@@ -637,7 +637,8 @@ class MarketDataProvider(ABC):
                 ts_ms = normalize_timestamp_ms(fallback_ts, default=None)
             px_f = extract_current_price_item(entry)
             if px_f is None:
-                px_f = safe_pos_float(entry.get("price", entry.get("px")), default=None)
+                raw_px = entry.get("price") if entry.get("price") is not None else entry.get("px")
+                px_f = safe_pos_float(raw_px, default=None)
             if ts_ms is not None and ts_ms > 0 and px_f is not None:
                 return ts_ms, px_f
             return None
@@ -929,8 +930,10 @@ class MarketDataProvider(ABC):
             out_side: list[tuple[float, float]] = []
             for item in rows:
                 if isinstance(item, dict):
-                    pf = safe_pos_float(item.get("px", item.get("price")), default=None)
-                    qf = safe_pos_float(item.get("sz", item.get("qty", item.get("volume"))), default=None)
+                    raw_p = item.get("px") if item.get("px") is not None else item.get("price")
+                    raw_q = next((item.get(k) for k in ("sz", "qty", "volume") if item.get(k) is not None), None)
+                    pf = safe_pos_float(raw_p, default=None)
+                    qf = safe_pos_float(raw_q, default=None)
                 elif isinstance(item, (list, tuple)) and len(item) >= 2:
                     pf = safe_pos_float(item[0], default=None)
                     qf = safe_pos_float(item[1], default=None)

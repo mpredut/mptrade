@@ -280,6 +280,15 @@ _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
 })
 
 
+def _canonical_queue_symbol(sym) -> str:
+    if isinstance(sym, bool):
+        return ""
+    raw = str(sym or "").strip()
+    if not raw:
+        return ""
+    return canonical_symbol_key(raw) or raw.upper()
+
+
 def _same_deferred_stream(left, right):
     """Return whether two pending pre-submit deferrals represent one current intent."""
     if any(
@@ -291,8 +300,8 @@ def _same_deferred_stream(left, right):
     left_provider = normalize_venue_name(left.get("provider_name"))
     right_provider = normalize_venue_name(right.get("provider_name"))
     provider_matches = not left_provider or not right_provider or left_provider == right_provider
-    left_sym = canonical_symbol_key(left.get("symbol")) or str(left.get("symbol") or "").strip().upper()
-    right_sym = canonical_symbol_key(right.get("symbol")) or str(right.get("symbol") or "").strip().upper()
+    left_sym = _canonical_queue_symbol(left.get("symbol"))
+    right_sym = _canonical_queue_symbol(right.get("symbol"))
     left_kind = str(left.get("kind") or "").strip() or None
     right_kind = str(right.get("kind") or "").strip() or None
     return bool(
@@ -381,8 +390,9 @@ def _resolve_outbox_prefix(placement: dict, kind) -> str:
     prefix = placement.get("prefix") or (
         f"{placement.get('owner')}_OR" if placement.get("owner") else None
     )
-    if not prefix and kind:
-        kind_s = str(kind).strip()
+    eff_kind = kind if kind is not None else placement.get("kind")
+    if not prefix and eff_kind:
+        kind_s = str(eff_kind).strip()
         if "monitor_order_replace" in kind_s:
             parent_owner = placement.get("parent_owner")
             prefix = "MO_MN_OR" if parent_owner == "manual" else ("MO_TA_OR" if parent_owner == "tradeall" else "MO_OR")
@@ -390,6 +400,8 @@ def _resolve_outbox_prefix(placement: dict, kind) -> str:
             prefix = "MT_OR"
         elif _is_tradeall_kind(kind_s):
             prefix = "TA_OR"
+        elif kind_s.lower().startswith("assetguardian"):
+            prefix = "AG_OR"
     return prefix or "OR"
 
 
@@ -502,11 +514,12 @@ def enqueue(
         existing = _read_nolock()
         if lifecycle == "awaiting_cancel":
             provider_key = normalize_venue_name(provider_name)
+            sym_key = _canonical_queue_symbol(symbol)
             for item in existing:
                 if (
                     str(item.get("lifecycle") or "").lower() == "awaiting_cancel"
                     and normalize_venue_name(item.get("provider_name")) == provider_key
-                    and item.get("symbol") == symbol
+                    and _canonical_queue_symbol(item.get("symbol")) == sym_key
                     and str(item.get("side") or "").upper() == side_u
                     and (_clean_retry_order_id(item.get("replaces_order_id")) or str(item.get("replaces_order_id") or ""))
                     == clean_rep_oid
@@ -532,12 +545,13 @@ def enqueue(
                 )
         if RETRY_DEDUP and lifecycle == "submit_pending" and _producer_lease_sec is None:
             provider_key = normalize_venue_name(provider_name)
+            sym_key = _canonical_queue_symbol(symbol)
             for e in existing:
                 if not _safe_to_evict_for_capacity(e):
                     continue
                 e_provider = normalize_venue_name(e.get("provider_name"))
                 if (
-                    str(e.get("symbol") or "").strip().upper() == symbol.upper()
+                    _canonical_queue_symbol(e.get("symbol")) == sym_key
                     and (e.get("side") or "").upper() == side_u
                     and str(e.get("lifecycle") or "submit_pending").lower() == "submit_pending"
                     and (not provider_key or not e_provider or provider_key == e_provider)
@@ -659,7 +673,8 @@ def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id:
 
 
 def _set_record_qty(rec: dict, qty: float) -> None:
-    rec["qty"] = rec["requested_qty_total"] = qty
+    rec["qty"] = qty
+    rec["requested_qty_total"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + qty
 
 
 def _assign_record_ttl(rec: dict, cts: float, custom_ttl: Optional[float], *, clear_if_none: bool = False) -> None:
@@ -798,13 +813,15 @@ def infer_record_owner(rec: dict) -> str:
             owner = "unspecified"
     if owner not in {"unknown", "unspecified", "order_retry"} and not str(owner).startswith("alt:"):
         return owner
-    kind = _clean_str(rec.get("kind"))
+    kind = _clean_str(rec.get("kind")) or _clean_str(placement.get("kind"))
     if "monitor_order_replace" in kind:
         return "monitororder"
     if kind in {"STOP", "TP"}:
         return "monitortrades"
     if _is_tradeall_kind(kind):
         return "tradeall"
+    if kind.lower().startswith("assetguardian"):
+        return "assetguardian"
     return owner
 
 
@@ -826,7 +843,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     """Return active accepted order_ids for ``symbol`` belonging to logical ``owner``."""
     if isinstance(symbol, bool) or isinstance(owner, bool):
         return []
-    target_sym = str(symbol or "").strip().upper()
+    target_sym = _canonical_queue_symbol(symbol)
     target_owner = str(owner or "").strip().lower()
     if not target_sym or not target_owner:
         return []
@@ -834,7 +851,7 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
     for r in _safe_load_all():
         if (
             str(r.get("lifecycle") or "").lower() == "accepted"
-            and str(r.get("symbol") or "").strip().upper() == target_sym
+            and _canonical_queue_symbol(r.get("symbol")) == target_sym
         ):
             oid_str = _clean_retry_order_id(r.get("order_id"))
             if oid_str and infer_record_owner(r) == target_owner and oid_str not in out:
@@ -1213,7 +1230,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
             if qty > current_qty + max(1e-12, current_qty * 1e-9):
                 break
             replaced_order_id = _clean_retry_order_id(rec.get("replaces_order_id")) or str(rec.get("replaces_order_id") or "").strip()
-            replaced_symbol = str(rec.get("symbol") or "").strip().upper()
+            replaced_symbol = _canonical_queue_symbol(rec.get("symbol"))
             if qty <= max(1e-12, current_qty * 1e-9):
                 existing.pop(index)
                 result = "resolved"
@@ -1233,7 +1250,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                     item for item in existing
                     if not (
                         str(item.get("lifecycle") or "").lower() == "accepted"
-                        and str(item.get("symbol") or "").strip().upper() == replaced_symbol
+                        and _canonical_queue_symbol(item.get("symbol")) == replaced_symbol
                         and (_clean_retry_order_id(item.get("order_id")) or str(item.get("order_id") or "").strip()) == replaced_order_id
                     )
                 ]
@@ -1245,7 +1262,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     """Remove an ``accepted`` tracker after intentional external cancellation."""
     if isinstance(symbol, bool) or isinstance(order_id, bool):
         return False
-    target_sym = str(symbol or "").strip().upper()
+    target_sym = _canonical_queue_symbol(symbol)
     target_oid = _clean_retry_order_id(order_id)
     if not target_sym or not target_oid:
         return False
@@ -1257,7 +1274,7 @@ def resolve_accepted_order(symbol, order_id) -> bool:
         for rec in existing:
             if (
                 str(rec.get("lifecycle") or "").lower() == "accepted"
-                and str(rec.get("symbol") or "").strip().upper() == target_sym
+                and _canonical_queue_symbol(rec.get("symbol")) == target_sym
                 and _clean_retry_order_id(rec.get("order_id")) == target_oid
             ):
                 removed_records.append(rec)
@@ -1404,7 +1421,7 @@ def resolve(symbol, side):
     """Legacy helper: remove only unaccepted pending records by symbol and side."""
     if isinstance(symbol, bool) or isinstance(side, bool):
         return 0
-    target_sym = str(symbol or "").strip().upper()
+    target_sym = _canonical_queue_symbol(symbol)
     side_u = normalize_side(side)
     _ensure_dir()
     with FileLock(LOCK_FILE):
@@ -1412,7 +1429,7 @@ def resolve(symbol, side):
         remaining = [
             rec for rec in existing
             if not (
-                str(rec.get("symbol") or "").strip().upper() == target_sym
+                _canonical_queue_symbol(rec.get("symbol")) == target_sym
                 and str(rec.get("side") or "").strip().upper() == side_u
                 and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
             )

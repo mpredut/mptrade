@@ -4733,6 +4733,133 @@ def test_iter80_pricefetcher_refresh_and_kraken_trailing_unlock(monkeypatch, tmp
         kt.trail_pct_for("UNKNOWN_SYMBOL_XYZ")
 
 
+def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_path, monkeypatch):
+    import order_lifecycle
+    import order_retry
+    from providers.base import MarketDataProvider
+    from providers.strategy_executor import OrderStatus
+    from providers.t212_provider import T212Provider
+
+    # 1. order_lifecycle._terminal_payload & _status_from_terminal_payload preserve orig_qty
+    st_term = OrderStatus("expired", filled_qty=4.0, cost=40.0, fee=0.04, venue_status="EXPIRED", orig_qty=10.0)
+    payload = order_lifecycle._terminal_payload(st_term, 1700000000.0)
+    assert payload["orig_qty"] == pytest.approx(10.0)
+    restored = order_lifecycle._status_from_terminal_payload(payload)
+    assert restored is not None
+    assert restored.orig_qty == pytest.approx(10.0)
+
+    # 2. order_retry preserves cumulative requested_qty_total across partial-fill remainder revisions
+    #    and matches symbols canonically across queue helpers
+    q_file = tmp_path / "order_retry_queue.jsonl"
+    lock_file = tmp_path / "order_retry_queue.lock"
+    monkeypatch.setattr(order_retry, "QUEUE_FILE", str(q_file))
+    monkeypatch.setattr(order_retry, "LOCK_FILE", str(lock_file))
+
+    rec_id = order_retry.enqueue(
+        "TAO/USDC",
+        "BUY",
+        qty=10.0,
+        requested_price=10.0,
+        ref_price=10.0,
+        now=1000.0,
+        place_kwargs={"kind": "assetguardian_tier"},
+    )
+    assert rec_id is not None
+    assert order_retry.mark_accepted(rec_id, {"orderId": "101", "origQty": "10.0"}, now=1000.0) is True
+    assert order_retry.get_accepted_order_ids_for_owner("taousdc", "assetguardian") == ["101"]
+
+    claimed_r0 = order_retry.claim([rec_id], now=1020.0)[0]
+    trans = order_retry.advance_claimed_status(claimed_r0, st_term, now=1020.0)
+    assert trans.action == "retry_terminal"
+    assert trans.remaining_qty == pytest.approx(6.0)
+
+    rec_after_r0 = order_retry.get(rec_id)
+    assert rec_after_r0["delivered_qty"] == pytest.approx(4.0)
+    assert rec_after_r0["qty"] == pytest.approx(6.0)
+    assert rec_after_r0["requested_qty_total"] == pytest.approx(10.0)
+
+    # Revision 1 submitted and accepted for remaining 6.0 -> requested_qty_total must remain 4.0 + 6.0 = 10.0
+    claimed_r1 = order_retry.claim([rec_id], now=1050.0)[0]
+    assert order_retry.complete_claim(
+        claimed_r1,
+        "accepted",
+        now=1050.0,
+        order={"orderId": "102", "origQty": "6.0"},
+    )
+    rec_after_r1_accept = order_retry.get(rec_id)
+    assert rec_after_r1_accept["qty"] == pytest.approx(6.0)
+    assert rec_after_r1_accept["requested_qty_total"] == pytest.approx(10.0)
+
+    # Observed status on revision 1 with orig_qty=6.0 -> requested_qty_total must remain 10.0
+    claimed_r1_obs = order_retry.claim([rec_id], now=1070.0)[0]
+    st_open_r1 = OrderStatus("open", filled_qty=1.0, cost=10.0, fee=0.01, venue_status="PARTIALLY_FILLED", orig_qty=6.0)
+    order_retry.advance_claimed_status(claimed_r1_obs, st_open_r1, now=1070.0)
+    rec_after_r1_obs = order_retry.get(rec_id)
+    assert rec_after_r1_obs["qty"] == pytest.approx(6.0)
+    assert rec_after_r1_obs["requested_qty_total"] == pytest.approx(10.0)
+
+    # Canonical symbol matching on resolve_accepted_order
+    assert order_retry.resolve_accepted_order("TAOUSDC", "102") is True
+    assert order_retry.get(rec_id) is None
+
+    # 3. T212Provider.open_orders and order_status fall back past explicit None fields (e.g. limitPrice=None, stopPrice=125.5)
+    class _StubT212Client:
+        def list_active_orders(self):
+            return [
+                {
+                    "id": "555",
+                    "ticker": "NVDA_US_EQ",
+                    "status": "NEW",
+                    "type": "STOP",
+                    "orderedQuantity": None,
+                    "quantity": -2.5,
+                    "limitPrice": None,
+                    "stopPrice": 125.5,
+                    "filledQuantity": None,
+                    "executedQty": 0.5,
+                }
+            ]
+
+        def get_order_status(self, oid):
+            return {
+                "id": oid,
+                "ticker": "NVDA_US_EQ",
+                "status": "FILLED",
+                "filledQuantity": 2.0,
+                "filledValue": 0.0,
+                "fillPrice": None,
+                "averagePrice": 130.0,
+                "orderedQuantity": None,
+                "quantity": 2.0,
+                "fee": 0.0,
+            }
+
+    t212 = T212Provider(client=_StubT212Client(), live_enabled=False)
+    open_list = t212.open_orders("NVDA_US_EQ")
+    assert len(open_list) == 1
+    assert open_list[0]["side"] == "SELL"
+    assert open_list[0]["price"] == pytest.approx(125.5)
+    assert open_list[0]["origQty"] == pytest.approx(2.5)
+    assert open_list[0]["executedQty"] == pytest.approx(0.5)
+
+    st_t212 = t212.order_status("NVDA_US_EQ", "555")
+    assert st_t212.status == "closed"
+    assert st_t212.cost == pytest.approx(260.0)
+    assert st_t212.orig_qty == pytest.approx(2.0)
+
+    # 4. MarketDataProvider.normalize_orderbook_payload & _parse_ssot_price_point fall back past explicit None keys
+    ob = MarketDataProvider.normalize_orderbook_payload(
+        {
+            "bids": [{"px": None, "price": 100.0, "sz": None, "qty": 1.5}],
+            "asks": [{"px": None, "price": 101.0, "sz": None, "volume": 2.0}],
+        }
+    )
+    assert ob == {"bids": [(100.0, 1.5)], "asks": [(101.0, 2.0)]}
+    pt = MarketDataProvider._parse_ssot_price_point({"timestamp": 1700000000, "price": None, "px": 42.5})
+    assert pt == (1700000000000, 42.5)
+
+
+
 
 
 
