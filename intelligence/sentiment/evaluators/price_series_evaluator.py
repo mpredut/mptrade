@@ -29,6 +29,43 @@ def _parse_ts_px_row(row: Any) -> Optional[Tuple[float, float]]:
     return ((tf * 1000.0 if tf < 1e11 else tf), pf) if (tf > 0.0 and pf > 0.0) else None
 
 
+_SORTED_TS_PX_MEMO: Dict[Tuple[int, int, Any, Any], List[Tuple[float, float]]] = {}
+_BUCKET_5M_MEMO: Dict[Tuple[int, int, Any, Any], Dict[int, float]] = {}
+
+
+def _series_memo_key(series: list) -> Optional[Tuple[int, int, Any, Any]]:
+    if not isinstance(series, list) or not series:
+        return None
+    r0, r1 = series[0], series[-1]
+    k0 = (r0[0], r0[1]) if isinstance(r0, (list, tuple)) and len(r0) >= 2 else r0
+    k1 = (r1[0], r1[1]) if isinstance(r1, (list, tuple)) and len(r1) >= 2 else r1
+    return (id(series), len(series), k0, k1)
+
+
+def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
+    if not isinstance(series, list) or not series:
+        return []
+    mkey = _series_memo_key(series)
+    if mkey is not None and (cached := _SORTED_TS_PX_MEMO.get(mkey)) is not None:
+        return cached
+    pts: List[Tuple[float, float]] = []
+    prev_t = -1.0
+    is_sorted = True
+    for row in series:
+        if (pt := _parse_ts_px_row(row)) is not None:
+            if pt[0] < prev_t:
+                is_sorted = False
+            prev_t = pt[0]
+            pts.append(pt)
+    if not is_sorted:
+        pts.sort(key=lambda x: x[0])
+    if mkey is not None:
+        if len(_SORTED_TS_PX_MEMO) >= 32:
+            _SORTED_TS_PX_MEMO.clear()
+        _SORTED_TS_PX_MEMO[mkey] = pts
+    return pts
+
+
 def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
     """Return True when two positive prices diverge by more than ``threshold`` relative to their minimum."""
     a_f, b_f = safe_pos_float(px_a, default=0.0) or 0.0, safe_pos_float(px_b, default=0.0) or 0.0
@@ -82,19 +119,24 @@ def compute_volume_profile_metrics(
     if not isinstance(series, list) or len(series) < 4:
         return {}
     try:
-        timed_rows: list[Tuple[float, float, float]] = []
-        scalar_rows: list[float] = []
-        for row in series:
-            if isinstance(row, (list, tuple)) and len(row) >= 2:
-                if (pt := _parse_ts_px_row(row)) is not None:
-                    timed_rows.append((pt[0], pt[1], safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0))
-            elif not isinstance(row, (list, tuple)) and (px_f := safe_pos_float(row, 0.0)) > 0.0:
-                scalar_rows.append(px_f)
+        has_vol_or_scalar = any(not isinstance(r, (list, tuple)) or len(r) != 2 for r in series)
+        if not has_vol_or_scalar:
+            raw_pairs = [(px_f, 0.0) for _, px_f in _extract_sorted_ts_px(series)]
+            has_real_vol = False
+        else:
+            timed_rows: list[Tuple[float, float, float]] = []
+            scalar_rows: list[float] = []
+            for row in series:
+                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                    if (pt := _parse_ts_px_row(row)) is not None:
+                        timed_rows.append((pt[0], pt[1], safe_pos_float(row[2], 0.0) if len(row) >= 3 else 0.0))
+                elif not isinstance(row, (list, tuple)) and (px_f := safe_pos_float(row, 0.0)) > 0.0:
+                    scalar_rows.append(px_f)
+            raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])] if timed_rows else [(px_f, 0.0) for px_f in scalar_rows]
+            has_real_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0) >= max(4, len(raw_pairs) // 4)
 
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None
-        raw_pairs = [(px_f, vol_w) for _, px_f, vol_w in sorted(timed_rows, key=lambda x: x[0])] if timed_rows else [(px_f, 0.0) for px_f in scalar_rows]
-        has_real_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0) >= max(4, len(raw_pairs) // 4)
         for px_f, vol_w in raw_pairs:
             if vol_w <= 0.0:
                 vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
@@ -237,7 +279,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
     if not isinstance(series, list) or len(series) < 2:
         return {}
     try:
-        clean_series = sorted((pt for row in series if (pt := _parse_ts_px_row(row)) is not None), key=lambda x: x[0])
+        clean_series = _extract_sorted_ts_px(series)
         if len(clean_series) < 2:
             return {}
         now_ms, cur_px = clean_series[-1]
@@ -311,8 +353,16 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
     try:
         def _clean_buckets(series: list) -> Dict[int, float]:
-            pts = sorted((pt for row in series if (pt := _parse_ts_px_row(row)) is not None), key=lambda x: x[0])
-            return {int(round(pt[0] / 300000.0)): pt[1] for pt in pts}
+            mkey = _series_memo_key(series)
+            if mkey is not None and (cached_b := _BUCKET_5M_MEMO.get(mkey)) is not None:
+                return cached_b
+            pts = _extract_sorted_ts_px(series)
+            bmap = {int(round(pt[0] / 300000.0)): pt[1] for pt in pts}
+            if mkey is not None:
+                if len(_BUCKET_5M_MEMO) >= 32:
+                    _BUCKET_5M_MEMO.clear()
+                _BUCKET_5M_MEMO[mkey] = bmap
+            return bmap
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
         if len(a_map) < 4 or len(b_map) < 4:
@@ -376,6 +426,8 @@ def _extract_ordered_prices(series_or_vals: Any) -> list[float]:
             scalars.append(v)
     if timed and not scalars:
         return [px for _, px in sorted(timed, key=lambda x: x[0])]
+    if scalars and not timed:
+        return scalars
     return [
         v for item in series_or_vals
         if (v := safe_pos_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, default=0.0) or 0.0) > 0.0
@@ -570,10 +622,7 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
     """Derive Kalman velocity (% per min), std, and trend from a 24h price series when cache_kalman_trend lacks the symbol."""
-    pts = sorted(
-        ((parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None),
-        key=lambda x: x[0],
-    )
+    pts = [(t_ms / 1000.0, px_v) for t_ms, px_v in _extract_sorted_ts_px(series_24h)]
     if len(pts) < 5:
         return None
     cutoff_s = pts[-1][0] - 7200.0
@@ -617,10 +666,7 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
 
 def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     """Derive fallback multi-horizon slopes (90s, 3.7m, 15m, 2.5h) and growth coefficients from a 24h series."""
-    pts = sorted(
-        ((parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None and parsed[1] > 0),
-        key=lambda x: x[0],
-    )
+    pts = [(t_ms / 1000.0, px_v) for t_ms, px_v in _extract_sorted_ts_px(series_24h) if px_v > 0]
     if len(pts) < 3:
         return {}
     t_now, p_now = pts[-1]
@@ -770,9 +816,9 @@ def _apply_24h_series_enrichment(
     """Enrich a symbol's `prices_and_trends` entry with 24h metrics, cross-BTC beta/corr, Kalman, slopes, and 1h vol."""
     entry.update(m24)
     if series_24h and safe_float(entry.get("price"), 0.0) <= 0.0:
-        parsed_pts_24 = [pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None]
+        parsed_pts_24 = _extract_sorted_ts_px(series_24h)
         if parsed_pts_24:
-            entry["price"] = max(parsed_pts_24, key=lambda x: x[0])[1]
+            entry["price"] = parsed_pts_24[-1][1]
         elif isinstance(series_24h[-1], (list, tuple)) and len(series_24h[-1]) >= 2:
             if (px_last_24 := safe_pos_float(series_24h[-1][1], default=None)) is not None:
                 entry["price"] = px_last_24
@@ -822,7 +868,7 @@ def _apply_24h_series_enrichment(
                 ):
                     entry[sk] = sv
         if len(series_24h) >= 20:
-            all_pts_m = sorted((pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None), key=lambda x: x[0])
+            all_pts_m = _extract_sorted_ts_px(series_24h)
             tail_pts_m: List[Tuple[float, float]] = []
             has_dense_1h_bars = False
             if len(all_pts_m) >= 10:

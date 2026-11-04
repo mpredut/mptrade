@@ -22,6 +22,11 @@ import sys
 import threading
 import time
 import urllib.parse
+
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("intelligence.macro_sentiment_ssot", _self_mod)
+    sys.modules.setdefault("macro_sentiment_ssot", _self_mod)
 from typing import (
     TYPE_CHECKING,
     Any,

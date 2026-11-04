@@ -802,10 +802,9 @@ def main(argv) -> int:
             if mode == "check":
                 return mode_check()
             if mode == "ui-sync-check":
-                intel_dir = os.path.join(_ROOT_DIR, "intelligence")
-                if intel_dir not in sys.path:
-                    sys.path.insert(0, intel_dir)
-                from macro_sentiment_ssot import resolve_derived_telemetry_intervals
+                if _ROOT_DIR not in sys.path:
+                    sys.path.insert(0, _ROOT_DIR)
+                from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
                 ssot_itvs = resolve_derived_telemetry_intervals()
                 idle_sec = float(ssot_itvs.get("ui_sync_idle_sec", 120.0))
                 if "--idle-sec" in argv and argv.index("--idle-sec") + 1 < len(argv):

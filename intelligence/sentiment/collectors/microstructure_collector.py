@@ -291,13 +291,20 @@ def load_symbol_price_series(
 
     # 4. Normalize, sort, and deduplicate series_24h so callers always receive clean [tms, px] (or [tms, px, vol]) points
     if series_24h:
-        cleaned_24h = sorted(
-            (
-                ([pt[0], pt[1], vol_v] if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None else [pt[0], pt[1]])
-                for row in series_24h if (pt := _parse_ts_px_row(row)) is not None
-            ),
-            key=lambda x: x[0],
-        )
+        cleaned_24h = []
+        prev_t = -1.0
+        is_sorted = True
+        for row in series_24h:
+            if (pt := _parse_ts_px_row(row)) is not None:
+                if pt[0] < prev_t:
+                    is_sorted = False
+                prev_t = pt[0]
+                if len(row) >= 3 and (vol_v := safe_pos_float(row[2], default=None)) is not None:
+                    cleaned_24h.append([pt[0], pt[1], vol_v])
+                else:
+                    cleaned_24h.append([pt[0], pt[1]])
+        if not is_sorted:
+            cleaned_24h.sort(key=lambda x: x[0])
         if len(cleaned_24h) >= 2:
             dedup_24h = [cleaned_24h[0]]
             for pt in cleaned_24h[1:]:
@@ -513,7 +520,7 @@ def enrich_24h_and_microstructure(
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
     now_ts = (now_ts / 1000.0 if now_ts > 1e11 else now_ts) if (now_ts := safe_pos_float(now_ts, default=None)) is not None else _time.time()
     _rj = _resolve_read_json_cached(read_json_fn)
-    btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
+    btc_series_24h, btc_vals_7d = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True)
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
@@ -538,7 +545,10 @@ def enrich_24h_and_microstructure(
             prices_and_trends[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
-        matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
+        if sym == "BTCUSDC" and btc_series_24h:
+            matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
+        else:
+            matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
         if sym_px_cur > 0 and matched_series_24h:
             last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
             if _prices_diverged(sym_px_cur, last_24_px):

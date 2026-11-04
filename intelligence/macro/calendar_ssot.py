@@ -27,11 +27,6 @@ from botcore import (
     safe_pos_float,
     split_csv as _split_csv,
 )
-from intelligence.macro.lexicon_ssot import (
-    _PARTISAN_ELECTION_CONTEXT_WORDS,
-    get_active_acute_shock_phrases,
-)
-import intelligence.macro_sentiment_ssot as _ssot
 
 
 @dataclass(frozen=True)
@@ -121,7 +116,7 @@ def get_session_transition_checkpoints_eet() -> Tuple[Tuple[int, int, str], ...]
     return tuple(parsed)
 
 
-SESSION_TRANSITION_CHECKPOINTS_EET: Tuple[Tuple[int, int, str], ...] = get_session_transition_checkpoints_eet()
+SESSION_TRANSITION_CHECKPOINTS_EET: Tuple[Tuple[int, int, str], ...] = ()
 
 
 def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
@@ -193,7 +188,7 @@ def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSess
 def did_cross_session_checkpoint(
     last_eval_ts: float,
     now_ts: float,
-    min_cooldown_sec: float = _ssot.SENTIMENT_CHECKPOINT_COOLDOWN_SEC,
+    min_cooldown_sec: Optional[float] = None,
 ) -> Optional[str]:
     """Return the checkpoint label if a canonical EET session transition was crossed in (last_eval_ts, now_ts]."""
     last_f = safe_pos_float(last_eval_ts, 0.0)
@@ -418,7 +413,7 @@ def resolve_macro_economic_calendar(
 
 
 def compute_dynamic_sentiment_interval(
-    base_interval_sec: float = _ssot.DEFAULT_SENTIMENT_INTERVAL_SEC,
+    base_interval_sec: Optional[float] = None,
     last_eval_ts: float = 0.0,
     now_ts: Optional[float] = None,
     cached_assessment: Optional[Any] = None,
@@ -431,6 +426,8 @@ def compute_dynamic_sentiment_interval(
     prev_btc_taker_ratio: Optional[float] = None,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_sentiment`` evaluation."""
+    if base_interval_sec is None:
+        base_interval_sec = _ssot.DEFAULT_SENTIMENT_INTERVAL_SEC
     derived = _ssot.resolve_derived_telemetry_intervals()
     dyn_default_sent = derived["default_sentiment_interval_sec"]
     raw_base = safe_pos_float(base_interval_sec, dyn_default_sent)
@@ -528,17 +525,21 @@ def compute_dynamic_sentiment_interval(
 
 
 def compute_dynamic_geopolitical_interval(
-    base_interval_sec: float = _ssot.DEFAULT_GEOPOLITICAL_INTERVAL_SEC,
+    base_interval_sec: Optional[float] = None,
     last_eval_ts: float = 0.0,
     now_ts: Optional[float] = None,
     cached_assessment: Optional[Any] = None,
     news_snapshot: Optional[Any] = None,
     headlines_changed: bool = False,
-    fallback_retry_ttl_sec: float = _ssot.DEFAULT_FALLBACK_RETRY_TTL_SEC,
+    fallback_retry_ttl_sec: Optional[float] = None,
     last_headlines_digest: str = "",
     cache_dir: Optional[str] = None,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_geopolitical`` evaluation."""
+    if base_interval_sec is None:
+        base_interval_sec = _ssot.DEFAULT_GEOPOLITICAL_INTERVAL_SEC
+    if fallback_retry_ttl_sec is None:
+        fallback_retry_ttl_sec = _ssot.DEFAULT_FALLBACK_RETRY_TTL_SEC
     derived = _ssot.resolve_derived_telemetry_intervals()
     dyn_default_geo = derived["default_geopolitical_interval_sec"]
     raw_base = safe_pos_float(base_interval_sec, dyn_default_geo)
@@ -602,3 +603,13 @@ def compute_dynamic_geopolitical_interval(
         return min(max_geo_itv, base * 1.15), "global_daytime_calm"
 
     return base, f"standard_geopolitical_ttl_{threat_level.lower()}"
+
+
+import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
+from intelligence.macro.lexicon_ssot import (  # noqa: E402
+    _PARTISAN_ELECTION_CONTEXT_WORDS,
+    get_active_acute_shock_phrases,
+)
+
+SESSION_TRANSITION_CHECKPOINTS_EET = get_session_transition_checkpoints_eet()
+_ssot.SESSION_TRANSITION_CHECKPOINTS_EET = SESSION_TRANSITION_CHECKPOINTS_EET
