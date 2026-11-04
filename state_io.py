@@ -79,9 +79,8 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
     destination = os.path.abspath(os.fspath(destination))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
-    staging_directory = tempfile.mkdtemp(
-        dir=directory, prefix=f".{os.path.basename(destination)}."
-    )
+    prefix = f".{os.path.basename(destination)}."
+    staging_directory = tempfile.mkdtemp(dir=directory, prefix=prefix)
     staged = os.path.join(staging_directory, "generation")
     try:
         try:
@@ -92,12 +91,11 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
                 os.fsync(handle.fileno())
         durable_replace_file(staged, destination)
     finally:
+        shutil.rmtree(staging_directory, ignore_errors=True)
         try:
-            os.unlink(staged)
-        except OSError:
-            pass
-        try:
-            os.rmdir(staging_directory)
+            for entry in os.listdir(directory):
+                if entry != os.path.basename(staging_directory) and entry.startswith(prefix):
+                    shutil.rmtree(os.path.join(directory, entry), ignore_errors=True)
         except OSError:
             pass
 

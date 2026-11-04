@@ -178,10 +178,12 @@ def main() -> int:
         touch_module_heartbeat("T212-bot", interval_sec=30.0, force=True, symbols=asset_names)
         while not STOP.is_set() and any(t.is_alive() for t in threads):
             touch_module_heartbeat("T212-bot", interval_sec=30.0, symbols=asset_names)
-            time.sleep(1)
+            STOP.wait(1.0)
     except KeyboardInterrupt:
         log("Shutdown requested (Ctrl+C)...")
         STOP.set()
+    for t in threads:
+        t.join(timeout=5.0)
     return 0
 
 

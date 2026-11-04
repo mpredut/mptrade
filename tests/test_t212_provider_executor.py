@@ -322,6 +322,19 @@ class T212ExecutorContractTest(unittest.TestCase):
         self.assertEqual(outcome.get("state"), "refused")
         self.assertIn("HTTP 400", str(outcome.get("reason") or ""))
 
+    def test_market_buy_retries_on_insufficient_free_cash_buffer(self):
+        responses = [
+            (400, {"type": "/api-errors/insufficient-free-for-stocks-buy", "detail": "Insufficient funds"}),
+            (200, {"id": 9901, "status": "NEW"}),
+        ]
+        with mock.patch.object(self.fake, "place_market_order", side_effect=responses) as mock_mkt:
+            res = self.provider.place_order("NVDA_US_EQ", "BUY", 201.73, 0.44, market=True)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("orderId"), "9901")
+        self.assertEqual(mock_mkt.call_count, 2)
+        self.assertEqual(mock_mkt.call_args_list[0].args, ("NVDA_US_EQ", 0.44))
+        self.assertEqual(mock_mkt.call_args_list[1].args, ("NVDA_US_EQ", 0.41))
+
 
 class T212ClientTransportTest(unittest.TestCase):
     def test_the_market_payload_and_the_history_fallback(self):

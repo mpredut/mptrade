@@ -317,7 +317,22 @@ class T212Provider(MarketDataProvider):
         symbol = symbol.strip()
         signed = self._signed_qty(side, qty)
         if _parse_bool_flag(market, False):
-            return self._client().place_market_order(symbol, signed, extended_hours=False)
+            status, data = self._client().place_market_order(symbol, signed, extended_hours=False)
+            if (
+                status == 400
+                and signed > 0
+                and isinstance(data, dict)
+                and "insufficient-free-for-stocks-buy" in str(data.get("type", "")).lower()
+            ):
+                scale = 10 ** _VOLUME_DECIMALS
+                retry_qty = int(signed * 0.945 * scale + 1e-9) / scale
+                if retry_qty >= _ORDER_MIN and retry_qty < signed:
+                    print(
+                        f"[T212] market BUY {symbol} qty={signed} hit 5% cash reserve buffer; "
+                        f"retrying with qty={retry_qty}"
+                    )
+                    return self._client().place_market_order(symbol, retry_qty, extended_hours=False)
+            return status, data
         if price is None:
             raise ProviderError("a T212 LIMIT order requires a price")
         price_f = safe_pos_float(price, default=None)

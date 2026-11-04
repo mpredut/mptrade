@@ -993,21 +993,37 @@ class BaseSpotMixin:
         reload_external: bool = False,
     ) -> None:
         """Shared self-healing execution loop for spot and T212 strategies."""
+        import signal
+        import threading
+
         check_min = safe_pos_float(self.p.check_minutes, default=None)
         sleep_sec = max(1.0, check_min * 60.0) if check_min is not None else 60.0
         sleep_fn = self._mod_global("time", time).sleep
         last_price: list[float | None] = [None]
         self._touch_strategy_heartbeat(None, sleep_sec, force=True)
+        sigterm_ev = threading.Event()
+        prev_sigterm = None
+        if stop is None and threading.current_thread() is threading.main_thread():
+            try:
+                prev_sigterm = signal.getsignal(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, lambda *_: sigterm_ev.set())
+            except (ValueError, OSError):
+                prev_sigterm = None
+
+        def _is_stopped() -> bool:
+            return bool((stop is not None and stop.is_set()) or sigterm_ev.is_set())
 
         def _delay() -> None:
             self._touch_strategy_heartbeat(last_price[0], sleep_sec)
             if stop is not None:
                 stop.wait(sleep_sec)
+            elif sleep_fn is time.sleep:
+                sigterm_ev.wait(sleep_sec)
             else:
                 sleep_fn(sleep_sec)
 
         try:
-            while not (stop is not None and stop.is_set()):
+            while not _is_stopped():
                 price = safe_pos_float(price_fn(), default=None)
                 last_price[0] = price
                 if price is None:
@@ -1034,3 +1050,9 @@ class BaseSpotMixin:
         except KeyboardInterrupt:
             self._log_msg("  [STRAT] stopped manually.")
             self._save()
+        finally:
+            if prev_sigterm is not None:
+                try:
+                    signal.signal(signal.SIGTERM, prev_sigterm)
+                except (ValueError, OSError):
+                    pass

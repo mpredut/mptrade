@@ -32,6 +32,8 @@ cachedb/
 *.lock
 *.meta
 *.bak*
+*.previous
+*.previous.*
 
 # State files (*.json in root and subdirectories are runtime states, except tracked schema/config)
 */**/*.json
