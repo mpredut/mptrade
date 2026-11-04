@@ -288,17 +288,18 @@ def compute_liquidation_clusters(
     )
     cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
     sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
+    slope_15m_v = safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0
     if (
         liq_magnet_bias == "LONG_SWEEP_MAGNET_DOWN"
         and cvd_reg == "aggressive_buying"
         and chg_15m_v >= 0.05
-        and kalman_vel > 0.0
+        and (kalman_vel > 0.0 or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55))
         and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
     ) or (
         liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
         and cvd_reg == "aggressive_market_dumps"
         and chg_15m_v <= -0.05
-        and kalman_vel < 0.0
+        and (kalman_vel < 0.0 or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45))
         and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
     ):
         liq_magnet_bias = "BALANCED_LIQ_MAGNET"

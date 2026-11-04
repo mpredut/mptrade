@@ -335,6 +335,8 @@ def collect_pretrade_telemetry(
                     first_alt_pt = _parse_ts_px_row(alt_series_24h[0]) if alt_series_24h else None
                     if "chg_24h_pct" in m24 and first_alt_pt is not None and first_alt_pt[1] > 0:
                         m24["chg_24h_pct"] = pct_delta(cur_px_est, first_alt_pt[1])
+            if rth_fresh_eq and m24 and cur_px_est > 0.0:
+                recalculate_live_price_geometry(m24, cur_px_est)
         if m24 and m24.get("vp_source") == "TPO" and not str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ:
             try:
                 import time as _pt_time

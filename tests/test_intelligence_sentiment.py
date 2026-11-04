@@ -4676,4 +4676,41 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert k_aw["kalman_vel"] > 0.0
     assert k_aw["kalman_vel_std"] < 5.0
 
+    # Wave 14: Bugs 74-78
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
+
+    # Bug 74: apply_short_trend_item falls back sub-threshold slope_full (<5e-8) to gradient_recent and sub-threshold growth_coefficient to slope_full
+    entry_74: dict = {}
+    apply_short_trend_item(
+        entry_74,
+        {
+            "dynamic": {
+                "222": {"slope_full": -2.63e-8, "gradient_recent": -2.61e-7, "growth_coefficient": -1.07e-6},
+                "9000": {"slope_full": 4.00e-7, "gradient_recent": 3.50e-7, "growth_coefficient": 1.20e-8},
+            }
+        },
+    )
+    assert abs(entry_74["slope_3_7m"] - (-2.61e-7)) < 1e-12
+    assert abs(entry_74["growth_2_5h"] - 4.00e-7) < 1e-12
+
+    # Bug 76: is_excluded_reference_news_item filters first-person plural ("We're...") reader-advice columns
+    assert is_excluded_reference_news_item(
+        "‘It seems bizarre’: We’re in our 80s with $950,000 in traditional IRAs. Why is our adviser pushing Roth conversions?"
+    ) is True
+
+    # Bug 77: compute_liquidation_clusters clamps LONG_SWEEP_MAGNET_DOWN when slope_15m > 0, aggressive_buying, SYNCHRONIZED_SPOT_PERP_BUYING, and strong taker/OB imbalance
+    liq_77 = compute_liquidation_clusters(
+        {"price": 0.41585, "chg_15m_pct": 0.46, "kalman_vel": -0.011, "slope_15m": 1.43e-6, "volatility_1h_pct": 0.25},
+        {
+            "whale_long_pct": 0.74,
+            "taker_buy_sell_ratio": 1.2659,
+            "ob_imbalance": 0.598,
+            "cvd_regime": "aggressive_buying",
+            "spot_perp_flow_regime": "SYNCHRONIZED_SPOT_PERP_BUYING",
+            "oi_usd": 200_000_000.0,
+        },
+    )
+    assert liq_77["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
 
