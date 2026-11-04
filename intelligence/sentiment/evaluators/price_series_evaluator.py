@@ -261,15 +261,20 @@ def compute_volume_profile_metrics(
                 acc_vol += down_vol
 
         eff_dec = _auto_px_decimals(cur_px, decimals)
+        step_px = max(0.5 * bin_w, 10.0 ** (-eff_dec))
         poc_px = round(poc_raw, eff_dec)
         val_px = round(min(poc_raw, low_px + val_idx * bin_w), eff_dec)
         vah_px = round(max(poc_raw, low_px + (vah_idx + 1) * bin_w), eff_dec)
         if val_px >= poc_px and poc_raw > low_px:
-            val_px = round(max(low_px, poc_raw - max(0.5 * bin_w, 10.0 ** (-eff_dec))), eff_dec)
+            val_px = round(max(low_px, poc_raw - step_px), eff_dec)
         if vah_px <= poc_px and poc_raw < high_px:
-            vah_px = round(min(high_px, poc_raw + max(0.5 * bin_w, 10.0 ** (-eff_dec))), eff_dec)
+            vah_px = round(min(high_px, poc_raw + step_px), eff_dec)
         if vah_px <= val_px:
             vah_px, val_px = round(high_px, eff_dec), round(low_px, eff_dec)
+        if poc_px >= vah_px and vah_px > val_px:
+            poc_px = round(max(val_px + 10.0 ** (-eff_dec), vah_px - step_px), eff_dec)
+        elif poc_px <= val_px and vah_px > val_px:
+            poc_px = round(min(vah_px - 10.0 ** (-eff_dec), val_px + step_px), eff_dec)
         out_vp: Dict[str, Any] = {
             "poc_px": poc_px,
             "vah_px": vah_px,
@@ -710,11 +715,14 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         (9000.0, 150.0, "slope_2_5h", "trend_2_5h", "growth_2_5h"),
     ):
         target_t = t_now - win_sec
-        ref_t, ref_p = min(pts[:-1], key=lambda item: abs(item[0] - target_t))
+        cands = [pt for pt in pts[:-1] if pt[0] not in seen_slope_ref_t] if len(pts) >= 10 else pts[:-1]
+        if not cands:
+            continue
+        ref_t, ref_p = min(cands, key=lambda item: abs(item[0] - target_t))
         max_age_sec = 200.0 if win_sec <= 90.0 else win_sec * 4.0
         if len(pts) >= 10 and (
             (win_sec < 9000.0 and (t_now - ref_t) > max_age_sec)
-            or ref_t in seen_slope_ref_t
+            or (win_sec > 90.0 and (t_now - ref_t) < win_sec * 0.5)
         ):
             continue
         seen_slope_ref_t.add(ref_t)
