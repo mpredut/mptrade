@@ -322,7 +322,7 @@ class KrakenProvider(MarketDataProvider):
             return None
         from cachepaths import resolve_kraken_lookup_symbol
 
-        lim = max(5, min(500, int(safe_pos_float(limit, default=200) or 200)))
+        lim = self.clamp_orderbook_limit(limit)
         pair = resolve_kraken_lookup_symbol(str(symbol).strip())
         try:
             res = self._client()._public("Depth", {"pair": pair, "count": lim})

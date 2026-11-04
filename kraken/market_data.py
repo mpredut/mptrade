@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from providers.base import validate_ohlc_candle_bar
+from providers.base import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
 
 try:
     from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
@@ -43,15 +43,15 @@ def fetch_ohlc_candles(
     if isinstance(pair, bool) or not isinstance(pair, str) or not pair.strip():
         raise ValueError(f"invalid pair: {pair!r}")
     pair = pair.strip()
-    if isinstance(interval, bool) or isinstance(timeout, bool):
-        raise ValueError("interval and timeout must not be boolean")
-    if isinstance(interval, float) or (isinstance(interval, str) and "." in interval.strip()):
-        raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    itv_i = exact_pos_int(interval, default=None)
+    interval = parse_ohlc_interval_minutes(
+        interval,
+        str_to_min={},
+        reject_float=True,
+        venue_label="Kraken",
+    )
     to_f = safe_pos_float(timeout, default=None)
-    if itv_i is None or to_f is None:
+    if to_f is None:
         raise ValueError(f"invalid interval={interval!r} or timeout={timeout!r}")
-    interval = itv_i
     qs = urllib.parse.urlencode({"pair": pair, "interval": interval})
     url = f"https://api.kraken.com/0/public/OHLC?{qs}"
     data = fetch_public_json(url, timeout=to_f, user_agent="mptrade/kraken-ohlc-fetcher")

@@ -471,12 +471,60 @@ def optional_env(key: str, default: str | dict | None = "", env: dict | None = N
     return raw if raw else default_str
 
 
-def bool_env(key: str, default: bool | dict = False, env: dict | None = None) -> bool:
-    """Read an optional boolean setting from os.environ or an injected dictionary."""
-    if isinstance(default, dict) and env is None:
-        env, default = default, False
-    src = os.environ if env is None else env
-    return bool(_parse_bool_flag(src.get(key), bool(default)))
+def env_value(folder: str, key: str) -> str | None:
+    """Read one key from ``.env``/``config.env``/``runtime.env`` in ``folder`` without mutating ``os.environ``."""
+    if not isinstance(folder, str) or not folder.strip() or not isinstance(key, str) or not key.strip():
+        return None
+    for fname in (".env", "config.env", "runtime.env"):
+        path = os.path.join(folder, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            parsed = parse_dotenv(path)
+            if key in parsed:
+                val = str(parsed[key]).strip()
+                return val or None
+        except Exception:
+            continue
+    return None
+
+
+def env_values_map(folder: str, names: tuple[str, ...] | list[str]) -> dict[str, str | None]:
+    """Resolve each key from ``os.environ`` first, falling back to ``env_value(folder, name)``."""
+    return {name: os.environ.get(name) or env_value(folder, name) for name in names}
+
+
+_UNSET = object()
+
+
+def bool_env(
+    key: str,
+    second: object = _UNSET,
+    env: dict | object = _UNSET,
+    *,
+    default: object = _UNSET,
+    folder: str | None = None,
+) -> bool:
+    """Read an optional boolean setting from os.environ, an injected dict, or a folder's .env/config.env."""
+    eff_default: object = False if default is _UNSET else default
+    eff_env: dict | None = env if isinstance(env, dict) else None
+    if second is not _UNSET:
+        if isinstance(second, dict) and eff_env is None:
+            eff_env = second
+        elif second is None or (isinstance(second, str) and _parse_bool_flag(second, None) is None):
+            folder = second
+            if default is _UNSET and env is not _UNSET and not isinstance(env, dict):
+                eff_default = env
+        elif default is _UNSET:
+            eff_default = second
+    def_flag = bool(_parse_bool_flag(eff_default, False))
+    if not isinstance(key, str) or not key.strip():
+        return def_flag
+    src = os.environ if eff_env is None else eff_env
+    val = src.get(key)
+    if val is None and folder is not None:
+        val = env_value(folder, key)
+    return bool(_parse_bool_flag(val, def_flag))
 
 
 def resolve_cli_arg(

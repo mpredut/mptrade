@@ -181,7 +181,7 @@ class BinanceProvider(MarketDataProvider):
         from cachepaths import resolve_binance_lookup_symbol
 
         sym_u = symbol.strip().upper()
-        lim = max(5, min(500, exact_pos_int(limit, default=200) or 200))
+        lim = self.clamp_orderbook_limit(limit)
         lookup_sym = resolve_binance_lookup_symbol(sym_u)
         for cand_sym in dict.fromkeys((sym_u, lookup_sym)):
             if not cand_sym:
@@ -231,13 +231,7 @@ class BinanceProvider(MarketDataProvider):
             return None
         symbol = symbol.strip().upper()
         sym_canon = canonical_symbol_key(symbol)
-        spec = next(
-            (
-                item for item in instrument_registry.select_instruments("binance").values()
-                if item.symbol == symbol or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
-            ),
-            None,
-        )
+        spec = self._resolve_venue_instrument_spec(symbol)
         if spec is None:
             return None
         status = health.require_fresh_account_cache()
@@ -1281,15 +1275,12 @@ class MarketApi:
             symbol, explicit_provider_name)
         prov_name = provider.name
         if inst_params is None:
-            try:
-                sym_canon = canonical_symbol_key(symbol)
-                for spec in instrument_registry.select_instruments(prov_name).values():
-                    if sym_canon and canonical_symbol_key(spec.symbol) == sym_canon:
-                        inst_params = dict(spec.params or {})
-                        base = base or spec.base or None
-                        quote = quote or spec.quote or None
-                        break
-            except Exception:
+            spec = MarketDataProvider.resolve_venue_instrument_spec(prov_name, symbol)
+            if spec is not None:
+                inst_params = dict(spec.params or {})
+                base = base or spec.base or None
+                quote = quote or spec.quote or None
+            else:
                 inst_params = {}
         if base is None or quote is None:
             res_base, res_quote = resolve_assets(symbol, base=base, quote=quote)

@@ -159,6 +159,7 @@ _SIDECAR_SUFFIXES: tuple[str, ...] = (
     ".lock",
     ".tmp",
 )
+_SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True))
 
 
 def _clean_path_str(p: object) -> str:
@@ -168,13 +169,20 @@ def _clean_path_str(p: object) -> str:
     return str(os.fspath(p)).strip()
 
 
-def _strip_sidecar_filename(name: str) -> str:
-    """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
-    s = name.strip().replace("\\", "/")
+def _norm_rel_cache_path(raw: str, *, strip_cachedb_prefix: bool = False) -> str:
+    s = raw.strip().replace("\\", "/")
     while s.startswith("./"):
         s = s[2:]
+    if strip_cachedb_prefix and s.startswith("cachedb/"):
+        s = s[len("cachedb/"):]
+    return s
+
+
+def _strip_sidecar_filename(name: str) -> str:
+    """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
+    s = _norm_rel_cache_path(name)
     if "/" in s:
-        for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+        for sub in _SORTED_SUBDOMAINS:
             if s.startswith(sub + "/"):
                 s = s[len(sub) + 1:]
                 break
@@ -196,17 +204,11 @@ def _strip_sidecar_filename(name: str) -> str:
 
 def resolve_cache_subdomain(name: object) -> str | None:
     """Return the canonical thematic cachedb subdomain for ``name``, or ``None`` if unclassified."""
-    raw = _clean_path_str(name).replace("\\", "/")
-    if not raw:
-        return None
-    while raw.startswith("./"):
-        raw = raw[2:]
-    if raw.startswith("cachedb/"):
-        raw = raw[len("cachedb/"):]
+    raw = _norm_rel_cache_path(_clean_path_str(name), strip_cachedb_prefix=True)
     if not raw or raw in CACHEDB_SUBDOMAINS:
         return None
     if "/" in raw:
-        for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+        for sub in _SORTED_SUBDOMAINS:
             if raw.startswith(sub + "/") and raw[len(sub) + 1:]:
                 if sub == "system":
                     inner = resolve_cache_subdomain(os.path.basename(raw))
@@ -417,7 +419,7 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
                 break
     dirs = [dirname]
     norm_dir = dirname.replace("\\", "/")
-    for sub in sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True):
+    for sub in _SORTED_SUBDOMAINS:
         if norm_dir.endswith("/" + sub) or norm_dir == sub:
             parent_dir = norm_dir[: -len(sub)].rstrip("/") or "."
             if parent_dir and parent_dir not in dirs:
@@ -500,13 +502,7 @@ def cache_path(name: str) -> str:
         return name
     if os.path.isabs(raw):
         return str(resolve_cachedb_filepath(raw))
-    norm = raw.replace("\\", "/")
-    while norm.startswith("./"):
-        norm = norm[2:]
-    if norm.startswith("cachedb/"):
-        name = norm[len("cachedb/"):]
-    else:
-        name = norm
+    name = _norm_rel_cache_path(raw, strip_cachedb_prefix=True)
     d = get_cachedb_dir()
     try:
         os.makedirs(d, exist_ok=True)

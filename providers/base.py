@@ -14,11 +14,14 @@ from typing import Any, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    bool_env,
+    env_value,
+    env_values_map,
     exact_nonneg_int,
     exact_pos_int,
     extract_current_price_item,
     obj_attr,
-    parse_dotenv,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -26,11 +29,14 @@ from botcore import (
 )
 from cachepaths import (
     cache_path,
+    cache_symbol_variants,
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    compatible_quote_suffixes,
     get_cachedb_dir,
     normalize_venue_name,
+    resolve_cache_dir_path,
     resolve_cachedb_filepath,
     resolve_kraken_lookup_symbol,
     split_symbol_assets,
@@ -56,42 +62,6 @@ def live_price_fetch_context():
 def is_in_live_price_fetch() -> bool:
     """Return True when called inside a cacheManager remote price poll."""
     return int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0) > 0
-
-
-def env_value(folder: str, key: str) -> Optional[str]:
-    """Read one key from ``.env``/``config.env``/``runtime.env`` without mutating ``os.environ``."""
-    if not isinstance(folder, str) or not folder.strip() or not isinstance(key, str) or not key.strip():
-        return None
-    for fname in (".env", "config.env", "runtime.env"):
-        path = os.path.join(folder, fname)
-        if not os.path.exists(path):
-            continue
-        try:
-            parsed = parse_dotenv(path)
-            if key in parsed:
-                val = str(parsed[key]).strip()
-                return val or None
-        except Exception:
-            continue
-    return None
-
-
-def env_values_map(folder: str, names: tuple[str, ...] | List[str]) -> dict[str, Optional[str]]:
-    """Resolve each key from ``os.environ`` first, falling back to ``env_value(folder, name)``."""
-    return {name: os.environ.get(name) or env_value(folder, name) for name in names}
-
-
-def bool_env(key: str, folder: Optional[str] = None, default: bool = False) -> bool:
-    """Resolve a boolean flag from os.environ or optional provider .env/config.env."""
-    def_flag = _parse_bool_flag(default, False)
-    if not isinstance(key, str) or not key.strip():
-        return def_flag
-    v = os.environ.get(key)
-    if v is None and folder is not None:
-        v = env_value(folder, key)
-    if v is None:
-        return def_flag
-    return _parse_bool_flag(v, def_flag)
 
 
 _TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts")
@@ -526,10 +496,6 @@ def extract_client_order_id(order: Any, default: Optional[str] = None) -> Option
     return _first_mapped(order, _CLIENT_ORDER_ID_KEYS, clean_order_id, default)
 
 
-def _extract_order_cid(order: dict) -> str:
-    return extract_client_order_id(order, default="") or ""
-
-
 def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = None) -> str:
     """Classify an order or fill record as placed by ``'AI'`` (autonomous executor) or ``'BOT'`` (deterministic fleet)."""
     if not isinstance(order, dict):
@@ -540,7 +506,7 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     oid = extract_order_id(order, default="")
     if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
         return "AI"
-    raw_cid = _extract_order_cid(order).upper()
+    raw_cid = (extract_client_order_id(order, default="") or "").upper()
     if raw_cid.startswith("AI_"):
         return "AI"
     if raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids:
@@ -566,7 +532,7 @@ def resolve_order_origin(
     mod = _first_nonempty_str(order, ("module", "bot", "caller"), lower=True)
     rule = _first_nonempty_str(order, ("rule", "trigger_rule", "kind", "role", "motivation"))
     oid = extract_order_id(order, default="")
-    raw_cid = _extract_order_cid(order)
+    raw_cid = extract_client_order_id(order, default="") or ""
 
     if isinstance(audit_origin_map, dict):
         for lookup_key in (str(oid) if oid else "", raw_cid):
@@ -686,7 +652,7 @@ def normalize_open_order(
                 ts_ms = mapped_ts
                 break
     if ts_ms is not None and ts_ms > 0:
-        eff_now_s = safe_pos_float(now_ts, default=None) or time.time()
+        eff_now_s = resolve_now_ts(now_ts)
         age_m = round(max(0.0, (eff_now_s * 1000.0 - float(ts_ms)) / 60000.0), 1)
         rec["created_ts"] = round(float(ts_ms) / 1000.0, 1)
         rec["age_min"] = age_m
@@ -779,84 +745,17 @@ def aggregate_fills_by_order_id(
 # Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 
-from .quantity import decide_quantity, remaining_average_cost, venue_fee_cap_quantity  # noqa: E402
+from .quantity import (  # noqa: E402
+    compute_fills_cost_basis,
+    decide_quantity,
+    remaining_average_cost,
+    venue_fee_cap_quantity,
+)
 from .strategy_executor import (  # noqa: E402
     OrderReconciliationCapabilities,
     PairPrecision,
     ProviderError,
 )
-
-
-def compute_fills_cost_basis(
-    rows: Any,
-    held_qty: float,
-    since_s: float,
-    *,
-    base_asset: str = "",
-    quote_asset: str = "",
-    require_explicit_fee_asset: bool = False,
-    validate_row_fn: Any = None,
-) -> Optional[float]:
-    """Compute inventory-reconciled acquisition cost (``remaining_average_cost``) from raw or normalized fill rows."""
-    since_val = safe_pos_float(since_s, default=None)
-    if since_val is None:
-        raise ValueError("since_s must be finite and positive")
-    if not isinstance(rows, (list, tuple)):
-        return None
-    now_ms = time.time() * 1000.0
-    cutoff = now_ms - since_val * 1000.0
-    normalized = []
-    for idx, r in enumerate(rows):
-        if not isinstance(r, dict):
-            return None
-        row = dict(r)
-        ts_ms = extract_timestamp_ms(row, default=0) or 0
-        if (callable(validate_row_fn) and not validate_row_fn(row)) or ts_ms <= 0 or ts_ms > now_ms:
-            return None
-        if ts_ms < cutoff:
-            continue
-        px = extract_order_price(row, default=0.0) or 0.0
-        qty = extract_order_qty(row, default=0.0) or 0.0
-        side = extract_order_side(row)
-        if px <= 0.0 or qty <= 0.0 or side not in ("BUY", "SELL"):
-            return None
-        fee_info = extract_order_fee(
-            row,
-            base_asset=base_asset,
-            quote_asset=quote_asset,
-            fill_price=px,
-            require_explicit_asset=require_explicit_fee_asset,
-        )
-        if fee_info is None:
-            if require_explicit_fee_asset:
-                return None
-            base_fee = 0.0
-            quote_fee = 0.0
-        else:
-            base_fee = fee_info["base_fee"]
-            quote_fee = fee_info["quote_fee"]
-        fill_id = row.get("id", row.get("tid", row.get("tradeId", row.get("orderId", idx))))
-        normalized.append(
-            {
-                "id": fill_id,
-                "timestamp": ts_ms,
-                "qty": qty,
-                "price": px,
-                "side": side,
-                "base_fee": base_fee,
-                "quote_fee": quote_fee,
-            }
-        )
-
-    def _trade_sort_key(item: dict) -> tuple[int, int, str]:
-        raw_id = item.get("id")
-        id_int = safe_int(raw_id, default=None)
-        if id_int is not None:
-            return (int(item["timestamp"]), 0, f"{id_int:020d}")
-        return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
-
-    normalized.sort(key=_trade_sort_key)
-    return remaining_average_cost(normalized, held_qty)
 
 
 def _derive_128bit_client_order_id(
@@ -947,6 +846,119 @@ OHLC_INTERVALS_MIN_TO_STR: dict[int, str] = {
 OHLC_INTERVALS_STR_TO_MIN: dict[str, int] = {
     v: k for k, v in OHLC_INTERVALS_MIN_TO_STR.items()
 }
+
+OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
+    "1H": "1h",
+    "2H": "2h",
+    "4H": "4h",
+    "6H": "6h",
+    "8H": "8h",
+    "12H": "12h",
+    "1D": "1d",
+    "3D": "3d",
+    "1W": "1w",
+}
+
+
+def parse_ohlc_interval_minutes(
+    interval: Any,
+    *,
+    str_to_min: Optional[dict[str, int]] = None,
+    reject_float: bool = False,
+    venue_label: str = "OHLC",
+) -> int:
+    """Parse an OHLC interval (integer minutes or string e.g. '1h', '60') into positive integer minutes."""
+    if isinstance(interval, bool):
+        raise ValueError(f"interval must be positive integer or string, not bool: {interval}")
+    lookup = str_to_min if str_to_min is not None else OHLC_INTERVALS_STR_TO_MIN
+    if isinstance(interval, str):
+        cleaned = interval.strip()
+        cleaned = OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
+        if cleaned not in lookup and cleaned.lower() in lookup and cleaned.upper() != "1M":
+            cleaned = cleaned.lower()
+        if cleaned in lookup:
+            return lookup[cleaned]
+        if cleaned.isascii() and cleaned.isdigit():
+            val = int(cleaned)
+            if val <= 0:
+                raise ValueError(f"interval must be positive: {interval}")
+            return val
+        raise ValueError(f"unsupported {venue_label} interval: {interval}")
+    if reject_float and isinstance(interval, float):
+        raise ValueError(f"invalid interval={interval!r}: unsupported {venue_label} interval")
+    val_i = exact_pos_int(interval, default=None)
+    if val_i is None:
+        raise ValueError(f"invalid interval={interval!r}: unsupported {venue_label} interval")
+    return val_i
+
+
+def parse_ohlc_interval(
+    interval: Any,
+    *,
+    min_to_str: Optional[dict[int, str]] = None,
+    str_to_min: Optional[dict[str, int]] = None,
+    reject_float: bool = False,
+    venue_label: str = "OHLC",
+) -> tuple[int, str]:
+    """Resolve ``interval`` into ``(interval_minutes, interval_str)`` using ``min_to_str``."""
+    m2s = min_to_str if min_to_str is not None else OHLC_INTERVALS_MIN_TO_STR
+    s2m = str_to_min if str_to_min is not None else {v: k for k, v in m2s.items()}
+    minutes = parse_ohlc_interval_minutes(
+        interval,
+        str_to_min=s2m,
+        reject_float=reject_float,
+        venue_label=venue_label,
+    )
+    interval_str = m2s.get(minutes)
+    if interval_str is None:
+        raise ValueError(f"unsupported {venue_label} interval cadence: {interval} ({minutes}m)")
+    return minutes, interval_str
+
+
+def resolve_ohlc_time_window_ms(
+    *,
+    start_ms: Any = None,
+    end_ms: Any = None,
+    lookback_days: Any = None,
+    lookback_hours: Any = None,
+    timeout: Any = 25,
+    default_lookback_days: int = 30,
+    strict_numeric_types: bool = False,
+) -> tuple[int, int, int, float]:
+    """Validate and resolve ``(now_ms, final_start, final_end, timeout_f)`` for OHLC candle fetches."""
+    now_ms = int(time.time() * 1000)
+    timeout_f = safe_pos_float(timeout, default=None)
+    if timeout_f is None or (strict_numeric_types and not isinstance(timeout, (int, float))):
+        raise ValueError(f"invalid OHLC window parameters: timeout must be finite and positive: {timeout!r}")
+    if end_ms is not None:
+        end_f = safe_pos_float(end_ms, default=None)
+        if end_f is None or int(end_f) <= 0 or (strict_numeric_types and not isinstance(end_ms, (int, float))):
+            raise ValueError(f"invalid OHLC window parameters: end_ms must be finite and positive: {end_ms!r}")
+        final_end = int(end_f)
+    else:
+        final_end = now_ms
+    if final_end <= 0:
+        raise ValueError(f"end_ms must be positive: {end_ms!r}")
+    if start_ms is not None:
+        start_f = safe_nonneg_float(start_ms, default=None)
+        if start_f is None or (strict_numeric_types and not isinstance(start_ms, (int, float))):
+            raise ValueError(f"invalid OHLC window parameters: start_ms must be finite and non-negative: {start_ms!r}")
+        final_start = int(start_f)
+    elif lookback_days is not None:
+        lb_f = safe_pos_float(lookback_days, default=None)
+        if lb_f is None or int(lb_f) <= 0 or (strict_numeric_types and not isinstance(lookback_days, (int, float))):
+            raise ValueError(f"invalid OHLC window parameters: lookback_days must be finite and positive: {lookback_days!r}")
+        final_start = final_end - int(lb_f) * 86400 * 1000
+    elif lookback_hours is not None:
+        lb_f = safe_pos_float(lookback_hours, default=None)
+        if lb_f is None or (strict_numeric_types and not isinstance(lookback_hours, (int, float))):
+            raise ValueError(f"invalid OHLC window parameters: lookback_hours must be finite and positive: {lookback_hours!r}")
+        final_start = int(final_end - lb_f * 3600 * 1000)
+    else:
+        final_start = final_end - default_lookback_days * 86400 * 1000
+    if final_start >= final_end:
+        raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
+    return now_ms, final_start, final_end, timeout_f
 
 
 _MISSING = object()
@@ -1053,6 +1065,14 @@ def read_client_ohlc_series(
         raise
     except Exception as exc:
         raise ProviderError(f"{pfx}: {exc}") from exc
+
+
+def _ts_ms_to_s(ts_ms: float | int) -> float:
+    return ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+
+
+def _is_fresh_obs_ts(obs_ts_s: Optional[float], now_s: float, max_age_s: float) -> bool:
+    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
 
 
 class MarketDataProvider(ABC):
@@ -1165,6 +1185,31 @@ class MarketDataProvider(ABC):
     def get_trades(self, symbol: str, since_s: float) -> List[dict]:
         return self.get_orders(symbol, None, since_s)
 
+    @staticmethod
+    def resolve_venue_instrument_spec(venue: Any, symbol: str) -> Any:
+        """Resolve ``InstrumentSpec`` for ``symbol`` on ``venue`` from ``instrument_registry``."""
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
+            return None
+        sym_u = symbol.strip().upper()
+        sym_canon = canonical_symbol_key(sym_u)
+        try:
+            import instrument_registry
+
+            venue_slug = normalize_venue_name(getattr(venue, "name", venue) or "")
+            return next(
+                (
+                    item
+                    for item in instrument_registry.select_instruments(venue_slug).values()
+                    if item.symbol.upper() == sym_u or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
+                ),
+                None,
+            )
+        except Exception:
+            return None
+
+    def _resolve_venue_instrument_spec(self, symbol: str) -> Any:
+        return self.resolve_venue_instrument_spec(getattr(self, "name", ""), symbol)
+
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float) -> Optional[float]:
         """Return inventory-reconciled acquisition cost from fresh SSOT fills, or None when unknown."""
         since_val = safe_pos_float(since_s, default=None)
@@ -1179,25 +1224,9 @@ class MarketDataProvider(ABC):
         if rows is None:
             return None
         sym_u = symbol.strip().upper()
-        sym_canon = canonical_symbol_key(sym_u)
-        base_asset = ""
-        quote_asset = ""
-        try:
-            import instrument_registry
-
-            venue_slug = normalize_venue_name(getattr(self, "name", ""))
-            spec = next(
-                (
-                    item
-                    for item in instrument_registry.select_instruments(venue_slug).values()
-                    if item.symbol.upper() == sym_u or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
-                ),
-                None,
-            )
-            if spec is not None:
-                base_asset, quote_asset = spec.base, spec.quote
-        except Exception:
-            pass
+        spec = self._resolve_venue_instrument_spec(sym_u)
+        base_asset = spec.base if spec is not None else ""
+        quote_asset = spec.quote if spec is not None else ""
         if not base_asset:
             parts = split_symbol_assets(sym_u)
             if parts is not None:
@@ -1626,7 +1655,7 @@ class MarketDataProvider(ABC):
             items = data.get("items") if isinstance(data.get("items"), dict) else data
             fetchtime_map = data.get("fetchtime") if isinstance(data.get("fetchtime"), dict) else {}
             file_ts = extract_timestamp_s(data, default=None)
-            eff_now = safe_pos_float(now_s, default=None) or time.time()
+            eff_now = resolve_now_ts(now_s)
             for cand in candidates:
                 raw_entry = casefold_get(items, cand)
                 if raw_entry is None:
@@ -1638,8 +1667,7 @@ class MarketDataProvider(ABC):
                 if parsed is None:
                     continue
                 ts_ms, px = parsed
-                obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-                if -5.0 <= (eff_now - obs_s) <= max_age:
+                if _is_fresh_obs_ts(_ts_ms_to_s(ts_ms), eff_now, max_age):
                     return px
         except Exception:
             pass
@@ -1707,8 +1735,7 @@ class MarketDataProvider(ABC):
                 if len(valid) < 2:
                     continue
                 valid.sort(key=lambda pt: pt[0])
-                latest_age_s = now_s - (valid[-1][0] / 1000.0)
-                if latest_age_s < -5.0 or latest_age_s > max_latest_age_sec:
+                if not _is_fresh_obs_ts(valid[-1][0] / 1000.0, now_s, max_latest_age_sec):
                     continue
                 out = [{"timestamp": ts, "price": px} for ts, px in valid if ts >= cutoff_ms]
                 if len(out) < 2:
@@ -1737,7 +1764,7 @@ class MarketDataProvider(ABC):
             if not isinstance(data, dict):
                 return None
             items = data.get("items") if isinstance(data.get("items"), dict) else data
-            eff_now = safe_pos_float(now_s, default=None) or time.time()
+            eff_now = resolve_now_ts(now_s)
             for cand in candidates:
                 if not cand:
                     continue
@@ -1745,7 +1772,7 @@ class MarketDataProvider(ABC):
                 if not isinstance(snap, dict):
                     continue
                 raw_ts = extract_timestamp_s(snap, default=None)
-                if raw_ts is not None and raw_ts > 0 and -5.0 <= (eff_now - raw_ts) <= max_age:
+                if raw_ts is not None and raw_ts > 0 and _is_fresh_obs_ts(raw_ts, eff_now, max_age):
                     return dict(snap)
         except Exception:
             pass
@@ -1774,8 +1801,7 @@ class MarketDataProvider(ABC):
                                 snap = casefold_get(stm_mem, cand)
                                 if not isinstance(snap, dict):
                                     continue
-                                raw_ts = extract_timestamp_s(snap, default=None)
-                                if raw_ts is not None and -5.0 <= (now_s - raw_ts) <= max_age:
+                                if _is_fresh_obs_ts(extract_timestamp_s(snap, default=None), now_s, max_age):
                                     return dict(snap)
                     except Exception:
                         pass
@@ -1785,7 +1811,7 @@ class MarketDataProvider(ABC):
                             snap = stm.get_fresh_snapshot(cand)
                             if isinstance(snap, dict):
                                 raw_ts = extract_timestamp_s(snap, default=None)
-                                if raw_ts is None or -5.0 <= (now_s - raw_ts) <= max_age:
+                                if raw_ts is None or _is_fresh_obs_ts(raw_ts, now_s, max_age):
                                     return dict(snap)
                         except Exception:
                             continue
@@ -1879,6 +1905,21 @@ class MarketDataProvider(ABC):
         bids.sort(key=lambda x: x[0], reverse=True)
         asks.sort(key=lambda x: x[0])
         return {"bids": bids, "asks": asks}
+
+    @staticmethod
+    def clamp_orderbook_limit(
+        limit: Any,
+        *,
+        default: int = 200,
+        min_limit: int = 5,
+        max_limit: int = 500,
+    ) -> int:
+        """Clamp an orderbook depth limit to ``[min_limit, max_limit]``."""
+        raw = exact_pos_int(limit, default=None)
+        if raw is None:
+            raw_f = safe_pos_float(limit, default=None)
+            raw = int(raw_f) if (raw_f is not None and int(raw_f) > 0) else default
+        return max(min_limit, min(max_limit, raw))
 
     def get_orderbook(self, symbol: str, limit: int = 200) -> Optional[dict]:
         """Return normalized L2 orderbook ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}`` for ``symbol``."""
@@ -1995,32 +2036,21 @@ def resolve_ssot_price_from_cache(
     if not sym_clean:
         return None
     max_age = safe_pos_float(max_age_sec, default=60.0) or 60.0
-    now_s = safe_pos_float(now_ts, default=None) or time.time()
-
-    if quote_isolated:
-        from cachepaths import cache_symbol_variants, compatible_quote_suffixes
-
-        quotes = compatible_quote_suffixes(sym_clean, default_usd=("USDC", "USDT", "USD", "FDUSD"))
-        cands = list(
-            dict.fromkeys(
-                c
-                for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean, quotes=quotes))
-                if isinstance(c, str) and c and "/" not in c
-            )
+    now_s = resolve_now_ts(now_ts)
+    quotes = (
+        compatible_quote_suffixes(sym_clean, default_usd=("USDC", "USDT", "USD", "FDUSD"))
+        if quote_isolated
+        else ("USDC", "USDT", "USD", "EUR")
+    )
+    cands = list(
+        dict.fromkeys(
+            c
+            for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean, quotes=quotes))
+            if isinstance(c, str) and c and "/" not in c
         )
-    else:
-        from cachepaths import cache_symbol_variants
-
-        cands = list(
-            dict.fromkeys(
-                c
-                for c in (sym_clean, sym_u, *cache_symbol_variants(sym_clean))
-                if isinstance(c, str) and c and "/" not in c
-            )
-        )
-
+    )
     is_default_dir = not cache_dir or str(cache_dir).strip() in ("", "cachedb")
-    eff_dir = get_cachedb_dir() if is_default_dir else str(cache_dir).strip()
+    eff_dir = resolve_cache_dir_path(cache_dir) or get_cachedb_dir()
     price_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, "cache_current_price.json")))
     px = MarketDataProvider._read_ssot_current_price_candidates(
         cands,
@@ -2046,8 +2076,7 @@ def resolve_ssot_price_from_cache(
             parsed = MarketDataProvider._parse_ssot_price_point(entries[-1], fallback_ts=extract_timestamp_s(raw, default=None))
             if parsed is not None:
                 ts_ms, px = parsed
-                obs_s = ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-                if -5.0 <= (now_s - obs_s) <= max_age:
+                if _is_fresh_obs_ts(_ts_ms_to_s(ts_ms), now_s, max_age):
                     return px
         except Exception:
             continue

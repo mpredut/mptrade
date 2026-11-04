@@ -619,10 +619,27 @@ class TestRebuyGuardsKraken(Base):
         self.assertAlmostEqual(ts.executor.round_quantity("HYPEUSD", 1.23459), 1.2345)
         self.assertAlmostEqual(ts.executor.round_price("HYPEUSD", 48.129), 48.13)
         from cachepaths import cache_path
+        from providers.base import (
+            parse_ohlc_interval,
+            parse_ohlc_interval_minutes,
+            resolve_ohlc_time_window_ms,
+        )
         hl_Live_ssot = HyperliquidProvider(token="HYPE", live_enabled=True)
         hl_Live_ssot._force_ssot_cache = True
         hl_cache_file = hl_Live_ssot._fills_cache_file()
         self.assertEqual(hl_cache_file, cache_path("cache_trade_hyperliquid.json"))
+
+        # 5. Shared OHLC interval/window helpers, clamp_orderbook_limit & resolve_venue_instrument_spec
+        self.assertEqual(parse_ohlc_interval(" 1H "), (60, "1h"))
+        self.assertEqual(parse_ohlc_interval(" 1M "), (43200, "1M"))
+        self.assertEqual(parse_ohlc_interval_minutes("240"), 240)
+        _, s_ms, e_ms, to_f = resolve_ohlc_time_window_ms(end_ms=100_000_000, lookback_hours=1, timeout=15)
+        self.assertEqual(e_ms - s_ms, 3600 * 1000)
+        self.assertEqual(to_f, 15.0)
+        self.assertEqual(MarketDataProvider.clamp_orderbook_limit(1), 5)
+        self.assertEqual(MarketDataProvider.clamp_orderbook_limit(9999), 500)
+        self.assertEqual(MarketDataProvider.clamp_orderbook_limit("bad"), 200)
+        self.assertIsNotNone(MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSD"))
 
 
 

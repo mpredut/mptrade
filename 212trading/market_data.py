@@ -23,6 +23,7 @@ except ImportError:
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
+from providers.base import validate_ohlc_candle_bar
 
 
 def parse_interval_minutes(value: str) -> int:
@@ -111,23 +112,17 @@ def fetch_yahoo_candles(
     for index, timestamp in enumerate(timestamps):
         if index >= series_len:
             continue
-        ts_f = safe_pos_float(timestamp, default=None)
-        o_f = safe_pos_float(opens[index], default=None)
-        h_f = safe_pos_float(highs[index], default=None)
-        l_f = safe_pos_float(lows[index], default=None)
-        c_f = safe_pos_float(closes[index], default=None)
-        if ts_f is None or o_f is None or h_f is None or l_f is None or c_f is None:
-            continue
-        ts_i = int(ts_f)
-        if ts_i <= 0 or h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
-            continue
-        records.append({
-            "timestamp": ts_i,
-            "open": o_f,
-            "high": h_f,
-            "low": l_f,
-            "close": c_f,
-        })
+        bar = validate_ohlc_candle_bar(
+            timestamp,
+            opens[index],
+            highs[index],
+            lows[index],
+            closes[index],
+            drop_incomplete=False,
+            ts_in_ms=False,
+        )
+        if bar is not None:
+            records.append(bar)
     if drop_incomplete:
         regular = ((result.get("meta") or {}).get("currentTradingPeriod") or {}).get(
             "regular"

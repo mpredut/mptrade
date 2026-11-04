@@ -4,10 +4,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import math
+import time
 from typing import Any, Callable, Optional, Tuple
 
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,78 @@ def remaining_average_cost(fills, held_qty):
         return safe_pos_float(cost / qty, default=None)
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
+
+
+def compute_fills_cost_basis(
+    rows: Any,
+    held_qty: float,
+    since_s: float,
+    *,
+    base_asset: str = "",
+    quote_asset: str = "",
+    require_explicit_fee_asset: bool = False,
+    validate_row_fn: Any = None,
+) -> Optional[float]:
+    """Compute inventory-reconciled acquisition cost (``remaining_average_cost``) from raw or normalized fill rows."""
+    since_val = safe_pos_float(since_s, default=None)
+    if since_val is None:
+        raise ValueError("since_s must be finite and positive")
+    if not isinstance(rows, (list, tuple)):
+        return None
+    now_ms = time.time() * 1000.0
+    cutoff = now_ms - since_val * 1000.0
+    normalized = []
+    for idx, r in enumerate(rows):
+        if not isinstance(r, dict):
+            return None
+        row = dict(r)
+        ts_ms = extract_timestamp_ms(row, default=0) or 0
+        if (callable(validate_row_fn) and not validate_row_fn(row)) or ts_ms <= 0 or ts_ms > now_ms:
+            return None
+        if ts_ms < cutoff:
+            continue
+        px = extract_order_price(row, default=0.0) or 0.0
+        qty = extract_order_qty(row, default=0.0) or 0.0
+        side = extract_order_side(row)
+        if px <= 0.0 or qty <= 0.0 or side not in ("BUY", "SELL"):
+            return None
+        fee_info = extract_order_fee(
+            row,
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+            fill_price=px,
+            require_explicit_asset=require_explicit_fee_asset,
+        )
+        if fee_info is None:
+            if require_explicit_fee_asset:
+                return None
+            base_fee = 0.0
+            quote_fee = 0.0
+        else:
+            base_fee = fee_info["base_fee"]
+            quote_fee = fee_info["quote_fee"]
+        fill_id = row.get("id", row.get("tid", row.get("tradeId", row.get("orderId", idx))))
+        normalized.append(
+            {
+                "id": fill_id,
+                "timestamp": ts_ms,
+                "qty": qty,
+                "price": px,
+                "side": side,
+                "base_fee": base_fee,
+                "quote_fee": quote_fee,
+            }
+        )
+
+    def _trade_sort_key(item: dict) -> tuple[int, int, str]:
+        raw_id = item.get("id")
+        id_int = safe_int(raw_id, default=None)
+        if id_int is not None:
+            return (int(item["timestamp"]), 0, f"{id_int:020d}")
+        return (int(item["timestamp"]), 1, str(raw_id or "") if not isinstance(raw_id, bool) else "")
+
+    normalized.sort(key=_trade_sort_key)
+    return remaining_average_cost(normalized, held_qty)
 
 
 @dataclass(frozen=True)
@@ -491,5 +564,14 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                             scale_applied=scale_applied, applied_scale=applied_scale)
 
 
-from .base import _clean_single_order_id, normalize_side  # noqa: E402
+from .base import (  # noqa: E402
+    _clean_single_order_id,
+    clean_order_id,
+    extract_order_fee,
+    extract_order_price,
+    extract_order_qty,
+    extract_order_side,
+    extract_timestamp_ms,
+    normalize_side,
+)
 

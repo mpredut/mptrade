@@ -53,6 +53,7 @@ from shadow_runtime import (  # noqa: E402
     load_shadow_environment, prepare_shadow_runtime,
 )
 from botcore import exact_pos_int, required_env, safe_float, safe_int, safe_pos_float  # noqa: E402
+from providers.base import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 
@@ -174,13 +175,18 @@ def _load_history(pair: str, interval: int) -> list[tuple[int, float, float, flo
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) != 5:
             continue
-        vals = [safe_pos_float(row[i], default=None) for i in range(5)]
-        if any(v is None for v in vals):
+        bar = validate_ohlc_candle_bar(
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            drop_incomplete=False,
+            ts_in_ms=False,
+        )
+        if bar is None:
             continue
-        ts_f, o_f, h_f, l_f, c_f = vals
-        if h_f < l_f or h_f < max(o_f, c_f) or l_f > min(o_f, c_f):
-            continue
-        out.append((int(ts_f), o_f, h_f, l_f, c_f))
+        out.append((bar["timestamp"], bar["open"], bar["high"], bar["low"], bar["close"]))
     return out
 
 

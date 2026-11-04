@@ -21,6 +21,8 @@ if _ROOT not in sys.path:
 from botcore import load_local_module  # noqa: E402
 from providers.base import (  # noqa: E402
     OHLC_INTERVALS_MIN_TO_STR,
+    parse_ohlc_interval,
+    resolve_ohlc_time_window_ms,
     validate_ohlc_candle_bar,
 )
 
@@ -111,53 +113,20 @@ def fetch_ohlc_candles(
     if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
         raise ValueError(f"invalid coin: {coin!r}")
     coin = coin.strip()
-    if isinstance(interval, str):
-        cleaned = interval.strip()
-        cleaned_norm = cleaned.lower() if cleaned.lower() in _REV_INTERVALS else cleaned
-        if cleaned_norm in _REV_INTERVALS:
-            interval_str = cleaned_norm
-            interval_min = _REV_INTERVALS[cleaned_norm]
-        elif cleaned.isascii() and cleaned.isdigit():
-            interval_min = int(cleaned)
-            interval_str = INTERVALS.get(interval_min)
-            if interval_str is None:
-                raise ValueError(f"unsupported Hyperliquid interval: {interval}")
-        else:
-            raise ValueError(f"unsupported Hyperliquid interval: {interval}")
-    else:
-        interval_min = None if isinstance(interval, float) else exact_pos_int(interval, default=None)
-        if interval_min is None:
-            raise ValueError(f"unsupported Hyperliquid interval: {interval!r}")
-        interval_str = INTERVALS.get(interval_min)
-        if interval_str is None:
-            raise ValueError(f"unsupported Hyperliquid interval: {interval} minutes")
-
-    to_f = safe_pos_float(timeout, default=None)
-    if to_f is None or not isinstance(timeout, (int, float)):
-        raise ValueError(f"invalid timeout: {timeout!r}")
-
-    now_ms = int(time.time() * 1000)
-    if end_ms is not None:
-        end_f = safe_pos_float(end_ms, default=None)
-        if end_f is None or not isinstance(end_ms, (int, float)):
-            raise ValueError(f"invalid end_ms: {end_ms!r}")
-        final_end = int(end_f)
-    else:
-        final_end = now_ms
-    if start_ms is not None:
-        start_f = safe_nonneg_float(start_ms, default=None)
-        if start_f is None or not isinstance(start_ms, (int, float)):
-            raise ValueError(f"invalid start_ms: {start_ms!r}")
-        final_start = int(start_f)
-    elif lookback_hours is not None:
-        lb_f = safe_pos_float(lookback_hours, default=None)
-        if lb_f is None or not isinstance(lookback_hours, (int, float)):
-            raise ValueError(f"invalid lookback_hours: {lookback_hours!r}")
-        final_start = int(final_end - lb_f * 3600 * 1000)
-    else:
-        final_start = final_end - 30 * 24 * 3600 * 1000
-    if final_start >= final_end:
-        raise ValueError(f"start_ms ({final_start}) must be before end_ms ({final_end})")
+    _, interval_str = parse_ohlc_interval(
+        interval,
+        min_to_str=INTERVALS,
+        str_to_min=_REV_INTERVALS,
+        reject_float=True,
+        venue_label="Hyperliquid",
+    )
+    now_ms, final_start, final_end, to_f = resolve_ohlc_time_window_ms(
+        start_ms=start_ms,
+        end_ms=end_ms,
+        lookback_hours=lookback_hours,
+        timeout=timeout,
+        strict_numeric_types=True,
+    )
 
     payload = _post_info({
         "type": "candleSnapshot",
