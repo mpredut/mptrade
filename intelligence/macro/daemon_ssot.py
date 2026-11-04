@@ -550,6 +550,8 @@ class CachedHttpJsonCollector:
                 fetch_fn = cand_mod
             elif callable(cand_ssot) and cand_ssot is not _fetch_public_json:
                 fetch_fn = cand_ssot
+            elif callable(fetch_public_json) and fetch_public_json is not _fetch_public_json:
+                fetch_fn = fetch_public_json
             else:
                 fetch_fn = cand_mod or cand_ssot or fetch_public_json
             data = fetch_fn(

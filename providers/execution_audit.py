@@ -458,15 +458,35 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "get_orders", None)
         return reader(symbol, side, lookback) if callable(reader) else []
 
-    def trend_snapshot(self, symbol: str):
+    def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0):
         reader = getattr(self._executor, "trend_snapshot", None)
-        return reader(symbol) if callable(reader) else None
+        if not callable(reader):
+            return None
+        try:
+            return reader(symbol, max_age_sec=max_age_sec)
+        except TypeError:
+            return reader(symbol)
 
-    def trend(self, symbol: str) -> float:
+    def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
         reader = getattr(self._executor, "trend", None)
         if callable(reader):
-            return safe_float(reader(symbol), default=0.0)
+            try:
+                raw = reader(symbol, max_age_sec=max_age_sec)
+            except TypeError:
+                raw = reader(symbol)
+            return safe_float(raw, default=0.0)
         return 0.0
+
+    def trend_direction(self, symbol: str, max_age_sec: float = 15.0) -> Optional[str]:
+        reader = getattr(self._executor, "trend_direction", None)
+        if callable(reader):
+            try:
+                return reader(symbol, max_age_sec=max_age_sec)
+            except TypeError:
+                return reader(symbol)
+        from .base import MarketDataProvider
+
+        return MarketDataProvider.trend_direction(self, symbol, max_age_sec=max_age_sec)
 
     def get_orderbook(self, symbol: str, limit: int = 200):
         reader = getattr(self._executor, "get_orderbook", None)
@@ -480,11 +500,27 @@ class AuditedStrategyExecutor:
         reader = getattr(self._executor, "get_ssot_cached_price", None)
         return reader(symbol, max_age_sec=max_age_sec) if callable(reader) else None
 
+    def get_ssot_price_history(
+        self,
+        symbol: str,
+        lookback_hours: float,
+        max_latest_age_sec: float = 120.0,
+    ) -> Optional[list[dict]]:
+        reader = getattr(self._executor, "get_ssot_price_history", None)
+        return reader(symbol, lookback_hours, max_latest_age_sec=max_latest_age_sec) if callable(reader) else None
+
+    def _pair_precision_attr(self, symbol: str, attr: str, default: Any = None) -> Any:
+        from .base import MarketDataProvider
+
+        return MarketDataProvider._pair_precision_attr(self, symbol, attr, default)
+
     def round_quantity(self, symbol: str, qty: float) -> float:
         fn = getattr(self._executor, "round_quantity", None)
         if callable(fn):
             return fn(symbol, qty)
-        return safe_pos_float(qty, default=0.0) or 0.0
+        from .base import MarketDataProvider
+
+        return MarketDataProvider.round_quantity(self, symbol, qty)
 
     round_amount = round_quantity
 
@@ -492,13 +528,17 @@ class AuditedStrategyExecutor:
         fn = getattr(self._executor, "round_price", None)
         if callable(fn):
             return fn(symbol, price)
-        return safe_pos_float(price, default=0.0) or 0.0
+        from .base import MarketDataProvider
+
+        return MarketDataProvider.round_price(self, symbol, price)
 
     def min_order_qty(self, symbol: str) -> float:
         fn = getattr(self._executor, "min_order_qty", None)
         if callable(fn):
             return safe_nonneg_float(fn(symbol), default=0.0) or 0.0
-        return 0.0
+        from .base import MarketDataProvider
+
+        return MarketDataProvider.min_order_qty(self, symbol)
 
     def strategy_dry_run(self, force_paper: bool, strategy_execute: bool) -> bool:
         fn = getattr(self._executor, "strategy_dry_run", None)

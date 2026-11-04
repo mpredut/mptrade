@@ -1100,6 +1100,76 @@ def test_iter45_hl_spot_fallbacks_portfolio_per_symbol_fills_and_interval_plus_s
     assert (recent_orders["SOLUSDC"].get("last_buy") or {}).get("price") == 180.0
 
 
+def test_iter46_audited_executor_precision_daemon_ssot_monkeypatch_and_tca_hl_casefold(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import intelligence.macro.daemon_ssot as daemon_ssot
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
+    from providers.base import PairPrecision
+    from providers.execution_audit import AuditedStrategyExecutor, ExecutionAudit
+
+    # 1. AuditedStrategyExecutor fallback to pair_precision for round_quantity/round_price/min_order_qty and trend_snapshot(max_age_sec)
+    class _MinimalExec:
+        name = "test_exec"
+
+        def pair_precision(self, symbol: str):
+            return PairPrecision(price_decimals=2, volume_decimals=3, order_min=0.05)
+
+        def trend_snapshot(self, symbol: str, max_age_sec: float = 15.0):
+            return {
+                "symbol": symbol,
+                "max_age_sec": max_age_sec,
+                "growth_coefficient": 120.0,
+                "gradient_recent": 120.0,
+                "slope_small": 0.05,
+                "final_trend": 120.0,
+            }
+
+        def trend(self, symbol: str, max_age_sec: float = 15.0) -> float:
+            return float(max_age_sec)
+
+    audited = AuditedStrategyExecutor(_MinimalExec(), ExecutionAudit(str(tmp_path)))
+    assert audited.round_quantity("BTCUSDC", 1.23456) == 1.234
+    assert audited.round_price("BTCUSDC", 99.987) == 99.99
+    assert audited.min_order_qty("BTCUSDC") == 0.05
+    assert audited.trend_snapshot("BTCUSDC", max_age_sec=42.0)["max_age_sec"] == 42.0
+    assert audited.trend("BTCUSDC", max_age_sec=42.0) == 42.0
+    assert audited.trend_direction("BTCUSDC", max_age_sec=42.0) == "up"
+
+    # 2. CachedHttpJsonCollector respects monkeypatching intelligence.macro.daemon_ssot.fetch_public_json
+    class _DummyCollector(daemon_ssot.CachedHttpJsonCollector):
+        def __init__(self):
+            super().__init__(
+                cache_ttl_sec=60.0,
+                default_ttl_sec=60.0,
+                endpoint_url="https://example.test/api",
+                default_endpoint_fn=lambda: "https://example.test/api",
+            )
+
+        def _parse_fetched_payload(self, data, now):
+            return {"ok": True, "val": data.get("val"), "ts": now}
+
+    monkeypatch.setattr(daemon_ssot, "fetch_public_json", lambda url, **kw: {"val": 777})
+    coll = _DummyCollector()
+    snap = coll.fetch(force_refresh=True, now_ts=1700000000.0)
+    assert snap == {"ok": True, "val": 777, "ts": 1700000000.0}
+
+    # 3. resolve_venue_fee_and_limits handles case-insensitive Hyperliquid caches and _sz_decimals_cache
+    fake_hl_prov = SimpleNamespace(
+        _spot_pair=None,
+        _meta_cache={"hype": {"szDecimals": 2}},
+        _client=SimpleNamespace(_sz_decimals_cache={"btc": 5}, info=None),
+    )
+    fake_inst = SimpleNamespace(_provider=fake_hl_prov, params={})
+    hl_lim = resolve_venue_fee_and_limits("hyperliquid", "HYPEUSDC", fake_inst, price=25.0)
+    assert hl_lim["step_size"] == 0.01
+    assert hl_lim["min_qty"] == 0.01
+
+    hl_btc_lim = resolve_venue_fee_and_limits("hyperliquid", "BTCUSDC", fake_inst, price=90000.0)
+    assert hl_btc_lim["step_size"] == 0.00001
+    assert hl_btc_lim["min_qty"] == 0.00001
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

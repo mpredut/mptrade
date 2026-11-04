@@ -903,6 +903,9 @@ class TrailingAdapterBase:
             f"  {self._LOG_TAG} {target}: -{trail}% reached but the instant trend is UP — NOT selling (anti-wick)"
         )
 
+    def log_item_error(self, key, e) -> None:
+        self.log(f"  ! {self._LOG_TAG} {key}: {e}")
+
     def log_tick_error(self, e) -> None:
         if self._VENUE_SLUG == "kraken":
             self.log(f"  ! {self._LOG_TAG} cycle failed ({e.__class__.__name__}: {e}) — retrying")
@@ -1006,10 +1009,11 @@ class TrailingAdapterBase:
                 if not isinstance(e, dict):
                     e = {}
                 peak = safe_pos_float(e.get("peak"), default=None)
+                t_f = safe_nonneg_float(t, default=0.0)
                 rb = e.get("rebuy") if isinstance(e.get("rebuy"), dict) else None
                 print(
                     f"{a}: varf={peak} trailing={t}% "
-                    + (f"sells below {peak * (1 - t / 100):.4f}" if peak else "(no peak yet)")
+                    + (f"sells below {peak * (1 - t_f / 100):.4f}" if peak else "(no peak yet)")
                     + (f"  | re-buy ARMAT (qty {rb.get('qty')}, min {rb.get('low')})" if rb else "")
                 )
             rebuy_en = self._module_attr("REBUY_ENABLED", self.core.rebuy_enabled)
@@ -1022,13 +1026,14 @@ class TrailingAdapterBase:
             if not isinstance(st, dict):
                 st = {}
             peak = safe_pos_float(st.get("peak"), default=None)
+            tr_f = safe_nonneg_float(tr, default=0.0)
             mode = (
                 "pending order" if st.get("pending_order") else
                 "warming up" if "warmup_at" in st else
                 "waiting for rebuy" if st.get("rebuy") else
                 "tracking" if peak else "uninitialized"
             )
-            stop = peak * (1 - tr / 100) if peak else None
+            stop = peak * (1 - tr_f / 100) if peak else None
             print(
                 f"{s}: state={mode} peak={peak} trailing={tr}% threshold={stop} "
                 f"warmup_at={st.get('warmup_at')}"

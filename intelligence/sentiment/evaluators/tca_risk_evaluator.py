@@ -129,22 +129,36 @@ def resolve_venue_fee_and_limits(
                                 taker_bps = round(fv * 100.0, 2)
                 min_qty = safe_pos_float(p_meta.get("ordermin"), default=min_qty) or min_qty
                 min_notional = safe_pos_float(p_meta.get("costmin"), default=min_notional) or min_notional
-                if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None:
+                if (lot_dec := safe_nonneg_float(p_meta.get("lot_decimals"), default=None)) is not None and 0 <= int(lot_dec) <= 18:
                     step_size = round(10.0 ** (-int(lot_dec)), 8)
-                if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None:
+                if (pair_dec := safe_nonneg_float(p_meta.get("pair_decimals"), default=None)) is not None and 0 <= int(pair_dec) <= 18:
                     tick_size = round(10.0 ** (-int(pair_dec)), 8)
     elif v_norm == "hyperliquid" and prov is not None:
         client = getattr(prov, "_client", None)
         base_tok = canonical_base_asset(symbol)
         meta_cache = getattr(prov, "_meta_cache", None) or getattr(client, "_meta_cache", None)
-        sz_dec = safe_nonneg_float(meta_cache[base_tok].get("szDecimals"), default=None) if isinstance(meta_cache, dict) and isinstance(meta_cache.get(base_tok), dict) else None
+        meta_entry = casefold_get(meta_cache, base_tok) if isinstance(meta_cache, dict) else None
+        sz_dec = safe_nonneg_float(meta_entry.get("szDecimals"), default=None) if isinstance(meta_entry, dict) else None
+        if sz_dec is None:
+            sz_cache = getattr(client, "_sz_decimals_cache", None)
+            if isinstance(sz_cache, dict):
+                sz_dec = safe_nonneg_float(casefold_get(sz_cache, base_tok), default=None)
         if sz_dec is None:
             info_obj = getattr(client, "info", None)
             c2a, a2sz, n2c = getattr(info_obj, "coin_to_asset", None), getattr(info_obj, "asset_to_sz_decimals", None), getattr(info_obj, "name_to_coin", None)
             if isinstance(c2a, dict) and isinstance(a2sz, dict):
-                spot_pair = getattr(prov, "_spot_pair", None) or (n2c.get(f"{base_tok}/USDC") if isinstance(n2c, dict) else None)
-                sz_dec = next((v for ck in (spot_pair, base_tok) if ck and ck in c2a and (v := safe_nonneg_float(a2sz.get(c2a[ck]), default=None)) is not None), None)
-        if sz_dec is not None:
+                spot_pair = getattr(prov, "_spot_pair", None) or (casefold_get(n2c, f"{base_tok}/USDC") if isinstance(n2c, dict) else None)
+                sz_dec = next(
+                    (
+                        v
+                        for ck in (spot_pair, base_tok)
+                        if ck
+                        and (asset_id := casefold_get(c2a, ck)) is not None
+                        and (v := safe_nonneg_float(a2sz.get(asset_id), default=None)) is not None
+                    ),
+                    None,
+                )
+        if sz_dec is not None and 0 <= int(sz_dec) <= 18:
             sz_i = int(sz_dec)
             step_size = min_qty = round(10.0 ** (-sz_i), 8)
             if safe_pos_float(params.get("tick_size"), default=None) is None:
