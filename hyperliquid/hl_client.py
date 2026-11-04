@@ -207,7 +207,11 @@ class HLClient:
         if isinstance(coin, bool) or not isinstance(coin, str) or not coin.strip():
             raise HLError(f"Missing size precision metadata for {coin}")
         coin = coin.strip()
-        meta = casefold_get(self._meta(), coin)
+        meta = None
+        try:
+            meta = casefold_get(self._meta(), coin)
+        except Exception:  # noqa: BLE001
+            meta = None
         dec_i = _exact_int_in_range(meta.get("szDecimals") if isinstance(meta, dict) else None, 0, 18)
         if dec_i is not None:
             return dec_i
@@ -225,6 +229,21 @@ class HLClient:
                         return tdec_i
         except Exception:  # noqa: BLE001
             pass
+        if not (isinstance(meta, dict) and "szDecimals" in meta):
+            coin_to_asset = getattr(self.info, "coin_to_asset", None)
+            asset_to_sz = getattr(self.info, "asset_to_sz_decimals", None)
+            if isinstance(coin_to_asset, dict) and isinstance(asset_to_sz, dict):
+                asset_id = casefold_get(coin_to_asset, coin)
+                if asset_id is None:
+                    name_to_coin = getattr(self.info, "name_to_coin", None)
+                    if isinstance(name_to_coin, dict):
+                        mapped = casefold_get(name_to_coin, f"{coin}/USDC") or casefold_get(name_to_coin, coin)
+                        if isinstance(mapped, str):
+                            asset_id = casefold_get(coin_to_asset, mapped)
+                if asset_id in asset_to_sz:
+                    adec_i = _exact_int_in_range(asset_to_sz[asset_id], 0, 18)
+                    if adec_i is not None:
+                        return adec_i
         raise HLError(f"Missing size precision metadata for {coin}")
 
     def max_leverage(self, coin: str) -> int:
@@ -366,6 +385,11 @@ class HLClient:
                     return u.get("name")
         except Exception as e:  # noqa: BLE001
             log(f"  ! resolve_spot_pair({token}) failed: {e}")
+            name_to_coin = getattr(self.info, "name_to_coin", None)
+            if isinstance(name_to_coin, dict):
+                mapped = casefold_get(name_to_coin, f"{token}/USDC")
+                if isinstance(mapped, str) and mapped.strip():
+                    return mapped.strip()
         return None
 
     def spot_mid(self, pair: str) -> float | None:

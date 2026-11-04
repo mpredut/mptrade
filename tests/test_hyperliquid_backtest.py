@@ -755,6 +755,22 @@ def test_hyperliquid_sz_decimals_spot_fallback_and_exact_sl_boundary():
     except hl_client_mod.HLError:
         pass
 
+    # Fallback to Info.__init__ cached maps when subsequent meta()/spot_meta() calls time out
+    def _raise_timeout():
+        raise TimeoutError("Read timed out")
+
+    dummy_timeout = object.__new__(hl_client_mod.HLClient)
+    dummy_timeout._meta_cache = {}
+    dummy_timeout.info = types.SimpleNamespace(
+        meta=_raise_timeout,
+        spot_meta=_raise_timeout,
+        coin_to_asset={"HYPE": 159, "@107": 10107},
+        name_to_coin={"HYPE": "HYPE", "HYPE/USDC": "@107"},
+        asset_to_sz_decimals={159: 2, 10107: 2},
+    )
+    assert dummy_timeout.sz_decimals("HYPE") == 2
+    assert dummy_timeout.resolve_spot_pair("HYPE") == "@107"
+
     # Exact intrabar stop_loss boundary (where IEEE-754 (avg - sl_level) / avg * 100 is 4.999999999999995 < 5.0)
     Strategy = hl_replay.Strategy
     StratParams = hl_replay.StratParams
