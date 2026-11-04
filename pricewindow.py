@@ -837,7 +837,7 @@ class PriceWindow:
                     continue
                 ts_f = safe_float(e[0], default=None)
                 if ts_f is not None:
-                    timestamps_sec.append(ts_f / 1000.0 if ts_f > 1e11 else ts_f)
+                    timestamps_sec.append(ts_f if 1e9 <= ts_f <= 1e11 else ts_f / 1000.0)
         except TypeError:
             return DEFAULT_SAMPLE_RATE_SEC
         if len(timestamps_sec) < 2:
