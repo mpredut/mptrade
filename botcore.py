@@ -1664,6 +1664,13 @@ _MERGED_MODULE_TARGETS = {
     "price_analysis": "hyperliquid.signals",
     "keys": "credentials",
     "keys.apikeys": "credentials",
+    "instruments_config": "instrument_registry",
+    "binance_api.bapi_ws_health": "binance_api.bapi_ws_bridge",
+    "lock.file_lock": "lock.cooldown",
+    "lock.trade_cooldown": "lock.cooldown",
+    "providers.binance_filters": "providers.quantity",
+    "providers.http_resilience": "providers.base",
+    "providers.replay_clock": "providers.replay_provider",
 }
 
 
@@ -1711,6 +1718,11 @@ class _MergedModuleAliasLoader:
             keys_pkg = sys.modules.get("keys")
             if keys_pkg is not None:
                 keys_pkg.apikeys = target_mod
+        elif "." in self.alias_name:
+            parent_name, child_attr = self.alias_name.rsplit(".", 1)
+            parent_pkg = sys.modules.get(parent_name)
+            if parent_pkg is not None:
+                setattr(parent_pkg, child_attr, target_mod)
         sys.modules[self.alias_name] = target_mod
 
 

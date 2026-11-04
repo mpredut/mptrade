@@ -175,7 +175,8 @@ def evaluate_asset(
         return []
 
     runner = replay_fn or run_replay
-    prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
+    if replay_fn is None or hasattr(aligned_base, "surge_guard"):
+        prewarm_trend_series(ohlc, warmup=warmup_n, params=aligned_base, bar_minutes=bar_minutes)
     for test_id, (variant_name, params) in variants.items():
         try:
             replay_kw: dict[str, Any] = {

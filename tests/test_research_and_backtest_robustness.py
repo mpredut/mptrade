@@ -6739,6 +6739,24 @@ def test_replay_provider_advance_and_harness_custom_replay_and_tradeall_sanitize
     assert all("initial_cash" not in kw and "fee_pct" not in kw for kw in called_kwargs)
     assert rows[0]["total_return_pct"] == 5.0
 
+    from offline.research.hybrid_reentry.run_equities import _import_t212, BASE_CONFIG
+    from strategies.spot_replay import prewarm_trend_series
+    t212_strat, t212_rp = _import_t212()
+    t212_cfg = dict(BASE_CONFIG, YAHOO_SYMBOL="NVDA")
+    t212_params = t212_strat.StratParams.from_env(t212_cfg)
+    assert not hasattr(t212_params, "surge_guard")
+    prewarm_trend_series(bars, warmup=5, params=t212_params, bar_minutes=1440.0)
+    t212_rows = evaluate_asset(
+        "NVDA",
+        bars,
+        t212_params,
+        bar_minutes=1440.0,
+        initial_cash=None,
+        replay_fn=t212_rp.run_replay,
+    )
+    assert len(t212_rows) == 5
+    assert all("error" not in r for r in t212_rows)
+
     # 3. tradeall._sanitize and _parse_tick_pair
     assert _sanitize("a|b\rc\nd") == "a/b c d"
     assert _parse_tick_pair([0, 100.0]) is None

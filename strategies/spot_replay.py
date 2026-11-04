@@ -496,7 +496,7 @@ def prewarm_trend_series(
         raw_params = _strat.StratParams.from_env() if params is None else params
     except Exception:
         raw_params = None
-    if raw_params is not None:
+    if raw_params is not None and hasattr(raw_params, "surge_guard"):
         run_replay(
             ohlc[warmup_i:],
             align_spot_interval_params(raw_params, bm_f),

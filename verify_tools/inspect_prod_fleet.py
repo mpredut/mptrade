@@ -10,11 +10,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+from botcore import safe_float
+from cachepaths import cache_path
+from state_io import read_json_file
+
 
 def ssh_cat(remote_path: str) -> dict | list | str | None:
+    if os.path.isfile(remote_path):
+        data = read_json_file(remote_path, default=None)
+        if data is not None:
+            return data
     cmd = ["ssh", "mptrade-prod", f"cat {remote_path}"]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
@@ -26,21 +39,23 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    balances = ssh_cat("/home/predut/mptrade/cachedb/state/venue_balances_state.json") or {}
-    topic_data = ssh_cat("/home/predut/mptrade/cachedb/system/llm_topic_threads.json") or {}
-    orders_data = ssh_cat("/home/predut/mptrade/cachedb/orders/cache_order.json") or {}
+    balances = ssh_cat(cache_path("venue_balances_state.json")) or {}
+    topic_data = ssh_cat(cache_path("llm_topic_threads.json")) or {}
+    orders_data = ssh_cat(cache_path("cache_order.json")) or {}
 
     # 1. Balances & Positions
-    cash = {k: v for k, v in balances.items() if k.startswith("cash:")}
-    positions = {k: v for k, v in balances.items() if k.startswith("pos:")}
+    cash = {k: v for k, v in balances.items() if k.startswith("cash:") and isinstance(v, dict)}
+    positions = {k: v for k, v in balances.items() if k.startswith("pos:") and isinstance(v, dict)}
 
-    total_free_cash = sum(v.get("free", 0.0) for v in cash.values())
-    total_locked_cash = sum(v.get("locked_quote_usd", 0.0) for v in cash.values())
-    total_free_pos_val = sum(v.get("value_usd", 0.0) for v in positions.values())
-    total_locked_pos_val = sum(v.get("locked_base_usd", 0.0) for v in positions.values())
+    total_free_cash = sum(safe_float(v.get("free"), 0.0) or 0.0 for v in cash.values())
+    total_locked_cash = sum(safe_float(v.get("locked_quote_usd"), 0.0) or 0.0 for v in cash.values())
+    total_free_pos_val = sum(safe_float(v.get("value_usd"), 0.0) or 0.0 for v in positions.values())
+    total_locked_pos_val = sum(safe_float(v.get("locked_base_usd"), 0.0) or 0.0 for v in positions.values())
 
     # Unified Portfolio Value (Cash + Assets)
     total_unified_val = total_free_cash + total_locked_cash + total_free_pos_val + total_locked_pos_val
+    cash_reserves = total_free_cash + total_locked_cash
+    cash_pct = (cash_reserves / total_unified_val * 100.0) if total_unified_val > 0 else 0.0
 
     # 2. Topic State
     auto_topic = topic_data.get("auto_cryptotrade_executor", {}) if isinstance(topic_data, dict) else {}
@@ -60,8 +75,8 @@ def inspect_fleet(json_output: bool = False):
                                 "venue": "binance",
                                 "symbol": o.get("symbol", sym),
                                 "side": o.get("side"),
-                                "price": float(o.get("price", 0.0)),
-                                "orig_qty": float(o.get("origQty", 0.0)),
+                                "price": safe_float(o.get("price"), 0.0) or 0.0,
+                                "orig_qty": safe_float(o.get("origQty"), 0.0) or 0.0,
                                 "status": o.get("status"),
                             })
 
@@ -69,7 +84,7 @@ def inspect_fleet(json_output: bool = False):
         "unified_nav_usd": round(total_unified_val, 2),
         "total_free_cash_usd": round(total_free_cash, 2),
         "total_locked_cash_usd": round(total_locked_cash, 2),
-        "total_cash_reserves_usd": round(total_free_cash + total_locked_cash, 2),
+        "total_cash_reserves_usd": round(cash_reserves, 2),
         "total_free_assets_usd": round(total_free_pos_val, 2),
         "total_locked_assets_usd": round(total_locked_pos_val, 2),
         "cash_breakdown": cash,
@@ -91,12 +106,12 @@ def inspect_fleet(json_output: bool = False):
 
     print("=== CASH BALANCES ===")
     for k, v in cash.items():
-        f = v.get("free", 0.0)
-        l = v.get("locked_quote_usd", 0.0)
+        f = safe_float(v.get("free"), 0.0) or 0.0
+        l = safe_float(v.get("locked_quote_usd"), 0.0) or 0.0
         print(f"  {k}: Free=${f:,.2f} | Locked=${l:,.2f}")
     print(f"  --> TOTAL FREE CASH: ${total_free_cash:,.2f} USD")
     print(f"  --> TOTAL LOCKED CASH: ${total_locked_cash:,.2f} USD")
-    print(f"  --> TOTAL CASH RESERVES: ${total_free_cash + total_locked_cash:,.2f} USD ({(total_free_cash + total_locked_cash)/total_unified_val*100:.1f}%)")
+    print(f"  --> TOTAL CASH RESERVES: ${cash_reserves:,.2f} USD ({cash_pct:.1f}%)")
 
     print("\n=== TOTAL ESTIMATED PORTFOLIO VALUE ===")
     print(f"  Unified Value (Assets + Cash): ${total_unified_val:,.2f} USD")
@@ -111,8 +126,8 @@ def inspect_fleet(json_output: bool = False):
 
     print("\n=== ASSET POSITIONS ===")
     for k, v in positions.items():
-        val = v.get("value_usd", 0.0)
-        l_usd = v.get("locked_base_usd", 0.0)
+        val = safe_float(v.get("value_usd"), 0.0) or 0.0
+        l_usd = safe_float(v.get("locked_base_usd"), 0.0) or 0.0
         print(f"  {k}: Free=${val:,.2f} | Locked Base=${l_usd:,.2f} | Total=${val + l_usd:,.2f}")
 
     if active_orders:

@@ -20,17 +20,17 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-import log
-import utils
 from botcore import exact_pos_int, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
+from providers.quantity import resolve_assets
 from providers.strategy_executor import PairPrecision
 from state_io import read_jsonl_dicts
 
-# Strip the quote suffix to obtain the base asset (BTCUSDC -> BTC). This was
-# centralized in utils on July 28 after being duplicated here and elsewhere.
-_base_asset = utils.base_asset
+
+def _base_asset(symbol: str) -> str:
+    """Return a trading symbol's base asset by removing the first known quote suffix."""
+    return resolve_assets(symbol)[0]
 
 _BT_ENV_KEYS = (
     "BACKTEST_MODE",
@@ -45,6 +45,7 @@ def backtest_isolation_context(quiet: bool = False):
     """Temporarily set backtest/replay isolation env flags and optional print suppression."""
     if quiet:
         try:
+            import log
             log.disable_print()
         except Exception:
             pass
@@ -61,6 +62,7 @@ def backtest_isolation_context(quiet: bool = False):
                 os.environ[k] = v
         if quiet:
             try:
+                import log
                 log.enable_print()
             except Exception:
                 pass

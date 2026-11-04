@@ -6,13 +6,24 @@ configuration; Hyperliquid claims its supported HYPE symbol forms. This package 
 not eagerly import ``market_api`` because provider registration would form an import
 cycle. Consumers normally import ``api`` from ``providers.market_api`` directly.
 """
+import importlib as _importlib
 import sys as _sys
 
-from . import base as http_resilience
-from . import quantity as binance_filters
-from . import replay_provider as replay_clock
+import botcore as _botcore  # noqa: F401 - ensures _MergedModuleAliasFinder is registered
 
-_sys.modules.setdefault(f"{__name__}.http_resilience", http_resilience)
-_sys.modules.setdefault(f"{__name__}.binance_filters", binance_filters)
-_sys.modules.setdefault(f"{__name__}.replay_clock", replay_clock)
+_LAZY_SUBMODULE_ALIASES = {
+    "http_resilience": "providers.base",
+    "binance_filters": "providers.quantity",
+    "replay_clock": "providers.replay_provider",
+}
+
+
+def __getattr__(name: str):
+    target = _LAZY_SUBMODULE_ALIASES.get(name)
+    if target is not None:
+        mod = _importlib.import_module(target)
+        _sys.modules[f"{__name__}.{name}"] = mod
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
