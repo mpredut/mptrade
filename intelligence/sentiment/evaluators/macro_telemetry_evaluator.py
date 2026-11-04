@@ -71,6 +71,8 @@ def compute_deribit_options_surface(
             opt_type = parts[3].strip().upper()
             oi = safe_pos_float(b.get("open_interest"), default=0.0) or 0.0
             iv = safe_pos_float(b.get("mark_iv"), default=0.0) or 0.0
+            if 0.05 <= iv < 5.0:
+                iv *= 100.0
             if strike is None or oi <= 0.0 or opt_type not in ("C", "P"):
                 continue
             if opt_type == "C":
@@ -186,7 +188,11 @@ def apply_asset_scope_filter(
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         portfolio_summary.pop("t212_cycles", None)
     if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
-        _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_venue(cv)})
+        def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:
+            v_str = cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
+            return (normalize_venue_name(v_str) == "t212") == want_t212
+
+        _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_cash_entry(ck, cv)})
     if isinstance(portfolio_summary.get("recent_orders"), dict):
         def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
             if isinstance(rv, dict) and rv.get("venue"):
@@ -228,9 +234,20 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
                 cycle_fallback_prices[m_sym] = ob_mid_v
     if isinstance(watcher_price_items, dict):
         for m_sym, m_ser in watcher_price_items.items():
-            if isinstance(m_ser, list) and m_ser and isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
-                if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
-                    cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
+            if isinstance(m_ser, list) and m_ser:
+                valid_pts = [
+                    (ts_f / 1000.0 if ts_f > 1e11 else ts_f, px_f)
+                    for row in m_ser
+                    if isinstance(row, (list, tuple))
+                    and len(row) > 1
+                    and (ts_f := safe_pos_float(row[0], default=None)) is not None
+                    and (px_f := safe_pos_float(row[1], default=0.0) or 0.0) > 0.0
+                ]
+                if valid_pts:
+                    cycle_fallback_prices.setdefault(str(m_sym).upper(), max(valid_pts, key=lambda pt: pt[0])[1])
+                elif isinstance(m_ser[-1], (list, tuple)) and len(m_ser[-1]) > 1:
+                    if (m_px := safe_pos_float(m_ser[-1][1], default=0.0) or 0.0) > 0:
+                        cycle_fallback_prices.setdefault(str(m_sym).upper(), m_px)
     return cycle_fallback_prices
 
 
@@ -251,11 +268,18 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
             (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
             for p in v_pos_list
         )
-        v_cash_sum = sum(
-            (safe_pos_float(c.get("free"), default=0.0) or 0.0) + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
-            for c in vq_cash_map.values()
-            if isinstance(c, dict) and normalize_venue_name(c.get("venue")) == v_target
-        )
+        v_cash_sum = 0.0
+        for c_key, c in vq_cash_map.items():
+            c_venue = normalize_venue_name(c.get("venue") if isinstance(c, dict) and c.get("venue") else str(c_key or "").split(":", 1)[0])
+            if c_venue != v_target:
+                continue
+            if isinstance(c, dict):
+                v_cash_sum += (
+                    (safe_pos_float(c.get("free") or c.get("free_quote_usd") or c.get("free_usd"), default=0.0) or 0.0)
+                    + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
+                )
+            else:
+                v_cash_sum += safe_pos_float(c, default=0.0) or 0.0
         tot_v = round(v_pos_sum + v_cash_sum, 2)
         if tot_v > 0.0:
             if v_target == "binance":

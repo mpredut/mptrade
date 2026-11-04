@@ -15,6 +15,7 @@ from cachepaths import (
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
     clean_symbol_key,
+    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -219,9 +220,14 @@ def enrich_open_limit_orders_tca(
     for o in open_orders:
         if not isinstance(o, dict):
             continue
-        sym = str(o.get("symbol") or "").strip().upper()
-        side = str(o.get("side") or "").strip().upper()
-        lim_px = safe_pos_float(o.get("price"), default=None)
+        sym = str(o.get("symbol") or o.get("pair") or o.get("ticker") or "").strip().upper()
+        side = normalize_side(o.get("side")) or str(o.get("side") or "").strip().upper()
+        lim_px = (
+            safe_pos_float(o.get("price"), default=None)
+            or safe_pos_float(o.get("px"), default=None)
+            or safe_pos_float(o.get("limit_price"), default=None)
+            or safe_pos_float(o.get("limit"), default=None)
+        )
         if not sym or lim_px is None or lim_px <= 0.0:
             continue
         p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
@@ -384,17 +390,23 @@ def compute_enterprise_portfolio_risk_metrics(
             daily_vol_pct = min(25.0, max(0.8, vol_1h * math.sqrt(24.0)))
             pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
 
-    for c in vq_cash.values():
-        if not isinstance(c, dict):
-            continue
-        v_name = normalize_venue_name(c.get("venue")) or "unknown"
-        f_u = (
-            safe_pos_float(c.get("free"), default=None)
-            or safe_pos_float(c.get("free_quote_usd"), default=None)
-            or safe_pos_float(c.get("free_usd"), default=0.0)
-            or 0.0
-        )
-        l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
+    for c_key, c in vq_cash.items():
+        v_fallback = normalize_venue_name(str(c_key or "").split(":", 1)[0])
+        if isinstance(c, dict):
+            v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
+            f_u = (
+                safe_pos_float(c.get("free"), default=None)
+                or safe_pos_float(c.get("free_quote_usd"), default=None)
+                or safe_pos_float(c.get("free_usd"), default=0.0)
+                or 0.0
+            )
+            l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
+        else:
+            f_u = safe_pos_float(c, default=0.0) or 0.0
+            if f_u <= 0.0:
+                continue
+            v_name = v_fallback or "unknown"
+            l_u = 0.0
         venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
         venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
         venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u

@@ -124,6 +124,8 @@ def collect_macro_benchmarks_snapshot(
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+    if eff_now > 1e11:
+        eff_now /= 1000.0
     _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
@@ -139,10 +141,14 @@ def collect_macro_benchmarks_snapshot(
             q_list = (res.get("indicators") or {}).get("quote") or [{}]
             q_obj = q_list[0] if isinstance(q_list, list) and q_list and isinstance(q_list[0], dict) else {}
             closes = q_obj.get("close") if isinstance(q_obj.get("close"), list) else []
-            pts = [
-                (ts_f, c_f) for ts, c in zip(ts_list, closes)
-                if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
-            ]
+            pts = sorted(
+                (
+                    (ts_f / 1000.0 if ts_f > 1e11 else ts_f, c_f)
+                    for ts, c in zip(ts_list, closes)
+                    if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
+                ),
+                key=lambda pt: pt[0],
+            )
             px = safe_pos_float(meta.get("fulldayPrice"), default=None) or safe_pos_float(meta.get("regularMarketPrice"), default=None) or (pts[-1][1] if pts else None)
             if px is None:
                 continue
@@ -275,6 +281,7 @@ def harvest_macro_and_news_sensors(
     cache_dir: str, now_ts: float, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
+    now_ts = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
 
@@ -483,8 +490,9 @@ def harvest_portfolio_and_venue_cycles(
         portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
         av_ts = extract_timestamp_s(last_av) or safe_pos_float(last_av.get("t"), default=None)
         if av_ts is not None and now_ts is not None and now_ts > 0.0:
+            eff_now_s = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
             av_ts_s = av_ts / 1000.0 if av_ts > 1e11 else av_ts
-            portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, float(now_ts) - av_ts_s) / 60.0, 1)
+            portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
 
     kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
         workspace_dir, prices_and_trends, build_cycle_fallback_prices(microstructure, watcher_price_items), _rj,
@@ -512,8 +520,9 @@ def harvest_portfolio_and_venue_cycles(
                 hl_ro = dict(last_ps["hl"])
                 ps_ts = extract_timestamp_s(last_ps) or safe_pos_float(last_ps.get("t"), default=None)
                 if ps_ts is not None and now_ts is not None and now_ts > 0.0:
+                    eff_now_s = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
                     ps_ts_s = ps_ts / 1000.0 if ps_ts > 1e11 else ps_ts
-                    hl_ro["snapshot_age_min"] = round(max(0.0, float(now_ts) - ps_ts_s) / 60.0, 1)
+                    hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
                 portfolio_summary["hyperliquid_readonly"] = hl_ro
             break
 

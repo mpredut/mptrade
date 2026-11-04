@@ -2752,6 +2752,119 @@ def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(mo
     assert cd["whale_long_delta_pct"] == pytest.approx(0.08)
 
 
+def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch, tmp_path):
+    import external_order_guard as eog
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        collect_macro_benchmarks_snapshot,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        collect_pretrade_telemetry,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        apply_asset_scope_filter,
+        build_cycle_fallback_prices,
+        compute_deribit_options_surface,
+        reconcile_live_venue_equity_summary,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+    )
+
+    # 1. enrich_open_limit_orders_tca supports pair/ticker, side aliases (bid/ask), and px/limit_price keys
+    open_orders = [
+        {"pair": "BTCUSDC", "side": "bid", "px": 98.0},
+    ]
+    enrich_open_limit_orders_tca(
+        open_orders,
+        {"BTCUSDC": {"price": 100.0, "vol_1h_pct": 1.0}},
+        {"BTCUSDC": {"ob_mid_price": 100.0, "bid_wall_usd": 250000.0, "bid_wall_px": 99.0}},
+    )
+    assert open_orders[0]["dist_from_spot_pct"] == pytest.approx(-2.0)
+    assert open_orders[0]["wall_queue_pos"] == "BEHIND_BID_WALL"
+
+    # 2. compute_enterprise_portfolio_risk_metrics, reconcile_live_venue_equity_summary, and apply_asset_scope_filter
+    # infer venue from venue_quote_cash key ("binance:USDC" / "t212:USD") when "venue" field is omitted
+    ps = {
+        "tradable_positions": [
+            {"symbol": "BTCUSDC", "venue": "binance", "value_usd": 1000.0},
+        ],
+        "venue_quote_cash": {
+            "binance:USDC": {"free": 500.0},
+        },
+        "live_binance_equity_usdc": 1500.0,
+    }
+    risk = compute_enterprise_portfolio_risk_metrics(ps, {"BTCUSDC": {"price": 100.0}}, {})
+    assert risk["unified_nav_usd"] == pytest.approx(1500.0)
+    assert risk["venue_nav_breakdown_usd"].get("binance") == pytest.approx(1500.0)
+    assert "unknown" not in risk["venue_nav_breakdown_usd"]
+
+    ps_reconcile = {
+        "tradable_positions": [{"symbol": "BTCUSDC", "venue": "binance", "value_usd": 1000.0}],
+        "venue_quote_cash": {"binance:USDC": {"free_usd": 500.0}},
+    }
+    reconcile_live_venue_equity_summary(ps_reconcile)
+    assert ps_reconcile.get("live_binance_equity_usdc") == pytest.approx(1500.0)
+
+    ps_scope = {
+        "venue_quote_cash": {
+            "binance:USDC": {"free": 500.0},
+            "t212:USD": {"free": 200.0},
+        }
+    }
+    apply_asset_scope_filter({}, {}, ps_scope, "equities", {}, {})
+    assert list(ps_scope["venue_quote_cash"].keys()) == ["t212:USD"]
+
+    # 3. collect_pretrade_telemetry handles collectors without allow_network kwarg and percent/alias snapshot dicts
+    class _NoKwObCollector:
+        def fetch(self, symbol):
+            return {"symbol": symbol, "ob_imbalance": "64%", "largest_ask_wall_usd": 200000.0, "largest_ask_wall_price": 105.0}
+
+    class _NoKwWhaleCollector:
+        def fetch(self, symbol):
+            return {"symbol": symbol, "whale_long_pct": "60%", "taker_buy_sell_ratio": 1.35, "div_regime": "bullish_divergence"}
+
+    monkeypatch.setattr(eog, "get_orderbook_collector", lambda: _NoKwObCollector())
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: _NoKwWhaleCollector())
+    telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
+    assert telem.get("Orderbook Depth Imbalance") == "0.64 (64% bids vs 36% asks)"
+    assert telem.get("Whale Positioning") == "60.0% Top Traders Long (L/S ratio: 1.50)"
+    assert "bullish_divergence" in telem.get("Whale Taker Flow", "")
+
+    # 4. collect_macro_benchmarks_snapshot sorts unsorted ms timestamps and compute_deribit_options_surface normalizes decimal mark_iv
+    def _mock_yahoo_fetch(url, **kw):
+        if "SPY" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 510.0, "previousClose": 500.0},
+                            "timestamp": [1700003600000, 1700000000000, 1700002700000],
+                            "indicators": {"quote": [{"close": [510.0, 500.0, 505.0]}]},
+                        }
+                    ]
+                }
+            }
+        return {}
+
+    mb_snap = collect_macro_benchmarks_snapshot(str(tmp_path), now_ts=1700003600000.0, persist=False, fetch_fn=_mock_yahoo_fetch)
+    assert mb_snap is not None
+    spy_item = mb_snap["items"]["SPY"]
+    assert spy_item["chg_1h_pct"] == pytest.approx(2.0)
+    assert spy_item["chg_15m_pct"] == pytest.approx(((510.0 - 505.0) / 505.0) * 100.0, abs=0.05)
+
+    opt_surf = compute_deribit_options_surface(
+        [
+            {"instrument_name": "BTC-29DEC26-105000-C", "underlying_price": 100000.0, "open_interest": 100.0, "mark_iv": 0.50},
+            {"instrument_name": "BTC-29DEC26-95000-P", "underlying_price": 100000.0, "open_interest": 120.0, "mark_iv": 0.58},
+        ]
+    )
+    assert opt_surf.get("btc_skew_25d_pct") == pytest.approx(8.0)
+
+    fb_px = build_cycle_fallback_prices({}, {"BTCUSDC": [[1700000120000.0, 102.0], [1700000000000.0, 99.0]]})
+    assert fb_px["BTCUSDC"] == pytest.approx(102.0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

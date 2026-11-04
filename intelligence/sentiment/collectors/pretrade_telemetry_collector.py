@@ -11,7 +11,9 @@ from cachepaths import (
     compatible_quote_suffixes,
     get_cachedb_dir,
 )
+from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
+    clean_scale,
     obj_attr,
     read_first_cached_dict,
     safe_float,
@@ -98,7 +100,7 @@ def collect_pretrade_telemetry(
                 if isinstance(raw_cdir, str):
                     col_cdir = raw_cdir
             if not isinstance(col_cdir, str) or os.path.abspath(col_cdir) == os.path.abspath(cachedb_dir):
-                snap = col.fetch(symbol, allow_network=False)
+                snap = fetch_guard_snapshot(col, symbol, allow_network=False)
                 if snap is not None:
                     return snap
         except Exception:
@@ -114,7 +116,8 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_orderbook_collector
         ob_snap = _fetch_pillar2(get_orderbook_collector, "orderbook_depth_")
         if ob_snap is not None:
-            imb_f = safe_float(obj_attr(ob_snap, "imbalance_ratio", None), default=None)
+            raw_imb = obj_attr(ob_snap, "imbalance_ratio", obj_attr(ob_snap, "ob_imbalance", None))
+            imb_f = clean_scale(raw_imb, default=None, allow_percent=True)
             if imb_f is not None:
                 bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
                 ask_pct = 100 - bid_pct
@@ -161,13 +164,17 @@ def collect_pretrade_telemetry(
         from external_order_guard import get_whale_collector
         w_snap = _fetch_pillar2(get_whale_collector, "whale_snapshot_")
         if w_snap is not None:
-            lp_f = safe_float(obj_attr(w_snap, "top_traders_long_pct", None), default=None)
+            raw_lp = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", None))
+            lp_f = clean_scale(raw_lp, default=None, allow_percent=True)
             lr_f = safe_float(obj_attr(w_snap, "top_traders_long_ratio", None), default=None)
+            if lp_f is not None and lr_f is None and 0.0 < lp_f < 1.0:
+                lr_f = lp_f / (1.0 - lp_f)
             if lp_f is not None and lr_f is not None:
                 telemetry["Whale Positioning"] = f"{lp_f * 100.0:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
             tr_f = safe_float(obj_attr(w_snap, "taker_buy_sell_ratio", None), default=None)
             if tr_f is not None:
-                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {obj_attr(w_snap, 'divergence_regime', 'neutral')})"
+                div_reg = obj_attr(w_snap, "divergence_regime", obj_attr(w_snap, "div_regime", None)) or "neutral"
+                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {div_reg})"
     except Exception:
         pass
 
