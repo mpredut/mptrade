@@ -888,8 +888,10 @@ def load_symbol_best_recent_fills(
     from instrument_registry import casefold_get
 
     _rj = _resolve_read_json_cached(read_json_fn)
-    intents_path = os.path.join(cachedb_dir, "autonomous_trade_intents_state.json")
+    intents_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json")))
     intents_raw = _rj(intents_path) if _rj is not _default_read_json_cached else None
+    if intents_raw is None and _rj is not _default_read_json_cached and intents_path != os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"):
+        intents_raw = _rj(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
     if intents_raw is None:
         intents_raw = read_json_recovering(intents_path)
     known_ai_oids = collect_known_ai_order_ids(intents_raw)
@@ -898,6 +900,7 @@ def load_symbol_best_recent_fills(
     ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
     audit_origin_map = _load_recent_audit_origins(cachedb_dir)
     fills: Optional[Dict[str, Any]] = None
+    best_venue: Optional[str] = None
     best_fill_key: Tuple[int, int, float] = (-1, -1, -1.0)
     sym_upper = str(symbol or "").strip().upper()
     sym_quotes = compatible_quote_suffixes(sym_upper)
@@ -937,7 +940,64 @@ def load_symbol_best_recent_fills(
             )
             cand_key = (same_quote_fam, exact_sym, cand_ts)
             if fills is None or cand_key > best_fill_key:
-                fills, best_fill_key = cand_fills, cand_key
+                fills, best_venue, best_fill_key = cand_fills, cache_venue, cand_key
+    if fills is None or fills.get("last_buy") is None or fills.get("last_sell") is None or best_venue == "t212":
+        norm_cdir = os.path.normpath(os.path.abspath(cachedb_dir)) if cachedb_dir else ""
+        ws_dir = os.path.dirname(norm_cdir) if os.path.basename(norm_cdir).lower() == "cachedb" else norm_cdir
+        if ws_dir and os.path.isdir(ws_dir):
+            k_cycs, hl_cycs, t212_cycs = harvest_venue_cycles(ws_dir, {}, {}, read_json_fn=_rj)
+            cyc_maps = [("t212", t212_cycs), ("kraken", k_cycs), ("hyperliquid", hl_cycs)]
+            if best_venue:
+                cyc_maps.sort(key=lambda vc: 0 if vc[0] == best_venue else 1)
+            cyc_cands = list(dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in quote_variants if str(c).strip())]))
+            matched_cyc: Optional[Dict[str, Any]] = None
+            matched_cyc_venue: Optional[str] = None
+            for cand in cyc_cands:
+                if sym_quotes and compatible_quote_suffixes(cand) != sym_quotes:
+                    continue
+                for c_venue, c_map in cyc_maps:
+                    if isinstance((val := casefold_get(c_map, cand)), dict):
+                        matched_cyc, matched_cyc_venue = val, c_venue
+                        break
+                if matched_cyc is not None:
+                    break
+            if isinstance(matched_cyc, dict):
+                cyc_lb = safe_pos_float(matched_cyc.get("last_buy_price") or matched_cyc.get("entry_price"), default=None)
+                cyc_ls = safe_pos_float(matched_cyc.get("last_sell_price"), default=None)
+                cyc_avg = safe_pos_float(matched_cyc.get("avg_cost_px") or matched_cyc.get("entry_price"), default=None)
+                cyc_qty = safe_nonneg_float(matched_cyc.get("qty"), default=0.0) or 0.0
+                cyc_ls_ts = matched_cyc.get("_last_sell_ts_ms")
+                if fills is None and (cyc_lb is not None or cyc_ls is not None or (cyc_avg is not None and cyc_avg > 0)):
+                    fills = {
+                        "venue": matched_cyc_venue,
+                        "last_action_side": "BUY" if cyc_qty > 1e-8 else ("SELL" if cyc_ls is not None else "BUY"),
+                        "last_action_actor": "BOT",
+                        "last_action_actor_tag": "BOT",
+                        "active_avg_buy_px": round(cyc_avg, 6) if cyc_avg else None,
+                        "last_buy": (
+                            {"price": cyc_lb, "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None, "actor": "BOT", "actor_tag": "BOT"}
+                            if cyc_lb is not None
+                            else None
+                        ),
+                        "last_sell": (
+                            {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
+                            if cyc_ls is not None
+                            else None
+                        ),
+                        "recent_buys": [],
+                    }
+                elif isinstance(fills, dict):
+                    if matched_cyc_venue == "t212" and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
+                        fills["active_avg_buy_px"] = round(cyc_avg, 6)
+                    if fills.get("last_buy") is None and cyc_lb is not None:
+                        fills["last_buy"] = {
+                            "price": cyc_lb,
+                            "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None,
+                            "actor": "BOT",
+                            "actor_tag": "BOT",
+                        }
+                    if fills.get("last_sell") is None and cyc_ls is not None:
+                        fills["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
     return fills
 
 

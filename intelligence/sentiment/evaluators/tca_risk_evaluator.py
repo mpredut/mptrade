@@ -529,9 +529,12 @@ def build_cross_market_context(
         "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
         "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
         "chg_7d_pct", "pos_24h_pct", "poc_px", "sec_poc_px", "lvn_px", "vah_px", "val_px", "va_regime", "profile_shape",
-        "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
+        "slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
     )
-    _round_slope_keys = {"slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
+    _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
+
+    def _round_slope_sig(val: float) -> float:
+        return float(f"{val:.2e}") if 0.0 < abs(val) < 1e-4 else round(val, 6)
 
     crypto_bellwethers: Dict[str, Any] = {}
     for b_canon, (sym, pinfo) in sorted(by_base.items()):
@@ -545,7 +548,7 @@ def build_cross_market_context(
         cb_entry: Dict[str, Any] = {
             "symbol": sym, "price": round(px_f, 6),
             **{
-                k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
+                k: (_round_slope_sig(sf_v) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
                 if pinfo.get(k) is not None
                 and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
@@ -595,7 +598,7 @@ def build_cross_market_context(
             "symbol": eq_sym,
             **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
             **{
-                k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
+                k: (_round_slope_sig(sf_v) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
                 if pinfo.get(k) is not None
                 and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
@@ -605,7 +608,11 @@ def build_cross_market_context(
             },
         }
         if pinfo.get("pos_24h_pct") is None and not is_sub24h_dup_7d:
-            for k7 in ("pos_7d_pct", "low_7d", "high_7d"):
+            for k7 in (
+                "pos_7d_pct", "low_7d", "high_7d", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
+                "swing_low_px", "swing_high_px", "rally_from_swing_low_pct", "pullback_from_swing_high_pct",
+                "major_swing_low_px", "rally_from_major_low_pct", "avg_swing_amp_7d_pct",
+            ):
                 if pinfo.get(k7) is not None:
                     eq_entry[k7] = pinfo[k7]
         if t_cyc:
@@ -613,11 +620,13 @@ def build_cross_market_context(
                 k: t_cyc.get(k)
                 for k in (
                     "qty",
+                    "cost_usd",
                     "avg_cost_px",
                     "entry_price",
                     "last_buy_price",
                     "last_sell_price",
                     "last_exit_kind",
+                    "dca_buys",
                     "dd_pct",
                     "pos_peak",
                     "dd_from_peak_pct",

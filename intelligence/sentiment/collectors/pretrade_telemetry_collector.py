@@ -30,18 +30,23 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_b
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_PRICE_ANCHOR_KEYS,
     _first_variant_dict,
+    compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    reconcile_sibling_flow_and_liq_regimes,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    _apply_24h_series_enrichment,
     _auto_px_decimals,
     _compute_short_slopes_from_series,
     _parse_ts_px_row,
     _prices_diverged,
     apply_live_24trend_windows,
     apply_short_trend_item,
+    compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
 from state_io import read_json_dict_recovering as _default_read_json_cached
@@ -135,17 +140,17 @@ def collect_pretrade_telemetry(
                 if isinstance(ob_sym_raw, str) and ob_sym_raw.strip()
                 else is_usd_sym
             )
-            tot_ob_depth = (
-                (safe_pos_float(obj_attr(ob_snap, "bid_depth_usd", 0.0), 0.0) or 0.0)
-                + (safe_pos_float(obj_attr(ob_snap, "ask_depth_usd", 0.0), 0.0) or 0.0)
-            )
-            min_wall_usd = min(100_000.0, max(5_000.0, tot_ob_depth * 0.05)) if tot_ob_depth > 0.0 else 100_000.0
-            for side_lbl, usd_attr, px_attr in (
-                ("Ask", "largest_ask_wall_usd", "largest_ask_wall_price"),
-                ("Bid", "largest_bid_wall_usd", "largest_bid_wall_price"),
+            bid_d_usd = safe_pos_float(obj_attr(ob_snap, "bid_depth_usd", 0.0), 0.0) or 0.0
+            ask_d_usd = safe_pos_float(obj_attr(ob_snap, "ask_depth_usd", 0.0), 0.0) or 0.0
+            tot_ob_depth = bid_d_usd + ask_d_usd
+            for side_lbl, usd_attr, px_attr, side_d_usd in (
+                ("Ask", "largest_ask_wall_usd", "largest_ask_wall_price", ask_d_usd),
+                ("Bid", "largest_bid_wall_usd", "largest_bid_wall_price", bid_d_usd),
             ):
                 if not ob_same_q:
                     continue
+                eff_side_d = side_d_usd if side_d_usd > 0.0 else (tot_ob_depth * 0.5)
+                min_wall_usd = min(100_000.0, max(5_000.0, eff_side_d * 0.05)) if eff_side_d > 0.0 else 100_000.0
                 w_usd = safe_pos_float(obj_attr(ob_snap, usd_attr, 0.0), 0.0)
                 w_px = safe_pos_float(obj_attr(ob_snap, px_attr, 0.0), 0.0)
                 w_px_fmt = f"{w_px:,.2f}" if w_px >= 1.0 else f"{w_px:.6f}".rstrip("0").rstrip(".")
@@ -214,10 +219,66 @@ def collect_pretrade_telemetry(
     try:
         cur_p_data = _rj(os.path.join(cachedb_dir, "cache_current_price.json"))
         cur_p_items = cur_p_data.get("items", {}) if isinstance(cur_p_data, dict) and isinstance(cur_p_data.get("items"), dict) else {}
-        alt_series_24h, _ = load_symbol_price_series(
-            cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=False
+        alt_series_24h, arch_vals_7d = load_symbol_price_series(
+            cachedb_dir, symbol, current_price_items=cur_p_items, include_7d=True
         )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
+        last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
+        cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
+        if not cur_px_est or cur_px_est <= 0.0:
+            cur_px_est = next(
+                (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
+                0.0,
+            )
+        if cur_px_est <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
+            for vb_k, vb_v in vb_d.items():
+                if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
+                    if str(vb_v.get("symbol") or "").strip().upper() == str(symbol).strip().upper():
+                        cur_px_est = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
+                        if cur_px_est > 0.0:
+                            break
+
+        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
+        if cur_m_info:
+            if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
+                for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
+                    cur_m_info.pop(k_strip, None)
+            elif (
+                is_usd_sym
+                and str(symbol).strip().upper().endswith("USD")
+                and cur_px_est > 0.0
+                and (ob_mid_m := safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)) is not None
+                and abs(cur_px_est - ob_mid_m) / max(cur_px_est, ob_mid_m) > 0.01
+                and not _prices_diverged(cur_px_est, ob_mid_m)
+            ):
+                scale_r = cur_px_est / ob_mid_m
+                px_dec = _auto_px_decimals(cur_px_est)
+                cur_m_info["ob_mid_price"] = round(cur_px_est, px_dec)
+                cur_px_est = cur_m_info["ob_mid_price"]
+                for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+                    if (v_sc := safe_pos_float(cur_m_info.get(k_sc), default=None)) is not None:
+                        cur_m_info[k_sc] = round(v_sc * scale_r, px_dec)
+                for side_lbl, usd_k, px_k in (
+                    ("Ask", "ask_wall_usd", "ask_wall_px"),
+                    ("Bid", "bid_wall_usd", "bid_wall_px"),
+                ):
+                    w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
+                    w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
+                    if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
+                        w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
+                        telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
+            ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
+            is_exact_ob_sym = str(cur_m_info.get("_source_cand") or symbol).strip().upper() == str(symbol).strip().upper()
+            if (
+                is_usd_sym
+                and is_exact_ob_sym
+                and ob_mid_est is not None
+                and (cur_px_est <= 0.0 or abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01)
+            ):
+                cur_px_est = ob_mid_est
+                if m24:
+                    recalculate_live_price_geometry(m24, ob_mid_est)
+
         if m24:
             h_parts = [
                 f"{lbl}={safe_float(m24.get(k), 0.0):+.2f}%"
@@ -295,7 +356,98 @@ def collect_pretrade_telemetry(
                 if b_struct:
                     telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
-        cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
+        is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
+        m7d: Dict[str, Any] = (
+            compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq else 6)
+            if arch_vals_7d and len(arch_vals_7d) >= 2
+            else {}
+        )
+        if isinstance(w_data := _rj(os.path.join(cachedb_dir, "cache_watcher_all_price.json")), dict) and isinstance(w_items := w_data.get("items"), dict):
+            sym_quotes_7d = compatible_quote_suffixes(symbol)
+            for ck in sym_variants:
+                w_ser = casefold_get(w_items, ck)
+                if not isinstance(w_ser, (list, tuple)) or len(w_ser) < 2:
+                    continue
+                vals_7d = [
+                    px_w for pt in w_ser
+                    if isinstance(pt, (list, tuple)) and len(pt) > 1 and (px_w := safe_pos_float(pt[1], default=None)) is not None
+                ]
+                if len(vals_7d) < 2:
+                    continue
+                if ck != symbol and (compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1]))):
+                    continue
+                w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
+                if m7d and (is_eq or (w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000)):
+                    continue
+                if m7d_w := compute_7d_range_metrics(vals_7d, decimals=4 if is_eq else 6):
+                    m7d = m7d_w
+                    break
+        if m7d:
+            if m24.get("low_24h") is not None and m24.get("high_24h") is not None:
+                m7d["low_24h"], m7d["high_24h"] = m24["low_24h"], m24["high_24h"]
+            if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, safe_pos_float(m7d.get("low_7d"), 0.0) or cur_px_est):
+                recalculate_live_price_geometry(m7d, cur_px_est)
+        is_sub24h_dup_7d = (
+            bool(m24)
+            and "chg_24h_pct" not in m24
+            and m24.get("low_24h") is not None
+            and (m7d.get("low_7d"), m7d.get("high_7d")) == (m24.get("low_24h"), m24.get("high_24h"))
+        )
+        if m7d and not is_sub24h_dup_7d:
+            m7d_fmt = m7d
+            p7_parts = [
+                f"7d={safe_float(m7d_fmt.get('chg_7d_pct'), 0.0):+.2f}%",
+                (
+                    f"7d Range=[${m7d_fmt.get('low_7d')}, ${m7d_fmt.get('high_7d')}] "
+                    f"(pos={m7d_fmt.get('pos_7d_pct')}%, dd_high={safe_float(m7d_fmt.get('dd_7d_high_pct'), 0.0):+.2f}%, "
+                    f"bounce_low={safe_float(m7d_fmt.get('bounce_7d_low_pct'), 0.0):+.2f}%, span={m7d_fmt.get('span_7d_pct')}%)"
+                ),
+            ]
+            if m7d_fmt.get("swing_low_px") is not None and m7d_fmt.get("swing_high_px") is not None:
+                maj_sfx = (
+                    f", major_low=${m7d_fmt.get('major_swing_low_px')}"
+                    f"(rally={safe_float(m7d_fmt.get('rally_from_major_low_pct'), 0.0):+.2f}%)"
+                    if m7d_fmt.get("rally_from_major_low_pct") is not None and m7d_fmt.get("major_swing_low_px") is not None
+                    else ""
+                )
+                hist_sfx = ""
+                if isinstance(m7d_fmt.get("recent_swings_7d"), list) and m7d_fmt["recent_swings_7d"]:
+                    amp_s = (
+                        f", avg_amp={m7d_fmt.get('avg_swing_amp_7d_pct')}%"
+                        if m7d_fmt.get("avg_swing_amp_7d_pct") is not None
+                        else ""
+                    )
+                    hist_sfx = f", swings_7d=[{', '.join(str(x) for x in m7d_fmt['recent_swings_7d'])}]{amp_s}"
+                p7_parts.append(
+                    f"swing_wave(low=${m7d_fmt.get('swing_low_px')}, high=${m7d_fmt.get('swing_high_px')}, "
+                    f"rally_low={safe_float(m7d_fmt.get('rally_from_swing_low_pct'), 0.0):+.2f}%, "
+                    f"pullback_high={safe_float(m7d_fmt.get('pullback_from_swing_high_pct'), 0.0):+.2f}%{maj_sfx}){hist_sfx}"
+                )
+            telemetry["7d Price Range & Swing Structure"] = ", ".join(p7_parts)
+
+        t_entry: Dict[str, Any] = {}
+        try:
+            if isinstance(st_data := _rj(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
+                st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
+                if isinstance(tinfo := _first_variant_dict(st_items, sym_variants), dict):
+                    apply_short_trend_item(t_entry, tinfo)
+            for cand in sym_variants:
+                if isinstance(l24 := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand}.json")), dict) and (
+                    l24.get("windows") or any(wk in l24 for wk in ("90", "222", "900", "9000"))
+                ):
+                    apply_live_24trend_windows(t_entry, l24)
+                    break
+            s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
+            if alt_series_24h and (
+                all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
+                or (s15_val is not None and s25_val is not None and s15_val != 0.0 and s15_val == s25_val)
+            ):
+                for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
+                    if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
+                        t_entry[sk] = sv
+        except Exception:
+            pass
+
         if cur_m_info:
             if cur_m_info.get("spread_bps") is not None:
                 telemetry["Orderbook Bid-Ask Spread"] = f"{cur_m_info['spread_bps']} bps"
@@ -304,48 +456,110 @@ def collect_pretrade_telemetry(
             if d1_b > 0.0 or d1_a > 0.0:
                 slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
                 telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
-            last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
-            cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
-            if not cur_px_est or cur_px_est <= 0.0:
-                cur_px_est = next(
-                    (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
-                    0.0,
-                )
-            if not is_usd_sym and (not cur_px_est or cur_px_est <= 0.0 or _prices_diverged(cur_px_est, cur_m_info.get("ob_mid_price"))):
-                for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
-                    cur_m_info.pop(k_strip, None)
-            elif (
-                is_usd_sym
-                and str(symbol).strip().upper().endswith("USD")
-                and cur_px_est > 0.0
-                and (ob_mid_m := safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)) is not None
-                and abs(cur_px_est - ob_mid_m) / max(cur_px_est, ob_mid_m) > 0.01
-                and not _prices_diverged(cur_px_est, ob_mid_m)
-            ):
-                scale_r = cur_px_est / ob_mid_m
-                px_dec = _auto_px_decimals(cur_px_est)
-                cur_m_info["ob_mid_price"] = round(cur_px_est, px_dec)
-                for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
-                    if (v_sc := safe_pos_float(cur_m_info.get(k_sc), default=None)) is not None:
-                        cur_m_info[k_sc] = round(v_sc * scale_r, px_dec)
-                for side_lbl, usd_k, px_k in (
-                    ("Ask", "ask_wall_usd", "ask_wall_px"),
-                    ("Bid", "bid_wall_usd", "bid_wall_px"),
-                ):
-                    w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
-                    w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
-                    if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
-                        w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
-                        telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
-            p_est = dict(m24)
+            p_est: Dict[str, Any] = {k: v for k, v in t_entry.items() if v is not None}
             if cur_px_est and cur_px_est > 0:
                 p_est["price"] = cur_px_est
+            if m7d and not is_sub24h_dup_7d:
+                p_est.update(m7d)
+            if m24:
+                _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
+            if cur_px_est and cur_px_est > 0:
+                p_est["price"] = cur_px_est
+                recalculate_live_price_geometry(p_est, cur_px_est)
             enrich_microstructure_cvd(cur_m_info, p_est)
+            if (fr_v := safe_float(cur_m_info.get("funding_rate"), default=None)) is not None:
+                fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
+                f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
+                b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
+                fr_extras = [
+                    x
+                    for x in (
+                        f"funding_ann={f_ann:+.1f}%" if f_ann is not None else "",
+                        f"perp_basis={b_bps:+.1f}bps" if b_bps is not None else "",
+                    )
+                    if x and x.split("=", 1)[0] not in fr_base
+                ]
+                telemetry["Perpetual Funding Rate"] = f"{fr_base} ({', '.join(fr_extras)})" if fr_extras else fr_base
+            if (oi_v := safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0:
+                oi_base = telemetry.get("Derivatives Open Interest") or f"${oi_v:,.0f}"
+                if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None and "1h_chg=" not in oi_base:
+                    telemetry["Derivatives Open Interest"] = f"{oi_base} (1h_chg={oi_chg:+.2f}%)"
+                else:
+                    telemetry["Derivatives Open Interest"] = oi_base
+            liq_c = compute_liquidation_clusters(p_est, cur_m_info)
+            cur_m_info.update(liq_c)
+            if is_usd_sym:
+                cur_bd = safe_pos_float(cur_m_info.get("bid_depth_usd"), default=0.0) or 0.0
+                for cand in quote_variants:
+                    cand_u = str(cand or "").strip().upper()
+                    if not cand_u or cand_u == str(symbol).strip().upper():
+                        continue
+                    sib_ob_d = _rj(os.path.join(cachedb_dir, f"orderbook_depth_{cand_u}.json"))
+                    if not isinstance(sib_ob_d, dict):
+                        continue
+                    sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
+                    if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
+                        if sib_m := load_symbol_microstructure(cachedb_dir, cand_u, _rj, ob=sib_ob_d):
+                            sib_ob_mid = safe_pos_float(sib_m.get("ob_mid_price"), default=None)
+                            sib_live_px = extract_current_price_item(casefold_get(cur_p_items, cand_u))
+                            if not sib_live_px or sib_live_px <= 0.0:
+                                if isinstance(l24_s := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_u}.json")), dict):
+                                    w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
+                                    sib_live_px = safe_pos_float(
+                                        ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
+                                        default=None,
+                                    )
+                            if (
+                                cand_u.endswith("USD")
+                                and sib_live_px
+                                and sib_live_px > 0.0
+                                and sib_ob_mid is not None
+                                and abs(sib_live_px - sib_ob_mid) / max(sib_live_px, sib_ob_mid) > 0.01
+                                and not _prices_diverged(sib_live_px, sib_ob_mid)
+                            ):
+                                s_scale = sib_live_px / sib_ob_mid
+                                s_dec = _auto_px_decimals(sib_live_px)
+                                sib_m["ob_mid_price"] = round(sib_live_px, s_dec)
+                                for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+                                    if (v_sc := safe_pos_float(sib_m.get(k_sc), default=None)) is not None:
+                                        sib_m[k_sc] = round(v_sc * s_scale, s_dec)
+                            sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est
+                            sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
+                            enrich_microstructure_cvd(sib_m, sib_p_est)
+                            sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m))
+                            micro_pair = {symbol: cur_m_info, cand_u: sib_m}
+                            pt_pair = {symbol: p_est, cand_u: sib_p_est}
+                            reconcile_sibling_flow_and_liq_regimes(micro_pair, pt_pair)
+                            compute_cross_venue_arb_metrics(symbol, cur_m_info, p_est, micro_pair, pt_pair)
+                            liq_c["liq_magnet_bias"] = cur_m_info.get("liq_magnet_bias")
+                            if (arb_bps := safe_float(cur_m_info.get("cross_venue_arb_bps"), default=None)) is not None and cur_m_info.get("cross_venue_peer"):
+                                net_b = safe_float(cur_m_info.get("net_buy_edge_vs_peer_bps"), default=None)
+                                best_b = cur_m_info.get("best_buy_venue")
+                                arb_s = f"arb_vs_{cur_m_info['cross_venue_peer']}={arb_bps:+.1f}bps"
+                                if net_b is not None and best_b:
+                                    arb_s += f", net_buy_edge={net_b:+.1f}bps (best_buy={best_b})"
+                                telemetry["Cross-Venue Relative Value (Arbitrage)"] = arb_s
+                        break
             if cur_m_info.get("cvd_15m_usd") is not None:
                 cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
                 cvd_reg = cur_m_info.get("cvd_regime") or "balanced_flow"
-                telemetry["15m Cumulative Volume Delta (CVD)"] = f"${cvd_u:+,.0f} ({cvd_reg})"
-            liq_c = compute_liquidation_clusters(p_est, cur_m_info)
+                cvd_line = f"${cvd_u:+,.0f} ({cvd_reg})"
+                mh_parts = [
+                    f"{h_lbl}=tr:{tr_v:.2f}/cvd:${c_v:+,.0f}"
+                    for h_lbl, tr_k, cvd_k in (
+                        ("5m", "taker_ratio_5m", "cvd_5m_usd"),
+                        ("1h", "taker_ratio_1h", "cvd_1h_usd"),
+                        ("4h", "taker_ratio_4h", "cvd_4h_usd"),
+                    )
+                    if (tr_v := safe_pos_float(cur_m_info.get(tr_k), default=None)) is not None
+                    and (c_v := safe_float(cur_m_info.get(cvd_k), default=None)) is not None
+                ]
+                if mh_parts:
+                    cvd_line += f", flow_horizons({', '.join(mh_parts)})"
+                sp_cvd = safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)
+                if sp_cvd is not None and cur_m_info.get("spot_perp_flow_regime"):
+                    cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f} ({cur_m_info['spot_perp_flow_regime']})"
+                telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
             if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
                 deep_parts = [
                     f"deep_{s_lbl}=${liq_c[px_k]} (${safe_float(liq_c.get(usd_k), 0.0):,.0f}, {safe_float(liq_c.get(dist_k), 0.0):+.2f}%)"
@@ -361,30 +575,12 @@ def collect_pretrade_telemetry(
                     f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
                     f"magnet={liq_c.get('liq_magnet_bias')}"
                 )
-    except Exception:
-        pass
-
-    try:
-        t_entry: Dict[str, Any] = {}
-        if isinstance(st_data := _rj(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
-            st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
-            if isinstance(tinfo := _first_variant_dict(st_items, sym_variants), dict):
-                apply_short_trend_item(t_entry, tinfo)
-        for cand in sym_variants:
-            if isinstance(l24 := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand}.json")), dict) and l24.get("windows"):
-                apply_live_24trend_windows(t_entry, l24)
-                break
-        s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
-        if alt_series_24h and (
-            all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
-            or (s15_val is not None and s25_val is not None and s15_val != 0.0 and s15_val == s25_val)
-        ):
-            for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
-                if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
-                    t_entry[sk] = sv
-        if any(t_entry.get(k) is not None for k in ("slope_3_7m", "slope_15m", "slope_2_5h")):
+        if any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
             _fmt_s = lambda v: f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}"
+            s90_v = safe_float(t_entry.get("slope_90s"), default=None)
+            s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
             telemetry["Dynamic Multi-Window Slopes"] = (
+                f"{s90_pfx}"
                 f"3.7m={_fmt_s(safe_float(t_entry.get('slope_3_7m'), 0.0))}, "
                 f"15m={_fmt_s(safe_float(t_entry.get('slope_15m'), 0.0))}, "
                 f"2.5h={_fmt_s(safe_float(t_entry.get('slope_2_5h'), 0.0))}"
@@ -407,10 +603,27 @@ def collect_pretrade_telemetry(
                 if (ls.get("qty") is not None and ls.get("price") is not None)
                 else (f"{ls.get('price')}{ls_by}" if ls.get("price") is not None else "none")
             )
+            sub_parts = []
+            lb_px = safe_pos_float(lb.get("price"), default=None)
+            _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
+            if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
+                sub_parts.append(f"Active Cycle Avg BUY={act_avg}")
+            if (tac_avg := safe_pos_float(fills.get("tactical_avg_buy_px"), default=None)) is not None and not _same_px(tac_avg, act_avg) and not _same_px(tac_avg, lb_px):
+                sub_parts.append(f"Tactical Sub-Cycle Avg BUY={tac_avg}")
+            if (
+                (sw_avg := safe_pos_float(fills.get("swing_subcycle_avg_px"), default=None)) is not None
+                and (act_avg is None or abs(sw_avg - act_avg) / max(act_avg, 1e-12) >= 0.002)
+                and not _same_px(sw_avg, tac_avg)
+                and not _same_px(sw_avg, lb_px)
+            ):
+                sub_parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
+            if abs(lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), 0.0)) >= 0.01:
+                sub_parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
+            sub_sfx = f", {', '.join(sub_parts)}" if sub_parts else ""
             telemetry["Recent Venue Fills"] = (
                 f"Last Action={fills.get('last_action_side')}, "
                 f"Last BUY={lb_s}, "
-                f"Last SELL={ls_s}"
+                f"Last SELL={ls_s}{sub_sfx}"
             )
     except Exception:
         pass

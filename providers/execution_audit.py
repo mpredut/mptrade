@@ -1132,11 +1132,12 @@ def summarize_recent_ai_intents(
         return intent_summary
 
     recent_rev: list[dict[str, Any]] = []
+    non_resting_count = 0
     seen_oids: set[str] = set()
     seen_sym_side: set[tuple[str, str, str]] = set()
     recent_indices: set[int] = set()
     for idx in range(len(scoped_intents) - 1, -1, -1):
-        if len(recent_rev) >= 8:
+        if non_resting_count >= 8 or len(recent_rev) >= 16:
             break
         i = scoped_intents[idx]
         det = _resolve_intent_execution_details(
@@ -1165,7 +1166,16 @@ def summarize_recent_ai_intents(
         recent_indices.add(idx)
         if det["order_id"] is not None:
             seen_oids.add(str(det["order_id"]))
-        recent_rev.append(_to_summary(i, det))
+        sum_item = _to_summary(i, det)
+        recent_rev.append(sum_item)
+        if not (
+            isinstance(open_orders, list)
+            and open_orders
+            and det.get("is_open_in_venue")
+            and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
+            and (sum_item.get("age_h") or 0.0) > 0.5
+        ):
+            non_resting_count += 1
     recent_intents_out: list[dict[str, Any]] = list(reversed(recent_rev))
 
     if isinstance(open_orders, list) and open_orders and len(scoped_intents) > len(recent_intents_out):

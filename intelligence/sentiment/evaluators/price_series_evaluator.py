@@ -100,7 +100,7 @@ def _build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px:
     """Compute symmetric % distances from POC/VAL/VAH, Value Area position %, and VA regime."""
     if min(cur_px, poc_px, val_px, vah_px) <= 0.0:
         return {}
-    va_pos = range_position_pct(cur_px, val_px, vah_px)
+    va_pos = max(-100.0, min(200.0, range_position_pct(cur_px, val_px, vah_px)))
     return {
         "poc_dist_pct": pct_delta(cur_px, poc_px),
         "vah_dist_pct": pct_delta(cur_px, vah_px),
@@ -238,10 +238,7 @@ def compute_volume_profile_metrics(
                 eff_dec_tmp = _auto_px_decimals(cur_px, decimals)
                 hvn2_px = round(hvn2_raw, eff_dec_tmp)
                 lvn_px = round(lvn_raw, eff_dec_tmp)
-                if (
-                    smoothed_vols[hvn2_idx] >= 0.68 * smoothed_vols[poc_idx]
-                    and smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx])
-                ):
+                if smoothed_vols[lvn_idx] <= 0.90 * min(smoothed_vols[poc_idx], smoothed_vols[hvn2_idx]):
                     profile_shape = "BIMODAL"
                 if smoothed_vols[hvn2_idx] >= 0.85 * smoothed_vols[poc_idx]:
                     ref_center = 0.5 * (cur_px + (0.5 * (low_px + high_px)))
@@ -310,15 +307,26 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             tms, _ = _sample_at(mins)
             return tms is not None and tms >= now_ms - (mins + max_gap_mins) * 60000.0
 
-        out = _compute_horizon_range_dict(cur_px, min(x[1] for x in clean_series), max(x[1] for x in clean_series), "24h")
+        out = _compute_horizon_range_dict(
+            cur_px,
+            round(min(x[1] for x in clean_series), 6),
+            round(max(x[1] for x in clean_series), 6),
+            "24h",
+        )
+        seen_sample_tms: set[float] = set()
+        dedup_sparse_samples = len(clean_series) >= 25
         for key, mins, min_span_ms, max_gap_mins in (
             ("chg_1m_pct", 1.0, 60000.0, 2.5), ("chg_3m_pct", 3.0, 180000.0, 4.0), ("chg_5m_pct", 5.0, 300000.0, 6.0),
             ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
             ("chg_3h_pct", 180.0, 0.0, 0.0), ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
-            _, p_ref = _sample_at(mins)
+            tms, p_ref = _sample_at(mins)
             if p_ref > 0 and span_ms >= min_span_ms and (max_gap_mins <= 0.0 or _has_sample_near(mins, max_gap_mins)):
+                if dedup_sparse_samples and tms is not None and mins < 1440.0 and tms in seen_sample_tms:
+                    continue
+                if tms is not None:
+                    seen_sample_tms.add(tms)
                 out[key] = pct_delta(cur_px, p_ref)
 
         recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
@@ -602,7 +610,8 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
     """Overlay fresh 1-second sampled dynamic windows (90s, 3.7m, 15m, 2.5h) from `cachedb/24trend/live_<SYM>.json`."""
     if not isinstance(entry, dict) or not isinstance(lt_win, dict):
         return
-    wins = {wk: (lt_win.get(wk) if isinstance(lt_win.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
+    win_src = lt_win.get("windows") if isinstance(lt_win.get("windows"), dict) else lt_win
+    wins = {wk: (win_src.get(wk) if isinstance(win_src.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
     w90, w222, w900 = wins["90"], wins["222"] or wins["90"], wins["900"]
     wins["222"] = w222
     live_px = (
@@ -698,12 +707,14 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         ref_t, ref_p = min(pts[:-1], key=lambda item: abs(item[0] - target_t))
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
-            slope_v = round(((p_now - ref_p) / ref_p) / dt_min, 6) + 0.0
+            raw_s = ((p_now - ref_p) / ref_p) / dt_min
+            slope_v = (float(f"{raw_s:.2e}") if 0.0 < abs(raw_s) < 1e-4 else round(raw_s, 6)) + 0.0
             half_t = t_now - 0.5 * win_sec
             ref_t_h, ref_p_h = min(pts[:-1], key=lambda item: abs(item[0] - half_t))
             dt_min_h = max(0.5 * win_min, (t_now - ref_t_h) / 60.0)
             slope_half = (((p_now - ref_p_h) / ref_p_h) / dt_min_h) if (ref_p_h > 0 and dt_min_h > 0) else slope_v
-            g_v = round(0.35 * slope_v + 0.65 * slope_half, 6) + 0.0
+            raw_g = 0.35 * slope_v + 0.65 * slope_half
+            g_v = (float(f"{raw_g:.2e}") if 0.0 < abs(raw_g) < 1e-4 else round(raw_g, 6)) + 0.0
             win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
             out[g_key] = g_v
@@ -775,7 +786,10 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
     sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
     sw_hi = safe_pos_float(pinfo.get("swing_high_px"), default=None)
     if sw_lo is not None and sw_hi is not None:
-        sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur), 6), round(max(sw_hi, p_cur), 6)
+        if not pinfo.get("recent_swings_7d") and l24 is not None and h24 is not None:
+            sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur, l24), 6), round(max(sw_hi, p_cur, h24), 6)
+        else:
+            sw_lo_new, sw_hi_new = round(min(sw_lo, p_cur), 6), round(max(sw_hi, p_cur, h24 if h24 is not None and not pinfo.get("recent_swings_7d") else p_cur), 6)
         pinfo["swing_low_px"], pinfo["swing_high_px"] = sw_lo_new, sw_hi_new
         if sw_lo_new > 0.0:
             pinfo["rally_from_swing_low_pct"] = pct_delta(p_cur, sw_lo_new)

@@ -75,6 +75,7 @@ from state_io import (
 )
 
 read_json_cached = _default_read_json_cached
+_LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
@@ -244,22 +245,30 @@ def load_symbol_price_series(
             if arch_span_ms >= 5.0 * 86400.0 * 1000.0 or sparse_7d_pts:
                 break
 
+    arch_7d_end_ts = 0.0
+    arch_7d_span_ms = 0.0
     if archive_pts:
         try:
             if (last_pt := _parse_ts_px_row(archive_pts[-1])) is not None:
                 cutoff_24h, cutoff_7d = last_pt[0] - 86400.0 * 1000.0, last_pt[0] - 7.0 * 86400.0 * 1000.0
-                pts_24, pts_7d_vals = [], []
+                pts_24, pts_7d_vals, pts_7d_ts = [], [], []
                 for row in archive_pts:
                     if (pt := _parse_ts_px_row(row)) is not None:
                         if pt[0] >= cutoff_7d:
                             pts_7d_vals.append(pt[1])
+                            pts_7d_ts.append(pt[0])
                         if need_24h_supplement and pt[0] >= cutoff_24h:
                             pts_24.append([row[0], pt[1]])
+                arch_7d_end_ts = last_pt[0]
+                if len(pts_7d_ts) >= 2:
+                    arch_7d_span_ms = max(0.0, pts_7d_ts[-1] - pts_7d_ts[0])
                 if sparse_7d_pts and (sp_last := _parse_ts_px_row(sparse_7d_pts[-1])) is not None:
                     sp_cutoff_7d = sp_last[0] - 7.0 * 86400.0 * 1000.0
-                    sp_vals = [pt[1] for row in sparse_7d_pts if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
-                    if len(sp_vals) >= 2:
-                        pts_7d_vals = sp_vals
+                    sp_pts = [pt for row in sparse_7d_pts if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
+                    if len(sp_pts) >= 2:
+                        pts_7d_vals = [pt[1] for pt in sp_pts]
+                        arch_7d_end_ts = sp_last[0]
+                        arch_7d_span_ms = max(0.0, sp_pts[-1][0] - sp_pts[0][0])
                 if len(pts_7d_vals) >= 2:
                     vals_7d = pts_7d_vals
                 if need_24h_supplement and pts_24:
@@ -268,6 +277,7 @@ def load_symbol_price_series(
                         series_24h = (pts_24 + series_24h) if series_24h else pts_24
         except Exception:
             pass
+    _LAST_7D_SPAN_MS_BY_SYM[str(symbol).strip().upper()] = arch_7d_span_ms
 
     # 3. Overlay ultra-recent 1-second ticks from cache_current_price.json
     if isinstance(current_price_items, dict) and current_price_items:
@@ -328,9 +338,17 @@ def load_symbol_price_series(
         else:
             series_24h = []
 
-    if vals_7d and series_24h and (latest_px := safe_pos_float(series_24h[-1][1], default=None)) is not None:
-        if vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
-            vals_7d.append(latest_px)
+    if vals_7d and series_24h:
+        appended_newer = False
+        if arch_7d_end_ts > 0.0:
+            for pt in series_24h:
+                if pt[0] > arch_7d_end_ts and (pt_px := safe_pos_float(pt[1], default=None)) is not None:
+                    if vals_7d[-1] != pt_px and not _prices_diverged(pt_px, vals_7d[-1]):
+                        vals_7d.append(pt_px)
+                    appended_newer = True
+        if not appended_newer and (latest_px := safe_pos_float(series_24h[-1][1], default=None)) is not None:
+            if vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
+                vals_7d.append(latest_px)
 
     return series_24h, vals_7d
 
@@ -417,6 +435,8 @@ def load_symbol_microstructure(
             ("taker_ratio_1h", "taker_ratio_1h", None),
             ("taker_ratio_4h", "taker_ratio_4h", None),
             ("cvd_5m_usd", "cvd_5m_usd", None),
+            ("cvd_15m_usd", "cvd_15m_usd", None),
+            ("spot_cvd_15m_usd", "spot_cvd_15m_usd", None),
             ("cvd_1h_usd", "cvd_1h_usd", None),
             ("cvd_4h_usd", "cvd_4h_usd", None),
         ):
@@ -431,7 +451,7 @@ def load_symbol_microstructure(
             m_info["funding_rate"] = w_fr
     if m_info.get("funding_annualized_pct") is None and (fr_v := safe_float(m_info.get("funding_rate"), default=None)) is not None:
         m_info["funding_annualized_pct"] = round(fr_v * 3.0 * 365.0 * 100.0, 2)
-    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_1h_usd", "cvd_4h_usd"):
+    for usd_k in ("oi_usd", "taker_buy_vol_usd", "taker_sell_vol_usd", "cvd_5m_usd", "cvd_15m_usd", "spot_cvd_15m_usd", "cvd_1h_usd", "cvd_4h_usd"):
         if (uv := safe_float(m_info.get(usd_k), default=None)) is not None:
             m_info[usd_k] = round(uv, 2)
     enrich_microstructure_cvd(m_info)
@@ -616,8 +636,19 @@ def enrich_24h_and_microstructure(
                 post_rth_px_override = round(sym_px_cur, 4)
                 if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
                     m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
-        if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
+        arch_span_7d_ms = _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
+        if arch_vals_7d and len(arch_vals_7d) >= 2 and (
+            "chg_7d_pct" not in prices_and_trends[sym]
+            or (
+                prices_and_trends[sym].get("_partial_7d_span_ms") is not None
+                and arch_span_7d_ms > safe_float(prices_and_trends[sym].get("_partial_7d_span_ms"), 0.0)
+            )
+        ):
             prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
+            if 0.0 <= arch_span_7d_ms < 5 * 86400 * 1000:
+                prices_and_trends[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
+            else:
+                prices_and_trends[sym].pop("_partial_7d_span_ms", None)
         ohlc_fn = getattr(getattr(inst_by_sym.get(sym), "_provider", None), "ohlc_series", None)
         if not callable(ohlc_fn) and "PYTEST_CURRENT_TEST" not in os.environ:
             sym_u = sym.upper()
@@ -649,25 +680,39 @@ def enrich_24h_and_microstructure(
                             matched_series_24h = older_ohlc + list(matched_series_24h)
                             if m24_full := (compute_24h_price_metrics(matched_series_24h) or {}):
                                 m24 = m24_full
-                    if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
-                        s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
-                        s60_ts = sorted(
-                            ts_s
-                            for raw_ts in (getattr(s60, "timestamps", None) or ())
-                            if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
-                        )
-                        vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
-                        if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
-                            try:
-                                s240 = ohlc_fn(sym, 240)
-                                first_s60 = s60_ts[0] - 1800.0
-                                older_7d = _filter_ohlc_closes_since(s240, cutoff_7d, max_ts=first_s60)
-                                if older_7d:
-                                    vals_7d = older_7d + vals_7d
-                            except Exception:
-                                pass
-                        if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
-                            prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
+                except Exception:
+                    pass
+            if (
+                "chg_7d_pct" not in prices_and_trends[sym]
+                or (0.0 < span_24h_ms < 18 * 3600 * 1000)
+                or (0.0 < arch_span_7d_ms < 5 * 86400 * 1000)
+                or prices_and_trends[sym].get("_partial_7d_span_ms") is not None
+            ):
+                try:
+                    s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
+                    s60_ts = sorted(
+                        ts_s
+                        for raw_ts in (getattr(s60, "timestamps", None) or ())
+                        if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
+                    )
+                    vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
+                    if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
+                        try:
+                            s240 = ohlc_fn(sym, 240)
+                            first_s60 = s60_ts[0] - 1800.0
+                            older_7d = _filter_ohlc_closes_since(s240, cutoff_7d, max_ts=first_s60)
+                            if older_7d:
+                                vals_7d = older_7d + vals_7d
+                        except Exception:
+                            pass
+                    if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
+                        for ex_px in (safe_pos_float(m24.get("low_24h"), default=None), safe_pos_float(m24.get("high_24h"), default=None)):
+                            if ex_px is not None and not _prices_diverged(ex_px, vals_7d[-1]):
+                                vals_7d.insert(-1, ex_px)
+                        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, vals_7d[-1]) and abs(sym_px_cur - vals_7d[-1]) > 1e-9:
+                            vals_7d.append(sym_px_cur)
+                        prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
+                        prices_and_trends[sym].pop("_partial_7d_span_ms", None)
                 except Exception:
                     pass
             if m24.get("vp_source") == "TPO":
@@ -680,6 +725,7 @@ def enrich_24h_and_microstructure(
                             m24.update(vp_real)
                 except Exception:
                     pass
+        prices_and_trends[sym].pop("_partial_7d_span_ms", None)
         is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
         if not m24 and (is_t212_inst or (sym.endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ)):
             try:
@@ -802,7 +848,8 @@ def enrich_24h_and_microstructure(
                 ):
                     scale_r = sym_px_m / ob_mid_m
                     px_dec = _auto_px_decimals(sym_px_m)
-                    m_info["ob_mid_price"] = round(sym_px_m, px_dec)
+                    m_info["ob_mid_price"] = prices_and_trends[sym]["price"] = round(sym_px_m, px_dec)
+                    sym_px_m = m_info["ob_mid_price"]
                     for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
                         if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
                             m_info[k_sc] = round(v_sc * scale_r, px_dec)

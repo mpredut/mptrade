@@ -79,6 +79,19 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         if eff_d1 > 0.0:
             sp_half = (safe_nonneg_float(minfo.get("spread_bps"), default=2.0) or 2.0) * 0.5
             minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
+    p_dict = pinfo if isinstance(pinfo, dict) else {}
+    m_px = (
+        safe_pos_float(p_dict.get("price"), default=None)
+        or safe_pos_float(minfo.get("ob_mid_price"), default=None)
+        or ((b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else None)
+    )
+    funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
+    if minfo.get("perp_spot_basis_bps") is None and m_px and m_px > 0.0:
+        mark_p = safe_pos_float(minfo.get("mark_price"), default=None)
+        if mark_p is not None and mark_p > 0.0:
+            minfo["perp_spot_basis_bps"] = round(((mark_p - m_px) / m_px) * 10000.0, 2)
+        elif funding_r != 0.0:
+            minfo["perp_spot_basis_bps"] = round(funding_r * 10000.0 * 1.5, 2)
     cvd_usd = safe_float(minfo.get("cvd_15m_usd"), default=None)
     if cvd_usd is None:
         tb_v, ts_v = safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=None), safe_nonneg_float(minfo.get("taker_sell_vol_usd"), default=None)
@@ -86,12 +99,6 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             cvd_usd = minfo["cvd_15m_usd"] = round(tb_v - ts_v, 0)
     if cvd_usd is None:
         return
-    p_dict = pinfo if isinstance(pinfo, dict) else {}
-    m_px = (
-        safe_pos_float(p_dict.get("price"), default=None)
-        or safe_pos_float(minfo.get("ob_mid_price"), default=None)
-        or ((b_bid + b_ask) / 2.0 if b_bid > 0.0 and b_ask >= b_bid else None)
-    )
     if m_px is not None and m_px > 0.0:
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1))
     ob_imb = clean_scale(minfo.get("ob_imbalance"), default=0.5, allow_percent=True)
@@ -125,16 +132,9 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         max_spot_cvd = ref_scale * 0.85
         minfo["spot_cvd_15m_usd"] = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * ob_net_pct * 0.35 + vel_adj)), 0)
     spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
-    funding_r = safe_float(minfo.get("funding_rate"), default=0.0) or 0.0
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     cvd_5m = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
     cvd_1h = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0
-    if minfo.get("perp_spot_basis_bps") is None and m_px and m_px > 0.0:
-        mark_p = safe_pos_float(minfo.get("mark_price"), default=None)
-        if mark_p is not None and mark_p > 0.0:
-            minfo["perp_spot_basis_bps"] = round(((mark_p - m_px) / m_px) * 10000.0, 2)
-        elif funding_r != 0.0:
-            minfo["perp_spot_basis_bps"] = round(funding_r * 10000.0 * 1.5, 2)
 
     is_multi_horizon_selloff = cvd_usd < 0.0 and cvd_5m < 0.0 and cvd_1h < 0.0 and funding_r >= 0.0
     is_absorbing_cvd = minfo.get("cvd_regime") == "spot_absorbing"
@@ -678,11 +678,17 @@ def enrich_cross_venue_trends(
                 if ck != sym and (compatible_quote_suffixes(ck) != sym_quotes or _prices_diverged(sym_px_cur, last_m_px)):
                     continue
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
-                if "chg_7d_pct" in entry and (sym.endswith(("_EQ", "_US_EQ")) or (w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000)):
+                w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
+                if "chg_7d_pct" in entry and (sym.endswith(("_EQ", "_US_EQ")) or (0.0 <= w_span_ms < 5 * 86400 * 1000)):
+                    entry.pop("_partial_7d_span_ms", None)
                     continue
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
                 dec_7d = 4 if sym.endswith(("_EQ", "_US_EQ")) else None
                 entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))
+                if 0.0 <= w_span_ms < 5 * 86400 * 1000:
+                    entry["_partial_7d_span_ms"] = w_span_ms
+                else:
+                    entry.pop("_partial_7d_span_ms", None)
                 break
 
 

@@ -722,6 +722,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     supervisor_summary_pattern = re.compile(
         r"(Autonomous AI Supervisor cycle complete:|\[(ENFORCE|SHADOW)\]\s+auto_|"
         r"\[SHADOW WOULD (?:EXECUTE|APPLY)\]|\[ENFORCE (?:EXECUTING|ATTEMPTING PATCH)\]|"
+        r"\"__orchestrator_intent__\"\s*:|"
         r"mailer:\s+Email delivery skipped|Email gated by common delivery policy|"
         r"(?:Supervisor\s+)?ntfy(?: delivery)? gated (?:by common policy|after due-batch flush)|Dispatched ntfy alert to|"
         r"Retry queue full .* dropping oldest notification|"
@@ -732,7 +733,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     )
     guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
     daemon_recovered_pattern = re.compile(
-        r"(Daemon status:\s*active|Remote-control daemon started)",
+        r"(Daemon status:\s*active|Remote-control daemon started|"
+        r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
+        r"\[verify\].*is LISTED and tradable)",
+        re.IGNORECASE,
+    )
+    startup_fatal_exc_pattern = re.compile(
+        r"^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError):",
         re.IGNORECASE,
     )
     ignored_test_prefixes = ("pytest_", "__main___", "py.test_", "c_")
@@ -760,6 +767,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     total_lines = len(lines)
                     tail_start_idx = max(0, total_lines - min(10, max(3, total_lines // 4)))
                     file_sig_stats: Dict[str, Dict[str, Any]] = {}
+                    last_exc_sig: str = ""
+                    last_exc_idx: int = -100
                     for idx, line in enumerate(lines):
                         if supervisor_summary_pattern.search(line):
                             continue
@@ -804,10 +813,26 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 and any(daemon_recovered_pattern.search(lines[j]) for j in range(idx + 1, total_lines))
                             ):
                                 continue
+                            sig = normalize_error_signature(cleaned)
+                            if (
+                                sig
+                                and sig == last_exc_sig
+                                and 0 < (idx - last_exc_idx) <= 25
+                                and any(
+                                    "During handling of the above exception" in lines[j]
+                                    or "The above exception was the direct cause" in lines[j]
+                                    for j in range(last_exc_idx + 1, idx)
+                                )
+                            ):
+                                last_exc_idx = idx
+                                if idx >= tail_start_idx and sig in file_sig_stats:
+                                    file_sig_stats[sig]["unresolved_at_tail"] = True
+                                continue
+                            last_exc_sig = sig
+                            last_exc_idx = idx
                             error_count += 1
                             if cleaned not in critical_events and len(critical_events) < 50:
                                 critical_events.append(cleaned)
-                            sig = normalize_error_signature(cleaned)
                             if sig:
                                 st = file_sig_stats.setdefault(
                                     sig,
@@ -823,8 +848,14 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             if cleaned not in guard_interventions and len(guard_interventions) < 50:
                                 guard_interventions.append(cleaned)
                         elif daemon_recovered_pattern.search(line):
-                            for st_prev in file_sig_stats.values():
+                            for sig_k, st_prev in list(file_sig_stats.items()):
                                 st_prev["unresolved_at_tail"] = False
+                                sample_prev = str(st_prev.get("sample") or "").strip()
+                                if startup_fatal_exc_pattern.match(sample_prev):
+                                    error_count = max(0, error_count - int(st_prev.get("count", 0)))
+                                    file_sig_stats.pop(sig_k, None)
+                                    if sample_prev in critical_events:
+                                        critical_events.remove(sample_prev)
                     for st in file_sig_stats.values():
                         if st["count"] >= 2 or st["unresolved_at_tail"]:
                             persistent_errors.append(st)
@@ -1102,7 +1133,7 @@ def harvest_heartbeats_and_state_files(
                 hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
                 max_hb_age = 300.0 if hb_name == "rtrade.heartbeat" else 1800.0
                 hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
-                if hb_ts is not None and now_ts >= hb_ts:
+                if hb_ts is not None and hb_ts <= now_ts + 60.0:
                     age_sec = max(0.0, now_ts - hb_ts)
                     if age_sec > max_hb_age:
                         continue
@@ -1146,14 +1177,22 @@ def harvest_heartbeats_and_state_files(
                     hb_full = os.path.join(scan_dir, entry)
                     if not os.path.isfile(hb_full):
                         continue
-                    mtime = os.path.getmtime(hb_full)
-                    age_sec = max(0.0, now_ts - mtime)
-                    if age_sec > 1800.0:
-                        continue
                     data = _rj(hb_full)
                     if isinstance(data, dict) and data:
+                        hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
+                        if hb_ts is not None and hb_ts <= now_ts + 60.0:
+                            age_sec = max(0.0, now_ts - hb_ts)
+                        else:
+                            mtime = os.path.getmtime(hb_full)
+                            age_sec = max(0.0, now_ts - mtime)
+                        if age_sec > 1800.0:
+                            continue
                         active_heartbeats[entry] = {**data, "age_seconds": round(age_sec, 1)}
                     else:
+                        mtime = os.path.getmtime(hb_full)
+                        age_sec = max(0.0, now_ts - mtime)
+                        if age_sec > 1800.0:
+                            continue
                         active_heartbeats[entry] = build_heartbeat_payload(
                             {"ts": mtime},
                             extra={"age_seconds": round(age_sec, 1)},

@@ -502,7 +502,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
                 f"{_format_horizon_range(pinfo, px_f, '7d')}"
             )
-        if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None:
+        is_dup_swing = (
+            is_sub24h_dup_7d
+            and not pinfo.get("recent_swings_7d")
+            and (pinfo.get("swing_low_px"), pinfo.get("swing_high_px")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+        )
+        if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None and not is_dup_swing:
             sw_ral = _parse_finite_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
             sw_pb = _parse_finite_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
             maj_sfx = (

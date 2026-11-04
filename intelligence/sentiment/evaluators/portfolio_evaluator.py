@@ -72,21 +72,33 @@ def parse_venue_cycle_state(
     qty = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
     raw_cost = st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost")
     cost = safe_nonneg_float(raw_cost, default=0.0) or 0.0
-    avg_cost = (
-        round(cost / qty, avg_decimals)
-        if qty > 1e-12 and cost > 0
-        else (
-            round_opt_px(
-                st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price") or st_data.get("entry_price"),
-                avg_decimals,
-            )
-            if qty > 1e-12
-            else None
-        )
+    last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
+    explicit_avg = safe_pos_float(
+        st_data.get("avg_cost") or st_data.get("avg_cost_px") or st_data.get("avg_price"),
+        default=None,
     )
+    dca_buys_i = int(safe_nonneg_float(st_data.get("dca_buys"), default=0) or 0)
+    single_lot_px = (
+        safe_pos_float(st_data.get("entry_price") or last_buy_px, default=None)
+        if dca_buys_i == 0
+        else None
+    )
+    if qty > 1e-12 and cost > 0:
+        if explicit_avg is not None and abs(qty * explicit_avg - cost) <= 0.015:
+            avg_cost = round(explicit_avg, avg_decimals)
+        elif single_lot_px is not None and abs(qty * single_lot_px - cost) <= 0.015:
+            avg_cost = round(single_lot_px, avg_decimals)
+        else:
+            avg_cost = round(cost / qty, avg_decimals)
+    elif qty > 1e-12:
+        avg_cost = round_opt_px(
+            explicit_avg or st_data.get("entry_price"),
+            avg_decimals,
+        )
+    else:
+        avg_cost = None
     px_f = resolve_symbol_price(symbol, prices_and_trends, fallback_prices)
     dd_pct = pct_delta(px_f, avg_cost) if avg_cost and px_f > 0 else None
-    last_buy_px = st_data.get("last_buy_price") if st_data.get("last_buy_price") is not None else st_data.get("last_open_price")
     cyc_entry: Dict[str, Any] = {
         "qty": round(qty, 6),
         "cost_usd": round(cost, 2),
@@ -647,7 +659,11 @@ def reconcile_venue_cycles_with_recent_orders(
                     cur_kind = str(c_dict.get("last_exit_kind") or "").strip().upper()
                     is_newer_partial_sell = rem_q > 1e-6 and ls_ts_ms > 0.0 and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
                     replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
-                    if sell_p < ref_avg * 0.995 and cur_kind in replaceable_kinds:
+                    lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
+                    is_loss_or_scratch_sell = sell_p < ref_avg * 0.995 or (
+                        sell_p < ref_avg - 1e-6 and (is_newer_partial_sell or lifo_pnl_ro < 0.0)
+                    )
+                    if is_loss_or_scratch_sell and cur_kind in replaceable_kinds:
                         c_dict["last_exit_kind"] = "REDUCE"
                     elif sell_p >= ref_avg * 1.001 and (not cur_kind or (is_newer_partial_sell and cur_kind == "STOP")):
                         c_dict["last_exit_kind"] = "TP"
@@ -806,15 +822,32 @@ def enrich_positions_with_orders_and_cycles(
                     pos["open_lots"] = ro["open_lots"][-4:]
                 if (lifo_pnl := safe_float(ro.get("lifo_realized_pnl_usd"), default=None)) is not None and abs(lifo_pnl) >= 0.01:
                     pos["lifo_realized_pnl_usd"] = round(lifo_pnl, 2)
-            set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb.get("price") if isinstance(lb, dict) else None, pos_px_f)
+            lb_px = safe_pos_float(lb.get("price") if isinstance(lb, dict) else None, default=None)
+            set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", lb_px, pos_px_f)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", ls.get("price") if isinstance(ls, dict) else None, pos_px_f)
             r_buys = ro.get("recent_buys") if isinstance(ro.get("recent_buys"), list) else []
             open_lots = ro.get("open_lots") if isinstance(ro.get("open_lots"), list) else []
+            newest_lot_ts = max(
+                [int(safe_pos_float(x.get("ts_ms"), default=0) or 0) for x in [*open_lots, *( [lb] if isinstance(lb, dict) else [] )] if isinstance(x, dict)],
+                default=0,
+            )
+            fresh_lots = [
+                lot for lot in open_lots
+                if isinstance(lot, dict)
+                and safe_float(lot.get("entry_px"), 0.0) > 0
+                and (
+                    newest_lot_ts <= 0
+                    or not (lot_ts := int(safe_pos_float(lot.get("ts_ms"), default=0) or 0))
+                    or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
+                )
+            ]
             low_buy_px = (
-                min((safe_float(lot.get("entry_px"), 0.0) for lot in open_lots if isinstance(lot, dict) and safe_float(lot.get("entry_px"), 0.0) > 0), default=0.0)
-                if open_lots
+                min((safe_float(lot.get("entry_px"), 0.0) for lot in fresh_lots), default=0.0)
+                if fresh_lots
                 else min((safe_float(b.get("price"), 0.0) for b in r_buys if isinstance(b, dict) and safe_float(b.get("price"), 0.0) > 0), default=0.0)
             )
+            if lb_px is not None and lb_px > 0:
+                low_buy_px = min(low_buy_px, lb_px) if low_buy_px > 0 else lb_px
             if low_buy_px > 0 and not is_flat_after_exit:
                 set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
         for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):

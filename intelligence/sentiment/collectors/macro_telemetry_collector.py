@@ -178,7 +178,7 @@ def collect_macro_benchmarks_snapshot(
             if meta.get("marketState"):
                 item_entry["market_state"] = str(meta.get("marketState")).strip().upper()
             if pts:
-                vals_24h = [p[1] for p in pts if p[0] >= pts[-1][0] - 86400.0] or [p[1] for p in pts]
+                vals_24h = ([p[1] for p in pts if p[0] >= pts[-1][0] - 86400.0] or [p[1] for p in pts]) + [px]
                 item_entry["low_24h"], item_entry["high_24h"] = round(min(vals_24h), dec), round(max(vals_24h), dec)
             items[label] = item_entry
         except Exception:
@@ -315,8 +315,26 @@ def harvest_macro_and_news_sensors(
                             m for m in raw_movers
                             if isinstance(m, (list, tuple)) and len(m) >= 2 and isinstance(m[0], str) and m[0].strip().isascii() and m[0].strip().isalnum()
                         ]
-            if attr == "macro_benchmarks" and not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
-                enriched["summary_line"] = summary_s
+            if attr == "macro_benchmarks":
+                if isinstance(mb_items := enriched.get("items"), dict):
+                    enriched_items: Dict[str, Any] = {}
+                    for mb_k, mb_v in mb_items.items():
+                        if isinstance(mb_v, dict):
+                            mb_copy = dict(mb_v)
+                            mb_px = safe_pos_float(mb_copy.get("price"), default=None)
+                            mb_lo = safe_pos_float(mb_copy.get("low_24h"), default=None)
+                            mb_hi = safe_pos_float(mb_copy.get("high_24h"), default=None)
+                            if mb_px is not None:
+                                if mb_lo is not None and mb_px < mb_lo:
+                                    mb_copy["low_24h"] = mb_px
+                                if mb_hi is not None and mb_px > mb_hi:
+                                    mb_copy["high_24h"] = mb_px
+                            enriched_items[mb_k] = mb_copy
+                        else:
+                            enriched_items[mb_k] = mb_v
+                    enriched["items"] = enriched_items
+                if not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
+                    enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
         from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals
@@ -561,7 +579,10 @@ def populate_market_and_portfolio_snapshot(
         except Exception:
             intents_data = None
     if intents_data is None:
-        raw_intents = _rj_any(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+        intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
+        raw_intents = _rj_any(intents_path)
+        if raw_intents is None and intents_path != os.path.join(cache_dir, "autonomous_trade_intents_state.json"):
+            raw_intents = _rj_any(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
         if isinstance(raw_intents, dict):
             raw_intents = raw_intents.get("intents")
         intents_data = raw_intents if isinstance(raw_intents, list) else None

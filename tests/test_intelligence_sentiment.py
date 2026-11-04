@@ -3657,3 +3657,480 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "0/1 running" in sec_2b
     assert "No running heartbeats (all fleet processes stopped)" in sec_2b
     assert "All heartbeats fresh" not in sec_2b
+
+    # Bugs 36, 37 & 38:
+    # - load_symbol_best_recent_fills supplements missing last_sell from .state_<SYM>.json
+    # - collect_pretrade_telemetry evaluates orderbook walls against per-side depth (5% of side depth)
+    # - collect_pretrade_telemetry populates '7d Price Range & Swing Structure' from cache_watcher_all_price.json when 24h series is absent
+    ws_36 = tmp_path / "ws_36"
+    cdir_36 = ws_36 / "cachedb"
+    kr_36 = ws_36 / "kraken"
+    cdir_36.mkdir(parents=True, exist_ok=True)
+    kr_36.mkdir(parents=True, exist_ok=True)
+    (cdir_36 / "cache_trade_kraken.json").write_text(
+        json.dumps({"items": {"ADAUSD": [{"side": "BUY", "price": 0.224378, "qty": 1448.44, "timestamp": 1773338995022, "status": "FILLED"}]}}),
+        encoding="utf-8",
+    )
+    (kr_36 / ".state_ADAUSD.json").write_text(
+        json.dumps({"qty": 4283.15, "entry_price": 0.228669, "last_buy_price": 0.224378, "last_sell_price": 0.238254, "last_sell_ts": 1773332904.415}),
+        encoding="utf-8",
+    )
+    (cdir_36 / "orderbook_depth_TAOUSD.json").write_text(
+        json.dumps({
+            "symbol": "TAOUSD",
+            "mid_price": 223.35,
+            "bid_depth_usd": 495383.0,
+            "ask_depth_usd": 414240.0,
+            "imbalance_ratio": 0.55,
+            "largest_ask_wall_usd": 27705.0,
+            "largest_ask_wall_price": 224.28,
+            "largest_bid_wall_usd": 51581.0,
+            "largest_bid_wall_price": 220.35,
+        }),
+        encoding="utf-8",
+    )
+    (cdir_36 / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"SPCX": [[1793000000000, 145.0], [1793300000000, 135.0], [1793600000000, 142.0], [1793750000000, 138.36]]}}),
+        encoding="utf-8",
+    )
+    pt_ada_36 = ptc_mod.collect_pretrade_telemetry("ADAUSD", cachedb_dir=str(cdir_36))
+    assert "Last SELL=0.238254 (by=BOT)" in pt_ada_36.get("Recent Venue Fills", "")
+    pt_tao_37 = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_36))
+    assert pt_tao_37.get("Orderbook Ask Wall Ahead") == "$27,705 @ $224.28"
+    assert pt_tao_37.get("Orderbook Bid Wall Ahead") == "$51,581 @ $220.35"
+    pt_spcx_38 = ptc_mod.collect_pretrade_telemetry("SPCX_US_EQ", cachedb_dir=str(cdir_36))
+    assert "7d Range=[$135.0, $145.0]" in pt_spcx_38.get("7d Price Range & Swing Structure", "")
+    assert "swing_wave(" in pt_spcx_38.get("7d Price Range & Swing Structure", "")
+
+    # Bugs 39, 40 & 41:
+    # - update_microstructure_cycle_deltas does not pollute ob_imbalance_delta from sibling venue history and persists missing sibling keys
+    # - compute_enterprise_portfolio_risk_metrics scales equity VaR appropriately and weights avg_corr_24h by USD exposure; build_cross_market_context includes 7d range for equities without 24h series
+    from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
+        compute_enterprise_portfolio_risk_metrics,
+    )
+
+    mhist_39 = cdir_36 / "microstructure_cycle_history.json"
+    mhist_39.write_text(
+        json.dumps({"HYPEUSD": [{"ts": 1793750000.0, "ob_imbalance": 0.599, "whale_long_pct": 0.65, "oi_usd": 1900000000.0}]}),
+        encoding="utf-8",
+    )
+    micro_39 = {
+        "HYPEUSD": {"ob_imbalance": 0.599, "whale_long_pct": 0.67, "oi_usd": 1900000000.0},
+        "HYPEUSDC": {"ob_imbalance": 0.535, "whale_long_pct": 0.67, "oi_usd": 1900000000.0},
+    }
+    update_microstructure_cycle_deltas(str(cdir_36), micro_39, now_ts=1793750600.0)
+    assert "ob_imbalance_delta" not in micro_39["HYPEUSDC"].get("cycle_delta", {})
+    assert micro_39["HYPEUSDC"]["cycle_delta"]["whale_long_delta_pct"] == 0.02
+    saved_mh_39 = json.loads(mhist_39.read_text(encoding="utf-8"))
+    assert "HYPEUSDC" in saved_mh_39 and len(saved_mh_39["HYPEUSDC"]) == 1
+
+    risk_eq_40 = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [
+                {"venue": "t212", "symbol": "SPCX_US_EQ", "value_usd": 974.46},
+                {"venue": "t212", "symbol": "NVDA_US_EQ", "value_usd": 6.20},
+            ],
+            "venue_quote_cash": {"t212:USD": {"venue": "t212", "free": 92.18}},
+        },
+        {"SPCX_US_EQ": {"price": 138.36, "span_7d_pct": 10.33, "corr_btc_24h": 0.25}, "NVDA_US_EQ": {"price": 206.69, "corr_btc_24h": 0.80}},
+        {},
+    )
+    assert risk_eq_40["intraday_var_95_pct"] < 4.5
+    assert abs(risk_eq_40["avg_corr_vs_btc_24h"] - 0.25) <= 0.01
+
+    cmc_40 = build_cross_market_context(
+        {"SPCX_US_EQ": {"price": 138.36, "chg_7d_pct": -4.89, "pos_7d_pct": 26.6, "low_7d": 134.665, "high_7d": 148.58}},
+        {},
+        {},
+    )
+    assert cmc_40["equity_bellwethers"]["SPCX_US_EQ"]["pos_7d_pct"] == 26.6
+    assert cmc_40["equity_bellwethers"]["SPCX_US_EQ"]["low_7d"] == 134.665
+
+    # Bugs 42, 43 & 44:
+    # - sync_sibling_symbol_telemetry does not copy bimodal sec_poc_px/lvn_px onto a sibling that already computed its own unimodal poc_px
+    # - enrich_sentiment_advisor_live_flow_divergence includes 1h_tr and cvd_1h alongside 15m flow when present
+    # - collect_pretrade_telemetry includes flow_horizons and spot_cvd_15m in '15m Cumulative Volume Delta (CVD)'
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
+
+    pt_42 = {
+        "TAOUSDC": {"price": 223.4, "poc_px": 226.49, "sec_poc_px": 221.5, "lvn_px": 224.0, "profile_shape": "BIMODAL"},
+        "TAOUSD": {"price": 223.34, "poc_px": 226.8, "profile_shape": "UNIMODAL"},
+    }
+    sync_sibling_symbol_telemetry(pt_42, {})
+    assert "sec_poc_px" not in pt_42["TAOUSD"]
+    assert "lvn_px" not in pt_42["TAOUSD"]
+    assert pt_42["TAOUSD"]["profile_shape"] == "UNIMODAL"
+
+    sa_43 = {"market_bias": "NEUTRAL", "recommended_action": "HOLD", "age_min": 45.0, "summary": "Quiet taker ratio 0.87."}
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_43,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.38, "cvd_15m_usd": 26_040_000.0, "taker_ratio_1h": 0.78, "cvd_1h_usd": -117_130_000.0}},
+    )
+    assert "1h_tr=0.78" in sa_43["live_flow_divergence"]
+    assert "cvd_1h=-117.13M" in sa_43["live_flow_divergence"]
+
+    (cdir_36 / "whale_snapshot_TAOUSD.json").write_text(
+        json.dumps({
+            "symbol": "TAOUSD",
+            "top_traders_long_pct": 0.745,
+            "taker_buy_sell_ratio": 0.5035,
+            "taker_buy_vol_usd": 589331.0,
+            "taker_sell_vol_usd": 1170479.0,
+            "taker_ratio_5m": 1.07,
+            "cvd_5m_usd": 9600.0,
+            "taker_ratio_1h": 0.76,
+            "cvd_1h_usd": -722300.0,
+            "spot_cvd_15m_usd": 41800.0,
+        }),
+        encoding="utf-8",
+    )
+    pt_tao_44 = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_36))
+    assert "flow_horizons(5m=tr:1.07/cvd:$+9,600, 1h=tr:0.76/cvd:$-722,300)" in pt_tao_44.get("15m Cumulative Volume Delta (CVD)", "")
+    assert "spot_cvd_15m=$+28,400 (BALANCED_CROSS_VENUE_FLOW)" in pt_tao_44.get("15m Cumulative Volume Delta (CVD)", "")
+
+    # Bugs 45, 46 & 47:
+    # - build_cross_market_context preserves 3 significant digits for small slopes (<1e-4) instead of rounding to 6 decimal places
+    # - collect_pretrade_telemetry recalculates m24 geometry with live orderbook mid price and emits 7d range even when m24 is present
+    cmc_46 = build_cross_market_context(
+        {"ADAUSD": {"price": 0.18783, "slope_3_7m": 6.48e-07, "slope_15m": 1.55e-06, "slope_2_5h": -6.15e-07}},
+        {},
+        {},
+    )
+    assert cmc_46["crypto_bellwethers"]["ADA"]["slope_3_7m"] == 6.48e-07
+    assert cmc_46["crypto_bellwethers"]["ADA"]["slope_15m"] == 1.55e-06
+    assert cmc_46["crypto_bellwethers"]["ADA"]["slope_2_5h"] == -6.15e-07
+
+    (cdir_36 / "cache_24_price_TAOUSD.json").write_text(
+        json.dumps({"items": {"TAOUSD": [[1793670000000 + i * 3600000, 222.0 + (i % 5) * 0.5] for i in range(25)]}}),
+        encoding="utf-8",
+    )
+    (cdir_36 / "cache_watcher_all_price.json").write_text(
+        json.dumps({
+            "items": {
+                "SPCX": [[1793000000000, 145.0], [1793300000000, 135.0], [1793600000000, 142.0], [1793750000000, 138.36]],
+                "TAOUSD": [[1793100000000, 250.0], [1793400000000, 220.0], [1793750000000, 223.35]],
+            }
+        }),
+        encoding="utf-8",
+    )
+    pt_tao_45 = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_36))
+    assert "24h Multi-Horizon Price Evolution" in pt_tao_45
+    assert "7d Price Range & Swing Structure" in pt_tao_45
+    assert "7d Range=[$220.0, $250.0]" in pt_tao_45["7d Price Range & Swing Structure"]
+
+    # Bugs 48, 49 & 50:
+    # - harvest_macro_and_news_sensors clamps macro_benchmarks low_24h/high_24h to include price
+    # - load_symbol_price_series appends newer series_24h ticks after arch_7d_end_ts to vals_7d so sub-7d troughs are preserved
+    # - summarize_recent_ai_intents does not let open resting orders with age_h > 0.5 consume the 8-slot non-resting quota
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from providers.execution_audit import extract_intent_notional, summarize_recent_ai_intents
+
+    (cdir_36 / "macro_benchmarks_collect.json").write_text(
+        json.dumps({
+            "ts": 1793810000.0,
+            "items": {
+                "SPY": {"symbol": "SPY", "price": 757.09, "low_24h": 753.35, "high_24h": 757.01, "chg_24h_pct": 0.44},
+                "IBIT": {"symbol": "IBIT", "price": 44.31, "low_24h": 43.66, "high_24h": 44.05, "chg_24h_pct": 0.61},
+            },
+        }),
+        encoding="utf-8",
+    )
+    ms_48, _ = harvest_macro_and_news_sensors(str(cdir_36), 1793810060.0)
+    assert ms_48["macro_benchmarks"]["items"]["SPY"]["high_24h"] == 757.09
+    assert ms_48["macro_benchmarks"]["items"]["IBIT"]["high_24h"] == 44.31
+
+    (cdir_36 / "cache_365_price_ADAUSD.jsonl").write_text(
+        "\n".join(json.dumps([1793700000000 + i * 1000000, 0.1900 - i * 0.0001]) for i in range(10)) + "\n",
+        encoding="utf-8",
+    )
+    (cdir_36 / "cache_24_price_ADAUSD.json").write_text(
+        json.dumps({
+            "items": {
+                "ADAUSD": [
+                    [1793709000000, 0.1891],
+                    [1793710000000, 0.186567],
+                    [1793711000000, 0.18783],
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    _, vals_7d_49 = load_symbol_price_series(str(cdir_36), "ADAUSD", {})
+    assert min(vals_7d_49) == 0.186567
+
+    intents_50 = [
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "order_type": "MARKET", "status": "EXECUTED", "suggested_notional_usd": 100.0 + k, "timestamp": 1793700000.0 + k * 60.0, "execution_payload": {"orderId": 1000 + k, "status": "FILLED", "executedQty": "0.001", "price": "77000.0"}}
+        for k in range(8)
+    ] + [
+        {"decision": "SELL", "symbol": "TAOUSDC", "venue": "binance", "order_type": "LIMIT", "limit_price": 231.5, "status": "EXECUTED", "suggested_notional_usd": 500.0, "timestamp": 1793705000.0, "execution_payload": {"orderId": 9999, "status": "NEW", "origQty": "2.0", "executedQty": "0.0", "price": "231.5"}},
+    ]
+    open_50 = [{"venue": "binance", "symbol": "TAOUSDC", "order_id": "9999", "side": "SELL", "price": 231.5, "orig_qty": 2.0, "executed_qty": 0.0, "status": "NEW"}]
+    sum_50 = summarize_recent_ai_intents(intents_50, "crypto", 1793710000.0, extract_intent_notional, open_orders=open_50)
+    assert len([x for x in sum_50 if x.get("order_id") != "9999"]) == 8
+
+    # Bugs 51 & 52:
+    # - harvest_heartbeats_and_state_files uses payload ts/timestamp for fleet .heartbeat files in system/heartbeat
+    # - collect_pretrade_telemetry includes major_low and swings_7d/avg_amp in 7d Price Range & Swing Structure
+    from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+
+    hb_sys_dir = cdir_36 / "system" / "heartbeat"
+    hb_sys_dir.mkdir(parents=True, exist_ok=True)
+    (hb_sys_dir / "HL-bot.heartbeat").write_text(
+        json.dumps({"ts": 1793710000.0, "status": "OK", "service": "HL-bot"}),
+        encoding="utf-8",
+    )
+    (hb_sys_dir / "Stale-bot.heartbeat").write_text(
+        json.dumps({"ts": 1793700000.0, "status": "OK", "service": "Stale-bot"}),
+        encoding="utf-8",
+    )
+    hbs_51, _ = harvest_heartbeats_and_state_files(str(cdir_36), str(tmp_path), 1793710045.0)
+    assert "HL-bot.heartbeat" in hbs_51
+    assert hbs_51["HL-bot.heartbeat"]["age_seconds"] == 45.0
+    assert "Stale-bot.heartbeat" not in hbs_51
+
+    (cdir_36 / "cache_365_price_TAOUSDC.jsonl").write_text(
+        "\n".join(
+            json.dumps([1793600000000 + i * 3600000, px_v])
+            for i, px_v in enumerate([240.0, 210.0, 235.0, 215.0, 245.0, 220.0, 232.0, 228.0])
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pt_tao_52 = ptc_mod.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_36))
+    assert "swings_7d=[" in pt_tao_52.get("7d Price Range & Swing Structure", "")
+    assert "avg_amp=" in pt_tao_52.get("7d Price Range & Swing Structure", "")
+
+    # Bugs 53 & 54:
+    # - parse_venue_cycle_state avoids cent-rounding quantization on small single-lot qty (0.03 * 207.92708333 -> cost_usd=6.24)
+    #   and reconcile_venue_cycles_with_recent_orders updates last_exit_kind to REDUCE on newer scratch/loss sells below entry/avg
+    # - build_cross_market_context includes 7d swing structure metrics for equity bellwethers when 24h series is absent
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        parse_venue_cycle_state,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+
+    nvda_cyc_53 = parse_venue_cycle_state(
+        {
+            "qty": 0.03,
+            "cost_usd": 6.24,
+            "dca_buys": 0,
+            "entry_price": 207.92708333,
+            "last_buy_price": 207.92708333,
+            "last_sell_price": 208.1,
+            "last_sell_ts": 1793718965.337,
+            "last_exit_kind": "TP",
+        },
+        "NVDA_US_EQ",
+        {"NVDA_US_EQ": {"price": 206.69}},
+        avg_decimals=4,
+        include_meta=True,
+    )
+    assert nvda_cyc_53["avg_cost_px"] == 207.9271
+    t212_cycs_53 = {"NVDA_US_EQ": nvda_cyc_53}
+    reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        t212_cycs_53,
+        {
+            "t212": {
+                "NVDA_US_EQ": {
+                    "active_avg_buy_px": 207.93,
+                    "active_cycle_rem_qty": 0.03,
+                    "lifo_realized_pnl_usd": -0.03,
+                    "last_buy": {"price": 207.93, "qty": 0.96, "ts_ms": 1793720000000},
+                    "last_sell": {"price": 207.9, "qty": 0.93, "ts_ms": 1793724706157},
+                    "recent_buys": [{"price": 207.93, "qty": 0.96, "ts_ms": 1793720000000}],
+                    "recent_sells": [{"price": 207.9, "qty": 0.93, "ts_ms": 1793724706157}],
+                }
+            }
+        },
+        {("t212", "NVDA_US_EQ"): 0.03},
+        {"NVDA_US_EQ": {"price": 206.69}},
+    )
+    assert t212_cycs_53["NVDA_US_EQ"]["last_exit_kind"] == "REDUCE"
+
+    cmc_54 = build_cross_market_context(
+        {
+            "SPCX_US_EQ": {
+                "price": 138.36,
+                "chg_7d_pct": -4.89,
+                "pos_7d_pct": 26.6,
+                "low_7d": 134.665,
+                "high_7d": 148.58,
+                "dd_7d_high_pct": -6.88,
+                "bounce_7d_low_pct": 2.74,
+                "span_7d_pct": 10.33,
+                "swing_low_px": 136.14,
+                "swing_high_px": 142.468,
+                "rally_from_swing_low_pct": 1.63,
+                "pullback_from_swing_high_pct": -2.88,
+            }
+        },
+        {},
+        {},
+    )
+    assert cmc_54["equity_bellwethers"]["SPCX_US_EQ"]["swing_low_px"] == 136.14
+    assert cmc_54["equity_bellwethers"]["SPCX_US_EQ"]["swing_high_px"] == 142.468
+
+    # Bug 55: collect_pretrade_telemetry includes funding_ann, perp_basis, 1h_chg on OI, and Cross-Venue Relative Value (Arbitrage)
+    (cdir_36 / "orderbook_depth_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "bid_depth_usd": 120000.0,
+                "ask_depth_usd": 90000.0,
+                "imbalance_pct": 14.29,
+                "spread_bps": 1.2,
+                "mid_price": 228.5,
+                "depth_1pct_bid_usd": 115000.0,
+                "depth_1pct_ask_usd": 88000.0,
+                "bids": [[228.45, 50.0]],
+                "asks": [[228.55, 50.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_36 / "orderbook_depth_TAOUSD.json").write_text(
+        json.dumps(
+            {
+                "bid_depth_usd": 45000.0,
+                "ask_depth_usd": 38000.0,
+                "imbalance_pct": 8.43,
+                "spread_bps": 4.5,
+                "mid_price": 228.1,
+                "depth_1pct_bid_usd": 42000.0,
+                "depth_1pct_ask_usd": 35000.0,
+                "bids": [[228.05, 20.0]],
+                "asks": [[228.15, 20.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_36 / "whale_snapshot_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "funding_rate": 0.0001,
+                "oi_usd": 125000000.0,
+                "oi_1h_chg_pct": 1.45,
+                "cvd_15m_usd": 85000.0,
+                "spot_cvd_15m_usd": 110000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_tao_55 = ptc_mod.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_36))
+    assert "funding_ann=" in pt_tao_55.get("Perpetual Funding Rate", "")
+    assert "perp_basis=" in pt_tao_55.get("Perpetual Funding Rate", "")
+    assert "1h_chg=+1.45%" in pt_tao_55.get("Derivatives Open Interest", "")
+    assert "arb_vs_TAOUSD=" in pt_tao_55.get("Cross-Venue Relative Value (Arbitrage)", "")
+    assert "net_buy_edge=" in pt_tao_55.get("Cross-Venue Relative Value (Arbitrage)", "")
+
+    # Bug 57 & 58: suppress duplicate sub-24h swing_wave in Section 3A; include 90s slope & sub-cycle cost anchors in pretrade
+    sub24_sec = _format_market_prices_section(
+        {
+            "ADAUSD": {
+                "price": 0.1878,
+                "chg_15m_pct": 0.12,
+                "low_24h": 0.186567,
+                "high_24h": 0.191635,
+                "chg_7d_pct": -1.5,
+                "low_7d": 0.186567,
+                "high_7d": 0.191635,
+                "swing_low_px": 0.186567,
+                "swing_high_px": 0.191635,
+                "rally_from_swing_low_pct": 0.68,
+                "pullback_from_swing_high_pct": -1.99,
+            }
+        }
+    )
+    assert "swing_wave(" not in sub24_sec
+    t24_dir = cdir_36 / "24trend"
+    t24_dir.mkdir(exist_ok=True)
+    (t24_dir / "live_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "90": {"slope_full": 0.00125},
+                "222": {"slope_full": 0.00085},
+                "900": {"slope_full": 0.00045},
+                "9000": {"slope_full": 0.00015},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_36 / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": [
+                        {"orderId": "1", "side": "BUY", "price": 260.0, "executedQty": 2.0, "timestamp": 1700000000000, "status": "FILLED"},
+                        {"orderId": "2", "side": "BUY", "price": 224.0, "executedQty": 1.0, "timestamp": 1700500000000, "status": "FILLED"},
+                        {"orderId": "3", "side": "BUY", "price": 226.0, "executedQty": 1.0, "timestamp": 1700501800000, "status": "FILLED"},
+                        {"orderId": "4", "side": "SELL", "price": 228.0, "executedQty": 0.5, "timestamp": 1700503600000, "status": "FILLED"},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_tao_58 = ptc_mod.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_36))
+    assert "90s=+0.00125" in pt_tao_58.get("Dynamic Multi-Window Slopes", "")
+    assert "Active Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
+    assert "Tactical Sub-Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
+    assert "Sub-Cycle LIFO Realized PnL=$+1.00" in pt_tao_58.get("Recent Venue Fills", "")
+
+    # Bug 59 & 60: build_cross_market_context includes slope_90s and t212_cycle cost_usd/dca_buys
+    cmc_60 = build_cross_market_context(
+        {"BTCUSDC": {"price": 77000.0, "slope_90s": 0.11591, "slope_15m": 0.17415}},
+        {},
+        {"SPCX_US_EQ": {"qty": 7.04, "cost_usd": 1021.14, "avg_cost_px": 144.9872, "dca_buys": 1}},
+    )
+    assert cmc_60["crypto_bellwethers"]["BTC"]["slope_90s"] == 0.11591
+    assert cmc_60["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]["cost_usd"] == 1021.14
+    assert cmc_60["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]["dca_buys"] == 1
+
+    # Discrepancy AG & AI: 22h watcher/archive span (<5d, >=18h) backfills full 7d OHLC range; de-escalation headline filtered
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+
+    assert (
+        filter_valid_severity_keywords(
+            ["escalation", "iran escalation"],
+            title="Oil Prices to Come Under Pressure if Midterms Outcome Halts Iran Escalation - WSJ",
+        )
+        == ()
+    )
+    now_ag = 1_793_800_000.0
+    watcher_ag = {"ADAUSD": [[int((now_ag - 22 * 3600) * 1000), 0.18252], [int(now_ag * 1000), 0.1879]]}
+    (cdir_36 / "cache_24_price_ADAUSD.json").write_text(json.dumps({"items": watcher_ag}), encoding="utf-8")
+    pt_ag = {"ADAUSD": {"price": 0.1879}}
+    enrich_cross_venue_trends(pt_ag, {}, {}, {}, {}, {}, watcher_ag)
+    assert pt_ag["ADAUSD"].get("_partial_7d_span_ms") is not None
+
+    class _FakeAdaProvider:
+        def ohlc_series(self, sym, interval):
+            from types import SimpleNamespace
+
+            n_bars = 168 if interval == 60 else 42
+            step_s = interval * 60
+            ts_list = [now_ag - (n_bars - 1 - idx) * step_s for idx in range(n_bars)]
+            closes = [0.2072 if idx == 0 else (0.214343 if idx == 30 else 0.1879) for idx in range(n_bars)]
+            return SimpleNamespace(timestamps=ts_list, closes=closes, lows=closes, highs=closes, volumes=[1000.0] * n_bars)
+
+    from types import SimpleNamespace as _SNS
+
+    enrich_24h_and_microstructure(
+        str(cdir_36),
+        str(tmp_path),
+        pt_ag,
+        {},
+        {},
+        {"ADAUSD": _SNS(_provider=_FakeAdaProvider(), provider_name="kraken")},
+        now_ag,
+    )
+    enrich_cross_venue_trends(pt_ag, {}, {}, {}, {}, {}, watcher_ag)
+    assert pt_ag["ADAUSD"]["high_7d"] == 0.214343
+    assert pt_ag["ADAUSD"]["low_7d"] == 0.18252
+    assert "_partial_7d_span_ms" not in pt_ag["ADAUSD"]
