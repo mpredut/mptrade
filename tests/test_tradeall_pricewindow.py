@@ -71,6 +71,9 @@ finally:
                 setattr(_binance_package, _child, _PRELOADED_IMPORTS[_full_name])
             elif getattr(_binance_package, _child, None) is _IMPORT_MOCKS[_full_name]:
                 delattr(_binance_package, _child)
+    if getattr(cm, "apiorders", None) is _IMPORT_MOCKS["binance_api.bapi_allorders"]:
+        from binance_api import bapi_allorders as _real_bapi_allorders
+        cm.apiorders = _real_bapi_allorders
 
 mock_bapi = _mock_bapi
 

@@ -1347,17 +1347,23 @@ class TradingBot:
         for order in orphan_orders:
             order_id = extract_order_id(order) or ""
             client_id = extract_client_order_id(order)
-            venue.executor.cancel_order(self.symbol, order_id)
             try:
-                resolve_accepted_order(self.symbol, order_id)
-            except Exception:
-                pass
-            print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled order_id={order_id} client_id={client_id}")
+                venue.executor.cancel_order(self.symbol, order_id)
+                print(f"[{self.symbol}] recovery: orphaned RT_ order cancelled order_id={order_id} client_id={client_id}")
+            except Exception as exc:
+                print(f"[{self.symbol}] recovery: cancel orphaned RT_ order {order_id} raised {exc}")
         if orphan_orders:
             remaining = {extract_order_id(order) for order in venue.executor.open_orders(self.symbol)}
-            not_canceled = [
-                extract_order_id(order) for order in orphan_orders if extract_order_id(order) in remaining
-            ]
+            not_canceled = []
+            for order in orphan_orders:
+                oid = extract_order_id(order)
+                if oid in remaining:
+                    not_canceled.append(oid)
+                elif oid:
+                    try:
+                        resolve_accepted_order(self.symbol, oid)
+                    except Exception:
+                        pass
             if not_canceled:
                 print(f"[{self.symbol}] RECOVERY BLOCKED: unconfirmed cancellation for the RT_ orders {not_canceled}")
                 return True

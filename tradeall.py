@@ -340,9 +340,12 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             existing_str.add(clean_oid)
 
     if to_cancel or order_ids:
+        failed_cancels = []
         for order_id in to_cancel:
             try:
-                mkt.cancel_order(symbol, str(order_id))
+                if mkt.cancel_order(symbol, str(order_id)) is False:
+                    failed_cancels.append(order_id)
+                    continue
                 try:
                     order_retry.resolve_accepted_order(symbol, order_id)
                 except Exception:
@@ -350,6 +353,7 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
             except Exception as _e:
                 print(f"[TRADEALL] cancel existing order {order_id} (or filled): {_e}")
         order_ids.clear()
+        order_ids.extend(failed_cancels)
 
 
     # Cancel expired orders on venue
@@ -594,8 +598,7 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
         cmp_str = f"> {SMALL_SLOPE_THRESHOLD}" if is_up else f"< -{SMALL_SLOPE_THRESHOLD}"
         reason = "small_window_surge_up" if is_up else "small_window_plunge_down"
         print(f"[SMALL-WINDOW] Momentum {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope} {cmp_str}")
-        _fire_trend_order(enable, symbol, trend_state, direction, action, current_price, reason, regime_ctx=regime_ctx)
-        return
+        return _fire_trend_order(enable, symbol, trend_state, direction, action, current_price, reason, regime_ctx=regime_ctx)
 
     if ACCEL_ENABLED and price_window is not None and (
         (gradient > 0 and slope >= PRICE_CHANGE_THRESHOLD_EUR)
@@ -617,12 +620,13 @@ def logic_small(win, enable, symbol, gradient, slope, trend_state, current_price
                     f"[SMALL-WINDOW] Acceleration {action} {'surge' if is_up else 'plunge'}: gradient={gradient}, slope={slope:.3f}, "
                     f"vel_90s={vel_short:.3f}%/m, acc_90s={acc_short:.3f}%/m^2, vel_180s={vel_med:.3f}%/m"
                 )
-                _fire_trend_order(
+                return _fire_trend_order(
                     enable, symbol, trend_state, direction, action, current_price,
                     reason, regime_ctx=regime_ctx,
                 )
         except Exception as e:
             print(f"[SMALL-WINDOW] Acceleration calculation error for {symbol}: {e}")
+    return None
 
 
 def logic(win, enable, symbol, gradient, slope, trend_state, current_price, regime_ctx=None):
@@ -697,12 +701,12 @@ def handle_symbol(symbol, current_price, price_window, price_window_big,
         print(f"[TRADEALL] {symbol} resolved trend: {getattr(regime_ctx, 'resolved_trend', None)}")
 
     # SMALL ONE!!
-    logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price,
-                regime_ctx=regime_ctx, price_window=price_window)
+    small_placed = logic_small("SMALL", True, symbol, gradient, slope, trend_state, current_price,
+                               regime_ctx=regime_ctx, price_window=price_window)
 
     # BIG ONE!!!
     slope_big, price_diff = analyzer_big.check_price_change(PRICE_CHANGE_THRESHOLD_BIG_EUR)
-    logic("BIG", True, symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
+    logic("BIG", not bool(small_placed), symbol, gradient, slope_big, trend_state_big, current_price, regime_ctx=regime_ctx)
 
     # Cross-process snapshot aligned with CacheShortTrendManager SSOT.
     eps_fn = getattr(price_window, "get_noise_epsilon", None)

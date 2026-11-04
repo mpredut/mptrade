@@ -4440,6 +4440,107 @@ def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_
     monitortrades._hard_tp_last.pop("BTCUSDC", None)
 
 
+def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_scale(monkeypatch):
+    import types
+    from providers.quantity import decide_quantity
+    import rtrade
+    import tradeall as ta
+
+    # 1. tradeall.handle_symbol disables BIG firing when logic_small already placed an order on the same tick
+    logic_calls = []
+    monkeypatch.setattr(ta, "logic_small", lambda *args, **kwargs: [1001])
+    monkeypatch.setattr(ta, "logic", lambda win, enable, *args, **kwargs: logic_calls.append((win, enable)))
+    dummy_pw = types.SimpleNamespace(
+        set_sample_rate=lambda _: None,
+        get_short_trend=lambda: (1.0, 0.5, 1.2, 0.8),
+        get_noise_epsilon=lambda: 0.1,
+        prices=[100.0, 101.0],
+        window_seconds=222.0,
+        sample_rate_sec=1.0,
+    )
+    dummy_an = types.SimpleNamespace(check_price_change=lambda _: (4.0, 1))
+    ts1 = ta.TrendState(3600, 300, 300)
+    ts2 = ta.TrendState(3600, 300, 300)
+    ta.handle_symbol("BTCUSDC", 101.0, dummy_pw, dummy_pw, dummy_an, dummy_an, ts1, ts2, regime_ctx="dummy")
+    assert logic_calls == [("BIG", False)]
+
+    # 2. tradeall.track_and_place_order retains order_id when mkt.cancel_order returns False
+    resolved_ids = []
+    monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: False)
+    monkeypatch.setattr(ta.order_retry, "resolve_accepted_order", lambda sym, oid: resolved_ids.append(oid))
+    monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ta, "_fire_order", lambda *args, **kwargs: None)
+    tracked = ["777"]
+    res_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 100.0, 100.0, order_ids=tracked)
+    assert resolved_ids == []
+    assert res_ids == ["777"]
+
+    # 3. rtrade.TradingBot._cleanup_orphan_rt_orders continues canceling remaining orphans if one cancel raises
+    bot = object.__new__(rtrade.TradingBot)
+    bot.symbol = "TAOUSDC"
+    canceled_rt = []
+
+    def _mock_cancel(sym, oid):
+        canceled_rt.append(oid)
+        if oid == "91":
+            raise RuntimeError("already filled -2011")
+
+    open_seq = [
+        [
+            {"orderId": "91", "clientOrderId": "RT_orphan_1"},
+            {"orderId": "92", "clientOrderId": "RT_orphan_2"},
+        ],
+        [],
+    ]
+    venue = types.SimpleNamespace(
+        executor=types.SimpleNamespace(
+            open_orders=lambda _sym: open_seq.pop(0),
+            cancel_order=_mock_cancel,
+        )
+    )
+    pair_store = types.SimpleNamespace(active=lambda _sym: [])
+    blocked = bot._cleanup_orphan_rt_orders(venue, pair_store)
+    assert blocked is False
+    assert canceled_rt == ["91", "92"]
+
+    # 4. decide_quantity supports percentage string scale and _suggested_scale_by_side["BUY"], and T212 partial sell min_notional
+    class _DummyT212Prov:
+        provider_name = "t212"
+
+        def free_balance(self, asset):
+            return 1000.0 if asset == "USD" else 0.10
+
+        def policy_cap_quantity(self, symbol, side, price, requested, balance_cap, **kw):
+            return requested
+
+        def fee_cap_quantity(self, symbol, side, price, balance_cap):
+            return balance_cap
+
+        def round_amount(self, symbol, qty):
+            return round(qty, 2)
+
+        def order_filter_refusal(self, *args, **kwargs):
+            return None
+
+    prov = _DummyT212Prov()
+    dec_buy = decide_quantity(
+        prov,
+        "NVDA_US_EQ",
+        "BUY",
+        100.0,
+        2.0,
+        regime_context={"_suggested_scale_by_side": {"BUY": "50%"}},
+    )
+    assert dec_buy.scale_applied is True
+    assert dec_buy.applied_scale == 0.5
+    assert dec_buy.final_qty == 1.0
+
+    # Selling 0.06 out of 0.10 shares at $100 leaves $4 (<$6) and max_part ($4) < $6 min_notional -> sells full 0.10
+    dec_sell = decide_quantity(prov, "NVDA_US_EQ", "SELL", 100.0, 0.06, enforce_business_minimum=True)
+    assert dec_sell.final_qty == 0.10
+
+
+
 
 
 

@@ -494,7 +494,12 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     final = _round_qty(min(requested, balance_cap, policy_cap, fee_cap))
     venue_l = normalize_venue_name(provider) or normalize_venue_name(getattr(provider, "provider_name", None))
     if side == "SELL" and venue_l == "t212" and final > 0:
-        final = _round_qty(t212_adjust_partial_sell_qty(final, balance_cap, price)[0])
+        final = _round_qty(
+            t212_adjust_partial_sell_qty(
+                final, balance_cap, price,
+                min_notional_usd=6.0 if _parse_bool_flag(enforce_business_minimum, default=True) else 0.0,
+            )[0]
+        )
 
     # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
     # Applied per-order without mutating the shared market context.
@@ -509,8 +514,20 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
             if isinstance(regime_context, dict)
             else getattr(regime_context, "suggested_scale", None)
         )
+        if effective_scale is None:
+            by_side = (
+                regime_context.get("_suggested_scale_by_side")
+                if isinstance(regime_context, dict)
+                else getattr(regime_context, "_suggested_scale_by_side", None)
+            )
+            if isinstance(by_side, dict):
+                effective_scale = by_side.get("BUY")
 
-    eff_scale_f = safe_float(effective_scale, default=None)
+    if isinstance(effective_scale, str) and effective_scale.strip().endswith("%"):
+        pct_val = safe_float(effective_scale.strip()[:-1].strip(), default=None)
+        eff_scale_f = (pct_val / 100.0) if pct_val is not None else None
+    else:
+        eff_scale_f = safe_float(effective_scale, default=None)
 
     if eff_scale_f is not None and eff_scale_f < 1.0 and final > 0:
         if eff_scale_f <= 0.0:
