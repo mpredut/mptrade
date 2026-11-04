@@ -132,15 +132,32 @@ class GeminiClient(GeminiQuotaRouterMixin):
         bot_cli_base: str,
         run_env: dict[str, str],
         is_mocked: bool,
+        *,
+        include_repo_rules: Optional[bool] = None,
     ) -> subprocess.CompletedProcess:
-        """Run the isolated agy CLI tool with robust file-locking and timeout management."""
+        """Run the isolated agy CLI tool with robust file-locking and timeout management.
+
+        Non-coding autonomous queries (trading, macro, sentiment, pre-trade guards) run with
+        ``include_repo_rules=False`` from ``bot_cli_base`` so ``agy`` does not walk up into
+        ``_ROOT_DIR`` or inject ``AGENTS.md`` engineering rules into financial reasoning prompts.
+        Code self-healing topics (``can_self_heal=True``) set ``include_repo_rules=True`` to run
+        inside ``_ROOT_DIR`` with ``--add-dir`` and load ``AGENTS.md``.
+        """
+        use_repo_rules = (
+            bool(getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False))
+            if include_repo_rules is None
+            else bool(include_repo_rules)
+        )
         cmd = [self.cli_path, "--project", self.project_id, "--model", cli_model, "--output-format", "json"]
+        if not is_mocked and use_repo_rules and os.path.isdir(_ROOT_DIR):
+            cmd.extend(["--add-dir", _ROOT_DIR])
         if resume:
             cmd.extend(["--conversation", resume])
         cmd.extend(["-p", text])
         if is_mocked or not os.path.isdir(bot_cli_base):
             return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
                                   check=False, env=run_env)
+        exec_cwd = _ROOT_DIR if (use_repo_rules and os.path.isdir(_ROOT_DIR)) else bot_cli_base
         lock_path = os.path.join(bot_cli_base, ".agy_bot_cli.lock")
         lock_wait = max(90.0, call_timeout) if call_timeout >= 30.0 else min(call_timeout * 0.5, 5.0)
         deadline = time.monotonic() + lock_wait
@@ -157,7 +174,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     time.sleep(0.15)
             try:
                 return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
-                                      check=False, env=run_env)
+                                      check=False, env=run_env, cwd=exec_cwd)
             finally:
                 if locked:
                     try:
@@ -237,9 +254,13 @@ class GeminiClient(GeminiQuotaRouterMixin):
         now = time.time()
         explicit_call_model = model.strip() if isinstance(model, str) and model.strip() else None
         topic_preferred_model: Optional[str] = None
-        if not explicit_call_model and not getattr(self, "_explicit_model", False) and topic_key:
+        include_repo_rules = False
+        if topic_key:
             try:
-                topic_preferred_model = topic_spec(topic_key).preferred_model
+                spec_obj = topic_spec(topic_key)
+                include_repo_rules = bool(getattr(spec_obj, "can_self_heal", False))
+                if not explicit_call_model and not getattr(self, "_explicit_model", False):
+                    topic_preferred_model = spec_obj.preferred_model
             except Exception:
                 topic_preferred_model = None
         selected_model = explicit_call_model or topic_preferred_model or self.model
@@ -293,6 +314,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if self.cli_path and os.path.exists(self.cli_path) and (not in_pytest or cli_mocked):
             topic_lock: Optional[threading.Lock] = None
             topic_lock_transferred = False
+            prev_repo_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
+            self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
             try:
                 bot_cli_base = resolve_bot_cli_base()
                 is_mocked = cli_mocked
@@ -562,6 +585,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
             except Exception as e:
                 logger.warning("Failed to invoke agy CLI: %s", e)
             finally:
+                self._JSON_MODE_LOCAL.include_repo_rules = prev_repo_rules
                 if topic_lock is not None and not topic_lock_transferred:
                     topic_lock.release()
 

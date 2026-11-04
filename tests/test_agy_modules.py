@@ -694,6 +694,60 @@ class TestMirrorTopicThreadToUi:
         assert reg["auto_cryptotrade_executor"]["conversation_id"] == "fresh-adopted-cid"
         assert reg["auto_cryptotrade_executor"]["step_count"] == 5
 
+    def test_execute_cli_isolates_trading_topics_from_repo_rules_and_includes_for_self_heal(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+        from intelligence.sentiment.gemini_client import GeminiClient, _ROOT_DIR
+
+        fake_bin = tmp_path / "agy-bot"
+        fake_bin.write_text("#!/bin/sh\n")
+        bot_cli_base = tmp_path / "bot_cli"
+        bot_cli_base.mkdir()
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((list(cmd), dict(kwargs)))
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"response": "{}"}', stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        client = GeminiClient(cli_path=str(fake_bin), project_id="autonommptrade")
+
+        # 1. Trading/macro/guard query (include_repo_rules=False): runs in bot_cli_base without --add-dir
+        client._execute_cli(
+            "cid-trade",
+            "evaluate market",
+            30.0,
+            "gemini-4-argon-medium",
+            str(bot_cli_base),
+            {},
+            is_mocked=False,
+            include_repo_rules=False,
+        )
+        assert len(calls) == 1
+        trade_cmd, trade_kw = calls[0]
+        assert "--add-dir" not in trade_cmd
+        assert trade_kw.get("cwd") == str(bot_cli_base)
+
+        # 2. Code self-heal query (include_repo_rules=True): runs in _ROOT_DIR with --add-dir _ROOT_DIR
+        client._execute_cli(
+            "cid-repair",
+            "audit system",
+            60.0,
+            "gemini-4-argon-medium",
+            str(bot_cli_base),
+            {},
+            is_mocked=False,
+            include_repo_rules=True,
+        )
+        assert len(calls) == 2
+        repair_cmd, repair_kw = calls[1]
+        assert "--add-dir" in repair_cmd
+        assert repair_cmd[repair_cmd.index("--add-dir") + 1] == _ROOT_DIR
+        assert repair_kw.get("cwd") == _ROOT_DIR
+
+
 
 
 
