@@ -4282,3 +4282,25 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert sw_ak["swing_high_px"] == 0.201272
     assert sw_ak["rally_from_swing_low_pct"] == 6.75
     assert sw_ak["pullback_from_swing_high_pct"] == -3.19
+
+    # Wave 6: collect_pretrade_telemetry omits deduplicated/stale horizons and sub-2.5h slopes on sparse series
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    pt_sparse_dir = tmp_path / "pt_sparse"
+    pt_sparse_dir.mkdir(parents=True, exist_ok=True)
+    rgnt_pts_pt = [[now_ms_w3 - 24 * 3600_000 + i * 2 * 3600_000, round(1.36 + (i % 3) * 0.02, 4), 1000.0] for i in range(11)]
+    rgnt_pts_pt += [
+        [now_ms_w3 - 4 * 3600_000, 1.3717, 1500.0],
+        [now_ms_w3 - 3 * 3600_000, 1.36, 1200.0],
+        [now_ms_w3 - 10 * 60_000, 1.37, 800.0],
+    ]
+    (pt_sparse_dir / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_pts_pt}}),
+        encoding="utf-8",
+    )
+    pt_rgnt = collect_pretrade_telemetry("RGNT_US_EQ", cachedb_dir=str(pt_sparse_dir))
+    assert "30m=+0.00%" not in pt_rgnt.get("24h Multi-Horizon Price Evolution", "")
+    assert "1h=+0.00%" not in pt_rgnt.get("24h Multi-Horizon Price Evolution", "")
+    assert "3.7m=+0.00000" not in pt_rgnt.get("Dynamic Multi-Window Slopes", "")
+    assert "15m=+0.00000" not in pt_rgnt.get("Dynamic Multi-Window Slopes", "")
+    assert "2.5h=" in pt_rgnt.get("Dynamic Multi-Window Slopes", "")

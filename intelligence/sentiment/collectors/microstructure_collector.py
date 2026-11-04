@@ -104,6 +104,64 @@ def _filter_ohlc_closes_since(
     return [px_v for _, px_v in sorted(timed_out, key=lambda x: x[0])]
 
 
+def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+    ohlc_fn = getattr(getattr((inst_by_sym or {}).get(sym), "_provider", None), "ohlc_series", None)
+    if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
+        return ohlc_fn if callable(ohlc_fn) else None
+    sym_u = str(sym or "").strip().upper()
+    try:
+        if sym_u in ("ADAUSD", "TAOUSD", "HYPEUSD"):
+            from providers.kraken_provider import KrakenProvider
+
+            return KrakenProvider().ohlc_series
+        if sym_u == "HYPEUSDC":
+            from providers.hyperliquid_provider import HyperliquidProvider
+
+            return HyperliquidProvider().ohlc_series
+        if sym_u.endswith(("USDC", "USDT")):
+            from providers.market_api import api as _mkt_api
+
+            return getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
+    except Exception:
+        pass
+    return None
+
+
+def _load_stitched_7d_ohlc_closes(
+    ohlc_fn: Any,
+    sym: str,
+    now_ts: float,
+    m24: Optional[Dict[str, Any]] = None,
+    cur_px: float = 0.0,
+) -> List[float]:
+    if not callable(ohlc_fn):
+        return []
+    s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
+    s60_ts = sorted(
+        ts_s
+        for raw_ts in (getattr(s60, "timestamps", None) or ())
+        if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
+    )
+    vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
+    if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
+        try:
+            s240 = ohlc_fn(sym, 240)
+            first_s60 = s60_ts[0] - 1800.0
+            older_7d = _filter_ohlc_closes_since(s240, cutoff_7d, max_ts=first_s60)
+            if older_7d:
+                vals_7d = older_7d + vals_7d
+        except Exception:
+            pass
+    if len(vals_7d) >= 2:
+        if isinstance(m24, dict):
+            for ex_px in (safe_pos_float(m24.get("low_24h"), default=None), safe_pos_float(m24.get("high_24h"), default=None)):
+                if ex_px is not None and not _prices_diverged(ex_px, vals_7d[-1]):
+                    vals_7d.insert(-1, ex_px)
+        if cur_px > 0 and not _prices_diverged(cur_px, vals_7d[-1]) and abs(cur_px - vals_7d[-1]) > 1e-9:
+            vals_7d.append(cur_px)
+    return vals_7d
+
+
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
     return (
         lookup_symbol_cache_items(
@@ -651,24 +709,7 @@ def enrich_24h_and_microstructure(
                 prices_and_trends[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
             else:
                 prices_and_trends[sym].pop("_partial_7d_span_ms", None)
-        ohlc_fn = getattr(getattr(inst_by_sym.get(sym), "_provider", None), "ohlc_series", None)
-        if not callable(ohlc_fn) and "PYTEST_CURRENT_TEST" not in os.environ:
-            sym_u = sym.upper()
-            try:
-                if sym_u in ("ADAUSD", "TAOUSD", "HYPEUSD"):
-                    from providers.kraken_provider import KrakenProvider
-
-                    ohlc_fn = KrakenProvider().ohlc_series
-                elif sym_u == "HYPEUSDC":
-                    from providers.hyperliquid_provider import HyperliquidProvider
-
-                    ohlc_fn = HyperliquidProvider().ohlc_series
-                elif sym_u.endswith(("USDC", "USDT")):
-                    from providers.market_api import api as _mkt_api
-
-                    ohlc_fn = getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
-            except Exception:
-                ohlc_fn = None
+        ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
         if callable(ohlc_fn):
             if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                 try:
@@ -691,28 +732,8 @@ def enrich_24h_and_microstructure(
                 or prices_and_trends[sym].get("_partial_7d_span_ms") is not None
             ):
                 try:
-                    s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
-                    s60_ts = sorted(
-                        ts_s
-                        for raw_ts in (getattr(s60, "timestamps", None) or ())
-                        if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
-                    )
-                    vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
-                    if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
-                        try:
-                            s240 = ohlc_fn(sym, 240)
-                            first_s60 = s60_ts[0] - 1800.0
-                            older_7d = _filter_ohlc_closes_since(s240, cutoff_7d, max_ts=first_s60)
-                            if older_7d:
-                                vals_7d = older_7d + vals_7d
-                        except Exception:
-                            pass
+                    vals_7d = _load_stitched_7d_ohlc_closes(ohlc_fn, sym, now_ts, m24, sym_px_cur)
                     if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
-                        for ex_px in (safe_pos_float(m24.get("low_24h"), default=None), safe_pos_float(m24.get("high_24h"), default=None)):
-                            if ex_px is not None and not _prices_diverged(ex_px, vals_7d[-1]):
-                                vals_7d.insert(-1, ex_px)
-                        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, vals_7d[-1]) and abs(sym_px_cur - vals_7d[-1]) > 1e-9:
-                            vals_7d.append(sym_px_cur)
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
                         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
                 except Exception:

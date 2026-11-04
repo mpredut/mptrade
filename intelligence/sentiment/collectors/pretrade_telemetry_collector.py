@@ -22,6 +22,9 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
+    _LAST_7D_SPAN_MS_BY_SYM,
+    _load_stitched_7d_ohlc_closes,
+    _resolve_fallback_ohlc_fn,
     load_symbol_microstructure,
     load_symbol_price_series,
 )
@@ -260,19 +263,7 @@ def collect_pretrade_telemetry(
                 import time as _pt_time
 
                 sym_u_pt = str(symbol).strip().upper()
-                ohlc_fn_pt = None
-                if sym_u_pt in ("ADAUSD", "TAOUSD", "HYPEUSD"):
-                    from providers.kraken_provider import KrakenProvider
-
-                    ohlc_fn_pt = KrakenProvider().ohlc_series
-                elif sym_u_pt == "HYPEUSDC":
-                    from providers.hyperliquid_provider import HyperliquidProvider
-
-                    ohlc_fn_pt = HyperliquidProvider().ohlc_series
-                elif sym_u_pt.endswith(("USDC", "USDT")):
-                    from providers.market_api import api as _mkt_api
-
-                    ohlc_fn_pt = getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
+                ohlc_fn_pt = _resolve_fallback_ohlc_fn(sym_u_pt)
                 if callable(ohlc_fn_pt):
                     now_s_pt = _pt_time.time()
                     pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
@@ -301,6 +292,8 @@ def collect_pretrade_telemetry(
                 px_dec = _auto_px_decimals(cur_px_est)
                 cur_m_info["ob_mid_price"] = round(cur_px_est, px_dec)
                 cur_px_est = cur_m_info["ob_mid_price"]
+                if m24:
+                    recalculate_live_price_geometry(m24, cur_px_est)
                 for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
                     if (v_sc := safe_pos_float(cur_m_info.get(k_sc), default=None)) is not None:
                         cur_m_info[k_sc] = round(v_sc * scale_r, px_dec)
@@ -326,11 +319,16 @@ def collect_pretrade_telemetry(
                     recalculate_live_price_geometry(m24, ob_mid_est)
 
         if m24:
+            has_any_m24_h = any(
+                safe_float(m24.get(k), default=None) is not None
+                for k in ("chg_15m_pct", "chg_30m_pct", "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct")
+            )
             h_parts = [
                 f"{lbl}={safe_float(m24.get(k), 0.0):+.2f}%"
                 for lbl, k, req in (
                     ("1m", "chg_1m_pct", False), ("3m", "chg_3m_pct", False), ("5m", "chg_5m_pct", False),
-                    ("15m", "chg_15m_pct", True), ("30m", "chg_30m_pct", True), ("1h", "chg_1h_pct", True), ("3h", "chg_3h_pct", True),
+                    ("15m", "chg_15m_pct", not has_any_m24_h), ("30m", "chg_30m_pct", not has_any_m24_h),
+                    ("1h", "chg_1h_pct", not has_any_m24_h), ("3h", "chg_3h_pct", not has_any_m24_h),
                     ("6h", "chg_6h_pct", False), ("12h", "chg_12h_pct", False), ("24h", "chg_24h_pct", False),
                 )
                 if req or safe_float(m24.get(k), default=None) is not None
@@ -428,6 +426,23 @@ def collect_pretrade_telemetry(
                 if m7d_w := compute_7d_range_metrics(vals_7d, decimals=4 if is_eq else 6):
                     m7d = m7d_w
                     break
+        if (
+            not is_eq
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and (not m7d or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
+        ):
+            try:
+                import time as _pt_time
+
+                sym_u_7d = str(symbol).strip().upper()
+                ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
+                if callable(ohlc_fn_7d):
+                    vals_7d_ohlc = _load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, _pt_time.time(), m24, cur_px_est)
+                    if len(vals_7d_ohlc) >= 2 and (not m7d or len(vals_7d_ohlc) >= 24):
+                        if m7d_ohlc := compute_7d_range_metrics(vals_7d_ohlc, decimals=6):
+                            m7d = m7d_ohlc
+            except Exception:
+                pass
         if m7d:
             if m24.get("low_24h") is not None and m24.get("high_24h") is not None:
                 m7d["low_24h"], m7d["high_24h"] = m24["low_24h"], m24["high_24h"]
@@ -623,14 +638,18 @@ def collect_pretrade_telemetry(
                 )
         if any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
             _fmt_s = lambda v: f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}"
-            s90_v = safe_float(t_entry.get("slope_90s"), default=None)
-            s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
-            telemetry["Dynamic Multi-Window Slopes"] = (
-                f"{s90_pfx}"
-                f"3.7m={_fmt_s(safe_float(t_entry.get('slope_3_7m'), 0.0))}, "
-                f"15m={_fmt_s(safe_float(t_entry.get('slope_15m'), 0.0))}, "
-                f"2.5h={_fmt_s(safe_float(t_entry.get('slope_2_5h'), 0.0))}"
-            )
+            slope_parts = [
+                f"{s_lbl}={_fmt_s(s_val)}"
+                for s_lbl, s_key in (
+                    ("90s", "slope_90s"),
+                    ("3.7m", "slope_3_7m"),
+                    ("15m", "slope_15m"),
+                    ("2.5h", "slope_2_5h"),
+                )
+                if (s_val := safe_float(t_entry.get(s_key), default=None)) is not None
+            ]
+            if slope_parts:
+                telemetry["Dynamic Multi-Window Slopes"] = ", ".join(slope_parts)
     except Exception:
         pass
 
