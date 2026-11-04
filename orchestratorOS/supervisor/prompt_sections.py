@@ -839,7 +839,7 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
         ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
         ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", ("active_avg_buy_px",)),
         ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", ()),
-        ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("last_buy_px",)),
+        ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
         ("last_sell_px", "last_sell_px", "chg_vs_last_sell", "chg_vs_last_sell_pct", ()),
         ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
     ):

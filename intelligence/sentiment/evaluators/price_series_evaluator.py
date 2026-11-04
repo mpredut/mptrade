@@ -314,7 +314,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
             "24h",
         )
         seen_sample_tms: set[float] = set()
-        dedup_sparse_samples = len(clean_series) >= 25
+        dedup_sparse_samples = len(clean_series) >= 12
         for key, mins, min_span_ms, max_gap_mins in (
             ("chg_1m_pct", 1.0, 60000.0, 2.5), ("chg_3m_pct", 3.0, 180000.0, 4.0), ("chg_5m_pct", 5.0, 300000.0, 6.0),
             ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
@@ -697,6 +697,7 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         return {}
     t_now, p_now = pts[-1]
     out: Dict[str, Any] = {}
+    seen_slope_ref_t: set[float] = set()
     for win_sec, win_min, s_key, t_key, g_key in (
         (90.0, 1.5, "slope_90s", "trend_90s", "growth_90s"),
         (222.0, 3.7, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
@@ -705,6 +706,9 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     ):
         target_t = t_now - win_sec
         ref_t, ref_p = min(pts[:-1], key=lambda item: abs(item[0] - target_t))
+        if len(pts) >= 10 and (t_now - ref_t) > max(win_sec * 4.0, 900.0) and ref_t in seen_slope_ref_t:
+            continue
+        seen_slope_ref_t.add(ref_t)
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
             raw_s = ((p_now - ref_p) / ref_p) / dt_min

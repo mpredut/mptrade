@@ -832,7 +832,7 @@ def enrich_positions_with_orders_and_cycles(
                 default=0,
             )
             fresh_lots = [
-                lot for lot in open_lots
+                lot for lot in open_lots[-4:]
                 if isinstance(lot, dict)
                 and safe_float(lot.get("entry_px"), 0.0) > 0
                 and (
