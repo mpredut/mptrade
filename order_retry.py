@@ -88,31 +88,14 @@ def _validate_retry_config():
 _validate_retry_config()
 
 NON_FAILURE_DEFERRAL_REASONS = frozenset({
-    "daily_limit",
-    "trend_deferred",
-    "medium_trend_deferred",
-    "account_cache_not_fresh",
-    "account_cache_snapshot_changed",
-    "retry_price_unfavorable",
+    "daily_limit", "trend_deferred", "medium_trend_deferred",
+    "account_cache_not_fresh", "account_cache_snapshot_changed", "retry_price_unfavorable",
 })
-
-TERMINAL_FILTER_REFUSAL_REASONS = frozenset({
-    "below_min_notional",
-    "qty_zero_or_negative",
-})
-TERMINAL_FILTER_REFUSAL_PREFIXES = (
-    "binance_filter_refused:",
-    "filter_",
-)
+TERMINAL_FILTER_REFUSAL_REASONS = frozenset({"below_min_notional", "qty_zero_or_negative"})
+TERMINAL_FILTER_REFUSAL_PREFIXES = ("binance_filter_refused:", "filter_")
 TERMINAL_FILTER_REFUSAL_SUBSTRINGS = (
-    "order minimum not met",
-    "volume minimum not met",
-    "cost minimum not met",
-    "minimum value of",
-    "invalid price",
-    "invalid size",
-    "invalid arguments",
-    "tick size check failed",
+    "order minimum not met", "volume minimum not met", "cost minimum not met",
+    "minimum value of", "invalid price", "invalid size", "invalid arguments", "tick size check failed",
 )
 
 
@@ -127,12 +110,7 @@ def is_terminal_filter_refusal(reason) -> bool:
     )
 
 
-POSSIBLY_SUBMITTED_REASONS = frozenset({
-    "",
-    "submit_pending",
-    "submit_ambiguous",
-    "response_without_order_id",
-})
+POSSIBLY_SUBMITTED_REASONS = frozenset({"", "submit_pending", "submit_ambiguous", "response_without_order_id"})
 
 
 def submission_requires_reconciliation(rec) -> bool:
@@ -296,15 +274,9 @@ def valid_record(rec):
 
 
 _CONSOLIDATED_DEFERRAL_REASONS = frozenset({
-    "balance_unavailable",
-    "daily_limit",
-    "insufficient_funds",
-    "trend_deferred",
-    "medium_trend_deferred",
-    "medium_trend_qty_zero",
-    "profit_guard",
-    "qty_zero_after_policy",
-    "qty_zero_after_weight",
+    "balance_unavailable", "daily_limit", "insufficient_funds", "trend_deferred",
+    "medium_trend_deferred", "medium_trend_qty_zero", "profit_guard",
+    "qty_zero_after_policy", "qty_zero_after_weight",
 })
 
 
@@ -496,30 +468,17 @@ def enqueue(
     requested_price = safe_pos_float(requested_price, default=None)
     ref_price = safe_pos_float(ref_price, default=None)
     rec = {
-        "id": record_id,
-        "prefix": prefix,
+        "id": record_id, "prefix": prefix,
         "intent_id": str(intent_id or f"outbox-{record_id}"),
         "provider_name": None if provider_name is None else str(provider_name),
-        "symbol": symbol,
-        "side": side_u,
-        "kind": None if kind is None else str(kind),
-        "qty": qty,
-        "requested_qty_total": qty,
-        "delivered_qty": 0.0,
-        "place_kwargs": placement,
-        "requested_price": requested_price,
-        "ref_price": ref_price,
-        "created_ts": cts,
-        "attempts": attempts,
-        "last_attempt_ts": last_attempt_ts,
+        "symbol": symbol, "side": side_u, "kind": None if kind is None else str(kind),
+        "qty": qty, "requested_qty_total": qty, "delivered_qty": 0.0,
+        "place_kwargs": placement, "requested_price": requested_price, "ref_price": ref_price,
+        "created_ts": cts, "attempts": attempts, "last_attempt_ts": last_attempt_ts,
         "last_failure_reason": str(failure_reason) if failure_reason is not None else None,
-        "ttl_started_ts": cts,
-        "revision": 0,
-        "lifecycle": lifecycle,
+        "ttl_started_ts": cts, "revision": 0, "lifecycle": lifecycle,
     }
-    if custom_ttl is not None:
-        rec["ttl_sec"] = custom_ttl
-        rec["expires_at_ts"] = cts + custom_ttl
+    _assign_record_ttl(rec, cts, custom_ttl)
     if lifecycle == "awaiting_cancel":
         rec["replaces_order_id"] = clean_rep_oid
         rec["replaces_original_qty"] = replaces_original_qty
@@ -585,8 +544,7 @@ def enqueue(
                 ):
                     e["requested_price"] = requested_price
                     e["ref_price"] = ref_price
-                    e["qty"] = qty
-                    e["requested_qty_total"] = qty
+                    _set_record_qty(e, qty)
                     revision = int(e.get("revision", 0)) + 1
                     refreshed_kwargs = _sanitize_place_kwargs(place_kwargs)
                     pfx = e.get("prefix") or refreshed_kwargs.get("prefix") or prefix or "OR"
@@ -609,12 +567,7 @@ def enqueue(
                     e["intent_id"] = str(intent_id or e.get("intent_id") or f"outbox-{e.get('id', record_id)}")
                     e["kind"] = None if kind is None else str(kind)
                     e["lifecycle"] = "submit_pending"
-                    if custom_ttl is not None:
-                        e["ttl_sec"] = custom_ttl
-                        e["expires_at_ts"] = cts + custom_ttl
-                    else:
-                        e.pop("ttl_sec", None)
-                        e.pop("expires_at_ts", None)
+                    _assign_record_ttl(e, cts, custom_ttl, clear_if_none=True)
                     e.pop("order_id", None)
                     _set_safe_to_discard(
                         e,
@@ -705,11 +658,23 @@ def _matches_exact_claim(record: dict, claim_snapshot: dict, snapshot_client_id:
     )
 
 
+def _set_record_qty(rec: dict, qty: float) -> None:
+    rec["qty"] = rec["requested_qty_total"] = qty
+
+
+def _assign_record_ttl(rec: dict, cts: float, custom_ttl: Optional[float], *, clear_if_none: bool = False) -> None:
+    if custom_ttl is not None:
+        rec["ttl_sec"] = custom_ttl
+        rec["expires_at_ts"] = cts + custom_ttl
+    elif clear_if_none:
+        rec.pop("ttl_sec", None)
+        rec.pop("expires_at_ts", None)
+
+
 def _apply_claim_qty_and_scale(record: dict, qty=None, applied_scale=None) -> None:
     q_val = safe_pos_float(qty, default=None)
     if q_val is not None:
-        record["qty"] = q_val
-        record["requested_qty_total"] = q_val
+        _set_record_qty(record, q_val)
     if applied_scale is not None:
         s_val = safe_pos_float(applied_scale, default=None)
         if s_val is not None and s_val < 1.0:
@@ -792,12 +757,16 @@ def _record_order_and_client_ids(r: dict) -> list:
     return [x for x in (oid, cid) if x]
 
 
+def _is_active_accepted_or_unassigned(r: dict) -> bool:
+    lc = str(r.get("lifecycle") or "").lower()
+    return lc == "accepted" or (lc == "submit_pending" and r.get("order_id") is None)
+
+
 def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        lc = str(r.get("lifecycle") or "").lower()
-        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
+        if not _is_active_accepted_or_unassigned(r):
             continue
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
@@ -843,8 +812,7 @@ def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        lc = str(r.get("lifecycle") or "").lower()
-        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
+        if not _is_active_accepted_or_unassigned(r):
             continue
         inferred = infer_record_owner(r)
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
@@ -990,8 +958,7 @@ def _apply_accepted(rec, order, now, provider_name=None):
         return False
     venue_qty = extract_orig_qty(order)
     if venue_qty is not None:
-        rec["qty"] = venue_qty
-        rec["requested_qty_total"] = venue_qty
+        _set_record_qty(rec, venue_qty)
     _set_safe_to_discard(rec, False)
     rec["order_id"] = order_id
     rec["lifecycle"] = "accepted"
@@ -1136,8 +1103,7 @@ def complete_claim(
                 _set_safe_to_discard(rec, False)
                 venue_qty = extract_orig_qty(order) or safe_pos_float(claimed.get("qty"), default=None)
                 if venue_qty is not None:
-                    rec["qty"] = venue_qty
-                    rec["requested_qty_total"] = venue_qty
+                    _set_record_qty(rec, venue_qty)
                 if not _apply_accepted(rec, order, now, provider_name=provider_name):
                     rec["last_failure_reason"] = "response_without_order_id"
                     rec["attempts"] = max(
@@ -1151,8 +1117,7 @@ def complete_claim(
                 rec["venue_status"] = str(getattr(status, "venue_status", "") or "")
                 status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
                 if status_orig is not None:
-                    rec["qty"] = status_orig
-                    rec["requested_qty_total"] = status_orig
+                    _set_record_qty(rec, status_orig)
                 rec["filled_qty"] = safe_nonneg_float(getattr(status, "filled_qty", None), default=0.0)
                 rec["filled_cost"] = safe_nonneg_float(getattr(status, "cost", None), default=0.0)
                 rec["filled_fee"] = safe_nonneg_float(getattr(status, "fee", None), default=0.0)
@@ -1166,8 +1131,7 @@ def complete_claim(
                 status_orig = safe_pos_float(getattr(status, "orig_qty", None), default=None)
                 if status_orig is not None:
                     current_qty = status_orig
-                    rec["qty"] = current_qty
-                    rec["requested_qty_total"] = current_qty
+                    _set_record_qty(rec, current_qty)
                 remaining_qty = max(0.0, current_qty - filled_qty)
                 _append_order_history(rec, observed_at=now, status=status)
                 rec["delivered_qty"] = safe_nonneg_float(rec.get("delivered_qty"), default=0.0) + min(current_qty, filled_qty)
@@ -1254,8 +1218,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
                 existing.pop(index)
                 result = "resolved"
             else:
-                rec["qty"] = qty
-                rec["requested_qty_total"] = qty
+                _set_record_qty(rec, qty)
                 rec["lifecycle"] = "submit_pending"
                 rec["last_failure_reason"] = "submit_pending"
                 rec["submission_state"] = "refused"

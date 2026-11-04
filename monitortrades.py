@@ -519,13 +519,10 @@ def _load_mt_conf(path=None):
     """Strictly load mandatory global settings from monitortrades.conf at module init."""
     global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
     global MT_SL_TREND_DEFER_MAX_SEC, MT_SL_BOUNCE_MIN_RECOVERY_PCT, MT_SL_BOUNCE_PULLBACK_PCT
-    global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT
-    global MT_SL_STRUCTURAL_BREAK_ENABLED
+    global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT, MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
-    global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO
-    global MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K, MT_TP_RATCHET_MIN_PULLBACK_PCT
-    global MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC
-    global MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_POST_STOP_COOLDOWN_SEC
+    global MT_TP_TREND_RIDE_ENABLED, MT_TP_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_RATIO, MT_TP_RATCHET_ENABLED, MT_TP_RATCHET_K
+    global MT_TP_RATCHET_MIN_PULLBACK_PCT, MT_TP_PROFIT_FLOOR_MIN_PCT, MT_TP_STAGNATION_MAX_SEC, MT_REENTRY_HYBRID_ENABLED, MT_REENTRY_POST_STOP_COOLDOWN_SEC
     path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitortrades.conf")
     if not os.path.exists(path):
         raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
@@ -1111,6 +1108,17 @@ _POST_STOP_AI_APPLIED_SCALE: dict[str, float] = {}
 _POST_STOP_AI_NOT_ENFORCED: set[str] = set()
 
 
+def _restore_reentry_state(symbol: str, prev_reentry_state: dict, *, save: bool = True) -> None:
+    if prev_reentry_state:
+        _REENTRY_STATE[symbol] = prev_reentry_state
+        if save:
+            _save_mt_state()
+
+
+def _compute_reentry_buy_qty(buy_budget, buy_qty_cfg, default_qty, current_price: float) -> float:
+    return round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or default_qty), 6)
+
+
 def _apply_post_stop_ai_guard(
     symbol: str, current_price: float, sell_price: float, sell_time: float,
     reentry_snap: ReentrySnapshot, buy_budget: Optional[float], buy_qty_cfg: Optional[float],
@@ -1135,7 +1143,7 @@ def _apply_post_stop_ai_guard(
             _POST_STOP_AI_NOT_ENFORCED.add(symbol)
         raw_trough = safe_pos_float(reentry_snap.post_sell_trough, default=None)
         _trough_px = raw_trough if raw_trough is not None else min(sell_price, current_price)
-        _est_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+        _est_qty = _compute_reentry_buy_qty(buy_budget, buy_qty_cfg, qty, current_price)
         if _has_live_quantity_policy(provider):
             try:
                 q_dec, _ = _eval_reentry_buy_quantity_decision(
@@ -1149,15 +1157,10 @@ def _apply_post_stop_ai_guard(
             except Exception:
                 pass
         _ps_dec = _ps_guard.check(
-            symbol=symbol,
-            current_price=current_price,
-            last_sell_price=sell_price,
-            trough=_trough_px,
-            bounce_pct=reentry_snap.bounce_ratio(_trough_px),
-            qty=_est_qty,
-            notional_eur=_est_qty * current_price,
-            last_sell_time_s=sell_time,
-            now=reentry_snap.current_time_s,
+            symbol=symbol, current_price=current_price, last_sell_price=sell_price,
+            trough=_trough_px, bounce_pct=reentry_snap.bounce_ratio(_trough_px),
+            qty=_est_qty, notional_eur=_est_qty * current_price,
+            last_sell_time_s=sell_time, now=reentry_snap.current_time_s,
         )
         ps_scale = safe_float(getattr(_ps_dec, "suggested_scale", 1.0), 1.0)
         if ps_scale is None or not (0.0 < ps_scale <= 1.0):
@@ -1234,9 +1237,7 @@ def _execute_reentry_buy(
         _LAST_EXIT_KIND.pop(symbol, None)
         _save_mt_state()
         return True
-    if prev_reentry_state:
-        _REENTRY_STATE[symbol] = prev_reentry_state
-        _save_mt_state()
+    _restore_reentry_state(symbol, prev_reentry_state)
     return False
 
 
@@ -1406,26 +1407,17 @@ def _evaluate_mt_reentry(
     )
 
     reentry_snap = ReentrySnapshot(
-        symbol=symbol,
-        current_price=current_price,
-        last_sell_price=sell_price,
-        last_exit_kind=last_exit_kind,
-        post_sell_peak=prev_reentry_state["peak"],
-        post_sell_trough=prev_reentry_state["trough"],
-        current_time_s=current_time_s,
-        last_sell_time_s=sell_time,
-        trend_up=current_trend_up,
-        trend_down=not current_trend_up,
-        vol_1h=vol_1h,
-        vol_source="1h_cache" if vol_1h > 0 else "default",
+        symbol=symbol, current_price=current_price, last_sell_price=sell_price,
+        last_exit_kind=last_exit_kind, post_sell_peak=prev_reentry_state["peak"],
+        post_sell_trough=prev_reentry_state["trough"], current_time_s=current_time_s,
+        last_sell_time_s=sell_time, trend_up=current_trend_up, trend_down=not current_trend_up,
+        vol_1h=vol_1h, vol_source="1h_cache" if vol_1h > 0 else "default",
     )
     if verbose:
         print(f"(price_decrease_versus_sell: {reentry_snap.sale_drop_pct}%)")
 
     if not current_trend_up:
-        if prev_reentry_state:
-            _REENTRY_STATE[symbol] = prev_reentry_state
-            _save_mt_state()
+        _restore_reentry_state(symbol, prev_reentry_state)
         if verbose:
             print("No action taken, because trend is down!")
         return True
@@ -1439,12 +1431,10 @@ def _evaluate_mt_reentry(
     qty = 1
     _effective_held_qty = max(avail_qty, owned_qty) if isolation == "own_ledger" else avail_qty
     _pos_value = _effective_held_qty * current_price
-    _initial_buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+    _initial_buy_qty = _compute_reentry_buy_qty(buy_budget, buy_qty_cfg, qty, current_price)
     _initial_projected_value = _pos_value + (_initial_buy_qty * current_price)
     if max_budget and _initial_projected_value > max_budget:
-        if prev_reentry_state:
-            _REENTRY_STATE[symbol] = prev_reentry_state
-            _save_mt_state()
+        _restore_reentry_state(symbol, prev_reentry_state)
         print(f"[{symbol}] budget cap depasit post-trade ({_initial_projected_value:.0f} > {max_budget} USD) — not buying")
         return True
 
@@ -1453,9 +1443,7 @@ def _evaluate_mt_reentry(
         if not _can_pass_buy_quantity_policy(
             inst, symbol, current_price, _initial_buy_qty, min_qty=min_qty, sell_price=sell_price
         ):
-            if prev_reentry_state:
-                _REENTRY_STATE[symbol] = prev_reentry_state
-                _save_mt_state()
+            _restore_reentry_state(symbol, prev_reentry_state)
             return True
         print(f"[{symbol}] Post-STOP recovery bounce confirmed: {reentry_dec.reason}")
         _POST_STOP_AI_APPLIED_SCALE.pop(symbol, None)
@@ -1468,18 +1456,15 @@ def _evaluate_mt_reentry(
             )
         _reentry_applied_scale = float(_POST_STOP_AI_APPLIED_SCALE.pop(symbol, 1.0) or 1.0)
         if not allowed:
-            if prev_reentry_state:
-                _REENTRY_STATE[symbol] = prev_reentry_state
-                _save_mt_state()
+            _restore_reentry_state(symbol, prev_reentry_state)
             return True
     else:
         print(f"Price decreased with {reentry_snap.sale_drop_ratio * 100}% by more than {gain_threshold * 100}% versus sell price: Placing buy order")
 
-    _buy_qty = round((buy_budget / current_price) if buy_budget else (buy_qty_cfg or qty), 6)
+    _buy_qty = _compute_reentry_buy_qty(buy_budget, buy_qty_cfg, qty, current_price)
     _projected_value = _pos_value + (_buy_qty * current_price)
     if max_budget and _projected_value > max_budget:
-        if prev_reentry_state:
-            _REENTRY_STATE[symbol] = prev_reentry_state
+        _restore_reentry_state(symbol, prev_reentry_state, save=False)
         print(f"[{symbol}] budget cap depasit post-trade ({_projected_value:.0f} > {max_budget} USD) — not buying")
     else:
         _execute_reentry_buy(
@@ -1609,6 +1594,13 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     _save_mt_state()
 
 
+def _touch_mt_hb(*, force: bool = False) -> None:
+    touch_module_heartbeat(
+        "monitortrades", interval_sec=30.0, force=force,
+        intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
+    )
+
+
 def main():
     instruments = load_for("mt")
     if not instruments:
@@ -1630,12 +1622,7 @@ def main():
     check_and_notify_executed_trades(maxage_trade_s)
 
     d = MT_GUARD_WINDOW_DAYS
-    touch_module_heartbeat(
-        "monitortrades",
-        interval_sec=30.0,
-        force=True,
-        intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
-    )
+    _touch_mt_hb(force=True)
     while True:
         try:
             print_number_of_orders(maxage_trade_s)
@@ -1662,11 +1649,7 @@ def main():
             except Exception as _e:
                 print(f"flush_smart_stop_loss_alerts error: {_e}")
 
-        touch_module_heartbeat(
-            "monitortrades",
-            interval_sec=30.0,
-            intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
-        )
+        _touch_mt_hb()
         time.sleep(MT_MAIN_LOOP_SLEEP_SEC)
 
 

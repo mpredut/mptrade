@@ -32,6 +32,11 @@ def _resolve_provider_name(provider) -> Optional[str]:
     return normalize_venue_name(provider, default=None)
 
 
+def _norm_epoch_float(val, default=None, *, pos_only: bool = False) -> Optional[float]:
+    f = (safe_pos_float if pos_only else safe_float)(val, default=default)
+    return (f / 1000.0 if f > 100_000_000_000 else f) if f is not None else default
+
+
 def normalize_market_regime_snapshot(
     snapshot: Optional[Mapping],
 ) -> Optional[dict]:
@@ -132,16 +137,12 @@ class MarketRegimeContext:
         require_identity: bool = False,
     ) -> bool:
         """Validate whether context matches instrument identity, timestamp sanity, and freshness constraints."""
-        current_time = time.time() if now is None else safe_float(now, default=None)
+        current_time = time.time() if now is None else _norm_epoch_float(now)
         if current_time is None:
             return False
-        if current_time > 100_000_000_000:
-            current_time /= 1000.0
 
         # 1. Timestamp validation: evaluated_at must be strictly positive, finite, and not in the future
-        eval_at = safe_pos_float(self.evaluated_at, default=None)
-        if eval_at is not None and eval_at > 100_000_000_000:
-            eval_at /= 1000.0
+        eval_at = _norm_epoch_float(self.evaluated_at, pos_only=True)
         if eval_at is None or eval_at > (current_time + 1.0):
             return False
 
@@ -233,35 +234,20 @@ class MarketRegimeContext:
         eval_ts = (
             time.time()
             if (evaluated_at is None or isinstance(evaluated_at, bool))
-            else safe_float(evaluated_at, default=0.0)
+            else _norm_epoch_float(evaluated_at, default=0.0)
         )
-        if eval_ts > 100_000_000_000:
-            eval_ts /= 1000.0
         dur_s = (
             0.0
             if (trend_duration_seconds is None or isinstance(trend_duration_seconds, bool))
             else safe_float(trend_duration_seconds, default=-1.0)
         )
-        sym_norm = (
-            symbol.strip().upper()
-            if isinstance(symbol, str) and symbol.strip()
-            else None
-        )
+        sym_norm = symbol.strip().upper() if isinstance(symbol, str) and symbol.strip() else None
         prov_norm = _resolve_provider_name(provider)
-        bench_norm = (
-            benchmark_symbol.strip().upper()
-            if isinstance(benchmark_symbol, str) and benchmark_symbol.strip()
-            else None
-        )
+        bench_norm = benchmark_symbol.strip().upper() if isinstance(benchmark_symbol, str) and benchmark_symbol.strip() else None
         return cls(
-            decision=decision,
-            resolved_trend=trend,
-            evaluated_at=eval_ts,
-            symbol=sym_norm,
-            provider=prov_norm,
-            trend_duration_seconds=dur_s,
-            benchmark_symbol=bench_norm,
-            benchmark_decision=benchmark_decision,
+            decision=decision, resolved_trend=trend, evaluated_at=eval_ts,
+            symbol=sym_norm, provider=prov_norm, trend_duration_seconds=dur_s,
+            benchmark_symbol=bench_norm, benchmark_decision=benchmark_decision,
         )
 
 
@@ -350,15 +336,9 @@ class MarketRegimeEvidence:
 
     @property
     def age_seconds(self) -> Optional[float]:
-        eval_f = safe_float(self.evaluated_at, default=None)
-        obs_f = safe_float(self.observed_at, default=None)
-        if eval_f is None or obs_f is None:
-            return None
-        if eval_f > 100_000_000_000:
-            eval_f /= 1000.0
-        if obs_f > 100_000_000_000:
-            obs_f /= 1000.0
-        return safe_float(eval_f - obs_f, default=None)
+        eval_f = _norm_epoch_float(self.evaluated_at)
+        obs_f = _norm_epoch_float(self.observed_at)
+        return None if (eval_f is None or obs_f is None) else safe_float(eval_f - obs_f, default=None)
 
     @property
     def temporal_state(self) -> str:
@@ -728,17 +708,11 @@ class MarketRegimeService:
                 ohlc_max_age_seconds=None, now=None):
         """Resolve the selected regime while preserving the legacy return type."""
         return self.resolve_with_evidence(
-            provider,
-            symbol,
-            horizon=horizon,
-            snapshot=snapshot,
-            interval_min=interval_min,
-            window_seconds=window_seconds,
-            allow_fallback=allow_fallback,
-            snapshot_source=snapshot_source,
+            provider, symbol, horizon=horizon, snapshot=snapshot,
+            interval_min=interval_min, window_seconds=window_seconds,
+            allow_fallback=allow_fallback, snapshot_source=snapshot_source,
             snapshot_max_age_seconds=snapshot_max_age_seconds,
-            ohlc_max_age_seconds=ohlc_max_age_seconds,
-            now=now,
+            ohlc_max_age_seconds=ohlc_max_age_seconds, now=now,
         ).decision
 
     def resolve_with_evidence(
@@ -1151,14 +1125,16 @@ class MarketRegimeService:
     def _window_sample_count(interval_min: int, window_seconds: float) -> int:
         return max(3, int(math.ceil(window_seconds / (interval_min * 60.0))))
 
+    def _ttl_for(self, decision) -> float:
+        return self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec
+
     def _evaluate_provider_source(self, provider, symbol: str, *,
                                   interval_min=1, window_seconds=900.0):
         im_i = exact_pos_int(interval_min, default=None)
         win_f = safe_pos_float(window_seconds, default=None)
         if im_i is None or win_f is None:
             raise ValueError("the regime interval and window must be positive")
-        interval_min = im_i
-        window_seconds = win_f
+        interval_min, window_seconds = im_i, win_f
         key = (
             str(getattr(provider, "name", "unknown")).lower(),
             str(symbol),
@@ -1172,16 +1148,11 @@ class MarketRegimeService:
                 c_ts = safe_float(cached[0], default=None)
                 cached_dec = cached[1]
                 if c_ts is not None and cached_dec is not None:
-                    ttl = (
-                        self.cache_ttl_sec
-                        if getattr(cached_dec, "fresh", False)
-                        else self.negative_cache_ttl_sec
-                    )
+                    ttl = self._ttl_for(cached_dec)
                     if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
                         self._cache.move_to_end(key)
                         return cached[1:]
-        observed_at = None
-        continuous = None
+        observed_at = continuous = None
         try:
             series = self._closed_series(provider, symbol, interval_min)
             closes = tuple(series.closes)
@@ -1190,46 +1161,25 @@ class MarketRegimeService:
             if not timestamps or len(timestamps) == len(closes):
                 closes = closes[-needed:]
                 timestamps = timestamps[-needed:]
-            consumed = ClosedPriceSeries(
-                closes,
-                interval_min,
-                series.last_closed_at,
-                timestamps,
-            )
+            consumed = ClosedPriceSeries(closes, interval_min, series.last_closed_at, timestamps)
             observed_at, continuous = self._series_timing(consumed)
             decision = self.evaluate_closes(
-                consumed.closes,
-                interval_min=interval_min,
-                window_seconds=window_seconds,
+                consumed.closes, interval_min=interval_min, window_seconds=window_seconds,
             )
         except Exception as exc:  # Unavailable data remains explicit unknown.
-            decision = self.evaluator.unknown(
-                f"source_error:{exc.__class__.__name__}"
-            )
-        ttl = (
-            self.cache_ttl_sec
-            if decision.fresh
-            else self.negative_cache_ttl_sec
-        )
-        if ttl > 0:
+            decision = self.evaluator.unknown(f"source_error:{exc.__class__.__name__}")
+        if self._ttl_for(decision) > 0:
             with self._lock:
                 lru_dict_put(
-                    self._cache,
-                    key,
-                    (cache_now, decision, observed_at, continuous),
-                    self.cache_max,
+                    self._cache, key, (cache_now, decision, observed_at, continuous), self.cache_max,
                 )
         return decision, observed_at, continuous
 
     def evaluate_provider(self, provider, symbol: str, *, interval_min=1,
                           window_seconds=900.0) -> MarketRegimeDecision:
-        decision, _observed_at, _continuous = self._evaluate_provider_source(
-            provider,
-            symbol,
-            interval_min=interval_min,
-            window_seconds=window_seconds,
-        )
-        return decision
+        return self._evaluate_provider_source(
+            provider, symbol, interval_min=interval_min, window_seconds=window_seconds,
+        )[0]
 
     @staticmethod
     def _resolve_horizon_window(horizon="short", interval_min=None):

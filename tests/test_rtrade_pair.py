@@ -986,5 +986,373 @@ class PairCoordinatorTest(unittest.TestCase):
             self.assertEqual(outcome.reason, "hard_stop_recovery_pending")
 
 
+import json as _json
+import os as _os
+import tempfile as _tempfile
+from pathlib import Path as _Path
+from unittest.mock import patch as _patch
+import rtrade as _rtrade
+from rtrade_pair_store import RTradePairStore, rtrade_client_order_id
+
+_RTRADE_ROOT = _Path(__file__).resolve().parents[1]
+
+
+class RTradeHeartbeatTest(unittest.TestCase):
+    def setUp(self):
+        self._last = _rtrade._rtrade_heartbeat_last
+
+    def tearDown(self):
+        _rtrade._rtrade_heartbeat_last = self._last
+
+    def test_heartbeat_is_written_and_throttled_by_loop_progress(self):
+        with _tempfile.TemporaryDirectory() as tmp:
+            path = _os.path.join(tmp, "rtrade.heartbeat")
+            with (
+                _patch.object(_rtrade, "_RTRADE_HEARTBEAT_PATH", path),
+                _patch.object(_rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
+                _patch.object(_rtrade.time, "monotonic", side_effect=(100.0, 110.0, 131.0)),
+            ):
+                _rtrade._rtrade_heartbeat_last = float("-inf")
+                _rtrade._touch_rtrade_heartbeat()
+                self.assertTrue(_os.path.exists(path))
+                self.assertEqual(_rtrade._rtrade_heartbeat_last, 100.0)
+
+                _rtrade._touch_rtrade_heartbeat()
+                self.assertEqual(_rtrade._rtrade_heartbeat_last, 100.0)
+
+                _rtrade._touch_rtrade_heartbeat()
+                self.assertEqual(_rtrade._rtrade_heartbeat_last, 131.0)
+
+    def test_process_manifest_uses_dedicated_heartbeat(self):
+        line = next(
+            row for row in (_RTRADE_ROOT / "procs.conf").read_text(encoding="utf-8").splitlines()
+            if row.startswith("rtrade.py|")
+        )
+        parts = line.split("|")
+        self.assertEqual(parts[0], "rtrade.py")
+        self.assertEqual(parts[1], "$ROOT")
+        self.assertEqual(parts[3], "rtrade")
+        hb_targets = [f.strip() for f in parts[4].split(",")]
+        self.assertIn("cachedb/rtrade.heartbeat", hb_targets)
+        self.assertEqual(parts[5], "180")
+        self.assertEqual(parts[6], "fleet")
+
+    def test_rtrade_imports_sys_and_defines_recovery_timeout(self):
+        self.assertTrue(hasattr(_rtrade, "sys"), "rtrade must import sys for sys.exit")
+        self.assertTrue(callable(_rtrade.sys.exit))
+        self.assertTrue(hasattr(_rtrade, "_RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC"))
+        self.assertLess(
+            _rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC, 180.0,
+            "Startup recovery timeout must be strictly less than orchestrator 180s threshold"
+        )
+
+    def test_venue_pair_recovery_blocked_management(self):
+        venue = _rtrade._LivePairVenue.__new__(_rtrade._LivePairVenue)
+        venue._recovery_blocked_pairs = set()
+        venue.recovery_blocked = False
+        venue._set_pair_recovery_blocked("pair-1", True)
+        self.assertTrue(venue.recovery_blocked)
+        self.assertTrue(venue.pair_recovery_blocked("pair-1"))
+        venue._set_pair_recovery_blocked("pair-1", False)
+        self.assertFalse(venue.recovery_blocked)
+        self.assertFalse(venue.pair_recovery_blocked("pair-1"))
+
+    def test_coordinator_loop_exits_on_venue_recovery_blocked_timeout(self):
+        from unittest.mock import MagicMock
+        bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
+        bot.symbol = "TAOUSDC"
+        bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
+        mock_venue = MagicMock()
+        mock_venue.recovery_blocked = True
+        mock_venue.executor.open_orders.return_value = []
+        mock_pair_store = MagicMock()
+        mock_pair_store.active.return_value = []
+
+        start_time = 1000.0
+        timeout = _rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
+        monotonic_times = [start_time, start_time + 1.0, start_time + timeout + 5.0]
+        with (
+            _patch.object(_rtrade.time, "monotonic", side_effect=monotonic_times),
+            _patch.object(_rtrade.time, "sleep", return_value=None),
+            _patch.object(_rtrade.sys, "exit") as mock_exit,
+            _patch.object(_rtrade, "_LivePairVenue", return_value=mock_venue),
+            _patch.object(_rtrade, "RTradePairStore", return_value=mock_pair_store),
+        ):
+            mock_exit.side_effect = SystemExit(1)
+            with self.assertRaises(SystemExit):
+                bot._run_coordinator_forever()
+            mock_exit.assert_called_once_with(1)
+
+    def test_startup_recovery_terminal_record_clears_venue_blockage(self):
+        from unittest.mock import MagicMock
+        bot = _rtrade.TradingBot.__new__(_rtrade.TradingBot)
+        bot.symbol = "TAOUSDC"
+        bot.DEFAULT_ADJUSTMENT_PERCENT = 0.005
+        mock_venue = MagicMock()
+        mock_venue.recovery_blocked = False
+        mock_pair_store = MagicMock()
+        record = {
+            "pair_id": "test_pair_1",
+            "qty": 1.0,
+            "start_side": "SELL",
+            "state": {"phase": "quoting", "tickets": []},
+            "intents": {"limit:SELL": {"recovery_state": "absence_confirmed_no_reuse"}},
+        }
+        mock_pair_store.active.return_value = [record]
+        mock_venue.merge_checkpoint_intents.return_value = record["state"]
+        mock_venue.executor.open_orders.return_value = []
+
+        with (
+            _patch.object(_rtrade, "_LivePairVenue", return_value=mock_venue),
+            _patch.object(_rtrade, "RTradePairStore", return_value=mock_pair_store),
+            _patch.object(_rtrade.time, "sleep", side_effect=StopIteration),
+        ):
+            try:
+                bot._run_coordinator_forever()
+            except StopIteration:
+                pass
+            mock_pair_store.checkpoint.assert_any_call("test_pair_1", record["state"], terminal=True)
+            mock_venue._set_pair_recovery_blocked.assert_called_with("test_pair_1", False)
+
+    def test_all_procs_conf_entries_have_dedicated_heartbeat_and_stale_threshold(self):
+        rows = [
+            row.strip()
+            for row in (_RTRADE_ROOT / "procs.conf").read_text(encoding="utf-8").splitlines()
+            if row.strip() and not row.strip().startswith("#")
+        ]
+        self.assertGreaterEqual(len(rows), 17)
+        for row in rows:
+            parts = row.split("|")
+            self.assertEqual(len(parts), 7, f"Malformed procs.conf row: {row}")
+            label = parts[3].strip()
+            hb_targets = [f.strip() for f in parts[4].split(",") if f.strip()]
+            stale_s = float(parts[5].strip() or 0)
+            self.assertTrue(
+                any(t.endswith(".heartbeat") for t in hb_targets),
+                f"Process {label} must have a dedicated .heartbeat target in procs.conf: {row}",
+            )
+            self.assertGreater(stale_s, 0.0, f"Process {label} must have a positive hb_stale_s in procs.conf")
+
+    def test_touch_module_heartbeat_and_harvest_fleet_heartbeats(self):
+        import botcore
+        from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+
+        with _tempfile.TemporaryDirectory() as tmp:
+            (_Path(tmp) / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+            with _patch.dict(_os.environ, {"MPTRADE_CACHEDB_DIR": tmp}, clear=False):
+                ts1 = botcore.touch_module_heartbeat(
+                    "cacheManager", interval_sec=30.0, force=True, now=500.0,
+                    status={"ts": 1700000500.0}, symbols=["BTCUSDC", "TAOUSDC"],
+                )
+                self.assertEqual(ts1, 500.0)
+                hb_file = _Path(tmp) / "system" / "heartbeat" / "cacheManager.heartbeat"
+                self.assertTrue(hb_file.exists())
+                data = _json.loads(hb_file.read_text(encoding="utf-8"))
+                self.assertEqual(data["status"], "alive")
+                self.assertEqual(data["symbols"], ["BTCUSDC", "TAOUSDC"])
+
+                ts2 = botcore.touch_module_heartbeat("cacheManager", interval_sec=30.0, now=510.0)
+                self.assertEqual(ts2, 500.0)
+
+                ts3 = botcore.touch_module_heartbeat(
+                    "cacheManager", interval_sec=30.0, now=535.0, symbols=["BTCUSDC"],
+                )
+                self.assertEqual(ts3, 535.0)
+                data_after = _json.loads(hb_file.read_text(encoding="utf-8"))
+                self.assertEqual(data_after["symbols"], ["BTCUSDC", "TAOUSDC"])
+                self.assertEqual(data_after["status"], "alive")
+
+                mtime = _os.path.getmtime(str(hb_file))
+                active_hb, _ = harvest_heartbeats_and_state_files(tmp, tmp, mtime + 1500.0)
+                self.assertIn("cacheManager.heartbeat", active_hb)
+                self.assertEqual(active_hb["cacheManager.heartbeat"]["status"], "alive")
+
+                log_file = _Path(tmp) / "Kraken-trailing.log"
+                log_file.write_text("quiet stdout\n", encoding="utf-8")
+                _os.utime(str(log_file), (mtime - 3600.0, mtime - 3600.0))
+                fresh, age_s, _, stale_path = botcore.evaluate_heartbeat_files_freshness(
+                    [str(hb_file), str(log_file)], 900.0, mtime + 30.0,
+                )
+                self.assertTrue(fresh, f"Expected fresh=True when .heartbeat is fresh even if .log is quiet, got {stale_path}")
+                self.assertAlmostEqual(age_s, 30.0, delta=1.0)
+
+                stale_fresh, _, _, stale_reason = botcore.evaluate_heartbeat_files_freshness(
+                    [str(hb_file), str(log_file)], 900.0, mtime + 950.0,
+                )
+                self.assertFalse(stale_fresh)
+                self.assertIn("cacheManager.heartbeat", stale_reason)
+
+
+class RTradePairStoreTest(unittest.TestCase):
+    def test_the_client_order_id_is_stable_and_rtrade_specific(self):
+        first = rtrade_client_order_id("pair-1", "buy")
+        self.assertEqual(first, rtrade_client_order_id("pair-1", "BUY"))
+        self.assertTrue(first.startswith("RT_"))
+        self.assertEqual(len(first), 35)
+        self.assertNotEqual(first, rtrade_client_order_id("pair-1", "SELL"))
+        self.assertNotEqual(first, rtrade_client_order_id("pair-1", "BUY", "hard_stop"))
+
+    def setUp(self):
+        self.tmp = _tempfile.TemporaryDirectory()
+        self.store = RTradePairStore(_os.path.join(self.tmp.name, "pairs.json"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _assert_existing_invalid_store_is_preserved(self, payload):
+        original = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        with open(self.store.path, "wb") as handle:
+            handle.write(original)
+
+        with self.assertRaises(ValueError):
+            self.store.active("TAOUSDC")
+        self.assertEqual(open(self.store.path, "rb").read(), original)
+
+        with self.assertRaises(ValueError):
+            self.store.begin("TAOUSDC", "new-pair", "BUY", 1.0)
+        self.assertEqual(open(self.store.path, "rb").read(), original)
+
+    def test_existing_invalid_roots_fail_closed_without_rewrite(self):
+        for payload in ([], {}, {"version": 1, "pairs": []}, {"pairs": []}, {"version": 2, "pairs": {}}):
+            with self.subTest(payload=payload):
+                self._assert_existing_invalid_store_is_preserved(payload)
+
+    def test_existing_malformed_active_pair_fails_closed_without_rewrite(self):
+        self._assert_existing_invalid_store_is_preserved({
+            "version": 1,
+            "pairs": {
+                "pair-1": {
+                    "symbol": "TAOUSDC", "pair_id": "another-pair", "start_side": "BUY",
+                    "qty": 1.0, "phase": "reserved", "terminal": False,
+                    "intents": {}, "state": None, "created_ts": 100.0, "updated_ts": 100.0,
+                },
+            },
+        })
+
+    def test_existing_malformed_intent_identity_fails_closed_without_rewrite(self):
+        self._assert_existing_invalid_store_is_preserved({
+            "version": 1,
+            "pairs": {
+                "pair-1": {
+                    "symbol": "TAOUSDC", "pair_id": "pair-1", "start_side": "BUY",
+                    "qty": 1.0, "phase": "reserved", "terminal": False,
+                    "intents": {
+                        "limit:BUY": {
+                            "side": "SELL", "kind": "limit", "qty": 1.0, "price": 100.0,
+                            "client_order_id": "RT_invalid", "order_id": None,
+                        },
+                    },
+                    "state": None, "created_ts": 100.0, "updated_ts": 100.0,
+                },
+            },
+        })
+
+    def test_valid_legacy_v1_record_loads_and_gains_only_requested_checkpoint(self):
+        legacy = {
+            "version": 1,
+            "pairs": {
+                "pair-v1": {
+                    "symbol": "TAOUSDC", "pair_id": "pair-v1", "start_side": "BUY",
+                    "qty": 1.0, "phase": "reserved", "terminal": False,
+                    "intents": {
+                        "limit:BUY": {
+                            "side": "BUY", "kind": "limit", "qty": 1.0, "price": 99.0,
+                            "client_order_id": "RT_legacy", "order_id": None,
+                        },
+                    },
+                    "state": None, "created_ts": 100.0, "updated_ts": 100.0,
+                },
+            },
+        }
+        with open(self.store.path, "w", encoding="utf-8", newline="\n") as handle:
+            _json.dump(legacy, handle, separators=(",", ":"))
+
+        loaded = self.store.active("TAOUSDC")
+        self.assertEqual(loaded[0]["intents"]["limit:BUY"]["qty"], 1.0)
+
+        state = {"pair_id": "pair-v1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []}
+        self.store.checkpoint("pair-v1", state, terminal=False)
+        updated = self.store.active("TAOUSDC")[0]
+        self.assertEqual(updated["state"], state)
+        self.assertNotIn("limit_revisions", updated["state"])
+
+    def test_intent_is_durable_before_acceptance_and_checkpoint(self):
+        self.store.begin("TAOUSDC", "pair-1", "BUY", 2.0)
+        self.store.intent("pair-1", "BUY", 100.0, 2.0, "SD_client", kind="limit")
+        pending = self.store.active("TAOUSDC")[0]
+        self.assertIsNone(pending["intents"]["limit:BUY"]["order_id"])
+
+        self.store.accepted("pair-1", "BUY", "77", kind="limit")
+        state = {"pair_id": "pair-1", "qty": 2.0, "start_side": "BUY", "phase": "quoting", "tickets": []}
+        self.store.checkpoint("pair-1", state, terminal=False)
+        adopted = self.store.active("TAOUSDC")[0]
+        self.assertEqual(adopted["intents"]["limit:BUY"]["order_id"], "77")
+        self.assertEqual(adopted["state"]["phase"], "quoting")
+
+    def test_terminal_pair_is_not_recovered(self):
+        self.store.begin("TAOUSDC", "pair-2", "SELL", 1.0)
+        self.store.checkpoint("pair-2", {"pair_id": "pair-2", "phase": "complete", "tickets": []}, terminal=True)
+        self.assertEqual(self.store.active("TAOUSDC"), [])
+
+    def test_intent_can_atomically_create_pair_without_separate_begin(self):
+        self.store.intent("pair-3", "BUY", 100.0, 1.0, "SD_atomic", kind="limit", symbol="TAOUSDC", start_side="BUY")
+        rec = self.store.active("TAOUSDC")[0]
+        self.assertEqual(rec["pair_id"], "pair-3")
+        self.assertEqual(rec["intents"]["limit:BUY"]["client_order_id"], "SD_atomic")
+
+    def test_canonical_tracked_intent_replaces_and_removes_exact_leg(self):
+        pending = {
+            "intent_id": "rtrade:pair-4:limit:buy", "client_order_id": "RT_canonical",
+            "symbol": "TAOUSDC", "side": "BUY", "kind": "limit",
+            "requested_qty": 1.25, "requested_price": 99.5,
+            "attempt": 1, "created_at": 100.0, "lookup_misses": 0,
+        }
+        self.store.persist_intent("pair-4", "BUY", "limit", pending, symbol="TAOUSDC", start_side="BUY")
+        rec = self.store.active("TAOUSDC")[0]
+        stored = rec["intents"]["limit:BUY"]
+        self.assertEqual(stored["requested_qty"], 1.25)
+        self.assertEqual(stored["requested_price"], 99.5)
+        self.assertEqual(stored["qty"], 1.25)
+        self.assertEqual(stored["price"], 99.5)
+
+        accepted = dict(pending, order_id="77", submitted_qty=1.2)
+        self.store.persist_intent("pair-4", "BUY", "limit", accepted, symbol="TAOUSDC")
+        rec = self.store.active("TAOUSDC")[0]
+        self.assertEqual(rec["intents"]["limit:BUY"]["order_id"], "77")
+
+        self.store.persist_intent("pair-4", "BUY", "limit", None, symbol="TAOUSDC")
+        rec = self.store.active("TAOUSDC")[0]
+        self.assertNotIn("limit:BUY", rec["intents"])
+
+    def test_checkpoint_many_updates_rounds_in_one_transaction(self):
+        for pair_id in ("p1", "p2"):
+            self.store.begin("TAOUSDC", pair_id, "BUY", 1.0)
+        self.store.checkpoint_many([
+            ("p1", {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": []}, False),
+            ("p2", {"phase": "complete"}, True),
+        ])
+        active = self.store.active("TAOUSDC")
+        self.assertEqual([rec["pair_id"] for rec in active], ["p1"])
+
+    def test_terminal_history_is_bounded(self):
+        store = RTradePairStore(_os.path.join(self.tmp.name, "bounded.json"), terminal_retention=2)
+        for i in range(4):
+            pair_id = f"t{i}"
+            store.begin("TAOUSDC", pair_id, "BUY", 1.0)
+            store.checkpoint(pair_id, {"phase": "complete"}, terminal=True)
+        with open(store.path, encoding="utf-8") as handle:
+            pairs = _json.load(handle)["pairs"]
+        self.assertEqual(len(pairs), 2)
+
+    def test_default_in_memory_store_creates_no_disk_file(self):
+        store = RTradePairStore()
+        self.assertIsNone(store.path)
+        self.assertIsNone(store.lock_path)
+        store.begin("TAOUSDC", "mem-1", "BUY", 1.0)
+        self.assertEqual(len(store.active("TAOUSDC")), 1)
+        store.checkpoint("mem-1", {"phase": "complete"}, terminal=True)
+        self.assertEqual(store.active("TAOUSDC"), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

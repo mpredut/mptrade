@@ -392,35 +392,36 @@ def _enqueue_bounded_bulk(
     t_key = _canonical_topic_key(new_item.get("topic"))
     new_rank = _PRIO_RANK.get(str(new_item.get("priority") or "default"), 1)
 
-    topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
-    if len(topic_indices) >= topic_max:
-        victim_idx = min(
-            topic_indices,
-            key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1),
-        )
-        victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
-        if new_rank <= victim_rank:
-            return False, "topic_queue_full_dropped"
+    def _evict_lowest_if_full(indices, limit: int, drop_reason: str) -> Optional[str]:
+        if len(indices) < limit:
+            return None
+        victim_idx = min(indices, key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1))
+        if new_rank <= _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1):
+            return drop_reason
         evicted = pending_bulk.pop(victim_idx)
         if isinstance(last_map, dict) and isinstance(evicted, dict):
             last_map.pop(str(evicted.get("fingerprint") or ""), None)
             last_map.pop(str(evicted.get("sim_key") or ""), None)
+        return None
 
-    if len(pending_bulk) >= queue_max:
-        victim_idx = min(
-            range(len(pending_bulk)),
-            key=lambda i: _PRIO_RANK.get(str(pending_bulk[i].get("priority") or "default"), 1),
-        )
-        victim_rank = _PRIO_RANK.get(str(pending_bulk[victim_idx].get("priority") or "default"), 1)
-        if new_rank <= victim_rank:
-            return False, "queue_full_dropped"
-        evicted = pending_bulk.pop(victim_idx)
-        if isinstance(last_map, dict) and isinstance(evicted, dict):
-            last_map.pop(str(evicted.get("fingerprint") or ""), None)
-            last_map.pop(str(evicted.get("sim_key") or ""), None)
+    topic_indices = [i for i, it in enumerate(pending_bulk) if _canonical_topic_key(it.get("topic")) == t_key]
+    if reason := _evict_lowest_if_full(topic_indices, topic_max, "topic_queue_full_dropped"):
+        return False, reason
+    if reason := _evict_lowest_if_full(range(len(pending_bulk)), queue_max, "queue_full_dropped"):
+        return False, reason
 
     pending_bulk.append(new_item)
     return True, "buffered_for_bulk"
+
+
+def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -> bool:
+    if channel != "ntfy" or not channel_state.get("blocked"):
+        return False
+    blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
+    if blocked_until > 0 and now_ts >= blocked_until:
+        channel_state["blocked"] = False
+        return False
+    return True
 
 
 def synthesize_bulk_notifications(items: list[dict]) -> tuple[str, str, str, str]:
@@ -607,12 +608,8 @@ def pass_common_gate(
     with FileLock(path.with_suffix(path.suffix + ".lock")):
         state = _load_delivery_state(path, today)
         channel_state = _normalize_channel_state(state, channel, now_ts)
-        if channel == "ntfy" and channel_state.get("blocked"):
-            blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
-            if blocked_until > 0 and now_ts >= blocked_until:
-                channel_state["blocked"] = False
-            else:
-                return False, "provider_daily_limit", False, None
+        if _is_ntfy_channel_blocked(channel, channel_state, now_ts):
+            return False, "provider_daily_limit", False, None
 
         last_map: dict[str, float] = channel_state["last"]
         topic_last: dict[str, float] = channel_state["topic_last_ts"]
@@ -714,12 +711,8 @@ def pop_due_bulk_batch(
         if channel not in state["channels"]:
             return None
         channel_state = _normalize_channel_state(state, channel, now_ts)
-        if channel == "ntfy" and channel_state.get("blocked"):
-            blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
-            if blocked_until > 0 and now_ts >= blocked_until:
-                channel_state["blocked"] = False
-            else:
-                return None
+        if _is_ntfy_channel_blocked(channel, channel_state, now_ts):
+            return None
         pending_bulk: list[dict] = channel_state["pending_bulk"]
         if not pending_bulk:
             return None
@@ -935,37 +928,38 @@ class AlertNotifier:
         if not alert_file.is_absolute():
             alert_file = BASE_DIR / alert_file
         try:
+            now_iso = datetime.now().isoformat()
             with alert_file.open("a", encoding="utf-8") as f:
                 if AlertNotifier.is_new_coin_alert(alert):
-                    f.write(f"[{datetime.now().isoformat()}] NEW COIN {alert.get('symbol')} "
-                            f"(source: {alert.get('source', 'unknown')})\n")
-                    f.write(AlertNotifier.format_new_coin_message(alert) + "\n")
-                    f.write("-" * 50 + "\n")
-                    return True
-                if isinstance(alert, dict):
+                    f.write(
+                        f"[{now_iso}] NEW COIN {alert.get('symbol')} "
+                        f"(source: {alert.get('source', 'unknown')})\n"
+                        f"{AlertNotifier.format_new_coin_message(alert)}\n"
+                    )
+                elif isinstance(alert, dict):
                     if alert.get("type") == "bot_event":
-                        f.write(f"[{datetime.now().isoformat()}] BOT EVENT {alert.get('name', alert.get('symbol', 'N/A'))}\n")
-                        f.write(AlertNotifier.format_bot_event(alert) + "\n")
+                        f.write(
+                            f"[{now_iso}] BOT EVENT {alert.get('name', alert.get('symbol', 'N/A'))}\n"
+                            f"{AlertNotifier.format_bot_event(alert)}\n"
+                        )
                     else:
-                        sym = alert.get("symbol", "N/A")
                         body = alert.get("body") or alert.get("name") or str(alert)
-                        f.write(f"[{datetime.now().isoformat()}] {sym}: {body}\n")
-                    f.write("-" * 50 + "\n")
-                    return True
-                reference_time = AlertNotifier.format_human_readable_time(
-                    getattr(alert, "reference_time", None) or getattr(alert, "timestamp", None)
-                )
-                sym = getattr(alert, "symbol", "N/A")
-                atype = getattr(alert, "alert_type", "")
-                pchg = safe_float(getattr(alert, "percent_change", 0.0), 0.0)
-                cprice = safe_float(getattr(alert, "current_price", 0.0), 0.0)
-                rprice = safe_float(getattr(alert, "reference_price", 0.0), 0.0)
-                f.write(f"[{datetime.now().isoformat()}] {sym} - {atype} - {pchg:+.2f}%\n")
-                f.write(f"  Price: ${cprice:.4f}\n")
-                f.write(f"  Reference: ${rprice:.4f} (at {reference_time})\n")
-                url = getattr(alert, "url", None)
-                if url:
-                    f.write(f"  Link: {url}\n")
+                        f.write(f"[{now_iso}] {alert.get('symbol', 'N/A')}: {body}\n")
+                else:
+                    ref_ts = _alert_attr(alert, "reference_time") or _alert_attr(alert, "timestamp")
+                    reference_time = AlertNotifier.format_human_readable_time(ref_ts)
+                    sym = _alert_attr(alert, "symbol", "N/A")
+                    atype = _alert_attr(alert, "alert_type", "")
+                    pchg = safe_float(_alert_attr(alert, "percent_change", 0.0), 0.0)
+                    cprice = safe_float(_alert_attr(alert, "current_price", 0.0), 0.0)
+                    rprice = safe_float(_alert_attr(alert, "reference_price", 0.0), 0.0)
+                    f.write(
+                        f"[{now_iso}] {sym} - {atype} - {pchg:+.2f}%\n"
+                        f"  Price: ${cprice:.4f}\n"
+                        f"  Reference: ${rprice:.4f} (at {reference_time})\n"
+                    )
+                    if url := _alert_attr(alert, "url"):
+                        f.write(f"  Link: {url}\n")
                 f.write("-" * 50 + "\n")
             return True
         except Exception as e:
@@ -1184,76 +1178,20 @@ def _dispatch_order_event_notification(
 
 
 def notify_order_placed(
-    symbol: Any,
-    side: Any,
-    order_id: Any,
-    price: Any,
-    quantity: Any,
-    *,
-    venue: Optional[str] = None,
-    owner: Optional[str] = None,
-    source: Optional[str] = None,
-    order_type: str = "LIMIT",
-    allow_ai_executor: bool = True,
-    title: Optional[str] = None,
-    body: Optional[str] = None,
-    notify_fn: Optional[Any] = None,
-    include_price: bool = True,
+    symbol: Any, side: Any, order_id: Any, price: Any, quantity: Any, *, order_type: str = "LIMIT", **kwargs: Any
 ) -> bool:
     """Dispatch a passive order placement notification via notify_fn or notify_engine."""
     return _dispatch_order_event_notification(
-        symbol,
-        side,
-        order_id,
-        price,
-        quantity,
-        default_verb="PLACED LIMIT",
-        default_icon="📝",
-        venue=venue,
-        owner=owner,
-        source=source,
-        order_type=order_type,
-        allow_ai_executor=allow_ai_executor,
-        title=title,
-        body=body,
-        notify_fn=notify_fn,
-        include_price=include_price,
+        symbol, side, order_id, price, quantity,
+        default_verb="PLACED LIMIT", default_icon="📝", order_type=order_type, **kwargs,
     )
 
 
 def notify_order_executed(
-    symbol: Any,
-    side: Any,
-    order_id: Any,
-    price: Any,
-    quantity: Any,
-    *,
-    venue: Optional[str] = None,
-    owner: Optional[str] = None,
-    source: Optional[str] = None,
-    order_type: str = "MARKET",
-    allow_ai_executor: bool = True,
-    title: Optional[str] = None,
-    body: Optional[str] = None,
-    notify_fn: Optional[Any] = None,
-    include_price: bool = True,
+    symbol: Any, side: Any, order_id: Any, price: Any, quantity: Any, *, order_type: str = "MARKET", **kwargs: Any
 ) -> bool:
     """Dispatch an order execution notification via notify_fn or notify_engine."""
     return _dispatch_order_event_notification(
-        symbol,
-        side,
-        order_id,
-        price,
-        quantity,
-        default_verb="EXECUTED",
-        default_icon="🎉",
-        venue=venue,
-        owner=owner,
-        source=source,
-        order_type=order_type,
-        allow_ai_executor=allow_ai_executor,
-        title=title,
-        body=body,
-        notify_fn=notify_fn,
-        include_price=include_price,
+        symbol, side, order_id, price, quantity,
+        default_verb="EXECUTED", default_icon="🎉", order_type=order_type, **kwargs,
     )

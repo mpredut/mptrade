@@ -339,22 +339,19 @@ class BinanceProvider(MarketDataProvider):
 
     @staticmethod
     def _account_cache_state(status) -> tuple[str, str]:
-        return (
-            str(status.order_cache_version),
-            str(status.trade_cache_version),
-        )
+        return str(status.order_cache_version), str(status.trade_cache_version)
+
+    def _require_account_cache_state(self) -> tuple[str, str]:
+        from binance_api import bapi_placeorder as _po
+        return self._account_cache_state(_po.require_account_cache_for_submit())
 
     def prepare_order_state(self):
         """Synchronize Binance account readers before shared policy checks."""
-        from binance_api import bapi_placeorder as _po
-        status = _po.require_account_cache_for_submit()
-        return self._account_cache_state(status)
+        return self._require_account_cache_state()
 
     def validate_order_state(self, expected_state):
         """Refuse when policy checks raced with a newer account-cache snapshot."""
-        from binance_api import bapi_placeorder as _po
-        status = _po.require_account_cache_for_submit()
-        current_state = self._account_cache_state(status)
+        current_state = self._require_account_cache_state()
         if current_state != tuple(expected_state or ()):
             raise SubmissionRefused("account_cache_snapshot_changed")
         return current_state
@@ -698,22 +695,25 @@ class MarketApi:
         self._route[symbol] = default
         return default
 
-    def get_current_price(
-        self, symbol: str, *, provider_name=None,
-    ) -> Optional[float]:
-        """Read a quote through explicit venue routing when it is configured."""
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.get_current_price(symbol)
-
-    def get_price_history(
-        self, symbol: str, lookback_h: float, *, provider_name=None,
-    ) -> Optional[List]:
-        provider = (
+    def _provider_routed_or_default(
+        self, symbol: str, provider_name=None,
+    ) -> MarketDataProvider:
+        return (
             self._provider_explicit_or_routed(symbol, provider_name)
             if provider_name is not None
             else self._provider_for(symbol)
         )
-        return provider.get_price_history(symbol, lookback_h)
+
+    def get_current_price(
+        self, symbol: str, *, provider_name=None,
+    ) -> Optional[float]:
+        """Read a quote through explicit venue routing when it is configured."""
+        return self._provider_explicit_or_routed(symbol, provider_name).get_current_price(symbol)
+
+    def get_price_history(
+        self, symbol: str, lookback_h: float, *, provider_name=None,
+    ) -> Optional[List]:
+        return self._provider_routed_or_default(symbol, provider_name).get_price_history(symbol, lookback_h)
 
     # -- Account routing by symbol/asset, normalized by provider. ---------------
     def free_balance(self, asset: str) -> Optional[float]:
@@ -734,22 +734,15 @@ class MarketApi:
     def get_orders(
         self, symbol: str, side: Optional[str], since_s: float, *, provider_name=None,
     ) -> List[dict]:
-        provider = (
-            self._provider_explicit_or_routed(symbol, provider_name)
-            if provider_name is not None
-            else self._provider_for(symbol)
-        )
-        return provider.get_orders(symbol, side, since_s)
+        return self._provider_routed_or_default(symbol, provider_name).get_orders(symbol, side, since_s)
 
     def get_trades(self, symbol: str, since_s: float, *,
                    provider_name=None) -> List[dict]:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.get_trades(symbol, since_s)
+        return self._provider_explicit_or_routed(symbol, provider_name).get_trades(symbol, since_s)
 
     def position_cost_basis(self, symbol: str, held_qty: float, since_s: float, *,
                             provider_name=None) -> Optional[float]:
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        return provider.position_cost_basis(symbol, held_qty, since_s)
+        return self._provider_explicit_or_routed(symbol, provider_name).position_cost_basis(symbol, held_qty, since_s)
 
     def latest_fill_price(self, symbol: str, side: str, since_s: float, *,
                           provider_name=None, min_notional=None,
@@ -807,12 +800,22 @@ class MarketApi:
         provider = self._provider_explicit_or_routed(symbol, provider_name)
         return self._reconciliation_capabilities(provider)
 
-    def open_orders(self, symbol: str, *, provider_name=None) -> List[dict]:
+    def _require_reconciliation_method(
+        self, symbol: str, provider_name, cap_attr: str, method_name: str,
+    ):
         provider = self._provider_explicit_or_routed(symbol, provider_name)
-        capabilities = self._reconciliation_capabilities(provider)
-        if not capabilities.list_open_orders:
-            raise ProviderError(f"{provider.name}: open_orders is unsupported")
-        return provider.open_orders(symbol)
+        if not getattr(self._reconciliation_capabilities(provider), cap_attr, False):
+            raise ProviderError(f"{provider.name}: {method_name} is unsupported")
+        method = getattr(provider, method_name, None)
+        if not callable(method):
+            raise ProviderError(f"{provider.name}: declared {method_name} is missing")
+        return provider, method
+
+    def open_orders(self, symbol: str, *, provider_name=None) -> List[dict]:
+        _provider, method = self._require_reconciliation_method(
+            symbol, provider_name, "list_open_orders", "open_orders"
+        )
+        return method(symbol)
 
     def order_by_client_id(self, symbol: str, client_order_id: str, *,
                            provider_name=None):
@@ -821,15 +824,9 @@ class MarketApi:
         This narrow recovery hook lets persistent callers reconcile an ambiguous
         submit without guessing from balances or submitting a duplicate.
         """
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        capabilities = self._reconciliation_capabilities(provider)
-        if not capabilities.lookup_by_client_order_id:
-            raise ProviderError(
-                f"{provider.name}: order_by_client_id is unsupported")
-        method = getattr(provider, "order_by_client_id", None)
-        if not callable(method):
-            raise ProviderError(
-                f"{provider.name}: declared order_by_client_id is missing")
+        provider, method = self._require_reconciliation_method(
+            symbol, provider_name, "lookup_by_client_order_id", "order_by_client_id"
+        )
         clean_coid = (
             _clean_client_order_id(client_order_id)
             if isinstance(client_order_id, (str, int)) and not isinstance(client_order_id, bool)
@@ -846,13 +843,9 @@ class MarketApi:
     def order_status(self, symbol: str, order_id: str, *,
                      provider_name=None) -> OrderStatus:
         """Return venue-neutral status; lookup failures remain fail-closed."""
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        capabilities = self._reconciliation_capabilities(provider)
-        if not capabilities.status_by_order_id:
-            raise ProviderError(f"{provider.name}: order_status is unsupported")
-        method = getattr(provider, "order_status", None)
-        if not callable(method):
-            raise ProviderError(f"{provider.name}: declared order_status is missing")
+        provider, method = self._require_reconciliation_method(
+            symbol, provider_name, "status_by_order_id", "order_status"
+        )
         oid_str = self._clean_order_id_arg(order_id, provider.name)
         try:
             status = method(symbol, oid_str)
@@ -869,15 +862,10 @@ class MarketApi:
 
     def cancel_order(self, symbol: str, order_id: str, *, provider_name=None) -> None:
         """Cancel through the provider-neutral adapter contract."""
-        provider = self._provider_explicit_or_routed(symbol, provider_name)
-        capabilities = self._reconciliation_capabilities(provider)
-        if not capabilities.cancel_by_order_id:
-            raise ProviderError(f"{provider.name}: cancel_order is unsupported")
-        method = getattr(provider, "cancel_order", None)
-        if not callable(method):
-            raise ProviderError(f"{provider.name}: declared cancel_order is missing")
-        oid_str = self._clean_order_id_arg(order_id, provider.name)
-        method(symbol, oid_str)
+        provider, method = self._require_reconciliation_method(
+            symbol, provider_name, "cancel_by_order_id", "cancel_order"
+        )
+        method(symbol, self._clean_order_id_arg(order_id, provider.name))
 
     def tracked_order_lifecycle(self, *, provider_name: str, venue=None,
                                 missing_confirmations=2,
@@ -1039,17 +1027,12 @@ class MarketApi:
                       allow_fallback=True) -> MarketRegimeDecision:
         """Return a common regime with explicit horizon and source fallback."""
         return self.market_regime_resolution(
-            symbol,
-            provider_name=provider_name,
-            horizon=horizon,
-            interval_min=interval_min,
-            window_seconds=window_seconds,
-            snapshot=snapshot,
-            snapshot_source=snapshot_source,
+            symbol, provider_name=provider_name, horizon=horizon,
+            interval_min=interval_min, window_seconds=window_seconds,
+            snapshot=snapshot, snapshot_source=snapshot_source,
             snapshot_max_age_seconds=snapshot_max_age_seconds,
             ohlc_max_age_seconds=ohlc_max_age_seconds,
-            strength_threshold=strength_threshold,
-            allow_fallback=allow_fallback,
+            strength_threshold=strength_threshold, allow_fallback=allow_fallback,
         ).decision
 
     def market_regime_bundle(
@@ -1162,26 +1145,15 @@ class MarketApi:
         )
 
     def composite_market_regime(
-        self,
-        symbol: str,
-        *,
-        benchmarks=(),
-        provider_name=None,
-        benchmark_provider_name=None,
-        use_case="balanced",
-        weights=None,
-        strength_threshold=None,
-        allow_fallback=True,
+        self, symbol: str, *, benchmarks=(), provider_name=None,
+        benchmark_provider_name=None, use_case="balanced", weights=None,
+        strength_threshold=None, allow_fallback=True,
     ) -> CompositeMarketRegimeDecision:
         """Blend asset horizons with explicitly configured crypto benchmarks."""
         return self.market_regime_bundle(
-            symbol,
-            benchmarks=benchmarks,
-            provider_name=provider_name,
-            benchmark_provider_name=benchmark_provider_name,
-            use_case=use_case,
-            weights=weights,
-            strength_threshold=strength_threshold,
+            symbol, benchmarks=benchmarks, provider_name=provider_name,
+            benchmark_provider_name=benchmark_provider_name, use_case=use_case,
+            weights=weights, strength_threshold=strength_threshold,
             allow_fallback=allow_fallback,
         ).composite
 

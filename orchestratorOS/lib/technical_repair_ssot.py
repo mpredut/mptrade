@@ -85,58 +85,30 @@ SYSTEM_INFRA_REPAIR_ACTIONS: Tuple[str, ...] = ("RESTART_VPN", "PIN_DNS", "REBOO
 VENUE_ORDER_REPAIR_ACTIONS: Tuple[str, ...] = ("CANCEL_ORDER", "SYNC_POSITION")
 
 ALL_REPAIR_ACTIONS: Tuple[str, ...] = (
-    *BOT_MODULE_REPAIR_ACTIONS,
-    *FLEET_REPAIR_ACTIONS,
-    *SYSTEM_INFRA_REPAIR_ACTIONS,
-    *VENUE_ORDER_REPAIR_ACTIONS,
-    "NONE",
+    *BOT_MODULE_REPAIR_ACTIONS, *FLEET_REPAIR_ACTIONS,
+    *SYSTEM_INFRA_REPAIR_ACTIONS, *VENUE_ORDER_REPAIR_ACTIONS, "NONE",
 )
-
 BOT_OR_FLEET_ERROR_ACTIONS: FrozenSet[str] = frozenset({
-    *BOT_MODULE_REPAIR_ACTIONS,
-    *FLEET_REPAIR_ACTIONS,
-    *VENUE_ORDER_REPAIR_ACTIONS,
+    *BOT_MODULE_REPAIR_ACTIONS, *FLEET_REPAIR_ACTIONS, *VENUE_ORDER_REPAIR_ACTIONS,
 })
 SYSTEM_OS_ERROR_ACTIONS: FrozenSet[str] = frozenset(SYSTEM_INFRA_REPAIR_ACTIONS)
 
 BOT_AND_ORDER_ERROR_CATEGORIES: FrozenSet[str] = frozenset({
-    "BOT_EXCEPTION",
-    "ORPHAN_ORDER",
-    "FLEET_STALE",
-    "CODE_BUG",
-    "CONFIG_ERROR",
+    "BOT_EXCEPTION", "ORPHAN_ORDER", "FLEET_STALE", "CODE_BUG", "CONFIG_ERROR",
 })
 SYSTEM_OS_ERROR_CATEGORIES: FrozenSet[str] = frozenset({
-    "SYSTEM_ERROR",
-    "SERVER_ERROR",
-    "OS_RESOURCE",
-    "VPN_ERROR",
-    "NETWORK_ERROR",
+    "SYSTEM_ERROR", "SERVER_ERROR", "OS_RESOURCE", "VPN_ERROR", "NETWORK_ERROR",
 })
-
 ALL_DIAGNOSED_CATEGORIES: Tuple[str, ...] = (
-    "BOT_EXCEPTION",
-    "FLEET_STALE",
-    "SYSTEM_ERROR",
-    "OS_RESOURCE",
-    "VPN_ERROR",
-    "NETWORK_ERROR",
-    "CONFIG_ERROR",
-    "CODE_BUG",
-    "ORPHAN_ORDER",
-    "GUARD_VETO",
-    "HEALTHY",
+    "BOT_EXCEPTION", "FLEET_STALE", "SYSTEM_ERROR", "OS_RESOURCE", "VPN_ERROR",
+    "NETWORK_ERROR", "CONFIG_ERROR", "CODE_BUG", "ORPHAN_ORDER", "GUARD_VETO", "HEALTHY",
 )
 
 DIAGNOSED_SEVERITIES: Tuple[str, ...] = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 ACTIONABLE_ERROR_SEVERITIES: FrozenSet[str] = frozenset({"CRITICAL", "HIGH", "MEDIUM"})
 
 AUDITED_CONFIG_FILES: Tuple[str, ...] = (
-    "procs.conf",
-    "order_guard.conf",
-    "config.env",
-    "instruments.conf",
-    "macro_intelligence.conf",
+    "procs.conf", "order_guard.conf", "config.env", "instruments.conf", "macro_intelligence.conf",
 )
 PROTECTED_SECRET_FILES: FrozenSet[str] = frozenset({".env"})
 
@@ -144,89 +116,33 @@ TRADING_ADMIN_BIN: str = "/usr/local/sbin/trading-admin"
 
 # Maps canonical system/fleet actions to (trading-admin subcommand, systemctl fallback command, log description)
 SYSTEM_ADMIN_ACTION_SPECS: Dict[str, Tuple[str, List[str], str]] = {
-    "RESTART_FLEET": (
-        "restart",
-        ["/bin/systemctl", "restart", "python_orchestrator.service"],
-        "Restarting entire trading fleet + VPN",
-    ),
-    "RESTART_VPN": (
-        "restart",
-        ["/bin/systemctl", "restart", "pia.service"],
-        "Restarting VPN service (wgpia0) + fleet",
-    ),
-    "PIN_DNS": (
-        "pin-dns",
-        ["/bin/systemctl", "restart", "systemd-resolved"],
-        "Pinning DNS and restarting systemd-resolved",
-    ),
-    "REBOOT_SYSTEM": (
-        "reboot",
-        ["/bin/systemctl", "reboot"],
-        "Rebooting entire Linux system",
-    ),
+    "RESTART_FLEET": ("restart", ["/bin/systemctl", "restart", "python_orchestrator.service"], "Restarting entire trading fleet + VPN"),
+    "RESTART_VPN": ("restart", ["/bin/systemctl", "restart", "pia.service"], "Restarting VPN service (wgpia0) + fleet"),
+    "PIN_DNS": ("pin-dns", ["/bin/systemctl", "restart", "systemd-resolved"], "Pinning DNS and restarting systemd-resolved"),
+    "REBOOT_SYSTEM": ("reboot", ["/bin/systemctl", "reboot"], "Rebooting entire Linux system"),
 }
 
 ACTION_SYNONYM_MAP: Dict[str, str] = {
-    "REBOOT": "REBOOT_SYSTEM",
-    "SYSTEM_REBOOT": "REBOOT_SYSTEM",
-    "REBOOT_HOST": "REBOOT_SYSTEM",
-    "REBOOT_MACHINE": "REBOOT_SYSTEM",
-    "REBOOT_SERVER": "REBOOT_SYSTEM",
-    "REBOOT_FLEET": "RESTART_FLEET",
-    "RESTART_ORCHESTRATOR": "RESTART_FLEET",
-    "RESTART_ALL": "RESTART_FLEET",
-    "REBOOT_VPN": "RESTART_VPN",
-    "RESTART_PIA": "RESTART_VPN",
-    "RECONNECT_VPN": "RESTART_VPN",
-    "FIX_DNS": "PIN_DNS",
-    "RESTART_DNS": "PIN_DNS",
-    "RESET_DNS": "PIN_DNS",
-    "REBOOT_BOT": "RESTART_BOT",
-    "REBOOT_MODULE": "RESTART_MODULE",
-    "RESTART_PROCESS": "RESTART_MODULE",
-    "RESTART_SERVICE": "RESTART_MODULE",
+    "REBOOT": "REBOOT_SYSTEM", "SYSTEM_REBOOT": "REBOOT_SYSTEM", "REBOOT_HOST": "REBOOT_SYSTEM",
+    "REBOOT_MACHINE": "REBOOT_SYSTEM", "REBOOT_SERVER": "REBOOT_SYSTEM",
+    "REBOOT_FLEET": "RESTART_FLEET", "RESTART_ORCHESTRATOR": "RESTART_FLEET", "RESTART_ALL": "RESTART_FLEET",
+    "REBOOT_VPN": "RESTART_VPN", "RESTART_PIA": "RESTART_VPN", "RECONNECT_VPN": "RESTART_VPN",
+    "FIX_DNS": "PIN_DNS", "RESTART_DNS": "PIN_DNS", "RESET_DNS": "PIN_DNS",
+    "REBOOT_BOT": "RESTART_BOT", "REBOOT_MODULE": "RESTART_MODULE",
+    "RESTART_PROCESS": "RESTART_MODULE", "RESTART_SERVICE": "RESTART_MODULE",
 }
 
 FLEET_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "fleet",
-    "flota",
-    "all",
-    "all_bots",
-    "all_processes",
-    "orchestrator",
-    "python_orchestrator",
-    "python_orchestrator.service",
+    "fleet", "flota", "all", "all_bots", "all_processes", "orchestrator", "python_orchestrator", "python_orchestrator.service",
 })
 VPN_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "vpn",
-    "wgpia0",
-    "pia",
-    "pia.service",
-    "piavpn",
-    "piavpn.service",
-    "pia-vpn",
-    "pia-vpn.service",
-    "wireguard",
-    "tun0",
+    "vpn", "wgpia0", "pia", "pia.service", "piavpn", "piavpn.service", "pia-vpn", "pia-vpn.service", "wireguard", "tun0",
 })
 DNS_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "dns",
-    "resolved",
-    "systemd-resolved",
-    "systemd-resolved.service",
-    "resolv.conf",
-    "pin-dns",
+    "dns", "resolved", "systemd-resolved", "systemd-resolved.service", "resolv.conf", "pin-dns",
 })
 SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
-    "system",
-    "host",
-    "machine",
-    "linux",
-    "os",
-    "server",
-    "kernel",
-    "intreg_sistemul",
-    "full_system",
+    "system", "host", "machine", "linux", "os", "server", "kernel", "intreg_sistemul", "full_system",
 })
 
 
@@ -955,6 +871,16 @@ def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[st
     return [f"tests/{fname}" for fname in ("test_import_safety.py", "test_config_env_shell_safe.py") if fname in test_files] or ["tests/"]
 
 
+def _rollback_patched_file(real_target: str, content: Optional[str], workspace_dir: str) -> None:
+    if content is not None:
+        try:
+            atomic_write_text(real_target, content)
+            return
+        except OSError:
+            pass
+    subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+
+
 def apply_code_patch_safely(
     target_file: str,
     search_block: str,
@@ -969,12 +895,7 @@ def apply_code_patch_safely(
         if log:
             log.warning("%s", err_msg)
         return False
-    if (
-        not isinstance(search_block, str)
-        or not isinstance(replace_block, str)
-        or not search_block
-        or search_block == replace_block
-    ):
+    if not (isinstance(search_block, str) and isinstance(replace_block, str) and search_block and search_block != replace_block):
         if log:
             log.warning("Refusing empty or no-op autonomous patch on %s.", target_file)
         return False
@@ -991,8 +912,7 @@ def apply_code_patch_safely(
             if log:
                 log.warning(
                     "Search block matched %d locations in %s (must be unique). Skipping ambiguous patch.",
-                    match_count,
-                    target_file,
+                    match_count, target_file,
                 )
             return False
 
@@ -1008,23 +928,12 @@ def apply_code_patch_safely(
             return True
         if log:
             log.warning("Self-healing patch broke tests (exit code %d). Performing immediate rollback.", res.returncode)
-        try:
-            atomic_write_text(real_target, content)
-        except OSError:
-            subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+        _rollback_patched_file(real_target, content, workspace_dir)
         return False
     except Exception as e:
         if log:
             log.error("Error during safe code patching: %s. Performing rollback.", e)
-        restored = False
-        if content is not None:
-            try:
-                atomic_write_text(real_target, content)
-                restored = True
-            except OSError:
-                restored = False
-        if not restored:
-            subprocess.run(["git", "checkout", "--", real_target], cwd=workspace_dir, check=False)
+        _rollback_patched_file(real_target, content, workspace_dir)
         return False
 
 
@@ -1115,6 +1024,43 @@ def execute_venue_or_fleet_repair_action(
     return False
 
 
+_CORE_HEARTBEAT_NAMES = ("macro_analyzer.heartbeat", "globaltelemetry_collector.heartbeat", "rtrade.heartbeat")
+
+
+def _resolve_heartbeat_entry(
+    hb_path: str,
+    data: Any,
+    now_ts: float,
+    max_age: float,
+    *,
+    allow_mtime_fallback: bool = True,
+    prefer_mtime_when_stale: bool = False,
+) -> Optional[Dict[str, Any]]:
+    has_dict = isinstance(data, dict) and bool(data)
+    hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None) if has_dict else None
+    mtime: Optional[float] = None
+    if allow_mtime_fallback and os.path.exists(hb_path):
+        try:
+            mtime = os.path.getmtime(hb_path)
+        except OSError:
+            mtime = None
+    if has_dict:
+        if prefer_mtime_when_stale and mtime is not None and mtime <= now_ts + 60.0 and (hb_ts is None or hb_ts < mtime - 60.0 or hb_ts > now_ts + 60.0):
+            age_sec = max(0.0, now_ts - mtime)
+        elif hb_ts is not None and hb_ts <= now_ts + 60.0:
+            age_sec = max(0.0, now_ts - hb_ts)
+        elif mtime is not None:
+            age_sec = max(0.0, now_ts - mtime)
+        else:
+            return dict(data)
+        return {**data, "age_seconds": round(age_sec, 1)} if age_sec <= max_age else None
+    if mtime is not None:
+        age_sec = max(0.0, now_ts - mtime)
+        if age_sec <= max_age:
+            return build_heartbeat_payload({"ts": mtime}, extra={"age_seconds": round(age_sec, 1)})
+    return None
+
+
 def harvest_heartbeats_and_state_files(
     cache_dir: str,
     workspace_dir: str,
@@ -1125,79 +1071,40 @@ def harvest_heartbeats_and_state_files(
     _rj = _resolve_repair_json_reader(read_json_fn)
     _is_default_rj = _rj is _default_read_json_recovering
     active_heartbeats: Dict[str, Any] = {}
-    for hb_name in ("macro_analyzer.heartbeat", "globaltelemetry_collector.heartbeat", "rtrade.heartbeat"):
+    for hb_name in _CORE_HEARTBEAT_NAMES:
         hb_raw_path = os.path.join(cache_dir, hb_name)
         data = _rj(hb_raw_path)
-        if isinstance(data, dict) and data:
-            if _is_default_rj:
-                hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
-                max_hb_age = 300.0 if hb_name == "rtrade.heartbeat" else 1800.0
-                hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
-                if hb_ts is not None and hb_ts <= now_ts + 60.0:
-                    age_sec = max(0.0, now_ts - hb_ts)
-                    if age_sec > max_hb_age:
-                        continue
-                    data = {**data, "age_seconds": round(age_sec, 1)}
-                elif hb_name == "rtrade.heartbeat" and os.path.exists(hb_resolved):
-                    try:
-                        mtime = os.path.getmtime(hb_resolved)
-                        age_sec = max(0.0, now_ts - mtime)
-                        if age_sec > max_hb_age:
-                            continue
-                        data = {**data, "age_seconds": round(age_sec, 1)}
-                    except OSError:
-                        pass
-            active_heartbeats[hb_name] = data
+        is_rtrade = hb_name == "rtrade.heartbeat"
+        if not _is_default_rj:
+            if isinstance(data, dict) and data:
+                active_heartbeats[hb_name] = data
             continue
-        if hb_name == "rtrade.heartbeat" and _is_default_rj:
-            hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
-            if os.path.exists(hb_resolved):
-                try:
-                    mtime = os.path.getmtime(hb_resolved)
-                    age_sec = max(0.0, now_ts - mtime)
-                    if age_sec <= 300.0:
-                        active_heartbeats[hb_name] = build_heartbeat_payload(
-                            {"ts": mtime},
-                            extra={"age_seconds": round(age_sec, 1)},
-                        )
-                except OSError:
-                    pass
+        resolved_entry = _resolve_heartbeat_entry(
+            str(resolve_cachedb_filepath(hb_raw_path)),
+            data,
+            now_ts,
+            300.0 if is_rtrade else 1800.0,
+            allow_mtime_fallback=is_rtrade,
+        )
+        if resolved_entry is not None:
+            active_heartbeats[hb_name] = resolved_entry
     if _is_default_rj:
         for scan_dir in (os.path.join(cache_dir, "system", "heartbeat"), cache_dir):
             if not os.path.isdir(scan_dir):
                 continue
             try:
                 for entry in sorted(os.listdir(scan_dir)):
-                    if not entry.endswith(".heartbeat") or entry in active_heartbeats or entry in (
-                        "macro_analyzer.heartbeat",
-                        "globaltelemetry_collector.heartbeat",
-                        "rtrade.heartbeat",
-                    ):
+                    if not entry.endswith(".heartbeat") or entry in active_heartbeats or entry in _CORE_HEARTBEAT_NAMES:
                         continue
                     hb_full = os.path.join(scan_dir, entry)
                     if not os.path.isfile(hb_full):
                         continue
-                    data = _rj(hb_full)
-                    mtime = os.path.getmtime(hb_full)
-                    if isinstance(data, dict) and data:
-                        hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
-                        if mtime <= now_ts + 60.0 and (hb_ts is None or hb_ts < mtime - 60.0 or hb_ts > now_ts + 60.0):
-                            age_sec = max(0.0, now_ts - mtime)
-                        elif hb_ts is not None and hb_ts <= now_ts + 60.0:
-                            age_sec = max(0.0, now_ts - hb_ts)
-                        else:
-                            age_sec = max(0.0, now_ts - mtime)
-                        if age_sec > 1800.0:
-                            continue
-                        active_heartbeats[entry] = {**data, "age_seconds": round(age_sec, 1)}
-                    else:
-                        age_sec = max(0.0, now_ts - mtime)
-                        if age_sec > 1800.0:
-                            continue
-                        active_heartbeats[entry] = build_heartbeat_payload(
-                            {"ts": mtime},
-                            extra={"age_seconds": round(age_sec, 1)},
-                        )
+                    resolved_entry = _resolve_heartbeat_entry(
+                        hb_full, _rj(hb_full), now_ts, 1800.0,
+                        allow_mtime_fallback=True, prefer_mtime_when_stale=True,
+                    )
+                    if resolved_entry is not None:
+                        active_heartbeats[entry] = resolved_entry
             except OSError:
                 pass
     state_files: Dict[str, Any] = {}

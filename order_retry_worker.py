@@ -288,6 +288,15 @@ def _complete_reconciled_order(
     return True
 
 
+def _audit_status_event(record, event: str, status, **fields) -> None:
+    _audit_event(
+        record, event,
+        status=status.status, venue_status=status.venue_status,
+        filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
+        **fields,
+    )
+
+
 def _process_awaiting_cancel_claim(mkt, r: dict, symbol, provider_name, now: float) -> None:
     replaced_order_id = str(r.get("replaces_order_id") or "")
     try:
@@ -345,24 +354,14 @@ def _process_accepted_claim(mkt, r: dict, symbol, provider_name, now: float) -> 
     transition = oq.advance_claimed_status(r, status, now)
     if transition.action == "observed":
         if transition.status_changed:
-            _audit_event(
-                r, "order_status", status=status.status, venue_status=status.venue_status,
-                filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-            )
+            _audit_status_event(r, "order_status", status)
         return 0, 0, 0
     if transition.action == "filled":
-        _audit_event(
-            r, "order_terminal", status=status.status, venue_status=status.venue_status,
-            filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-        )
+        _audit_status_event(r, "order_terminal", status)
         print(f"[order_retry] FILLED {r.get('side')} {symbol} orderId={r.get('order_id')} qty={status.filled_qty}")
         return 1, 0, 0
     if transition.action == "retry_terminal":
-        _audit_event(
-            r, "order_terminal_retry", status=status.status, venue_status=status.venue_status,
-            filled_qty=status.filled_qty, cost=status.cost, fee=status.fee,
-            remaining_qty=transition.remaining_qty,
-        )
+        _audit_status_event(r, "order_terminal_retry", status, remaining_qty=transition.remaining_qty)
         print(
             f"[order_retry] {status.venue_status or status.status} {symbol} "
             f"orderId={r.get('order_id')} filled={status.filled_qty} remainder={transition.remaining_qty}"
@@ -370,10 +369,7 @@ def _process_accepted_claim(mkt, r: dict, symbol, provider_name, now: float) -> 
         return 0, 1, 0
     if not transition.status_changed:
         return 0, 0, 0
-    _audit_event(
-        r, "order_terminal", status=status.status, venue_status=status.venue_status,
-        filled_qty=status.filled_qty, cost=status.cost, fee=status.fee, retry=False,
-    )
+    _audit_status_event(r, "order_terminal", status, retry=False)
     _alert_terminal(r, status)
     return 0, 0, 1
 
@@ -587,8 +583,7 @@ def process_once(mkt, now=None):
             order = None
         sq = safe_pos_float(outcome_context.get("submitted_qty"), default=None)
         if sq is not None:
-            r["qty"] = sq
-            r["requested_qty_total"] = sq
+            oq._set_record_qty(r, sq)
         accepted = _accepted_order(order)
         if not accepted and outcome_context.get("state") != "refused":
             reconciliation_state, recovered = _reconcile_client_order(
@@ -598,14 +593,14 @@ def process_once(mkt, now=None):
                 order = _hydrate_missing_order_orig_qty(mkt, symbol, recovered, provider_name=provider_name)
                 accepted = True
                 reconciled += 1
+        req_audit_kw = {
+            "qty": req_qty_before_place, "price": price, "attempt": next_attempt_num,
+            "retry_stage": retry_stage, "age_progress": round(age_progress, 3),
+        }
         if accepted:
             succeeded += 1
             oq.complete_claim(r, "accepted", now, order=order, provider_name=provider_name)
-            _audit_event(
-                r, "submit_requested", qty=req_qty_before_place, price=price,
-                attempt=next_attempt_num,
-                retry_stage=retry_stage, age_progress=round(age_progress, 3),
-            )
+            _audit_event(r, "submit_requested", **req_audit_kw)
             _audit_event(
                 r, "submit_accepted",
                 order_id=oq.order_id_from_response(order), qty=r.get("qty"), price=price,
@@ -639,11 +634,7 @@ def process_once(mkt, now=None):
                 and str(refusal_reason) == prev_failure_reason
             )
             if not repeat_pre_submit_refusal:
-                _audit_event(
-                    r, "submit_requested", qty=req_qty_before_place, price=price,
-                    attempt=next_attempt_num,
-                    retry_stage=retry_stage, age_progress=round(age_progress, 3),
-                )
+                _audit_event(r, "submit_requested", **req_audit_kw)
                 _audit_event(
                     r, "submit_refused" if submission_state == "refused" else "submit_unknown",
                     qty=r.get("qty"), price=price,
@@ -806,6 +797,10 @@ def _alert_producer_quarantine(rec, *, reason="lookup_unavailable"):
     )
 
 
+_INVALID_REF_TS_MSG = (
+    "The venue reports no matching client order, but intent timestamps are invalid or in the future. "
+    "Automatic submission and expiry are blocked; inspect the venue and outbox manually."
+)
 _RECONCILIATION_QUARANTINE_MESSAGES = {
     "not_found_outside_reliable_horizon": (
         "The venue reports no matching client order, but this intent is older than the bounded interval in which "
@@ -815,14 +810,8 @@ _RECONCILIATION_QUARANTINE_MESSAGES = {
         "The venue reports no matching client order, but the provider does not declare a reliable reconciliation "
         "interval. Automatic submission and expiry are blocked; inspect the venue and outbox manually."
     ),
-    "invalid_reference_timestamp": (
-        "The venue reports no matching client order, but intent timestamps are invalid or in the future. "
-        "Automatic submission and expiry are blocked; inspect the venue and outbox manually."
-    ),
-    "future_reference_timestamp": (
-        "The venue reports no matching client order, but intent timestamps are invalid or in the future. "
-        "Automatic submission and expiry are blocked; inspect the venue and outbox manually."
-    ),
+    "invalid_reference_timestamp": _INVALID_REF_TS_MSG,
+    "future_reference_timestamp": _INVALID_REF_TS_MSG,
 }
 _DEFAULT_RECONCILIATION_QUARANTINE_MSG = (
     "This intent may already exist at the venue, but deterministic client-ID reconciliation is unavailable. "
@@ -851,23 +840,16 @@ def _alert_terminal(rec, status):
         str(rec.get("id") or ""), _safe_int(rec.get("revision"), 0),
         str(rec.get("order_id") or ""), str(status.venue_status or status.status or ""),
     )
-    if terminal_key in _ALERTED_TERMINALS:
-        return
-    _ALERTED_TERMINALS.add(terminal_key)
-    try:
-        context = _format_record_context(rec)
-        alert.notify(
-            title=f"🛑 order terminal {rec.get('side')} {rec.get('symbol')}",
-            body=(
-                f"{context}\nOrder {rec.get('order_id')} became "
-                f"{status.venue_status or status.status}; filled={status.filled_qty}, "
-                "the rest is NOT resent automatically after a cancel."
-            ),
-            source="order_retry",
-            symbol=str(rec.get("symbol")),
-        )
-    except Exception as exc:
-        print(f"[order_retry] the terminal alert failed (ignored): {exc}")
+    _send_quarantine_alert(
+        _ALERTED_TERMINALS, terminal_key, rec,
+        "🛑 order terminal",
+        (
+            f"Order {rec.get('order_id')} became "
+            f"{status.venue_status or status.status}; filled={status.filled_qty}, "
+            "the rest is NOT resent automatically after a cancel."
+        ),
+        label="the terminal",
+    )
 
 
 class IncidentDigest:
@@ -1085,6 +1067,10 @@ def _alert_giveups(records, now):
         print(f"[order_retry] the giveup digest failed (ignored): {exc}")
 
 
+def _touch_worker_hb(status, *, poll: float = WORKER_POLL_SEC, force: bool = False) -> None:
+    touch_module_heartbeat("order_retry", interval_sec=30.0, force=force, status=status, intervals={"poll": poll})
+
+
 def main():
     import log  # noqa: F401 — ensure stdout timestamps and daily logger file from startup
 
@@ -1109,9 +1095,9 @@ def main():
 
     if not oq.RETRY_ENABLED:
         print("[order_retry] RETRY_ENABLED=false — worker ALIVE but inactive (idle).")
-        touch_module_heartbeat("order_retry", interval_sec=30.0, force=True, status={"retry_enabled": False}, intervals={"poll": 60.0})
+        _touch_worker_hb({"retry_enabled": False}, poll=60.0, force=True)
         while True:
-            touch_module_heartbeat("order_retry", interval_sec=30.0, status={"retry_enabled": False}, intervals={"poll": 60.0})
+            _touch_worker_hb({"retry_enabled": False}, poll=60.0)
             time.sleep(60)
 
     from providers.market_api import api as mkt
@@ -1128,7 +1114,7 @@ def main():
         print(f"[order_retry] startup consolidation aborted: {exc}")
 
     print(f"[order_retry] start (poll={WORKER_POLL_SEC:.0f}s, interval={oq.RETRY_INTERVAL_SEC:.0f}s, TTL={oq.RETRY_TTL_SEC:.0f}s)")
-    touch_module_heartbeat("order_retry", interval_sec=30.0, force=True, status={"retry_enabled": True}, intervals={"poll": WORKER_POLL_SEC})
+    _touch_worker_hb({"retry_enabled": True}, force=True)
     while True:
         last_stats = None
         try:
@@ -1141,12 +1127,7 @@ def main():
             print(f"[order_retry] queue corruption; pass aborted: {exc}")
         except Exception as exc:
             print(f"[order_retry] pass error (continuing): {exc}")
-        touch_module_heartbeat(
-            "order_retry",
-            interval_sec=30.0,
-            status=last_stats if isinstance(last_stats, dict) else {"retry_enabled": True},
-            intervals={"poll": WORKER_POLL_SEC},
-        )
+        _touch_worker_hb(last_stats if isinstance(last_stats, dict) else {"retry_enabled": True})
         time.sleep(WORKER_POLL_SEC)
     return 0
 
