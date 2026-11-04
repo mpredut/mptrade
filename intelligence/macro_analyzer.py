@@ -24,6 +24,7 @@ from cachepaths import resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
     DEFAULT_GEOPOLITICAL_INTERVAL_SEC,
     DEFAULT_SENTIMENT_INTERVAL_SEC,
+    clean_scale,
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
     compute_step_retry_ts,
@@ -32,12 +33,14 @@ from intelligence.macro_sentiment_ssot import (
     load_cached_fear_greed_snapshot,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
+    obj_attr,
     parse_symbol_list,
     prune_automated_cli_threads,
     resolve_derived_telemetry_intervals,
     resolve_global_trading_session,
     resolve_now_ts,
     run_daemon_loop,
+    safe_int,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat,
@@ -107,11 +110,15 @@ class MacroAnalyzer:
         self.llm_advisor = self.gemini_advisor = self.sentiment_advisor
 
         cached_geo_ts = safe_pos_float(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), 0.0)
+        if cached_geo_ts > 1e11:
+            cached_geo_ts /= 1000.0
         cached_adv_ts = safe_pos_float(
-            getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", None)
+            obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts")
             or getattr(self.sentiment_advisor, "_last_eval_ts", 0.0),
             0.0,
         )
+        if cached_adv_ts > 1e11:
+            cached_adv_ts /= 1000.0
         self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
         self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts
         self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
@@ -147,7 +154,12 @@ class MacroAnalyzer:
         body: str,
         skip_notify: bool = False,
     ) -> None:
-        last_notif = getattr(self, ts_attr, 0.0)
+        last_notif = safe_pos_float(getattr(self, ts_attr, 0.0), 0.0)
+        if last_notif > 1e11:
+            last_notif /= 1000.0
+        assessment_ts = safe_pos_float(assessment_ts, eval_now)
+        if assessment_ts > 1e11:
+            assessment_ts /= 1000.0
         is_fresh = assessment_ts > last_notif or (eval_now < last_notif)
         elapsed = eval_now - last_notif
         min_itv = min(eff_interval_sec if eff_interval_sec > 0 else fallback_interval_sec, 3600.0)
@@ -229,9 +241,11 @@ class MacroAnalyzer:
             )
             if assessment:
                 if fg_snap is not None:
-                    self._last_fg_value = int(fg_snap.value)
+                    self._last_fg_value = safe_int(obj_attr(fg_snap, "value"), self._last_fg_value)
                 if mb_snap is not None:
-                    self._last_advance_ratio = float(mb_snap.advance_ratio)
+                    self._last_advance_ratio = clean_scale(
+                        obj_attr(mb_snap, "advance_ratio"), default=self._last_advance_ratio, allow_percent=True
+                    )
                 if isinstance(whale_data, dict):
                     tr_val = safe_pos_float(whale_data.get("taker_buy_sell_ratio"), default=None)
                     if tr_val is not None:
@@ -339,7 +353,7 @@ class MacroAnalyzer:
         cur_btc_tr = safe_pos_float(whale_snap.get("taker_buy_sell_ratio"), default=None) if isinstance(whale_snap, dict) else None
         cached_adv = getattr(self.sentiment_advisor, "_cached_assessment", None)
         latest_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", cached_geo)
-        geo_threat_str = str(getattr(latest_geo, "threat_level", "NORMAL") or "NORMAL")
+        geo_threat_str = str(obj_attr(latest_geo, "threat_level") or "NORMAL")
 
         adv_interval, adv_reason = compute_dynamic_sentiment_interval(
             base_interval_sec=self.advisor_interval_sec,
@@ -366,9 +380,13 @@ class MacroAnalyzer:
             except TypeError:
                 adv_ok = self.assess_market_advisor(force=force)
             adv_last_eval = safe_pos_float(getattr(self.sentiment_advisor, "_last_eval_ts", None), 0.0)
+            if adv_last_eval > 1e11:
+                adv_last_eval /= 1000.0
             adv_cached_ts = safe_pos_float(
-                getattr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts", None), 0.0
+                obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"), 0.0
             )
+            if adv_cached_ts > 1e11:
+                adv_cached_ts /= 1000.0
             if adv_ok and (adv_last_eval <= 0.0 or adv_last_eval >= current_ts or adv_cached_ts >= current_ts):
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts

@@ -37,7 +37,7 @@ class GeopoliticalShockGuard:
         brake = normalize_recommended_brake(obj_attr(assessment, "recommended_brake"), threat_level=level)
         raw_summary = obj_attr(assessment, "summary")
         summary = str(raw_summary).strip() if (isinstance(raw_summary, str) and raw_summary.strip()) else "geopolitical_shock"
-        risk_score = obj_float(assessment, "risk_score", 0.0)
+        risk_score = clean_scale(obj_attr(assessment, "risk_score"), default=0.0, allow_percent=True)
 
         if level == "CRITICAL_SHOCK" or brake == "HARD_VETO_NEW_BUYS":
             return GuardDecision.veto(

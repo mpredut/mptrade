@@ -153,6 +153,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 now_ts=eff_now,
             )
             if snap:
+                idx_ts = safe_pos_float(getattr(snap, "timestamp", None), now_val)
+                if idx_ts > 1e11:
+                    idx_ts /= 1000.0
                 self._save_dual_cache(
                     "fear_greed",
                     {
@@ -163,7 +166,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "trend_7d_change": snap.trend_7d_change,
                         "is_extreme_fear": snap.is_extreme_fear,
                         "is_extreme_greed": snap.is_extreme_greed,
-                        "index_timestamp": safe_pos_float(getattr(snap, "timestamp", None), now_val),
+                        "index_timestamp": idx_ts,
                         "ts": now_val,
                     },
                 )
@@ -187,6 +190,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
                 tot = getattr(breadth, "total_count", 0)
+                b_ts = safe_pos_float(getattr(breadth, "ts", None), now_val)
+                if b_ts > 1e11:
+                    b_ts /= 1000.0
                 mb_payload: Dict[str, Any] = {
                     "advance_ratio": breadth.advance_ratio,
                     "median_change_pct": breadth.median_change_pct,
@@ -201,7 +207,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     "declining_count": breadth.declining_count,
                     "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
                     "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
-                    "ts": safe_pos_float(getattr(breadth, "ts", None), now_val),
+                    "ts": b_ts,
                 }
                 for rot_k in (
                     "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
@@ -217,10 +223,14 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating market breadth: %s", e)
         return False
 
-    def update_macro_benchmarks(self, force: bool = False) -> bool:
+    def update_macro_benchmarks(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch SPY, QQQ, ES=F, NQ=F, DXY, and US10Y macro benchmarks and persist to cachedb/."""
         try:
-            snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True)
+            eff_now = self._resolve_step_now(now)
+            try:
+                snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True, now_ts=eff_now)
+            except TypeError:
+                snap = collect_macro_benchmarks_snapshot(self.cache_dir, timeout_sec=3.5, persist=True)
             if isinstance(snap, dict) and snap.get("items"):
                 logger.debug("Macro benchmarks updated: %s", snap.get("summary_line", ""))
                 return True

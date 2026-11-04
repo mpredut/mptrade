@@ -2971,6 +2971,120 @@ def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(m
     assert "0.62" in out_str and "65.0% longs" in out_str and "Risk Score: 0.75" in out_str and "Scale: 50%" in out_str
 
 
+def test_iter64_breadth_rotation_fields_taxonomy_spaces_and_ms_timestamps(tmp_path):
+    import json
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
+    from intelligence.macro_sentiment_ssot import (
+        load_cached_fear_greed_snapshot,
+        load_cached_geopolitical_eval,
+        load_cached_market_breadth_snapshot,
+        load_cached_sentiment_advisor_eval,
+        normalize_market_bias,
+        normalize_recommended_action,
+        normalize_recommended_brake,
+        normalize_threat_level,
+    )
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+
+    # 1. Multi-word taxonomy tokens with spaces or hyphens normalize properly
+    assert normalize_threat_level("CRITICAL SHOCK") == "CRITICAL_SHOCK"
+    assert normalize_threat_level("critical-shock") == "CRITICAL_SHOCK"
+    assert normalize_recommended_brake("HARD VETO NEW BUYS") == "HARD_VETO_NEW_BUYS"
+    assert normalize_recommended_brake("downscale-50") == "DOWNSCALE_50"
+    assert normalize_recommended_action("TRIM PROFITS") == "TRIM_PROFITS"
+    assert normalize_recommended_action("take-profit") == "TRIM_PROFITS"
+    assert normalize_market_bias("risk-off") == "BEARISH"
+
+    # 2. load_cached_market_breadth_snapshot preserves all 10 rotation fields and normalizes percent advance_ratio / ms ts
+    mb_path = tmp_path / "market_breadth_collect.json"
+    mb_path.write_text(
+        json.dumps(
+            {
+                "advance_ratio": "64%",
+                "advancing_count": 32,
+                "declining_count": 18,
+                "total_count": 50,
+                "median_change_pct": 1.8,
+                "mean_change_pct": 2.1,
+                "dispersion_std": 3.2,
+                "regime": "BULLISH_BREADTH",
+                "top_gainers": [["SOLUSDC", 8.5]],
+                "top_losers": [["ADAUSDC", -2.1]],
+                "ts": 1700000000000.0,
+                "btc_price": 85000.0,
+                "btc_chg_24h_pct": 2.5,
+                "eth_price": 2550.0,
+                "eth_chg_24h_pct": 4.2,
+                "eth_btc_ratio": 0.03,
+                "eth_btc_chg_24h_pct": 1.66,
+                "btc_vol_share_pct": 42.0,
+                "eth_vol_share_pct": 18.0,
+                "alt_vol_share_pct": 40.0,
+                "rotation_regime": "ETH_OUTPERFORMING",
+            }
+        ),
+        encoding="utf-8",
+    )
+    mb_snap = load_cached_market_breadth_snapshot(str(tmp_path), now_ts=1700000100.0)
+    assert mb_snap is not None
+    assert mb_snap.advance_ratio == pytest.approx(0.64)
+    assert mb_snap.ts == pytest.approx(1700000000.0)
+    assert mb_snap.btc_price == pytest.approx(85000.0)
+    assert mb_snap.eth_price == pytest.approx(2550.0)
+    assert mb_snap.eth_btc_ratio == pytest.approx(0.03)
+    assert mb_snap.alt_vol_share_pct == pytest.approx(40.0)
+    assert mb_snap.rotation_regime == "ETH_OUTPERFORMING"
+
+    # 3. load_cached_fear_greed_snapshot normalizes millisecond ts and falls back to index_timestamp
+    fg_path = tmp_path / "fear_greed_collect.json"
+    fg_path.write_text(
+        json.dumps({"value": 72, "classification": "Greed", "index_timestamp": 1700000000000.0}),
+        encoding="utf-8",
+    )
+    fg_snap = load_cached_fear_greed_snapshot(str(tmp_path), now_ts=1700000100.0)
+    assert fg_snap is not None
+    assert fg_snap.timestamp == pytest.approx(1700000000.0)
+
+    # 4. GeopoliticalShockGuard and cached eval loaders normalize percentage risk_score/confidence and ms timestamps
+    guard = GeopoliticalShockGuard(downscale_factor=0.5)
+    g_dec = guard.check("BTCUSDC", "BUY", {"threat_level": "CRITICAL SHOCK", "risk_score": "85%", "summary": "Test shock"})
+    assert not g_dec.allowed
+    assert g_dec.metadata["risk_score"] == pytest.approx(0.85)
+
+    (tmp_path / "geopolitical_eval.json").write_text(
+        json.dumps({"threat_level": "CRITICAL SHOCK", "recommended_brake": "hard-veto", "risk_score": 85, "ts": 1700000000000}),
+        encoding="utf-8",
+    )
+    geo_eval = load_cached_geopolitical_eval(str(tmp_path))
+    assert geo_eval is not None
+    assert geo_eval["threat_level"] == "CRITICAL_SHOCK"
+    assert geo_eval["recommended_brake"] == "HARD_VETO_NEW_BUYS"
+    assert geo_eval["risk_score"] == pytest.approx(0.85)
+    assert geo_eval["ts"] == pytest.approx(1700000000.0)
+
+    (tmp_path / "sentiment_eval.json").write_text(
+        json.dumps({"market_bias": "risk-on", "risk_level": "elevated", "recommended_action": "trim profits", "confidence": 80, "ts": 1700000000000}),
+        encoding="utf-8",
+    )
+    sent_eval = load_cached_sentiment_advisor_eval(str(tmp_path))
+    assert sent_eval is not None
+    assert sent_eval["market_bias"] == "BULLISH"
+    assert sent_eval["risk_level"] == "HIGH"
+    assert sent_eval["recommended_action"] == "TRIM_PROFITS"
+    assert sent_eval["confidence"] == pytest.approx(0.80)
+    assert sent_eval["ts"] == pytest.approx(1700000000.0)
+
+    # 5. GeopoliticalThreatAnalyzer and SentimentAdvisor load ms timestamps and integer percent scores from disk
+    ga = GeopoliticalThreatAnalyzer(gemini_client=object(), state_file=str(tmp_path / "geopolitical_eval.json"))
+    assert ga._last_eval_ts == pytest.approx(1700000000.0)
+    assert ga._cached_assessment is not None and ga._cached_assessment.risk_score == pytest.approx(0.85)
+
+    sa = SentimentAdvisor(gemini_client=object(), cache_file=str(tmp_path / "sentiment_eval.json"))
+    assert sa._last_eval_ts == pytest.approx(1700000000.0)
+    assert sa._cached_assessment is not None and sa._cached_assessment.confidence == pytest.approx(0.80)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -397,7 +397,7 @@ def _normalize_taxonomy(
     default: Optional[str] = None,
 ) -> str:
     fallback = default if (default and default in allowed) else (allowed[default_idx] if len(allowed) > default_idx else fallback_str)
-    cleaned = str(value or "").strip().upper()
+    cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
     return cleaned if cleaned in allowed else _parse_kv_map(_cfg_str("taxonomies", alias_cfg_key)).get(cleaned, fallback)
 
 
@@ -419,7 +419,7 @@ def normalize_threat_level(value: Any, default: Optional[str] = None) -> str:
 
 def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) -> str:
     brakes = get_recommended_brakes()
-    cleaned = str(value or "").strip().upper()
+    cleaned = "" if isinstance(value, bool) else re.sub(r"[\s\-]+", "_", str(value or "").strip().upper())
     if cleaned in brakes:
         return cleaned
     if (aliased := _parse_kv_map(_cfg_str("taxonomies", "brake_aliases")).get(cleaned)) is not None:
@@ -484,7 +484,18 @@ def load_cached_fear_greed_snapshot(
                 continue
             fg_val = max(0, min(100, int(round(safe_float(fg_data.get("value"), 50.0)))))
             fg_cls = _clean_nonbool_str(fg_data.get("classification"), "") or _clean_nonbool_str(fg_data.get("sentiment"), "Neutral")
-            raw_fg_ts = fg_data.get("ts") if fg_data.get("ts") is not None else fg_data.get("timestamp")
+            raw_fg_ts = (
+                fg_data.get("ts")
+                if fg_data.get("ts") is not None
+                else (
+                    fg_data.get("timestamp")
+                    if fg_data.get("timestamp") is not None
+                    else fg_data.get("index_timestamp")
+                )
+            )
+            fg_ts = safe_pos_float(raw_fg_ts, eval_now)
+            if fg_ts > 1e11:
+                fg_ts /= 1000.0
             raw_hist = fg_data.get("historical_values") or ()
             hist_vals = tuple(
                 max(0, min(100, int(round(v_f))))
@@ -494,7 +505,7 @@ def load_cached_fear_greed_snapshot(
             return FearGreedSnapshot(
                 value=fg_val,
                 classification=fg_cls,
-                timestamp=safe_pos_float(raw_fg_ts, eval_now),
+                timestamp=fg_ts,
                 historical_values=hist_vals,
                 trend_7d_change=int(round(safe_float(fg_data.get("trend_7d_change"), 0.0))),
                 is_extreme_fear=_parse_bool_flag(fg_data.get("is_extreme_fear"), fg_val <= 25),
@@ -535,8 +546,12 @@ def load_cached_market_breadth_snapshot(
             raw_dec = mb_data.get("declining_count") if mb_data.get("declining_count") is not None else mb_data.get("declining")
             raw_tot = mb_data.get("total_count") if mb_data.get("total_count") is not None else mb_data.get("total_symbols")
             raw_ts = mb_data.get("ts") if mb_data.get("ts") is not None else mb_data.get("timestamp")
+            mb_ts = safe_pos_float(raw_ts, eval_now)
+            if mb_ts > 1e11:
+                mb_ts /= 1000.0
+            rot_reg = _clean_nonbool_str(mb_data.get("rotation_regime"), "") or None
             return MarketBreadthSnapshot(
-                advance_ratio=safe_float(mb_data.get("advance_ratio"), 0.5),
+                advance_ratio=clean_scale(mb_data.get("advance_ratio"), default=0.5, allow_percent=True),
                 advancing_count=safe_int(raw_adv, 0),
                 declining_count=safe_int(raw_dec, 0),
                 total_count=safe_int(raw_tot, 0),
@@ -546,7 +561,17 @@ def load_cached_market_breadth_snapshot(
                 regime=_clean_nonbool_str(mb_data.get("regime"), "NEUTRAL"),
                 top_gainers=_norm_pairs(mb_data.get("top_gainers") or ()),
                 top_losers=_norm_pairs(mb_data.get("top_losers") or ()),
-                ts=safe_float(raw_ts, eval_now),
+                ts=mb_ts,
+                btc_price=safe_pos_float(mb_data.get("btc_price"), None),
+                btc_chg_24h_pct=safe_float(mb_data.get("btc_chg_24h_pct"), None),
+                eth_price=safe_pos_float(mb_data.get("eth_price"), None),
+                eth_chg_24h_pct=safe_float(mb_data.get("eth_chg_24h_pct"), None),
+                eth_btc_ratio=safe_pos_float(mb_data.get("eth_btc_ratio"), None),
+                eth_btc_chg_24h_pct=safe_float(mb_data.get("eth_btc_chg_24h_pct"), None),
+                btc_vol_share_pct=safe_float(mb_data.get("btc_vol_share_pct"), None),
+                eth_vol_share_pct=safe_float(mb_data.get("eth_vol_share_pct"), None),
+                alt_vol_share_pct=safe_float(mb_data.get("alt_vol_share_pct"), None),
+                rotation_regime=rot_reg,
             )
         except Exception as mb_err:
             logger.debug("Failed loading market breadth from %s: %s", mb_path, mb_err)
@@ -574,26 +599,36 @@ def load_cached_sentiment_advisor_eval(cache_dir: str) -> Optional[Dict[str, Any
     """Load and normalize cached SentimentAdvisor evaluation dictionary from ``cache_dir``."""
     data, _ = read_first_cached_dict(cache_dir, "sentiment_eval_files")
     if data:
-        return {
+        out: Dict[str, Any] = {
             **data,
             "market_bias": normalize_market_bias(data.get("market_bias")),
             "risk_level": normalize_risk_level(data.get("risk_level")),
             "recommended_action": normalize_recommended_action(data.get("recommended_action")),
         }
+        if "confidence" in data:
+            out["confidence"] = clean_scale(data.get("confidence"), default=0.5, allow_percent=True)
+        if (ts_v := safe_pos_float(data.get("ts"), None)) is not None and ts_v > 1e11:
+            out["ts"] = ts_v / 1000.0
+        return out
     return None
 
 
 def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     """Load and normalize cached GeopoliticalThreatAnalyzer evaluation dictionary from ``cache_dir``."""
     fname = _cfg_str("cache_files", "geopolitical_eval_file", "geopolitical_eval.json")
-    data, _ = read_first_cached_dict(cache_dir, "", fname)
+    data, _ = read_first_cached_dict(cache_dir, "geopolitical_eval_files", fname)
     if data:
         tl = normalize_threat_level(data.get("threat_level"))
-        return {
+        out: Dict[str, Any] = {
             **data,
             "threat_level": tl,
             "recommended_brake": normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl),
         }
+        if "risk_score" in data:
+            out["risk_score"] = clean_scale(data.get("risk_score"), default=0.0, allow_percent=True)
+        if (ts_v := safe_pos_float(data.get("ts"), None)) is not None and ts_v > 1e11:
+            out["ts"] = ts_v / 1000.0
+        return out
     return None
 
 

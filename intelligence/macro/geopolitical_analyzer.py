@@ -110,10 +110,12 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             else max(0, safe_int(data.get("headlines_analyzed"), 0))
         )
         ts_val = ts if ts is not None else safe_nonneg_ts(data.get("ts", 0.0), 0.0)
+        if ts_val > 1e11:
+            ts_val /= 1000.0
         raw_rs = data.get("risk_score", default_risk_score)
         return GeopoliticalThreatAssessment(
             threat_level=tl_norm,
-            risk_score=clean_scale(raw_rs, default=default_risk_score, allow_percent=isinstance(raw_rs, str) and "%" in raw_rs),
+            risk_score=clean_scale(raw_rs, default=default_risk_score, allow_percent=True),
             summary=summary_str,
             recommended_brake=rb_norm,
             headlines_analyzed=hl_count,

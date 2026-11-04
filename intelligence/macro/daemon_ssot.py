@@ -650,7 +650,8 @@ class CachedTopicAssessmentAgent:
                 return
             assessment = self._deserialize_from_disk(data)
             self._cached_assessment = assessment
-            self._last_eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
+            eval_ts = safe_nonneg_ts(getattr(assessment, "ts", 0.0), 0.0)
+            self._last_eval_ts = eval_ts / 1000.0 if eval_ts > 1e11 else eval_ts
             self._on_loaded_from_disk(data, assessment)
         except Exception as e:
             self._logger.debug("Could not load cached %s state %s: %s", self.AGENT_LABEL, path, e)
