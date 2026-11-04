@@ -1896,6 +1896,16 @@ class _MergedModuleAliasFinder:
             hl_signals_file = os.path.join(_REPO_ROOT, "hyperliquid", "signals.py")
             if isinstance(target_file, str) and os.path.abspath(target_file) == os.path.abspath(hl_signals_file):
                 target_name = "hyperliquid.signals"
+        if target_name is None and fullname.startswith("archive."):
+            rel_parts = fullname.split(".")
+            sub_dir = os.path.join(_REPO_ROOT, *rel_parts[:-1])
+            stem = rel_parts[-1]
+            resolved_dir = _resolve_archived_module_dir(sub_dir, stem)
+            py_file = os.path.join(resolved_dir, f"{stem}.py")
+            if os.path.isfile(py_file):
+                import importlib.util
+
+                return importlib.util.spec_from_file_location(fullname, py_file)
         if target_name is None:
             return None
         if fullname in ("keys", "keys.apikeys"):
