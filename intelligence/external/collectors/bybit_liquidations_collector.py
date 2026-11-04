@@ -199,12 +199,37 @@ class BybitLiquidationCollector:
         now = safe_pos_float(ts, default=None) if ts is not None else time.time()
         if now is None:
             return
+        if now > 1e11:
+            now /= 1000.0
         with self._lock:
             dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))
             cutoff = now - self._retention
             while dq and (safe_float(dq[0][0], default=None) is None or dq[0][0] < cutoff):
                 dq.popleft()
+
+    def _lookup_symbol_events(self, symbol: str) -> List[Tuple[float, str, float]]:
+        symbol_str = str(symbol or "").strip().upper()
+        sym_clean = clean_symbol_key(symbol_str)
+        with self._lock:
+            items = list(
+                self._events.get(sym_clean)
+                or casefold_get(self._events, sym_clean)
+                or casefold_get(self._events, symbol_str)
+                or ()
+            )
+            if not items and (sym_clean or symbol_str):
+                for cand in cache_symbol_variants(symbol_str or sym_clean, include_original=True, quotes=("USDT", "USDC", "USD")):
+                    cand_k = clean_symbol_key(cand)
+                    cand_items = (
+                        self._events.get(cand_k)
+                        or casefold_get(self._events, cand_k)
+                        or casefold_get(self._events, cand)
+                    )
+                    if cand_items:
+                        items = list(cand_items)
+                        break
+        return items
 
     def _aggregate_window(
         self,
@@ -221,6 +246,8 @@ class BybitLiquidationCollector:
                 continue
             ts, side, notional = row[0], row[1], row[2]
             ts_f = safe_float(ts, default=None)
+            if ts_f is not None and ts_f > 1e11:
+                ts_f /= 1000.0
             if ts_f is None or ts_f < cutoff or (max_ts is not None and ts_f > max_ts):
                 continue
             notional_f = safe_pos_float(notional, default=None)
@@ -245,16 +272,12 @@ class BybitLiquidationCollector:
         now: Optional[float] = None,
     ) -> LiquidationSummary:
         """Aggregate liquidation metrics for symbol over window_sec."""
+        items = self._lookup_symbol_events(symbol)
         symbol = clean_symbol_key(symbol)
         now_ts = safe_pos_float(now, default=None) or time.time()
+        if now_ts > 1e11:
+            now_ts /= 1000.0
         win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
-        with self._lock:
-            items = list(self._events.get(symbol, ()))
-            if not items:
-                for cand in cache_symbol_variants(symbol):
-                    if (cand_k := clean_symbol_key(cand)) and cand_k in self._events:
-                        items = list(self._events[cand_k])
-                        break
 
         long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(
             items, now_ts - win_sec, max_ts=now_ts + 5.0, require_pos_notional=True
@@ -280,16 +303,11 @@ class BybitLiquidationCollector:
     ) -> Dict[str, float]:
         """Aggregate liquidations for ``symbol`` over the last ``window_sec`` as a dict."""
         symbol_str = str(symbol or "").strip().upper()
-        sym_clean = clean_symbol_key(symbol_str)
         eff_win = safe_pos_float(window_sec, 300.0)
         now_ts = safe_pos_float(now, default=None) or time.time()
-        with self._lock:
-            items = list(casefold_get(self._events, sym_clean) or casefold_get(self._events, symbol_str) or ())
-            if not items and symbol_str:
-                for cand in cache_symbol_variants(symbol_str, include_original=True, quotes=("USDT", "USDC", "USD")):
-                    if cand_items := casefold_get(self._events, cand):
-                        items = list(cand_items)
-                        break
+        if now_ts > 1e11:
+            now_ts /= 1000.0
+        items = self._lookup_symbol_events(symbol_str)
         long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(items, now_ts - eff_win, max_ts=now_ts + 5.0)
         return {
             "symbol": symbol_str,

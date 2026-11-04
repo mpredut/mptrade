@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from botcore import obj_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import clean_scale, obj_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_symbol_key, telemetry_cache_file_path
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
@@ -63,10 +63,19 @@ class WhalePositioningSnapshot:
             data = {}
         raw_reg = data.get("divergence_regime")
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
+        raw_long_val = data.get("top_traders_long_pct") if data.get("top_traders_long_pct") is not None else data.get("whale_long_pct")
+        if isinstance(raw_long_val, str) and raw_long_val.strip().endswith("%"):
+            long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True)
+        else:
+            long_pct_raw = _clean_dict_float(data, "top_traders_long_pct", 0.5, "whale_long_pct", nonneg=True)
+            if 5.0 <= long_pct_raw <= 100.0:
+                long_pct_clean = round(long_pct_raw / 100.0, 4)
+            else:
+                long_pct_clean = min(1.0, max(0.0, long_pct_raw))
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             top_traders_long_ratio=_clean_dict_float(data, "top_traders_long_ratio", 1.0, "whale_long_ratio", nonneg=True),
-            top_traders_long_pct=min(1.0, _clean_dict_float(data, "top_traders_long_pct", 0.5, "whale_long_pct", nonneg=True)),
+            top_traders_long_pct=long_pct_clean,
             taker_buy_sell_ratio=_clean_dict_float(data, "taker_buy_sell_ratio", 1.0, nonneg=True),
             taker_buy_vol_usd=_clean_dict_float(data, "taker_buy_vol_usd", 0.0, nonneg=True),
             taker_sell_vol_usd=_clean_dict_float(data, "taker_sell_vol_usd", 0.0, nonneg=True),
@@ -111,6 +120,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             series_24h, _ = load_symbol_price_series(cache_dir, symbol.upper(), include_7d=False)
             pts = [pt for row in (series_24h or ()) if (pt := _parse_ts_px_row(row)) is not None]
             if len(pts) >= 2:
+                pts.sort(key=lambda x: x[0])
                 now_ms, latest_p = pts[-1]
                 target_ms = now_ms - 3_600_000.0
                 ref_p = next(
@@ -165,7 +175,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         oi_change_pct = safe_float(oi_change_pct, default=0.0)
         taker_ratio = safe_nonneg_float(taker_ratio, default=1.0)
         funding_rate = safe_float(funding_rate, default=None)
-        top_long_pct = safe_float(top_long_pct, default=None)
+        top_long_pct = clean_scale(top_long_pct, default=None, allow_percent=True) if top_long_pct is not None else None
         prev_reg_norm = prev_regime.strip().lower() if isinstance(prev_regime, str) else ""
         # 1. Price rising (> +0.2%)
         if price_1h_change_pct > 0.2:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import safe_float, safe_pos_float
+from botcore import clean_scale, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot, snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.whale_positioning_collector import (
@@ -32,11 +32,15 @@ class WhaleAccumulationTrigger:
         min_taker_sell_ratio: float = 0.80,        # Taker aggressive sells dominate (<0.80)
     ) -> None:
         self.collector = collector
-        long_pct = safe_pos_float(min_top_traders_long_pct, default=0.60) or 0.60
-        self.min_top_traders_long_pct = long_pct if long_pct <= 1.0 else 0.60
+        allow_long_pct = not (isinstance(min_top_traders_long_pct, (int, float)) and 1.0 < min_top_traders_long_pct < 5.0)
+        self.min_top_traders_long_pct = clean_scale(
+            min_top_traders_long_pct, default=0.60, min_positive=True, allow_percent=allow_long_pct
+        )
         self.min_taker_buy_ratio = safe_pos_float(min_taker_buy_ratio, default=1.25) or 1.25
-        short_pct = safe_pos_float(min_top_traders_short_pct, default=0.60) or 0.60
-        self.min_top_traders_short_pct = short_pct if short_pct <= 1.0 else 0.60
+        allow_short_pct = not (isinstance(min_top_traders_short_pct, (int, float)) and 1.0 < min_top_traders_short_pct < 5.0)
+        self.min_top_traders_short_pct = clean_scale(
+            min_top_traders_short_pct, default=0.60, min_positive=True, allow_percent=allow_short_pct
+        )
         self.min_taker_sell_ratio = safe_pos_float(min_taker_sell_ratio, default=0.80) or 0.80
 
     def evaluate(
@@ -62,9 +66,7 @@ class WhaleAccumulationTrigger:
         raw_long_pct = snap_attr(snapshot, "top_traders_long_pct", None)
         if raw_long_pct is None:
             raw_long_pct = snap_attr(snapshot, "whale_long_pct", None)
-        top_long_pct = safe_float(raw_long_pct, default=None)
-        if top_long_pct is not None and 1.0 < top_long_pct <= 100.0:
-            top_long_pct /= 100.0
+        top_long_pct = clean_scale(raw_long_pct, default=None, allow_percent=True)
         taker_ratio = safe_float(snap_attr(snapshot, "taker_buy_sell_ratio", None), default=None)
         raw_oi_chg = snap_attr(snapshot, "open_interest_1h_change_pct", None)
         if raw_oi_chg is None:

@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
     load_dotenv,
     required_float_env,
     safe_float,
@@ -248,8 +249,8 @@ class SmartStopLossGuard:
         self.max_threshold_pct = safe_pos_float(max_threshold_pct, 6.0)
         self.grace_seconds = safe_nonneg_float(grace_seconds, 120.0)
         self.disaster_buffer_pct = safe_nonneg_float(disaster_buffer_pct, 0.85)
-        min_w = safe_nonneg_float(min_whale_long_pct, 0.60)
-        self.min_whale_long_pct = min_w if min_w <= 1.0 else 0.60
+        allow_w_pct = not (isinstance(min_whale_long_pct, (int, float)) and 1.0 < min_whale_long_pct < 5.0)
+        self.min_whale_long_pct = clean_scale(min_whale_long_pct, default=0.60, allow_percent=allow_w_pct)
         self.min_taker_ratio = safe_pos_float(min_taker_ratio, 0.85)
 
     def evaluate(
@@ -324,14 +325,12 @@ class SmartStopLossGuard:
         )
 
         raw_top_long = _obj_attr(w_snap, "top_traders_long_pct", _obj_attr(w_snap, "whale_long_pct", 0.50)) if w_snap else 0.50
-        top_long_pct = safe_float(raw_top_long, 0.50)
-        if 1.0 < top_long_pct <= 100.0:
-            top_long_pct /= 100.0
+        top_long_pct = clean_scale(raw_top_long, default=0.50, allow_percent=True)
         taker_ratio = safe_float(_obj_attr(w_snap, "taker_buy_sell_ratio", 1.0), 1.0) if w_snap else 1.0
         raw_div_reg = _obj_attr(w_snap, "divergence_regime", None) if w_snap else None
         divergence_regime = raw_div_reg.strip().lower() if isinstance(raw_div_reg, str) and raw_div_reg.strip() else "neutral"
         raw_imb = _obj_attr(ob_snap, "imbalance_ratio", _obj_attr(ob_snap, "ob_imbalance", 0.50)) if ob_snap else 0.50
-        imbalance = safe_float(raw_imb, 0.50)
+        imbalance = clean_scale(raw_imb, default=0.50, allow_percent=True)
         raw_bid_wall = _obj_attr(ob_snap, "largest_bid_wall_usd", _obj_attr(ob_snap, "bid_wall_usd", 0.0)) if ob_snap else 0.0
         bid_wall = safe_float(raw_bid_wall, 0.0)
 
@@ -527,7 +526,7 @@ def evaluate_smart_stop_loss(
     max_thresh = safe_pos_float(m.get("smart_sl_max_threshold_pct"), 6.0)
     grace_sec = safe_nonneg_float(m.get("smart_sl_grace_seconds"), 120.0)
     default_disaster_buf = safe_nonneg_float(m.get("smart_sl_disaster_buffer_pct"), 0.85)
-    min_whale = safe_nonneg_float(m.get("smart_sl_min_whale_long_pct"), 0.60)
+    min_whale = m.get("smart_sl_min_whale_long_pct", 0.60)
     min_taker = safe_pos_float(m.get("smart_sl_min_taker_ratio"), 0.85)
 
     effective_disaster_buf = (

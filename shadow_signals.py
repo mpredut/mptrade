@@ -141,10 +141,12 @@ class KalmanStateTracker:
         """Return Kalman trend and state age for tradeall's live order gate."""
         st = self._state.get(symbol)
         if not isinstance(st, dict) and isinstance(symbol, str):
-            for cand in cache_symbol_variants(symbol):
-                st = self._state.get(cand) if cand in self._state else casefold_get(self._state, cand)
-                if isinstance(st, dict):
-                    break
+            st = casefold_get(self._state, symbol)
+            if not isinstance(st, dict):
+                for cand in cache_symbol_variants(symbol):
+                    st = self._state.get(cand) if cand in self._state else casefold_get(self._state, cand)
+                    if isinstance(st, dict):
+                        break
         if not isinstance(st, dict) or not st:
             return None, 1e18
         ts_f = safe_pos_float(st.get("ts"), default=None)
@@ -152,6 +154,10 @@ class KalmanStateTracker:
         kt_f = safe_float(st.get("kalman_trend"), default=None)
         if ts_f is None or now_f is None or kt_f not in (-1.0, 0.0, 1.0):
             return None, 1e18
+        if ts_f > 1e11:
+            ts_f /= 1000.0
+        if now_f > 1e11:
+            now_f /= 1000.0
         age = now_f - ts_f
         if age < -60.0:
             return None, 1e18
@@ -195,7 +201,7 @@ class KalmanStateTracker:
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
             return self._build_fields(k, self._last_vol_fields.get(symbol))
-        ts = ts_f
+        ts = ts_f / 1000.0 if ts_f > 1e11 else ts_f
         price = price_f
         sr_val = safe_pos_float(big_sample_rate, 1.0)
         eps_val = safe_nonneg_float(epsilon, 0.0)
@@ -213,7 +219,13 @@ class KalmanStateTracker:
                     hist_pts = [
                         (steps_back, p_h)
                         for steps_back, raw_p in enumerate(raw_hist, start=1)
-                        if (p_h := safe_pos_float(raw_p, default=None)) is not None
+                        if (
+                            p_h := safe_pos_float(
+                                raw_p[1] if isinstance(raw_p, (list, tuple)) and len(raw_p) >= 2 else raw_p,
+                                default=None,
+                            )
+                        )
+                        is not None
                     ][::-1]
                     if len(hist_pts) >= 2:
                         step_dt = step_n * max(sr_val, 0.1)

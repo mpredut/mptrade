@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from botcore import safe_float, safe_pos_float
+from botcore import clean_scale, safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
 from intelligence.external.collectors.bybit_liquidations_collector import (
@@ -31,8 +31,8 @@ class LiquidationCapitulationTrigger:
     ) -> None:
         self.collector = collector
         self.min_notional_usd = safe_pos_float(min_notional_usd, default=100_000.0) or 100_000.0
-        rt = safe_pos_float(ratio_threshold, default=0.75) or 0.75
-        self.ratio_threshold = rt if rt <= 1.0 else 0.75
+        allow_rt_pct = not (isinstance(ratio_threshold, (int, float)) and 1.0 < ratio_threshold < 5.0)
+        self.ratio_threshold = clean_scale(ratio_threshold, default=0.75, min_positive=True, allow_percent=allow_rt_pct)
         self.window_sec = safe_pos_float(window_sec, default=300.0) or 300.0
 
     def evaluate(
@@ -65,13 +65,16 @@ class LiquidationCapitulationTrigger:
         long_liq = safe_float(snap_attr(summary, "long_liq_usd", None), default=None)
         short_liq = safe_float(snap_attr(summary, "short_liq_usd", None), default=None)
         total_usd = safe_float(snap_attr(summary, "total_usd", None), default=None)
-        if isinstance(summary, dict) and "total_usd" not in summary and long_liq is not None and short_liq is not None:
+        has_total_key = ("total_usd" in summary) if isinstance(summary, dict) else hasattr(summary, "total_usd")
+        if not has_total_key and long_liq is not None and short_liq is not None:
             total_usd = long_liq + short_liq
-        cap_ratio = safe_float(snap_attr(summary, "capitulation_ratio", None), default=None)
-        if isinstance(summary, dict) and "capitulation_ratio" not in summary and total_usd is not None and total_usd > 0.0 and long_liq is not None:
+        has_cap_key = ("capitulation_ratio" in summary) if isinstance(summary, dict) else hasattr(summary, "capitulation_ratio")
+        cap_ratio = clean_scale(snap_attr(summary, "capitulation_ratio", None), default=None, allow_percent=True)
+        if not has_cap_key and total_usd is not None and total_usd > 0.0 and long_liq is not None:
             cap_ratio = long_liq / total_usd
-        sq_ratio = safe_float(snap_attr(summary, "squeeze_ratio", None), default=None)
-        if isinstance(summary, dict) and "squeeze_ratio" not in summary and total_usd is not None and total_usd > 0.0 and short_liq is not None:
+        has_sq_key = ("squeeze_ratio" in summary) if isinstance(summary, dict) else hasattr(summary, "squeeze_ratio")
+        sq_ratio = clean_scale(snap_attr(summary, "squeeze_ratio", None), default=None, allow_percent=True)
+        if not has_sq_key and total_usd is not None and total_usd > 0.0 and short_liq is not None:
             sq_ratio = short_liq / total_usd
         win_sec = safe_float(snap_attr(summary, "window_sec", None), default=self.window_sec)
         if (

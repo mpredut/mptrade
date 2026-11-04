@@ -2598,8 +2598,78 @@ def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp
     assert seen_ob_now == [1700012345.0]
 
 
+def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_path):
+    from types import SimpleNamespace
+    import shadow_signals as ss
+    from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector
+    from intelligence.external.collectors.whale_positioning_collector import (
+        WhalePositioningCollector,
+        WhalePositioningSnapshot,
+    )
+    from intelligence.external.guards.smart_stop_loss_guard import SmartStopLossGuard
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger
+    from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
+
+    # 1. KalmanTrend / KalmanTrendTrigger normalize millisecond timestamps so 60s steps do not trigger gap reset
+    ktt = KalmanTrendTrigger()
+    t0_ms = 1700000000000.0
+    px = 100.0
+    fired_ev = None
+    for i in range(30):
+        px += 0.25
+        out_k, ev_k = ktt.evaluate("BTCUSDC", t0_ms + i * 60_000.0, px, epsilon=0.05)
+        if ev_k is not None:
+            fired_ev = ev_k
+    assert out_k["trend"] == 1
+    assert fired_ev is not None and fired_ev.ts < 1e11
+
+    # 2. KalmanStateTracker supports (ts, price) pairs in big_prices and millisecond timestamps
+    journal = ss.KalmanJournal(fixed_path=os.devnull)
+    tracker = ss.KalmanStateTracker(journal=journal, now_fn=lambda: 1700000060.0, compute_vol=False)
+    pair_hist = [(1700000000000.0 - (20 - i) * 60_000.0, 100.0 + i * 0.1) for i in range(20)]
+    tracker.update("BTCUSDC", 1700000000000.0, 102.5, 0.05, pair_hist, 60.0)
+    tr_val, age_sec = tracker.current_trend("btcusdc")
+    assert tr_val in (-1, 0, 1) and age_sec == pytest.approx(60.0)
+
+    # 3. BybitLiquidationCollector unifies casefold/variant symbol lookup and normalizes ms timestamps
+    blc = BybitLiquidationCollector()
+    blc.record_event("BTC/USDT", "Buy", 150_000.0, ts=1700000000000.0)
+    blc.record_event("BTC/USDT", "Sell", 30_000.0, ts=1700000010000.0)
+    sum_b = blc.get_summary("btcusdc", window_sec=300.0, now=1700000020.0)
+    assert sum_b.long_liq_usd == pytest.approx(150_000.0)
+    assert sum_b.short_liq_usd == pytest.approx(30_000.0)
+    sig_b = blc.get_signal("BTC/USDC", window_sec=300.0, now=1700000020000.0)
+    assert sig_b["long_liq_usd"] == pytest.approx(150_000.0)
+
+    # 4. LiquidationCapitulationTrigger, WhaleAccumulationTrigger, SmartStopLossGuard, and WhalePositioningSnapshot percent scales
+    lct = LiquidationCapitulationTrigger(ratio_threshold=80.0, min_notional_usd=100_000.0)
+    assert lct.ratio_threshold == pytest.approx(0.80)
+    ev_liq = lct.evaluate("BTCUSDC", 90000.0, summary=SimpleNamespace(long_liq_usd=160_000.0, short_liq_usd=20_000.0), now=1700000020.0)
+    assert ev_liq is not None and ev_liq.reason == "liquidation_capitulation_burst"
+
+    wat = WhaleAccumulationTrigger(min_top_traders_long_pct=65.0, min_top_traders_short_pct="70%")
+    assert wat.min_top_traders_long_pct == pytest.approx(0.65)
+    assert wat.min_top_traders_short_pct == pytest.approx(0.70)
+    ev_wat = wat.evaluate(
+        "BTCUSDC",
+        90000.0,
+        snapshot={"whale_long_pct": "68%", "taker_buy_sell_ratio": 1.35, "oi_1h_chg_pct": 1.5},
+        now=1700000020.0,
+    )
+    assert ev_wat is not None and ev_wat.reason == "whale_aggressive_accumulation"
+
+    wps = WhalePositioningSnapshot.from_dict({"symbol": "BTCUSDC", "whale_long_pct": 35.0})
+    assert wps.top_traders_long_pct == pytest.approx(0.35)
+    assert WhalePositioningCollector.classify_regime(1.0, 1.0, 1.25, top_long_pct=40.0) == "short_squeeze_primed"
+
+    slg = SmartStopLossGuard(min_whale_long_pct=65.0)
+    assert slg.min_whale_long_pct == pytest.approx(0.65)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
