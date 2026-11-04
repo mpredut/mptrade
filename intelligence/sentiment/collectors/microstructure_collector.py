@@ -329,13 +329,37 @@ def load_symbol_price_series(
             if (last_pt := _parse_ts_px_row(archive_pts[-1])) is not None:
                 cutoff_24h, cutoff_7d = last_pt[0] - 86400.0 * 1000.0, last_pt[0] - 7.0 * 86400.0 * 1000.0
                 pts_24, pts_7d_vals, pts_7d_ts = [], [], []
-                for row in archive_pts:
-                    if (pt := _parse_ts_px_row(row)) is not None:
-                        if pt[0] >= cutoff_7d:
-                            pts_7d_vals.append(pt[1])
-                            pts_7d_ts.append(pt[0])
-                        if need_24h_supplement and pt[0] >= cutoff_24h:
-                            pts_24.append([row[0], pt[1]])
+                parsed_arch = [
+                    (
+                        pt[0],
+                        pt[1],
+                        safe_pos_float(row[2], default=None) if isinstance(row, (list, tuple)) and len(row) >= 3 else None,
+                        row[0] if isinstance(row, (list, tuple)) and row else pt[0],
+                    )
+                    for row in archive_pts
+                    if (pt := _parse_ts_px_row(row)) is not None
+                ]
+                has_arch_vol = any(v is not None for _, _, v, _ in parsed_arch)
+                clean_arch = []
+                for idx_a, item_a in enumerate(parsed_arch):
+                    if has_arch_vol and 0 < idx_a < len(parsed_arch) - 1 and item_a[2] is None:
+                        prev_a = clean_arch[-1] if clean_arch else parsed_arch[idx_a - 1]
+                        next_a = parsed_arch[idx_a + 1]
+                        if prev_a[2] is not None or next_a[2] is not None:
+                            ref_mid = 0.5 * (prev_a[1] + next_a[1])
+                            if (
+                                ref_mid > 0.0
+                                and abs(prev_a[1] - next_a[1]) / ref_mid <= 0.025
+                                and abs(item_a[1] - ref_mid) / ref_mid > 0.025
+                            ):
+                                continue
+                    clean_arch.append(item_a)
+                for pt_t, pt_p, _, raw_t0 in clean_arch:
+                    if pt_t >= cutoff_7d:
+                        pts_7d_vals.append(pt_p)
+                        pts_7d_ts.append(pt_t)
+                    if need_24h_supplement and pt_t >= cutoff_24h:
+                        pts_24.append([raw_t0, pt_p])
                 arch_7d_end_ts = last_pt[0]
                 if len(pts_7d_ts) >= 2:
                     arch_7d_span_ms = max(0.0, pts_7d_ts[-1] - pts_7d_ts[0])
@@ -411,6 +435,22 @@ def load_symbol_price_series(
                     dedup_24h.append(pt)
                 else:
                     dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
+            if len(dedup_24h) >= 3 and any(len(p) >= 3 for p in dedup_24h):
+                filtered_24h = [dedup_24h[0]]
+                for idx_d in range(1, len(dedup_24h) - 1):
+                    cur_d, next_d = dedup_24h[idx_d], dedup_24h[idx_d + 1]
+                    prev_d = filtered_24h[-1]
+                    if len(cur_d) < 3 and (len(prev_d) >= 3 or len(next_d) >= 3):
+                        ref_mid = 0.5 * (prev_d[1] + next_d[1])
+                        if (
+                            ref_mid > 0.0
+                            and abs(prev_d[1] - next_d[1]) / ref_mid <= 0.025
+                            and abs(cur_d[1] - ref_mid) / ref_mid > 0.025
+                        ):
+                            continue
+                    filtered_24h.append(cur_d)
+                filtered_24h.append(dedup_24h[-1])
+                dedup_24h = filtered_24h
             series_24h = dedup_24h if len(dedup_24h) >= 2 else []
         else:
             series_24h = []

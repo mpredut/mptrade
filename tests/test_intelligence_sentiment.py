@@ -4446,4 +4446,50 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert btc_m24_hl.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
     assert btc_m24_hl.get("higher_low_vs_prior_pct") == 1.19
 
+    # - Live tape_15m / chg_1m..15m sync in recalculate_live_price_geometry, 5m-bar slope_15m alignment, and ask_absorbing spot_perp_flow_regime symmetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _compute_short_slopes_from_series,
+        recalculate_live_price_geometry,
+    )
+
+    p_hype = {
+        "price": 83.57,
+        "chg_1m_pct": 0.02,
+        "chg_3m_pct": 0.14,
+        "chg_5m_pct": 0.01,
+        "chg_15m_pct": 0.42,
+        "recent_tape_15m": ["-15m:83.218", "-10m:83.4275", "-5m:83.559", "-3m:83.4535", "-1m:83.5525", "now:83.57"],
+        "low_15m": 83.218,
+        "high_15m": 83.57,
+    }
+    recalculate_live_price_geometry(p_hype, 83.4905)
+    assert p_hype["recent_tape_15m"][-1] == "now:83.4905"
+    assert p_hype["chg_1m_pct"] == -0.07
+    assert p_hype["chg_5m_pct"] == -0.08
+    assert p_hype["chg_15m_pct"] == 0.33
+
+    nvda_5m_series = [
+        [now_ms_w3 - (12 - i) * 300_000 - 150_000, 203.0 - i * 0.1]
+        for i in range(9)
+    ] + [
+        [now_ms_w3 - 1050_000, 202.09],
+        [now_ms_w3 - 750_000, 200.8999],
+        [now_ms_w3 - 450_000, 201.345],
+        [now_ms_w3 - 150_000, 200.99],
+        [now_ms_w3, 200.99],
+    ]
+    nvda_m24 = compute_24h_price_metrics(nvda_5m_series)
+    nvda_slopes = _compute_short_slopes_from_series(nvda_5m_series)
+    assert nvda_m24["chg_15m_pct"] < 0.0
+    assert nvda_slopes["slope_15m"] < 0.0
+    assert (nvda_slopes.get("growth_15m") or 0.0) <= 0.0
+
+    ada_m = {"cvd_15m_usd": 37300.0, "cvd_5m_usd": -130100.0, "cvd_1h_usd": -845800.0, "ob_imbalance": 0.62, "bid_depth_usd": 310000.0, "ask_depth_usd": 190000.0}
+    ada_p = {"price": 0.195748, "chg_15m_pct": -0.46, "vol_15m_usd": 150000.0}
+    enrich_microstructure_cvd(ada_m, ada_p)
+    assert ada_m["cvd_regime"] == "ask_absorbing"
+    assert ada_m["spot_perp_flow_regime"] != "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+
 

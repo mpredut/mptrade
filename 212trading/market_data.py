@@ -184,6 +184,24 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
             raw_v = vols[i] if i < len(vols) else None
             v_clean = safe_nonneg_float(raw_v, default=None)
             bars.append((int(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
+        if len(bars) >= 3 and any((b[2] or 0.0) > 0.0 for b in bars):
+            filtered_bars = [bars[0]]
+            for idx in range(1, len(bars) - 1):
+                cur_b, next_b = bars[idx], bars[idx + 1]
+                prev_b = filtered_bars[-1]
+                cur_v = cur_b[2]
+                if (cur_v is None or cur_v <= 0.0) and ((prev_b[2] or 0.0) > 0.0 or (next_b[2] or 0.0) > 0.0):
+                    p_prev, p_cur, p_next = prev_b[1], cur_b[1], next_b[1]
+                    ref_mid = 0.5 * (p_prev + p_next)
+                    if (
+                        ref_mid > 0.0
+                        and abs(p_prev - p_next) / ref_mid <= 0.025
+                        and abs(p_cur - ref_mid) / ref_mid > 0.025
+                    ):
+                        continue
+                filtered_bars.append(cur_b)
+            filtered_bars.append(bars[-1])
+            bars = filtered_bars
         return meta, bars
     except (ValueError, KeyError, TypeError):
         return None, []

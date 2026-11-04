@@ -83,12 +83,12 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
         pts: List[Tuple[float, float]] = [(pts_vol[0][0], pts_vol[0][1])]
         for idx in range(1, len(pts_vol) - 1):
             t_cur, p_cur, v_cur = pts_vol[idx]
-            if v_cur is not None and v_cur <= 0.0:
+            if v_cur is None or v_cur <= 0.0:
                 p_prev, p_next = pts[-1][1], pts_vol[idx + 1][1]
                 if (
                     min(p_prev, p_next, p_cur) > 0.0
-                    and abs(p_cur - p_prev) / p_prev > 0.04
-                    and abs(p_cur - p_next) / p_next > 0.04
+                    and abs(p_cur - p_prev) / p_prev > 0.025
+                    and abs(p_cur - p_next) / p_next > 0.025
                     and abs(p_next - p_prev) / min(p_prev, p_next) <= 0.035
                 ):
                     continue
@@ -772,9 +772,9 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     t_now, p_now = pts[-1]
     out: Dict[str, Any] = {}
     seen_slope_ref_t: set[float] = set()
-    has_sub3m_cadence = len(pts) < 10 or any(
-        0.0 < (b[0] - a[0]) < 180.0 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:])
-    )
+    has_sub3m_cadence = len(pts) < 10 or sum(
+        1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180.0
+    ) >= 2
     for win_sec, win_min, s_key, t_key, g_key in (
         (90.0, 1.5, "slope_90s", "trend_90s", "growth_90s"),
         (222.0, 3.7, "slope_3_7m", "trend_3_7m", "growth_3_7m"),
@@ -795,7 +795,12 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             cands = pts[:-1]
         if not cands:
             continue
-        ref_t, ref_p = min(cands, key=lambda item: abs(item[0] - target_t))
+        at_or_before = [pt for pt in cands if pt[0] <= target_t] if win_sec >= 900.0 else []
+        ref_t, ref_p = (
+            max(at_or_before, key=lambda item: item[0])
+            if at_or_before
+            else min(cands, key=lambda item: abs(item[0] - target_t))
+        )
         seen_slope_ref_t.add(ref_t)
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
@@ -809,7 +814,9 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             g_v = (float(f"{raw_g:.2e}") if 0.0 < abs(raw_g) < 1e-4 else round(raw_g, 6)) + 0.0
             win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
-            if ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10:
+            if (ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10) and (
+                has_sub3m_cadence or win_sec >= 9000.0 or raw_g * raw_s >= 0.0
+            ):
                 out[g_key] = g_v
             out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)
     if "slope_3_7m" in out:
@@ -934,6 +941,22 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             now_s = f"{p_cur_15m:.{eff_dec_15m}f}".rstrip("0").rstrip(".")
             tape_copy[-1] = f"now:{now_s}"
             pinfo["recent_tape_15m"] = tape_copy
+            tape_ref_by_lbl = {
+                lbl_s.strip(): ref_px
+                for entry in tape_copy[:-1]
+                if isinstance(entry, str)
+                and ":" in entry
+                and (lbl_s := entry.split(":", 1)[0])
+                and (ref_px := safe_pos_float(entry.split(":", 1)[1], default=None)) is not None
+            }
+            for tape_lbl, chg_key in (
+                ("-1m", "chg_1m_pct"),
+                ("-3m", "chg_3m_pct"),
+                ("-5m", "chg_5m_pct"),
+                ("-15m", "chg_15m_pct"),
+            ):
+                if chg_key in pinfo and (ref_px_t := tape_ref_by_lbl.get(tape_lbl)) is not None:
+                    pinfo[chg_key] = pct_delta(p_cur_15m, ref_px_t)
     l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
     h15 = safe_pos_float(pinfo.get("high_15m"), default=None)
     if l15 is not None and h15 is not None:

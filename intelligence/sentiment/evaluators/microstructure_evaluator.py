@@ -138,6 +138,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
 
     is_multi_horizon_selloff = cvd_usd < 0.0 and cvd_5m < 0.0 and cvd_1h < 0.0 and funding_r >= 0.0
     is_absorbing_cvd = minfo.get("cvd_regime") == "spot_absorbing"
+    is_ask_absorbing_cvd = minfo.get("cvd_regime") == "ask_absorbing"
     strong_spot_absorption = (
         is_absorbing_cvd
         and spot_cvd >= max(abs(cvd_usd) * 0.45, 5000.0)
@@ -152,7 +153,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         minfo["spot_perp_flow_regime"] = "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
     elif spot_cvd < 0.0 and cvd_usd > 0.0 and oi_chg >= 0.25 and strong_perp_trap:
         minfo["spot_perp_flow_regime"] = "RETAIL_PERP_LONG_TRAP"
-    elif spot_cvd > 0.0 and cvd_usd > 0.0 and (ob_imb >= 0.54 or spot_cvd >= max(abs(cvd_usd) * 0.15, 5000.0)):
+    elif spot_cvd > 0.0 and cvd_usd > 0.0 and (ob_imb >= 0.54 or spot_cvd >= max(abs(cvd_usd) * 0.15, 5000.0)) and not is_ask_absorbing_cvd:
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_BUYING"
     elif spot_cvd < 0.0 and cvd_usd < 0.0 and (ob_imb <= 0.46 or abs(spot_cvd) >= max(abs(cvd_usd) * 0.15, 5000.0)) and not is_absorbing_cvd:
         minfo["spot_perp_flow_regime"] = "SYNCHRONIZED_SPOT_PERP_SELLING"
