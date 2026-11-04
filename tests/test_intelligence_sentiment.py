@@ -4836,4 +4836,130 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     # 2.5 hours after fill: expired from last_cycle_execution_status (>60m terminal cutoff)
     assert build_last_cycle_execution_status(intents_b5, "crypto", 1_793_821_786.0 + 9000.0, extract_intent_notional) is None
 
+    # Bugs 79-82: Yahoo partial-bar duplicate deduplication in _extract_sorted_ts_px, L1 vs Flow OI cycle_delta guard, and pre-trade OI/sibling 24h series sync
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _compute_short_slopes_from_series,
+        compute_24h_price_metrics,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import update_microstructure_cycle_deltas
+
+    # Bug 79: 5-minute equity series with trailing partial sub-5m duplicate Yahoo quote drops the duplicate bar
+    base_ms_79 = 1_793_829_000_000
+    eq_series_79 = [[base_ms_79 + i * 300_000, 134.0 + i * 0.08, 100.0] for i in range(13)]
+    eq_series_79[-2][1] = 134.78
+    eq_series_79[-1][1] = 135.05
+    # Append trailing partial sub-5m duplicate quote 260s after last 5-minute bar
+    eq_series_79.append([eq_series_79[-1][0] + 260_000, 135.05, 0.0])
+    slopes_79 = _compute_short_slopes_from_series(eq_series_79)
+    assert slopes_79["slope_3_7m"] > 0.0
+    m24_79 = compute_24h_price_metrics(eq_series_79)
+    assert "chg_3m_pct" not in m24_79
+    assert m24_79["chg_5m_pct"] == 0.2
+
+    # Bug 80: update_microstructure_cycle_deltas compares native_l1_oi_usd against prior L1 oi_usd instead of emitting -77.96%
+    cdir_b80 = tmp_path / "cachedb_b80"
+    cdir_b80.mkdir(exist_ok=True)
+    (cdir_b80 / "microstructure_cycle_history.json").write_text(
+        json.dumps({"HYPEUSDC": [{"ts": 1_793_830_000.0, "oi_usd": 1_901_470_497.0}]}),
+        encoding="utf-8",
+    )
+    micro_b80 = {"HYPEUSDC": {"oi_usd": 419_168_669.47, "native_l1_oi_usd": 1_901_470_497.0}}
+    update_microstructure_cycle_deltas(str(cdir_b80), micro_b80, now_ts=1_793_830_900.0)
+    assert micro_b80["HYPEUSDC"]["cycle_delta"]["oi_delta_pct"] == 0.0
+
+
+
+def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filtering(tmp_path):
+    """Verify:
+    - Bug 17: enrich_24h_and_microstructure tracks active_7d_vals from _load_stitched_7d_ohlc_closes so ob_mid_m price adjustment does not overwrite chg_7d_pct with partial 1-day arch_vals_7d[0]
+    - Bug 18: collect_pretrade_telemetry backfills zero slope_90s/growth_90s/trend_90s from non-diverged sibling live_<SYM>.json (e.g. ADAUSDC for ADAUSD)
+    - Bug 20: harvest_log_anomalies_from_dirs ignores interactive [<stdin>:NN] lines and clears manage_agy errors after 'ui-sync: check healthy'
+    """
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    cdir = tmp_path / "cachedb"
+    for sub in ("prices", "trends/24trend", "telemetry", "24trend"):
+        (cdir / sub).mkdir(parents=True, exist_ok=True)
+
+    now_ts = 1_793_826_000.0
+    now_ms = int(now_ts * 1000)
+
+    # Partial 1.08-day archive starting at 0.184033 (+4.48% to 0.19228)
+    arch_rows = [
+        {"s": "ADAUSD", "i": [now_ms - int(1.08 * 86400 * 1000) + i * 3600_000, 0.184033 + i * 0.0003]}
+        for i in range(26)
+    ]
+    (cdir / "prices" / "cache_365_price_ADAUSD.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in arch_rows) + "\n",
+        encoding="utf-8",
+    )
+    s24_pts = [[now_ms - (24 - i) * 3600_000, 0.188 + i * 0.00018] for i in range(25)]
+    (cdir / "prices" / "cache_24_price_ADAUSD.json").write_text(
+        json.dumps({"items": {"ADAUSD": s24_pts}}),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "orderbook_depth_ADAUSDC.json").write_text(
+        json.dumps({"symbol": "ADAUSDC", "mid_price": 0.19228, "best_bid": 0.1922, "best_ask": 0.19236, "bid_depth_usd": 120_000.0, "ask_depth_usd": 110_000.0}),
+        encoding="utf-8",
+    )
+
+    # Full 7-day Kraken OHLC closes starting at 0.199018 (-3.39% to 0.19228, high=0.206197)
+    ohlc_ts = [now_ts - (168 - i) * 3600.0 for i in range(169)]
+    ohlc_closes = [0.199018] + [0.206197 if i == 40 else (0.18252 if i == 120 else 0.193) for i in range(1, 168)] + [0.19225]
+    dummy_inst = SimpleNamespace(
+        _provider=SimpleNamespace(
+            ohlc_series=lambda sym, interval: SimpleNamespace(timestamps=ohlc_ts, closes=ohlc_closes, volumes=[1000.0] * len(ohlc_ts))
+        )
+    )
+    pt_map = {"ADAUSD": {"price": 0.19225, "trend": 0, "growth_coefficient": 0.0}}
+    micro_map: dict = {}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_map, micro_map, {}, {"ADAUSD": dummy_inst}, now_ts)
+    assert pt_map["ADAUSD"]["high_7d"] == 0.206197
+    assert pt_map["ADAUSD"]["chg_7d_pct"] == -3.39
+
+    # Bug 18: live_ADAUSD.json has 0.0 in window '90', while sibling live_ADAUSDC.json has non-zero slope_90s
+    (cdir / "trends" / "24trend" / "live_ADAUSD.json").write_text(
+        json.dumps({
+            "windows": {
+                "90": {"slope_full": 0.0, "growth_coefficient": 0.0, "final_trend": 0, "gradient_recent": 0.0, "current_price": 0.19225},
+                "222": {"slope_full": -2.51e-05, "growth_coefficient": -1.3e-04, "final_trend": -1, "gradient_recent": -2.51e-05, "current_price": 0.19225},
+                "900": {"slope_full": -5.66e-05, "growth_coefficient": -2.9e-04, "final_trend": -1, "gradient_recent": -5.66e-05, "current_price": 0.19225},
+                "9000": {"slope_full": -3.19e-06, "growth_coefficient": -1.6e-05, "final_trend": 0, "gradient_recent": -3.19e-06, "current_price": 0.19225},
+            }
+        }),
+        encoding="utf-8",
+    )
+    (cdir / "trends" / "24trend" / "live_ADAUSDC.json").write_text(
+        json.dumps({
+            "windows": {
+                "90": {"slope_full": -2.46e-05, "growth_coefficient": -1.28e-04, "final_trend": -1, "gradient_recent": -2.46e-05, "current_price": 0.19228},
+                "222": {"slope_full": -2.51e-05, "growth_coefficient": -1.3e-04, "final_trend": -1, "gradient_recent": -2.51e-05, "current_price": 0.19228},
+            }
+        }),
+        encoding="utf-8",
+    )
+    pre_ada = collect_pretrade_telemetry("ADAUSD", cachedb_dir=str(cdir))
+    assert "90s=-2.46e-05" in pre_ada["Dynamic Multi-Window Slopes"]
+
+    # Bug 20: [<stdin>:NN] lines ignored & ui-sync: check healthy clears prior manage_agy error
+    ldir = tmp_path / "logs_b20"
+    ldir.mkdir(exist_ok=True)
+    s_fmt = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - ago))  # noqa: E731
+    (ldir / "app_2026-11-04.log").write_text(
+        "23:56:23 [<stdin>:34] FAIL: offline/research/intelligence_backtest.py -> AttributeError: 'NoneType' object has no attribute '__dict__'\n"
+        "23:56:45 [<stdin>:35] FAIL: offline/research/kraken_continuous_grid/fetch.py -> FileNotFoundError: [Errno 2] No such file or directory\n",
+        encoding="utf-8",
+    )
+    (ldir / "manage_agy.log").write_text(
+        f"[{s_fmt(1200)}] [manage_agy] ERROR: ui_sync_idle_sec / AGY_UI_SYNC_IDLE_SEC missing or invalid ('[23:53:02]')\n"
+        f"[{s_fmt(300)}] [manage_agy] ui-sync: check healthy (rc=10, idle_sec=120s).\n",
+        encoding="utf-8",
+    )
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=2.0)
+    assert anom.error_count == 1
+    assert anom.persistent_errors == []
+    assert not any("<stdin>" in ev for ev in anom.critical_events)
 

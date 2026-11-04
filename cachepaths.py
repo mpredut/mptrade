@@ -269,9 +269,12 @@ def resolve_cachedb_filepath(path: object) -> object:
         for old_p in (flat_path, legacy_sys_path):
             if old_p and os.path.isfile(old_p) and not os.path.exists(sub_path):
                 try:
+                    os.makedirs(os.path.dirname(sub_path), exist_ok=True)
                     os.replace(old_p, sub_path)
                 except OSError:
                     pass
+        if not os.path.exists(sub_path) and os.path.exists(flat_path):
+            return flat_path
         return sub_path
     if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
         return sub_path

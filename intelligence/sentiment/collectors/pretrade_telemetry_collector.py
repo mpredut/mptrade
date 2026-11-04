@@ -644,6 +644,25 @@ def collect_pretrade_telemetry(
                     l24.get("windows") or any(wk in l24 for wk in ("90", "222", "900", "9000"))
                 ):
                     apply_live_24trend_windows(t_entry, l24)
+                    if abs(safe_float(t_entry.get("slope_90s"), 0.0)) < 5e-8:
+                        for cand_sib in sym_variants:
+                            if cand_sib == cand:
+                                continue
+                            if isinstance(l24_sib := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_sib}.json")), dict) and (
+                                l24_sib.get("windows") or any(wk in l24_sib for wk in ("90", "222", "900", "9000"))
+                            ):
+                                sib_t: Dict[str, Any] = {}
+                                apply_live_24trend_windows(sib_t, l24_sib)
+                                sib_px = safe_pos_float(sib_t.get("price"), default=0.0) or 0.0
+                                if cur_px_est <= 0.0 or sib_px <= 0.0 or not _prices_diverged(cur_px_est, sib_px):
+                                    for k90 in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast"):
+                                        if k90 == "trend_90s":
+                                            if t_entry.get(k90) in (None, 0) and sib_t.get(k90) not in (None, 0):
+                                                t_entry[k90] = sib_t[k90]
+                                        elif abs(safe_float(t_entry.get(k90), 0.0)) < 5e-8 and abs(safe_float(sib_t.get(k90), 0.0)) >= 5e-8:
+                                            t_entry[k90] = sib_t[k90]
+                                    if abs(safe_float(t_entry.get("slope_90s"), 0.0)) >= 5e-8:
+                                        break
                     break
             k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_trend.json"))
             if not isinstance(k_data, dict) or not k_data:
@@ -722,8 +741,9 @@ def collect_pretrade_telemetry(
                 ]
                 telemetry["Perpetual Funding Rate"] = f"{fr_base} ({', '.join(fr_extras)})" if fr_extras else fr_base
             if (oi_v := safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) > 0.0:
-                oi_base = telemetry.get("Derivatives Open Interest") or f"${oi_v:,.0f}"
-                if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None and "1h_chg=" not in oi_base:
+                l1_oi = safe_pos_float(cur_m_info.get("native_l1_oi_usd"), default=0.0) or 0.0
+                oi_base = f"${oi_v:,.0f} (l1_oi=${l1_oi / 1e9:.2f}B)" if (l1_oi > 0.0 and abs(l1_oi - oi_v) > 1.0) else f"${oi_v:,.0f}"
+                if (oi_chg := safe_float(cur_m_info.get("oi_1h_chg_pct"), default=None)) is not None:
                     telemetry["Derivatives Open Interest"] = f"{oi_base} (1h_chg={oi_chg:+.2f}%)"
                 else:
                     telemetry["Derivatives Open Interest"] = oi_base
@@ -766,6 +786,11 @@ def collect_pretrade_telemetry(
                                         sib_m[k_sc] = round(v_sc * s_scale, s_dec)
                             sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est
                             sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
+                            sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
+                            if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
+                                if sib_px and sib_px > 0:
+                                    recalculate_live_price_geometry(sib_m24, sib_px)
+                                sib_p_est.update(sib_m24)
                             enrich_microstructure_cvd(sib_m, sib_p_est)
                             sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m))
                             micro_pair = {symbol: cur_m_info, cand_u: sib_m}

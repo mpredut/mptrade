@@ -870,6 +870,7 @@ def enrich_24h_and_microstructure(
             for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                 m24.pop(k_stale, None)
         arch_span_7d_ms = _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
+        active_7d_vals: List[float] = []
         if arch_vals_7d and len(arch_vals_7d) >= 2 and (
             is_eq_sym
             or "chg_7d_pct" not in prices_and_trends[sym]
@@ -879,6 +880,7 @@ def enrich_24h_and_microstructure(
             )
         ):
             prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
+            active_7d_vals = list(arch_vals_7d)
             if 0.0 <= arch_span_7d_ms < 5 * 86400 * 1000:
                 prices_and_trends[sym]["_partial_7d_span_ms"] = arch_span_7d_ms
             else:
@@ -915,6 +917,7 @@ def enrich_24h_and_microstructure(
                     if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
                         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
+                        active_7d_vals = list(vals_7d)
                 except Exception:
                     pass
             if m24.get("vp_source") == "TPO":
@@ -1018,6 +1021,20 @@ def enrich_24h_and_microstructure(
                     if len(pts_24h_bars) < 10:
                         pts_24h_bars = list(pts_5d[-78:])
                     pts_24h = list(pts_24h_bars)
+                    if rth_bar_fresh and matched_series_24h and pts_24h:
+                        last_bar_ts = pts_24h[-1][0]
+                        recent_sub5m = [
+                            pt for pt in matched_series_24h
+                            if isinstance(pt, (list, tuple))
+                            and len(pt) >= 2
+                            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= now_ms_i + 5000
+                            and not _prices_diverged(pt[1], pts_24h[-1][1])
+                        ]
+                        if recent_sub5m:
+                            by_ts = {pt[0]: pt for pt in pts_24h}
+                            for r_pt in recent_sub5m:
+                                by_ts.setdefault(r_pt[0], r_pt)
+                            pts_24h = [by_ts[k] for k in sorted(by_ts)]
                     px_diff_from_chart = bool(
                         pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4
                     )
@@ -1025,7 +1042,7 @@ def enrich_24h_and_microstructure(
                         pts_24h and sym_px_cur > 0 and abs(sym_px_cur - pts_24h[-1][1]) / max(sym_px_cur, pts_24h[-1][1]) > 0.005
                     )
                     if px_diff_from_chart and rth_bar_fresh and not px_diverged_05pct:
-                        pts_24h = list(pts_24h) + [[now_ms_i, round(sym_px_cur, 4)]]
+                        pts_24h = list(pts_24h) + [[int(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
                     elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
                         last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
                         pts_24h = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
@@ -1066,6 +1083,7 @@ def enrich_24h_and_microstructure(
                         vals_5d.append(round(sym_px_cur, 4))
                     if len(vals_5d) >= 2:
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
+                        active_7d_vals = list(vals_5d)
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
                         try:
                             from state_io import save_json_state
@@ -1121,8 +1139,8 @@ def enrich_24h_and_microstructure(
                 if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
-                    if arch_vals_7d and len(arch_vals_7d) >= 2 and not _prices_diverged(ob_mid_m, safe_float(arch_vals_7d[0], 0.0)):
-                        prices_and_trends[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(arch_vals_7d[0], 0.0))
+                    if active_7d_vals and len(active_7d_vals) >= 2 and not _prices_diverged(ob_mid_m, safe_float(active_7d_vals[0], 0.0)):
+                        prices_and_trends[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(active_7d_vals[0], 0.0))
                 elif (
                     not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym

@@ -162,12 +162,17 @@ do_status() {
 do_ui_sync() {
     exec 200>"$LOCK_FILE"
     flock -w 10 200 || exit 0
-    local python_bin="$ROOT/.venv/bin/python3" ssot_vals idle_sec="" min_interval_sec="" rc=0
+    local python_bin="${PYTHON_BIN:-$ROOT/.venv/bin/python3}" ssot_vals idle_sec="" min_interval_sec="" rc=0
+    [ -x "$python_bin" ] || python_bin="$ROOT/myenv/bin/python"
     [ -x "$python_bin" ] || python_bin="/usr/bin/python3"
-    ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT']; from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null || true)"
+    ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT']; from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null | grep -E '^[0-9]+ [0-9]+$' | tail -n 1 || true)"
     read -r idle_sec min_interval_sec <<< "$ssot_vals"
-    [ -z "$idle_sec" ] && idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
-    [ -z "$min_interval_sec" ] && min_interval_sec=720
+    if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
+        idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC 120 | grep -Eo '^[0-9]+' || echo 120)"
+    fi
+    if ! [[ "$min_interval_sec" =~ ^[0-9]+$ ]] || [ "$min_interval_sec" -le 0 ]; then
+        min_interval_sec=720
+    fi
     if ! [[ "$idle_sec" =~ ^[0-9]+$ ]] || [ "$idle_sec" -le 0 ]; then
         log "ERROR: ui_sync_idle_sec / AGY_UI_SYNC_IDLE_SEC missing or invalid ('$idle_sec')" >&2
         exit 1
@@ -177,7 +182,10 @@ do_ui_sync() {
     case "$rc" in
         0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s (cadence >= ${min_interval_sec}s); restarting to surface threads."
             do_restart ;;
-        10|11|12|3) ;;
+        10|11|12|3)
+            if [ -f "$ROOT/logs/manage_agy.log" ] && tail -n 1 "$ROOT/logs/manage_agy.log" 2>/dev/null | grep -Eq "ERROR:|WARNING:"; then
+                log "ui-sync: check healthy (rc=$rc, idle_sec=${idle_sec}s)."
+            fi ;;
         *)  log "WARNING: ui-sync-check failed (rc=$rc); see ~/agy_store_fix.log" >&2 ;;
     esac
 }

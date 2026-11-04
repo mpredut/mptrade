@@ -96,6 +96,13 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
         pts.append((pts_vol[-1][0], pts_vol[-1][1]))
     else:
         pts = [(t_v, p_v) for t_v, p_v, _ in pts_vol]
+    if (
+        len(pts) >= 10
+        and 0.0 < (pts[-1][0] - pts[-2][0]) < 295000.0
+        and abs(pts[-1][1] - pts[-2][1]) <= 1e-9
+        and sum(1 for a, b in zip(pts[:-2][-5:], pts[1:-1][-5:]) if 0.0 < (b[0] - a[0]) < 180000.0) < 2
+    ):
+        pts.pop()
     if mkey is not None:
         if len(_SORTED_TS_PX_MEMO) >= 32:
             _SORTED_TS_PX_MEMO.clear()
