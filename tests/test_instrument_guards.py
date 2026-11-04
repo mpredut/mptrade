@@ -92,10 +92,13 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self._tmp = tempfile.mkdtemp()
         tc.STATE_FILE = os.path.join(self._tmp, "trade_cooldown.json")
         tc.LOCK_FILE = os.path.join(self._tmp, "trade_cooldown.lock")
-        # Isolate the outcome journal from the production logger directory.
+        # Isolate the outcome journal and execution audit from the production logger directory.
         self._log_tmp = tempfile.mkdtemp()
         self._orig_log_dir = outcomes_log.ORDER_OUTCOMES_LOG_DIR
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._log_tmp
+        import instrument as _inst_mod
+        self._orig_exec_audit_dir = _inst_mod._EXECUTION_AUDIT.directory
+        _inst_mod._EXECUTION_AUDIT.directory = self._log_tmp
         # The re-placement queue: isolated — Instrument.place() enqueues on failure, and
         # these tests trigger many expected failures (cooldown/daily-limit) -> they must NOT
         # pollute the real cachedb/order_retry_queue.jsonl.
@@ -116,6 +119,8 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
     def tearDown(self):
         outcomes_log.ORDER_OUTCOMES_LOG_DIR = self._orig_log_dir
+        import instrument as _inst_mod
+        _inst_mod._EXECUTION_AUDIT.directory = self._orig_exec_audit_dir
 
     def _inst(self, provider, params=None):
         api = MarketApi([provider])

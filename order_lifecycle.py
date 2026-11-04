@@ -363,6 +363,11 @@ class TrackedOrderLifecycle:
                 "submit_accepted", pending,
                 qty=pending["requested_qty"],
                 submitted_qty=pending.get("submitted_qty"),
+                price=(
+                    pending.get("submitted_price")
+                    if pending.get("submitted_price") is not None
+                    else pending.get("requested_price")
+                ),
                 status=pending.get("submit_status"),
             )
         else:
