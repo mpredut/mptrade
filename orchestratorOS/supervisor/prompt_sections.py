@@ -398,25 +398,16 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
 
         extras: List[str] = []
         if "chg_15m_pct" in pinfo:
-            micro_horizons = "".join(
-                f"{m_lbl}={_parse_finite_float(pinfo.get(m_k), 0.0):+.2f}% "
-                for m_lbl, m_k in (("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"))
-                if m_k in pinfo and pinfo.get(m_k) is not None
-            )
-            opt_horizons = "".join(
+            all_horizons = "".join(
                 f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
-                for h_lbl, h_k in (("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"))
+                for h_lbl, h_k in (
+                    ("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"),
+                    ("15m", "chg_15m_pct"), ("30m", "chg_30m_pct"), ("1h", "chg_1h_pct"),
+                    ("3h", "chg_3h_pct"), ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
+                )
                 if h_k in pinfo and pinfo.get(h_k) is not None
             )
-            extras.append(
-                f"{micro_horizons}"
-                f"15m={_parse_finite_float(pinfo.get('chg_15m_pct'), 0.0):+.2f}% "
-                f"30m={_parse_finite_float(pinfo.get('chg_30m_pct'), 0.0):+.2f}% "
-                f"1h={_parse_finite_float(pinfo.get('chg_1h_pct'), 0.0):+.2f}% "
-                f"3h={_parse_finite_float(pinfo.get('chg_3h_pct'), 0.0):+.2f}% "
-                f"{opt_horizons}"
-                f"{_format_horizon_range(pinfo, px_f, '24h')}"
-            )
+            extras.append(f"{all_horizons}{_format_horizon_range(pinfo, px_f, '24h')}")
             if isinstance(pinfo.get("recent_tape_15m"), list) and pinfo["recent_tape_15m"]:
                 tape_str = f"tape_15m=[{', '.join(str(x) for x in pinfo['recent_tape_15m'])}]"
                 if pinfo.get("low_15m") is not None and pinfo.get("high_15m") is not None:
@@ -528,7 +519,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
                 f"rally_low={sw_ral:+.2f}%, pullback_high={sw_pb:+.2f}%{maj_sfx}){hist_sfx}"
             )
-        if "slope_15m" in pinfo:
+        if "slope_15m" in pinfo or pinfo.get("slope_2_5h") is not None:
             s90_v = _parse_finite_float(pinfo.get("slope_90s"), None)
             s90_pfx = f"90s={_fmt_slope_val(s90_v, 5)}, " if s90_v is not None else ""
             gr_v = _parse_finite_float(pinfo.get("gradient_recent"), None)
@@ -546,11 +537,14 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
             ]
             g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
-            extras.append(
-                f"slopes({s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
+            s_core = (
+                f"{s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
                 f"15m={_fmt_slope_val(pinfo.get('slope_15m'), 5)}, "
-                f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}{grad_rec_sfx}{fast_sfx}){g_sfx}"
+                f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}"
+                if "slope_15m" in pinfo
+                else f"2.5h={_fmt_slope_val(pinfo.get('slope_2_5h'), 5)}"
             )
+            extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx}){g_sfx}")
         if pinfo.get("vol_1h_pct") is not None:
             vol_part = f"vol_1h={pinfo.get('vol_1h_pct')}%"
             if pinfo.get("adapt_reentry_pct") is not None:
