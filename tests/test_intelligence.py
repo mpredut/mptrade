@@ -2377,8 +2377,120 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
     assert m_net["gaussian_horizon_days"] == pytest.approx(round(9.5 * 1.4, 4))
 
 
+def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_path, monkeypatch):
+    from intelligence.cli import inspect_symbol_intelligence
+    from intelligence.internal.state import survival as surv_mod
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        _infer_symbol_venue_and_fees_bps,
+        _resolve_non_static_prev_metric,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _apply_24h_series_enrichment,
+        compute_24h_price_metrics,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+    )
+    from intelligence.sentiment.guards.extreme_greed_guard import ExtremeGreedGuard
+    from intelligence.sentiment.guards.panic_washout_guard import PanicWashoutGuard
+    from intelligence.sentiment.triggers.market_breadth_trigger import MarketBreadthTrigger
+    from intelligence.sentiment.triggers.sentiment_contrarian_trigger import SentimentContrarianTrigger
+
+    # 1. _apply_24h_series_enrichment computes vol_1h_pct on 5-minute OHLC series (12-13 pts in last 1h, >=20 pts total)
+    t0_ms = 1_710_000_000_000
+    series_5m = [
+        [t0_ms + i * 300_000, 100.0 + ((-1) ** i) * (0.4 + (i % 3) * 0.1)]
+        for i in range(60)
+    ]
+    m24 = compute_24h_price_metrics(series_5m)
+    entry_5m = {"price": series_5m[-1][1]}
+    _apply_24h_series_enrichment("TAOUSD", entry_5m, m24, series_5m, None)
+    assert entry_5m.get("vol_1h_pct") is not None and entry_5m["vol_1h_pct"] > 0.0
+    assert entry_5m.get("adapt_reentry_pct") is not None and entry_5m["adapt_reentry_pct"] > 0.0
+
+    # 2. MarketBreadthTrigger, ExtremeGreedGuard, PanicWashoutGuard accept percentage thresholds/scales & "sentiment" key
+    mbt = MarketBreadthTrigger(washout_advance_threshold=15, blowoff_advance_threshold=88)
+    assert mbt.washout_advance_threshold == pytest.approx(0.15)
+    assert mbt.blowoff_advance_threshold == pytest.approx(0.88)
+    sig_b, ev_b = mbt.evaluate("BTCUSDC", 90000.0, {"advance_ratio": 12.0, "median_change_pct": -5.5})
+    assert sig_b == "BREADTH_WASHOUT_BUY"
+    assert ev_b is not None
+
+    egg = ExtremeGreedGuard(downscale_threshold=80, hard_veto_threshold=90, downscale_factor=35)
+    assert egg.downscale_factor == pytest.approx(0.35)
+    dec_egg = egg.check("BTCUSDC", "BUY", {"value": 84, "sentiment": "Extreme Greed"})
+    assert dec_egg.suggested_scale == pytest.approx(0.35)
+    assert dec_egg.metadata["classification"] == "Extreme Greed"
+
+    sct = SentimentContrarianTrigger()
+    sig_s, ev_s = sct.evaluate("BTCUSDC", 90000.0, {"value": 18, "sentiment": "Extreme Fear"})
+    assert sig_s == "CONTRARIAN_BUY"
+    assert ev_s is not None and ev_s.metadata["fear_greed_classification"] == "Extreme Fear"
+
+    pwg = PanicWashoutGuard(panic_advance_threshold=10, downscale_factor=50)
+    assert pwg.panic_advance_threshold == pytest.approx(0.10)
+    assert pwg.downscale_factor == pytest.approx(0.50)
+    dec_pwg = pwg.check("BTCUSDC", "BUY", breadth_snapshot={"advance_ratio": 8.0, "median_change_pct": -6.0})
+    assert dec_pwg.suggested_scale == pytest.approx(0.50)
+
+    # 3. enrich_open_limit_orders_tca and compute_enterprise_portfolio_risk_metrics resolve metrics across symbol variants
+    prices_map = {
+        "TAOUSD": {"price": 400.0},
+        "TAOUSDC": {"price": 400.0, "vol_1h_pct": 2.5, "beta_btc_24h": 1.6, "corr_btc_24h": 0.92},
+    }
+    open_orders = [{"symbol": "TAOUSD", "side": "BUY", "price": 390.0, "venue": "kraken"}]
+    enrich_open_limit_orders_tca(open_orders, prices_map, {})
+    assert open_orders[0]["fill_prob_1h_pct"] > 50.0
+
+    risk = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [{"venue": "kraken", "symbol": "TAOUSD", "value_usd": 1000.0}],
+            "venue_quote_cash": {"kraken": {"venue": "kraken", "free": 0.0}},
+        },
+        prices_map,
+        {},
+    )
+    assert risk["portfolio_btc_beta"] == pytest.approx(1.6)
+    assert risk["corr_vs_btc_24h"]["TAO"] == pytest.approx(0.92)
+
+    # 4. enrich_sentiment_advisor_live_flow_divergence skips empty BTCUSDC dict and resolves lowercase/Kraken BTC keys
+    sa_dict = {"age_min": 16.0, "recommended_action": "HALT_BUYS", "directional_bias": "BEARISH"}
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_dict,
+        {"BTCUSDC": {}, "btcusd": {"taker_buy_sell_ratio": 1.45, "cvd_15m_usd": 6_000_000.0}},
+    )
+    assert "LIVE_BUY_REVERSAL" in sa_dict.get("live_flow_divergence", "")
+
+    # 5. _infer_symbol_venue_and_fees_bps & _resolve_non_static_prev_metric & cli.inspect_symbol_intelligence
+    assert _infer_symbol_venue_and_fees_bps("SOLUSDC", {"venue": "hyperliquid"})[0] == "hyperliquid"
+    assert _infer_symbol_venue_and_fees_bps("HYPE/USDC", {})[0] == "hyperliquid"
+    assert _resolve_non_static_prev_metric(
+        [{"ts": None, "cvd_15m_usd": 10.0}, {"ts": 1000.0, "cvd_15m_usd": 50.0}],
+        1300.0,
+        "cvd_15m_usd",
+        100.0,
+        100.0,
+        static_tol=1.0,
+        min_diff=5.0,
+    ) == pytest.approx(50.0)
+
+    (tmp_path / "cache_T_trend.json").write_text(
+        json.dumps({"BTCUSDC": {"T": 14, "n": 5, "median_d": 2.0, "p90_d": 5.0}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(surv_mod, "estimate_T", lambda sym: {"T": 19, "n": 33, "median_d": 4.0, "p90_d": 11.0, "T_emp": 20.0})
+    rep = inspect_symbol_intelligence("BTCUSDC", cache_dir=str(tmp_path))
+    assert rep["pillar1_internal"]["trend_survival"]["T"] == 19
+    assert rep["pillar1_internal"]["trend_survival"]["samples"] == 33
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

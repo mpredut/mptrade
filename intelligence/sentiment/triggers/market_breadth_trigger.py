@@ -22,9 +22,9 @@ class MarketBreadthTrigger:
         blowoff_advance_threshold: float = 0.88,
         blowoff_median_threshold: float = 6.0,
     ) -> None:
-        self.washout_advance_threshold = clean_scale(washout_advance_threshold, 0.15)
+        self.washout_advance_threshold = clean_scale(washout_advance_threshold, 0.15, allow_percent=True)
         self.washout_median_threshold = safe_float(washout_median_threshold, -4.0)
-        self.blowoff_advance_threshold = clean_scale(blowoff_advance_threshold, 0.88)
+        self.blowoff_advance_threshold = clean_scale(blowoff_advance_threshold, 0.88, allow_percent=True)
         self.blowoff_median_threshold = safe_float(blowoff_median_threshold, 6.0)
         if self.washout_advance_threshold > self.blowoff_advance_threshold:
             self.washout_advance_threshold, self.blowoff_advance_threshold = (
@@ -50,7 +50,7 @@ class MarketBreadthTrigger:
         price_f = safe_pos_float(price, 0.0)
         if snapshot is None or price_f <= 0.0:
             return None, None
-        adv_r = safe_float(obj_attr(snapshot, "advance_ratio", None), default=None)
+        adv_r = clean_scale(obj_attr(snapshot, "advance_ratio", None), default=None, allow_percent=True)
         med_c = safe_float(obj_attr(snapshot, "median_change_pct", None), default=None)
         if adv_r is None or med_c is None:
             return None, None

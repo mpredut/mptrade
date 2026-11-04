@@ -52,7 +52,7 @@ class SentimentContrarianTrigger:
         price = price_f
         now = resolve_now_ts(ts)
         val = int(round(val_f)) if float(val_f).is_integer() else val_f
-        raw_cls = obj_attr(snapshot, "classification", None)
+        raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(snapshot, "sentiment", None)
         cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
         trend_7d = obj_attr(snapshot, "trend_7d_change", None)
 

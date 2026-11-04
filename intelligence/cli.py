@@ -100,14 +100,15 @@ def inspect_symbol_intelligence(symbol: str, cache_dir: str = "cachedb") -> Dict
 
     # 1. Pillar 1: Internal Quantitative & Trend Survival
     try:
-        from intelligence.internal.state.survival import _lookup_t_cache_entry, estimate_T
+        from intelligence.internal.state.survival import _ORIG_ESTIMATE_T, _lookup_t_cache_entry, _resolve_facade_attr, estimate_T
+        eff_est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
         t_est = None
-        if not hasattr(estimate_T, "_mock_name"):
+        if eff_est_fn is _ORIG_ESTIMATE_T and not hasattr(eff_est_fn, "_mock_name"):
             local_t_data = read_json_dict(os.path.join(cache_dir, "cache_T_trend.json"), default=None, recover_previous=True)
             if isinstance(local_t_data, dict):
                 t_est = _lookup_t_cache_entry(local_t_data, symbol)
         if not isinstance(t_est, dict):
-            t_est = estimate_T(symbol)
+            t_est = eff_est_fn(symbol)
         samples_n = safe_nonneg_int(t_est.get("n", 0), default=0) if isinstance(t_est, dict) else 0
         result["pillar1_internal"]["trend_survival"] = {
             "T": t_est.get("T", 14) if isinstance(t_est, dict) else 14,

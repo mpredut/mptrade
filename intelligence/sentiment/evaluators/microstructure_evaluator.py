@@ -289,9 +289,12 @@ def compute_liquidation_clusters(
 def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[str, float, float, float]:
     """Infer canonical venue name, maker/taker fee bps, and half-spread bps from SSOT `_VENUE_DEFAULT_FEE_SPECS`."""
     sym_u = str(sym or "").strip().upper()
-    if sym_u.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:", "T212:")):
-        venue = normalize_venue_name(sym_u.split(":", 1)[0])
-    elif sym_u == "HYPEUSDC":
+    explicit_v = normalize_venue_name((m_dict or {}).get("venue")) if isinstance(m_dict, dict) else ""
+    if explicit_v in _VENUE_DEFAULT_FEE_SPECS:
+        venue = explicit_v
+    elif ":" in sym_u and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0])) in _VENUE_DEFAULT_FEE_SPECS:
+        venue = pref_v
+    elif canonical_base_asset(sym_u) == "HYPE" and sym_u.endswith("USDC"):
         venue = "hyperliquid"
     elif sym_u.endswith(("USDC", "USDT")):
         venue = "binance"
@@ -372,7 +375,10 @@ def _resolve_non_static_prev_metric(
     """When `ref_val` is nearly identical to `cur_val`, scan recent history (3m-60m) for the last distinct value."""
     if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
         for cand in reversed(h_list):
-            if 180.0 <= (eff_now - float(cand["ts"])) <= 3600.0:
+            if not isinstance(cand, dict):
+                continue
+            cand_ts = safe_pos_float(cand.get("ts"), default=0.0) or 0.0
+            if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
                 cand_v = safe_float(cand.get(key), None)
                 if cand_v is not None and abs(cur_val - cand_v) >= min_diff:
                     return cand_v
@@ -409,11 +415,13 @@ def update_microstructure_cycle_deltas(
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
             continue
-        h_list = [x for x in (mhist.get(msym) or []) if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
+        raw_sym_hist = casefold_get(mhist, msym)
+        h_list = [x for x in (raw_sym_hist if isinstance(raw_sym_hist, list) else []) if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
         if not h_list:
             for ck in cache_symbol_variants(msym, include_base=True):
-                if ck in mhist and isinstance(mhist[ck], list):
-                    h_list = [x for x in mhist[ck] if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
+                cand_hist = casefold_get(mhist, ck)
+                if isinstance(cand_hist, list):
+                    h_list = [x for x in cand_hist if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
                     if h_list:
                         break
         ref_snap: Optional[Dict[str, Any]] = next(

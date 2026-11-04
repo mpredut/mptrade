@@ -225,6 +225,12 @@ def enrich_open_limit_orders_tca(
         if not sym or lim_px is None or lim_px <= 0.0:
             continue
         p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
+        if not isinstance(p_entry, dict) and isinstance(prices_and_trends, dict):
+            for cand in cache_symbol_variants(sym, include_base=False):
+                cand_p = casefold_get(prices_and_trends, cand)
+                if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
+                    p_entry = cand_p
+                    break
         m_entry = casefold_get(microstructure, sym) if isinstance(microstructure, dict) else None
         if not isinstance(m_entry, dict):
             for cand in cache_symbol_variants(sym, include_base=False):
@@ -249,7 +255,14 @@ def enrich_open_limit_orders_tca(
         ):
             o.pop(_stale_tca_k, None)
         dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
-        vol_1h = max(0.35, safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=1.1) or 1.1)
+        raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
+        if raw_vol_1h is None and isinstance(prices_and_trends, dict):
+            for cand in cache_symbol_variants(sym, include_base=True):
+                cand_p = casefold_get(prices_and_trends, cand)
+                if isinstance(cand_p, dict) and (v_cand := safe_pos_float(cand_p.get("vol_1h_pct"), default=None)) is not None:
+                    raw_vol_1h = v_cand
+                    break
+        vol_1h = max(0.35, raw_vol_1h or 1.1)
         v_norm = normalize_venue_name(o.get("venue"))
         if v_norm == "t212":
             dec = 2
@@ -353,17 +366,21 @@ def compute_enterprise_portfolio_risk_metrics(
             sym = str(p.get("symbol") or "").strip().upper()
             base = canonical_base_asset(sym)
             p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
-            if not isinstance(p_info, dict) and isinstance(prices_and_trends, dict):
-                p_info = next(
-                    (v for c in cache_symbol_variants(sym) if isinstance((v := casefold_get(prices_and_trends, c)), dict)),
-                    {},
-                )
-            elif not isinstance(p_info, dict):
+            if not isinstance(p_info, dict):
                 p_info = {}
+            def _resolve_p_metric(m_key: str) -> Any:
+                if p_info.get(m_key) is not None:
+                    return p_info.get(m_key)
+                if isinstance(prices_and_trends, dict):
+                    for c in cache_symbol_variants(sym, include_base=True):
+                        if isinstance(v_d := casefold_get(prices_and_trends, c), dict) and v_d.get(m_key) is not None:
+                            return v_d.get(m_key)
+                return None
+
             is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
-            beta_v = 1.0 if base == "BTC" else safe_float(p_info.get("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
-            corr_v = 1.0 if base == "BTC" else safe_float(p_info.get("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
-            vol_1h = safe_pos_float(p_info.get("vol_1h_pct"), default=1.0) or 1.0
+            beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
+            corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
+            vol_1h = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=1.0) or 1.0
             daily_vol_pct = min(25.0, max(0.8, vol_1h * math.sqrt(24.0)))
             pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
 

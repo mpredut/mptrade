@@ -30,8 +30,8 @@ class PanicWashoutGuard:
         downscale_factor: float = 0.50,
     ) -> None:
         self.severe_panic_fng_threshold = safe_thresh(severe_panic_fng_threshold, 12)
-        self.panic_advance_threshold = clean_scale(panic_advance_threshold, 0.10)
-        self.downscale_factor = clean_scale(downscale_factor, 0.50, min_positive=True)
+        self.panic_advance_threshold = clean_scale(panic_advance_threshold, 0.10, allow_percent=True)
+        self.downscale_factor = clean_scale(downscale_factor, 0.50, allow_percent=True, min_positive=True)
 
     def check(
         self,
@@ -65,7 +65,7 @@ class PanicWashoutGuard:
 
         # 2. Check Market Breadth Washout
         if breadth_snapshot is not None:
-            adv_ratio = safe_float(obj_attr(breadth_snapshot, "advance_ratio", None), default=None)
+            adv_ratio = clean_scale(obj_attr(breadth_snapshot, "advance_ratio", None), default=None, allow_percent=True)
             med_chg = safe_float(obj_attr(breadth_snapshot, "median_change_pct", None), default=None)
             if (
                 adv_ratio is not None

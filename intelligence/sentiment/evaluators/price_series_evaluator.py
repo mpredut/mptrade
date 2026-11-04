@@ -805,10 +805,10 @@ def _apply_24h_series_enrichment(
                     if t_ms >= cutoff_1h_ms and (t_ms - last_t_ms) >= 55000.0:
                         tail_pts_m.append((t_ms, px_v))
                         last_t_ms = t_ms
-                has_dense_1h_bars = len(tail_pts_m) >= 15
-                if len(tail_pts_m) < 10 and (entry.get("vol_1h_pct") is None or stale_short_cache):
+                has_dense_1h_bars = len(tail_pts_m) >= 20
+                if len(tail_pts_m) < 20 and (entry.get("vol_1h_pct") is None or stale_short_cache):
                     tail_pts_m = all_pts_m[-60:]
-            if len(tail_pts_m) >= 10 and (has_dense_1h_bars or entry.get("vol_1h_pct") is None or stale_short_cache):
+            if len(tail_pts_m) >= 20 and (has_dense_1h_bars or entry.get("vol_1h_pct") is None or stale_short_cache):
                 dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
                 if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
                     entry["vol_1h_pct"] = v1h_m

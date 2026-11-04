@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import normalize_venue_name
+from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_nonneg_float,
@@ -290,11 +291,13 @@ def enrich_sentiment_advisor_live_flow_divergence(
     if not isinstance(sentiment_advisor, dict) or not isinstance(microstructure, dict):
         return
     sa_age = safe_float(sentiment_advisor.get("age_min"), 0.0) or 0.0
-    btc_m = (
-        microstructure.get("BTCUSDC")
-        or microstructure.get("BTCUSDT")
-        or microstructure.get("XBTUSD")
-        or {}
+    btc_m = next(
+        (
+            cand
+            for k in ("BTCUSDC", "BTCUSDT", "BTCUSD", "XBTUSD", "XXBTZUSD", "BTC")
+            if isinstance(cand := casefold_get(microstructure, k), dict) and cand
+        ),
+        {},
     )
     if sa_age < 10.0 or not isinstance(btc_m, dict):
         return

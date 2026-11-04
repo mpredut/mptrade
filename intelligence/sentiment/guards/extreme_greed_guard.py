@@ -32,7 +32,7 @@ class ExtremeGreedGuard:
         self.hard_veto_threshold = _safe_thresh(hard_veto_threshold, 90)
         if self.downscale_threshold > self.hard_veto_threshold:
             self.downscale_threshold = self.hard_veto_threshold
-        self.downscale_factor = clean_scale(downscale_factor, 0.35, min_positive=True)
+        self.downscale_factor = clean_scale(downscale_factor, 0.35, allow_percent=True, min_positive=True)
 
     def check(
         self,
@@ -51,7 +51,8 @@ class ExtremeGreedGuard:
         if val_f is None:
             return GuardDecision.allow("ExtremeGreedGuard", "no_sentiment_data")
         val = int(round(val_f))
-        cls_label = str(obj_attr(snapshot, "classification", None) or "Unknown")
+        raw_cls = obj_attr(snapshot, "classification", None) or obj_attr(snapshot, "sentiment", None)
+        cls_label = str(raw_cls).strip() if (isinstance(raw_cls, str) and raw_cls.strip()) else "Unknown"
 
         if val >= self.hard_veto_threshold:
             return GuardDecision.veto(
