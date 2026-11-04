@@ -311,6 +311,13 @@ class BinanceAccountCacheHealthTest(unittest.TestCase):
         self.assertEqual(raised.exception.reason,
                          "account_cache_health_missing")
 
+    def test_zombie_pid_is_treated_as_dead_writer(self):
+        fake_stat = "12345 (cacheManager) Z 1 12345 12345 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 987654 0 0"
+        with unittest.mock.patch.object(health, "read_text_file", return_value=fake_stat), \
+             unittest.mock.patch.object(health.os, "kill", return_value=None):
+            self.assertFalse(health._pid_is_alive(12345))
+            self.assertIsNone(health._pid_started_at_ms(12345))
+
 
 class BinanceCacheHealthConfigTest(unittest.TestCase):
     def test_positive_finite_values_are_accepted(self):

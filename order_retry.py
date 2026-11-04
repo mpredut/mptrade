@@ -493,8 +493,8 @@ def enqueue(
     custom_ttl = safe_pos_float(raw_ttl, default=None)
     if custom_ttl is not None:
         custom_ttl = min(custom_ttl, MAX_GLOBAL_ORDER_TTL_SEC)
-    requested_price = safe_float(requested_price, default=None)
-    ref_price = safe_float(ref_price, default=None)
+    requested_price = safe_pos_float(requested_price, default=None)
+    ref_price = safe_pos_float(ref_price, default=None)
     rec = {
         "id": record_id,
         "prefix": prefix,
@@ -796,6 +796,8 @@ def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
     for r in _safe_load_all():
+        if str(r.get("lifecycle") or "").lower() != "accepted":
+            continue
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
             for k in _record_order_and_client_ids(r):

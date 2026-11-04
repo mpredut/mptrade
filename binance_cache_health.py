@@ -108,7 +108,10 @@ def _pid_started_at_ms(pid: int) -> Optional[int]:
         rparen = stat.rfind(")")
         if rparen < 0:
             return None
-        start_ticks = int(stat[rparen + 2:].split()[19])
+        fields = stat[rparen + 1:].split()
+        if len(fields) <= 19 or fields[0] in {"Z", "X", "x"}:
+            return None
+        start_ticks = int(fields[19])
         if start_ticks <= 0:
             return None
         proc_lines = read_text_lines("/proc/stat")
@@ -280,6 +283,13 @@ def _pid_is_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, OverflowError, ValueError, TypeError, OSError):
         return False
+    stat = read_text_file(f"/proc/{pid_val}/stat")
+    if stat:
+        rparen = stat.rfind(")")
+        if rparen >= 0:
+            fields = stat[rparen + 1:].split()
+            if fields and fields[0] in {"Z", "X", "x"}:
+                return False
     return True
 
 

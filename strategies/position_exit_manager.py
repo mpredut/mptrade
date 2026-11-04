@@ -152,6 +152,8 @@ class PositionSnapshot(PriceGeometrySnapshot):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=0.0))
         for attr in ("net_qty", "sellable_qty", "current_time_s", "vol_1h"):
             setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
+        if self.current_time_s > 1e11:
+            self.current_time_s /= 1000.0
         for attr in ("sma_value", "window_move_pct"):
             setattr(self, attr, safe_float(getattr(self, attr, None), default=None))
         if self.shadow_prices is None or isinstance(self.shadow_prices, (bool, str, bytes, dict)) or not hasattr(self.shadow_prices, "__iter__"):
@@ -241,8 +243,12 @@ class ReentrySnapshot(PriceGeometrySnapshot):
         self.current_price = safe_pos_float(self.current_price, default=0.0)
         for attr in ("last_sell_price", "post_sell_peak", "post_sell_trough", "last_sell_time_s"):
             setattr(self, attr, safe_pos_float(getattr(self, attr, None), default=None))
+        if self.last_sell_time_s is not None and self.last_sell_time_s > 1e11:
+            self.last_sell_time_s /= 1000.0
         for attr in ("current_time_s", "vol_1h"):
             setattr(self, attr, safe_nonneg_float(getattr(self, attr, 0.0), default=0.0))
+        if self.current_time_s > 1e11:
+            self.current_time_s /= 1000.0
         if self.last_exit_kind is not None:
             if isinstance(self.last_exit_kind, (bool, dict, list, tuple, set, frozenset)):
                 self.last_exit_kind = None
@@ -351,7 +357,9 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
 def _resolve_now_s(current_time_s: Optional[float]) -> float:
     """Resolve explicit simulation/snapshot timestamp or fall back to wall-clock time."""
     tf = safe_nonneg_float(current_time_s, default=None)
-    return tf if tf is not None else time.time()
+    if tf is None:
+        return time.time()
+    return tf / 1000.0 if tf > 1e11 else tf
 
 
 def _clamp_state_ts(state_dict: Dict[str, Any], key: str, now: float) -> float:

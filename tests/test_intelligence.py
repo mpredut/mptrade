@@ -3476,6 +3476,102 @@ def test_iter67_pricewindow_sample_rate_cachetrend_ms_and_composite_granular_qli
     assert q_ok is True and q_scale == pytest.approx(0.25)
 
 
+def test_iter68_accepted_ttl_map_spot_rules_ms_and_exit_manager_ms(monkeypatch):
+    import order_retry
+    from strategies import spot_rules
+    from strategies.position_exit_manager import (
+        PositionExitConfig,
+        PositionExitManager,
+        PositionSnapshot,
+        ReentryAction,
+        ReentrySnapshot,
+    )
+
+    # 1. order_retry.get_accepted_order_ttl_map only includes lifecycle == "accepted"
+    fake_records = [
+        {"lifecycle": "submit_pending", "order_id": "101", "ttl_sec": 300.0, "place_kwargs": {"client_order_id": "cid-101"}},
+        {"lifecycle": "awaiting_cancel", "order_id": "102", "ttl_sec": 450.0, "place_kwargs": {"client_order_id": "cid-102"}},
+        {"lifecycle": "accepted", "order_id": "103", "ttl_sec": 600.0, "place_kwargs": {"client_order_id": "cid-103"}},
+    ]
+    monkeypatch.setattr(order_retry, "_safe_load_all", lambda: fake_records)
+    ttl_map = order_retry.get_accepted_order_ttl_map()
+    assert "101" not in ttl_map and "cid-101" not in ttl_map
+    assert "102" not in ttl_map and "cid-102" not in ttl_map
+    assert ttl_map["103"] == pytest.approx(600.0) and ttl_map["cid-103"] == pytest.approx(600.0)
+
+    # 2. spot_rules: check_fast_profit_reversal and check_slow_grind_exhaustion normalize ms (>1e11) and descending shadows
+    base_s = 1700000000.0
+    shadows_ms_desc = [
+        ((base_s + 50.0) * 1000.0, 111.0),
+        ((base_s + 30.0) * 1000.0, 115.0),
+        ((base_s + 10.0) * 1000.0, 108.0),
+    ]
+    trig_fast, gain_pct, drop_pct = spot_rules.check_fast_profit_reversal(
+        current_price=111.0,
+        avg_cost=100.0,
+        base_tp_pct=5.0,
+        mult=2.0,
+        shadow_prices=shadows_ms_desc,
+        window_sec=60.0,
+        drop_pct=2.0,
+        current_time=base_s + 55.0,
+    )
+    assert trig_fast is True
+    assert gain_pct == pytest.approx(11.0)
+    assert drop_pct == pytest.approx((115.0 - 111.0) / 115.0 * 100.0)
+
+    # check_slow_grind_exhaustion should NOT falsely trigger when entry_ts and current_ts are 900s apart in ms
+    trig_grind_short, _ = spot_rules.check_slow_grind_exhaustion(
+        current_price=116.0,
+        avg_cost=100.0,
+        entry_ts=base_s * 1000.0,
+        current_ts=(base_s + 900.0) * 1000.0,
+        min_days=7.0,
+        min_gain_pct=15.0,
+        recent_peak=120.0,
+        shadow_prices=shadows_ms_desc,
+        flash_window_sec=900.0,
+        flash_drop_pct=1.5,
+        structural_drop_pct=2.5,
+    )
+    assert trig_grind_short is False
+
+    # And when genuinely >= 7 days in ms, it triggers properly
+    trig_grind_long, reason_grind = spot_rules.check_slow_grind_exhaustion(
+        current_price=116.0,
+        avg_cost=100.0,
+        entry_ts=base_s * 1000.0,
+        current_ts=(base_s + 8.0 * 86400.0) * 1000.0,
+        min_days=7.0,
+        min_gain_pct=15.0,
+        recent_peak=120.0,
+        shadow_prices=[],
+        flash_window_sec=900.0,
+        flash_drop_pct=1.5,
+        structural_drop_pct=2.5,
+    )
+    assert trig_grind_long is True and "slow_grind_structural_drop" in reason_grind
+
+    # 3. PositionSnapshot and ReentrySnapshot normalize ms timestamps (>1e11) to seconds
+    ps = PositionSnapshot(symbol="BTCUSDC", net_qty=1.0, sellable_qty=1.0, avg_buy_price=100.0, current_price=105.0, current_time_s=base_s * 1000.0)
+    assert ps.current_time_s == pytest.approx(base_s)
+
+    rs = ReentrySnapshot(
+        symbol="BTCUSDC",
+        current_price=99.5,
+        last_sell_price=100.0,
+        last_exit_kind="STOP",
+        last_sell_time_s=base_s * 1000.0,
+        current_time_s=(base_s + 30.0) * 1000.0,
+    )
+    assert rs.last_sell_time_s == pytest.approx(base_s)
+    assert rs.current_time_s == pytest.approx(base_s + 30.0)
+
+    mgr = PositionExitManager(PositionExitConfig(reentry_post_stop_cooldown_sec=60.0, reentry_sl_bounce_pct=0.01))
+    dec = mgr.evaluate_reentry(rs)
+    assert dec.action == ReentryAction.WAIT and "post_stop_stabilization_cooldown" in dec.reason and "elapsed=30s < 60s" in dec.reason
+
+
 if __name__ == "__main__":
     unittest.main()
 
