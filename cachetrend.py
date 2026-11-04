@@ -2102,7 +2102,17 @@ class _NonBinanceTrendPoller:
         self.stop_event.set()
         for ws in self.ws_streams:
             try:
-                ws.stop(timeout=min(2.0, float(timeout or 2.0)))
+                stop_ev = getattr(ws, "_stop_event", None)
+                if stop_ev is not None:
+                    stop_ev.set()
+            except Exception:
+                pass
+        ws_budget = min(2.0, float(timeout or 2.0))
+        ws_deadline = time.monotonic() + ws_budget
+        for ws in self.ws_streams:
+            try:
+                rem = max(0.05, ws_deadline - time.monotonic())
+                ws.stop(timeout=rem)
             except Exception:
                 pass
         if self.thread is not threading.current_thread():

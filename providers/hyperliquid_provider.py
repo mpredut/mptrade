@@ -22,6 +22,7 @@ import time
 from typing import List, Optional
 
 from botcore import (
+    _LOCAL_MODULE_LOCK,
     _parse_bool_flag,
     exact_nonneg_int,
     exact_pos_int,
@@ -72,14 +73,15 @@ _LIVE_ENV = "HL_LIVE_ORDERS"
 
 def _hl_client_module():
     """Import hyperliquid/hl_client.py while preserving sys.path."""
-    saved_path = list(sys.path)
-    try:
-        if _HL_DIR not in sys.path:
-            sys.path.insert(0, _HL_DIR)
-        import hl_client
-        return hl_client
-    finally:
-        sys.path[:] = saved_path
+    with _LOCAL_MODULE_LOCK:
+        saved_path = list(sys.path)
+        try:
+            if _HL_DIR not in sys.path:
+                sys.path.insert(0, _HL_DIR)
+            import hl_client
+            return hl_client
+        finally:
+            sys.path[:] = saved_path
 
 
 def _mainnet_setting() -> bool:

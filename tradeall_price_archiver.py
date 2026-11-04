@@ -93,7 +93,21 @@ def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
     """Stop producers, flush every pending tick, then close shared resources."""
     if nb_poller is not None:
         try:
-            nb_poller.stop()
+            stop_ev = getattr(nb_poller, "stop_event", None)
+            if stop_ev is not None:
+                stop_ev.set()
+            for ws in getattr(nb_poller, "ws_streams", None) or ():
+                ws_ev = getattr(ws, "_stop_event", None)
+                if ws_ev is not None:
+                    ws_ev.set()
+        except Exception:
+            pass
+    ws_mgr = getattr(ws_module, "bapi_ws_manager", None) if ws_module is not None else None
+    if ws_mgr is not None:
+        try:
+            ws_ev = getattr(ws_mgr, "_stop_event", None)
+            if ws_ev is not None:
+                ws_ev.set()
         except Exception:
             pass
     for cache in (caches or ()):
@@ -104,7 +118,12 @@ def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
                 pass
     for cache in (caches or ()):
         try:
-            cache.shutdown()
+            cache.shutdown(timeout=1.0)
+        except TypeError:
+            try:
+                cache.shutdown()
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -113,12 +132,32 @@ def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
             pass
     if current_price_mgr is not None:
         try:
-            current_price_mgr.shutdown()
+            current_price_mgr.shutdown(timeout=1.0)
+        except TypeError:
+            try:
+                current_price_mgr.shutdown()
+            except Exception:
+                pass
         except Exception:
             pass
-    if ws_module is not None and getattr(ws_module, "bapi_ws_manager", None) is not None:
+    if nb_poller is not None:
         try:
-            ws_module.bapi_ws_manager.stop()
+            nb_poller.stop(timeout=1.0)
+        except TypeError:
+            try:
+                nb_poller.stop()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    if ws_mgr is not None:
+        try:
+            ws_mgr.stop(timeout=1.0)
+        except TypeError:
+            try:
+                ws_mgr.stop()
+            except Exception:
+                pass
         except Exception:
             pass
 

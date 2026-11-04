@@ -14,6 +14,7 @@ gate. Importing this module does not eagerly initialize the Kraken client.
 """
 import os
 import re
+import threading
 import time
 from typing import Optional, List
 
@@ -201,6 +202,7 @@ class KrakenProvider(MarketDataProvider):
         self._auto_cli = None
         self._bot_fallback_cli = None
         self._minqty = {}  # Cache symbol-to-ordermin from pair_info.
+        self._client_lock = threading.RLock()
 
     @property
     def name(self) -> str:
@@ -229,33 +231,40 @@ class KrakenProvider(MarketDataProvider):
     def _client(self):
         if self._cli is not None:
             return self._cli
-        KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
-        # Read Kraken-specific credentials, with environment variables taking
-        # precedence. Preserve the existing whole-profile priority: primary,
-        # then SPARE, then BOT. The resolver prevents cross-profile key mixing.
-        values = env_values_map(
-            _KRAKEN_DIR,
-            (
-                "KRAKEN_API_KEY", "KRAKEN_API_SECRET",
-                "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE",
-                "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT",
-            ),
-        )
-        try:
-            credentials = kraken_credentials("fleet", values=values)
-            api_key, api_secret = credentials.key, credentials.secret
-        except CredentialProfileMissingError:
-            api_key = api_secret = None
-        cli = KrakenClient(api_key, api_secret)
-        # Cache only a credentialed client. When keys are initially absent, retry
-        # loading them on the next tick so the process can recover without restart.
-        if api_key and api_secret:
-            self._cli = cli
-            self._auto_cli = cli
-        else:
-            print("[Kraken] ⚠ STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
-                  " -> the account reads (balance/orders) will fail; NOT caching, retrying on the next tick.")
-        return cli
+        lock = getattr(self, "_client_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._client_lock = lock
+        with lock:
+            if self._cli is not None:
+                return self._cli
+            KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
+            # Read Kraken-specific credentials, with environment variables taking
+            # precedence. Preserve the existing whole-profile priority: primary,
+            # then SPARE, then BOT. The resolver prevents cross-profile key mixing.
+            values = env_values_map(
+                _KRAKEN_DIR,
+                (
+                    "KRAKEN_API_KEY", "KRAKEN_API_SECRET",
+                    "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE",
+                    "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT",
+                ),
+            )
+            try:
+                credentials = kraken_credentials("fleet", values=values)
+                api_key, api_secret = credentials.key, credentials.secret
+            except CredentialProfileMissingError:
+                api_key = api_secret = None
+            cli = KrakenClient(api_key, api_secret)
+            # Cache only a credentialed client. When keys are initially absent, retry
+            # loading them on the next tick so the process can recover without restart.
+            if api_key and api_secret:
+                self._cli = cli
+                self._auto_cli = cli
+            else:
+                print("[Kraken] ⚠ STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
+                      " -> the account reads (balance/orders) will fail; NOT caching, retrying on the next tick.")
+            return cli
 
     def _order_query_fallback_client(self):
         """Return a KrakenClient using the BOT profile when the auto-created fleet/SPARE key lacks order-query permission."""
@@ -264,18 +273,26 @@ class KrakenProvider(MarketDataProvider):
         fb = getattr(self, "_bot_fallback_cli", None)
         if fb is not None:
             return fb
-        try:
-            KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
-            values = env_values_map(_KRAKEN_DIR, ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"))
-            creds = kraken_credentials("bot", values=values)
-            primary_key = getattr(self._cli, "api_key", None)
-            if creds.key and creds.secret and creds.key != primary_key:
-                fb = KrakenClient(creds.key, creds.secret)
-                self._bot_fallback_cli = fb
+        lock = getattr(self, "_client_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._client_lock = lock
+        with lock:
+            fb = getattr(self, "_bot_fallback_cli", None)
+            if fb is not None:
                 return fb
-        except Exception:  # noqa: BLE001
-            pass
-        return None
+            try:
+                KrakenClient = load_local_module(_KRAKEN_DIR, "kraken_client").KrakenClient
+                values = env_values_map(_KRAKEN_DIR, ("KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"))
+                creds = kraken_credentials("bot", values=values)
+                primary_key = getattr(self._cli, "api_key", None)
+                if creds.key and creds.secret and creds.key != primary_key:
+                    fb = KrakenClient(creds.key, creds.secret)
+                    self._bot_fallback_cli = fb
+                    return fb
+            except Exception:  # noqa: BLE001
+                pass
+            return None
 
     def _query_with_bot_fallback(self, fn, err_prefix: Optional[str] = None):
         """Execute ``fn(cli)`` on primary client, falling back to BOT client on permission denied or transient rate-limit/nonce contention."""

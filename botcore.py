@@ -779,19 +779,23 @@ def parse_notify_enabled_flag(notify_enabled: object, conf: dict[str, str], conf
     raise ValueError(f"Invalid {label} {raw!r}")
 
 
+_LOCAL_MODULE_LOCK = threading.RLock()
+
+
 def ensure_local_module_priority(directory: str, *module_names: str) -> None:
     """Ensure ``directory`` is first on ``sys.path`` (with repo root available) and evict foreign cached modules."""
-    abs_dir = os.path.abspath(directory)
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
-    if sys.path[:1] != [abs_dir]:
-        if abs_dir in sys.path:
-            sys.path.remove(abs_dir)
-        sys.path.insert(0, abs_dir)
-    for mod_name in module_names:
-        mod_file = getattr(sys.modules.get(mod_name), "__file__", None)
-        if isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir:
-            sys.modules.pop(mod_name, None)
+    with _LOCAL_MODULE_LOCK:
+        abs_dir = os.path.abspath(directory)
+        if _REPO_ROOT not in sys.path:
+            sys.path.insert(0, _REPO_ROOT)
+        if sys.path[:1] != [abs_dir]:
+            if abs_dir in sys.path:
+                sys.path.remove(abs_dir)
+            sys.path.insert(0, abs_dir)
+        for mod_name in module_names:
+            mod_file = getattr(sys.modules.get(mod_name), "__file__", None)
+            if isinstance(mod_file, str) and mod_file and os.path.dirname(os.path.abspath(mod_file)) != abs_dir:
+                sys.modules.pop(mod_name, None)
 
 
 _AMBIGUOUS_LOCAL_MODULES = (
@@ -816,51 +820,58 @@ def load_local_module(
     reload: bool = False,
 ):
     """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
-    abs_dir = os.path.abspath(directory)
-    stem = name[:-3] if name.endswith(".py") else name
-    key = module_key or stem
-    if register and not reload:
-        mod = sys.modules.get(key)
-        mod_file = getattr(mod, "__file__", None) if mod is not None else None
-        if mod is not None and (
-            not isinstance(mod_file, str)
-            or not mod_file
-            or os.path.dirname(os.path.abspath(mod_file)) == abs_dir
-        ):
-            return mod
-    import importlib.util
-    orig_sys_path = list(sys.path)
-    saved_ambiguous: dict[str, object] = {}
-    for amb_name in _AMBIGUOUS_LOCAL_MODULES:
-        if amb_name in sys.modules:
-            amb_file = getattr(sys.modules[amb_name], "__file__", None)
-            if isinstance(amb_file, str) and amb_file and os.path.dirname(os.path.abspath(amb_file)) != abs_dir:
-                saved_ambiguous[amb_name] = sys.modules.pop(amb_name)
-    succeeded = False
-    try:
-        while abs_dir in sys.path:
-            sys.path.remove(abs_dir)
-        while _REPO_ROOT in sys.path:
-            sys.path.remove(_REPO_ROOT)
-        sys.path.insert(0, _REPO_ROOT)
-        sys.path.insert(0, abs_dir)
-        spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
-        mod = importlib.util.module_from_spec(spec)
-        if register:
-            sys.modules[key] = mod
+    with _LOCAL_MODULE_LOCK:
+        abs_dir = os.path.abspath(directory)
+        stem = name[:-3] if name.endswith(".py") else name
+        key = module_key or stem
+        if register and not reload:
+            mod = sys.modules.get(key)
+            mod_file = getattr(mod, "__file__", None) if mod is not None else None
+            if (
+                mod is not None
+                and getattr(mod, "__mptrade_exec_done__", True)
+                and (
+                    not isinstance(mod_file, str)
+                    or not mod_file
+                    or os.path.dirname(os.path.abspath(mod_file)) == abs_dir
+                )
+            ):
+                return mod
+        import importlib.util
+        orig_sys_path = list(sys.path)
+        saved_ambiguous: dict[str, object] = {}
+        for amb_name in _AMBIGUOUS_LOCAL_MODULES:
+            if amb_name in sys.modules:
+                amb_file = getattr(sys.modules[amb_name], "__file__", None)
+                if isinstance(amb_file, str) and amb_file and os.path.dirname(os.path.abspath(amb_file)) != abs_dir:
+                    saved_ambiguous[amb_name] = sys.modules.pop(amb_name)
+        succeeded = False
         try:
-            spec.loader.exec_module(mod)
-        except Exception:
+            while abs_dir in sys.path:
+                sys.path.remove(abs_dir)
+            while _REPO_ROOT in sys.path:
+                sys.path.remove(_REPO_ROOT)
+            sys.path.insert(0, _REPO_ROOT)
+            sys.path.insert(0, abs_dir)
+            spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
+            mod = importlib.util.module_from_spec(spec)
+            setattr(mod, "__mptrade_exec_done__", False)
             if register:
-                sys.modules.pop(key, None)
-            raise
-        succeeded = True
-        return mod
-    finally:
-        sys.path[:] = orig_sys_path
-        for amb_name, saved_mod in saved_ambiguous.items():
-            if not (succeeded and register and amb_name == key):
-                sys.modules[amb_name] = saved_mod
+                sys.modules[key] = mod
+            try:
+                spec.loader.exec_module(mod)
+                setattr(mod, "__mptrade_exec_done__", True)
+            except Exception:
+                if register:
+                    sys.modules.pop(key, None)
+                raise
+            succeeded = True
+            return mod
+        finally:
+            sys.path[:] = orig_sys_path
+            for amb_name, saved_mod in saved_ambiguous.items():
+                if not (succeeded and register and amb_name == key):
+                    sys.modules[amb_name] = saved_mod
 
 
 def sanitize_heartbeat_status(status: object) -> tuple[float, dict]:
@@ -1164,15 +1175,19 @@ def check_cooldown_gate(
     return True
 
 
+_CSV_SPLIT_RE = re.compile(r"[,\n]+")
+
+
 def split_csv(raw: str | None, *, lower: bool = False, upper: bool = False) -> tuple[str, ...]:
     """Split comma- or newline-delimited strings into a deduplicated tuple of stripped tokens."""
-    items: list[str] = []
-    for part in re.split(r"[,\n]+", raw or ""):
+    if not raw:
+        return ()
+    seen: dict[str, None] = {}
+    for part in _CSV_SPLIT_RE.split(raw):
         if cleaned := part.strip():
             cleaned = cleaned.lower() if lower else (cleaned.upper() if upper else cleaned)
-            if cleaned not in items:
-                items.append(cleaned)
-    return tuple(items)
+            seen.setdefault(cleaned, None)
+    return tuple(seen)
 
 
 def parse_symbol_list(symbols: object) -> list[str]:

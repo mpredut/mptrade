@@ -760,5 +760,40 @@ def test_unified_heartbeat_api_and_cached_http_collector(tmp_path):
         assert mock_fetch.call_count == 1
 
 
+def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
+    import sys
+    import threading
+
+    mod_path = tmp_path / "slow_venue_client.py"
+    mod_path.write_text(
+        "import time\n"
+        "time.sleep(0.05)\n"
+        "class VenueClient:\n"
+        "    READY = True\n",
+        encoding="utf-8",
+    )
+    sys.modules.pop("slow_venue_client", None)
+    barrier = threading.Barrier(6)
+    results = []
+    errors = []
+
+    def _worker():
+        try:
+            barrier.wait(timeout=2.0)
+            mod = botcore.load_local_module(str(tmp_path), "slow_venue_client")
+            results.append(mod.VenueClient.READY)
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3.0)
+    sys.modules.pop("slow_venue_client", None)
+    assert errors == []
+    assert results == [True] * 6
+
+
 if __name__ == "__main__":
     unittest.main()

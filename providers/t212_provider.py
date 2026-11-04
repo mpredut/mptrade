@@ -12,6 +12,7 @@ the strict StrategyExecutor path uses the same gate. Market-hours enforcement be
 to the instrument/strategy loop; this provider itself requests regular-hours orders.
 """
 import os
+import threading
 import time
 import importlib
 from typing import Optional, List
@@ -86,6 +87,7 @@ class T212Provider(MarketDataProvider):
     def __init__(self, client=None, live_enabled: Optional[bool] = None,
                  order_validity: Optional[str] = None):
         self._cli = client
+        self._client_lock = threading.RLock()
         # None preserves the historical T212_LIVE_ORDERS gate. The autonomous
         # launcher injects an explicit bool from its per-profile execution policy.
         self._live_enabled = live_enabled
@@ -118,29 +120,36 @@ class T212Provider(MarketDataProvider):
     def _client(self):
         if self._cli is not None:
             return self._cli
-        # importlib accepts the historical folder name without global sys.path
-        # mutation and also works in the installable wheel.
-        T212Client = importlib.import_module("212trading.t212_client").T212Client
-        # Use gitignored 212trading credentials, with fleet environment precedence.
-        values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
-        credentials = t212_credentials(values=values)
-        env = os.environ.get("T212_ENV") or env_value(_T212_DIR, "T212_ENV")
-        if not env:
-            raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
+        lock = getattr(self, "_client_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._client_lock = lock
+        with lock:
+            if self._cli is not None:
+                return self._cli
+            # importlib accepts the historical folder name without global sys.path
+            # mutation and also works in the installable wheel.
+            T212Client = importlib.import_module("212trading.t212_client").T212Client
+            # Use gitignored 212trading credentials, with fleet environment precedence.
+            values = env_values_map(_T212_DIR, ("T212_API_KEY", "T212_API_SECRET"))
+            credentials = t212_credentials(values=values)
+            env = os.environ.get("T212_ENV") or env_value(_T212_DIR, "T212_ENV")
+            if not env:
+                raise RuntimeError("T212_ENV is missing (212trading/.env or environment)")
 
-        def _opt_float(key: str) -> Optional[float]:
-            raw = os.environ.get(key) or env_value(_T212_DIR, key)
-            return safe_nonneg_float(str(raw).strip(), default=None) if (raw is not None and str(raw).strip()) else None
+            def _opt_float(key: str) -> Optional[float]:
+                raw = os.environ.get(key) or env_value(_T212_DIR, key)
+                return safe_nonneg_float(str(raw).strip(), default=None) if (raw is not None and str(raw).strip()) else None
 
-        self._cli = T212Client(
-            credentials.key,
-            credentials.secret,
-            env,
-            min_gap_sec=_opt_float("T212_MIN_GAP_SEC"),
-            portfolio_ttl_sec=_opt_float("T212_PORTFOLIO_TTL_SEC"),
-            order_min_gap_sec=_opt_float("T212_ORDER_MIN_GAP_SEC"),
-        )
-        return self._cli
+            self._cli = T212Client(
+                credentials.key,
+                credentials.secret,
+                env,
+                min_gap_sec=_opt_float("T212_MIN_GAP_SEC"),
+                portfolio_ttl_sec=_opt_float("T212_PORTFOLIO_TTL_SEC"),
+                order_min_gap_sec=_opt_float("T212_ORDER_MIN_GAP_SEC"),
+            )
+            return self._cli
 
     def _position(self, symbol: str, *, strict: bool = False) -> Optional[dict]:
         """Return the portfolio position for the ticker, or None."""

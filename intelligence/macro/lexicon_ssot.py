@@ -14,8 +14,9 @@ from botcore import (
     split_csv as _split_csv,
 )
 from cachepaths import cache_path, resolve_cachedb_filepath
-import intelligence.macro_sentiment_ssot as _ssot
 from state_io import read_json_dict_cached, save_json_state
+
+_ssot: Any = None
 
 logger = logging.getLogger(__name__)
 
@@ -113,18 +114,39 @@ _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
 }
 
 
+_SEED_SETS_CACHE: Dict[str, Tuple[Any, Set[str]]] = {}
+
+
 def _get_stopwords_set() -> Set[str]:
-    return set(_split_csv(_ssot._cfg_str("lexicon_seed", "stopwords"), lower=True))
+    raw = _ssot._cfg_str("lexicon_seed", "stopwords")
+    cached = _SEED_SETS_CACHE.get("stopwords")
+    if cached is not None and cached[0] == raw:
+        return cached[1]
+    res = set(_split_csv(raw, lower=True))
+    _SEED_SETS_CACHE["stopwords"] = (raw, res)
+    return res
 
 
 def _get_crisis_stems_set() -> Set[str]:
-    return set(_split_csv(_ssot._cfg_str("lexicon_seed", "crisis_context_stems"), lower=True))
+    raw = _ssot._cfg_str("lexicon_seed", "crisis_context_stems")
+    cached = _SEED_SETS_CACHE.get("crisis_stems")
+    if cached is not None and cached[0] == raw:
+        return cached[1]
+    res = set(_split_csv(raw, lower=True))
+    _SEED_SETS_CACHE["crisis_stems"] = (raw, res)
+    return res
 
 
 def _get_seed_terms_set() -> Set[str]:
-    return set(_split_csv(_ssot._cfg_str("lexicon_seed", "high_severity_terms"), lower=True)) | set(
-        _split_csv(_ssot._cfg_str("lexicon_seed", "acute_shock_phrases"), lower=True)
-    )
+    raw_h = _ssot._cfg_str("lexicon_seed", "high_severity_terms")
+    raw_a = _ssot._cfg_str("lexicon_seed", "acute_shock_phrases")
+    key_sig = (raw_h, raw_a)
+    cached = _SEED_SETS_CACHE.get("seed_terms")
+    if cached is not None and cached[0] == key_sig:
+        return cached[1]
+    res = set(_split_csv(raw_h, lower=True)) | set(_split_csv(raw_a, lower=True))
+    _SEED_SETS_CACHE["seed_terms"] = (key_sig, res)
+    return res
 
 
 def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
@@ -630,14 +652,24 @@ def _normalize_semantic_stem(token: str) -> str:
     return t
 
 
+_HEADLINE_STEMS_CACHE: Dict[Tuple[str, int], frozenset[str]] = {}
+_HEADLINE_STEM_TOKEN_RE = re.compile(
+    r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}"
+)
+
+
 def headline_content_stems(title: Any) -> Set[str]:
     """Extract normalized content stem tokens (excluding stopwords and publisher suffixes) from a headline."""
     if not isinstance(title, str) or not title.strip():
         return set()
-    clean = _strip_headline_publisher_suffix(title).strip().lower()
     stopwords = _get_stopwords_set()
+    cache_key = (title, id(stopwords))
+    cached = _HEADLINE_STEMS_CACHE.get(cache_key)
+    if cached is not None:
+        return set(cached)
+    clean = _strip_headline_publisher_suffix(title).strip().lower()
     stems: Set[str] = set()
-    for m in re.finditer(r"\$?(\d[\d,]*(?:\.\d+)?)\s*(?:bn|b|billion|m|mn|million|trillion|pct|%)?\b|[a-z]{3,}", clean):
+    for m in _HEADLINE_STEM_TOKEN_RE.finditer(clean):
         num_grp = m.group(1)
         if num_grp:
             stems.add(num_grp.replace(",", ""))
@@ -648,14 +680,19 @@ def headline_content_stems(title: Any) -> Set[str]:
         stem = _normalize_semantic_stem(tok)
         if len(stem) >= 3 and stem not in stopwords:
             stems.add(stem)
+    if len(_HEADLINE_STEMS_CACHE) >= 2048:
+        _HEADLINE_STEMS_CACHE.clear()
+    _HEADLINE_STEMS_CACHE[cache_key] = frozenset(stems)
     return stems
 
 
 def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     """Return True if two headlines represent syndicated rewrites of the same underlying news story."""
     stems_a = headline_content_stems(title_a)
+    if len(stems_a) < 4:
+        return False
     stems_b = headline_content_stems(title_b)
-    if len(stems_a) < 4 or len(stems_b) < 4:
+    if len(stems_b) < 4:
         return False
     shared = stems_a & stems_b
     if len(shared) < 4:
@@ -664,9 +701,9 @@ def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     return overlap >= 0.60
 
 
-HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = get_active_severity_keywords()
-ACUTE_SHOCK_PHRASES: Tuple[str, ...] = get_active_acute_shock_phrases()
-DEFAULT_RSS_URL: str = build_dynamic_rss_url()
+HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = ()
+ACUTE_SHOCK_PHRASES: Tuple[str, ...] = ()
+DEFAULT_RSS_URL: str = ""
 
 
 def match_high_severity_keywords(
@@ -707,3 +744,13 @@ def has_acute_shock_keywords(
     """Return True if any headline in ``texts`` contains an active acute systemic shock phrase."""
     phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=now_ts)
     return any(any(p in (t or "").lower() for p in phrases) for t in texts)
+
+
+import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
+
+HIGH_SEVERITY_KEYWORDS = get_active_severity_keywords()
+ACUTE_SHOCK_PHRASES = get_active_acute_shock_phrases()
+DEFAULT_RSS_URL = build_dynamic_rss_url()
+_ssot.HIGH_SEVERITY_KEYWORDS = HIGH_SEVERITY_KEYWORDS
+_ssot.ACUTE_SHOCK_PHRASES = ACUTE_SHOCK_PHRASES
+_ssot.DEFAULT_RSS_URL = DEFAULT_RSS_URL
