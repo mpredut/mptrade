@@ -479,4 +479,40 @@ def test_read_text_bytes_csv_and_tail_max_bytes(tmp_path):
     assert read_json_dict_cached(p_cached, memo) == {"recovered": 42}
 
 
+def test_stage_previous_generation_and_concurrent_reader_race(tmp_path, monkeypatch):
+    import os
+    from state_io import read_json_dict_recovering
+
+    data_path = str(tmp_path / "cache_current_price.json")
+    atomic_write_json(data_path, {"items": {"BTCUSDC": 70000.0}})
+
+    # 1. While writer has staged .previous via hardlink (before replacing data_path),
+    # a concurrent reader calling read_json_dict_recovering must not unlink .previous.
+    backup_path = stage_previous_generation(data_path)
+    assert os.path.exists(backup_path)
+    assert os.path.samefile(data_path, backup_path)
+    assert read_json_dict_recovering(data_path) == {"items": {"BTCUSDC": 70000.0}}
+    assert os.path.exists(backup_path)
+
+    # Once data_path is replaced with a new inode and left with a stale .previous,
+    # a subsequent read cleans up the stale .previous.
+    atomic_write_json(data_path, {"items": {"BTCUSDC": 70100.0}})
+    assert not os.path.samefile(data_path, backup_path)
+    assert read_json_dict_recovering(data_path) == {"items": {"BTCUSDC": 70100.0}}
+    assert not os.path.exists(backup_path)
+
+    # 2. If a concurrent reader unlinks destination immediately after os.replace inside
+    # durable_replace_file, stage_previous_generation must not raise FileNotFoundError.
+    real_replace = os.replace
+
+    def replace_then_concurrent_unlink(src, dst):
+        real_replace(src, dst)
+        if dst.endswith(".previous") and os.path.exists(dst):
+            os.unlink(dst)
+
+    monkeypatch.setattr("state_io.os.replace", replace_then_concurrent_unlink)
+    stage_previous_generation(data_path)
+
+
+
 

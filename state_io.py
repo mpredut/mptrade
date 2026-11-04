@@ -60,11 +60,11 @@ def durable_replace_file(source: str, destination: str) -> None:
     source = os.path.abspath(os.fspath(source))
     destination = os.path.abspath(os.fspath(destination))
     os.makedirs(os.path.dirname(destination), exist_ok=True)
+    with open(source, "rb") as handle:
+        os.fsync(handle.fileno())
     os.replace(source, destination)
     if source != destination and os.path.exists(source):
         os.remove(source)
-    with open(destination, "rb") as handle:
-        os.fsync(handle.fileno())
     _fsync_parent_directory(destination)
 
 
@@ -622,7 +622,11 @@ def commit_file_and_meta(
     if had_prior_file is None:
         had_prior_file = os.path.exists(target_path)
         if had_prior_file and backup_path is None:
-            backup_path = stage_previous_generation(target_path)
+            try:
+                backup_path = stage_previous_generation(target_path)
+            except FileNotFoundError:
+                backup_path = None
+                had_prior_file = os.path.exists(target_path)
         elif not had_prior_file:
             discard_generation_file(previous_generation_path(target_path))
     else:
@@ -834,6 +838,14 @@ def read_csv_dicts(
     return _read_with_policy(path, _read_strict, default=eff_default)
 
 
+def _is_active_staged_backup(target_path: str, target_backup: str) -> bool:
+    """Return True when ``target_backup`` is hard-linked to ``target_path`` by an in-flight writer."""
+    try:
+        return os.path.samefile(target_path, target_backup)
+    except OSError:
+        return False
+
+
 def read_recovering_previous(
     path: str,
     read_fn: Callable[[str], T] = json.loads,
@@ -872,7 +884,9 @@ def read_recovering_previous(
         _invoke = read_fn
     try:
         result = _invoke(target_path)
-        if os.path.exists(target_backup):
+        if os.path.exists(target_backup) and not _is_active_staged_backup(
+            target_path, target_backup
+        ):
             discard_generation_file(target_backup)
         return result
     except Exception as primary_exc:
