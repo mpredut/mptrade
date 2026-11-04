@@ -424,27 +424,30 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     bypassed.clear()
     bypassed.update(lowered_existing)
 
+    def _add_guard_tokens(guard_obj: GuardSpec) -> None:
+        bypassed.add(guard_obj.code.lower())
+        bypassed.add(guard_obj.canonical)
+        bypassed.update(guard_obj.aliases)
+
     # 1. If master bypass ('all' or '*') was active, expand all sibling guards before revoking target
     if bypassed.intersection({"all", "*"}):
         for s in GUARD_INSTANCES:
             if s.code != g.code:
-                bypassed.add(s.code.lower())
+                _add_guard_tokens(s)
         bypassed.difference_update({"all", "*"})
 
     # 2. If composite 'profit_guard' (G_PROF + G_QLIMIT1) was active and target is one of them, preserve sibling
     if g.code in ("G_PROF", "G_QLIMIT1") and "profit_guard" in bypassed:
-        sibling_code = "g_qlimit1" if g.code == "G_PROF" else "g_prof"
-        bypassed.add(sibling_code)
+        sibling_spec = GUARD_REGISTRY["G_QLIMIT1"] if g.code == "G_PROF" else GUARD_REGISTRY["G_PROF"]
+        _add_guard_tokens(sibling_spec)
         bypassed.discard("profit_guard")
 
     # 3. If composite 'financial' ('gf') category was active, preserve sibling financial guards
     if g in GUARD_CATEGORIES.get("financial", ()):
         if bypassed.intersection({"financial", "gf"}):
-            bypassed.update(
-                s.code.lower()
-                for s in GUARD_CATEGORIES["financial"]
-                if s.code != g.code
-            )
+            for s in GUARD_CATEGORIES["financial"]:
+                if s.code != g.code:
+                    _add_guard_tokens(s)
         bypassed.difference_update({"financial", "gf"})
 
     # 4. If target's category bypass was active, preserve sibling guards in that category
@@ -455,11 +458,9 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
     else:
         cat_active = bool(bypassed.intersection(cat_tokens))
     if cat_active:
-        bypassed.update(
-            s.code.lower()
-            for s in GUARD_CATEGORIES.get(g.category, ())
-            if s.code != g.code
-        )
+        for s in GUARD_CATEGORIES.get(g.category, ()):
+            if s.code != g.code:
+                _add_guard_tokens(s)
     bypassed.difference_update(g.aliases)
     bypassed.discard(g.canonical)
     bypassed.discard(g.code.lower())
@@ -473,7 +474,9 @@ def revoke_guard_bypass(bypassed: set[str], code: str) -> None:
 
 def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
     """Return True when every guard in the given category is bypassed."""
-    guards = GUARD_CATEGORIES.get(category)
+    cat_norm = "" if isinstance(category, bool) else str(category or "").strip().lower()
+    cat_key = _CATEGORY_SHORTCUTS.get(cat_norm, cat_norm)
+    guards = GUARD_CATEGORIES.get(cat_key)
     return bool(guards) and all(g.is_bypassed(bypassed) for g in guards)
 
 

@@ -300,7 +300,8 @@ def get_total_traded_stats(symbol, period_seconds=86400):
         side = _normalize_side(t.get('side'))
         if side in stats:
             px_f = safe_pos_float(t.get('price'), default=None)
-            qty_f = safe_pos_float(t.get('quantity', t.get('qty')), default=None)
+            raw_qty = t.get('quantity') if t.get('quantity') is not None else t.get('qty')
+            qty_f = safe_pos_float(raw_qty, default=None)
             if px_f is None or qty_f is None:
                 continue
             stats[side]['total_quantity'] += qty_f

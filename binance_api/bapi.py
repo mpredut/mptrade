@@ -224,7 +224,11 @@ def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):
                 else:
                     continue
             original_qty = float(extract_orig_qty(order, default=0.0) or 0.0)
-            raw_exec_qty = order.get('executedQty', order.get('z', order.get('vol_exec', 0.0)))
+            raw_exec_qty = order.get('executedQty')
+            if raw_exec_qty is None:
+                raw_exec_qty = order.get('z')
+            if raw_exec_qty is None:
+                raw_exec_qty = order.get('vol_exec')
             executed_qty = safe_nonneg_float(raw_exec_qty, default=0.0)
             remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
             ts_ms = extract_timestamp_ms(order, default=0) or 0

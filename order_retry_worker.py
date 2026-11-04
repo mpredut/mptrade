@@ -256,9 +256,10 @@ def _not_found_is_reliable(mkt, record, now, provider_name):
 
 
 def _audit_event(record, event, **fields):
+    place_kwargs = record.get("place_kwargs") if isinstance(record.get("place_kwargs"), dict) else {}
     payload = {
         "side": str(record.get("side") or "").lower() or None,
-        "kind": record.get("kind"),
+        "kind": record.get("kind") or place_kwargs.get("kind"),
         "client_order_id": oq._record_client_order_id(record),
         "order_id": record.get("order_id"),
         "revision": record.get("revision"),
@@ -400,12 +401,13 @@ def _prepare_retry_placement_kwargs(r: dict, kwargs: dict, provider_name, now: f
             kwargs["allow_math_reference_sell"] = True
 
     retry_stage = "standard"
-    if r.get("kind") == "monitor_order_replace":
+    eff_kind = str(r.get("kind") or kwargs.get("kind") or "").strip()
+    if "monitor_order_replace" in eff_kind:
         _enable_profit_math_bypass()
         kwargs["wait_for_trend"] = True
     else:
         is_stop_expired_timer = (
-            str(r.get("kind") or kwargs.get("kind") or "").strip().upper() == "STOP"
+            eff_kind.upper() == "STOP"
             and not _parse_bool_flag(kwargs.get("wait_for_trend"), True)
         )
         kwargs["wait_for_trend"] = not is_stop_expired_timer
@@ -979,12 +981,13 @@ def _alert_giveups(records, now):
                 ttl_started_ts=rec.get("ttl_started_ts"),
                 last_failure_reason=rec.get("last_failure_reason"),
             )
+            place_kw = rec.get("place_kwargs") if isinstance(rec.get("place_kwargs"), dict) else {}
             events.append({
                 "labels": {
                     "provider": str(rec.get("provider_name") or "routed"),
                     "symbol": str(rec.get("symbol")),
                     "side": str(rec.get("side")),
-                    "kind": str(rec.get("kind") or "unspecified"),
+                    "kind": str(rec.get("kind") or place_kw.get("kind") or "unspecified"),
                     "reason": str(rec.get("last_failure_reason") or "unspecified"),
                     "expiry": reason,
                 },

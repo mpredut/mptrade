@@ -4859,6 +4859,102 @@ def test_iter81_order_retry_requested_qty_total_and_provider_null_fallbacks(tmp_
     assert pt == (1700000000000, 42.5)
 
 
+def test_iter82_late_intelligence_scale_retry_worker_kind_and_guard_hierarchy(monkeypatch):
+    import instrument
+    import order_retry_worker
+    from guard_hierarchy import is_category_bypassed, normalize_bypassed_guards, revoke_guard_bypass
+    import binance_api.bapi_allorders as bapi_allorders
+
+    # 1. _parse_scale_factor and _apply_late_intelligence_scale support percentage strings and _suggested_scale_by_side
+    assert instrument._parse_scale_factor("25%", default=0.5) == pytest.approx(0.25)
+    assert instrument._parse_scale_factor(0.4, default=0.5) == pytest.approx(0.4)
+
+    class _DummyProvider:
+        name = "binance"
+        def round_quantity(self, symbol, qty):
+            return round(float(qty), 4)
+
+    inst = object.__new__(instrument.Instrument)
+    inst.symbol = "BTCUSDC"
+    inst._provider = _DummyProvider()
+    monkeypatch.setattr(instrument, "check_order_filter_refusal", lambda *a, **kw: None)
+
+    ctx = {"suggested_scale": None, "_suggested_scale_by_side": {"BUY": "25%"}}
+    scaled_qty, new_scale, refusal = inst._apply_late_intelligence_scale(
+        qty=2.0,
+        price=50000.0,
+        is_market=True,
+        enforce_business_minimum=False,
+        regime_context=ctx,
+        applied_scale=1.0,
+        side_u="BUY",
+    )
+    assert refusal is None
+    assert scaled_qty == pytest.approx(0.5)
+    assert new_scale == pytest.approx(0.25)
+
+    # 2. order_retry_worker._prepare_retry_placement_kwargs honors monitor_order_replace in place_kwargs / compound kind
+    rec = {
+        "id": "rec-82",
+        "symbol": "BTCUSDC",
+        "side": "SELL",
+        "kind": None,
+        "requested_price": 51000.0,
+        "created_ts": 1700000000.0,
+        "place_kwargs": {"kind": "monitor_order_replace_sell"},
+    }
+    kw = {"kind": "monitor_order_replace_sell"}
+    side_u, _age, _prog, stage = order_retry_worker._prepare_retry_placement_kwargs(rec, kw, "binance", 1700000100.0)
+    assert side_u == "SELL"
+    assert stage == "standard"
+    assert kw.get("wait_for_trend") is True
+    assert kw.get("allow_math_reference_sell") is True
+    assert "G_PROF" in kw.get("bypass_guards", [])
+    assert "math_reference" in kw.get("bypass_guards", [])
+
+    recorded_audit = []
+    monkeypatch.setattr(
+        order_retry_worker._AUDIT,
+        "record",
+        lambda event, **fields: recorded_audit.append((event, fields)),
+    )
+    order_retry_worker._audit_event(rec, "test_event")
+    assert len(recorded_audit) == 1
+    assert recorded_audit[0][1]["kind"] == "monitor_order_replace_sell"
+
+    # 3. guard_hierarchy.is_category_bypassed supports case-insensitivity and category shortcuts,
+    #    and revoke_guard_bypass preserves canonical/alias tokens for remaining siblings
+    b_op = normalize_bypassed_guards("go")
+    assert is_category_bypassed("operational", b_op)
+    assert is_category_bypassed("OPERATIONAL", b_op)
+    assert is_category_bypassed("go", b_op)
+
+    b_prof = {"profit_guard"}
+    revoke_guard_bypass(b_prof, "G_QLIMIT1")
+    assert "g_prof" in b_prof
+    assert "math_reference" in b_prof
+    assert "math_profit" in b_prof
+    assert "g_qlimit1" not in b_prof
+
+    # 4. bapi_allorders.get_total_traded_stats falls back to 'qty' when 'quantity' is explicitly None
+    monkeypatch.setattr(
+        bapi_allorders,
+        "get_trade_orders",
+        lambda **kw: [
+            {"side": "BUY", "price": 100.0, "quantity": None, "qty": 1.5},
+            {"side": "SELL", "price": 110.0, "quantity": 2.0, "qty": None},
+        ],
+    )
+    stats = bapi_allorders.get_total_traded_stats("BTCUSDC", period_seconds=3600)
+    assert stats["BUY"]["total_quantity"] == pytest.approx(1.5)
+    assert stats["BUY"]["total_value"] == pytest.approx(150.0)
+    assert stats["BUY"]["trade_count"] == 1
+    assert stats["SELL"]["total_quantity"] == pytest.approx(2.0)
+    assert stats["SELL"]["total_value"] == pytest.approx(220.0)
+    assert stats["SELL"]["trade_count"] == 1
+
+
+
 
 
 
