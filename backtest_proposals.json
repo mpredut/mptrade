@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-05T00:43:38",
+    "ts": "2026-11-05T01:58:10",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -11,10 +11,10 @@
       "half1": 51.76,
       "half2": 404.39
     },
-    "dev_commit": "ca28de18"
+    "dev_commit": "6d3fc758"
   },
   {
-    "ts": "2026-11-05T00:43:38",
+    "ts": "2026-11-05T01:58:10",
     "full_key": "BINANCE_TAO.mt.gain",
     "section": "BINANCE_TAO",
     "key": "mt.gain",
@@ -23,8 +23,8 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 66.43,
-      "half2": 35.19
+      "half2": 35.2
     },
-    "dev_commit": "ca28de18"
+    "dev_commit": "6d3fc758"
   }
 ]
