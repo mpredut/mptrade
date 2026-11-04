@@ -234,10 +234,14 @@ class KalmanStateTracker:
                     seq_prices = big_prices if isinstance(big_prices, (list, tuple)) else list(big_prices)
                     step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
                     raw_hist = seq_prices[-1 - step_n :: -step_n][:60]
+                    if not raw_hist and len(seq_prices) >= 2:
+                        raw_hist = [seq_prices[0]]
+                    step_dt = step_n * max(sr_val, 0.1)
                     hist_pts = [
                         (steps_back, p_h)
                         for steps_back, raw_p in enumerate(raw_hist, start=1)
-                        if (
+                        if (ts - steps_back * step_dt) >= 0.0
+                        and (
                             p_h := safe_pos_float(
                                 raw_p[1] if isinstance(raw_p, (list, tuple)) and len(raw_p) >= 2 else raw_p,
                                 default=None,
@@ -245,8 +249,7 @@ class KalmanStateTracker:
                         )
                         is not None
                     ][::-1]
-                    if len(hist_pts) >= 2:
-                        step_dt = step_n * max(sr_val, 0.1)
+                    if hist_pts:
                         for steps_back, p_h in hist_pts:
                             fed.append(p_h)
                             if len(fed) > 60:

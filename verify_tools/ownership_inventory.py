@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import _parse_bool_flag, parse_dotenv  # noqa: E402
+from botcore import _parse_bool_flag, load_ini_config, parse_dotenv  # noqa: E402
 from cachepaths import normalize_venue_name, split_symbol_assets  # noqa: E402
 from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
 from orchestratorOS.lib.technical_repair_ssot import parse_procs_manifest  # noqa: E402
@@ -142,8 +142,7 @@ def _python_symbols(root: Path) -> tuple[list[str], str]:
             except Exception:
                 tao = "TAOUSDC" if "TAOUSDC" in syms else ""
         except Exception:
-            parser = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-            parser.read(conf_path, encoding="utf-8")
+            parser = load_ini_config(conf_path, must_exist=False, inline_comments=True)
             for section in parser.sections():
                 vals = parser[section]
                 if normalize_venue_name(vals.get("provider", "")) == "binance" and _truthy(vals.get("enabled"), True):

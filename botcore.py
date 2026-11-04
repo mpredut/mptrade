@@ -1690,6 +1690,7 @@ config_cache: dict = {}
 _CONFIG_MTIME: tuple[float, float] = (-1.0, -1.0)
 _CONFIG_LAST_CHECK: float = 0.0
 
+ROOT_DIR = _REPO_ROOT
 CONFIG_ENV_PATH = os.path.join(_REPO_ROOT, "config.env")
 CONFIG_TXT_PATH = os.path.join(_REPO_ROOT, "config.txt")
 
@@ -1739,7 +1740,7 @@ def load_config():
     config_cache = new_config
 
 
-_watcher_stop_event = threading.Event()
+_watcher_stop_event = globals().get("_watcher_stop_event") or threading.Event()
 
 
 def config_watcher(interval=5 * 60):
@@ -1761,7 +1762,7 @@ def is_trade_enabled() -> bool:
     return _parse_bool(config_cache.get("trade_enabled", True), default=True)
 
 
-watcher_thread = None
+watcher_thread = globals().get("watcher_thread")
 
 
 def start_config_watcher():
@@ -1798,7 +1799,13 @@ def register_module_aliases(module_name: str, *aliases: str) -> None:
     self_file = getattr(self_mod, "__file__", None)
     for alias in aliases:
         prev = sys.modules.get(alias)
-        if prev is None or prev is self_mod or getattr(prev, "__file__", None) == self_file:
+        prev_loader = getattr(prev, "__loader__", None)
+        if (
+            prev is None
+            or prev is self_mod
+            or getattr(prev, "__file__", None) == self_file
+            or getattr(prev_loader, "__class__", None).__name__ == "_MergedModuleAliasLoader"
+        ):
             sys.modules[alias] = self_mod
             if "." in alias:
                 parent_name, child_attr = alias.rsplit(".", 1)
@@ -1860,19 +1867,28 @@ class _MergedModuleAliasLoader:
             sys.modules[self.alias_name] = target_mod
             return
 
-        target_mod = importlib.import_module(self.target_name)
         if self.alias_name == "keys":
+            is_reload = getattr(module, "_is_credentials_shim", False) and self.target_name in sys.modules
+            target_mod = (
+                importlib.reload(sys.modules[self.target_name])
+                if is_reload
+                else importlib.import_module(self.target_name)
+            )
             keys_pkg = sys.modules.get("keys")
-            if keys_pkg is None or keys_pkg is module:
+            if keys_pkg is None or not getattr(keys_pkg, "_is_credentials_shim", False):
                 import types as _types
 
-                keys_pkg = _types.ModuleType("keys")
+                keys_pkg = module if getattr(module, "__name__", None) == "keys" else _types.ModuleType("keys")
                 keys_pkg.__path__ = []
                 keys_pkg._is_credentials_shim = True
+            if getattr(keys_pkg, "__spec__", None) is None:
+                keys_pkg.__spec__ = _MergedModuleAliasFinder.find_spec("keys")
             keys_pkg.apikeys = target_mod
             sys.modules["keys"] = keys_pkg
             sys.modules["keys.apikeys"] = target_mod
             return
+
+        target_mod = importlib.import_module(self.target_name)
         if self.alias_name == "keys.apikeys":
             keys_pkg = sys.modules.get("keys")
             if keys_pkg is not None:

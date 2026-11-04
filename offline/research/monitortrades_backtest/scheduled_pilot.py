@@ -58,7 +58,7 @@ os.chdir(ROOT)
 os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import log
-from botcore import _parse_bool_flag, float_env, load_dotenv, safe_float
+from botcore import _parse_bool_flag, float_env, load_dotenv, load_ini_config, safe_float
 from cachepaths import cache_path
 from instrument_registry import select_instruments
 from offline.research.backtest_ranges import scan_backtest_ranges
@@ -161,8 +161,7 @@ def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
 
 def _current_value(section, key):
     """Read today's LIVE value (not the grid) directly from instruments.conf."""
-    cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#", ";"))
-    cp.read(INSTRUMENTS_CONF, encoding="utf-8")
+    cp = load_ini_config(INSTRUMENTS_CONF, must_exist=False, inline_comments=True)
     if section not in cp or key not in cp[section]:
         raise KeyError(f"{section}.{key} not found in {INSTRUMENTS_CONF}")
     val = safe_float(cp[section][key], default=None)

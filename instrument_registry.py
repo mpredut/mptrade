@@ -640,10 +640,47 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
 
 # ─── Binance Symbol Validation & Precision Helpers ───────────────────────────
 
-def __getattr__(name: str):
+import types as _types
+
+
+class _DynamicSymbolsList(list):
+    _from_dynamic_getattr = True
+
+
+class _DynamicSymbolStr(str):
+    _from_dynamic_getattr = True
+
+
+def _resolve_dynamic_symbol_attr(name: str):
     if name == "symbols":
-        return symbols_for("binance")
+        return _DynamicSymbolsList(symbols_for("binance"))
+    if name == "forcesellsymbol":
+        return _DynamicSymbolsList(symbols_for("binance", "force_sell"))
+    if name.endswith("symbol") and len(name) > 6 and name.islower():
+        base = name[:-6].upper()
+        for spec in load_registry().values():
+            if spec.base.upper() == base:
+                return _DynamicSymbolStr(spec.symbol)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+class _InstrumentRegistryModule(_types.ModuleType):
+    def __getattr__(self, name: str):
+        return _resolve_dynamic_symbol_attr(name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if getattr(value, "_from_dynamic_getattr", False):
+            self.__dict__.pop(name, None)
+            return
+        super().__setattr__(name, value)
+
+
+if __name__ in sys.modules and not isinstance(sys.modules[__name__], _InstrumentRegistryModule):
+    sys.modules[__name__].__class__ = _InstrumentRegistryModule
+
+
+def __getattr__(name: str):
+    return _resolve_dynamic_symbol_attr(name)
 
 
 def _get_client():
@@ -651,21 +688,36 @@ def _get_client():
     return client
 
 
+def _resolve_cur_symbols() -> list:
+    self_mod = sys.modules.get(__name__)
+    sym_mod = sys.modules.get("symbols")
+    if sym_mod is not None and sym_mod is not self_mod and hasattr(sym_mod, "symbols"):
+        val = getattr(sym_mod, "symbols", None)
+        if isinstance(val, (list, tuple, set)):
+            return list(val)
+    if self_mod is not None and "symbols" in self_mod.__dict__:
+        val = self_mod.__dict__["symbols"]
+        if isinstance(val, (list, tuple, set)):
+            return list(val)
+    return symbols_for("binance")
+
+
 def _normalize_ordertype(order_type):
     if isinstance(order_type, str):
-        s = order_type.strip().upper()
-        if s in ("B", "BUY", "BID", "LONG"):
+        s = " ".join(order_type.strip().upper().replace("_", " ").replace("-", " ").split())
+        if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
             return "BUY"
-        if s in ("S", "SELL", "ASK", "SHORT"):
+        if s in ("S", "SELL", "ASK", "A", "SHORT", "SOLD", "CLOSE LONG", "OPEN SHORT"):
             return "SELL"
-        return s
+        return order_type.strip().upper()
     return order_type
 
 
-def _normalize_symbol(symbol):
+def _normalize_symbol(symbol, cur_symbols: list | None = None):
     if isinstance(symbol, str):
         s = symbol.strip().upper()
-        cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
+        if cur_symbols is None:
+            cur_symbols = _resolve_cur_symbols()
         if s in cur_symbols:
             return s
         s_clean = s.replace("/", "")
@@ -684,8 +736,8 @@ def validate_ordertype(order_type):
 
 
 def validate_symbols(symbol):
-    cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
-    norm_sym = _normalize_symbol(symbol)
+    cur_symbols = _resolve_cur_symbols()
+    norm_sym = _normalize_symbol(symbol, cur_symbols)
     if norm_sym not in cur_symbols:
         raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {cur_symbols}.")
 
@@ -701,8 +753,8 @@ def validate_params(order_type, symbol, price=1, qty=1):
     if safe_pos_float(qty, default=None) is None:
         raise ValueError(f"Invalid quantity '{qty}'. Quantity must be a positive number.")
 
-    cur_symbols = getattr(sys.modules[__name__], "symbols", None) or symbols_for("binance")
-    norm_sym = _normalize_symbol(symbol)
+    cur_symbols = _resolve_cur_symbols()
+    norm_sym = _normalize_symbol(symbol, cur_symbols)
     if norm_sym not in cur_symbols:
         raise ValueError(f"Invalid symbol '{symbol}'. Symbol must be one of {cur_symbols}.")
 

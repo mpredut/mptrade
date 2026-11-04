@@ -5364,6 +5364,124 @@ def test_iter11_cited_taker_buying_ratio_and_first_person_plural_advice_column_e
     assert is_excluded_reference_news_item(headline_ay, "MarketWatch", "https://news.google.com/rss/articles/123") is True
 
 
+def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
+    tmp_path, monkeypatch
+):
+    import importlib
+    import sys
+    import botcore
+    import credentials
+    import instrument_registry
+    import symbols
+    import config
+
+    # 1. symbols facade attributes (`forcesellsymbol`, `<base>symbol`), monkeypatch undo dynamic resolution,
+    #    empty `symbols = []` override, and `_normalize_ordertype` extended tokens
+    assert isinstance(symbols.forcesellsymbol, list) and "BTCUSDC" in symbols.forcesellsymbol
+    assert symbols.btcsymbol == "BTCUSDC"
+    assert symbols.taosymbol == "TAOUSDC"
+    assert symbols._normalize_ordertype("A") == "SELL"
+    assert symbols._normalize_ordertype("SOLD") == "SELL"
+    assert symbols._normalize_ordertype("open_long") == "BUY"
+    assert symbols._normalize_ordertype("close-long") == "SELL"
+
+    with monkeypatch.context() as mp:
+        mp.setattr(symbols, "symbols", [])
+        with pytest.raises(ValueError):
+            symbols.validate_symbols("BTCUSDC")
+    # After monkeypatch undo, `symbols` is NOT frozen in instrument_registry.__dict__
+    assert "symbols" not in instrument_registry.__dict__
+    custom_conf = tmp_path / "instruments.conf"
+    custom_conf.write_text(
+        "[eth]\nprovider = binance\nsymbol = ETHUSDC\nbase = ETH\nquote = USDC\nenabled = true\n"
+        "isolation = dedicated\nmarket_hours = 24x7\nrole.mt = false\nrole.tradeall_fire = false\n"
+        "role.kalman_primary = false\nrole.trailing = false\nrole.assetguardian = false\n"
+        "role.archive = false\nrole.rtrade = false\nrole.force_sell = true\n",
+        encoding="utf-8",
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(instrument_registry, "DEFAULT_PATH", custom_conf)
+        assert symbols.symbols == ["ETHUSDC"]
+        assert symbols.forcesellsymbol == ["ETHUSDC"]
+        assert symbols.ethsymbol == "ETHUSDC"
+
+    # 2. config.ROOT_DIR compatibility, botcore watcher preservation on reload, and importlib.reload(keys)
+    assert hasattr(config, "ROOT_DIR") and os.path.isdir(config.ROOT_DIR)
+    keys_mod = importlib.import_module("keys")
+    reloaded_keys = importlib.reload(keys_mod)
+    assert reloaded_keys.apikeys is sys.modules["credentials"]
+
+    # 3. inspect_prod_fleet merges non-Binance open_orders:* with Binance cache_order.json fallback
+    from verify_tools import inspect_prod_fleet
+
+    fake_balances = {
+        "cash:binance:USDC": {"free": 500.0, "locked_quote_usd": 100.0},
+        "open_orders:kraken": [],
+        "open_orders:hyperliquid:HYPE": [
+            {"symbol": "HYPE", "side": "S", "limitPx": "25.5", "sz": "2.0", "oid": "hl-1"}
+        ],
+    }
+    fake_orders = {
+        "items": {
+            "BTCUSDC": [
+                {
+                    "orderId": 999,
+                    "symbol": "BTCUSDC",
+                    "side": "B",
+                    "price": "65000.0",
+                    "origQty": "0.002",
+                    "status": "NEW",
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        inspect_prod_fleet,
+        "ssh_cat",
+        lambda p: (
+            fake_balances
+            if "venue_balances_state.json" in str(p)
+            else (fake_orders if "cache_order.json" in str(p) else {})
+        ),
+    )
+    fleet_res = inspect_prod_fleet.inspect_fleet(json_output=True)
+    assert len(fleet_res["active_orders"]) == 2
+    by_venue = {o["venue"]: o for o in fleet_res["active_orders"]}
+    assert by_venue["hyperliquid"]["side"] == "SELL"
+    assert by_venue["hyperliquid"]["price"] == pytest.approx(25.5)
+    assert by_venue["hyperliquid"]["orig_qty"] == pytest.approx(2.0)
+    assert by_venue["binance"]["symbol"] == "BTCUSDC"
+    assert by_venue["binance"]["side"] == "BUY"
+    assert by_venue["binance"]["price"] == pytest.approx(65000.0)
+
+    # 4. KalmanStateTracker warm-start guards negative synthetic timestamps and short buffers
+    from shadow_signals import KalmanStateTracker
+
+    tracker = KalmanStateTracker(state_path=str(tmp_path / "kstate.json"), compute_vol=False)
+    res_zero_ts = tracker.update(
+        "BTCUSDC",
+        price=105.0,
+        ts=0.0,
+        epsilon=0.01,
+        big_prices=[100.0 + 0.1 * i for i in range(50)],
+        big_sample_rate=1.0,
+    )
+    assert len(tracker._fed_prices["BTCUSDC"]) == 1
+    assert res_zero_ts["kalman_trend"] == 0
+
+    tracker2 = KalmanStateTracker(state_path=str(tmp_path / "kstate2.json"), compute_vol=False)
+    res_short = tracker2.update(
+        "ETHUSDC",
+        price=2020.0,
+        ts=1000.0,
+        epsilon=0.1,
+        big_prices=[2000.0, 2005.0, 2010.0, 2015.0],
+        big_sample_rate=1.0,
+    )
+    assert len(tracker2._fed_prices["ETHUSDC"]) == 2
+    assert res_short["kalman_vel"] > 0.0
+
+
 
 
 

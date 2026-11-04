@@ -34,6 +34,13 @@ if not _keys_blocked:
         _existing_keys.__path__ = []
         _existing_keys._is_credentials_shim = True
         sys.modules["keys"] = _existing_keys
+    if getattr(_existing_keys, "__spec__", None) is None:
+        try:
+            from botcore import _MergedModuleAliasFinder
+
+            _existing_keys.__spec__ = _MergedModuleAliasFinder.find_spec("keys")
+        except Exception:
+            pass
     _existing_keys.apikeys = sys.modules[__name__]
     sys.modules["keys.apikeys"] = sys.modules[__name__]
 

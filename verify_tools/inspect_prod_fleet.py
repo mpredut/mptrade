@@ -20,6 +20,12 @@ if _ROOT_DIR not in sys.path:
 
 from botcore import safe_float
 from cachepaths import cache_path
+from providers.base import (
+    extract_order_id,
+    extract_order_price,
+    extract_order_side,
+    extract_orig_qty,
+)
 from state_io import read_json_file
 
 
@@ -87,39 +93,57 @@ def inspect_fleet(json_output: bool = False):
         else ""
     )
 
-    # 3. Active Resting Orders from venue_balances_state (open_orders:*) or cache_order fallback
+    # 3. Active Resting Orders from venue_balances_state (open_orders:*) and cache_order fallback
     active_orders = []
-    open_order_keys = [k for k in balances.keys() if k.startswith("open_orders:")]
-    if open_order_keys:
-        for k in open_order_keys:
-            olist = balances.get(k)
-            if isinstance(olist, list):
-                parts = k.split(":", 2)
-                default_venue = parts[1] if len(parts) > 1 else "binance"
-                default_sym = parts[2] if len(parts) > 2 else ""
-                for o in olist:
-                    if isinstance(o, dict):
-                        active_orders.append({
-                            "venue": o.get("venue") or default_venue,
-                            "symbol": o.get("symbol") or default_sym,
-                            "side": o.get("side"),
-                            "price": safe_float(o.get("price"), 0.0) or 0.0,
-                            "orig_qty": safe_float(o.get("orig_qty") or o.get("origQty") or o.get("qty"), 0.0) or 0.0,
-                            "status": o.get("status") or "NEW",
-                        })
-    elif isinstance(orders_data, dict) and "items" in orders_data:
+    seen_order_keys: set[tuple[str, str, str]] = set()
+    has_binance_open_orders = False
+    open_order_keys = [k for k in balances.keys() if isinstance(k, str) and k.startswith("open_orders:")]
+    for k in open_order_keys:
+        olist = balances.get(k)
+        if isinstance(olist, list):
+            parts = k.split(":", 2)
+            default_venue = (parts[1] if len(parts) > 1 else "binance").strip().lower() or "binance"
+            default_sym = parts[2] if len(parts) > 2 else ""
+            for o in olist:
+                if isinstance(o, dict):
+                    venue = str(o.get("venue") or default_venue).strip().lower() or default_venue
+                    sym = str(o.get("symbol") or default_sym).strip()
+                    oid = extract_order_id(o)
+                    if venue == "binance":
+                        has_binance_open_orders = True
+                    if oid:
+                        dedup_key = (venue, sym, oid)
+                        if dedup_key in seen_order_keys:
+                            continue
+                        seen_order_keys.add(dedup_key)
+                    active_orders.append({
+                        "venue": venue,
+                        "symbol": sym,
+                        "side": extract_order_side(o) or o.get("side"),
+                        "price": extract_order_price(o, default=0.0) or 0.0,
+                        "orig_qty": extract_orig_qty(o, default=0.0) or 0.0,
+                        "status": o.get("status") or "NEW",
+                    })
+    if not has_binance_open_orders and isinstance(orders_data, dict) and "items" in orders_data:
         items = orders_data["items"]
         if isinstance(items, dict):
             for sym, olist in items.items():
                 if isinstance(olist, list):
                     for o in olist:
                         if isinstance(o, dict) and o.get("status") in ("NEW", "OPEN", "PARTIALLY_FILLED"):
+                            sym_s = str(o.get("symbol") or sym).strip()
+                            oid = extract_order_id(o)
+                            if oid:
+                                dedup_key = ("binance", sym_s, oid)
+                                if dedup_key in seen_order_keys:
+                                    continue
+                                seen_order_keys.add(dedup_key)
                             active_orders.append({
                                 "venue": "binance",
-                                "symbol": o.get("symbol", sym),
-                                "side": o.get("side"),
-                                "price": safe_float(o.get("price"), 0.0) or 0.0,
-                                "orig_qty": safe_float(o.get("origQty") or o.get("quantity"), 0.0) or 0.0,
+                                "symbol": sym_s,
+                                "side": extract_order_side(o) or o.get("side"),
+                                "price": extract_order_price(o, default=0.0) or 0.0,
+                                "orig_qty": extract_orig_qty(o, default=0.0) or 0.0,
                                 "status": o.get("status"),
                             })
 
