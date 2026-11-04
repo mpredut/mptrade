@@ -598,16 +598,18 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     """Return True if a headline originates from a static reference/encyclopedia domain or first-person advice column."""
     title_s = str(title or "").strip()
     title_l = title_s.lower()
+    url_l = str(url or "").strip().lower()
     if title_l and re.search(
-        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me)\b",
+        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|^cramer:\s|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading)\b",
         title_l,
     ):
+        return True
+    if url_l and ("/investingclub/" in url_l or "watch-options-action-live" in url_l):
         return True
     excluded = get_excluded_reference_sources()
     if not excluded:
         return False
     src_l = str(source or "").strip().lower()
-    url_l = str(url or "").strip().lower()
     pub_sfx = ""
     if " - " in title_s:
         pub_sfx = title_s.rsplit(" - ", 1)[-1].strip().lower()

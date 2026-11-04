@@ -5362,6 +5362,21 @@ def test_iter11_cited_taker_buying_ratio_and_first_person_plural_advice_column_e
         "Why is our adviser pushing Roth conversions? - MarketWatch"
     )
     assert is_excluded_reference_news_item(headline_ay, "MarketWatch", "https://news.google.com/rss/articles/123") is True
+    assert is_excluded_reference_news_item(
+        "This year’s worst-performing S&P 500 stock is finally seeing some major relief",
+        "MarketWatch.com - Top Stories",
+        "https://www.marketwatch.com/story/this-years-worst-performing-s-p-500-stock-is-finally-seeing-some-major-relief-fff3fa85",
+    ) is True
+    assert is_excluded_reference_news_item(
+        "A massive trade just happened in a leading mortgage lender",
+        "US Top News and Analysis",
+        "https://www.cnbc.com/2026/11/04/a-massive-trade-just-happened-in-a-leading-mortgage-lender-watch-options-action-live.html",
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Cramer: What must happen for Home Depot to keep its 25% monthlong rally going",
+        "US Top News and Analysis",
+        "https://www.cnbc.com/2026/11/04/cramer-home-depot.html",
+    ) is True
 
 
 def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(

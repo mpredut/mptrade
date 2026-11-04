@@ -267,6 +267,8 @@ class KalmanStateTracker:
                 ):
                     seq_prices = big_prices if isinstance(big_prices, (list, tuple)) else list(big_prices)
                     step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
+                    if len(seq_prices) >= 6 and step_n * 2 >= len(seq_prices):
+                        step_n = max(1, (len(seq_prices) - 1) // 2)
                     raw_hist = seq_prices[-1 - step_n :: -step_n][:60]
                     if not raw_hist and len(seq_prices) >= 2:
                         raw_hist = [seq_prices[0]]

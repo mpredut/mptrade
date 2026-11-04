@@ -589,6 +589,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                         for k in ("kalman_vel", "kalman_vel_std", "kalman_trend")
                         if k in k_fields
                     }
+                if adapt_reentry is not None:
+                    kalman_extra["adapt_reentry_pct"] = adapt_reentry
+                if adapt_dca is not None:
+                    kalman_extra["adapt_dca_pct"] = adapt_dca
             except Exception:
                 pass
 
