@@ -41,9 +41,10 @@ _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
-    "allegedly", "arrest", "arrested", "baseball", "bat", "boy", "burglary",
-    "charged", "dog", "heart", "mugger", "panic", "robbery", "shark",
-    "stabbing", "suspect", "teenager", "volunteer",
+    "allegedly", "alligator", "animal", "arrest", "arrested", "baseball", "bat",
+    "bear", "boy", "burglary", "charged", "cougar", "dog", "grizzly", "heart",
+    "lion", "mugger", "panic", "robbery", "shark", "stabbing", "suspect",
+    "teenager", "tiger", "volunteer", "wildlife", "wolf",
 })
 
 _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({

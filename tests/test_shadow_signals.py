@@ -245,6 +245,34 @@ class TestShadowRuntime(unittest.TestCase):
             self.assertTrue(os.path.exists(new_path))
             self.assertEqual(tracker.current_trend("TAOUSDC"), (-1, 10.0))
 
+    def test_tape_15m_range_bounds_and_non_crisis_wildlife_attack_filter(self):
+        """15m_range includes -15m tape anchor, 3m covers up to 4.999m, and wildlife attack headlines are excluded."""
+        from intelligence.macro.lexicon_ssot import (
+            filter_valid_severity_keywords,
+            match_high_severity_keywords,
+        )
+        from intelligence.sentiment.evaluators.price_series_evaluator import (
+            compute_24h_price_metrics,
+        )
+
+        headline = "Mother and daughter both killed in grizzly bear attack, Canadian authorities confirm - The Guardian"
+        self.assertEqual(match_high_severity_keywords(headline), ())
+        self.assertEqual(filter_valid_severity_keywords(["attack"], title=headline), ())
+
+        now_ms = 1_700_000_000_000
+        tao_15m_series = [
+            [now_ms - int(15.05 * 60_000), 232.8],
+            [now_ms - int(10.0 * 60_000), 233.25],
+            [now_ms - int(5.0 * 60_000), 233.4],
+            [now_ms - int(3.0 * 60_000), 233.7],
+            [now_ms - int(1.0 * 60_000), 233.8],
+            [now_ms, 233.95],
+        ]
+        m24 = compute_24h_price_metrics(tao_15m_series)
+        self.assertIn("-15m:232.8", m24.get("recent_tape_15m", []))
+        self.assertEqual(m24.get("low_15m"), 232.8)
+        self.assertEqual(m24.get("high_15m"), 233.95)
+
 
 if __name__ == "__main__":
     unittest.main()

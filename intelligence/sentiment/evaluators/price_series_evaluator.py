@@ -321,7 +321,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         seen_sample_tms: set[float] = set()
         dedup_sparse_samples = len(clean_series) >= 12
         for key, mins, min_span_ms, max_gap_mins in (
-            ("chg_1m_pct", 1.0, 60000.0, 1.8), ("chg_3m_pct", 3.0, 180000.0, 1.8), ("chg_5m_pct", 5.0, 300000.0, 4.5),
+            ("chg_1m_pct", 1.0, 60000.0, 1.999), ("chg_3m_pct", 3.0, 180000.0, 1.999), ("chg_5m_pct", 5.0, 300000.0, 4.5),
             ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
             ("chg_3h_pct", 180.0, 0.0, 0.0), ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
@@ -337,25 +337,29 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
         if len(recent_15m) >= 3:
             eff_dec_15m = _auto_px_decimals(cur_px)
-            l15, h15 = round(min(recent_15m), eff_dec_15m), round(max(recent_15m), eff_dec_15m)
-            out["low_15m"], out["high_15m"] = l15, h15
-            if h15 > l15 > 0:
-                out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
-                out["span_15m_pct"] = pct_delta(h15, l15)
             tape_pts: list[str] = []
+            tape_vals: list[float] = []
             seen_tape_tms: set[float] = set()
             for m_off, lbl in ((15.0, "-15m"), (10.0, "-10m"), (5.0, "-5m"), (3.0, "-3m"), (1.0, "-1m"), (0.0, "now")):
                 if m_off == 0.0:
                     tape_pts.append(f"now:{f'{round(cur_px, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
+                    tape_vals.append(cur_px)
                     continue
                 if span_ms < m_off * 60000.0:
                     continue
-                max_tape_gap = 4.5 if m_off == 5.0 else (1.8 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
+                max_tape_gap = 4.5 if m_off == 5.0 else (1.999 if m_off in (1.0, 3.0) else max(3.0, m_off * 0.5))
                 t_tap, p_tap = _sample_at(m_off)
                 if t_tap is None or t_tap < now_ms - (m_off + max_tape_gap) * 60000.0 or t_tap in seen_tape_tms:
                     continue
                 seen_tape_tms.add(t_tap)
                 tape_pts.append(f"{lbl}:{f'{round(p_tap, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
+                tape_vals.append(p_tap)
+            all_15m_vals = recent_15m + tape_vals if len(tape_pts) >= 3 else recent_15m
+            l15, h15 = round(min(all_15m_vals), eff_dec_15m), round(max(all_15m_vals), eff_dec_15m)
+            out["low_15m"], out["high_15m"] = l15, h15
+            if h15 > l15 > 0:
+                out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
+                out["span_15m_pct"] = pct_delta(h15, l15)
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
         if span_ms >= 3600000.0 * 2.0:
