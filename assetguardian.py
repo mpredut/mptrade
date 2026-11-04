@@ -2,6 +2,8 @@ from __future__ import annotations
 import os
 import hashlib
 import math
+import signal
+import threading
 import time
 
 from binance_api import bapi as api
@@ -1114,6 +1116,12 @@ def _reuse_unaccepted_attempt(symbol, kind, state, pending):
     attempts[key] = max(0, attempt - 1)
     state = dict(state)
     state["attempts_by_tier"] = attempts
+    refusal_reason = pending.get("refusal_reason")
+    if isinstance(refusal_reason, str) and refusal_reason.strip() and pending.get("intent_id"):
+        state["last_refusal"] = {
+            "intent_id": str(pending["intent_id"]),
+            "reason": refusal_reason.strip(),
+        }
     _save_symbol_campaign(symbol, kind, state)
     return state
 
@@ -1396,6 +1404,12 @@ def _submit_campaign_tier(
     client_order_id = client_id_fn(symbol, state, threshold, attempt)
     state = dict(state)
     state["attempts_by_tier"] = attempts
+    last_ref = state.get("last_refusal")
+    if isinstance(last_ref, dict) and last_ref.get("intent_id") == client_order_id and last_ref.get("reason"):
+        ref_map = getattr(ORDER_LIFECYCLE, "_last_refusal_by_intent", None)
+        if isinstance(ref_map, dict):
+            ref_map[(str(client_order_id), str(symbol), str(side_label), str(intent_kind))] = str(last_ref["reason"])
+    state.pop("last_refusal", None)
     intent = ORDER_LIFECYCLE.new_intent(
         intent_id=client_order_id, client_order_id=client_order_id, symbol=symbol,
         side=side_label, requested_qty=requested_qty, requested_price=requested_price,
@@ -1637,6 +1651,9 @@ def evaluate_symbol(symbol, minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT):
     )
 
 
+_STOP_EVENT = threading.Event()
+
+
 def evaluate_and_maybe_sell_or_buy(
     minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT,
     symbols=None,
@@ -1644,12 +1661,24 @@ def evaluate_and_maybe_sell_or_buy(
     """Evaluate configured assets independently, accepting at most one order/cycle."""
     selected = tuple(symbols) if symbols is not None else TRACKED_SYMBOLS
     for symbol in selected:
+        if _STOP_EVENT.is_set():
+            break
         if evaluate_symbol(symbol, minutes_back=minutes_back):
             return True
     return False
 
 
 def run_forever():
+    _STOP_EVENT.clear()
+
+    def _on_signal(_signum, _frame):
+        _STOP_EVENT.set()
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _on_signal)
+        except Exception:
+            pass
     print(
         f" Started. check_interval={CHECK_INTERVAL_SECONDS}s, "
         f"sell_tiers={SELL_TIERS}, sell_rearm={SELL_REARM_GROWTH_PERCENT}%, "
@@ -1666,11 +1695,13 @@ def run_forever():
         symbols=list(TRACKED_SYMBOLS),
         intervals={"check_interval": CHECK_INTERVAL_SECONDS},
     )
-    while True:
+    while not _STOP_EVENT.is_set():
         try:
             evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
         except Exception as e:
             print(f" Runtime ERROR: {e}")
+        if _STOP_EVENT.is_set():
+            break
         sleep_seconds = _next_check_seconds()
         touch_module_heartbeat(
             "assetguardian",
@@ -1681,7 +1712,7 @@ def run_forever():
         # Flushing at the cycle boundary publishes all preceding lines when stdout
         # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
         print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)
-        time.sleep(sleep_seconds)
+        _STOP_EVENT.wait(sleep_seconds)
 
 
 if __name__ == "__main__":

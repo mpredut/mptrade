@@ -365,7 +365,10 @@ class Instrument:
             enforce_business_minimum = _parse_bool_flag(caller_enforce_biz_min, True)
             retry_kwargs["enforce_business_minimum"] = enforce_business_minimum
         else:
-            enforce_business_minimum = not (bypass_profit_guard and side_u == "SELL" and is_market)
+            enforce_business_minimum = not (
+                (bypass_profit_guard and side_u == "SELL" and is_market)
+                or (caller_module == "assetguardian" and side_u == "SELL")
+            )
         profit_window_ref = retry_requested_price = retry_price_tolerance = None
         try:
             if retry_constraint_supplied:

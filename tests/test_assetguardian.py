@@ -1364,6 +1364,41 @@ class AssetGuardianTest(unittest.TestCase):
                 6.00,
             )
 
+        with self.subTest(msg="test_persisted_last_refusal_deduplicates_audit_across_restart"):
+            state = MemoryState()
+            provider = mock.Mock()
+            provider.free_balance.return_value = 10.0
+
+            def _refuse_place(*_args, **kwargs):
+                ctx = kwargs.get("_outcome_context")
+                if isinstance(ctx, dict):
+                    ctx.update(accepted=False, reason="profit_guard", state="refused")
+                return None
+
+            audit_mock = mock.Mock()
+            with mock.patch.object(ag, "STATE", state), \
+                 mock.patch.object(ag.api, "get_current_price", return_value=115.0), \
+                 mock.patch.object(ag.mkt, "provider_by_name", return_value=provider), \
+                 mock.patch.object(ag.mkt, "place", side_effect=_refuse_place), \
+                 mock.patch.object(ag.ORDER_LIFECYCLE, "audit", audit_mock):
+                ag.ORDER_LIFECYCLE._last_refusal_by_intent.clear()
+                tier, campaign, _ = ag._sell_campaign_tier(
+                    "TAOUSDC", 115.0, {"timestamp": 10, "price": 100.0}, 10.0,
+                    self.sell_provider)
+                self.assertFalse(ag._submit_sell_tier(
+                    "TAOUSDC", current_price=115.0, tier=tier, state=campaign))
+                self.assertEqual(audit_mock.record.call_count, 2)
+
+                # Simulate process restart by clearing in-memory _last_refusal_by_intent
+                ag.ORDER_LIFECYCLE._last_refusal_by_intent.clear()
+                campaign_reloaded = ag._symbol_campaign("TAOUSDC", "sell")
+                self.assertIn("last_refusal", campaign_reloaded)
+                self.assertFalse(ag._submit_sell_tier(
+                    "TAOUSDC", current_price=115.0, tier=tier, state=campaign_reloaded))
+                # No duplicate submit_requested / submit_refused emitted after reload
+                self.assertEqual(audit_mock.record.call_count, 2)
+
+
 
 
 

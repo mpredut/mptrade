@@ -814,17 +814,6 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     if isinstance(T_quanta, bool) or isinstance(quant_seconds, bool):
         return None
 
-    if T_quanta is None:
-        try:
-            est = estimate_T(symbol)
-            T_quanta = est["T"]
-            print(f"[{symbol}] T AUTO (empiric hibrid): {T_quanta} zile  "
-                  f"(n={est['n']} episoade, w_empiric={est['w']}, "
-                  f"mediana={est.get('median_d')}z, P90={est.get('p90_d')}z)")
-        except Exception as e:
-            T_quanta = 14
-            print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
-
     all_trend_data = cm.get_cache_manager("LongTrend").cache
     items = lookup_symbol_cache_items(all_trend_data, symbol)
     if not items:
@@ -839,6 +828,17 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     if trend is None:
         print(f" No trend in cache for symbol {symbol}.")
         return None
+
+    if T_quanta is None:
+        try:
+            est = estimate_T(symbol)
+            T_quanta = est["T"]
+            print(f"[{symbol}] T AUTO (empiric hibrid): {T_quanta} zile  "
+                  f"(n={est['n']} episoade, w_empiric={est['w']}, "
+                  f"mediana={est.get('median_d')}z, P90={est.get('p90_d')}z)")
+        except Exception as e:
+            T_quanta = 14
+            print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
 
     dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
     t_quanta_f = safe_pos_float(T_quanta, default=None)
