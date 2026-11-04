@@ -120,6 +120,8 @@ SESSION_TRANSITION_CHECKPOINTS_EET: Tuple[Tuple[int, int, str], ...] = ()
 
 
 def _to_tz(now_ts: float, tz_name: str, fallback_offset_hours: int) -> datetime:
+    if now_ts > 1e11:
+        now_ts /= 1000.0
     if ZoneInfo is not None:
         try:
             return datetime.fromtimestamp(now_ts, tz=ZoneInfo(tz_name))
@@ -193,6 +195,10 @@ def did_cross_session_checkpoint(
     """Return the checkpoint label if a canonical EET session transition was crossed in (last_eval_ts, now_ts]."""
     last_f = safe_pos_float(last_eval_ts, 0.0)
     now_f = safe_pos_float(now_ts, 0.0)
+    if last_f > 1e11:
+        last_f /= 1000.0
+    if now_f > 1e11:
+        now_f /= 1000.0
     cooldown_f = safe_nonneg_float(min_cooldown_sec, _ssot.SENTIMENT_CHECKPOINT_COOLDOWN_SEC)
     if last_f <= 0.0 or now_f <= last_f or (now_f - last_f) < cooldown_f:
         return None

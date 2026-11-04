@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from botcore import _parse_bool_flag, safe_nonneg_int, safe_pos_float
 from cachepaths import cache_symbol_variants
 from intelligence.macro_sentiment_ssot import (
+    clean_scale,
     clean_symbol_key,
     get_cache_filenames,
     inspect_daemon_heartbeat,
@@ -45,7 +46,10 @@ def _stamp_age(data: Dict[str, Any], now: float, *, include_seconds: bool = True
     if raw_ts is None and ts_fallback_key:
         raw_ts = data.get(ts_fallback_key)
     ts = safe_float(raw_ts, 0.0)
-    age = (now - ts) if ts > 0.0 else float("inf")
+    if ts > 1e11:
+        ts /= 1000.0
+    now_s = now / 1000.0 if now > 1e11 else now
+    age = (now_s - ts) if ts > 0.0 else float("inf")
     if include_seconds:
         age_f = safe_float(age, default=None)
         data["age_seconds"] = round(age_f, 1) if age_f is not None else None
@@ -224,7 +228,7 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     print("\n🌊 [PILLAR 2: EXTERNAL MICROSTRUCTURE & DERIVATIVES FLOW]")
     ob = p2.get("orderbook")
     if isinstance(ob, dict) and ob:
-        imbalance = safe_float(ob.get("imbalance_ratio"), 0.5)
+        imbalance = clean_scale(ob.get("imbalance_ratio", ob.get("ob_imbalance")), 0.5, allow_percent=True)
         imb_bar = "🟢 BIDS" if imbalance > 0.55 else ("🔴 ASKS" if imbalance < 0.45 else "⚪ BALANCED")
         print(f"  • Spot Depth:     Mid=${safe_float(ob.get('mid_price'), 0.0):,.2f} | Bids=${safe_float(ob.get('bid_depth_usd'), 0.0):,.0f} | Asks=${safe_float(ob.get('ask_depth_usd'), 0.0):,.0f}")
         print(f"  • Imbalance:      {imbalance:.2f} ({imb_bar}) [snapshot: {ob.get('age_formatted', 'unknown')}]")
@@ -244,8 +248,9 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
 
     whale = p2.get("whale")
     if isinstance(whale, dict) and whale:
-        regime = str(whale.get("divergence_regime") or "neutral").upper()
-        print(f"  • Whale L/S:      {safe_float(whale.get('top_traders_long_ratio'), 1.0):.2f} ({safe_float(whale.get('top_traders_long_pct'), 0.5)*100:.1f}% longs)")
+        regime = str(whale.get("divergence_regime") or whale.get("div_regime") or "neutral").upper()
+        w_lp = clean_scale(whale.get("top_traders_long_pct", whale.get("whale_long_pct")), 0.5, allow_percent=True)
+        print(f"  • Whale L/S:      {safe_float(whale.get('top_traders_long_ratio'), 1.0):.2f} ({w_lp*100:.1f}% longs)")
         print(f"  • Taker Vol Buy:  ${safe_float(whale.get('taker_buy_vol_usd'), 0.0):,.0f} vs Sell: ${safe_float(whale.get('taker_sell_vol_usd'), 0.0):,.0f} (Ratio: {safe_float(whale.get('taker_buy_sell_ratio'), 1.0):.2f})")
         print(f"  • OI Divergence:  Regime={regime} | OI 1h Delta={safe_float(whale.get('open_interest_1h_change_pct'), 0.0):+.2f}% [snapshot: {whale.get('age_formatted', 'unknown')}]")
     else:
@@ -271,7 +276,7 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     if isinstance(p4, dict) and p4:
         level = str(p4.get("threat_level") or "NORMAL")
         icon = "🟢" if level == "NORMAL" else ("🟡" if level == "ELEVATED" else "🔴")
-        print(f"  • Threat Level:   {icon} {level} (Risk Score: {safe_float(p4.get('risk_score'), 0.0):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
+        print(f"  • Threat Level:   {icon} {level} (Risk Score: {clean_scale(p4.get('risk_score'), 0.0, allow_percent=True):.2f}) [snapshot: {p4.get('age_formatted', 'unknown')}]")
         print(f"  • Brake Action:   {p4.get('recommended_brake', 'NONE')}")
         print(f"  • Analysis:       {p4.get('summary', '')}")
     else:
@@ -282,11 +287,11 @@ def print_intelligence_report(report: Dict[str, Any]) -> None:
     buy_std = gp.get("buy_standard")
     if isinstance(buy_std, dict) and buy_std:
         status_std = "✅ ALLOWED" if _parse_bool_flag(buy_std.get("allowed")) else "⛔ BLOCKED"
-        print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {safe_float(buy_std.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
+        print(f"  • Standard BUY (250 EUR):   {status_std} | Scale: {clean_scale(buy_std.get('suggested_scale'), 1.0, allow_percent=True)*100:.0f}% | Reason: {buy_std.get('reason', '')}")
     buy_hi = gp.get("buy_high_stake")
     if isinstance(buy_hi, dict) and buy_hi:
         status_hi = "✅ ALLOWED" if _parse_bool_flag(buy_hi.get("allowed")) else "⛔ BLOCKED"
-        print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {safe_float(buy_hi.get('suggested_scale'), 1.0)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
+        print(f"  • High-Stake BUY (1500 EUR): {status_hi} | Scale: {clean_scale(buy_hi.get('suggested_scale'), 1.0, allow_percent=True)*100:.0f}% | Reason: {buy_hi.get('reason', '')}")
 
     print("=" * 76 + "\n")
 

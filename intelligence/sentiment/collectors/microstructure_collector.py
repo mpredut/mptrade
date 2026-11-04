@@ -17,6 +17,7 @@ from cachepaths import (
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
+    clean_scale,
     obj_attr,
     safe_float,
     safe_nonneg_float,
@@ -176,6 +177,24 @@ def load_symbol_price_series(
                 return older_pts + cur_ser
         return cur_ser
 
+    def _sort_ts_rows(rows: list) -> list:
+        if len(rows) < 2:
+            return rows
+        prev_t = -1.0
+        for r in rows:
+            pt = _parse_ts_px_row(r)
+            if pt is not None:
+                if pt[0] < prev_t:
+                    keyed = []
+                    for r_item in rows:
+                        p = _parse_ts_px_row(r_item)
+                        if p is not None:
+                            keyed.append((p[0], r_item))
+                    keyed.sort(key=lambda x: x[0])
+                    return [r_item for _, r_item in keyed]
+                prev_t = pt[0]
+        return rows
+
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
     _rj_cand = _resolve_read_json_cached()
     _rj = read_json_recovering if _rj_cand is _default_read_json_cached else _rj_cand
@@ -186,7 +205,7 @@ def load_symbol_price_series(
         for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _extract_cached_items_series(_rj(p24_path), cands)
+            ser = _sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
             if len(ser) >= 2:
                 series_24h = list(ser) if not series_24h else _prepend_older_non_diverged_points(series_24h, ser)
                 p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
@@ -206,7 +225,7 @@ def load_symbol_price_series(
             return []
         try:
             if arch_path.endswith(".json"):
-                aser = _extract_cached_items_series(_rj(arch_path), cands)
+                aser = _sort_ts_rows(_extract_cached_items_series(_rj(arch_path), cands))
                 return list(aser) if len(aser) >= 2 else []
             parsed_rows = []
             for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
@@ -219,6 +238,7 @@ def load_symbol_price_series(
                     item = rec if isinstance(rec, list) else None
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
                     parsed_rows.append([item[0], item[1]])
+            parsed_rows = _sort_ts_rows(parsed_rows)
             return parsed_rows if len(parsed_rows) >= 2 else []
         except Exception:
             return []
@@ -357,7 +377,8 @@ def load_symbol_microstructure(
     m_info: Dict[str, Any] = {"_source_cand": ob_cand} if ob_cand else {}
     if ob is not None:
         ob_same_quote = (not ob_cand) or (compatible_quote_suffixes(ob_cand) == compatible_quote_suffixes(sym))
-        m_info["ob_imbalance"] = obj_attr(ob, "imbalance_ratio", obj_attr(ob, "ob_imbalance"))
+        raw_ob_imb = obj_attr(ob, "imbalance_ratio", obj_attr(ob, "ob_imbalance"))
+        m_info["ob_imbalance"] = clean_scale(raw_ob_imb, default=None, allow_percent=True) if raw_ob_imb is not None else None
         ob_mid = safe_pos_float(obj_attr(ob, "mid_price", obj_attr(ob, "ob_mid_price")), default=None)
         best_bid = safe_pos_float(obj_attr(ob, "best_bid"), default=None)
         best_ask = safe_pos_float(obj_attr(ob, "best_ask"), default=None)
@@ -374,11 +395,11 @@ def load_symbol_microstructure(
         ):
             val = safe_nonneg_float(obj_attr(ob, k_src, obj_attr(ob, k_dst) if k_src != k_dst else None), default=None)
             m_info[k_dst] = round(val, 0) if val is not None else None
-        m_info["bid_wall_px"] = obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")) if ob_same_quote else None
-        m_info["ask_wall_px"] = obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")) if ob_same_quote else None
+        m_info["bid_wall_px"] = safe_pos_float(obj_attr(ob, "largest_bid_wall_price", obj_attr(ob, "bid_wall_px")), default=None) if ob_same_quote else None
+        m_info["ask_wall_px"] = safe_pos_float(obj_attr(ob, "largest_ask_wall_price", obj_attr(ob, "ask_wall_px")), default=None) if ob_same_quote else None
     if deriv is not None:
-        m_info["funding_rate"] = obj_attr(deriv, "funding_rate")
-        m_info["pred_funding_rate"] = obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate"))
+        m_info["funding_rate"] = safe_float(obj_attr(deriv, "funding_rate"), default=None)
+        m_info["pred_funding_rate"] = safe_float(obj_attr(deriv, "predicted_funding_rate", obj_attr(deriv, "pred_funding_rate")), default=None)
         m_info["oi_usd"] = obj_attr(deriv, "open_interest_usd", obj_attr(deriv, "oi_usd"))
         m_info["mark_price"] = safe_pos_float(obj_attr(deriv, "mark_price"), default=None)
         m_info["index_price"] = safe_pos_float(obj_attr(deriv, "index_price"), default=None)
@@ -392,7 +413,7 @@ def load_symbol_microstructure(
             ("taker_buy_vol_usd", "taker_buy_vol_usd", None),
             ("taker_sell_vol_usd", "taker_sell_vol_usd", None),
             ("oi_1h_chg_pct", "open_interest_1h_change_pct", "oi_1h_chg_pct"),
-            ("divergence_regime", "divergence_regime", None),
+            ("divergence_regime", "divergence_regime", "div_regime"),
             ("taker_ratio_5m", "taker_ratio_5m", None),
             ("taker_ratio_1h", "taker_ratio_1h", None),
             ("taker_ratio_4h", "taker_ratio_4h", None),
@@ -401,6 +422,8 @@ def load_symbol_microstructure(
             ("cvd_4h_usd", "cvd_4h_usd", None),
         ):
             val_w = obj_attr(whale, src_k, obj_attr(whale, alt_k) if alt_k else None)
+            if dst_k == "whale_long_pct" and val_w is not None:
+                val_w = clean_scale(val_w, default=None, allow_percent=True)
             if val_w is not None or dst_k not in m_info:
                 m_info[dst_k] = val_w
         if not safe_pos_float(m_info.get("oi_usd"), default=None) and (w_oi := safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)) is not None:
@@ -642,19 +665,36 @@ def enrich_24h_and_microstructure(
                 chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
                 pts_5d: List[List[Any]] = []
                 if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
-                    pts_5d = [
-                        ([int(ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0] if len(bar) >= 3 else [int(ts_f * 1000), round(px_f, 4)])
-                        for bar in chart_res[1]
-                        if isinstance(bar, (list, tuple)) and len(bar) >= 2 and (ts_f := safe_pos_float(bar[0], default=None)) is not None and (px_f := safe_pos_float(bar[1], default=None)) is not None
-                    ]
+                    pts_5d = sorted(
+                        (
+                            (
+                                [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0]
+                                if len(bar) >= 3
+                                else [int(ts_f if ts_f > 1e11 else ts_f * 1000), round(px_f, 4)]
+                            )
+                            for bar in chart_res[1]
+                            if isinstance(bar, (list, tuple))
+                            and len(bar) >= 2
+                            and (ts_f := safe_pos_float(bar[0], default=None)) is not None
+                            and (px_f := safe_pos_float(bar[1], default=None)) is not None
+                        ),
+                        key=lambda pt: pt[0],
+                    )
                 elif isinstance(chart_res, dict):
                     q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
                     vols = q_obj.get("volume") or []
-                    pts_5d = [
-                        [int(ts_f * 1000), round(c_f, 4), safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0]
-                        for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
-                        if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
-                    ]
+                    pts_5d = sorted(
+                        (
+                            [
+                                int(ts_f if ts_f > 1e11 else ts_f * 1000),
+                                round(c_f, 4),
+                                safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0,
+                            ]
+                            for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
+                            if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
+                        ),
+                        key=lambda pt: pt[0],
+                    )
                 if pts_5d:
                     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
                     now_ms_i = int(now_ts * 1000)

@@ -200,6 +200,8 @@ def inspect_daemon_heartbeat(
     try:
         pid = exact_pos_int(data.get("pid", 0), 0)
         ts = safe_float(data.get("ts", 0.0), 0.0)
+        if ts > 1e11:
+            ts /= 1000.0
         age = max(0.0, time.time() - ts) if ts > 0.0 else float("inf")
         is_alive = False
         if pid > 0:

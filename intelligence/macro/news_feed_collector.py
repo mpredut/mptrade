@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import datetime, timezone
 import email.utils
 import logging
 import os
@@ -215,15 +215,25 @@ class NewsFeedCollector:
         s = pub_date.strip()
         if "04 Oct 2026" in s:
             return None
+        now_s = now / 1000.0 if now > 1e11 else now
+        dt: Optional[datetime] = None
         try:
             dt = email.utils.parsedate_to_datetime(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            pub_ts = float(dt.timestamp())
-            if (now - pub_ts) >= -600.0:
-                return min(now, pub_ts)
         except Exception:
-            pass
+            try:
+                iso_s = (s[:-1] + "+00:00") if s.endswith(("Z", "z")) else s
+                dt = datetime.fromisoformat(iso_s)
+            except Exception:
+                dt = None
+        if dt is not None:
+            try:
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                pub_ts = float(dt.timestamp())
+                if (now_s - pub_ts) >= -600.0:
+                    return min(now_s, pub_ts)
+            except Exception:
+                pass
         return None
 
     def _retention_window_sec(self) -> float:
@@ -243,6 +253,8 @@ class NewsFeedCollector:
                 if not isinstance(item, dict):
                     continue
                 raw_ts = safe_pos_float(item.get("first_seen_ts", now), -1.0)
+                if raw_ts > 1e11:
+                    raw_ts /= 1000.0
                 h = self._coerce_headline(item)
                 norm = self._normalize_title(h.title) if h else ""
                 if not (h and norm):
@@ -359,7 +371,11 @@ class NewsFeedCollector:
         if not (isinstance(v, tuple) and len(v) == 2 and hasattr(v[1], "title")):
             return False
         ts_f = safe_float(v[0], default=None)
-        if ts_f is None or ts_f < cutoff:
+        if ts_f is None:
+            return False
+        if ts_f > 1e11:
+            ts_f /= 1000.0
+        if ts_f < cutoff:
             return False
         return max_ts is None or ts_f <= max_ts
 
@@ -388,6 +404,7 @@ class NewsFeedCollector:
 
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
+        now = resolve_now_ts(now)
         cache_dir = self._CacheDirOrNone()
         retention_cutoff = now - self._retention_window_sec()
         self._seen_first_ts = {

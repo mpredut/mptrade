@@ -2865,6 +2865,112 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
     assert fb_px["BTCUSDC"] == pytest.approx(102.0)
 
 
+def test_iter63_microstructure_archive_sorting_post_stop_ms_and_news_iso_dates(monkeypatch, tmp_path, capsys):
+    import json
+    from intelligence.cli import _stamp_age, print_intelligence_report
+    from intelligence.macro.calendar_ssot import did_cross_session_checkpoint
+    from intelligence.macro.daemon_ssot import inspect_daemon_heartbeat
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        load_symbol_microstructure,
+        load_symbol_price_series,
+    )
+    import intelligence.sentiment.guards.post_stop_reentry_guard as psrg
+
+    # 1. load_symbol_price_series sorts unsorted archive_pts before extracting vals_7d
+    arch_file = tmp_path / "cache_365_price_BTCUSDC.json"
+    arch_file.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        [1700500000000, 110.0],
+                        [1700000000000, 100.0],
+                        [1700250000000, 105.0],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    s24, v7d = load_symbol_price_series(str(tmp_path), "BTCUSDC", include_7d=True)
+    assert v7d == [100.0, 105.0, 110.0]
+
+    # 2. load_symbol_microstructure normalizes percent ob_imbalance / whale_long_pct, string funding_rate, and div_regime alias
+    m_info = load_symbol_microstructure(
+        str(tmp_path),
+        "BTCUSDC",
+        ob={"symbol": "BTCUSDC", "ob_imbalance": "62%", "mid_price": 100.0, "bid_wall_px": "98.5"},
+        deriv={"funding_rate": "0.0004", "pred_funding_rate": "0.0005"},
+        whale={"whale_long_pct": "65%", "div_regime": "bullish_divergence"},
+    )
+    assert m_info is not None
+    assert m_info["ob_imbalance"] == pytest.approx(0.62)
+    assert m_info["whale_long_pct"] == pytest.approx(0.65)
+    assert m_info["funding_rate"] == pytest.approx(0.0004)
+    assert m_info["pred_funding_rate"] == pytest.approx(0.0005)
+    assert m_info["bid_wall_px"] == pytest.approx(98.5)
+    assert m_info["divergence_regime"] == "bullish_divergence"
+
+    # 3. PostStopReentryGuard.check normalizes millisecond last_sell_time_s and percentage string bounce_pct
+    captured_prompts = []
+    monkeypatch.setattr(psrg, "collect_pretrade_telemetry", lambda *a, **kw: {})
+    monkeypatch.setattr(psrg, "query_topic_json", lambda client, topic, prompt, **kw: captured_prompts.append(prompt) or {"decision": "APPROVED"})
+    ps_guard = psrg.PostStopReentryGuard(gemini_client=object(), notify_enabled=False, cache_ttl_sec=600.0)
+    dec1 = ps_guard.check(
+        "BTCUSDC",
+        current_price=102.5,
+        last_sell_price=101.0,
+        trough=100.0,
+        bounce_pct="2.5%",
+        last_sell_time_s=1700000000000.0,
+        now=1700000600.0,
+    )
+    assert dec1.allowed
+    assert any("Elapsed Time Since Stop-Loss: 10.0 minutes" in p and "+2.50% bounce from trough" in p for p in captured_prompts)
+    # Cache hit when called with seconds timestamp for the same sell event
+    dec2 = ps_guard.check(
+        "BTCUSDC",
+        current_price=102.5,
+        last_sell_price=101.0,
+        trough=100.0,
+        bounce_pct=0.025,
+        last_sell_time_s=1700000000.0,
+        now=1700000610.0,
+    )
+    assert dec2.allowed and len(captured_prompts) == 1
+
+    # 4. NewsFeedCollector._parse_recent_pub_date_ts supports ISO-8601 dates and ms timestamps in history
+    iso_ts = NewsFeedCollector._parse_recent_pub_date_ts("2023-11-14T22:13:20Z", 1700000100.0)
+    assert iso_ts == pytest.approx(1700000000.0)
+
+    # 5. calendar_ssot, daemon_ssot, and cli normalize millisecond timestamps and percent scales
+    cp = did_cross_session_checkpoint(1700020000000.0, 1700038000000.0, min_cooldown_sec=60.0)
+    assert cp is None or isinstance(cp, str)
+
+    hb_path = tmp_path / "test_daemon.heartbeat"
+    hb_path.write_text(json.dumps({"pid": 99999999, "ts": 1700000000000.0}), encoding="utf-8")
+    hb_res = inspect_daemon_heartbeat(str(tmp_path), ("test_daemon.heartbeat",))
+    assert hb_res["age_seconds"] is not None and hb_res["age_seconds"] > 1000.0
+
+    stamped = _stamp_age({"ts": 1700000000000.0}, 1700000030.0)
+    assert stamped["age_seconds"] == pytest.approx(30.0)
+
+    print_intelligence_report(
+        {
+            "symbol": "BTCUSDC",
+            "pillar2_external": {
+                "orderbook": {"ob_imbalance": "62%", "mid_price": 100.0},
+                "whale": {"whale_long_pct": "65%", "div_regime": "bullish_divergence"},
+            },
+            "pillar4_macro": {"threat_level": "ELEVATED", "risk_score": "75%"},
+            "guard_preview": {"buy_standard": {"allowed": True, "suggested_scale": "50%", "reason": "test"}},
+        }
+    )
+    out_str = capsys.readouterr().out
+    assert "0.62" in out_str and "65.0% longs" in out_str and "Risk Score: 0.75" in out_str and "Scale: 50%" in out_str
+
+
 if __name__ == "__main__":
     unittest.main()
 
