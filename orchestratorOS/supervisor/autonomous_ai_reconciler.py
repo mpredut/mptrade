@@ -53,6 +53,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     BOT_AND_ORDER_ERROR_CATEGORIES,
     LogEventSummary,
     SYSTEM_OS_ERROR_CATEGORIES,
+    _resolve_repair_json_reader,
     apply_code_patch_safely,
     apply_reconciliation_plan,
     audit_workspace_configs,
@@ -71,6 +72,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     persist_supervisor_audit_artifact,
     read_json_recovering,
     recent_log_lines,  # noqa: F401 (re-export: test compat)
+    save_json_state,  # noqa: F401 (re-export: test compat)
     send_supervisor_ntfy_http,
     submit_supervisor_trading_decisions,
 )
@@ -193,7 +195,7 @@ class AutonomousAIReconciler:
         scope = (asset_scope or "all").strip().lower()
         snapshot = TelemetrySensorSnapshot()
         now_ts = time.time()
-        _read_json = read_json_recovering
+        _read_json = _resolve_repair_json_reader(read_json_recovering)
 
         snapshot.active_heartbeats, snapshot.state_files = harvest_heartbeats_and_state_files(
             self.cache_dir, self.workspace_dir, now_ts, _read_json

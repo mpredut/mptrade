@@ -1344,38 +1344,74 @@ def _parse_currency_pos_float(raw: Any, default: Any = None) -> Any:
 
 def extract_intent_side(data: dict[str, Any]) -> str:
     """Extract normalized BUY/SELL/HOLD side from an intent dictionary."""
+    if not isinstance(data, dict):
+        return ""
     for k in ("decision", "action", "side"):
         if data.get(k) is not None:
-            return normalize_side(data.get(k))
+            norm = normalize_side(data.get(k))
+            if norm:
+                return norm
     return ""
+
+
+_NOTIONAL_KEYS: tuple[str, ...] = (
+    "suggested_notional_usd",
+    "notional_usd",
+    "amount_usd",
+    "size_usd",
+    "usd_notional",
+    "notional",
+    "value_usd",
+)
 
 
 def extract_intent_notional(data: dict[str, Any], default: Any = None) -> Any:
     """Extract and parse positive suggested notional USD across aliases and currency strings."""
     if not isinstance(data, dict):
         return default
-    raw_notional = data.get("suggested_notional_usd")
-    if raw_notional is None:
-        for nk in ("notional_usd", "amount_usd", "size_usd", "usd_notional", "notional", "value_usd"):
-            if data.get(nk) is not None:
-                raw_notional = data.get(nk)
-                break
-    return _parse_currency_pos_float(raw_notional, default)
+    for nk in _NOTIONAL_KEYS:
+        if data.get(nk) is not None:
+            val = _parse_currency_pos_float(data.get(nk), None)
+            if val is not None:
+                return val
+    return default
+
+
+def _resolve_clamped_intent_notional(
+    data: dict[str, Any],
+    min_notional_usd: float,
+    max_notional_usd: float,
+) -> float:
+    """Resolve and clamp suggested notional USD; explicit non-positive numeric values clamp to min_notional_usd."""
+    pos = extract_intent_notional(data, None)
+    if pos is not None:
+        return max(min_notional_usd, min(float(pos), max_notional_usd))
+    if isinstance(data, dict):
+        for nk in _NOTIONAL_KEYS:
+            raw = data.get(nk)
+            if raw is None or isinstance(raw, bool):
+                continue
+            if isinstance(raw, str):
+                raw = _CURRENCY_STRIP_RE.sub("", raw).strip()
+            num = safe_float(raw, None)
+            if num is not None and num <= 0.0:
+                return float(min_notional_usd)
+    return max(min_notional_usd, float(max_notional_usd))
 
 
 def extract_intent_limit_price(data: dict[str, Any], default: Any = None) -> Any:
     """Extract and parse positive passive limit price across aliases and currency strings."""
     if not isinstance(data, dict):
         return default
-    raw_px = data.get("limit_price")
-    if raw_px is None:
-        for pk in ("target_price", "order_price", "limit_px"):
-            if data.get(pk) is not None:
-                raw_px = data.get(pk)
-                break
-        if raw_px is None and str(data.get("order_type") or data.get("type") or "").strip().upper() == "LIMIT":
-            raw_px = data.get("price")
-    return _parse_currency_pos_float(raw_px, default)
+    keys: tuple[str, ...] = ("limit_price", "target_price", "order_price", "limit_px")
+    if str(data.get("order_type") or data.get("type") or "").strip().upper() == "LIMIT":
+        keys = (*keys, "price")
+    for pk in keys:
+        if data.get(pk) is not None:
+            val = _parse_currency_pos_float(data.get(pk), None)
+            if val is not None:
+                return val
+    return default
 
 
 def extract_intent_order_type(data: dict[str, Any]) -> str:
@@ -1813,8 +1849,7 @@ def validate_and_build_intent_dict(
                 source, side, symbol, confidence, min_confidence,
             )
         return None
-    notional = extract_intent_notional(decision, max_notional_usd)
-    notional = max(min_notional_usd, min(notional, max_notional_usd))
+    notional = _resolve_clamped_intent_notional(decision, min_notional_usd, max_notional_usd)
     intent_id = generate_unique_intent_id(now_ts, side, symbol, existing_intents)
     raw_urg = decision.get("urgency", "NORMAL")
     urgency = (
@@ -2266,8 +2301,7 @@ def preflight_intent_and_resolve_price(
         _record_intent_state(intent, "REJECTED_UNKNOWN_INSTRUMENT", now_ts, symbol=symbol, venue=venue)
         return False, intent_id, decision, symbol, venue, confidence, None, 0.0, 0.0, False
 
-    suggested_usd = extract_intent_notional(intent, max_notional_usd)
-    effective_usd = max(min_notional_usd, min(suggested_usd, max_notional_usd))
+    effective_usd = _resolve_clamped_intent_notional(intent, min_notional_usd, max_notional_usd)
 
     live_price = safe_pos_float(get_live_price_fn(inst), default=None)
     if live_price is None:

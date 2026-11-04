@@ -178,10 +178,19 @@ class KrakenTrailing(TrailingAdapterBase):
         )
 
     def trail_pct_for(self, asset: str) -> float:
+        default_pct = safe_pos_float(
+            self._module_attr("DEFAULT_TRAIL_PCT", DEFAULT_TRAIL_PCT),
+            default=float(DEFAULT_TRAIL_PCT),
+        )
         if isinstance(asset, bool) or not isinstance(asset, str) or not asset.strip():
-            return DEFAULT_TRAIL_PCT
-        val = self._lookup_symbol_entry(TRAIL_PCT, asset)
-        return val if val is not None else DEFAULT_TRAIL_PCT
+            return default_pct
+        trail_map = self._module_attr("TRAIL_PCT", TRAIL_PCT)
+        val = self._lookup_symbol_entry(
+            trail_map,
+            asset,
+            predicate=lambda v: safe_pos_float(v, default=None) is not None,
+        )
+        return float(safe_pos_float(val, default=default_pct)) if val is not None else default_pct
 
     def _balance_ex_map(self) -> dict | None:
         if self._tick_balances is not None:

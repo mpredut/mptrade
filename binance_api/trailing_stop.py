@@ -169,11 +169,16 @@ class TrailingStop(TrailingAdapterBase):
         )
 
     def trail_pct_for(self, symbol: str) -> float:
-        if isinstance(symbol, bool) or symbol is None:
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             raise KeyError(symbol)
-        val = self._lookup_symbol_entry(TRAIL_PCT, symbol)
+        trail_map = self._module_attr("TRAIL_PCT", TRAIL_PCT)
+        val = self._lookup_symbol_entry(
+            trail_map,
+            symbol,
+            predicate=lambda v: safe_pos_float(v, default=None) is not None,
+        )
         if val is not None:
-            return val
+            return float(safe_pos_float(val, default=val))
         raise KeyError(symbol)
 
     def _long_trend_up(self, symbol: str) -> bool:

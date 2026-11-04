@@ -937,12 +937,13 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
 
 def _format_portfolio_section(
     ps: Dict[str, Any],
-    asset_scope: str,
+    asset_scope: Any = "all",
     *,
     max_usd: float = 2000.0,
     include_macro_benchmarks: bool = True,
 ) -> List[str]:
     """Format Section 3C (Spot Wallet Balances, Tradable Positions, Cycle Cost Anchors & Last Fills)."""
+    scope_s = str(asset_scope or "all").strip().lower() if isinstance(asset_scope, str) else "all"
     lines = ["\n### 3C. SPOT WALLET BALANCES, TRADABLE POSITIONS, CYCLE COST ANCHORS & LAST FILLS:"]
     if isinstance(pre := ps.get("portfolio_risk_engine"), dict) and pre.get("unified_nav_usd"):
         pre_parts = [
@@ -1070,11 +1071,11 @@ def _format_portfolio_section(
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]
         if isinstance(cmc, dict):
-            if cmc.get("crypto_bellwethers") and asset_scope == "equities":
+            if cmc.get("crypto_bellwethers") and scope_s == "equities":
                 lines.append(
                     f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {cmc['crypto_bellwethers']}"
                 )
-            if cmc.get("equity_bellwethers") and asset_scope != "equities":
+            if cmc.get("equity_bellwethers") and scope_s != "equities":
                 lines.append(
                     f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
                 )

@@ -1627,8 +1627,99 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
             md_mod.parse_interval_minutes(bad_iv)
 
 
+def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(monkeypatch, tmp_path):
+    from binance_api import trailing_stop as bin_ts
+    from kraken import trailing_stop as krk_ts
+    from orchestratorOS.lib import technical_repair_ssot as tr_ssot
+    from orchestratorOS.supervisor import autonomous_ai_reconciler as ar_mod
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.execution_audit import (
+        extract_intent_limit_price,
+        extract_intent_notional,
+        extract_intent_side,
+        validate_and_build_intent_dict,
+    )
+    from trailing_core import TrailingAdapterBase, TrailingCore
+
+    # 1. Monkeypatching autonomous_ai_reconciler.read_json_recovering / save_json_state
+    #    is honoured by technical_repair_ssot helpers even when called without explicit fn
+    monkeypatch.setattr(
+        ar_mod,
+        "read_json_recovering",
+        lambda p: {"status": "alive", "ts": 1700000000.0} if str(p).endswith("rtrade.heartbeat") else None,
+    )
+    hbs, _ = tr_ssot.harvest_heartbeats_and_state_files(str(tmp_path), str(tmp_path), 1700009999.0)
+    assert "rtrade.heartbeat" in hbs and hbs["rtrade.heartbeat"]["status"] == "alive"
+
+    saved_calls = []
+    monkeypatch.setattr(ar_mod, "save_json_state", lambda p, d, **kw: saved_calls.append((p, d)))
+    tr_ssot.persist_supervisor_audit_artifact(
+        {"ts": 1700000000.0, "mode": "shadow", "summary": "ok"},
+        str(tmp_path),
+        str(tmp_path / "eval.json"),
+        str(tmp_path / "eval.heartbeat"),
+    )
+    assert len(saved_calls) == 2 and saved_calls[0][1]["summary"] == "ok"
+
+    # 2. _format_portfolio_section normalizes asset_scope case-insensitively and defaults to "all"
+    ps_sample = {
+        "cross_market_context": {
+            "crypto_bellwethers": {"BTC": 80000.0},
+            "equity_bellwethers": {"NVDA": 140.0},
+        }
+    }
+    eq_lines = "\n".join(_format_portfolio_section(ps_sample, " EQUITIES "))
+    assert "Cross-Market Live Crypto Telemetry" in eq_lines
+    assert "Cross-Market US Equities Telemetry" not in eq_lines
+    default_lines = "\n".join(_format_portfolio_section(ps_sample))
+    assert "Cross-Market US Equities Telemetry" in default_lines
+
+    # 3. TrailingCore._asset_for_pair is case-insensitive and trail_pct_for validates positive floats
+    class _DummyAdapter:
+        def assets(self):
+            return [("HYPE", "HYPE", "HYPEUSD", 2.0)]
+
+    core = TrailingCore.__new__(TrailingCore)
+    core.a = _DummyAdapter()
+    assert core._asset_for_pair("hypeusd") == "HYPE"
+    assert core._asset_for_pair("  HypeUsd ") == "HYPE"
+    assert TrailingAdapterBase._lookup_symbol_entry({"BTCUSDC": 1.5}, "   ") is None
+    assert TrailingAdapterBase._lookup_symbol_entry({"BTCUSDC": 1.5}, 123) is None
+
+    bts = bin_ts.TrailingStop.__new__(bin_ts.TrailingStop)
+    monkeypatch.setattr(bin_ts, "TRAIL_PCT", {"BTCUSDC": 1.75, "BAD": -1.0})
+    assert bts.trail_pct_for("btcusdc") == pytest.approx(1.75)
+    for bad_sym in ("", "   ", "BAD", True):
+        with pytest.raises(KeyError):
+            bts.trail_pct_for(bad_sym)
+
+    kts = krk_ts.KrakenTrailing.__new__(krk_ts.KrakenTrailing)
+    monkeypatch.setattr(krk_ts, "TRAIL_PCT", {"HYPE": 2.25, "BAD": 0.0})
+    monkeypatch.setattr(krk_ts, "DEFAULT_TRAIL_PCT", 3.5)
+    assert kts.trail_pct_for("hype") == pytest.approx(2.25)
+    assert kts.trail_pct_for("BAD") == pytest.approx(3.5)
+
+    # 4. Intent field extractors fall through empty/non-positive primary keys to valid aliases,
+    #    and validate_and_build_intent_dict clamps explicit <= 0 notional to min_notional_usd
+    assert extract_intent_side({"decision": "", "side": "buy"}) == "BUY"
+    assert extract_intent_notional({"suggested_notional_usd": "", "notional_usd": "$350"}) == pytest.approx(350.0)
+    assert extract_intent_limit_price({"order_type": "LIMIT", "limit_price": "", "price": "79,500"}) == pytest.approx(79500.0)
+
+    rec_zero = validate_and_build_intent_dict(
+        {"decision": "BUY", "symbol": "BTCUSDC", "venue": "binance", "confidence": 0.90, "suggested_notional_usd": 0},
+        source="test",
+        min_confidence=0.85,
+        min_notional_usd=10.0,
+        max_notional_usd=2000.0,
+        existing_intents=[],
+        now_ts=1700000000.0,
+    )
+    assert rec_zero is not None and rec_zero["suggested_notional_usd"] == pytest.approx(10.0)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

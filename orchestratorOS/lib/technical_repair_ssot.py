@@ -42,6 +42,44 @@ from state_io import (
 )
 
 parse_finite_float = safe_float
+_default_read_json_recovering = read_json_recovering
+_default_save_json_state = save_json_state
+
+
+def _resolve_repair_json_reader(read_json_fn: Any = None) -> Any:
+    if callable(read_json_fn) and read_json_fn is not _default_read_json_recovering:
+        return read_json_fn
+    try:
+        from orchestratorOS.supervisor import autonomous_ai_reconciler as _ar
+
+        ar_rj = getattr(_ar, "read_json_recovering", None)
+        if callable(ar_rj) and ar_rj is not _default_read_json_recovering:
+            return ar_rj
+    except Exception:
+        pass
+    if callable(read_json_recovering) and read_json_recovering is not _default_read_json_recovering:
+        return read_json_recovering
+    if callable(read_json_fn):
+        return read_json_fn
+    return read_json_recovering
+
+
+def _resolve_repair_save_json_state(save_json_fn: Any = None) -> Any:
+    if callable(save_json_fn) and save_json_fn is not _default_save_json_state:
+        return save_json_fn
+    try:
+        from orchestratorOS.supervisor import autonomous_ai_reconciler as _ar
+
+        ar_sj = getattr(_ar, "save_json_state", None)
+        if callable(ar_sj) and ar_sj is not _default_save_json_state:
+            return ar_sj
+    except Exception:
+        pass
+    if callable(save_json_state) and save_json_state is not _default_save_json_state:
+        return save_json_state
+    if callable(save_json_fn):
+        return save_json_fn
+    return save_json_state
 
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
@@ -540,7 +578,7 @@ def gather_system_and_vpn_telemetry(
     sys_vpn["vpn_outage_active"] = os.path.exists("/var/lib/pia_selfheal/outage_since")
     sys_vpn["internet_healthy"] = bool(sys_vpn.get("default_route_present", True) and not sys_vpn.get("vpn_outage_active", False))
 
-    rw_state = read_json_recovering(os.path.join(workspace_dir, ".resource_watchdog_state.json"))
+    rw_state = _resolve_repair_json_reader()(os.path.join(workspace_dir, ".resource_watchdog_state.json"))
     if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
         offenders = [
             {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
@@ -1009,13 +1047,14 @@ def harvest_heartbeats_and_state_files(
     read_json_fn: Any = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Harvest active heartbeat JSON/mtime files and watchdog state file ages."""
-    _rj = read_json_fn or read_json_recovering
+    _rj = _resolve_repair_json_reader(read_json_fn)
+    _is_default_rj = _rj is _default_read_json_recovering
     active_heartbeats: Dict[str, Any] = {}
     for hb_name in ("macro_analyzer.heartbeat", "globaltelemetry_collector.heartbeat", "rtrade.heartbeat"):
         hb_raw_path = os.path.join(cache_dir, hb_name)
         data = _rj(hb_raw_path)
         if isinstance(data, dict) and data:
-            if hb_name == "rtrade.heartbeat" and (read_json_fn is None or read_json_fn is read_json_recovering):
+            if hb_name == "rtrade.heartbeat" and _is_default_rj:
                 hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
                 if os.path.exists(hb_resolved):
                     try:
@@ -1028,7 +1067,7 @@ def harvest_heartbeats_and_state_files(
                         pass
             active_heartbeats[hb_name] = data
             continue
-        if hb_name == "rtrade.heartbeat" and (read_json_fn is None or read_json_fn is read_json_recovering):
+        if hb_name == "rtrade.heartbeat" and _is_default_rj:
             hb_resolved = str(resolve_cachedb_filepath(hb_raw_path))
             if os.path.exists(hb_resolved):
                 try:
@@ -1041,7 +1080,7 @@ def harvest_heartbeats_and_state_files(
                         )
                 except OSError:
                     pass
-    if read_json_fn is None or read_json_fn is read_json_recovering:
+    if _is_default_rj:
         for scan_dir in (os.path.join(cache_dir, "system", "heartbeat"), cache_dir):
             if not os.path.isdir(scan_dir):
                 continue
@@ -1152,7 +1191,8 @@ def persist_supervisor_audit_artifact(
     """Persist full SupervisorAuditReport dict and heartbeat JSON to disk in cachedb/."""
     try:
         os.makedirs(cache_dir, exist_ok=True)
-        save_json_state(state_file, clean_json_value(report_dict), indent=2)
+        _save_json = _resolve_repair_save_json_state()
+        _save_json(state_file, clean_json_value(report_dict), indent=2)
         hb = build_heartbeat_payload(
             {"ts": report_dict.get("ts")},
             extra={
@@ -1164,7 +1204,7 @@ def persist_supervisor_audit_artifact(
                 "market_trading_decisions": report_dict.get("market_trading_decisions") or [],
             },
         )
-        save_json_state(heartbeat_file, hb, indent=2)
+        _save_json(heartbeat_file, hb, indent=2)
     except Exception as e:
         if log:
             log.warning("Could not persist audit artifact: %s", e)
@@ -1421,7 +1461,7 @@ def summarize_fleet_sensor_status(
         read_first_cached_dict,
     )
 
-    _rj = read_json_fn or read_json_recovering
+    _rj = _resolve_repair_json_reader(read_json_fn)
     sensors: Dict[str, Any] = {}
 
     if geo := read_first_cached_dict(cachedb_dir, "geopolitical_eval_files", "geopolitical_eval.json", read_json_fn=_rj)[0]:

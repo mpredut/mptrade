@@ -322,8 +322,9 @@ class TrailingCore:
         return persist
 
     def _asset_for_pair(self, pair: str, default: str = "") -> str:
+        pair_u = "" if isinstance(pair, bool) or pair is None else str(pair).strip().upper()
         for _k, asset, p, _t in self.a.assets():
-            if p == pair:
+            if p == pair or (pair_u and str(p or "").strip().upper() == pair_u):
                 return asset
         return default
 
@@ -720,7 +721,7 @@ class TrailingAdapterBase:
 
     @classmethod
     def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
-        if isinstance(symbol, bool) or symbol is None or not isinstance(mapping, dict):
+        if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip() or not isinstance(mapping, dict):
             return None
         from cachepaths import canonical_base_asset, canonical_symbol_key
         from instrument_registry import casefold_get
