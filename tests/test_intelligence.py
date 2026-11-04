@@ -4049,6 +4049,68 @@ def test_iter72_series_24h_double_ms_order_ts_iso_and_portfolio_enrichment(tmp_p
     assert "chg_7d_pct" not in eq_nvda
 
 
+def test_iter73_warmup_shadow_prices_cost_basis_fill_id_and_ohlc_window():
+    from collections import deque
+    from intelligence.external.collectors.base_collector import _clean_snapshot_ts
+    from providers.order_ohlc_utils import build_price_history_points, resolve_ohlc_time_window_ms
+    from providers.quantity import compute_fills_cost_basis
+    from strategies.base_spot_mixin import BaseSpotMixin
+    from strategies.spot_rules import _iter_valid_shadow_prices
+
+    # 1. _iter_valid_shadow_prices and BaseSpotMixin._shadow_vol_1h preserve negative warmup timestamps
+    warmup_pts = [(-float((20 - i) * 60), 100.0 + (i % 3) * 0.5) for i in range(20)]
+    valid_pts = _iter_valid_shadow_prices(warmup_pts)
+    assert len(valid_pts) == 20
+    assert valid_pts[0][0] == pytest.approx(-1200.0)
+    assert valid_pts[-1][0] == pytest.approx(-60.0)
+
+    class _DummySpot(BaseSpotMixin):
+        replay_mode = True
+
+    dummy_replay = _DummySpot()
+    dummy_replay._shadow_prices = deque(warmup_pts, maxlen=120)
+    vol_replay = dummy_replay._shadow_vol_1h()
+    assert vol_replay is not None and vol_replay > 0.0
+
+    dummy_live = _DummySpot()
+    dummy_live.replay_mode = False
+    dummy_live._shadow_prices = deque(warmup_pts, maxlen=120)
+    vol_live = dummy_live._shadow_vol_1h()
+    assert vol_live == pytest.approx(vol_replay)
+
+    # 2. _clean_snapshot_ts supports ISO-8601 strings and millisecond timestamps
+    assert _clean_snapshot_ts({"ts": "2023-11-14T22:13:20Z"}) == pytest.approx(1700000000.0)
+    assert _clean_snapshot_ts({"timestamp": 1700000000000}) == pytest.approx(1700000000.0)
+
+    # 3. compute_fills_cost_basis handles rows without explicit ID (idx=0 fallback >= 1) and rows with {"id": None, "tid": ...}
+    cost_no_id = compute_fills_cost_basis(
+        [{"time": 1700000000, "price": 100.0, "qty": 2.0, "side": "BUY"}],
+        held_qty=2.0,
+        since_s=1e9,
+    )
+    assert cost_no_id == pytest.approx(100.0)
+
+    cost_null_id_with_tid = compute_fills_cost_basis(
+        [{"id": None, "tid": "T-1", "time": 1700000000, "price": 50.0, "qty": 3.0, "side": "BUY"}],
+        held_qty=3.0,
+        since_s=1e9,
+    )
+    assert cost_null_id_with_tid == pytest.approx(50.0)
+
+    # 4. build_price_history_points rounds seconds*1000 and resolve_ohlc_time_window_ms supports fractional lookback_days
+    pts = build_price_history_points(
+        [{"ts": 1700000000.123, "px": 42.0}],
+        lambda r: r["ts"],
+        lambda r: r["px"],
+        ts_in_seconds=True,
+    )
+    assert pts == [{"timestamp": 1700000000123, "price": 42.0}]
+
+    _, start_ms, end_ms, _ = resolve_ohlc_time_window_ms(end_ms=1700086400000, lookback_days=0.5)
+    assert end_ms - start_ms == 43200 * 1000
+
+
+
 
 
 

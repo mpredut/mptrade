@@ -134,7 +134,14 @@ def compute_fills_cost_basis(
         else:
             base_fee = fee_info["base_fee"]
             quote_fee = fee_info["quote_fee"]
-        fill_id = row.get("id", row.get("tid", row.get("tradeId", row.get("orderId", idx))))
+        fill_id = next(
+            (
+                v
+                for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid")
+                if (v := row.get(k)) is not None
+            ),
+            idx + 1,
+        )
         normalized.append(
             {
                 "id": fill_id,

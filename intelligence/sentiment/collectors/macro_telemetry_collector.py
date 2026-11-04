@@ -30,6 +30,7 @@ from intelligence.macro_sentiment_ssot import (
     obj_attr,
     read_first_cached_dict,
     resolve_macro_economic_calendar,
+    resolve_now_ts,
     resolve_patched_attr,
     resolve_read_json_cached,
     safe_float,
@@ -124,7 +125,7 @@ def collect_macro_benchmarks_snapshot(
     fetch_fn: Optional[Callable[..., Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch SPY, QQQ, ES=F, NQ=F, DXY, US10Y, IBIT, Coinbase Premium Index, and Deribit DVOL and persist to cachedb."""
-    eff_now = normalize_epoch_sec(safe_pos_float(now_ts, default=None) or _time.time(), default=_time.time())
+    eff_now = resolve_now_ts(now_ts)
     _fetch = fetch_fn or _resolve_macro_ssot_attr("fetch_public_json", fetch_public_json, _default_fetch_public_json)
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
@@ -272,7 +273,7 @@ def harvest_macro_and_news_sensors(
     cache_dir: str, now_ts: float, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
-    now_ts = normalize_epoch_sec(now_ts, default=0.0)
+    now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
 
@@ -508,8 +509,8 @@ def harvest_portfolio_and_venue_cycles(
         if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
             if isinstance(last_ps.get("hl"), dict):
                 hl_ro = dict(last_ps["hl"])
-                ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"))
-                eff_now_s = normalize_epoch_sec(now_ts)
+                ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"), allow_iso=True)
+                eff_now_s = resolve_now_ts(now_ts)
                 if ps_ts_s is not None and eff_now_s is not None:
                     hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
                 portfolio_summary["hyperliquid_readonly"] = hl_ro
@@ -531,6 +532,7 @@ def populate_market_and_portfolio_snapshot(
     log: Optional[Any] = None,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
+    now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)

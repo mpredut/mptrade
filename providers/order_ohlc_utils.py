@@ -821,7 +821,7 @@ def build_price_history_points(
         p_f = safe_pos_float(extract_px(row), default=None)
         if t_f is None or p_f is None or (cutoff_s is not None and t_f < cutoff_s):
             continue
-        out.append({"timestamp": int(t_f * 1000) if ts_in_seconds else int(t_f), "price": p_f})
+        out.append({"timestamp": int(round(t_f * 1000.0)) if ts_in_seconds else int(round(t_f)), "price": p_f})
     out.sort(key=lambda x: x["timestamp"])
     return out
 
@@ -969,12 +969,12 @@ def resolve_ohlc_time_window_ms(
         final_start = int(start_f)
     elif lookback_days is not None:
         lb_f = safe_pos_float(lookback_days, default=None)
-        if lb_f is None or int(lb_f) <= 0 or (strict_numeric_types and not isinstance(lookback_days, (int, float))):
+        if lb_f is None or int(lb_f * 86400 * 1000) <= 0 or (strict_numeric_types and not isinstance(lookback_days, (int, float))):
             raise ValueError(f"invalid OHLC window parameters: lookback_days must be finite and positive: {lookback_days!r}")
-        final_start = final_end - int(lb_f) * 86400 * 1000
+        final_start = int(final_end - lb_f * 86400 * 1000)
     elif lookback_hours is not None:
         lb_f = safe_pos_float(lookback_hours, default=None)
-        if lb_f is None or (strict_numeric_types and not isinstance(lookback_hours, (int, float))):
+        if lb_f is None or int(lb_f * 3600 * 1000) <= 0 or (strict_numeric_types and not isinstance(lookback_hours, (int, float))):
             raise ValueError(f"invalid OHLC window parameters: lookback_hours must be finite and positive: {lookback_hours!r}")
         final_start = int(final_end - lb_f * 3600 * 1000)
     else:

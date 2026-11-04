@@ -152,7 +152,15 @@ def _clean_snapshot_symbol(data: Dict[str, Any], fallback: str = "") -> str:
 
 
 def _clean_snapshot_ts(data: Dict[str, Any], default: float = 0.0) -> float:
-    return normalize_epoch_sec(_clean_dict_float(data, "ts", default, "timestamp", nonneg=True), default=default)
+    fb = normalize_epoch_sec(default, default=0.0, allow_zero=True, allow_iso=True)
+    eff_default = 0.0 if fb is None else fb
+    if not isinstance(data, dict):
+        return eff_default
+    for k in ("ts", "timestamp"):
+        ts = normalize_epoch_sec(data.get(k), default=None, allow_zero=True, allow_iso=True)
+        if ts is not None:
+            return ts
+    return eff_default
 
 
 def round_spread_bps(

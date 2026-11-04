@@ -932,8 +932,8 @@ def load_symbol_best_recent_fills(
             same_quote_fam = 1 if (not sym_quotes or cand_quotes == sym_quotes) else 0
             exact_sym = 1 if (cand_u == sym_upper or (cache_venue == "hyperliquid" and cand_u == base_upper and sym_upper == f"{base_upper}USDC")) else 0
             cand_ts = max(
-                safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
-                safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
+                safe_nonneg_float((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
+                safe_nonneg_float((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
             )
             cand_key = (same_quote_fam, exact_sym, cand_ts)
             if fills is None or cand_key > best_fill_key:

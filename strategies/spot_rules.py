@@ -26,8 +26,10 @@ def _iter_valid_shadow_prices(shadow_prices: object) -> list[tuple[float, float]
     for item in shadow_prices:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
             continue
-        tf, pf = normalize_epoch_sec(item[0], default=None, allow_zero=True), _finite_float(item[1])
+        tf, pf = _finite_float(item[0]), _finite_float(item[1])
         if tf is not None and pf is not None and pf > 0:
+            if tf >= 1e11:
+                tf /= 1000.0
             out.append((tf, pf))
     if len(out) > 1 and any(out[i][0] > out[i + 1][0] for i in range(len(out) - 1)):
         out.sort(key=lambda pair: pair[0])

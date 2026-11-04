@@ -548,8 +548,8 @@ class BaseSpotMixin:
             self.replay_mode
             and isinstance(t0_raw, (int, float))
             and isinstance(tn_raw, (int, float))
-            and 0.0 <= t0_raw <= 1e11
-            and 0.0 < tn_raw <= 1e11
+            and -1e11 < t0_raw <= 1e11
+            and -1e11 < tn_raw <= 1e11
             and tn_raw > t0_raw
         ):
             cache_key = (
@@ -578,9 +578,11 @@ class BaseSpotMixin:
         clean_pts = []
         for item in sp:
             if isinstance(item, (list, tuple)) and len(item) >= 2:
-                tf = normalize_epoch_sec(item[0], default=None, allow_zero=True)
+                tf = safe_float(item[0], default=None)
                 pf = safe_pos_float(item[1], default=None)
                 if tf is not None and pf is not None:
+                    if tf >= 1e11:
+                        tf /= 1000.0
                     clean_pts.append((tf, pf))
         n_clean = len(clean_pts)
         if n_clean < 20:

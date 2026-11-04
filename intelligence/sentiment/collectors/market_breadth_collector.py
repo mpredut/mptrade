@@ -17,6 +17,7 @@ from intelligence.macro_sentiment_ssot import (
     is_cache_fresh,
     resolve_now_ts,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_ts,
 )
 
@@ -63,7 +64,7 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         endpoint_url: Optional[str] = None,
     ) -> None:
         super().__init__(cache_ttl_sec, 60.0, endpoint_url, get_market_breadth_endpoint_url)
-        self.min_volume_usd = safe_nonneg_ts(min_volume_usd, 5_000_000.0)
+        self.min_volume_usd = safe_nonneg_float(min_volume_usd, 5_000_000.0)
 
     @staticmethod
     def parse_tickers(
@@ -76,7 +77,7 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
             return None
 
         now = resolve_now_ts(now_ts)
-        min_vol = safe_nonneg_ts(min_volume_usd, get_breadth_min_volume_usd())
+        min_vol = safe_nonneg_float(min_volume_usd, get_breadth_min_volume_usd())
         top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
         quote_suffixes = get_breadth_quote_suffixes()
         excluded_suffixes = tuple(f"{b}{q}" for b in get_breadth_excluded_bases() for q in quote_suffixes)
