@@ -206,7 +206,15 @@ class PublicPriceStreamBase(BinanceWSBase):
         self._subscribed: Set[str]     = set()
         self._lock = threading.Lock()
         self._subscribers = []
-        raw_syms = [symbols] if isinstance(symbols, str) else list(symbols or ())
+        if isinstance(symbols, str):
+            raw_syms = [symbols]
+        elif symbols is None or isinstance(symbols, (bool, bytes, dict)):
+            raw_syms = []
+        else:
+            try:
+                raw_syms = list(symbols)
+            except TypeError:
+                raw_syms = []
         norm_list = []
         for s in raw_syms:
             norm_s = self._norm_ws_symbol(s)
@@ -287,6 +295,7 @@ class BinancePriceStream(PublicPriceStreamBase):
     def __init__(self, symbols: Optional[list] = None):
         super().__init__(symbols=symbols)
         self._cmd_queue: Optional[asyncio.Queue] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._req_id = 0
 
     def start(self, name: str = "BinanceWS", daemon: bool = False) -> "BinancePriceStream":
@@ -308,6 +317,7 @@ class BinancePriceStream(PublicPriceStreamBase):
 
     # ─── Async core ───────────────────────────────────────────────────────────
     async def _main(self) -> None:
+        self._loop = asyncio.get_running_loop()
         self._cmd_queue = asyncio.Queue()   # Create it in the event loop that uses it.
         await self._run_with_reconnect(self._connect_and_run)
 
@@ -435,7 +445,21 @@ class BinancePriceStream(PublicPriceStreamBase):
         if self._cmd_queue is None:
             logger.warning("Manager not started, cannot send %s for %s", method, symbol)
             return
-        self._cmd_queue.put_nowait({"method": method, "stream": self._stream_name(symbol)})
+        item = {"method": method, "stream": self._stream_name(symbol)}
+        loop = getattr(self, "_loop", None) or getattr(self._cmd_queue, "_loop", None)
+        if loop is not None and loop.is_running():
+            try:
+                if asyncio.get_running_loop() is loop:
+                    self._cmd_queue.put_nowait(item)
+                    return
+            except RuntimeError:
+                pass
+            try:
+                loop.call_soon_threadsafe(self._cmd_queue.put_nowait, item)
+                return
+            except RuntimeError:
+                pass
+        self._cmd_queue.put_nowait(item)
 
     # ─── Public API ───────────────────────────────────────────────────────────
     def add_symbol(self, symbol: str) -> bool:

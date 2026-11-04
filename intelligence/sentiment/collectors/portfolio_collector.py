@@ -12,6 +12,7 @@ from botcore import load_key_value_conf
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
+    canonical_symbol_key,
     compatible_quote_suffixes,
     normalize_venue_name,
     split_symbol_assets,
@@ -430,6 +431,8 @@ def _attach_trailing_peak_to_position(
     """Attach trailing peak and drawdown to `pos_entry` when held base exceeds min notional, or defer to `pending_peaks_by_vs`."""
     peak_f = safe_pos_float(raw_peak, default=0.0) or 0.0
     if raw_peak is None or peak_f <= 0.0:
+        pos_entry.pop("trailing_peak", None)
+        pos_entry.pop("dd_from_peak_pct", None)
         return
     eff_peak = max(peak_f, px_f) if px_f > 0.0 else peak_f
     dd_pct = round(((px_f - eff_peak) / eff_peak) * 100.0, 2) if px_f > 0.0 else fallback_dd
@@ -460,6 +463,38 @@ def _apply_open_orders_locked_balances(
     """Aggregate locked quote/base from `open_orders_list` and enrich `venue_quote_cash` and `tradable_positions`."""
     if not open_orders_list:
         return
+    pos_by_vs: Dict[tuple[str, str], Dict[str, Any]] = {}
+    for pos_item in tradable_positions:
+        if isinstance(pos_item, dict):
+            pv = normalize_venue_name(pos_item.get("venue"))
+            ps = str(pos_item.get("symbol") or "").strip().upper()
+            if pv and ps:
+                pos_by_vs[(pv, ps)] = pos_item
+
+    def _resolve_pos_sym_and_quote(oo_v: str, oo_sym: str) -> tuple[str, str]:
+        inst_oo = inst_by_sym.get(f"{oo_v}:{oo_sym}") or inst_by_sym.get(oo_sym)
+        matched_pos = pos_by_vs.get((oo_v, oo_sym))
+        resolved_sym = oo_sym
+        if matched_pos is None:
+            oo_canon = canonical_symbol_key(oo_sym)
+            oo_base = canonical_base_asset(oo_sym)
+            for (pv, ps), p_obj in pos_by_vs.items():
+                if pv != oo_v:
+                    continue
+                if (oo_canon and canonical_symbol_key(ps) == oo_canon) or (
+                    oo_v == "hyperliquid" and oo_base and canonical_base_asset(ps) == oo_base
+                ):
+                    matched_pos = p_obj
+                    resolved_sym = ps
+                    if inst_oo is None:
+                        inst_oo = inst_by_sym.get(f"{oo_v}:{ps}") or inst_by_sym.get(ps)
+                    break
+        inst_q = str(getattr(inst_oo, "quote", "") or getattr(inst_oo, "quote_asset", "") or "").strip().upper() if inst_oo is not None else ""
+        pos_q = str((matched_pos or {}).get("quote") or (matched_pos or {}).get("quote_asset") or "").strip().upper()
+        _, parsed_q = resolve_assets(oo_sym, None, None)
+        eff_q = inst_q or pos_q or str(parsed_q or "").strip().upper() or ("USDC" if oo_v == "hyperliquid" else "USD")
+        return resolved_sym, eff_q
+
     locked_quote_by_vq: Dict[tuple[str, str], float] = {}
     locked_quote_by_vs: Dict[tuple[str, str], float] = {}
     locked_base_by_vs: Dict[tuple[str, str], float] = {}
@@ -481,14 +516,13 @@ def _apply_open_orders_locked_balances(
                 oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
         if not oo_v or not oo_sym or oo_rem <= 0.0:
             continue
-        _, oo_quote = resolve_assets(oo_sym, None, None)
-        oo_q_u = (oo_quote or "USD").strip().upper()
+        oo_pos_sym, oo_q_u = _resolve_pos_sym_and_quote(oo_v, oo_sym)
         if oo_side == "BUY" and oo_px > 0.0:
             locked_notional = oo_rem * oo_px
             locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
-            locked_quote_by_vs[(oo_v, oo_sym)] = locked_quote_by_vs.get((oo_v, oo_sym), 0.0) + locked_notional
+            locked_quote_by_vs[(oo_v, oo_pos_sym)] = locked_quote_by_vs.get((oo_v, oo_pos_sym), 0.0) + locked_notional
         elif oo_side == "SELL":
-            locked_base_by_vs[(oo_v, oo_sym)] = locked_base_by_vs.get((oo_v, oo_sym), 0.0) + oo_rem
+            locked_base_by_vs[(oo_v, oo_pos_sym)] = locked_base_by_vs.get((oo_v, oo_pos_sym), 0.0) + oo_rem
 
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
@@ -742,13 +776,13 @@ def harvest_tradable_positions_and_orders(
                     else:
                         px_rec = cached_pos_px
                 rec_peak = safe_pos_float(rec_pos.get("trailing_peak"), default=None)
-                if rec_peak is None and p_sym:
+                if p_sym:
                     v_trail_map = trailing_by_venue.get(v_rec_norm, {}) if isinstance(trailing_by_venue, dict) else {}
                     t_cands = cache_symbol_variants(p_sym, include_original=True, include_base=True, quotes=compatible_quote_suffixes(p_sym))
                     t_dict = _first_variant_dict(v_trail_map, t_cands) or (
                         _first_variant_dict(trailing_map, t_cands) if v_rec_norm in ("binance", "kraken") else None
                     )
-                    if isinstance(t_dict, dict):
+                    if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
                         rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
                 _attach_trailing_peak_to_position(
                     rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,

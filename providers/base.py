@@ -1186,19 +1186,24 @@ class MarketDataProvider(ABC):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
         sym_u = symbol.strip().upper()
+        sym_clean = clean_symbol_key(sym_u)
         sym_canon = canonical_symbol_key(sym_u)
         try:
-            import instrument_registry
+            import instrument_registry as _default_ir
 
+            mkt_mod = sys.modules.get("providers.market_api")
+            ir = getattr(mkt_mod, "instrument_registry", None) or _default_ir
             venue_slug = normalize_venue_name(getattr(venue, "name", venue) or "")
-            return next(
-                (
-                    item
-                    for item in instrument_registry.select_instruments(venue_slug).values()
-                    if item.symbol.upper() == sym_u or (sym_canon and canonical_symbol_key(item.symbol) == sym_canon)
-                ),
-                None,
-            )
+            specs = list(ir.select_instruments(venue_slug).values())
+            for item in specs:
+                item_sym = str(getattr(item, "symbol", "") or "").strip().upper()
+                if item_sym == sym_u or (sym_clean and clean_symbol_key(item_sym) == sym_clean):
+                    return item
+            for item in specs:
+                item_sym = str(getattr(item, "symbol", "") or "").strip().upper()
+                if sym_canon and canonical_symbol_key(item_sym) == sym_canon:
+                    return item
+            return None
         except Exception:
             return None
 
@@ -1656,6 +1661,7 @@ class MarketDataProvider(ABC):
         lh_f = safe_pos_float(lookback_hours, default=None)
         if lh_f is None or lh_f > 24.0:
             return None
+        max_latest_age = safe_pos_float(max_latest_age_sec, default=120.0) or 120.0
         candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
         if not candidates:
             return None
@@ -1689,7 +1695,7 @@ class MarketDataProvider(ABC):
                 if len(valid) < 2:
                     continue
                 valid.sort(key=lambda pt: pt[0])
-                if not _is_fresh_obs_ts(valid[-1][0] / 1000.0, now_s, max_latest_age_sec):
+                if not _is_fresh_obs_ts(valid[-1][0] / 1000.0, now_s, max_latest_age):
                     continue
                 out = [{"timestamp": ts, "price": px} for ts, px in valid if ts >= cutoff_ms]
                 if len(out) < 2:

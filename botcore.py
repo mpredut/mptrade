@@ -449,8 +449,10 @@ def optional_env(key: str, default: str | dict | None = "", env: dict | None = N
     return raw if raw else default_str
 
 
-def env_value(folder: str, key: str) -> str | None:
+def env_value(folder: str | os.PathLike, key: str) -> str | None:
     """Read one key from ``.env``/``config.env``/``runtime.env`` in ``folder`` without mutating ``os.environ``."""
+    if isinstance(folder, os.PathLike):
+        folder = os.fspath(folder)
     if not isinstance(folder, str) or not folder.strip() or not isinstance(key, str) or not key.strip():
         return None
     for fname in (".env", "config.env", "runtime.env"):
@@ -467,29 +469,40 @@ def env_value(folder: str, key: str) -> str | None:
     return None
 
 
-def env_values_map(folder: str, names: tuple[str, ...] | list[str]) -> dict[str, str | None]:
+def env_values_map(folder: str | os.PathLike, names: tuple[str, ...] | list[str]) -> dict[str, str | None]:
     """Resolve each key from ``os.environ`` first, falling back to ``env_value(folder, name)``."""
-    return {name: os.environ.get(name) or env_value(folder, name) for name in names}
+    out: dict[str, str | None] = {}
+    for name in names:
+        raw_env = os.environ.get(name)
+        clean_env = raw_env.strip() if isinstance(raw_env, str) else None
+        out[name] = clean_env if clean_env else env_value(folder, name)
+    return out
 
 
 _UNSET = object()
 
 
 def bool_env(
-    key: str,
+    key: str | os.PathLike,
     second: object = _UNSET,
     env: dict | object = _UNSET,
     *,
     default: object = _UNSET,
-    folder: str | None = None,
+    folder: str | os.PathLike | None = None,
 ) -> bool:
     """Read an optional boolean setting from os.environ, an injected dict, or a folder's .env/config.env."""
+    if isinstance(key, os.PathLike) and isinstance(second, str):
+        folder, key, second = key, second, _UNSET
     eff_default: object = False if default is _UNSET else default
     eff_env: dict | None = env if isinstance(env, dict) else None
     if second is not _UNSET:
         if isinstance(second, dict) and eff_env is None:
             eff_env = second
-        elif second is None or (isinstance(second, str) and _parse_bool_flag(second, None) is None):
+        elif (
+            second is None
+            or isinstance(second, os.PathLike)
+            or (isinstance(second, str) and _parse_bool_flag(second, None) is None)
+        ):
             folder = second
             if default is _UNSET and env is not _UNSET and not isinstance(env, dict):
                 eff_default = env
@@ -500,7 +513,7 @@ def bool_env(
         return def_flag
     src = os.environ if eff_env is None else eff_env
     val = src.get(key)
-    if val is None and folder is not None:
+    if (val is None or (isinstance(val, str) and not val.strip())) and folder is not None:
         val = env_value(folder, key)
     return bool(_parse_bool_flag(val, def_flag))
 

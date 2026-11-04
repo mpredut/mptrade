@@ -1707,6 +1707,12 @@ class _VenuePriceStreamBase(PublicPriceStreamBase):
                 builtins.print(f"[{self.__class__.__name__}] subscriber error ({symbol}): {exc}")
 
     async def _connect_and_run(self) -> None:
+        while not self._stop_event.is_set():
+            with self._lock:
+                has_symbols = bool(self._symbols)
+            if has_symbols:
+                break
+            await self._interruptible_sleep(1.0)
         if not self._symbols or self._stop_event.is_set():
             return
         async with _websockets.connect(

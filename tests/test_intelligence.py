@@ -1238,7 +1238,89 @@ def test_iter47_lazy_intelligence_imports_monkeypatch_forwarding_and_strict_int_
     )
 
 
+def test_iter48_portfolio_locked_balances_ws_enqueue_threadsafe_and_bool_env_pathlike(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import botcore
+    from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _apply_open_orders_locked_balances,
+        _attach_trailing_peak_to_position,
+    )
+    import providers.market_api as market_api
+    from providers.base import MarketDataProvider
+
+    # 1. _apply_open_orders_locked_balances resolves Hyperliquid USDC quote and matches HYPEUSDC order to HYPE position
+    open_orders = [
+        {"venue": "hyperliquid", "symbol": "HYPE", "side": "BUY", "price": 25.0, "qty": 4.0},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "SELL", "price": 30.0, "qty": 2.0},
+    ]
+    venue_quote_cash = {"hyperliquid:USDC": {"venue": "hyperliquid", "asset": "USDC", "free_quote_usd": 500.0}}
+    tradable_positions = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "base": "HYPE",
+            "quote": "USDC",
+            "price": 28.0,
+            "free_base": 8.0,
+            "free_quote": 500.0,
+        }
+    ]
+    _apply_open_orders_locked_balances(
+        open_orders,
+        tradable_positions,
+        venue_quote_cash,
+        {},
+        {"HYPE": {"price": 28.0}},
+        {},
+        {},
+        now_ts_oo=1700000000.0,
+        gateway_max_usd=2000.0,
+    )
+    assert venue_quote_cash["hyperliquid:USDC"].get("locked_quote_usd") == 100.0
+    assert tradable_positions[0].get("locked_base_qty") == 2.0
+    assert tradable_positions[0].get("locked_quote_usd") == 100.0
+
+    # 2. _attach_trailing_peak_to_position clears stale trailing_peak and dd_from_peak_pct when peak is None/0
+    pos_entry = {"trailing_peak": 50.0, "dd_from_peak_pct": -10.0}
+    _attach_trailing_peak_to_position(pos_entry, "hyperliquid", "HYPE", 45.0, 10.0, None, {})
+    assert "trailing_peak" not in pos_entry
+    assert "dd_from_peak_pct" not in pos_entry
+
+    # 3. PublicPriceStreamBase handles non-iterable symbols=True and BinancePriceStream._enqueue_cmd uses call_soon_threadsafe
+    base_stream = PublicPriceStreamBase(symbols=True)
+    assert base_stream._symbols == ()
+
+    b_stream = BinancePriceStream(symbols=["BTCUSDC"])
+    scheduled = []
+    b_stream._cmd_queue = SimpleNamespace(put_nowait=lambda x: None)
+    b_stream._loop = SimpleNamespace(
+        is_running=lambda: True,
+        call_soon_threadsafe=lambda fn, *args: scheduled.append((fn, args)),
+    )
+    b_stream._enqueue_cmd("SUBSCRIBE", "ETHUSDC")
+    assert len(scheduled) == 1
+    assert scheduled[0][1] == ({"method": "SUBSCRIBE", "stream": "ethusdc@ticker"},)
+
+    # 4. botcore.bool_env & env_values_map accept pathlib.Path and fall back when os.environ value is blank
+    (tmp_path / ".env").write_text("TEST_ITER48_FLAG=1\nTEST_ITER48_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("TEST_ITER48_FLAG", "   ")
+    assert botcore.bool_env("TEST_ITER48_FLAG", tmp_path, False) is True
+    assert botcore.bool_env(tmp_path, "TEST_ITER48_FLAG", False) is True
+    assert botcore.env_values_map(tmp_path, ["TEST_ITER48_KEY"]).get("TEST_ITER48_KEY") == "from_file"
+
+    # 5. MarketDataProvider.resolve_venue_instrument_spec prioritizes exact match over canonical alias & respects monkeypatched registry
+    alias_item = SimpleNamespace(venue="kraken", symbol="TAOUSD", base="TAO", quote="USD")
+    exact_item = SimpleNamespace(venue="kraken", symbol="TAOUSDC", base="TAO", quote="USDC")
+    fake_ir = SimpleNamespace(select_instruments=lambda v: {"TAOUSD": alias_item, "TAOUSDC": exact_item})
+    monkeypatch.setattr(market_api, "instrument_registry", fake_ir, raising=False)
+    resolved = MarketDataProvider.resolve_venue_instrument_spec("kraken", "TAOUSDC")
+    assert resolved is exact_item
+    assert resolved.quote == "USDC"
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
