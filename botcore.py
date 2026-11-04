@@ -276,6 +276,21 @@ def clean_json_value(val: object, *, stringify_keys: bool = True) -> object:
     return val
 
 
+def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> None:
+    """Insert/refresh ``(key, value)`` at the MRU end of ``cache`` and evict oldest entries beyond ``max_entries``."""
+    if hasattr(cache, "move_to_end"):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_entries:
+            cache.popitem(last=False)
+    else:
+        if key in cache:
+            cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > max_entries:
+            cache.pop(next(iter(cache)), None)
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. CONFIGURATION & ENVIRONMENT SSOT (Loading, Parsing, Key-Value & Watcher)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1221,7 +1236,7 @@ _LEGACY_ARCHIVE_DIR: str | None = None
 
 def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
     global _LEGACY_ARCHIVE_DIR
-    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")):
+    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")) or os.path.isdir(os.path.join(abs_dir, stem)):
         return abs_dir
     archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
     if not os.path.isfile(archive_tar):
@@ -1239,7 +1254,11 @@ def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
         with tarfile.open(archive_tar, "r:gz") as tf:
             tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
     extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
-    return extracted_dir if os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) else abs_dir
+    return (
+        extracted_dir
+        if (os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) or os.path.isdir(os.path.join(extracted_dir, stem)))
+        else abs_dir
+    )
 
 
 def load_local_module(
@@ -1820,21 +1839,6 @@ def normalize_class_name(cls_or_name: object) -> str:
     return ""
 
 
-def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> None:
-    """Insert/refresh ``(key, value)`` at the MRU end of ``cache`` and evict oldest entries beyond ``max_entries``."""
-    if hasattr(cache, "move_to_end"):
-        cache[key] = value
-        cache.move_to_end(key)
-        while len(cache) > max_entries:
-            cache.popitem(last=False)
-    else:
-        if key in cache:
-            cache.pop(key, None)
-        cache[key] = value
-        while len(cache) > max_entries:
-            cache.pop(next(iter(cache)), None)
-
-
 async def async_interruptible_sleep(
     stop_event: object,
     delay: object,
@@ -2004,6 +2008,19 @@ class _MergedModuleAliasFinder:
                 import importlib.util
 
                 return importlib.util.spec_from_file_location(fullname, py_file)
+            pkg_dir = os.path.join(resolved_dir, stem)
+            if os.path.isdir(pkg_dir):
+                import importlib.machinery
+                import importlib.util
+
+                init_py = os.path.join(pkg_dir, "__init__.py")
+                if os.path.isfile(init_py):
+                    return importlib.util.spec_from_file_location(
+                        fullname, init_py, submodule_search_locations=[pkg_dir]
+                    )
+                spec = importlib.machinery.ModuleSpec(fullname, None, is_package=True)
+                spec.submodule_search_locations = [pkg_dir]
+                return spec
         if target_name is None:
             return None
         if fullname in ("keys", "keys.apikeys"):

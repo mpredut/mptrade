@@ -569,7 +569,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                 k_tracker = getattr(self, "_kalman_tracker", None)
                 if k_tracker is None:
                     k_path = os.path.join(os.path.dirname(self.filename), "cache_kalman_trend.json")
-                    k_tracker = shadow_signals.KalmanStateTracker(state_path=k_path)
+                    k_tracker = shadow_signals.KalmanStateTracker(state_path=k_path, compute_vol=False)
                     self._kalman_tracker = k_tracker
                 with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
                     big_seq = list(w_big.prices) if w_big is not None else ()

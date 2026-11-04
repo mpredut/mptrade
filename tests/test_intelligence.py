@@ -5497,6 +5497,203 @@ def test_iter86_symbols_facade_config_reload_inspect_fleet_and_kalman_warmstart(
     assert res_short["kalman_vel"] > 0.0
 
 
+def test_iter87_kalman_multiprocess_merge_execution_audit_cancel_ts_and_archive_subpkg(
+    tmp_path, monkeypatch
+):
+    import importlib
+    import json
+    from intelligence.internal.state.survival import estimate_remaining_trend_hours
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_microstructure_cvd,
+        reconcile_sibling_flow_and_liq_regimes,
+    )
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        reconcile_intents_from_execution_audit,
+    )
+    from shadow_signals import KalmanStateTracker
+
+    # 1. Multi-process KalmanStateTracker._write_state preserves newer disk_ts entries from another process
+    #    and preserves seeded Kalman fields over unseeded cold-tick fields
+    state_file = tmp_path / "cache_kalman_trend.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": {
+                        "price": 75000.0,
+                        "kalman_price": 75000.0,
+                        "kalman_vel": 2.5,
+                        "kalman_vel_std": 0.4,
+                        "kalman_trend": 1,
+                        "ts": 1000.0,
+                    },
+                    "SOLUSDC": {
+                        "price": 150.0,
+                        "kalman_price": 150.0,
+                        "kalman_vel": -0.5,
+                        "kalman_vel_std": 0.2,
+                        "kalman_trend": -1,
+                        "ts": 1000.0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    proc_a = KalmanStateTracker(state_path=str(state_file), compute_vol=False)
+    proc_b = KalmanStateTracker(state_path=str(state_file), compute_vol=False)
+
+    # proc_a updates BTCUSDC at ts=2000 with warm-up
+    proc_a.update(
+        "BTCUSDC",
+        price=76000.0,
+        ts=2000.0,
+        epsilon=1.0,
+        big_prices=[75000.0 + 20.0 * i for i in range(50)],
+        big_sample_rate=1.0,
+    )
+    # proc_b (which loaded BTCUSDC at ts=1000) updates SOLUSDC at ts=2005 on a cold tick
+    res_sol_cold = proc_b.update("SOLUSDC", price=151.0, ts=2005.0, epsilon=0.1)
+    assert res_sol_cold["kalman_vel_std"] == pytest.approx(0.2)
+    assert res_sol_cold["kalman_trend"] == -1
+
+    raw_saved = json.loads(state_file.read_text(encoding="utf-8"))
+    saved_items = raw_saved.get("items", raw_saved)
+    assert saved_items["BTCUSDC"]["ts"] == pytest.approx(2000.0)
+    assert saved_items["BTCUSDC"]["price"] == pytest.approx(76000.0)
+    assert saved_items["SOLUSDC"]["ts"] == pytest.approx(2005.0)
+
+    # 2. reconcile_intents_from_execution_audit sets terminal_ts on canceled_prior_oids and _ts_backfill_checked
+    #    on unmatched reconciled_terminal intents, and build_last_cycle_execution_status does not let a
+    #    newly-canceled old order hijack last_ts
+    audit_dir = tmp_path / "audit"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    (audit_dir / "execution_audit_2099-01-01.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "order_terminal",
+                "intent_id": "intent_other",
+                "order_id": "oid-other",
+                "venue_status": "FILLED",
+                "ts": 5000.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    intents = [
+        {
+            "intent_id": "intent_old_btc",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "timestamp": 1000.0,
+            "execution_payload": {"orderId": "oid-old", "status": "NEW"},
+        },
+        {
+            "intent_id": "intent_unmatched_eth",
+            "symbol": "ETHUSDC",
+            "venue": "binance",
+            "decision": "BUY",
+            "order_type": "MARKET",
+            "status": "EXECUTED",
+            "timestamp": 4980.0,
+            "execution_payload": {
+                "orderId": "oid-unmatched",
+                "status": "FILLED",
+                "executedQty": "0.1",
+                "price": "2500.0",
+                "reconciled_terminal": True,
+            },
+        },
+        {
+            "intent_id": "intent_new_sol",
+            "symbol": "SOLUSDC",
+            "venue": "binance",
+            "decision": "BUY",
+            "order_type": "LIMIT",
+            "status": "EXECUTED",
+            "timestamp": 5000.0,
+            "canceled_prior_open_orders": ["oid-old"],
+            "execution_payload": {
+                "orderId": "oid-new",
+                "status": "FILLED",
+                "executedQty": "1.0",
+                "price": "150.0",
+                "reconciled_terminal": True,
+                "terminal_ts": 5000.0,
+            },
+        },
+    ]
+    changed = reconcile_intents_from_execution_audit(intents, str(audit_dir))
+    assert changed is True
+    assert intents[0]["execution_payload"]["status"] == "CANCELED"
+    assert intents[0]["execution_payload"]["terminal_ts"] == pytest.approx(5000.0)
+    assert intents[1]["execution_payload"].get("_ts_backfill_checked") is True
+
+    # A second call should NOT need to re-scan audit files because terminal_ts / _ts_backfill_checked are set
+    monkeypatch.setattr(
+        "providers.execution_audit.glob.glob",
+        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("glob should not be called on second pass")),
+    )
+    assert reconcile_intents_from_execution_audit(intents, str(audit_dir)) is False
+
+    status_out = build_last_cycle_execution_status(intents, "crypto", 5005.0, extract_intent_notional)
+    status_list = status_out if isinstance(status_out, list) else ([status_out] if status_out else [])
+    status_syms = {s["symbol"] for s in status_list}
+    assert "SOLUSDC" in status_syms
+    assert "ETHUSDC" in status_syms
+    assert "BTCUSDC" not in status_syms
+
+    # 3. enrich_microstructure_cvd preserves explicit spot_cvd_15m_usd when pinfo is None,
+    #    and reconcile_sibling_flow_and_liq_regimes updates sibling spot_perp_flow_regime
+    minfo_explicit = {
+        "cvd_15m_usd": 200_000.0,
+        "spot_cvd_15m_usd": 150_000.0,
+        "bid_depth_usd": 100_000.0,
+        "ask_depth_usd": 100_000.0,
+    }
+    enrich_microstructure_cvd(minfo_explicit, None)
+    assert minfo_explicit["spot_cvd_15m_usd"] == pytest.approx(150_000.0)
+    assert "SYNCHRONIZED_SPOT_PERP_BUYING" in str(minfo_explicit.get("spot_perp_flow_regime", ""))
+
+    micro_map = {
+        "BTCUSDC": {
+            "cvd_15m_usd": 500_000.0,
+            "spot_cvd_15m_usd": 140_000.0,
+            "bid_depth_usd": 800_000.0,
+            "ask_depth_usd": 200_000.0,
+            "_synthetic_spot_cvd": True,
+        },
+        "BTCUSDT": {
+            "cvd_15m_usd": 500_000.0,
+            "spot_cvd_15m_usd": -250_000.0,
+            "bid_depth_usd": 200_000.0,
+            "ask_depth_usd": 100_000.0,
+            "_synthetic_spot_cvd": True,
+        },
+    }
+    price_map = {
+        "BTCUSDC": {"price": 75000.0, "kalman_trend": "UP", "slope_15m": 0.001, "vol_1h_pct": 1.2, "chg_15m_pct": 0.5},
+        "BTCUSDT": {"price": 75000.0, "kalman_trend": "UP", "slope_15m": 0.001, "vol_1h_pct": 1.2, "chg_15m_pct": 0.5},
+    }
+    reconcile_sibling_flow_and_liq_regimes(micro_map, price_map)
+    assert micro_map["BTCUSDT"]["spot_cvd_15m_usd"] > 0.0
+    assert "SYNCHRONIZED_SPOT_PERP_BUYING" in str(micro_map["BTCUSDT"].get("spot_perp_flow_regime", ""))
+
+    # 4. archive.<subpkg>.<mod> resolves subpackages inside legacy_archive.tar.gz
+    shm_mod = importlib.import_module("archive.shmem.shmutils")
+    assert hasattr(shm_mod, "SharedMemory") or shm_mod.__name__ == "archive.shmem.shmutils"
+
+    # 5. estimate_remaining_trend_hours handles extreme duration_hours without OverflowError
+    rem = estimate_remaining_trend_hours(duration_hours=1e160, p_cont=0.6)
+    assert isinstance(rem, float) and rem > 0.0
+
+
 
 
 

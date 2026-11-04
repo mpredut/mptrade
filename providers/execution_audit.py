@@ -612,13 +612,13 @@ def reconcile_intents_from_execution_audit(
     audit_dir: str,
 ) -> bool:
     """Reconcile FAILED/PENDING_EXECUTION intents and enrich incomplete EXECUTED intents from execution_audit_*.jsonl."""
-    canceled_prior_oids: set[str] = {
-        oid_s
-        for item in intents
-        if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list)
-        for raw_oid in item["canceled_prior_open_orders"]
-        if (oid_s := clean_order_id(raw_oid))
-    }
+    canceled_prior_oids: dict[str, float] = {}
+    for item in intents:
+        if isinstance(item, dict) and isinstance(item.get("canceled_prior_open_orders"), list):
+            c_ts = safe_pos_float(item.get("timestamp"), default=0.0) or 0.0
+            for raw_oid in item["canceled_prior_open_orders"]:
+                if oid_s := clean_order_id(raw_oid):
+                    canceled_prior_oids[oid_s] = max(canceled_prior_oids.get(oid_s, 0.0), c_ts)
     updated = False
     failed_by_id: dict[str, dict[str, Any]] = {}
     executed_incomplete_by_id: dict[str, dict[str, Any]] = {}
@@ -637,6 +637,7 @@ def reconcile_intents_from_execution_audit(
                 bool(exec_pay.get("reconciled_terminal"))
                 and "filled_at" not in exec_pay
                 and "terminal_ts" not in exec_pay
+                and not exec_pay.get("_ts_backfill_checked")
             )
             if not exec_pay.get("reconciled_terminal") or needs_ts_backfill:
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
@@ -647,16 +648,24 @@ def reconcile_intents_from_execution_audit(
                 )
                 is_resting_msg = str(exec_pay.get("msg") or "").strip().lower() == "resting"
                 if (
-                    not needs_ts_backfill
-                    and item_oid
+                    item_oid
                     and item_oid in canceled_prior_oids
-                    and cur_v_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
-                    and extract_executed_qty(exec_pay, default=0.0) <= 0.0
+                    and (
+                        (
+                            not needs_ts_backfill
+                            and cur_v_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
+                            and extract_executed_qty(exec_pay, default=0.0) <= 0.0
+                        )
+                        or (needs_ts_backfill and cur_v_st in ("CANCELED", "CANCELLED"))
+                    )
                 ):
                     exec_pay = dict(exec_pay)
                     exec_pay["status"] = "CANCELED"
                     if is_resting_msg:
                         exec_pay.pop("msg", None)
+                    c_ts_val = canceled_prior_oids[item_oid] or safe_pos_float(item.get("timestamp"), default=None)
+                    if c_ts_val is not None:
+                        exec_pay["terminal_ts"] = c_ts_val
                     exec_pay["reconciled_terminal"] = True
                     item["execution_payload"] = exec_pay
                     updated = True
@@ -721,6 +730,12 @@ def reconcile_intents_from_execution_audit(
                     or l_stat in ("canceled", "cancelled", "expired", "rejected")
                 ):
                     matched_exec_records[iid] = rec
+
+    for iid_chk, item_chk in executed_incomplete_by_id.items():
+        if iid_chk not in matched_exec_records:
+            ep_chk = item_chk.get("execution_payload")
+            if isinstance(ep_chk, dict) and ep_chk.get("reconciled_terminal"):
+                ep_chk["_ts_backfill_checked"] = True
 
     if not matched_records and not matched_exec_records:
         return updated
@@ -1096,7 +1111,10 @@ def _resolve_intent_execution_details(
         else None
     )
     fill_ts_val = ts_val
-    if isinstance(exec_pay, dict):
+    is_fill_exec = exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED") or (
+        eff_qty is not None and eff_qty > 0
+    )
+    if is_fill_exec and isinstance(exec_pay, dict):
         for _ftk in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
             _fcand = exec_pay.get(_ftk)
             if _fcand is None:
@@ -1107,11 +1125,11 @@ def _resolve_intent_execution_details(
                 if _f_s >= ts_val:
                     fill_ts_val = max(fill_ts_val, _f_s)
                     break
-    if matched_fill_ts_ms > 0:
+    if is_fill_exec and matched_fill_ts_ms > 0:
         _mf_s = _ts_ms_to_s(float(matched_fill_ts_ms))
         if _mf_s > fill_ts_val:
             fill_ts_val = _mf_s
-    if fill_ts_val <= ts_val and str(last_hist.get("action") or "") == "RECONCILED_EXECUTED":
+    if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") == "RECONCILED_EXECUTED":
         _lh_parsed = _parse_epoch_or_iso_s(last_hist.get("ts"))
         if _lh_parsed is not None and _lh_parsed > 0.0:
             _lh_s = _ts_ms_to_s(_lh_parsed)
@@ -1282,10 +1300,18 @@ def build_last_cycle_execution_status(
         base_t = safe_float(intent_obj.get("timestamp"), 0.0) or 0.0
         ep = intent_obj.get("execution_payload")
         if isinstance(ep, dict):
-            for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
-                ft = _parse_epoch_or_iso_s(ep.get(k))
-                if ft is not None and ft > 0:
-                    base_t = max(base_t, _ts_ms_to_s(ft))
+            ep_st = str(ep.get("status") or "").strip().upper()
+            has_fill = (
+                ep_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED")
+                or extract_executed_qty(ep, default=0.0) > 0.0
+                or ep.get("filled_at") is not None
+                or ep.get("filled_ts") is not None
+            )
+            if has_fill and ep_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+                for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
+                    ft = _parse_epoch_or_iso_s(ep.get(k))
+                    if ft is not None and ft > 0:
+                        base_t = max(base_t, _ts_ms_to_s(ft))
         return base_t
 
     last_ts = max((_eff_intent_ts(i) for i in scoped_intents), default=0.0)

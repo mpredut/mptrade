@@ -17,6 +17,8 @@ from botcore import (
     _parse_bool_flag,
     exact_int,
     load_dotenv as _load_dotenv,
+    lru_dict_put,
+    normalize_epoch_sec,
     normalize_trend_direction,
     require_int,
     required_bool_env,
@@ -197,8 +199,10 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
         return []
     now_s = time.time()
     cached = _OHLC_BACKFILL_MEMO.get(sym_u)
-    if cached is not None and 0.0 <= (now_s - cached[0]) < _OHLC_BACKFILL_TTL_SEC:
-        return cached[1]
+    if cached is not None:
+        ttl_s = _OHLC_BACKFILL_TTL_SEC if cached[1] else 60.0
+        if 0.0 <= (now_s - cached[0]) < ttl_s:
+            return cached[1]
     days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
     cands = cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
     pts: List[Tuple[float, float]] = []
@@ -211,7 +215,7 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
                     break
         except Exception:
             continue
-    _OHLC_BACKFILL_MEMO[sym_u] = (now_s, pts)
+    lru_dict_put(_OHLC_BACKFILL_MEMO, sym_u, (now_s, pts), 64)
     return pts
 
 
@@ -222,23 +226,38 @@ def _load_sorted_price_series(
     log_insufficient: bool = False,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     data: List[Tuple[int, float]] = priceLstFor(symbol)
-    norm_data = [(ts / 1000.0 if ts >= 1e11 else float(ts), p) for ts, p in data]
+    norm_data = [
+        (tf, pf)
+        for ts, p in data
+        if (tf := normalize_epoch_sec(ts, default=None)) is not None
+        and (pf := safe_pos_float(p, default=None)) is not None
+    ]
     norm_data.sort(key=lambda x: x[0])
     min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
     cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
     if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
         oldest_ts = norm_data[0][0] if norm_data else float("inf")
+        anchor_px = norm_data[0][1] if norm_data else None
         for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
             sib_raw = priceLstFor(sib)
             if len(sib_raw) >= 2:
                 sib_norm = sorted(
-                    ((ts / 1000.0 if ts >= 1e11 else float(ts), p) for ts, p in sib_raw),
+                    (
+                        (tf, pf)
+                        for ts, p in sib_raw
+                        if (tf := normalize_epoch_sec(ts, default=None)) is not None
+                        and (pf := safe_pos_float(p, default=None)) is not None
+                    ),
                     key=lambda x: x[0],
                 )
                 older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
-                if older_pts:
+                if older_pts and (
+                    anchor_px is None
+                    or abs(older_pts[-1][1] - anchor_px) / max(older_pts[-1][1], anchor_px) <= 0.10
+                ):
                     norm_data = older_pts + norm_data
                     oldest_ts = norm_data[0][0]
+                    anchor_px = norm_data[0][1]
                     cur_span_s = norm_data[-1][0] - norm_data[0][0]
                     if cur_span_s >= min_req_span_s:
                         break
@@ -246,7 +265,10 @@ def _load_sorted_price_series(
             ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
             if ohlc_pts:
                 older_ohlc = [pt for pt in ohlc_pts if pt[0] < oldest_ts - 1.0]
-                if older_ohlc:
+                if older_ohlc and (
+                    anchor_px is None
+                    or abs(older_ohlc[-1][1] - anchor_px) / max(older_ohlc[-1][1], anchor_px) <= 0.10
+                ):
                     norm_data = older_ohlc + norm_data
     if len(norm_data) < 2:
         return None

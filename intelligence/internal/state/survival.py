@@ -484,7 +484,7 @@ def estimate_remaining_trend_hours(
         return 0.0
     med_f = safe_pos_float(median_d, default=None)
     p90_f = safe_pos_float(p90_d, default=None)
-    if (med_f is None or p90_f is None) and isinstance(symbol, str) and symbol.strip():
+    if (med_f is None or p90_f is None or p_cont is None) and isinstance(symbol, str) and symbol.strip():
         cached_ent = get_cached_t_entry(symbol)
         if isinstance(cached_ent, dict):
             if med_f is None:
@@ -498,12 +498,18 @@ def estimate_remaining_trend_hours(
     k = max(0.8, min(3.5, math.log(math.log(10.0) / math.log(2.0)) / math.log(p90_f / med_f)))
     lam = med_f / (math.log(2.0) ** (1.0 / k))
     t_d = dur_h / 24.0
-    base_pow = (t_d / lam) ** k
-    step = 0.05
+    try:
+        base_pow = (t_d / lam) ** k
+    except OverflowError:
+        return 1.0
+    step = max(0.05, p90_f / 150.0)
     rem_d = 0.0
     for i in range(1, 600):
         u = (i - 0.5) * step
-        s_cond = math.exp(base_pow - ((t_d + u) / lam) ** k)
+        try:
+            s_cond = min(1.0, math.exp(min(0.0, base_pow - ((t_d + u) / lam) ** k)))
+        except OverflowError:
+            break
         rem_d += s_cond * step
         if s_cond < 1e-4:
             break

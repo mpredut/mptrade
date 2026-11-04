@@ -122,7 +122,11 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
     a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
     tot_depth = b_depth + a_depth
-    if tot_depth > 0.0 and not minfo.get("_cross_venue_spot_cvd"):
+    if (
+        (minfo.get("spot_cvd_15m_usd") is None or pinfo is not None or minfo.get("_synthetic_spot_cvd"))
+        and tot_depth > 0.0
+        and not minfo.get("_cross_venue_spot_cvd")
+    ):
         tb_v = safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=0.0) or 0.0
         ts_v = safe_nonneg_float(minfo.get("taker_sell_vol_usd"), default=0.0) or 0.0
         tot_vol = tb_v + ts_v
@@ -838,8 +842,8 @@ def sync_sibling_symbol_telemetry(
             prices_and_trends,
             cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
         )
-        minfo.update(compute_liquidation_clusters(p_match, minfo))
         enrich_microstructure_cvd(minfo, p_match)
+        minfo.update(compute_liquidation_clusters(p_match, minfo))
         if isinstance(p_match, dict) and minfo.get("spread_bps") is not None:
             p_match.setdefault("spread_bps", minfo["spread_bps"])
         compute_cross_venue_arb_metrics(msym, minfo, p_match, microstructure, prices_and_trends)
@@ -904,12 +908,16 @@ def reconcile_sibling_flow_and_liq_regimes(
             vel_adj = ref_scale * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
             max_spot_cvd = ref_scale * 0.85
             unified_spot_cvd = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * agg_ob_net_pct * 0.35 + vel_adj)), 0)
-            for _, m_s in non_div:
+            for s_k, m_s in non_div:
                 if m_s.get("_synthetic_spot_cvd") or m_s.get("_cross_venue_spot_cvd"):
                     m_s["spot_cvd_15m_usd"] = unified_spot_cvd
                     m_s["_cross_venue_spot_cvd"] = True
+                    s_p = casefold_get(pt_map, s_k)
+                    enrich_microstructure_cvd(m_s, s_p if isinstance(s_p, dict) else (p_d if p_d else None))
             prim_m["_cross_venue_spot_cvd"] = True
             enrich_microstructure_cvd(prim_m, p_d if p_d else None)
+            if prim_m.get("liq_magnet_bias") is not None and isinstance(prim_p_dict, dict):
+                prim_m.update(compute_liquidation_clusters(prim_p_dict, prim_m))
         prim_mag = prim_m.get("liq_magnet_bias")
         prim_cvd_reg = prim_m.get("cvd_regime")
         prim_cvd_15m = safe_float(prim_m.get("cvd_15m_usd"), None)

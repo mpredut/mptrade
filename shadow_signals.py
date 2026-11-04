@@ -28,6 +28,7 @@ from botcore import (
     require_shadow_interval,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_ts,
     safe_pos_float,
     sanitize_pipe_field,
 )
@@ -131,6 +132,8 @@ class KalmanStateTracker:
                         break
             loaded = read_json_dict(self.state_path, default=None, recover_previous=True)
             if isinstance(loaded, dict):
+                if isinstance(loaded.get("items"), dict) and set(loaded.keys()) <= {"items", "ts", "updated_ts"}:
+                    loaded = dict(loaded["items"])
                 self._state = loaded
         except Exception as e:  # noqa: BLE001
             print(f"[shadow_signals] error loading initial kalman state: {e}")
@@ -146,17 +149,35 @@ class KalmanStateTracker:
             if os.path.exists(self.state_path):
                 existing = read_json_dict(self.state_path, default=None, recover_previous=True)
                 if isinstance(existing, dict):
+                    if isinstance(existing.get("items"), dict) and set(existing.keys()) <= {"items", "ts", "updated_ts"}:
+                        existing = existing["items"]
                     for k, v in existing.items():
                         if not isinstance(v, dict):
                             continue
                         cur_v = merged.get(k)
                         if cur_v is None:
                             merged[k] = v
-                        elif (
+                            continue
+                        cur_ts = safe_nonneg_ts(cur_v.get("ts"), 0.0)
+                        disk_ts = safe_nonneg_ts(v.get("ts"), 0.0)
+                        cur_unseeded = (
                             safe_nonneg_float(cur_v.get("kalman_vel_std"), 6.0) >= 5.99
                             and abs(safe_float(cur_v.get("kalman_vel"), 0.0)) < 1e-12
-                            and safe_nonneg_float(v.get("kalman_vel_std"), 6.0) < 5.99
-                        ):
+                        )
+                        disk_seeded = safe_nonneg_float(v.get("kalman_vel_std"), 6.0) < 5.99
+                        if disk_ts > cur_ts:
+                            if disk_seeded or cur_unseeded:
+                                merged[k] = v
+                            else:
+                                merged[k] = {
+                                    **v,
+                                    **{
+                                        fk: cur_v[fk]
+                                        for fk in ("kalman_vel", "kalman_vel_std", "kalman_trend")
+                                        if fk in cur_v
+                                    },
+                                }
+                        elif cur_unseeded and disk_seeded:
                             merged[k] = {
                                 **cur_v,
                                 **{
@@ -221,8 +242,17 @@ class KalmanStateTracker:
             "adapt_dca_pct": adapt_dca,
         }
 
-    def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
-               big_prices, big_sample_rate: float, *, precomputed_vol_1h_pct: float | None = None) -> dict:
+    def update(
+        self,
+        symbol: str,
+        ts: float,
+        price: float,
+        epsilon: float | None = None,
+        big_prices=None,
+        big_sample_rate: float = 1.0,
+        *,
+        precomputed_vol_1h_pct: float | None = None,
+    ) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         if isinstance(symbol, str):
@@ -246,12 +276,23 @@ class KalmanStateTracker:
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:
             last_fed = -1e18
-        is_cold = len(self._fed_prices.get(symbol, ())) < 2
-        has_big_warmup = (
+        step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
+        if (
             big_prices is not None
             and not isinstance(big_prices, (str, bytes, dict))
             and hasattr(big_prices, "__len__")
-            and len(big_prices) >= 3
+            and len(big_prices) >= 6
+            and step_n * 2 >= len(big_prices)
+        ):
+            step_n = max(1, (len(big_prices) - 1) // 2)
+        step_dt = step_n * max(sr_val, 0.1)
+        is_cold = len(self._fed_prices.get(symbol, ())) < 2
+        has_big_warmup = (
+            ts >= step_dt
+            and big_prices is not None
+            and not isinstance(big_prices, (str, bytes, dict))
+            and hasattr(big_prices, "__len__")
+            and len(big_prices) > step_n
         )
         if ts - last_fed >= KALMAN_SAMPLE_SEC or (is_cold and has_big_warmup):
             kf = self._kalman.get(symbol)
@@ -266,13 +307,9 @@ class KalmanStateTracker:
                     and len(big_prices) >= 2
                 ):
                     seq_prices = big_prices if isinstance(big_prices, (list, tuple)) else list(big_prices)
-                    step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
-                    if len(seq_prices) >= 6 and step_n * 2 >= len(seq_prices):
-                        step_n = max(1, (len(seq_prices) - 1) // 2)
                     raw_hist = seq_prices[-1 - step_n :: -step_n][:60]
                     if not raw_hist and len(seq_prices) >= 2:
                         raw_hist = [seq_prices[0]]
-                    step_dt = step_n * max(sr_val, 0.1)
                     hist_pts = [
                         (steps_back, p_h)
                         for steps_back, raw_p in enumerate(raw_hist, start=1)
@@ -335,6 +372,16 @@ class KalmanStateTracker:
         else:
             v1h = None
         fields = self._build_fields(k, v1h)
+        prev_st = self._state.get(symbol)
+        if (
+            isinstance(prev_st, dict)
+            and safe_nonneg_float(fields.get("kalman_vel_std"), 6.0) >= 5.99
+            and abs(safe_float(fields.get("kalman_vel"), 0.0)) < 1e-12
+            and safe_nonneg_float(prev_st.get("kalman_vel_std"), 6.0) < 5.99
+        ):
+            for fk in ("kalman_vel", "kalman_vel_std", "kalman_trend"):
+                if fk in prev_st:
+                    fields[fk] = prev_st[fk]
         self._state[symbol] = {**fields, "ts": ts, "price": price}
         self._write_state(ts)
         return fields
