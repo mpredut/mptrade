@@ -843,7 +843,12 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     )
     from intelligence.macro import daemon_ssot
     import intelligence.macro_sentiment_ssot as ssot
-    from intelligence.sentiment.collectors import microstructure_collector, portfolio_collector
+    from intelligence.sentiment.collectors import (
+        macro_telemetry_collector,
+        microstructure_collector,
+        portfolio_collector,
+        pretrade_telemetry_collector,
+    )
     from intelligence.sentiment.evaluators import portfolio_evaluator, tca_risk_evaluator
 
     # 1. External collectors follow *_collector.py naming with identical module aliases for backwards compatibility
@@ -853,9 +858,13 @@ def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ss
     assert whale_positioning is whale_positioning_collector
     assert ext_cols.OrderbookDepthCollector is orderbook_depth_collector.OrderbookDepthCollector
 
-    # 2. Microstructure collector owns enrich_24h_and_microstructure and portfolio_collector re-exports it
+    # 2. Microstructure, pretrade, and portfolio collectors have clean boundaries and re-exports
     assert microstructure_collector.enrich_24h_and_microstructure is portfolio_collector.enrich_24h_and_microstructure
+    assert macro_telemetry_collector.collect_pretrade_telemetry is pretrade_telemetry_collector.collect_pretrade_telemetry
     assert callable(portfolio_collector.load_symbol_best_recent_fills)
+    assert callable(portfolio_collector._attach_trailing_peak_to_position)
+    assert callable(portfolio_collector._apply_open_orders_locked_balances)
+    assert ssot.configure_daemon_cli_logging is daemon_ssot.configure_daemon_cli_logging
 
     orders_cache = {
         "items": {

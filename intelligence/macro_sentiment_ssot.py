@@ -647,6 +647,7 @@ from intelligence.macro.daemon_ssot import (
     _ACTIVE_BOUNDED_LOCK,
     _ACTIVE_BOUNDED_STEPS,
     compute_step_retry_ts,
+    configure_daemon_cli_logging,
     detect_active_binance_symbols,
     inspect_daemon_heartbeat,
     prune_automated_cli_threads,

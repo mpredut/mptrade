@@ -411,6 +411,129 @@ def load_venue_trailing_maps(
     return trailing_map, trailing_by_venue
 
 
+def _attach_trailing_peak_to_position(
+    pos_entry: Dict[str, Any],
+    v_norm: str,
+    sym: str,
+    px_f: float,
+    fb_val: Optional[float],
+    raw_peak: Any,
+    pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
+    *,
+    fallback_dd: Any = None,
+) -> None:
+    """Attach trailing peak and drawdown to `pos_entry` when held base exceeds min notional, or defer to `pending_peaks_by_vs`."""
+    peak_f = safe_pos_float(raw_peak, default=0.0) or 0.0
+    if raw_peak is None or peak_f <= 0.0:
+        return
+    eff_peak = max(peak_f, px_f) if px_f > 0.0 else peak_f
+    dd_pct = round(((px_f - eff_peak) / eff_peak) * 100.0, 2) if px_f > 0.0 else fallback_dd
+    min_notional_f = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
+    has_held_base = fb_val is None or (fb_val > 1e-8 and (px_f <= 0.0 or fb_val * px_f >= min_notional_f))
+    if has_held_base:
+        pos_entry["trailing_peak"] = round(eff_peak, 6)
+        pos_entry["dd_from_peak_pct"] = dd_pct
+    else:
+        pos_entry.pop("trailing_peak", None)
+        pos_entry.pop("dd_from_peak_pct", None)
+        if v_norm and sym:
+            pending_peaks_by_vs[(v_norm, sym)] = (round(eff_peak, 6), dd_pct)
+
+
+def _apply_open_orders_locked_balances(
+    open_orders_list: List[Dict[str, Any]],
+    tradable_positions: List[Dict[str, Any]],
+    venue_quote_cash: Dict[str, Dict[str, Any]],
+    inst_by_sym: Dict[str, Any],
+    prices_and_trends: Dict[str, Any],
+    updated_bals: Dict[str, Any],
+    pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
+    *,
+    now_ts_oo: float,
+    gateway_max_usd: float,
+) -> None:
+    """Aggregate locked quote/base from `open_orders_list` and enrich `venue_quote_cash` and `tradable_positions`."""
+    if not open_orders_list:
+        return
+    locked_quote_by_vq: Dict[tuple[str, str], float] = {}
+    locked_quote_by_vs: Dict[tuple[str, str], float] = {}
+    locked_base_by_vs: Dict[tuple[str, str], float] = {}
+    for oo_item in open_orders_list:
+        if not isinstance(oo_item, dict):
+            continue
+        oo_v = normalize_venue_name(oo_item.get("venue"))
+        oo_sym = str(oo_item.get("symbol") or "").strip().upper()
+        oo_side = str(oo_item.get("side") or "").strip().upper()
+        oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
+        oo_rem = safe_pos_float(oo_item.get("remaining_qty"), default=None) or safe_pos_float(oo_item.get("qty"), default=0.0) or 0.0
+        if oo_item.get("created_ts") is None:
+            oo_item["created_ts"] = round(now_ts_oo, 3)
+            oo_item["age_min"] = 0.0
+            oo_item["age"] = "0.0m"
+        if oo_px > 0.0 and oo_sym and oo_item.get("dist_from_spot_pct") is None:
+            spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_sym, prices_and_trends)
+            if spot_oo > 0.0:
+                oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
+        if not oo_v or not oo_sym or oo_rem <= 0.0:
+            continue
+        _, oo_quote = resolve_assets(oo_sym, None, None)
+        oo_q_u = (oo_quote or "USD").strip().upper()
+        if oo_side == "BUY" and oo_px > 0.0:
+            locked_notional = oo_rem * oo_px
+            locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
+            locked_quote_by_vs[(oo_v, oo_sym)] = locked_quote_by_vs.get((oo_v, oo_sym), 0.0) + locked_notional
+        elif oo_side == "SELL":
+            locked_base_by_vs[(oo_v, oo_sym)] = locked_base_by_vs.get((oo_v, oo_sym), 0.0) + oo_rem
+
+    for cash_val in venue_quote_cash.values():
+        if isinstance(cash_val, dict):
+            cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
+            if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
+                cash_val["locked_quote_usd"] = round(lq_val, 2)
+                cash_bkey = f"cash:{cv_norm}:{cq_u}"
+                if cash_bkey in updated_bals:
+                    updated_bals[cash_bkey] = dict(cash_val)
+
+    for pos_entry in tradable_positions:
+        p_v_norm = normalize_venue_name(pos_entry.get("venue"))
+        p_sym_u = str(pos_entry.get("symbol") or "").strip().upper()
+        lq_pos = locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0)
+        lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
+        if lq_pos > 0.0 or lb_pos > 0.0:
+            inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
+            px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
+            fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
+            prev_inst_limits = (
+                {k: pos_entry[k] for k in ("exchange_min_notional_usd", "min_qty", "step_size", "tick_size", "spread_bps") if pos_entry.get(k) is not None}
+                if inst_obj is None
+                else {}
+            )
+            pos_entry.update(
+                resolve_venue_fee_and_limits(
+                    str(pos_entry.get("venue") or ""),
+                    p_sym_u,
+                    inst_obj,
+                    price=px_pos,
+                    free_quote=safe_nonneg_float(pos_entry.get("free_quote"), default=None),
+                    free_base=fb_pos,
+                    locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
+                    locked_base_qty=lb_pos if lb_pos > 0.0 else None,
+                    gateway_max_usd=gateway_max_usd,
+                )
+            )
+            if prev_inst_limits:
+                pos_entry.update(prev_inst_limits)
+            if lb_pos > 1e-8 and "trailing_peak" not in pos_entry and (pend_peak := pending_peaks_by_vs.get((p_v_norm, p_sym_u))) is not None:
+                min_not_pos = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
+                held_total = (fb_pos or 0.0) + lb_pos
+                if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
+                    pos_entry["trailing_peak"] = pend_peak[0]
+                    pos_entry["dd_from_peak_pct"] = pend_peak[1]
+            pos_bkey = f"pos:{p_v_norm}:{p_sym_u}"
+            if pos_bkey in updated_bals:
+                updated_bals[pos_bkey] = dict(pos_entry)
+
+
 def harvest_tradable_positions_and_orders(
     inst_map: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
@@ -525,11 +648,6 @@ def harvest_tradable_positions_and_orders(
             )
             if not t_state and v_norm == "binance" and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
                 t_state = val_b
-            peak = t_state.get("peak")
-            peak_f = safe_float(peak, 0.0)
-            if peak_f > 0 and px_f > 0 and peak_f < px_f:
-                peak_f = px_f
-            dd_from_peak_pct = round(((px_f - peak_f) / peak_f) * 100.0, 2) if px_f > 0 and peak_f > 0 else None
             pos_entry: Dict[str, Any] = {
                 "venue": venue, "symbol": sym, "base": base, "quote": quote,
                 "price": round_opt_px(px, 6) if px is not None else None,
@@ -542,14 +660,9 @@ def harvest_tradable_positions_and_orders(
             pos_entry.update(
                 resolve_venue_fee_and_limits(venue, sym, inst, price=px_f, free_quote=quote_free, free_base=base_free, gateway_max_usd=gateway_max_usd)
             )
-            min_notional_f = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
-            has_held_base = base_free is None or (base_free > 1e-8 and (px_f <= 0.0 or base_free * px_f >= min_notional_f))
-            if peak is not None and peak_f > 0:
-                if has_held_base:
-                    pos_entry["trailing_peak"] = round(peak_f, 6)
-                    pos_entry["dd_from_peak_pct"] = dd_from_peak_pct
-                else:
-                    pending_peaks_by_vs[(v_norm, sym)] = (round(peak_f, 6), dd_from_peak_pct)
+            _attach_trailing_peak_to_position(
+                pos_entry, v_norm, sym, px_f, base_free, t_state.get("peak"), pending_peaks_by_vs
+            )
             if params.get("trailing.pct"):
                 pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")
             if params.get("mt.gain") or params.get("mt.lost"):
@@ -632,19 +745,10 @@ def harvest_tradable_positions_and_orders(
                     )
                     if isinstance(t_dict, dict):
                         rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
-                if rec_peak is not None:
-                    eff_rec_peak = max(rec_peak, px_rec) if px_rec > 0 else rec_peak
-                    rec_dd = round(((px_rec - eff_rec_peak) / eff_rec_peak) * 100.0, 2) if px_rec > 0 and eff_rec_peak > 0 else rec_pos.get("dd_from_peak_pct")
-                    min_not_rec = max(1.0, safe_float(rec_pos.get("exchange_min_notional_usd") or rec_pos.get("min_notional_usd"), 1.0))
-                    has_held_rec = fb_val is None or (fb_val > 1e-8 and (px_rec <= 0.0 or fb_val * px_rec >= min_not_rec))
-                    if has_held_rec:
-                        rec_pos["trailing_peak"] = round(eff_rec_peak, 6)
-                        rec_pos["dd_from_peak_pct"] = rec_dd
-                    else:
-                        rec_pos.pop("trailing_peak", None)
-                        rec_pos.pop("dd_from_peak_pct", None)
-                        if v_rec_norm and p_sym:
-                            pending_peaks_by_vs[(v_rec_norm, p_sym)] = (round(eff_rec_peak, 6), rec_dd)
+                _attach_trailing_peak_to_position(
+                    rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,
+                    fallback_dd=rec_pos.get("dd_from_peak_pct"),
+                )
                 tradable_positions.append(rec_pos)
             elif k.startswith("cash:") and isinstance(v, dict):
                 c_venue, c_asset = str(v.get("venue") or "").strip().lower(), str(v.get("asset") or "").strip().upper()
@@ -669,84 +773,17 @@ def harvest_tradable_positions_and_orders(
     if isinstance(verified_open_venues, set):
         verified_open_venues.update(live_open_ok_venues - failed_open_venues)
 
-    if open_orders_list:
-        locked_quote_by_vq: Dict[tuple[str, str], float] = {}
-        locked_quote_by_vs: Dict[tuple[str, str], float] = {}
-        locked_base_by_vs: Dict[tuple[str, str], float] = {}
-        for oo_item in open_orders_list:
-            if not isinstance(oo_item, dict):
-                continue
-            oo_v = normalize_venue_name(oo_item.get("venue"))
-            oo_sym = str(oo_item.get("symbol") or "").strip().upper()
-            oo_side = str(oo_item.get("side") or "").strip().upper()
-            oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
-            oo_rem = safe_pos_float(oo_item.get("remaining_qty"), default=None) or safe_pos_float(oo_item.get("qty"), default=0.0) or 0.0
-            if oo_item.get("created_ts") is None:
-                oo_item["created_ts"] = round(now_ts_oo, 3)
-                oo_item["age_min"] = 0.0
-                oo_item["age"] = "0.0m"
-            if oo_px > 0.0 and oo_sym and oo_item.get("dist_from_spot_pct") is None:
-                spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_sym, prices_and_trends)
-                if spot_oo > 0.0:
-                    oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
-            if not oo_v or not oo_sym or oo_rem <= 0.0:
-                continue
-            _, oo_quote = resolve_assets(oo_sym, None, None)
-            oo_q_u = (oo_quote or "USD").strip().upper()
-            if oo_side == "BUY" and oo_px > 0.0:
-                locked_notional = oo_rem * oo_px
-                locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
-                locked_quote_by_vs[(oo_v, oo_sym)] = locked_quote_by_vs.get((oo_v, oo_sym), 0.0) + locked_notional
-            elif oo_side == "SELL":
-                locked_base_by_vs[(oo_v, oo_sym)] = locked_base_by_vs.get((oo_v, oo_sym), 0.0) + oo_rem
-
-        for cash_val in venue_quote_cash.values():
-            if isinstance(cash_val, dict):
-                cv_norm, cq_u = normalize_venue_name(cash_val.get("venue")), str(cash_val.get("asset") or "").strip().upper()
-                if (lq_val := locked_quote_by_vq.get((cv_norm, cq_u), 0.0)) > 0.0:
-                    cash_val["locked_quote_usd"] = round(lq_val, 2)
-                    cash_bkey = f"cash:{cv_norm}:{cq_u}"
-                    if cash_bkey in updated_bals:
-                        updated_bals[cash_bkey] = dict(cash_val)
-
-        for pos_entry in tradable_positions:
-            p_v_norm = normalize_venue_name(pos_entry.get("venue"))
-            p_sym_u = str(pos_entry.get("symbol") or "").strip().upper()
-            lq_pos = locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0)
-            lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
-            if lq_pos > 0.0 or lb_pos > 0.0:
-                inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
-                px_pos = safe_pos_float(pos_entry.get("price"), default=0.0) or 0.0
-                fb_pos = safe_nonneg_float(pos_entry.get("free_base"), default=None)
-                prev_inst_limits = (
-                    {k: pos_entry[k] for k in ("exchange_min_notional_usd", "min_qty", "step_size", "tick_size", "spread_bps") if pos_entry.get(k) is not None}
-                    if inst_obj is None
-                    else {}
-                )
-                pos_entry.update(
-                    resolve_venue_fee_and_limits(
-                        str(pos_entry.get("venue") or ""),
-                        p_sym_u,
-                        inst_obj,
-                        price=px_pos,
-                        free_quote=safe_nonneg_float(pos_entry.get("free_quote"), default=None),
-                        free_base=fb_pos,
-                        locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
-                        locked_base_qty=lb_pos if lb_pos > 0.0 else None,
-                        gateway_max_usd=gateway_max_usd,
-                    )
-                )
-                if prev_inst_limits:
-                    pos_entry.update(prev_inst_limits)
-                if lb_pos > 1e-8 and "trailing_peak" not in pos_entry and (pend_peak := pending_peaks_by_vs.get((p_v_norm, p_sym_u))) is not None:
-                    min_not_pos = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
-                    held_total = (fb_pos or 0.0) + lb_pos
-                    if px_pos <= 0.0 or held_total * px_pos >= min_not_pos:
-                        pos_entry["trailing_peak"] = pend_peak[0]
-                        pos_entry["dd_from_peak_pct"] = pend_peak[1]
-                pos_bkey = f"pos:{p_v_norm}:{p_sym_u}"
-                if pos_bkey in updated_bals:
-                    updated_bals[pos_bkey] = dict(pos_entry)
+    _apply_open_orders_locked_balances(
+        open_orders_list,
+        tradable_positions,
+        venue_quote_cash,
+        inst_by_sym,
+        prices_and_trends,
+        updated_bals,
+        pending_peaks_by_vs,
+        now_ts_oo=now_ts_oo,
+        gateway_max_usd=gateway_max_usd,
+    )
 
     if bcache_path and updated_bals and ("PYTEST_CURRENT_TEST" not in os.environ or os.path.exists(bcache_path)):
         try:

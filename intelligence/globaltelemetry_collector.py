@@ -23,6 +23,7 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     compute_step_retry_ts,
+    configure_daemon_cli_logging,
     detect_active_binance_symbols,
     is_interval_due,
     parse_symbol_list,
@@ -300,11 +301,7 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_daemon_cli_logging(args.verbose)
 
     collector = GlobalTelemetryCollector(
         symbols=parse_symbol_list(args.symbols) or None,

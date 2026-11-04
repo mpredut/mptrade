@@ -357,6 +357,18 @@ def run_daemon_loop(
     log.info("%s stopped gracefully.", daemon_name)
 
 
+def configure_daemon_cli_logging(
+    verbose: bool = False,
+    fmt: str = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+) -> None:
+    """Configure standard CLI logging format and verbosity for intelligence daemons."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format=fmt,
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
 def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) -> int:
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
@@ -664,6 +676,7 @@ __all__ = [
     "_ACTIVE_BOUNDED_LOCK",
     "_ACTIVE_BOUNDED_STEPS",
     "compute_step_retry_ts",
+    "configure_daemon_cli_logging",
     "detect_active_binance_symbols",
     "inspect_daemon_heartbeat",
     "prune_automated_cli_threads",

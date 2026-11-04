@@ -25,6 +25,7 @@ from intelligence.macro.news_feed_collector import NewsFeedCollector
 from intelligence.macro_sentiment_ssot import (
     ExternalTelemetryMixin,
     compute_step_retry_ts,
+    configure_daemon_cli_logging,
     detect_active_binance_symbols,
     is_interval_due,
     obj_attr,
@@ -33,6 +34,7 @@ from intelligence.macro_sentiment_ssot import (
     prune_automated_cli_threads,
     resolve_now_ts,
     run_daemon_loop,
+    run_scheduled_step,
     safe_pos_float,
     sanitize_heartbeat_status,
     write_daemon_heartbeat,
@@ -136,18 +138,23 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
 
         self._step_external_symbols(current_ts, force, results, bounded=False)
 
-        if not self.skip_macro and is_interval_due(current_ts, self._last_macro_ts, self.macro_interval_sec, force=force):
-            try:
-                macro_ok = self.update_macro(force=force, now=current_ts)
-            except TypeError:
-                macro_ok = self.update_macro(force=force)
-            if macro_ok:
-                results["macro_updated"] = True
-                self._last_macro_ts = current_ts
-            else:
-                self._last_macro_ts = compute_step_retry_ts(
-                    self._last_macro_ts, current_ts, self.macro_interval_sec
-                )
+        if not self.skip_macro:
+            def _invoke_macro() -> bool:
+                try:
+                    return bool(self.update_macro(force=force, now=current_ts))
+                except TypeError:
+                    return bool(self.update_macro(force=force))
+
+            run_scheduled_step(
+                self,
+                current_ts=current_ts,
+                ts_attr="_last_macro_ts",
+                interval_sec=self.macro_interval_sec,
+                fn=_invoke_macro,
+                force=force,
+                results=results,
+                result_key="macro_updated",
+            )
 
         if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
             prune_automated_cli_threads(logger)
@@ -212,11 +219,7 @@ def main():
     except Exception:
         pass
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_daemon_cli_logging(args.verbose, fmt="[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s")
 
     daemon = IntelligenceTelemetryDaemon(
         symbols=parse_symbol_list(args.symbols) or None,
