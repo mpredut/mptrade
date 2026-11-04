@@ -13,17 +13,18 @@ from intelligence.sentiment.collectors.macro_telemetry_collector import (
 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
 from intelligence.sentiment.collectors.microstructure_collector import (
     discover_reference_microstructure_symbols,
+    enrich_24h_and_microstructure,
     ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    enrich_24h_and_microstructure,
     harvest_bot_runtime_states,
     harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
+    load_symbol_best_recent_fills,
     load_venue_trailing_maps,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -85,7 +86,7 @@ __all__ = [
     "harvest_bot_runtime_states", "harvest_initial_prices_and_trends", "harvest_kraken_xstocks",
     "harvest_macro_and_news_sensors", "harvest_portfolio_and_venue_cycles",
     "harvest_recent_orders_and_enrich_positions", "harvest_tradable_positions_and_orders",
-    "harvest_venue_cycles", "load_symbol_microstructure", "load_symbol_price_series",
+    "harvest_venue_cycles", "load_symbol_best_recent_fills", "load_symbol_microstructure", "load_symbol_price_series",
     "load_venue_trailing_maps", "parse_venue_cycle_state", "pct_delta",
     "populate_market_and_portfolio_snapshot", "range_position_pct",
     "recalculate_live_price_geometry", "reconcile_venue_cycles_with_recent_orders",

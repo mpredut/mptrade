@@ -15,7 +15,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_side,
     snap_attr,
 )
-from intelligence.external.collectors.orderbook_depth import (
+from intelligence.external.collectors.orderbook_depth_collector import (
     OrderbookDepthCollector,
     OrderbookSnapshot,
 )

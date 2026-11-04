@@ -16,7 +16,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_side,
     snap_attr,
 )
-from intelligence.external.collectors.derivatives_telemetry import (
+from intelligence.external.collectors.derivatives_telemetry_collector import (
     DerivativesTelemetry,
     DerivativesTelemetryCollector,
 )

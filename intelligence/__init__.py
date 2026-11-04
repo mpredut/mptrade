@@ -27,10 +27,10 @@ from intelligence.internal.state.survival import get_trend_survival_metrics, est
 from intelligence.internal.state.persistence import calculate_mann_kendall, calculate_hurst_exponent, classify_hurst_regime
 
 # Pillar 2: External telemetry (Whales, Liquidations, OI, Orderbook)
-from intelligence.external.collectors.bybit_liquidations import BybitLiquidationCollector, LiquidationSummary
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry, DerivativesTelemetryCollector
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot, WhalePositioningCollector
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot, OrderbookDepthCollector
+from intelligence.external.collectors.bybit_liquidations_collector import BybitLiquidationCollector, LiquidationSummary
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry, DerivativesTelemetryCollector
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot, WhalePositioningCollector
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot, OrderbookDepthCollector
 
 from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
 from intelligence.external.triggers.whale_accumulation_trigger import WhaleAccumulationTrigger

@@ -170,9 +170,13 @@ def round_spread_bps(
 
 
 def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Resolve a helper function from the concrete collector's module or `orderbook_depth` if monkeypatched."""
+    """Resolve a helper function from the concrete collector's module or `orderbook_depth_collector` if monkeypatched."""
     cls = cls_or_self if isinstance(cls_or_self, type) else type(cls_or_self)
-    for mod_name in (getattr(cls, "__module__", ""), "intelligence.external.collectors.orderbook_depth"):
+    for mod_name in (
+        getattr(cls, "__module__", ""),
+        "intelligence.external.collectors.orderbook_depth_collector",
+        "intelligence.external.collectors.orderbook_depth",
+    ):
         if mod_name and (mod := sys.modules.get(mod_name)) is not None:
             cand = getattr(mod, attr_name, None)
             if callable(cand) and cand is not default_fn:
@@ -409,7 +413,13 @@ class _DiskBackedSymbolCollector:
         ):
             import urllib.parse as _urlparse
 
-            q_params = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
+            q_params: Dict[str, Any] = dict(_urlparse.parse_qsl(url.split("?", 1)[1]))
+            for int_k in ("nSigFigs", "mantissa"):
+                if int_k in q_params:
+                    try:
+                        q_params[int_k] = int(q_params[int_k])
+                    except (TypeError, ValueError):
+                        pass
             raw_data = cls._post_hyperliquid_info(
                 q_params, timeout=timeout, user_agent=user_agent
             )

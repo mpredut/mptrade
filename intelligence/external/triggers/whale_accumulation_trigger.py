@@ -13,7 +13,7 @@ from typing import Optional
 from botcore import safe_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot, snap_attr
 from intelligence.internal.triggers.trigger_event import TriggerEvent, TriggerAction, TriggerSide
-from intelligence.external.collectors.whale_positioning import (
+from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )

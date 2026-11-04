@@ -12,7 +12,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     normalize_venue_name,
 )
-from intelligence.external.collectors.orderbook_depth import round_spread_bps
+from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,

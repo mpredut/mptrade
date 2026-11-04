@@ -15,7 +15,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_side,
     snap_attr,
 )
-from intelligence.external.collectors.whale_positioning import (
+from intelligence.external.collectors.whale_positioning_collector import (
     WhalePositioningCollector,
     WhalePositioningSnapshot,
 )

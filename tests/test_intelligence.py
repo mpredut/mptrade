@@ -826,6 +826,66 @@ def test_external_collectors_and_ssot_prompt_modularization():
     assert pf._format_portfolio_section is ps._format_portfolio_section
 
 
+def test_intelligence_architecture_alignment_collectors_evaluators_and_daemon_ssot(tmp_path):
+    """Verify Step 1-4 modularization: *_collector.py naming, microstructure/portfolio boundary, tca_risk_evaluator, and daemon_ssot."""
+    import json
+    import time as _time
+    import intelligence.external.collectors as ext_cols
+    from intelligence.external.collectors import (
+        bybit_liquidations,
+        bybit_liquidations_collector,
+        derivatives_telemetry,
+        derivatives_telemetry_collector,
+        orderbook_depth,
+        orderbook_depth_collector,
+        whale_positioning,
+        whale_positioning_collector,
+    )
+    from intelligence.macro import daemon_ssot
+    import intelligence.macro_sentiment_ssot as ssot
+    from intelligence.sentiment.collectors import microstructure_collector, portfolio_collector
+    from intelligence.sentiment.evaluators import portfolio_evaluator, tca_risk_evaluator
+
+    # 1. External collectors follow *_collector.py naming with identical module aliases for backwards compatibility
+    assert bybit_liquidations is bybit_liquidations_collector
+    assert derivatives_telemetry is derivatives_telemetry_collector
+    assert orderbook_depth is orderbook_depth_collector
+    assert whale_positioning is whale_positioning_collector
+    assert ext_cols.OrderbookDepthCollector is orderbook_depth_collector.OrderbookDepthCollector
+
+    # 2. Microstructure collector owns enrich_24h_and_microstructure and portfolio_collector re-exports it
+    assert microstructure_collector.enrich_24h_and_microstructure is portfolio_collector.enrich_24h_and_microstructure
+    assert callable(portfolio_collector.load_symbol_best_recent_fills)
+
+    orders_cache = {
+        "items": {
+            "BTCUSDC": [
+                {"orderId": 101, "symbol": "BTCUSDC", "side": "BUY", "status": "FILLED", "price": 75000.0, "executedQty": 0.1, "time": int(_time.time() * 1000)},
+            ]
+        }
+    }
+    (tmp_path / "cache_order.json").write_text(json.dumps(orders_cache), encoding="utf-8")
+    fills = portfolio_collector.load_symbol_best_recent_fills(
+        str(tmp_path),
+        "BTCUSDC",
+        ["BTCUSDC"],
+    )
+    assert isinstance(fills, dict) and (fills.get("last_buy") or {}).get("price") == 75000.0
+
+    # 3. TCA & risk evaluator owns TCA/risk/cross-market evaluators and is re-exported cleanly
+    assert portfolio_evaluator.compute_enterprise_portfolio_risk_metrics is tca_risk_evaluator.compute_enterprise_portfolio_risk_metrics
+    assert portfolio_evaluator.enrich_open_limit_orders_tca is tca_risk_evaluator.enrich_open_limit_orders_tca
+    assert portfolio_evaluator.enrich_recent_orders_markout is tca_risk_evaluator.enrich_recent_orders_markout
+    assert portfolio_evaluator.build_cross_market_context is tca_risk_evaluator.build_cross_market_context
+
+    # 4. Daemon SSOT owns daemon runtime primitives & base collector/agent classes and is re-exported in macro_sentiment_ssot
+    assert ssot.CachedHttpJsonCollector is daemon_ssot.CachedHttpJsonCollector
+    assert ssot.CachedTopicAssessmentAgent is daemon_ssot.CachedTopicAssessmentAgent
+    assert ssot.ExternalTelemetryMixin is daemon_ssot.ExternalTelemetryMixin
+    assert ssot.run_daemon_loop is daemon_ssot.run_daemon_loop
+    assert ssot.write_daemon_heartbeat is daemon_ssot.write_daemon_heartbeat
+
+
 if __name__ == "__main__":
     unittest.main()
 

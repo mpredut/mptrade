@@ -34,18 +34,17 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
+    enrich_24h_and_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
-    _load_audit_terminal_orders,
-    _load_recent_audit_origins,
-    enrich_24h_and_microstructure,
     harvest_bot_runtime_states,
     harvest_kraken_xstocks,
     harvest_recent_orders_and_enrich_positions,
     harvest_tradable_positions_and_orders,
     harvest_venue_cycles,
+    load_symbol_best_recent_fills,
     load_venue_trailing_maps,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -384,6 +383,17 @@ def harvest_macro_and_news_sensors(
                 "keywords": item.get("matched_keywords") or [],
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
             })
+    gt_cur = macro_sensors.get("geopolitical_threat")
+    if (
+        isinstance(gt_cur, dict)
+        and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
+        and (safe_float(gt_cur.get("age_min"), 0.0) or 0.0) >= 90.0
+        and breaking_news
+        and not any(n.get("is_high_severity") for n in breaking_news)
+    ):
+        gt_cur["live_deescalation_note"] = (
+            f"NO_FRESH_HIGH_SEV_HEADLINES_90M (shield age={gt_cur.get('age_min')}m; 0/{len(breaking_news)} live headlines high-sev)"
+        )
     macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
         now_ts=now_ts, breaking_news=valid_news or breaking_news
     )
@@ -911,43 +921,7 @@ def collect_pretrade_telemetry(
         pass
 
     try:
-        intents_raw = read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
-        known_ai_oids = collect_known_ai_order_ids(intents_raw)
-        ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
-        audit_origin_map = _load_recent_audit_origins(cachedb_dir)
-        fills: Optional[Dict[str, Any]] = None
-        best_fill_ts = -1.0
-        for ord_file, cache_venue in (
-            ("cache_order.json", "binance"),
-            ("cache_trade_kraken.json", "kraken"),
-            ("cache_trade_hyperliquid.json", "hyperliquid"),
-            ("cache_trade_t212.json", "t212"),
-        ):
-            ord_data = read_json_cached(os.path.join(cachedb_dir, ord_file))
-            o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
-            orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
-            if not orders_for_sym and cache_venue in ("hyperliquid", "t212"):
-                audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
-                orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(audit_items, cand))), [])
-            v_ai_intents = (
-                [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
-                if ai_intents_list is not None
-                else None
-            )
-            if cand_fills := extract_symbol_recent_fills(
-                orders_for_sym,
-                known_ai_order_ids=known_ai_oids,
-                audit_origin_map=audit_origin_map,
-                ai_intents=v_ai_intents,
-                symbol=symbol,
-            ):
-                cand_ts = max(
-                    safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
-                    safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
-                )
-                if fills is None or cand_ts > best_fill_ts:
-                    fills, best_fill_ts = cand_fills, cand_ts
-        if fills:
+        if fills := load_symbol_best_recent_fills(cachedb_dir, symbol, quote_variants):
             lb, ls = fills.get("last_buy") or {}, fills.get("last_sell") or {}
             lb_by = f" (by={lb.get('actor_tag') or lb.get('actor')})" if (lb.get("actor_tag") or lb.get("actor")) else ""
             ls_by = f" (by={ls.get('actor_tag') or ls.get('actor')})" if (ls.get("actor_tag") or ls.get("actor")) else ""

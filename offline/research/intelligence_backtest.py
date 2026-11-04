@@ -42,10 +42,10 @@ from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceG
 from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
 from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
-from intelligence.external.collectors.whale_positioning import WhalePositioningSnapshot
-from intelligence.external.collectors.orderbook_depth import OrderbookSnapshot
-from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+from intelligence.external.collectors.whale_positioning_collector import WhalePositioningSnapshot
+from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 
 # Pillar 3 Macro & Geopolitical Imports
 from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard

@@ -51,17 +51,17 @@ def _get_collector(attr_name: str, module_path: str, cls_name: str):
 
 def get_whale_collector():
     """Lazily load singleton whale positioning collector."""
-    return _get_collector("_whale_collector", "intelligence.external.collectors.whale_positioning", "WhalePositioningCollector")
+    return _get_collector("_whale_collector", "intelligence.external.collectors.whale_positioning_collector", "WhalePositioningCollector")
 
 
 def get_orderbook_collector():
     """Lazily load singleton orderbook depth collector."""
-    return _get_collector("_orderbook_collector", "intelligence.external.collectors.orderbook_depth", "OrderbookDepthCollector")
+    return _get_collector("_orderbook_collector", "intelligence.external.collectors.orderbook_depth_collector", "OrderbookDepthCollector")
 
 
 def get_derivatives_collector():
     """Lazily load singleton derivatives telemetry collector."""
-    return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry", "DerivativesTelemetryCollector")
+    return _get_collector("_derivatives_collector", "intelligence.external.collectors.derivatives_telemetry_collector", "DerivativesTelemetryCollector")
 
 
 def check_external_order_guards(

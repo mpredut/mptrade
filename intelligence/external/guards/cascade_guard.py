@@ -14,7 +14,7 @@ from intelligence.internal.guards.guard_decision import (
     normalize_guard_side,
     snap_attr,
 )
-from intelligence.external.collectors.bybit_liquidations import (
+from intelligence.external.collectors.bybit_liquidations_collector import (
     BybitLiquidationCollector,
     LiquidationSummary,
 )

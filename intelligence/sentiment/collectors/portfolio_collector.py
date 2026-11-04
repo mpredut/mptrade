@@ -6,9 +6,9 @@ import logging
 import os
 import re
 import time as _time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from botcore import load_key_value_conf, load_local_module
+from botcore import load_key_value_conf
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -19,10 +19,13 @@ from cachepaths import (
 from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_ts,
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
+    _iter_t212_state_files,
     discover_reference_microstructure_symbols,
+    enrich_24h_and_microstructure,
     ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
@@ -81,17 +84,25 @@ from providers.base import (
     normalize_timestamp_ms,
     resolve_order_origin,
 )
-from providers.execution_audit import intent_venue_client_order_ids
+from providers.execution_audit import collect_known_ai_order_ids, intent_venue_client_order_ids
 from providers.quantity import resolve_assets, venue_fee_cap_quantity
 from state_io import (
     read_json_dict_recovering as read_json_cached,
     read_json_file,
+    read_json_recovering,
     read_tail_jsonl_dicts,
     resolve_cachedb_filepath,
     save_json_state,
 )
 
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
+
+_ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
+    ("cache_order.json", "binance"),
+    ("cache_trade_kraken.json", "kraken"),
+    ("cache_trade_hyperliquid.json", "hyperliquid"),
+    ("cache_trade_t212.json", "t212"),
+)
 
 
 def _iter_audit_dir_file_batches(
@@ -274,18 +285,6 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     return by_sym
 
 
-def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
-    if not os.path.isdir(t212_dir := os.path.join(workspace_dir, "212trading")):
-        return []
-    out: List[Tuple[str, str]] = []
-    for st_path in sorted(_glob.glob(os.path.join(t212_dir, ".state_*.json"))):
-        fname = os.path.basename(st_path)
-        ticker = fname[len(".state_") : -len(".json")].upper()
-        if not fname.startswith("..") and ticker.replace("_", "").isalnum():
-            out.append((st_path, ticker))
-    return out
-
-
 def harvest_venue_cycles(
     workspace_dir: str,
     prices_and_trends: Dict[str, Any],
@@ -380,7 +379,7 @@ def harvest_kraken_xstocks(
         "sl_alert_pct": safe_pos_float(xstock_cfg.get("xstock_sl_alert_pct"), default=None),
     }
     if live_px > 0:
-        xst_summary["live_price"] = live_px
+        xst_summary["live_price"] = round(live_px, 4)
         if alloc_px is not None:
             xst_summary["pnl_vs_alloc_pct"] = round(((live_px - alloc_px) / alloc_px) * 100.0, 2)
     if isinstance((sib_cyc := _first_variant_dict(all_t212_cycles, (t212_sib, underlying))), dict):
@@ -487,7 +486,7 @@ def harvest_tradable_positions_and_orders(
                 try:
                     get_px_fn = getattr(inst._provider, "get_current_price", None)
                     if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:
-                        px = px_f = live_px
+                        px = px_f = round(live_px, 4) if v_norm == "t212" else live_px
                 except Exception:
                     px, px_f = None, 0.0
             if px_f <= 0 and (px_f := resolve_symbol_price(sym, prices_and_trends, explicit_quote=quote)) > 0:
@@ -672,6 +671,7 @@ def harvest_tradable_positions_and_orders(
 
     if open_orders_list:
         locked_quote_by_vq: Dict[tuple[str, str], float] = {}
+        locked_quote_by_vs: Dict[tuple[str, str], float] = {}
         locked_base_by_vs: Dict[tuple[str, str], float] = {}
         for oo_item in open_orders_list:
             if not isinstance(oo_item, dict):
@@ -694,7 +694,9 @@ def harvest_tradable_positions_and_orders(
             _, oo_quote = resolve_assets(oo_sym, None, None)
             oo_q_u = (oo_quote or "USD").strip().upper()
             if oo_side == "BUY" and oo_px > 0.0:
-                locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + oo_rem * oo_px
+                locked_notional = oo_rem * oo_px
+                locked_quote_by_vq[(oo_v, oo_q_u)] = locked_quote_by_vq.get((oo_v, oo_q_u), 0.0) + locked_notional
+                locked_quote_by_vs[(oo_v, oo_sym)] = locked_quote_by_vs.get((oo_v, oo_sym), 0.0) + locked_notional
             elif oo_side == "SELL":
                 locked_base_by_vs[(oo_v, oo_sym)] = locked_base_by_vs.get((oo_v, oo_sym), 0.0) + oo_rem
 
@@ -710,8 +712,7 @@ def harvest_tradable_positions_and_orders(
         for pos_entry in tradable_positions:
             p_v_norm = normalize_venue_name(pos_entry.get("venue"))
             p_sym_u = str(pos_entry.get("symbol") or "").strip().upper()
-            p_quote_u = str(pos_entry.get("quote") or "USD").strip().upper()
-            lq_pos = locked_quote_by_vq.get((p_v_norm, p_quote_u), 0.0)
+            lq_pos = locked_quote_by_vs.get((p_v_norm, p_sym_u), 0.0)
             lb_pos = locked_base_by_vs.get((p_v_norm, p_sym_u), 0.0)
             if lq_pos > 0.0 or lb_pos > 0.0:
                 inst_obj = inst_by_sym.get(f"{p_v_norm}:{p_sym_u}") or inst_by_sym.get(p_sym_u)
@@ -759,221 +760,48 @@ def harvest_tradable_positions_and_orders(
     return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym
 
 
-def enrich_24h_and_microstructure(
-    cache_dir: str,
-    workspace_dir: str,
-    prices_and_trends: Dict[str, Any],
-    microstructure: Dict[str, Any],
-    cur_p_items: Dict[str, Any],
-    inst_by_sym: Dict[str, Any],
-    now_ts: float,
+def load_symbol_best_recent_fills(
+    cachedb_dir: str,
+    symbol: str,
+    quote_variants: Sequence[str],
     read_json_fn: Any = None,
-) -> None:
-    """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
+) -> Optional[Dict[str, Any]]:
+    """Load the most recent venue fills dict for `symbol` across order caches and execution_audit fallback."""
+    from instrument_registry import casefold_get
+
     _rj = read_json_fn or read_json_cached
-    btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
-    bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
-    raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
-    cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
-    for _, ticker in _iter_t212_state_files(workspace_dir):
-        cached_pos = cached_bals.get(f"pos:t212:{ticker}")
-        cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
-        t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
-        if cached_t212_px is not None and (
-            ticker not in inst_by_sym or (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0
+    intents_raw = read_json_recovering(os.path.join(cachedb_dir, "autonomous_trade_intents_state.json"))
+    known_ai_oids = collect_known_ai_order_ids(intents_raw)
+    ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
+    audit_origin_map = _load_recent_audit_origins(cachedb_dir)
+    fills: Optional[Dict[str, Any]] = None
+    best_fill_ts = -1.0
+    for ord_file, cache_venue in _ORDER_CACHE_FILES:
+        ord_data = _rj(os.path.join(cachedb_dir, ord_file))
+        o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
+        orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
+        if not orders_for_sym and cache_venue in ("hyperliquid", "t212"):
+            audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
+            orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(audit_items, cand))), [])
+        v_ai_intents = (
+            [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
+            if ai_intents_list is not None
+            else None
+        )
+        if cand_fills := extract_symbol_recent_fills(
+            orders_for_sym,
+            known_ai_order_ids=known_ai_oids,
+            audit_origin_map=audit_origin_map,
+            ai_intents=v_ai_intents,
+            symbol=symbol,
         ):
-            t_entry["price"] = cached_t212_px
-    from instruments_config import discover_hyperliquid_spot
-
-    for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
-        ensure_fresh_symbol_microstructure(cache_dir, hl_sym, now_ts=now_ts, include_derivatives=True)
-        if hl_sym not in prices_and_trends and (
-            any(canonical_base_asset(k) == hl_base for k in prices_and_trends)
-            or load_symbol_microstructure(cache_dir, hl_sym, _rj)
-        ):
-            cached_hl_pos = cached_bals.get(f"pos:hyperliquid:{hl_sym}")
-            hl_px = safe_pos_float(cached_hl_pos.get("price") if isinstance(cached_hl_pos, dict) else None, default=0.0) or resolve_symbol_price(hl_sym, prices_and_trends, explicit_quote=hl_quote)
-            prices_and_trends[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
-    for sym in list(prices_and_trends.keys()):
-        sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
-        matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
-        if sym_px_cur > 0 and matched_series_24h:
-            last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
-            if _prices_diverged(sym_px_cur, last_24_px):
-                matched_series_24h = []
-            elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
-                matched_series_24h = list(matched_series_24h) + [[int(now_ts * 1000), sym_px_cur]]
-        if sym_px_cur > 0 and arch_vals_7d and _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
-            arch_vals_7d = []
-        if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0:
-            if matched_series_24h:
-                prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
-            elif arch_vals_7d:
-                prices_and_trends[sym]["price"] = arch_vals_7d[-1]
-        s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
-        s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
-        span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
-        m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
-        if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
-            prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d))
-        ohlc_fn = getattr(getattr(inst_by_sym.get(sym), "_provider", None), "ohlc_series", None)
-        if not callable(ohlc_fn) and sym.upper() in ("ADAUSD", "TAOUSD", "HYPEUSD") and "PYTEST_CURRENT_TEST" not in os.environ:
-            try:
-                from providers.kraken_provider import KrakenProvider
-
-                ohlc_fn = KrakenProvider().ohlc_series
-            except Exception:
-                ohlc_fn = None
-        if callable(ohlc_fn):
-            if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
-                try:
-                    pts_24h = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0)
-                    if not m24:
-                        if m24 := (compute_24h_price_metrics(pts_24h) or {}):
-                            matched_series_24h = pts_24h
-                    elif len(pts_24h) >= 8 and (pts_24h[-1][0] - pts_24h[0][0]) >= 18 * 3600 * 1000 and s24_p0 is not None:
-                        older_ohlc = [pt for pt in pts_24h if pt[0] < s24_p0[0]]
-                        if older_ohlc:
-                            matched_series_24h = older_ohlc + list(matched_series_24h)
-                            if m24_full := (compute_24h_price_metrics(matched_series_24h) or {}):
-                                m24 = m24_full
-                    if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
-                        s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
-                        s60_ts = getattr(s60, "timestamps", ()) or ()
-                        vals_7d = [float(px) for ts, px in zip(s60_ts, getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
-                        if s60_ts and (float(s60_ts[-1]) - float(s60_ts[0])) < 5 * 86400.0:
-                            try:
-                                s240 = ohlc_fn(sym, 240)
-                                first_s60 = float(s60_ts[0]) - 1800.0
-                                older_7d = [float(px) for ts, px in zip(getattr(s240, "timestamps", ()), getattr(s240, "closes", ())) if cutoff_7d <= ts <= first_s60 and float(px) > 0]
-                                if older_7d:
-                                    vals_7d = older_7d + vals_7d
-                            except Exception:
-                                pass
-                        if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
-                            prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
-                except Exception:
-                    pass
-            if m24.get("vp_source") == "TPO":
-                try:
-                    pts_vp = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0, require_positive_volume=True)
-                    if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
-                        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_vp[-1][1]):
-                            pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
-                        if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
-                            m24.update(vp_real)
-                except Exception:
-                    pass
-        is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
-        if not m24 and (is_t212_inst or (sym.endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ)):
-            try:
-                _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
-                chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
-                pts_5d: List[List[Any]] = []
-                if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
-                    pts_5d = [
-                        ([int(ts_f * 1000), round(px_f, 4), safe_nonneg_float(bar[2], 0.0) or 0.0] if len(bar) >= 3 else [int(ts_f * 1000), round(px_f, 4)])
-                        for bar in chart_res[1]
-                        if isinstance(bar, (list, tuple)) and len(bar) >= 2 and (ts_f := safe_pos_float(bar[0], default=None)) is not None and (px_f := safe_pos_float(bar[1], default=None)) is not None
-                    ]
-                elif isinstance(chart_res, dict):
-                    q_obj = ((chart_res.get("indicators") or {}).get("quote") or [{}])[0]
-                    vols = q_obj.get("volume") or []
-                    pts_5d = [
-                        [int(ts_f * 1000), round(c_f, 4), safe_nonneg_float(vols[idx], 0.0) or 0.0 if idx < len(vols) else 0.0]
-                        for idx, (ts, c) in enumerate(zip(chart_res.get("timestamp") or [], q_obj.get("close") or []))
-                        if (ts_f := safe_pos_float(ts, default=None)) is not None and (c_f := safe_pos_float(c, default=None)) is not None
-                    ]
-                if pts_5d:
-                    if not is_t212_inst and (chart_px := safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0) > 0.0:
-                        prices_and_trends[sym]["price"] = chart_px
-                        sym_px_cur = chart_px
-                    cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
-                    pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
-                    if len(pts_24h) < 10:
-                        pts_24h = list(pts_5d[-78:])
-                    if pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(sym_px_cur - pts_24h[-1][1]) > 1e-9:
-                        pts_24h = list(pts_24h) + [[int(now_ts * 1000), sym_px_cur]]
-                    if m24 := (compute_24h_price_metrics(pts_24h) or {}):
-                        matched_series_24h = pts_24h
-                    vals_5d = [pt[1] for pt in pts_5d]
-                    if len(vals_5d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
-                        prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
-            except Exception:
-                pass
-        if m24:
-            _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
-
-        if sym.upper() in ("HYPEUSD", "TAOUSD", "ADAUSD"):
-            ensure_fresh_symbol_microstructure(
-                cache_dir, sym.upper(), now_ts=now_ts, max_age_ob_sec=180.0, max_age_whale_sec=360.0
+            cand_ts = max(
+                safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
+                safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
             )
-        if m_info := load_symbol_microstructure(cache_dir, sym, _rj):
-            is_usd_sym = "USD" in compatible_quote_suffixes(sym)
-            sym_px_m = safe_float((prices_and_trends.get(sym) or {}).get("price"), 0.0)
-            ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
-            src_cand_u = str(m_info.get("_source_cand") or sym).strip().upper()
-            is_exact_ob_sym = src_cand_u == str(sym).strip().upper()
-            cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_by_sym) and (sym in inst_by_sym)
-            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
-                if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
-                    prices_and_trends[sym]["price"] = ob_mid_m
-                    sym_px_m = ob_mid_m
-            elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, ob_mid_m)):
-                for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
-                    m_info.pop(k_strip, None)
-            enrich_microstructure_cvd(m_info, prices_and_trends.get(sym))
-            m_info.update(compute_liquidation_clusters(prices_and_trends.get(sym), m_info))
-            if m_info.get("spread_bps") is not None and isinstance(prices_and_trends.get(sym), dict):
-                prices_and_trends[sym]["spread_bps"] = m_info["spread_bps"]
-            microstructure[sym] = m_info
-
-    for msym in discover_reference_microstructure_symbols(cache_dir, microstructure, _rj):
-        if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
-            msym_quotes = compatible_quote_suffixes(msym)
-            p_ref = _first_variant_dict(
-                prices_and_trends,
-                cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
-            )
-            if p_ref is not None and msym not in prices_and_trends:
-                ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
-                if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
-                    p_sib = dict(p_ref)
-                    p_sib["price"] = ob_mid_sib
-                    if m_info_ref.get("spread_bps") is not None:
-                        p_sib["spread_bps"] = m_info_ref["spread_bps"]
-                    prices_and_trends[msym] = p_sib
-                    p_ref = p_sib
-            elif p_ref is None:
-                ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
-                ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
-                if not ser_24h and msym.endswith("USD") and "PYTEST_CURRENT_TEST" not in os.environ:
-                    try:
-                        from providers.kraken_provider import KrakenProvider
-
-                        krk_p = KrakenProvider()
-                        ser_24h = _extract_ohlc_series_points(krk_p.ohlc_series(msym, 5), min_ts=now_ts - 86400.0)
-                        if ref_px is not None and ser_24h and abs(ref_px - float(ser_24h[-1][1])) > 1e-9 and not _prices_diverged(ref_px, float(ser_24h[-1][1])):
-                            ser_24h.append([int(now_ts * 1000), ref_px])
-                        if len(vals_7d) < 2:
-                            s60, cutoff_7d = krk_p.ohlc_series(msym, 60), now_ts - 7 * 86400.0
-                            vals_7d = [float(px) for ts, px in zip(getattr(s60, "timestamps", ()), getattr(s60, "closes", ())) if ts >= cutoff_7d and float(px) > 0]
-                    except Exception:
-                        pass
-                if ref_px is None and ser_24h:
-                    ref_px = safe_pos_float(ser_24h[-1][1], default=None)
-                if ref_px is not None:
-                    p_ref = {"price": ref_px, "trend": 0, "growth_coefficient": 0.0}
-                    if m_info_ref.get("spread_bps") is not None:
-                        p_ref["spread_bps"] = m_info_ref["spread_bps"]
-                    if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
-                        _apply_24h_series_enrichment(msym, p_ref, m24_ref, ser_24h, btc_series_24h)
-                    if vals_7d and len(vals_7d) >= 2:
-                        p_ref.update(compute_7d_range_metrics(vals_7d))
-                    prices_and_trends[msym] = p_ref
-            enrich_microstructure_cvd(m_info_ref, p_ref)
-            m_info_ref.update(compute_liquidation_clusters(p_ref, m_info_ref))
-            microstructure[msym] = m_info_ref
+            if fills is None or cand_ts > best_fill_ts:
+                fills, best_fill_ts = cand_fills, cand_ts
+    return fills
 
 
 def harvest_recent_orders_and_enrich_positions(
@@ -1007,10 +835,7 @@ def harvest_recent_orders_and_enrich_positions(
         else:
             recent_orders.setdefault(sym_k, fills_d)
 
-    for order_cache_name, cache_venue in (
-        ("cache_order.json", "binance"), ("cache_trade_kraken.json", "kraken"),
-        ("cache_trade_hyperliquid.json", "hyperliquid"), ("cache_trade_t212.json", "t212"),
-    ):
+    for order_cache_name, cache_venue in _ORDER_CACHE_FILES:
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             v_ai_intents = _venue_intents(cache_venue)
@@ -1228,6 +1053,7 @@ __all__ = [
     "harvest_recent_orders_and_enrich_positions",
     "harvest_tradable_positions_and_orders",
     "harvest_venue_cycles",
+    "load_symbol_best_recent_fills",
     "load_venue_trailing_maps",
     "parse_venue_cycle_state",
     "recalculate_live_price_geometry",

@@ -24,18 +24,20 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
     update_microstructure_cycle_deltas,
 )
 from intelligence.sentiment.evaluators.portfolio_evaluator import (
+    enrich_positions_with_orders_and_cycles,
+    extract_symbol_recent_fills,
+    parse_venue_cycle_state,
+    reconcile_venue_cycles_with_recent_orders,
+    set_pos_anchor,
+)
+from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     _VENUE_DEFAULT_FEE_SPECS,
     build_cross_market_context,
     compute_enterprise_portfolio_risk_metrics,
     enrich_open_limit_orders_tca,
-    enrich_positions_with_orders_and_cycles,
     enrich_recent_orders_markout,
-    extract_symbol_recent_fills,
-    parse_venue_cycle_state,
-    reconcile_venue_cycles_with_recent_orders,
     resolve_symbol_price,
     resolve_venue_fee_and_limits,
-    set_pos_anchor,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _WINDOW_TREND_SPECS,

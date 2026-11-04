@@ -15,8 +15,8 @@ from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.noise_guard import NoiseFloorGuard
 from intelligence.internal.state.volatility import calculate_volatility_1h
 from intelligence.internal.state.survival import get_trend_survival_metrics
-from intelligence.external.collectors.bybit_liquidations import LiquidationSummary
-from intelligence.external.collectors.derivatives_telemetry import DerivativesTelemetry
+from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
+from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
 from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
 from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
 from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger

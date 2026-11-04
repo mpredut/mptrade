@@ -42,7 +42,7 @@ from typing import List, Optional
 
 from botcore import safe_pos_float
 from cachepaths import canonical_symbol_key as _clean_liq_symbol
-from intelligence.external.collectors.bybit_liquidations import (
+from intelligence.external.collectors.bybit_liquidations_collector import (
     BYBIT_WS_URL as BYBIT_URL,
     DEFAULT_SYMBOLS,
     MAX_RETENTION_SEC,
