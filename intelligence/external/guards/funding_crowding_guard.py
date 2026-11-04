@@ -40,7 +40,12 @@ class FundingCrowdingGuard:
         self.min_short_funding_rate = min_short if min_short < 0.0 else -0.0005
         pol_norm = str(crowding_policy or "downscale").strip().lower() if not isinstance(crowding_policy, bool) else "downscale"
         self.crowding_policy = pol_norm if pol_norm in ("downscale", "defer") else "downscale"
-        self.crowded_scale = clean_scale(crowded_scale, default=0.50, min_positive=True)
+        self.crowded_scale = clean_scale(
+            crowded_scale,
+            default=0.50,
+            min_positive=True,
+            allow_percent=isinstance(crowded_scale, str),
+        )
 
     def check(
         self,

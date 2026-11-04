@@ -43,7 +43,12 @@ class WhaleDivergenceGuard:
         self.severe_cascade_oi_pct = safe_float(severe_cascade_oi_pct, default=-5.0) or -5.0
         self.min_taker_ratio = safe_pos_float(min_taker_ratio, default=0.75) or 0.75
         self.taker_downscale_threshold = safe_pos_float(taker_downscale_threshold, default=0.90) or 0.90
-        self.taker_downscaled_scale = clean_scale(taker_downscaled_scale, default=0.50, min_positive=True)
+        self.taker_downscaled_scale = clean_scale(
+            taker_downscaled_scale,
+            default=0.50,
+            min_positive=True,
+            allow_percent=isinstance(taker_downscaled_scale, str),
+        )
 
     def check(
         self,

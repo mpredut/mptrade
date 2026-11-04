@@ -54,6 +54,8 @@ class ParabolicSurgeGuard:
         current_price = current_price_f
 
         ts_now = safe_pos_float(now, default=0.0) or 0.0
+        if ts_now > 1e11:
+            ts_now /= 1000.0
         history_seq = (
             list(price_history)
             if price_history is not None
@@ -67,6 +69,8 @@ class ParabolicSurgeGuard:
                     continue
                 hf = safe_pos_float(item[0], default=None)
                 if hf is not None:
+                    if hf > 1e11:
+                        hf /= 1000.0
                     ts_now = max(ts_now, hf)
 
         # Dynamic threshold based on volatility if available
@@ -89,7 +93,11 @@ class ParabolicSurgeGuard:
             st = raw_st
             st["peak"] = safe_pos_float(st.get("peak"), default=current_price) or current_price
             st["ts"] = safe_nonneg_float(st.get("ts"), default=0.0) or 0.0
+            if st["ts"] > 1e11:
+                st["ts"] /= 1000.0
             st["disarmed_peak_ts"] = safe_nonneg_float(st.get("disarmed_peak_ts"), default=0.0) or 0.0
+            if st["disarmed_peak_ts"] > 1e11:
+                st["disarmed_peak_ts"] /= 1000.0
             st["surge_active"] = bool(st.get("surge_active", False))
 
         # Reset clock-skewed future timestamps
@@ -126,8 +134,11 @@ class ParabolicSurgeGuard:
                     continue
                 t_f = safe_float(item[0], default=None)
                 p_f = safe_pos_float(item[1], default=None)
-                if t_f is not None and p_f is not None and window_start_ts <= t_f <= max_allowed_ts:
-                    window_pts.append((t_f, p_f))
+                if t_f is not None and p_f is not None:
+                    if t_f > 1e11:
+                        t_f /= 1000.0
+                    if window_start_ts <= t_f <= max_allowed_ts:
+                        window_pts.append((t_f, p_f))
             if len(window_pts) > 1:
                 window_pts.sort(key=lambda x: x[0])
             if ts_now >= window_start_ts and (not window_pts or window_pts[-1] != (float(ts_now), float(current_price))):

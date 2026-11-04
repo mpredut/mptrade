@@ -507,7 +507,14 @@ class ExternalTelemetryMixin:
     def _fetch_and_log(self, collector: Any, symbol: str, err_label: str, fmt_msg: str, *attr_specs: Any) -> bool:
         log = getattr(self, "_telemetry_logger", logger)
         try:
-            snap = collector.fetch(symbol, allow_network=True)
+            cycle_now = getattr(self, "_active_cycle_ts", None)
+            if cycle_now is not None:
+                try:
+                    snap = collector.fetch(symbol, allow_network=True, now=cycle_now)
+                except TypeError:
+                    snap = collector.fetch(symbol, allow_network=True)
+            else:
+                snap = collector.fetch(symbol, allow_network=True)
             if snap:
                 vals = [
                     obj_attr(snap, spec[0], spec[1]) if isinstance(spec, tuple) else obj_float(snap, spec)

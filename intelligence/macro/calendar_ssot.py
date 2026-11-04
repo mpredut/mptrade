@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover
 
 from botcore import (
     _parse_bool_flag,
+    clean_scale,
     obj_attr,
     obj_float,
     resolve_now_ts,
@@ -459,7 +460,7 @@ def compute_dynamic_sentiment_interval(
     cached_risk = _ssot.normalize_risk_level(obj_attr(cached_assessment, "risk_level", None))
     breadth_regime = str(obj_attr(breadth, "regime", "NEUTRAL") or "NEUTRAL") if breadth is not None else "NEUTRAL"
     median_abs = abs(obj_float(breadth, "median_change_pct", 0.0)) if breadth is not None else 0.0
-    cur_adv = safe_float(obj_attr(breadth, "advance_ratio", None), None)
+    cur_adv = clean_scale(obj_attr(breadth, "advance_ratio", None), default=None, allow_percent=True)
 
     if norm_geo == "CRITICAL_SHOCK":
         return min_interval, "critical_geopolitical_shock_30m"
@@ -500,7 +501,7 @@ def compute_dynamic_sentiment_interval(
     prev_fg_val = safe_int(prev_fear_greed_val, None)
     if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:
         return min_interval, f"fear_greed_jump_{cur_fg_val - prev_fg_val:+d}pts"
-    prev_adv = safe_float(prev_advance_ratio, None)
+    prev_adv = clean_scale(prev_advance_ratio, default=None, allow_percent=True)
     if cur_adv is not None and prev_adv is not None and abs(cur_adv - prev_adv) >= 0.18:
         return min_interval, f"breadth_shift_{cur_adv - prev_adv:+.2f}"
 
@@ -535,6 +536,7 @@ def compute_dynamic_geopolitical_interval(
     headlines_changed: bool = False,
     fallback_retry_ttl_sec: float = _ssot.DEFAULT_FALLBACK_RETRY_TTL_SEC,
     last_headlines_digest: str = "",
+    cache_dir: Optional[str] = None,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_geopolitical`` evaluation."""
     derived = _ssot.resolve_derived_telemetry_intervals()
@@ -572,7 +574,7 @@ def compute_dynamic_geopolitical_interval(
                 if (str(obj_attr(h, "title", None) or "").strip().lower() not in prev_lower)
             )
         if threat_level in ("NORMAL", "ELEVATED"):
-            active_acute_phrases = get_active_acute_shock_phrases(now_ts=ts)
+            active_acute_phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=ts)
             has_new_acute = any(
                 phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
                 for h in high_sev[:12]

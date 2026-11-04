@@ -16,18 +16,26 @@ from botcore import safe_float, safe_pos_float
 
 
 def _extract_finite_prices(prices: Sequence[float]) -> np.ndarray:
-    if prices is None or isinstance(prices, (str, bytes, bool)):
+    if prices is None or isinstance(prices, (str, bytes, bytearray, dict, set, frozenset, bool)):
         return np.empty(0, dtype=float)
     if isinstance(prices, np.ndarray):
         if prices.dtype == np.bool_:
             return np.empty(0, dtype=float)
         if prices.dtype.kind in ("f", "i", "u"):
-            arr = prices.astype(float, copy=False).ravel()
+            if prices.ndim == 2 and prices.shape[1] >= 2:
+                arr = prices[:, 1].astype(float, copy=False).ravel()
+            else:
+                arr = prices.astype(float, copy=False).ravel()
             return arr[np.isfinite(arr)]
     vals = []
     try:
         for p in prices:
-            pf = safe_float(p, default=None)
+            raw_p = (
+                p[1]
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+                else (p[0] if isinstance(p, (list, tuple)) and len(p) == 1 else p)
+            )
+            pf = safe_float(raw_p, default=None)
             if pf is not None:
                 vals.append(pf)
     except TypeError:

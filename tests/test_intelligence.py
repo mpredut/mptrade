@@ -2488,8 +2488,119 @@ def test_iter58_5m_series_vol_breadth_greed_percent_scales_and_tca_variants(tmp_
     assert rep["pillar1_internal"]["trend_survival"]["samples"] == 33
 
 
+def test_iter59_parabolic_ms_timestamps_persistence_pairs_and_percent_scales(tmp_path):
+    import numpy as np
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookSnapshot
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
+    from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
+    from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
+    from intelligence.internal.guards.trend_significance_guard import TrendSignificanceGuard
+    from intelligence.internal.state.persistence import calculate_hurst_exponent, calculate_mann_kendall
+    from intelligence.macro.calendar_ssot import (
+        compute_dynamic_geopolitical_interval,
+        compute_dynamic_sentiment_interval,
+    )
+    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
+    from intelligence.macro_sentiment_ssot import update_dynamic_lexicon
+
+    # 1. ParabolicSurgeGuard normalizes millisecond timestamps in price_history and now
+    psg = ParabolicSurgeGuard(surge_threshold_pct=5.0, window_seconds=3600.0)
+    ms_hist = [
+        (1700000000000, 100.0),
+        (1700001800000, 103.0),
+        (1700003500000, 106.5),
+    ]
+    dec_psg = psg.check("BTCUSDC", "BUY", 106.5, price_history=ms_hist, now=1700003500.0)
+    assert not dec_psg.allowed
+    assert "parabolic_surge_active" in dec_psg.reason
+
+    # 2. persistence.py & TrendSignificanceGuard support (ts, price) tuple/list sequences and 2D arrays
+    ts_price_pairs = [(1700000000.0 + i * 60.0, 100.0 + i * 0.5) for i in range(70)]
+    s_stat, z_score, p_val = calculate_mann_kendall(ts_price_pairs)
+    assert s_stat > 0 and z_score > 3.0 and p_val < 0.001
+    h_exp = calculate_hurst_exponent(ts_price_pairs)
+    assert h_exp is not None and h_exp > 0.5
+    s_2d, _, p_2d = calculate_mann_kendall(np.asarray(ts_price_pairs, dtype=float))
+    assert s_2d == s_stat and p_2d == pytest.approx(p_val)
+
+    tsg = TrendSignificanceGuard(max_p_value=0.05, min_hurst=0.50)
+    dec_tsg = tsg.evaluate({"action": "ENTRY", "side": "BUY"}, ts_price_pairs)
+    assert dec_tsg.allowed and "trend_statistically_significant" in dec_tsg.reason
+
+    # 3. OrderbookSnapshot and external/internal guards accept percentage strings
+    ob_snap = OrderbookSnapshot.from_dict({"symbol": "BTCUSDC", "mid_price": 90000.0, "imbalance_ratio": "65%"})
+    assert ob_snap.imbalance_ratio == pytest.approx(0.65)
+    owg = OrderbookWallGuard(min_buy_imbalance="30%", max_sell_imbalance="70%")
+    assert owg.min_buy_imbalance == pytest.approx(0.30) and owg.max_sell_imbalance == pytest.approx(0.70)
+    wdg = WhaleDivergenceGuard(taker_downscaled_scale="40%")
+    assert wdg.taker_downscaled_scale == pytest.approx(0.40)
+    fcg = FundingCrowdingGuard(crowded_scale="60%")
+    assert fcg.crowded_scale == pytest.approx(0.60)
+    weg = WeibullExhaustionGuard(exhausted_scale="35%")
+    assert weg.exhausted_scale == pytest.approx(0.35)
+
+    # 4. compute_dynamic_sentiment_interval normalizes percentage advance_ratio / prev_advance_ratio
+    itv_s, rsn_s = compute_dynamic_sentiment_interval(
+        base_interval_sec=1800.0,
+        now_ts=1700010000.0,
+        breadth={"advance_ratio": 55.0, "median_change_pct": 1.0, "regime": "NEUTRAL"},
+        prev_advance_ratio=30.0,
+    )
+    assert "breadth_shift_+0.25" in rsn_s
+
+    # 5. compute_dynamic_geopolitical_interval forwards cache_dir to get_active_acute_shock_phrases
+    update_dynamic_lexicon(
+        [],
+        ["custom grid blackout"],
+        cache_dir=str(tmp_path),
+        now_ts=1700010000.0,
+    )
+    snap_news = NewsFeedSnapshot(
+        headlines=(
+            NewsHeadline(
+                title="Breaking: custom grid blackout reported across exchange hub",
+                source="Reuters",
+                pub_date="2026-11-04",
+                url="https://example.com/1",
+                is_high_severity=True,
+                matched_keywords=("blackout",),
+            ),
+        ),
+        total_fetched=1,
+        high_severity_count=1,
+        has_critical_shock_keywords=True,
+        ts=1700010000.0,
+    )
+    itv_g, rsn_g = compute_dynamic_geopolitical_interval(
+        base_interval_sec=1800.0,
+        last_eval_ts=1700009000.0,
+        now_ts=1700010000.0,
+        cached_assessment={"threat_level": "NORMAL", "is_fallback": False},
+        news_snapshot=snap_news,
+        headlines_changed=True,
+        last_headlines_digest="older unrelated headline",
+        cache_dir=str(tmp_path),
+    )
+    assert itv_g == 0.0 and rsn_g == "acute_shock_keyword_alert"
+
+    # 6. ExternalTelemetryMixin._fetch_and_log forwards active cycle timestamp now to symbol collectors
+    gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_news=True)
+    seen_ob_now = []
+    gtc.orderbook_collector.fetch = lambda sym, allow_network=True, now=None: (seen_ob_now.append(now), ob_snap)[1]
+    gtc.derivatives_collector.fetch = lambda sym, allow_network=True, now=None: None
+    gtc.whale_collector.fetch = lambda sym, allow_network=True, now=None: None
+    gtc.fear_greed_collector.fetch = lambda force_refresh=False, now_ts=None: None
+    gtc.breadth_collector.fetch = lambda force_refresh=False, now_ts=None: None
+    gtc.run_cycle(force=True, now=1700012345.0)
+    assert seen_ob_now == [1700012345.0]
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

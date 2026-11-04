@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.macro_sentiment_ssot import (
+    clean_scale,
     fetch_public_json,
     is_cache_fresh,
     resolve_now_ts as _effective_now_ts,
@@ -88,13 +89,18 @@ class OrderbookSnapshot:
         ask_depth = _clean_dict_float(data, "ask_depth_usd", 0.0, nonneg=True)
         d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth * (1.0 / 1.5), 2) if bid_depth > 0.0 else 0.0)
         d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth * (1.0 / 1.5), 2) if ask_depth > 0.0 else 0.0)
-        imb_raw = _clean_dict_float(data, "imbalance_ratio", 0.5, "ob_imbalance")
+        raw_imb_val = data.get("imbalance_ratio") if data.get("imbalance_ratio") is not None else data.get("ob_imbalance")
+        if isinstance(raw_imb_val, str) and raw_imb_val.strip().endswith("%"):
+            imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True)
+        else:
+            imb_raw = _clean_dict_float(data, "imbalance_ratio", 0.5, "ob_imbalance")
+            imb_clean = min(1.0, max(0.0, imb_raw))
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             mid_price=mid_price,
             bid_depth_usd=bid_depth,
             ask_depth_usd=ask_depth,
-            imbalance_ratio=min(1.0, max(0.0, imb_raw)),
+            imbalance_ratio=imb_clean,
             largest_bid_wall_usd=_clean_dict_float(data, "largest_bid_wall_usd", 0.0, "bid_wall_usd", nonneg=True),
             largest_bid_wall_price=_clean_dict_float(data, "largest_bid_wall_price", 0.0, "bid_wall_px", nonneg=True),
             largest_ask_wall_usd=_clean_dict_float(data, "largest_ask_wall_usd", 0.0, "ask_wall_usd", nonneg=True),

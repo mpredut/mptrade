@@ -33,8 +33,18 @@ class OrderbookWallGuard:
         whale_wall_usd_limit: float = 1_000_000.0,
     ) -> None:
         self.collector = collector
-        self.min_buy_imbalance = clean_scale(min_buy_imbalance, default=0.25, min_positive=True)
-        self.max_sell_imbalance = clean_scale(max_sell_imbalance, default=0.75, min_positive=True)
+        self.min_buy_imbalance = clean_scale(
+            min_buy_imbalance,
+            default=0.25,
+            min_positive=True,
+            allow_percent=isinstance(min_buy_imbalance, str),
+        )
+        self.max_sell_imbalance = clean_scale(
+            max_sell_imbalance,
+            default=0.75,
+            min_positive=True,
+            allow_percent=isinstance(max_sell_imbalance, str),
+        )
         self.whale_wall_usd_limit = safe_pos_float(whale_wall_usd_limit, default=1_000_000.0) or 1_000_000.0
 
     def check(

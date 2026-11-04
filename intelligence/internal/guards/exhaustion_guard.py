@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple
 
-from botcore import safe_pos_float
+from botcore import clean_scale, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     normalize_guard_side,
@@ -64,7 +64,10 @@ class WeibullExhaustionGuard:
     ):
         self.default_p90_days = safe_pos_float(default_p90_days, default=7.0) or 7.0
         self.policy = str(policy or "downscale").strip().lower() if not isinstance(policy, bool) else "downscale"
-        self.exhausted_scale = min(1.0, safe_pos_float(exhausted_scale, default=0.25) or 0.25)
+        if isinstance(exhausted_scale, str) and exhausted_scale.strip().endswith("%"):
+            self.exhausted_scale = clean_scale(exhausted_scale, default=0.25, allow_percent=True, min_positive=True)
+        else:
+            self.exhausted_scale = min(1.0, safe_pos_float(exhausted_scale, default=0.25) or 0.25)
 
     def check(
         self,

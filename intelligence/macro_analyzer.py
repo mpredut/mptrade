@@ -295,7 +295,10 @@ class MacroAnalyzer:
             _, digest = extract_high_severity_headlines_and_digest(news_snap)
             headlines_changed = bool(digest and digest != last_digest)
 
-        geo_interval, geo_reason = compute_dynamic_geopolitical_interval(
+        geo_interval, geo_reason = _call_with_optional_kwarg(
+            compute_dynamic_geopolitical_interval,
+            opt_key="cache_dir",
+            opt_val=self.cache_dir,
             base_interval_sec=self.macro_llm_interval_sec,
             last_eval_ts=self._last_macro_llm_ts,
             now_ts=current_ts,
