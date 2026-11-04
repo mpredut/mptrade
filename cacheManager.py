@@ -2102,8 +2102,19 @@ class CacheManagerInterface(ABC):
 
     @classmethod
     def shutdown_all_instances(cls, timeout=5.0):
-        results = [manager.shutdown(timeout=timeout)
-                   for manager in list(cls._live_instances)]
+        instances = list(cls._live_instances)
+        for manager in instances:
+            ev = getattr(manager, "_stop_event", None)
+            if ev is not None:
+                ev.set()
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        if eff_timeout is None:
+            eff_timeout = 5.0
+        deadline = time.monotonic() + eff_timeout
+        results = [
+            manager.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+            for manager in instances
+        ]
         return all(results) if results else True
     
     def enable_save_state_to_file(self):
@@ -3675,8 +3686,19 @@ class CacheFactory:
                 managers.append(short_trend)
             cls._instances = {}
             cls._sync_started = set()
-            results = [manager.shutdown(timeout=timeout) for manager in managers
-                       if hasattr(manager, "shutdown")]
+            for manager in managers:
+                ev = getattr(manager, "_stop_event", None)
+                if ev is not None:
+                    ev.set()
+            eff_timeout = safe_nonneg_float(timeout, default=5.0)
+            if eff_timeout is None:
+                eff_timeout = 5.0
+            deadline = time.monotonic() + eff_timeout
+            results = [
+                manager.shutdown(timeout=max(0.0, deadline - time.monotonic()))
+                for manager in managers
+                if hasattr(manager, "shutdown")
+            ]
             if (
                 current_price is _current_price_instance
                 and getattr(current_price, "thread", None) is None
@@ -3923,23 +3945,33 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[cacheManager] Cannot start the trend computation: {e}")
 
+    _stop_requested = threading.Event()
+
+    def _request_stop(_signum=None, _frame=None):
+        _stop_requested.set()
+
+    import signal as _signal
+    _signal.signal(_signal.SIGTERM, _request_stop)
+    _signal.signal(_signal.SIGINT, _request_stop)
+
     try:
         touch_module_heartbeat("cacheManager", interval_sec=30.0, force=True, symbols=list(_trend_syms or ()))
-        while any(t.is_alive() for t in threads):
+        while not _stop_requested.is_set() and any(t.is_alive() for t in threads):
             touch_module_heartbeat("cacheManager", interval_sec=30.0, symbols=list(_trend_syms or ()))
-            time.sleep(5.0)
+            if _stop_requested.wait(timeout=5.0):
+                break
     except KeyboardInterrupt:
         print("Stopped manually.")
     finally:
         account_cache_health.disable_writer()
         print("Cleanup / releasing resources...")
         if _nb_poller is not None:
-            _nb_poller.stop()
+            _nb_poller.stop(timeout=0.5)
         if _trend_mgr is not None:
-            _trend_mgr.shutdown()
-        CacheFactory.shutdown_all()
+            _trend_mgr.shutdown(timeout=1.0)
+        CacheFactory.shutdown_all(timeout=1.5)
         if _current_price_instance is not None:
-            _current_price_instance.shutdown()
+            _current_price_instance.shutdown(timeout=0.5)
         if _ws_bridge is not None:
             _ws_bridge.stop()
         from binance_api import bapi_client

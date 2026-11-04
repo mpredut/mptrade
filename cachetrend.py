@@ -1363,7 +1363,11 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def shutdown(self, timeout=5.0):
         """Stop evaluation, flush, and base sync loops, then unsubscribe Cache24 sources."""
-        base_stopped = super().shutdown(timeout=timeout)
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        if eff_timeout is None:
+            eff_timeout = 5.0
+        deadline = time.monotonic() + eff_timeout
+        base_stopped = super().shutdown(timeout=eff_timeout)
         for sym_key, cache24 in (self._cache24_managers or {}).items():
             unsubscribe = getattr(cache24, "unsubscribe_price", None)
             if unsubscribe is not None:
@@ -1372,7 +1376,7 @@ class CacheShortTrendManager(CacheManagerInterface):
                     unsubscribe(win)
         for thread in (self._full_eval_thread, self._flush_thread):
             if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=timeout)
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
         stopped = base_stopped and all(
             thread is None or not thread.is_alive()
             for thread in (self._full_eval_thread, self._flush_thread)
