@@ -17,6 +17,7 @@ import configparser
 import fcntl
 import json
 import math
+import numbers
 import os
 import re
 import sys
@@ -293,7 +294,10 @@ def safe_float(val: object, default: float | None = 0.0) -> float | None:
     """Safely coerce ``val`` to finite float, rejecting booleans, None, non-finite values, and non-numeric objects."""
     if val is None or isinstance(val, bool):
         return default
-    if not isinstance(val, (int, float, str, bytes, bytearray)) and type(val).__name__ != "Decimal":
+    if (
+        not isinstance(val, (int, float, str, bytes, bytearray, numbers.Real))
+        and type(val).__name__ != "Decimal"
+    ):
         return default
     try:
         f = float(val)

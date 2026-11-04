@@ -62,9 +62,27 @@ def inspect_fleet(json_output: bool = False):
     history = auto_topic.get("rolling_history") or []
     latest_summary = history[-1].get("summary", "") if history else ""
 
-    # 3. Active Resting Orders from cache_order
+    # 3. Active Resting Orders from venue_balances_state (open_orders:*) or cache_order fallback
     active_orders = []
-    if isinstance(orders_data, dict) and "items" in orders_data:
+    open_order_keys = [k for k in balances.keys() if k.startswith("open_orders:")]
+    if open_order_keys:
+        for k in open_order_keys:
+            olist = balances.get(k)
+            if isinstance(olist, list):
+                parts = k.split(":", 2)
+                default_venue = parts[1] if len(parts) > 1 else "binance"
+                default_sym = parts[2] if len(parts) > 2 else ""
+                for o in olist:
+                    if isinstance(o, dict):
+                        active_orders.append({
+                            "venue": o.get("venue") or default_venue,
+                            "symbol": o.get("symbol") or default_sym,
+                            "side": o.get("side"),
+                            "price": safe_float(o.get("price"), 0.0) or 0.0,
+                            "orig_qty": safe_float(o.get("orig_qty") or o.get("origQty") or o.get("qty"), 0.0) or 0.0,
+                            "status": o.get("status") or "NEW",
+                        })
+    elif isinstance(orders_data, dict) and "items" in orders_data:
         items = orders_data["items"]
         if isinstance(items, dict):
             for sym, olist in items.items():
@@ -76,7 +94,7 @@ def inspect_fleet(json_output: bool = False):
                                 "symbol": o.get("symbol", sym),
                                 "side": o.get("side"),
                                 "price": safe_float(o.get("price"), 0.0) or 0.0,
-                                "orig_qty": safe_float(o.get("origQty"), 0.0) or 0.0,
+                                "orig_qty": safe_float(o.get("origQty") or o.get("quantity"), 0.0) or 0.0,
                                 "status": o.get("status"),
                             })
 
