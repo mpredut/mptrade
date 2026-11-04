@@ -33,6 +33,7 @@ from intelligence.macro_sentiment_ssot import (
     compute_dynamic_geopolitical_interval,
     compute_dynamic_sentiment_interval,
     compute_step_retry_ts,
+    configure_daemon_cli_logging,
     extract_high_severity_headlines_and_digest,
     is_interval_due,
     load_cached_fear_greed_snapshot,
@@ -335,13 +336,12 @@ class MacroAnalyzer:
                 results["geopolitical_updated"] = True
                 self._last_macro_llm_ts = current_ts
             else:
-                retry_geo_itv = (
-                    min(geo_interval or self.macro_llm_interval_sec, self.macro_llm_interval_sec)
-                    if self._last_macro_llm_ts <= 0.0 and cached_geo is None
-                    else (geo_interval or self.macro_llm_interval_sec)
-                )
-                self._last_macro_llm_ts = compute_step_retry_ts(
-                    self._last_macro_llm_ts, current_ts, retry_geo_itv
+                self._last_macro_llm_ts = self._compute_eval_retry_ts(
+                    self._last_macro_llm_ts,
+                    current_ts,
+                    geo_interval,
+                    self.macro_llm_interval_sec,
+                    cached_geo,
                 )
             self.write_heartbeat(results)
 
@@ -385,13 +385,12 @@ class MacroAnalyzer:
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
             else:
-                retry_adv_itv = (
-                    min(adv_interval or self.advisor_interval_sec, self.advisor_interval_sec)
-                    if self._last_advisor_ts <= 0.0 and cached_adv is None
-                    else (adv_interval or self.advisor_interval_sec)
-                )
-                self._last_advisor_ts = compute_step_retry_ts(
-                    self._last_advisor_ts, current_ts, retry_adv_itv
+                self._last_advisor_ts = self._compute_eval_retry_ts(
+                    self._last_advisor_ts,
+                    current_ts,
+                    adv_interval,
+                    self.advisor_interval_sec,
+                    cached_adv,
                 )
             self.write_heartbeat(results)
 
@@ -408,6 +407,21 @@ class MacroAnalyzer:
 
         self.write_heartbeat(results)
         return results
+
+    @staticmethod
+    def _compute_eval_retry_ts(
+        last_ts: float,
+        current_ts: float,
+        eff_interval: float,
+        default_interval: float,
+        cached_assessment: Any,
+    ) -> float:
+        retry_itv = (
+            min(eff_interval or default_interval, default_interval)
+            if last_ts <= 0.0 and cached_assessment is None
+            else (eff_interval or default_interval)
+        )
+        return compute_step_retry_ts(last_ts, current_ts, retry_itv)
 
     def write_heartbeat(self, status: Dict[str, Any]) -> None:
         """Write heartbeat metadata atomically to cachedb/ with fallback."""
@@ -455,11 +469,7 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose DEBUG logging.")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    configure_daemon_cli_logging(args.verbose)
 
     analyzer = MacroAnalyzer(
         macro_llm_interval_sec=args.macro_llm_interval,

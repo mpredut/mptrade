@@ -4,7 +4,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from guard_hierarchy import BaseGuard, GUARD_REGISTRY, _ALL_GUARD_ALIASES, normalize_bypassed_guards
+from guard_hierarchy import (
+    BaseGuard,
+    GUARD_REGISTRY,
+    _ALL_GUARD_ALIASES,
+    normalize_bypassed_guards,
+    resolve_qlimit2_sub_bypasses,
+)
 
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 from intelligence.internal.triggers.kalman_trigger import KalmanTrendTrigger
@@ -131,23 +137,12 @@ class CompositeMarketIntelligence:
         """Run all protection guards (brakes) across all pillars in sequence."""
         effective_scale = 1.0
         downscale_dec: Optional[GuardDecision] = None
-        raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards)
+        raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass = resolve_qlimit2_sub_bypasses(bypass_guards)
         recognized_tokens = [t for t in raw_bypass_tokens if t in _ALL_GUARD_ALIASES]
         bypassed = normalize_bypassed_guards(recognized_tokens if recognized_tokens else None) | raw_bypass_tokens
         side = normalize_order_side(side)
         if now is not None:
             now = normalize_epoch_sec(now, default=None)
-        _qlimit2_group = {"g_qlimit2", "internal_quant_limit", "quantitative", "qlimit", "g_qlimit", "gf", "financial", "all", "*"}
-        parabolic_only_bypass = (
-            ("parabolic_surge" in raw_bypass_tokens)
-            and ("weibull_exhaustion" not in raw_bypass_tokens)
-            and not bool(raw_bypass_tokens & _qlimit2_group)
-        )
-        weibull_only_bypass = (
-            ("weibull_exhaustion" in raw_bypass_tokens)
-            and ("parabolic_surge" not in raw_bypass_tokens)
-            and not bool(raw_bypass_tokens & _qlimit2_group)
-        )
 
         def _is_bypassed(code: Optional[str], *legacy_names: str) -> bool:
             if not bypassed:

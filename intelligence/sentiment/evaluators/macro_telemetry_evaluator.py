@@ -8,6 +8,7 @@ from cachepaths import normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
+    parse_cited_taker_ratio,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -332,17 +333,11 @@ def enrich_sentiment_advisor_live_flow_divergence(
     live_cvd_1h = safe_float(btc_m.get("cvd_1h_usd"), None)
     sa_act = str(sentiment_advisor.get("recommended_action") or "").upper()
     sa_bias = str(sentiment_advisor.get("directional_bias") or sentiment_advisor.get("market_bias") or "").upper()
-    cited_tr: Optional[float] = None
-    if sa_age >= 15.0 and isinstance(sentiment_advisor.get("summary"), str):
-        m_tr = re.search(
-            r"(?:([0-9]+\.[0-9]+)\s*(?:taker\s+(?:buy/sell\s+)?|buy/sell\s+)ratio"
-            r"|taker\s+(?:buy/sell\s+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-            r"|taker\s+(?:(?:buy|sell|buying|selling|buy/sell)\s+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
-            sentiment_advisor["summary"],
-            re.IGNORECASE,
-        )
-        if m_tr:
-            cited_tr = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
+    cited_tr = (
+        parse_cited_taker_ratio(sentiment_advisor.get("summary"))
+        if sa_age >= 15.0
+        else None
+    )
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
     cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
     tr_1h_s = f"1h_tr={live_tr_1h:.2f}" if (live_tr is not None and live_tr_1h is not None) else ""

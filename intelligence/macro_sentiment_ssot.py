@@ -151,6 +151,43 @@ def extract_high_severity_headlines_and_digest(
     return high_sev, digest
 
 
+def split_headlines_digest(digest: str) -> List[str]:
+    """Split a ``||`` / ``|`` delimited headlines digest string into non-empty stripped titles."""
+    if not isinstance(digest, str) or not digest:
+        return []
+    return [
+        p.strip()
+        for part in digest.split("||")
+        for p in part.split("|")
+        if p.strip()
+    ]
+
+
+def has_new_acute_shock_headline(
+    high_sev: Sequence[Any],
+    last_digest: str,
+    active_acute_phrases: Sequence[str],
+    *,
+    max_items: int = 12,
+    prev_titles: Optional[Sequence[str]] = None,
+) -> bool:
+    """Return True if any headline in ``high_sev[:max_items]`` introduces a non-duplicate acute shock phrase."""
+    if not high_sev:
+        return False
+    if not last_digest:
+        return True
+    titles = split_headlines_digest(last_digest) if prev_titles is None else prev_titles
+    prev_lower = last_digest.lower()
+    return any(
+        (t_h := str(obj_attr(h, "title", None) or "").strip())
+        and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in titles)
+        and phrase in t_h.lower()
+        and phrase not in prev_lower
+        for h in high_sev[:max_items]
+        for phrase in active_acute_phrases
+    )
+
+
 # ============================================================================
 # 1. Config-Driven Taxonomies, Filenames, Endpoints & Interval Bounds
 # ============================================================================
@@ -859,6 +896,7 @@ from intelligence.macro.calendar_ssot import (
     get_macro_calendar_routine_labels,
     get_macro_calendar_windows_eet,
     get_session_transition_checkpoints_eet,
+    parse_cited_taker_ratio,
     parse_live_macro_release_surprises,
     resolve_global_trading_session,
     resolve_macro_economic_calendar,

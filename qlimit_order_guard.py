@@ -18,7 +18,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_nonneg_float
-from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
+from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards, resolve_qlimit2_sub_bypasses
 from intelligence.internal.guards.exhaustion_guard import WeibullExhaustionGuard
 from intelligence.internal.guards.guard_decision import BrakeAction
 from intelligence.internal.guards.parabolic_guard import ParabolicSurgeGuard
@@ -100,18 +100,7 @@ def check_qlimit2_order_guards(
     Returns:
         (allowed: bool, reason: str, suggested_scale: float)
     """
-    raw_bypass_tokens = GUARD_REGISTRY["G_QLIMIT2"]._coerce_bypass_set(bypass_guards) if bypass_guards else set()
-    _qlimit2_group = {"g_qlimit2", "internal_quant_limit", "quantitative", "qlimit", "g_qlimit", "gf", "financial", "all", "*"}
-    parabolic_only_bypass = (
-        ("parabolic_surge" in raw_bypass_tokens)
-        and ("weibull_exhaustion" not in raw_bypass_tokens)
-        and not bool(raw_bypass_tokens & _qlimit2_group)
-    )
-    weibull_only_bypass = (
-        ("weibull_exhaustion" in raw_bypass_tokens)
-        and ("parabolic_surge" not in raw_bypass_tokens)
-        and not bool(raw_bypass_tokens & _qlimit2_group)
-    )
+    raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass = resolve_qlimit2_sub_bypasses(bypass_guards)
     bypassed = normalize_bypassed_guards(bypass_guards=bypass_guards) if bypass_guards else set()
     if (
         "all" in bypassed

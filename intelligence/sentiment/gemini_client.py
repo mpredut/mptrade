@@ -368,12 +368,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         )
                         output, turn_cid = self._parse_cli_payload(proc)
                     except subprocess.TimeoutExpired:
-                        if not is_mocked:
-                            if session.conversation_id and conv_snapshot is not None:
-                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
-                            elif not session.conversation_id:
-                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
-                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
+                        self._rollback_cli_attempt(
+                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                        )
                         if not (session.conversation_id and not conversation_id):
                             if attempt_idx == len(models_to_try) - 1:
                                 raise
@@ -390,12 +387,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             timeout_sec,
                         )
                     except Exception as exc:
-                        if not is_mocked:
-                            if session.conversation_id and conv_snapshot is not None:
-                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
-                            elif not session.conversation_id:
-                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
-                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
+                        self._rollback_cli_attempt(
+                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                        )
                         logger.warning(
                             "Model candidate %s failed with exception: %s; trying fallback.",
                             model_candidate,
@@ -409,22 +403,17 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             model_candidate,
                             output.strip()[:160],
                         )
-                        if not is_mocked:
-                            if session.conversation_id and conv_snapshot is not None:
-                                restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
-                            elif not session.conversation_id:
-                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
-                                    self._remove_detached_thread(bot_cli_base, orphan_cid)
+                        self._rollback_cli_attempt(
+                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                        )
                         output = None
                         turn_cid = None
                         continue
 
-                    if output is None and not is_mocked:
-                        if session.conversation_id and conv_snapshot is not None:
-                            restore_conversation_state(bot_cli_base, session.conversation_id, conv_snapshot)
-                        elif not session.conversation_id:
-                            for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_attempt_cids:
-                                self._remove_detached_thread(bot_cli_base, orphan_cid)
+                    if output is None:
+                        self._rollback_cli_attempt(
+                            bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
+                        )
 
                     if (
                         output is None
@@ -472,9 +461,9 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             logger.warning("One-off thread attempt failed for model %s: %s", model_candidate, exc)
                         finally:
                             if not is_mocked and not detached_cid:
-                                for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_cids:
-                                    if orphan_cid != session.conversation_id:
-                                        self._remove_detached_thread(bot_cli_base, orphan_cid)
+                                self._cleanup_orphan_threads(
+                                    bot_cli_base, pre_cids, keep_cid=session.conversation_id
+                                )
                         if output and use_topic_session and detached_cid:
                             turn_cid = detached_cid
                             replaced_conversation = detached_cid != session.conversation_id
@@ -629,6 +618,34 @@ class GeminiClient(GeminiQuotaRouterMixin):
         if not re.fullmatch(r"[A-Za-z0-9_-]{4,128}", cid):
             return
         delete_threads({cid}, bot_cli_base)
+
+    def _cleanup_orphan_threads(
+        self,
+        bot_cli_base: str,
+        pre_cids: set[str],
+        *,
+        keep_cid: Optional[str] = None,
+    ) -> None:
+        """Delete any newly created detached conversation threads not in ``pre_cids``."""
+        for orphan_cid in self._list_conversation_cids(bot_cli_base) - pre_cids:
+            if orphan_cid != keep_cid:
+                self._remove_detached_thread(bot_cli_base, orphan_cid)
+
+    def _rollback_cli_attempt(
+        self,
+        bot_cli_base: str,
+        conversation_id: Optional[str],
+        conv_snapshot: Optional[Dict[str, Optional[bytes]]],
+        pre_attempt_cids: set[str],
+        is_mocked: bool,
+    ) -> None:
+        """Restore ``conv_snapshot`` or remove orphan threads after a failed CLI attempt."""
+        if is_mocked:
+            return
+        if conversation_id and conv_snapshot is not None:
+            restore_conversation_state(bot_cli_base, conversation_id, conv_snapshot)
+        elif not conversation_id:
+            self._cleanup_orphan_threads(bot_cli_base, pre_attempt_cids)
 
     def query_json(
         self,

@@ -12,6 +12,7 @@ from intelligence.macro_sentiment_ssot import (
     clean_scale,
     extract_high_severity_headlines_and_digest,
     get_cache_filenames,
+    has_new_acute_shock_headline,
     normalize_recommended_brake,
     normalize_threat_level,
     obj_attr,
@@ -195,29 +196,16 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
         else:
             active_acute_phrases = ()
-        prev_titles = (
-            [
-                p.strip()
-                for part in self._last_headlines_digest.split("||")
-                for p in part.split("|")
-                if p.strip()
-            ]
-            if self._last_headlines_digest
-            else []
-        )
         has_new_acute_phrase = bool(
             high_sev
             and (
                 not self._last_headlines_digest
                 or (
                     headline_digest != self._last_headlines_digest
-                    and any(
-                        (t_h := str(obj_attr(h, "title", None) or "").strip())
-                        and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
-                        and phrase in t_h.lower()
-                        and phrase not in self._last_headlines_digest.lower()
-                        for h in high_sev[:12]
-                        for phrase in active_acute_phrases
+                    and has_new_acute_shock_headline(
+                        high_sev,
+                        self._last_headlines_digest,
+                        active_acute_phrases,
                     )
                 )
             )

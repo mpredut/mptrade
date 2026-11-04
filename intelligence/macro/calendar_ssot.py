@@ -414,6 +414,24 @@ def resolve_macro_economic_calendar(
     }
 
 
+_CITED_TAKER_RATIO_RE = re.compile(
+    r"(?:([0-9]+\.[0-9]+)\s*(?:taker\s+(?:buy/sell\s+)?|buy/sell\s+)ratio"
+    r"|taker\s+(?:buy/sell\s+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
+    r"|taker\s+(?:(?:buy|sell|buying|selling|buy/sell)\s+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
+    re.IGNORECASE,
+)
+
+
+def parse_cited_taker_ratio(text: Any) -> Optional[float]:
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string."""
+    if not isinstance(text, str) or not text:
+        return None
+    m_tr = _CITED_TAKER_RATIO_RE.search(text)
+    if not m_tr:
+        return None
+    return safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
+
+
 def compute_dynamic_sentiment_interval(
     base_interval_sec: Optional[float] = None,
     last_eval_ts: float = 0.0,
@@ -473,16 +491,7 @@ def compute_dynamic_sentiment_interval(
     cur_tr = safe_pos_float(btc_taker_ratio, default=None)
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
     if prev_tr is None and cached_assessment is not None:
-        summary_s = str(obj_attr(cached_assessment, "summary", "") or "")
-        m_tr = re.search(
-            r"(?:([0-9]+\.[0-9]+)\s*(?:taker\s+(?:buy/sell\s+)?|buy/sell\s+)ratio"
-            r"|taker\s+(?:buy/sell\s+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-            r"|taker\s+(?:(?:buy|sell|buying|selling|buy/sell)\s+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
-            summary_s,
-            re.IGNORECASE,
-        )
-        if m_tr:
-            prev_tr = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
+        prev_tr = parse_cited_taker_ratio(str(obj_attr(cached_assessment, "summary", "") or ""))
     if cur_tr is not None:
         if prev_tr is not None and (
             (prev_tr <= 0.75 and cur_tr >= 1.25)
@@ -612,12 +621,7 @@ def compute_dynamic_geopolitical_interval(
     if changed_b and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
-        prev_titles = [
-            p.strip()
-            for part in last_headlines_digest.split("||")
-            for p in part.split("|")
-            if p.strip()
-        ]
+        prev_titles = _ssot.split_headlines_digest(last_headlines_digest)
         if high_sev:
             new_high_sev_count = sum(
                 1
@@ -630,13 +634,11 @@ def compute_dynamic_geopolitical_interval(
             )
         if threat_level in ("NORMAL", "ELEVATED"):
             active_acute_phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=ts)
-            has_new_acute = any(
-                (t_h := str(obj_attr(h, "title", None) or "").strip())
-                and not any(_ssot.headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
-                and phrase in t_h.lower()
-                and phrase not in prev_lower
-                for h in high_sev[:12]
-                for phrase in active_acute_phrases
+            has_new_acute = _ssot.has_new_acute_shock_headline(
+                high_sev,
+                last_headlines_digest,
+                active_acute_phrases,
+                prev_titles=prev_titles,
             )
 
     if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:

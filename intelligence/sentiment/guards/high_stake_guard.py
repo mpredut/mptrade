@@ -6,7 +6,7 @@ import os
 import sys
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from botcore import _parse_bool_flag, fetch_public_json
+from botcore import _parse_bool_flag, fetch_public_json, resolve_patched_attr
 from intelligence.internal.guards.guard_decision import GuardDecision, normalize_guard_mode
 from intelligence.macro_sentiment_ssot import (
     clean_scale, clean_symbol_key, is_cache_fresh, normalize_order_side,
@@ -206,23 +206,19 @@ class PreTradeLLMGuardBase:
                     return _dc_replace(base_dec, metadata={**base_dec.metadata, "notional_eur": notional})
                 return base_dec
 
-        _sub_mod = sys.modules.get(self.__class__.__module__)
-        _telem_fn = collect_pretrade_telemetry
-        if _sub_mod is not None:
-            _cand_telem = getattr(_sub_mod, "collect_pretrade_telemetry", None)
-            if callable(_cand_telem) and _cand_telem is not _default_collect_pretrade_telemetry:
-                _telem_fn = _cand_telem
-        if _telem_fn is _default_collect_pretrade_telemetry:
-            for _mod_name in (
+        _telem_fn = resolve_patched_attr(
+            "collect_pretrade_telemetry",
+            collect_pretrade_telemetry,
+            defaults=(_default_collect_pretrade_telemetry,),
+            modules=(
+                self.__class__.__module__,
+                __name__,
                 "intelligence.sentiment.collectors.macro_telemetry_collector",
                 "intelligence.sentiment.collectors.pretrade_telemetry_collector",
                 "intelligence.macro_sentiment_ssot",
-            ):
-                _m = sys.modules.get(_mod_name)
-                _cand_telem = getattr(_m, "collect_pretrade_telemetry", None) if _m is not None else None
-                if callable(_cand_telem) and _cand_telem is not _default_collect_pretrade_telemetry:
-                    _telem_fn = _cand_telem
-                    break
+            ),
+            require_callable=True,
+        )
 
         effective_telemetry = (
             telemetry
@@ -238,22 +234,18 @@ class PreTradeLLMGuardBase:
             context_items.extend(f"- {k}: {v}" for k, v in effective_telemetry.items())
         context_str = "\n".join(context_items)
 
-        _query_fn = query_topic_json
-        if _sub_mod is not None:
-            _cand_query = getattr(_sub_mod, "query_topic_json", None)
-            if callable(_cand_query) and _cand_query is not _default_query_topic_json:
-                _query_fn = _cand_query
-        if _query_fn is _default_query_topic_json:
-            for _q_mod_name in (
-                "intelligence.sentiment.guards.high_stake_guard",
+        _query_fn = resolve_patched_attr(
+            "query_topic_json",
+            query_topic_json,
+            defaults=(_default_query_topic_json,),
+            modules=(
+                self.__class__.__module__,
+                __name__,
                 "intelligence.sentiment.gemini_client",
                 "intelligence.macro_sentiment_ssot",
-            ):
-                _qm = sys.modules.get(_q_mod_name)
-                _cand_query = getattr(_qm, "query_topic_json", None) if _qm is not None else None
-                if callable(_cand_query) and _cand_query is not _default_query_topic_json:
-                    _query_fn = _cand_query
-                    break
+            ),
+            require_callable=True,
+        )
 
         prompt = f"{build_prompt_fn(context_str)}\n\n{LLM_GUARD_JSON_SCHEMA_FOOTER}"
         valid_resp = _query_fn(

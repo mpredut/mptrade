@@ -477,6 +477,36 @@ def is_category_bypassed(category: str, bypassed: set[str]) -> bool:
     return bool(guards) and all(g.is_bypassed(bypassed) for g in guards)
 
 
+_QLIMIT2_GROUP_TOKENS: frozenset[str] = frozenset({
+    "g_qlimit2",
+    "internal_quant_limit",
+    "quantitative",
+    "qlimit",
+    "g_qlimit",
+    "gf",
+    "financial",
+    "all",
+    "*",
+})
+
+
+def resolve_qlimit2_sub_bypasses(bypass_guards: object) -> tuple[set[str], bool, bool]:
+    """Return ``(raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass)`` for ``G_QLIMIT2``."""
+    raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards) if bypass_guards else set()
+    has_group = bool(raw_bypass_tokens & _QLIMIT2_GROUP_TOKENS)
+    parabolic_only = (
+        ("parabolic_surge" in raw_bypass_tokens)
+        and ("weibull_exhaustion" not in raw_bypass_tokens)
+        and not has_group
+    )
+    weibull_only = (
+        ("weibull_exhaustion" in raw_bypass_tokens)
+        and ("parabolic_surge" not in raw_bypass_tokens)
+        and not has_group
+    )
+    return raw_bypass_tokens, parabolic_only, weibull_only
+
+
 _RAW_INTEL_CACHE_CODES: tuple[str, ...] = (
     "GT_L",
     "G_QLIMIT1",

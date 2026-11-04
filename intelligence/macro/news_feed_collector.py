@@ -265,33 +265,7 @@ class NewsFeedCollector:
                     prev_seen = self._seen_first_ts.get(norm)
                     self._seen_first_ts[norm] = min(prev_seen, ts) if prev_seen is not None else ts
                 if 0.0 <= (now - ts) < self.rolling_window_sec:
-                    canon_url = canonical_article_url(h.url)
-                    keep_new = True
-                    if canon_url:
-                        for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
-                            if old_norm != norm and canonical_article_url(old_h.url) == canon_url:
-                                merged_ts = min(ts, old_ts)
-                                if self._prefer_newer_url_revision(h, raw_ts, old_h, old_ts, now):
-                                    self._aggregated_pool.pop(old_norm, None)
-                                    ts = merged_ts
-                                    self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, ts), ts)
-                                else:
-                                    self._aggregated_pool[old_norm] = (merged_ts, old_h)
-                                    self._seen_first_ts[old_norm] = min(
-                                        self._seen_first_ts.get(old_norm, merged_ts), merged_ts
-                                    )
-                                    keep_new = False
-                                break
-                    if keep_new:
-                        sem_key = norm if norm in self._aggregated_pool else self._find_semantic_duplicate_key(h.title, self._aggregated_pool)
-                        if sem_key is not None:
-                            old_ts, old_h = self._aggregated_pool[sem_key]
-                            merged_ts, merged_h = self._merge_same_norm_headlines(h, ts, old_h, old_ts)
-                            self._aggregated_pool[sem_key] = (merged_ts, merged_h)
-                            self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
-                            self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
-                        else:
-                            self._aggregated_pool[norm] = (ts, h)
+                    self._upsert_into_aggregated_pool(norm, h, ts, raw_ts, now, replace_on_tie=True)
         except Exception as e:
             logger.debug("Could not load news history from %s: %s", hist_file, e)
 
@@ -396,6 +370,56 @@ class NewsFeedCollector:
         e_ts = safe_pos_float(existing_raw_ts, default=0.0)
         return (c_ts >= e_ts) if replace_on_tie else (c_ts > e_ts)
 
+    def _upsert_into_aggregated_pool(
+        self,
+        norm: str,
+        h_obj: NewsHeadline,
+        eff_ts: float,
+        cand_order_ts: float,
+        now: float,
+        *,
+        replace_on_tie: bool = True,
+    ) -> None:
+        """Upsert ``(norm, h_obj, eff_ts)`` into ``self._aggregated_pool`` with URL revision and semantic dedup."""
+        canon_url = canonical_article_url(getattr(h_obj, "url", ""))
+        keep_new = True
+        if canon_url:
+            for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
+                if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
+                    merged_ts = min(eff_ts, old_ts)
+                    if self._prefer_newer_url_revision(
+                        h_obj,
+                        cand_order_ts,
+                        old_h,
+                        old_ts,
+                        now,
+                        replace_on_tie=replace_on_tie,
+                    ):
+                        self._aggregated_pool.pop(old_norm, None)
+                        eff_ts = merged_ts
+                    else:
+                        self._aggregated_pool[old_norm] = (merged_ts, old_h)
+                        self._seen_first_ts[old_norm] = min(
+                            self._seen_first_ts.get(old_norm, merged_ts), merged_ts
+                        )
+                        keep_new = False
+                    break
+        self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
+        if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
+            sem_key = (
+                norm
+                if norm in self._aggregated_pool
+                else self._find_semantic_duplicate_key(h_obj.title, self._aggregated_pool)
+            )
+            if sem_key is not None:
+                old_ts, old_h = self._aggregated_pool[sem_key]
+                merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
+                self._aggregated_pool[sem_key] = (merged_ts, merged_h)
+                self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
+                self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
+            else:
+                self._aggregated_pool[norm] = (eff_ts, h_obj)
+
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
         now = resolve_now_ts(now)
@@ -425,41 +449,14 @@ class NewsFeedCollector:
                     if 0.0 <= (now - merged_ts) < self.rolling_window_sec:
                         self._aggregated_pool[norm] = (merged_ts, merged_h)
                     continue
-                canon_url = canonical_article_url(h_obj.url)
-                keep_new = True
-                if canon_url:
-                    for old_norm, (old_ts, old_h) in list(self._aggregated_pool.items()):
-                        if old_norm != norm and canonical_article_url(getattr(old_h, "url", "")) == canon_url:
-                            merged_ts = min(eff_ts, old_ts)
-                            cand_order_ts = now if prev_seen is None else prev_seen
-                            if self._prefer_newer_url_revision(
-                                h_obj,
-                                cand_order_ts,
-                                old_h,
-                                old_ts,
-                                now,
-                                replace_on_tie=(prev_seen is None),
-                            ):
-                                self._aggregated_pool.pop(old_norm, None)
-                                eff_ts = merged_ts
-                            else:
-                                self._aggregated_pool[old_norm] = (merged_ts, old_h)
-                                self._seen_first_ts[old_norm] = min(
-                                    self._seen_first_ts.get(old_norm, merged_ts), merged_ts
-                                )
-                                keep_new = False
-                            break
-                self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, eff_ts), eff_ts)
-                if keep_new and 0.0 <= (now - eff_ts) < self.rolling_window_sec:
-                    sem_key = self._find_semantic_duplicate_key(h_obj.title, self._aggregated_pool)
-                    if sem_key is not None:
-                        old_ts, old_h = self._aggregated_pool[sem_key]
-                        merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
-                        self._aggregated_pool[sem_key] = (merged_ts, merged_h)
-                        self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
-                        self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
-                    else:
-                        self._aggregated_pool[norm] = (eff_ts, h_obj)
+                self._upsert_into_aggregated_pool(
+                    norm,
+                    h_obj,
+                    eff_ts,
+                    now if prev_seen is None else prev_seen,
+                    now,
+                    replace_on_tie=(prev_seen is None),
+                )
 
         cutoff = now - self.rolling_window_sec
         cleaned_pool: Dict[str, Tuple[float, NewsHeadline]] = {}
