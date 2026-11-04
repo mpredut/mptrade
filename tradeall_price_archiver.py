@@ -41,6 +41,7 @@ import cacheManager as cm
 from binance_api import bapi_ws
 from botcore import (
     load_dotenv as _load_dotenv,
+    require_pos_float,
     required_float_env,
     safe_pos_float,
     single_instance,
@@ -66,10 +67,7 @@ _SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,24}$")
 
 
 def _positive_finite(value, name, *, minimum=0.001):
-    parsed = safe_pos_float(value, default=None)
-    if parsed is None or parsed < minimum:
-        raise ValueError(f"{name} must be finite and >= {minimum}")
-    return parsed
+    return require_pos_float(value, name, min_value=minimum)
 
 
 def _symbols(raw):

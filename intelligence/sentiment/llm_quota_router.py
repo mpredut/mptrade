@@ -13,6 +13,7 @@ from botcore import (
     fetch_json_post,
     is_cache_fresh,
     optional_env,
+    resolve_patched_attr,
     safe_float,
 )
 from cachepaths import cache_path
@@ -28,10 +29,7 @@ AGY_QUOTA_USER_AGENT = "antigravity/1.4.12"
 
 def _gc_attr(name: str, default: Any) -> Any:
     """Resolve an attribute through `intelligence.sentiment.gemini_client` first so monkeypatches take effect."""
-    gc_mod = sys.modules.get("intelligence.sentiment.gemini_client")
-    if gc_mod is not None and hasattr(gc_mod, name):
-        return getattr(gc_mod, name)
-    return default
+    return resolve_patched_attr(name, default, modules=("intelligence.sentiment.gemini_client",))
 
 
 def canonical_rest_model(model_name: str) -> str:

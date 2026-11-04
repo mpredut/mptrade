@@ -28,7 +28,14 @@ from typing import Dict, Optional, Set, Callable
 
 import symbols as sym
 import utils as u
-from botcore import _parse_bool_flag, safe_float, safe_pos_float, safe_nonneg_float, safe_nonneg_int
+from botcore import (
+    _parse_bool_flag,
+    async_interruptible_sleep,
+    safe_float,
+    safe_pos_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+)
 
 try:
     from keys.apikeys import api_key_ws
@@ -188,14 +195,7 @@ class BinanceWSBase:
 
     # ─── Shared helpers ──────────────────────────────────────────────────────
     async def _interruptible_sleep(self, delay: float, step: float = 0.2) -> None:
-        delay_f = safe_pos_float(delay, default=None)
-        if delay_f is None:
-            return
-        step_f = safe_pos_float(step, default=0.2)
-        elapsed = 0.0
-        while elapsed < delay_f and not self._stop_event.is_set():
-            await asyncio.sleep(min(step_f, delay_f - elapsed))
-            elapsed += step_f
+        await async_interruptible_sleep(self._stop_event, delay, step, sleep_fn=asyncio.sleep)
 
     @staticmethod
     def _is_shutdown_error(exc: Exception) -> bool:

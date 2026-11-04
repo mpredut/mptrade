@@ -28,6 +28,7 @@ from providers.base import (
     extract_orig_qty,
     extract_remaining_qty,
     extract_timestamp_ms,
+    normalize_scalar_order_id,
     normalize_side,
 )
 from providers.quantity import resolve_assets
@@ -185,11 +186,7 @@ def _clean_bapi_oid_str(val):
     return clean_order_id(val)
 
 
-def _normalize_bapi_oid(val):
-    cleaned = clean_order_id(val)
-    if cleaned is None:
-        return None
-    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
+_normalize_bapi_oid = normalize_scalar_order_id
 
 
 def get_open_orders(order_type, symbol, *, strict=False, allowed_owners=None):

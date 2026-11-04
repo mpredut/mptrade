@@ -20,6 +20,7 @@ from botcore import (
     exact_nonneg_int,
     exact_pos_int,
     extract_current_price_item,
+    normalize_epoch_sec,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -110,19 +111,7 @@ def _parse_epoch_or_iso_s(value: Any) -> Optional[float]:
     numeric = safe_nonneg_float(value, default=None)
     if numeric is not None:
         return numeric
-    if isinstance(value, str):
-        s = value.strip()
-        if len(s) >= 10 and ("-" in s or "T" in s):
-            try:
-                iso_s = s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s
-                dt = datetime.fromisoformat(iso_s)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                ts_s = dt.timestamp()
-                return ts_s if ts_s >= 0.0 else None
-            except Exception:
-                return None
-    return None
+    return normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
 
 
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
@@ -148,7 +137,7 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
 
 
 def _ts_ms_to_s(ts_ms: float | int) -> float:
-    return ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+    return normalize_epoch_sec(ts_ms, default=0.0, allow_zero=True) or 0.0
 
 
 def _is_fresh_obs_ts(obs_ts_s: Optional[float], now_s: float, max_age_s: float) -> bool:
@@ -162,8 +151,7 @@ def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[
 
 def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
     """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
-    numeric = _first_mapped(order, _TIMESTAMP_KEYS, _parse_epoch_or_iso_s)
-    return default if numeric is None else _ts_ms_to_s(numeric)
+    return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
 
 
 def clean_order_id(val: Any) -> Optional[str]:
@@ -194,6 +182,19 @@ def clean_order_id(val: Any) -> Optional[str]:
 
 
 _clean_single_order_id = clean_order_id
+
+
+def clean_order_id_str(val: Any) -> str:
+    """Return ``clean_order_id(val)`` or ``''`` when empty/invalid."""
+    return clean_order_id(val) or ""
+
+
+def normalize_scalar_order_id(val: Any) -> int | str | None:
+    """Normalize a scalar order ID, preserving positive integers as ``int`` and string IDs as ``str``."""
+    cleaned = clean_order_id(val)
+    if cleaned is None:
+        return None
+    return exact_pos_int(val, default=cleaned) if isinstance(val, (int, float)) else cleaned
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
@@ -917,24 +918,45 @@ OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
 }
 
 
+_OHLC_UNIT_MULTIPLIERS: dict[str, int] = {"m": 1, "h": 60, "d": 1440}
+
+
 def parse_ohlc_interval_minutes(
     interval: Any,
     *,
     str_to_min: Optional[dict[str, int]] = None,
     reject_float: bool = False,
+    allow_unit_multiplier: bool = False,
+    require_unit_suffix: bool = False,
     venue_label: str = "OHLC",
 ) -> int:
     """Parse an OHLC interval (integer minutes or string e.g. '1h', '60') into positive integer minutes."""
+    if require_unit_suffix and not isinstance(interval, str):
+        raise ValueError(f"invalid {venue_label} interval: {interval!r}; examples: 5m, 1h, 1d")
     if isinstance(interval, bool):
         raise ValueError(f"interval must be positive integer or string, not bool: {interval}")
     lookup = str_to_min if str_to_min is not None else OHLC_INTERVALS_STR_TO_MIN
     if isinstance(interval, str):
         cleaned = interval.strip()
-        cleaned = OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
-        if cleaned not in lookup and cleaned.lower() in lookup and cleaned.upper() != "1M":
-            cleaned = cleaned.lower()
-        if cleaned in lookup:
-            return lookup[cleaned]
+        if lookup:
+            alias = OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES.get(cleaned.upper(), cleaned)
+            if alias not in lookup and alias.lower() in lookup and alias.upper() != "1M":
+                alias = alias.lower()
+            if alias in lookup:
+                return lookup[alias]
+        if allow_unit_multiplier and len(cleaned) >= 2:
+            num_part, unit = cleaned[:-1], cleaned[-1].lower()
+            if num_part.isascii() and num_part.isdigit() and unit in _OHLC_UNIT_MULTIPLIERS:
+                minutes = int(num_part) * _OHLC_UNIT_MULTIPLIERS[unit]
+                if minutes <= 0:
+                    raise ValueError(
+                        "the interval must be positive"
+                        if require_unit_suffix
+                        else f"interval must be positive: {interval}"
+                    )
+                return minutes
+        if require_unit_suffix:
+            raise ValueError(f"invalid {venue_label} interval: {interval!r}; examples: 5m, 1h, 1d")
         digits = cleaned[1:] if cleaned.startswith("+") else cleaned
         if digits.isascii() and digits.isdigit():
             val = int(digits)

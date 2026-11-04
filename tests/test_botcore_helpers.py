@@ -795,5 +795,103 @@ def test_load_local_module_thread_safe_concurrent_execution(tmp_path):
     assert results == [True] * 6
 
 
+def test_canonical_package1_unified_primitives():
+    import sys
+    import types
+    from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
+
+    # 1. strict_ascii_int
+    assert botcore.strict_ascii_int(42, min_value=1) == 42
+    assert botcore.strict_ascii_int(" 123 ", min_value=1) == 123
+    assert botcore.strict_ascii_int("123.0", allow_float_str=False) is None
+    assert botcore.strict_ascii_int("123.0", allow_float_str=True) == 123
+    assert botcore.strict_ascii_int("١٢٣", default=None) is None  # non-ASCII digits rejected
+    assert botcore.strict_ascii_int(True, default=None) is None
+    assert botcore.strict_ascii_int(0, min_value=1) is None
+
+    # 2. normalize_epoch_sec & resolve_now_ts
+    assert botcore.normalize_epoch_sec(1_700_000_000_000) == pytest.approx(1_700_000_000.0)
+    assert botcore.normalize_epoch_sec(1_700_000_000.5) == pytest.approx(1_700_000_000.5)
+    assert botcore.normalize_epoch_sec(0, allow_zero=False) is None
+    assert botcore.normalize_epoch_sec(0, allow_zero=True) == 0.0
+    assert botcore.normalize_epoch_sec("2026-01-01T00:00:00Z", allow_iso=True) == pytest.approx(1767225600.0)
+    assert botcore.resolve_now_ts(1_700_000_000_000) == pytest.approx(1_700_000_000.0)
+
+    # 3. resolve_patched_attr
+    default_fn = lambda: "default"
+    patched_fn = lambda: "patched"
+    dummy_mod = types.ModuleType("_dummy_patch_target")
+    dummy_mod.fn = patched_fn
+    sys.modules["_dummy_patch_target"] = dummy_mod
+    try:
+        resolved = botcore.resolve_patched_attr(
+            "fn",
+            default_fn,
+            local_val=default_fn,
+            modules=("_dummy_patch_target",),
+            require_callable=True,
+        )
+        assert resolved is patched_fn
+    finally:
+        sys.modules.pop("_dummy_patch_target", None)
+
+    # 4. lookup_symbol_cache_items superset modes
+    wrapped = {"items": {"BTCUSDT": [[1000, 50000.0]], "TAOUSD": {"median_d": 3.5}}}
+    assert lookup_symbol_cache_items(wrapped, "BTCUSDC", require_list=True, unwrap_items=True) == [[1000, 50000.0]]
+    assert lookup_symbol_cache_items(wrapped, "TAOUSDC", require_dict=True, unwrap_items=True) == {"median_d": 3.5}
+    single_wrapped = {"items": {"HYPEUSD": [[1000, 25.0]]}}
+    assert lookup_symbol_cache_items(
+        single_wrapped,
+        "HYPE",
+        allow_base_fallback=False,
+        single_item_quote_fallback=True,
+        require_list=True,
+        unwrap_items=True,
+    ) == [[1000, 25.0]]
+
+    # 5. Wave 2 primitives: require_*, clean_json_value, normalize_trend_direction, sanitizers, lru, order_id, cache root
+    from collections import OrderedDict
+    from cachepaths import cachedb_root_for_file
+    from providers.base import clean_order_id_str, normalize_scalar_order_id, parse_ohlc_interval_minutes
+
+    assert botcore.require_finite_float("3.5", "x") == 3.5
+    assert botcore.require_pos_float("2.0", "x", min_value=1.5) == 2.0
+    assert botcore.require_int("7", "n", min_value=1) == 7
+    with pytest.raises(ValueError, match="x must be finite and positive"):
+        botcore.require_pos_float(0.0, "x")
+    with pytest.raises(ValueError, match="invalid count"):
+        botcore.require_int(0, "count", min_value=1)
+
+    cleaned_no_str = botcore.clean_json_value({1: [float("nan"), (2.5,)]}, stringify_keys=False)
+    assert cleaned_no_str == {1: [None, [2.5]]}
+
+    assert botcore.normalize_trend_direction("BULLISH", preserve_bull_bear=False) == "up"
+    assert botcore.normalize_trend_direction("BULLISH", preserve_bull_bear=True) == "bull"
+    assert botcore.normalize_trend_direction("up", preserve_bull_bear=True) == "up"
+    assert botcore.normalize_trend_direction("short", allow_long_short=True) == "down"
+    assert botcore.normalize_trend_direction("short", default="neutral", allow_long_short=False) == "neutral"
+
+    assert botcore.sanitize_pipe_field("a|b\r\nc") == "a/b  c"
+    assert botcore.sanitize_identifier("..my/id$1..", strip_chars="._") == "my_id_1"
+    assert botcore.sanitize_identifier("a.b", allow_dots_hyphens=False) == "a_b"
+    assert botcore.normalize_class_name(OrderedDict) == "OrderedDict"
+    assert botcore.normalize_class_name("  MyCache ") == "MyCache"
+
+    lru = OrderedDict()
+    botcore.lru_dict_put(lru, "a", 1, 2)
+    botcore.lru_dict_put(lru, "b", 2, 2)
+    botcore.lru_dict_put(lru, "a", 10, 2)
+    botcore.lru_dict_put(lru, "c", 3, 2)
+    assert list(lru.items()) == [("a", 10), ("c", 3)]
+
+    assert clean_order_id_str(None) == ""
+    assert clean_order_id_str(" 12345.0 ") == "12345"
+    assert normalize_scalar_order_id(42.0) == 42
+    assert normalize_scalar_order_id("ABC-1") == "ABC-1"
+    assert parse_ohlc_interval_minutes("5m", str_to_min={}, allow_unit_multiplier=True, require_unit_suffix=True) == 5
+    assert cachedb_root_for_file("/tmp/cachedb/trends/cache_trend.json") == "/tmp/cachedb"
+    assert cachedb_root_for_file("/tmp/cachedb/system/heartbeat/hb.json") == "/tmp/cachedb"
+
+
 if __name__ == "__main__":
     unittest.main()

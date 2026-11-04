@@ -16,6 +16,8 @@ from intelligence.external.collectors.orderbook_depth_collector import round_spr
 from intelligence.internal.state.volatility import adaptive_thresholds
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    normalize_epoch_sec,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -407,9 +409,7 @@ def update_microstructure_cycle_deltas(
     """Compute and persist rolling microstructure `cycle_delta` metrics in `microstructure_cycle_history.json`."""
     if not cache_dir or not microstructure:
         return
-    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
-    if eff_now > 1e11:
-        eff_now /= 1000.0
+    eff_now = resolve_now_ts(now_ts)
     mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
     repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
     is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
@@ -428,10 +428,9 @@ def update_microstructure_cycle_deltas(
         for x in raw_seq:
             if not isinstance(x, dict):
                 continue
-            ts_v = safe_pos_float(x.get("ts"), default=0.0) or 0.0
-            if ts_v <= 0.0:
+            ts_s = normalize_epoch_sec(x.get("ts"))
+            if ts_s is None:
                 continue
-            ts_s = ts_v / 1000.0 if ts_v > 1e11 else ts_v
             items.append({**x, "ts": ts_s} if ts_s != x.get("ts") else x)
         items.sort(key=lambda d: float(d["ts"]))
         return items
@@ -673,10 +672,11 @@ def enrich_cross_venue_trends(
                 if ck != sym and (compatible_quote_suffixes(ck) != sym_quotes or _prices_diverged(sym_px_cur, last_m_px)):
                     continue
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
-                if "chg_7d_pct" in entry and w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000:
+                if "chg_7d_pct" in entry and (sym.endswith(("_EQ", "_US_EQ")) or (w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000)):
                     continue
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
-                entry.update(compute_7d_range_metrics(vals))
+                dec_7d = 4 if sym.endswith(("_EQ", "_US_EQ")) else None
+                entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))
                 break
 
 

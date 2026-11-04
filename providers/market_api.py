@@ -17,7 +17,17 @@ from collections import OrderedDict
 from typing import Any, Callable, List, Optional
 
 import instrument_registry
-from botcore import _parse_bool_flag, exact_pos_int, safe_float, safe_int, safe_pos_float, safe_nonneg_float
+from botcore import (
+    _parse_bool_flag,
+    exact_pos_int,
+    lru_dict_put,
+    require_finite_float,
+    require_pos_float,
+    safe_float,
+    safe_int,
+    safe_pos_float,
+    safe_nonneg_float,
+)
 from cachepaths import cache_symbol_variants, canonical_symbol_key, normalize_venue_name
 from instrument_registry import casefold_get
 from .base import (
@@ -116,19 +126,11 @@ def _parse_nonneg_order_field(raw: Any) -> Optional[float]:
 
 
 def _require_pos_since_s(since_s: Any) -> float:
-    val = safe_pos_float(since_s, default=None)
-    if val is None:
-        raise ValueError("since_s must be finite and positive")
-    return val
+    return require_pos_float(since_s, "since_s")
 
 
 def _resolve_evaluated_at(now: Any) -> float:
-    if now is None:
-        return time.time()
-    val = safe_float(now, default=None)
-    if val is None:
-        raise ValueError("now must be finite")
-    return val
+    return time.time() if now is None else require_finite_float(now, "now")
 
 
 def _parse_binance_order_id(order_id: Any, context: str) -> int:
@@ -929,9 +931,7 @@ class MarketApi:
             cache_max=service.cache_max,
             clock=service.clock,
         )
-        cache[key] = created
-        while len(cache) > 32:
-            cache.popitem(last=False)
+        lru_dict_put(cache, key, created, 32)
         return created
 
     def market_regime_context(

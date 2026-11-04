@@ -17,6 +17,8 @@ from typing import Mapping, Optional
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
+    lru_dict_put,
+    normalize_epoch_sec,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -631,10 +633,7 @@ class MarketRegimeService:
 
     @staticmethod
     def _pos_timestamp_seconds(value) -> Optional[float]:
-        val_f = safe_pos_float(value, default=None)
-        if val_f is None:
-            return None
-        return val_f / 1000.0 if val_f > 100_000_000_000 else val_f
+        return normalize_epoch_sec(value, default=None)
 
     @classmethod
     def _snapshot_observed_at(cls, snapshot: Optional[Mapping]) -> Optional[float]:
@@ -1214,11 +1213,12 @@ class MarketRegimeService:
         )
         if ttl > 0:
             with self._lock:
-                self._cache[key] = (
-                    cache_now, decision, observed_at, continuous)
-                self._cache.move_to_end(key)
-                while len(self._cache) > self.cache_max:
-                    self._cache.popitem(last=False)
+                lru_dict_put(
+                    self._cache,
+                    key,
+                    (cache_now, decision, observed_at, continuous),
+                    self.cache_max,
+                )
         return decision, observed_at, continuous
 
     def evaluate_provider(self, provider, symbol: str, *, interval_min=1,

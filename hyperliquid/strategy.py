@@ -37,7 +37,7 @@ from common import (
     safe_nonneg_float, safe_pos_float, safe_pos_int,
 )
 from notify import notify
-from providers.base import _clean_single_order_id
+from providers.base import _clean_single_order_id, normalize_scalar_order_id
 from state_io import load_json_state, save_json_state
 from strategies.base_spot_mixin import load_common_core_strat_env, sanitize_common_spot_state
 from strategies.state_store import safe_state_token as _safe_state_token
@@ -170,13 +170,7 @@ def _new_state() -> dict:
 
 
 _clean_oid = _clean_single_order_id
-
-
-def _normalize_stored_oid(raw_oid: object) -> int | str | None:
-    clean_oid = _clean_oid(raw_oid)
-    if clean_oid is None:
-        return None
-    return exact_pos_int(raw_oid, default=clean_oid) if isinstance(raw_oid, (int, float)) else clean_oid
+_normalize_stored_oid = normalize_scalar_order_id
 
 
 def _is_live_order_oid(oid: object) -> bool:

@@ -25,6 +25,7 @@ if _ROOT not in sys.path:
 from binance_api.market_data import fetch_ohlc_candles
 from botcore import (
     _parse_bool_flag,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
@@ -33,6 +34,7 @@ from botcore import (
 )
 from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
 from instrument_registry import casefold_get
+from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
@@ -40,22 +42,13 @@ T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
 
 
 def _resolve_facade_attr(name: str, current: Any, default: Any) -> Any:
-    if current is not default:
-        return current
-    facade = sys.modules.get("forecast.trend_survival")
-    cand = getattr(facade, name, None) if facade is not None else None
-    if cand is not None and cand is not default:
-        return cand
-    return current
+    return resolve_patched_attr(name, default, local_val=current, modules=("forecast.trend_survival",))
 
 
 def _effective_t_cache_file() -> str:
-    if isinstance(T_CACHE_FILE, str) and T_CACHE_FILE.strip() and T_CACHE_FILE != _DEFAULT_T_CACHE_FILE:
-        return T_CACHE_FILE
-    facade = sys.modules.get("forecast.trend_survival")
-    facade_file = getattr(facade, "T_CACHE_FILE", None) if facade is not None else None
-    if isinstance(facade_file, str) and facade_file.strip() and facade_file != _DEFAULT_T_CACHE_FILE:
-        return facade_file
+    cand = _resolve_facade_attr("T_CACHE_FILE", T_CACHE_FILE, _DEFAULT_T_CACHE_FILE)
+    if isinstance(cand, str) and cand.strip() and cand != _DEFAULT_T_CACHE_FILE:
+        return cand
     try:
         return cache_path("cache_T_trend.json")
     except Exception:
@@ -315,18 +308,8 @@ def _read_t_cache_dict(t_cache_path: str) -> Optional[dict]:
 
 
 def _lookup_t_cache_entry(data: Dict[str, Any], symbol: str) -> Optional[dict]:
-    if not isinstance(data, dict) or not isinstance(symbol, str) or not symbol.strip():
-        return None
-    for cand in (symbol, *cache_symbol_variants(symbol)):
-        ent = casefold_get(data, cand)
-        if isinstance(ent, dict):
-            return ent
-    target_base = _extract_base_symbol(symbol)
-    if target_base:
-        for k, v in data.items():
-            if isinstance(v, dict) and _extract_base_symbol(str(k)) == target_base:
-                return v
-    return None
+    ent = lookup_symbol_cache_items(data, symbol, require_dict=True)
+    return ent if isinstance(ent, dict) else None
 
 
 def get_cached_t_entry(symbol: str) -> Optional[dict]:

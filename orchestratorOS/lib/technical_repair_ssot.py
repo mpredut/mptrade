@@ -26,6 +26,7 @@ from botcore import (
     evaluate_heartbeat_files_freshness,
     obj_attr,
     parse_notify_enabled_flag,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -49,37 +50,27 @@ _default_save_json_state = save_json_state
 def _resolve_repair_json_reader(read_json_fn: Any = None) -> Any:
     if callable(read_json_fn) and read_json_fn is not _default_read_json_recovering:
         return read_json_fn
-    try:
-        from orchestratorOS.supervisor import autonomous_ai_reconciler as _ar
-
-        ar_rj = getattr(_ar, "read_json_recovering", None)
-        if callable(ar_rj) and ar_rj is not _default_read_json_recovering:
-            return ar_rj
-    except Exception:
-        pass
-    if callable(read_json_recovering) and read_json_recovering is not _default_read_json_recovering:
-        return read_json_recovering
-    if callable(read_json_fn):
-        return read_json_fn
-    return read_json_recovering
+    return resolve_patched_attr(
+        "read_json_recovering",
+        read_json_fn if callable(read_json_fn) else read_json_recovering,
+        local_val=read_json_recovering,
+        defaults=(_default_read_json_recovering,),
+        modules=("orchestratorOS.supervisor.autonomous_ai_reconciler",),
+        require_callable=True,
+    )
 
 
 def _resolve_repair_save_json_state(save_json_fn: Any = None) -> Any:
     if callable(save_json_fn) and save_json_fn is not _default_save_json_state:
         return save_json_fn
-    try:
-        from orchestratorOS.supervisor import autonomous_ai_reconciler as _ar
-
-        ar_sj = getattr(_ar, "save_json_state", None)
-        if callable(ar_sj) and ar_sj is not _default_save_json_state:
-            return ar_sj
-    except Exception:
-        pass
-    if callable(save_json_state) and save_json_state is not _default_save_json_state:
-        return save_json_state
-    if callable(save_json_fn):
-        return save_json_fn
-    return save_json_state
+    return resolve_patched_attr(
+        "save_json_state",
+        save_json_fn if callable(save_json_fn) else save_json_state,
+        local_val=save_json_state,
+        defaults=(_default_save_json_state,),
+        modules=("orchestratorOS.supervisor.autonomous_ai_reconciler",),
+        require_callable=True,
+    )
 
 # ---------------------------------------------------------------------------
 # 1. Canonical Taxonomy: Repair Actions, Targets & Issue Categories (SSOT)
@@ -504,6 +495,17 @@ def audit_workspace_configs(workspace_dir: str) -> Dict[str, Any]:
                             issues.append(f"instruments.conf:{idx} empty key name")
                     else:
                         issues.append(f"instruments.conf:{idx} malformed line: {line[:60]!r}")
+            elif cfg_name == "macro_intelligence.conf":
+                import configparser
+
+                cp = configparser.ConfigParser(interpolation=None)
+                try:
+                    cp.read_string("".join(raw_lines), source=cfg_name)
+                    for req_sec in ("feeds", "cache_files", "intervals", "taxonomies", "sessions"):
+                        if not cp.has_section(req_sec):
+                            issues.append(f"macro_intelligence.conf missing required [{req_sec}] section")
+                except configparser.Error as cp_exc:
+                    issues.append(f"macro_intelligence.conf parse error: {cp_exc}")
         except Exception as exc:
             issues.append(f"{cfg_name} read error: {exc}")
     return {"checked_files": checked, "issues": issues}
@@ -702,7 +704,17 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     scanned_count = 0
 
     err_pattern = re.compile(
-        r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b)",
+        r"(\bERROR\b|\bCRITICAL\b(?!_SHOCK)|Traceback|fail-closed|BUY BLOCKED|\bException\b|"
+        r"(?:^|\s)[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Interrupt|Timeout)\s*:)",
+        re.IGNORECASE,
+    )
+    py_exc_line_pattern = re.compile(
+        r"^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Interrupt|Timeout)\s*:"
+    )
+    traceback_boilerplate_pattern = re.compile(
+        r"^(?:The above exception was the direct cause of the following exception:|"
+        r"During handling of the above exception, another exception occurred:|"
+        r"File \".*\", line \d+)",
         re.IGNORECASE,
     )
     benign_warn_pattern = re.compile(r"(\[CMCPlatform\]\s+Warning|\[WARNING\])", re.IGNORECASE)
@@ -718,6 +730,10 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         re.IGNORECASE,
     )
     guard_pattern = re.compile(r"(\[.*GUARD.*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)", re.IGNORECASE)
+    daemon_recovered_pattern = re.compile(
+        r"(Daemon status:\s*active|Remote-control daemon started)",
+        re.IGNORECASE,
+    )
     ignored_test_prefixes = ("pytest_", "__main___", "py.test_", "c_")
 
     for l_dir in logs_dirs:
@@ -741,7 +757,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                         cutoff_ts,
                     )
                     total_lines = len(lines)
-                    tail_start_idx = max(0, total_lines - max(10, total_lines // 4))
+                    tail_start_idx = max(0, total_lines - min(10, max(3, total_lines // 4)))
                     file_sig_stats: Dict[str, Dict[str, Any]] = {}
                     for idx, line in enumerate(lines):
                         if supervisor_summary_pattern.search(line):
@@ -762,8 +778,32 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 re.IGNORECASE,
                             )
                         ):
-                            error_count += 1
                             cleaned = line.strip()
+                            if not cleaned or traceback_boilerplate_pattern.match(cleaned):
+                                continue
+                            if (
+                                line.startswith("    ")
+                                and idx > 0
+                                and lines[idx - 1].lstrip().startswith('File "')
+                            ):
+                                continue
+                            if cleaned == "Traceback (most recent call last):" and any(
+                                py_exc_line_pattern.match(lines[j].strip())
+                                for j in range(idx + 1, min(total_lines, idx + 45))
+                            ):
+                                continue
+                            if not (_FULL_TS_RE.search(line) or _GLOG_TS_RE.search(line) or _CLOCK_TS_RE.search(line)):
+                                if any(
+                                    cleaned in lines[j] and err_pattern.search(lines[j])
+                                    for j in range(idx + 1, min(total_lines, idx + 3))
+                                ):
+                                    continue
+                            if (
+                                ("Failed to recover daemon" in cleaned or "Error: not signed in:" in cleaned)
+                                and any(daemon_recovered_pattern.search(lines[j]) for j in range(idx + 1, total_lines))
+                            ):
+                                continue
+                            error_count += 1
                             if cleaned not in critical_events and len(critical_events) < 50:
                                 critical_events.append(cleaned)
                             sig = normalize_error_signature(cleaned)
@@ -781,6 +821,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             cleaned = line.strip()
                             if cleaned not in guard_interventions and len(guard_interventions) < 50:
                                 guard_interventions.append(cleaned)
+                        elif daemon_recovered_pattern.search(line):
+                            for st_prev in file_sig_stats.values():
+                                st_prev["unresolved_at_tail"] = False
                     for st in file_sig_stats.values():
                         if st["count"] >= 2 or st["unresolved_at_tail"]:
                             persistent_errors.append(st)

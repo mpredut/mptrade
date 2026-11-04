@@ -14,6 +14,7 @@ from binance_api import bapi as api
 from binance_api import order_id_context as rc
 from providers.base import (
     _clean_single_order_id,
+    clean_order_id_str,
     extract_client_order_id,
     extract_order_id,
     extract_order_price,
@@ -31,6 +32,7 @@ import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test comp
 from botcore import (
     float_env,
     load_dotenv as _load_dotenv,
+    lru_dict_put,
     required_float_env,
     required_int_env,
     safe_nonneg_float,
@@ -59,9 +61,7 @@ MODULE_ORDER_TTLS = {
 }
 
 
-def _clean_monitor_id(val) -> str:
-    cleaned = _clean_single_order_id(val)
-    return cleaned if cleaned is not None else ""
+_clean_monitor_id = clean_order_id_str
 
 
 def _format_duration_hm(seconds: float) -> str:
@@ -213,10 +213,7 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
 
 
 def _remember_initial_price(cache, order_id, price):
-    cache[order_id] = price
-    cache.move_to_end(order_id)
-    while len(cache) > MAX_TRACKED_ORDER_IDS:
-        cache.popitem(last=False)
+    lru_dict_put(cache, order_id, price, MAX_TRACKED_ORDER_IDS)
 
 
 TIME_SLEEP_ERROR = 10

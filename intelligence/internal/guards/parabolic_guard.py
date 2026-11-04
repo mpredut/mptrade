@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import normalize_epoch_sec, safe_float, safe_nonneg_float, safe_pos_float
 from intelligence.internal.guards.guard_decision import (
     GuardDecision,
     clean_guard_symbol_key,
@@ -53,9 +53,7 @@ class ParabolicSurgeGuard:
             return GuardDecision.allow("ParabolicSurgeGuard", "invalid_price_skipped")
         current_price = current_price_f
 
-        ts_now = safe_pos_float(now, default=0.0) or 0.0
-        if ts_now > 1e11:
-            ts_now /= 1000.0
+        ts_now = normalize_epoch_sec(now, default=0.0) or 0.0
         history_seq = (
             list(price_history)
             if price_history is not None
@@ -67,10 +65,7 @@ class ParabolicSurgeGuard:
             for item in reversed(history_seq):
                 if not isinstance(item, (list, tuple)) or len(item) < 2:
                     continue
-                hf = safe_pos_float(item[0], default=None)
-                if hf is not None:
-                    if hf > 1e11:
-                        hf /= 1000.0
+                if (hf := normalize_epoch_sec(item[0])) is not None:
                     ts_now = max(ts_now, hf)
 
         # Dynamic threshold based on volatility if available

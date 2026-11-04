@@ -325,6 +325,85 @@ def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
     return i if (i is not None and i >= 0) else default
 
 
+def strict_ascii_int(
+    val: object,
+    default: int | None = None,
+    *,
+    min_value: int | None = None,
+    allow_float_str: bool = False,
+) -> int | None:
+    """Coerce ``val`` (int, integral float, or ASCII digit string) to int, rejecting booleans and non-ASCII digits."""
+    if isinstance(val, bool) or not isinstance(val, (int, float, str)):
+        return default
+    if isinstance(val, str):
+        s = val.strip()
+        if allow_float_str and s.endswith(".0"):
+            s = s[:-2]
+        cleaned = s.lstrip("+-")
+        if not cleaned or not cleaned.isascii() or not cleaned.isdigit():
+            return default
+        parsed = exact_int(s, default=None)
+    else:
+        parsed = exact_int(val, default=None)
+    if parsed is None:
+        return default
+    if min_value is not None and parsed < min_value:
+        return default
+    return parsed
+
+
+def require_finite_float(
+    val: object,
+    name: str = "value",
+    *,
+    min_value: float | None = None,
+    error_msg: str | None = None,
+) -> float:
+    """Coerce ``val`` to a finite float (optionally ``>= min_value``) or raise ``ValueError``."""
+    f = safe_float(val, default=None)
+    if f is None or (min_value is not None and f < min_value):
+        raise ValueError(
+            error_msg
+            or (f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite")
+        )
+    return f
+
+
+def require_pos_float(
+    val: object,
+    name: str = "value",
+    *,
+    min_value: float | None = None,
+    error_msg: str | None = None,
+) -> float:
+    """Coerce ``val`` to a finite positive float (optionally ``>= min_value``) or raise ``ValueError``."""
+    f = safe_pos_float(val, default=None)
+    if f is None or (min_value is not None and f < min_value):
+        raise ValueError(
+            error_msg
+            or (
+                f"{name} must be finite and >= {min_value}"
+                if min_value is not None
+                else f"{name} must be finite and positive"
+            )
+        )
+    return f
+
+
+def require_int(
+    val: object,
+    name: str = "value",
+    *,
+    min_value: int | None = None,
+    error_msg: str | None = None,
+) -> int:
+    """Coerce ``val`` to an exact integer (optionally ``>= min_value``) or raise ``ValueError``."""
+    parsed = exact_int(val, default=None)
+    if parsed is None or (min_value is not None and parsed < min_value):
+        raise ValueError(error_msg or f"invalid {name}")
+    return parsed
+
+
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
     if obj is None or isinstance(obj, (str, bytes, bytearray)):
@@ -338,14 +417,17 @@ def obj_float(obj: object, key: str, default: float = 0.0) -> float:
     return safe_float(obj_attr(obj, key, None), default)
 
 
-def clean_json_value(val: object) -> object:
-    """Recursively sanitize non-finite floats (NaN/Inf -> None) and normalize dict keys to strings."""
+def clean_json_value(val: object, *, stringify_keys: bool = True) -> object:
+    """Recursively sanitize non-finite floats (NaN/Inf -> None) and optionally normalize dict keys to strings."""
     if isinstance(val, float):
         return safe_float(val, default=None)
     if isinstance(val, dict):
-        return {str(k): clean_json_value(v) for k, v in val.items()}
-    if isinstance(val, (list, tuple)):
-        return [clean_json_value(v) for v in val]
+        return {
+            (str(k) if stringify_keys else k): clean_json_value(v, stringify_keys=stringify_keys)
+            for k, v in val.items()
+        }
+    if isinstance(val, (list, tuple, set, frozenset)):
+        return [clean_json_value(v, stringify_keys=stringify_keys) for v in val]
     return val
 
 
@@ -1125,10 +1207,43 @@ def clean_scale(
     return f if 0.0 <= f <= 1.0 else default
 
 
-def resolve_now_ts(now_ts: object = None) -> float:
-    """Return ``now_ts`` if it is a valid positive finite timestamp, otherwise ``time.time()``."""
-    f = safe_pos_float(now_ts, -1.0)
-    return f if f > 0.0 else _time.time()
+def normalize_epoch_sec(
+    val: object,
+    default: float | None = None,
+    *,
+    allow_zero: bool = False,
+    allow_iso: bool = False,
+) -> float | None:
+    """Normalize a timestamp in seconds, milliseconds (>= 1e11), or optional ISO-8601 string into epoch seconds."""
+    f = safe_nonneg_float(val, default=None) if allow_zero else safe_pos_float(val, default=None)
+    if f is None and allow_iso and isinstance(val, str):
+        s = val.strip()
+        if len(s) >= 10 and ("-" in s or "T" in s):
+            try:
+                iso_s = s[:-1] + "+00:00" if s.endswith(("Z", "z")) else s
+                dt = datetime.fromisoformat(iso_s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ts_s = dt.timestamp()
+                if (ts_s >= 0.0) if allow_zero else (ts_s > 0.0):
+                    f = ts_s
+            except Exception:
+                f = None
+    if f is None:
+        return default
+    return f / 1000.0 if f >= 1e11 else f
+
+
+def resolve_now_ts(now_ts: object = None, *, allow_zero: bool = False) -> float:
+    """Return ``now_ts`` normalized to epoch seconds (converting ms >= 1e11), or ``time.time()``."""
+    f = normalize_epoch_sec(now_ts, default=None, allow_zero=allow_zero)
+    return f if f is not None else _time.time()
+
+
+def resolve_now_ms(now_ms: object = None) -> int:
+    """Return ``now_ms`` as a positive integer millisecond timestamp, or ``int(time.time() * 1000)``."""
+    parsed = safe_pos_int(now_ms, default=None)
+    return parsed if parsed is not None else int(_time.time() * 1000)
 
 
 def is_cache_fresh(
@@ -1220,5 +1335,167 @@ def validate_required_env_keys(
         raise ValueError(f"Missing or empty mandatory {label} settings: " + ", ".join(missing))
 
 
+def resolve_patched_attr(
+    attr_name: str,
+    default_val: object = None,
+    *,
+    local_val: object = _UNSET,
+    defaults: tuple[object, ...] = (),
+    modules: tuple[str, ...] | list[str] = (),
+    require_callable: bool = False,
+) -> object:
+    """Resolve ``attr_name`` across ``local_val`` and ``sys.modules[modules]`` when monkeypatched away from ``defaults``."""
+    unpatched = tuple(d for d in (default_val, *defaults) if d is not None)
+
+    def _is_valid(cand: object) -> bool:
+        if cand is _UNSET or cand is None:
+            return False
+        return callable(cand) if require_callable else True
+
+    def _is_patched(cand: object) -> bool:
+        return _is_valid(cand) and all(cand is not d for d in unpatched)
+
+    if local_val is not _UNSET and _is_patched(local_val):
+        return local_val
+    for mod_name in modules:
+        if not mod_name:
+            continue
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, attr_name):
+            cand = getattr(mod, attr_name, _UNSET)
+            if _is_patched(cand):
+                return cand
+            if not unpatched and cand is not _UNSET and not require_callable:
+                return cand
+    if local_val is not _UNSET and _is_valid(local_val):
+        return local_val
+    return default_val
+
+
+def bind_lazy_module_exports(
+    module_globals: dict[str, object],
+    lazy_imports: dict[str, str],
+    submodules: tuple[str, ...] | list[str] | set[str] | frozenset[str] = (),
+):
+    """Bind PEP 562 ``__getattr__``, ``__dir__``, and ``__all__`` into ``module_globals``."""
+    import importlib
+
+    pkg_name = str(module_globals.get("__name__", ""))
+    sub_set = frozenset(submodules)
+    all_names = list(module_globals.get("__all__") or list(lazy_imports))
+    module_globals["__all__"] = all_names
+
+    def __getattr__(name: str):
+        mod_name = lazy_imports.get(name)
+        if mod_name is not None:
+            val = getattr(importlib.import_module(mod_name), name)
+            module_globals[name] = val
+            return val
+        if name in sub_set:
+            mod = importlib.import_module(f"{pkg_name}.{name}")
+            module_globals[name] = mod
+            return mod
+        raise AttributeError(f"module {pkg_name!r} has no attribute {name!r}")
+
+    def __dir__() -> list[str]:
+        return sorted(set(module_globals) | set(all_names))
+
+    module_globals["__getattr__"] = __getattr__
+    module_globals["__dir__"] = __dir__
+    return __getattr__, __dir__
+
+
+_SAFE_ID_DOT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_SAFE_ID_NODOT_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
+_TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
+
+
+def normalize_trend_direction(
+    raw_dir: object,
+    default: str | None = None,
+    *,
+    preserve_bull_bear: bool = False,
+    allow_long_short: bool = False,
+) -> str | None:
+    """Normalize a raw trend token (``up``/``bull``/``uptrend``/``bullish``/``long``, etc.) into a canonical direction."""
+    if not isinstance(raw_dir, str):
+        return default
+    d = raw_dir.strip().lower()
+    if d in _TREND_UP_TOKENS or (allow_long_short and d == "long"):
+        return ("up" if d == "up" else "bull") if preserve_bull_bear else "up"
+    if d in _TREND_DOWN_TOKENS or (allow_long_short and d == "short"):
+        return ("down" if d == "down" else "bear") if preserve_bull_bear else "down"
+    return default
+
+
+def sanitize_pipe_field(value: object) -> str:
+    """Sanitize a field value for pipe-delimited logs by replacing ``|``, ``\\r``, and ``\\n``."""
+    if value is None:
+        return ""
+    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def sanitize_identifier(
+    value: object,
+    default: str = "unknown",
+    *,
+    sep: str = "_",
+    allow_dots_hyphens: bool = True,
+    strip_chars: str | None = None,
+) -> str:
+    """Sanitize an identifier/slug by replacing unsafe characters with ``sep`` and stripping edge separators."""
+    if value is None or isinstance(value, bool):
+        return default
+    pattern = _SAFE_ID_DOT_RE if allow_dots_hyphens else _SAFE_ID_NODOT_RE
+    cleaned = pattern.sub(sep, str(value).strip()).strip(strip_chars if strip_chars is not None else sep)
+    return cleaned or default
+
+
+def normalize_class_name(cls_or_name: object) -> str:
+    """Return the class name for a ``type`` object or stripped string, else ``''``."""
+    if isinstance(cls_or_name, type):
+        return cls_or_name.__name__
+    if isinstance(cls_or_name, str):
+        return cls_or_name.strip()
+    return ""
+
+
+def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> None:
+    """Insert/refresh ``(key, value)`` at the MRU end of ``cache`` and evict oldest entries beyond ``max_entries``."""
+    if hasattr(cache, "move_to_end"):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_entries:
+            cache.popitem(last=False)
+    else:
+        if key in cache:
+            cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > max_entries:
+            cache.pop(next(iter(cache)), None)
+
+
+async def async_interruptible_sleep(
+    stop_event: object,
+    delay: object,
+    step: object = 0.2,
+    *,
+    sleep_fn: object = None,
+) -> None:
+    """Sleep asynchronously up to ``delay`` seconds in ``step`` increments while ``stop_event`` is not set."""
+    eff_delay = safe_pos_float(delay, default=None)
+    if eff_delay is None:
+        return
+    eff_step = safe_pos_float(step, default=0.2) or 0.2
+    if sleep_fn is None:
+        import asyncio
+
+        sleep_fn = asyncio.sleep
+    is_stopped = getattr(stop_event, "is_set", None)
+    elapsed = 0.0
+    while elapsed < eff_delay and not (callable(is_stopped) and is_stopped()):
+        await sleep_fn(min(eff_step, eff_delay - elapsed))
+        elapsed += eff_step
 
 

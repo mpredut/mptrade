@@ -22,7 +22,7 @@ import multiprocessing
 import contextlib
 
 from .file_lock import FileLock
-from botcore import _parse_bool_flag, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, clean_json_value, safe_float, safe_pos_float
 
 
 def _is_active_entry(last, now: float, ttl: float) -> bool:
@@ -38,13 +38,7 @@ def _is_active_entry(last, now: float, ttl: float) -> bool:
 
 
 def _sanitize_json_payload(value):
-    if isinstance(value, float):
-        return safe_float(value, default=None)
-    if isinstance(value, dict):
-        return {k: _sanitize_json_payload(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_sanitize_json_payload(v) for v in value]
-    return value
+    return clean_json_value(value, stringify_keys=False)
 
 
 _as_bool_flag = _parse_bool_flag

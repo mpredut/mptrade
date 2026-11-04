@@ -5,7 +5,7 @@ import builtins
 import time
 from typing import Any
 
-from botcore import exact_pos_int, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import exact_pos_int, resolve_now_ms, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from providers.base import (
     clean_order_id,
     extract_order_price,
@@ -18,8 +18,7 @@ def _is_positive_finite(val: Any) -> bool:
     return safe_pos_float(val, default=None) is not None
 
 
-def _clean_now_ms(now_ms: Any) -> int:
-    return safe_pos_int(now_ms, default=None) or int(time.time() * 1000)
+_clean_now_ms = resolve_now_ms
 
 
 def _strip_int_str(val: Any) -> str | None:

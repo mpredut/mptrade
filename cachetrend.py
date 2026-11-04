@@ -34,6 +34,7 @@ from botcore import (
     load_dotenv as _load_dotenv,
     required_env,
     required_float_env,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -44,6 +45,7 @@ from cachepaths import (
     CACHEDB_SUBDOMAINS,
     cache_path,
     cache_symbol_variants,
+    cachedb_root_for_file,
     clean_symbol_key,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
@@ -111,10 +113,7 @@ def _cm_attr(name: str, default=None):
         local_val = globals().get(name)
         if local_val is not _ORIG_CACHETREND_ATTRS[name]:
             return local_val
-    mod = sys.modules.get("cacheManager") or _cm
-    if mod is not None and hasattr(mod, name):
-        return getattr(mod, name)
-    return default
+    return resolve_patched_attr(name, default, modules=("cacheManager", getattr(_cm, "__name__", "")))
 
 
 _dynamic_window_key = pw.dynamic_window_key
@@ -736,9 +735,7 @@ class CacheShortTrendManager(CacheManagerInterface):
 
     def _load_disk_cache24_entries(self, symbol):
         """Load raw [ts_ms, price] entries from cachedb/cache_24_price_<symbol>.json if present."""
-        base_dir = os.path.dirname(self.filename)
-        if os.path.basename(base_dir) in CACHEDB_SUBDOMAINS:
-            base_dir = os.path.dirname(base_dir)
+        base_dir = cachedb_root_for_file(self.filename)
         c24_file = None
         matched_sym = symbol
         for cand in _short_trend_symbol_variants(symbol):

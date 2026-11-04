@@ -439,6 +439,11 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 f"va_pos={va_pos}%, regime={va_reg}{shape_sfx}{vp_src_sfx})"
             )
 
+        is_sub24h_dup_7d = (
+            "chg_24h_pct" not in pinfo
+            and pinfo.get("low_24h") is not None
+            and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+        )
         is_non_btc_crypto = not sym.endswith(("_EQ", "_US_EQ")) and canonical_base_asset(sym) != "BTC"
         if is_non_btc_crypto:
             vs_btc_parts: List[str] = []
@@ -447,6 +452,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
                     ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
                 ):
+                    if h_lbl == "7d" and is_sub24h_dup_7d:
+                        continue
                     if h_k in pinfo and h_k in btc_entry:
                         a_v = _parse_finite_float(pinfo.get(h_k), None)
                         b_v = _parse_finite_float(btc_entry.get(h_k), None)
@@ -481,7 +488,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             if b_struct:
                 extras.append(f"bottom_6h={b_struct}({', '.join(b_parts)})")
 
-        if "chg_7d_pct" in pinfo:
+        if "chg_7d_pct" in pinfo and not is_sub24h_dup_7d:
             extras.append(
                 f"7d={_parse_finite_float(pinfo.get('chg_7d_pct'), 0.0):+.2f}% "
                 f"{_format_horizon_range(pinfo, px_f, '7d')}"
@@ -930,6 +937,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         f" | Swing Sub-Cycle Avg BUY={sw_b_px}"
         if sw_b_px
         and not _same_anchor_px(sw_b_px, avg_b_px)
+        and (not avg_b_px or abs(sw_b_px - avg_b_px) / max(avg_b_px, 1e-9) >= 0.002)
         and not _same_anchor_px(sw_b_px, tac_b_px)
         and not _same_anchor_px(sw_b_px, last_b_px)
         else ""

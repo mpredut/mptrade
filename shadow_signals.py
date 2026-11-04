@@ -19,7 +19,15 @@ import os
 import time
 from datetime import date
 
-from botcore import float_env, pos_float_env, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    float_env,
+    normalize_epoch_sec,
+    pos_float_env,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    sanitize_pipe_field,
+)
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from intelligence.internal.state.volatility import (
@@ -58,9 +66,7 @@ class KalmanJournal:
         self.out_dir = out_dir
         self.fixed_path = fixed_path
 
-    @staticmethod
-    def _sanitize(value) -> str:
-        return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ") if value is not None else ""
+    _sanitize = staticmethod(sanitize_pipe_field)
 
     def _path(self) -> str:
         if self.fixed_path:
@@ -149,15 +155,11 @@ class KalmanStateTracker:
                         break
         if not isinstance(st, dict) or not st:
             return None, 1e18
-        ts_f = safe_pos_float(st.get("ts"), default=None)
-        now_f = safe_float(self._now(), default=None)
+        ts_f = normalize_epoch_sec(st.get("ts"))
+        now_f = normalize_epoch_sec(self._now(), allow_zero=True)
         kt_f = safe_float(st.get("kalman_trend"), default=None)
         if ts_f is None or now_f is None or kt_f not in (-1.0, 0.0, 1.0):
             return None, 1e18
-        if ts_f > 1e11:
-            ts_f /= 1000.0
-        if now_f > 1e11:
-            now_f /= 1000.0
         age = now_f - ts_f
         if age < -60.0:
             return None, 1e18
@@ -194,15 +196,14 @@ class KalmanStateTracker:
                big_prices, big_sample_rate: float) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
-        ts_f = safe_float(ts, default=None)
+        ts_f = normalize_epoch_sec(ts, allow_zero=True)
         price_f = safe_pos_float(price, default=None)
         if ts_f is None or price_f is None:
             k = self._last_kfields.get(
                 symbol, {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0}
             )
             return self._build_fields(k, self._last_vol_fields.get(symbol))
-        ts = ts_f / 1000.0 if ts_f > 1e11 else ts_f
-        price = price_f
+        ts, price = ts_f, price_f
         sr_val = safe_pos_float(big_sample_rate, 1.0)
         eps_val = safe_nonneg_float(epsilon, 0.0)
         last_fed = self._last_fed.get(symbol, -1e18)

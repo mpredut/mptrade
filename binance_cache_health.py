@@ -20,7 +20,11 @@ from botcore import (
     exact_nonneg_int,
     exact_pos_int,
     load_dotenv,
+    normalize_class_name,
+    require_int,
+    require_pos_float,
     required_float_env,
+    resolve_now_ms,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
@@ -34,10 +38,7 @@ load_dotenv(os.path.join(_ROOT, "config.env"))
 
 
 def _positive_finite(value: float, name: str) -> float:
-    parsed = safe_pos_float(value, default=None)
-    if parsed is None:
-        raise ValueError(f"{name} must be finite and positive")
-    return parsed
+    return require_pos_float(value, name)
 
 
 MAX_AGE_SEC = _positive_finite(
@@ -190,11 +191,7 @@ def _publish_locked() -> None:
 
 
 def _normalize_cache_name(cache_name: object) -> str:
-    if isinstance(cache_name, type):
-        return cache_name.__name__
-    if isinstance(cache_name, str):
-        return cache_name.strip()
-    return ""
+    return normalize_class_name(cache_name)
 
 
 _INVALID_VERSION_STRINGS = {"", "nan", "null", "none", "inf", "-inf", "+inf"}
@@ -260,17 +257,11 @@ def _exact_int(value: Any) -> Optional[int]:
 
 
 def _positive_int(value, field: str) -> int:
-    val = exact_pos_int(value, default=None)
-    if val is None:
-        raise ValueError(f"invalid {field}")
-    return val
+    return require_int(value, field, min_value=1)
 
 
 def _nonnegative_int(value, field: str) -> int:
-    val = exact_nonneg_int(value, default=None)
-    if val is None:
-        raise ValueError(f"invalid {field}")
-    return val
+    return require_int(value, field, min_value=0)
 
 
 def _pid_is_alive(pid: int) -> bool:

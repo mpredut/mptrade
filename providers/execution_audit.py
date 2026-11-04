@@ -25,11 +25,13 @@ from botcore import (
     conf_or_override,
     exact_pos_int,
     float_env,
+    lru_dict_put,
     parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
+    sanitize_identifier,
 )
 from cachepaths import (
     cache_symbol_variants,
@@ -48,6 +50,7 @@ from .base import (
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,
     clean_order_id,
+    clean_order_id_str,
     extract_client_order_id,
     extract_executed_qty,
     extract_order_id,
@@ -83,10 +86,7 @@ _CACHE_MAX = _parse_cache_max()
 
 
 def _slug(value: object) -> str:
-    if isinstance(value, bool):
-        value = ""
-    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip())
-    return text.strip("-") or "unknown"
+    return sanitize_identifier(value, sep="-", allow_dots_hyphens=True, strip_chars="-")
 
 
 def _json_safe_value(val: Any) -> Any:
@@ -246,16 +246,11 @@ class AuditedStrategyExecutor:
             return ""
         return canonical_symbol_key(symbol) or clean_symbol_key(symbol)
 
-    @staticmethod
-    def _norm_order_id_key(order_id: object) -> str:
-        return clean_order_id(order_id) or ""
+    _norm_order_id_key = staticmethod(clean_order_id_str)
 
     @staticmethod
     def _lru_put(cache: OrderedDict, key: Any, value: Any) -> None:
-        cache[key] = value
-        cache.move_to_end(key)
-        while len(cache) > _CACHE_MAX:
-            cache.popitem(last=False)
+        lru_dict_put(cache, key, value, _CACHE_MAX)
 
     def _remember(self, symbol: str, order_id: str, intent_id: str) -> None:
         oid_key = self._norm_order_id_key(order_id)

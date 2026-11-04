@@ -17,6 +17,8 @@ from botcore import (
     _parse_bool_flag,
     exact_int,
     load_dotenv as _load_dotenv,
+    normalize_trend_direction,
+    require_int,
     required_bool_env,
     required_int_env,
     safe_float,
@@ -461,10 +463,7 @@ _TREND_MEMO_NONE = object()
 
 
 def _parse_strict_int(val):
-    iv = exact_int(val, default=None)
-    if iv is None:
-        raise ValueError("not integral")
-    return iv
+    return require_int(val, error_msg="not integral")
 
 
 def _clone_trend_result(value):
@@ -793,14 +792,7 @@ def write_all_trends(all_trends, filename=None):
     
     
 def _normalize_up_down_trend(raw_dir) -> Optional[str]:
-    if not isinstance(raw_dir, str):
-        return None
-    d = raw_dir.strip().lower()
-    if d in ("up", "bull"):
-        return "up"
-    if d in ("down", "bear"):
-        return "down"
-    return None
+    return normalize_trend_direction(raw_dir, default=None)
 
 
 def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=None, quant_seconds=3600*24, draw=False):

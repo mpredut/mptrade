@@ -30,6 +30,7 @@ from botcore import (
     clean_scale,
     load_dotenv,
     required_float_env,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -55,10 +56,7 @@ _SMART_SL_STATE_FILE = _DEFAULT_SMART_SL_STATE_FILE
 
 
 def _resolve_now(now: Optional[float]) -> float:
-    f = safe_nonneg_float(now, default=None)
-    if f is None:
-        return time.time()
-    return f / 1000.0 if f > 1e11 else f
+    return resolve_now_ts(now, allow_zero=True)
 
 
 def _effective_smart_sl_state_file() -> str:

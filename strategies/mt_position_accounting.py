@@ -8,6 +8,7 @@ import sys
 from typing import Any, Optional, Tuple
 
 from botcore import (
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -201,8 +202,7 @@ def _inst_provider(inst: Any = None) -> Optional[str]:
 
 
 def _mt_attr(name: str, default: Any) -> Any:
-    mod = sys.modules.get("monitortrades")
-    return getattr(mod, name, default) if mod is not None else default
+    return resolve_patched_attr(name, default, modules=("monitortrades",))
 
 
 def _as_instrument(x):

@@ -35,7 +35,8 @@ from pricewindow import (  # noqa: F401 (re-export: test compat)
 # environment (for example, a systemd EnvironmentFile); it only fills gaps.
 from botcore import (exact_nonneg_int, exact_pos_int, load_dotenv as _load_dotenv,
                      required_bool_env, required_float_env, required_int_env,
-                     safe_nonneg_float, safe_pos_float, touch_module_heartbeat)
+                     safe_nonneg_float, safe_pos_float, sanitize_pipe_field,
+                     touch_module_heartbeat)
 _load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "config.env"))
 
@@ -142,13 +143,7 @@ def _validate_tradeall_config():
 _validate_tradeall_config()
 
 
-def _sanitize_field(value):
-    """Remove characters that would break the pipe-delimited format (A3)."""
-    return (
-        str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
-        if value is not None
-        else ""
-    )
+_sanitize_field = sanitize_pipe_field
 
 
 def log_decision(symbol, event, **fields):

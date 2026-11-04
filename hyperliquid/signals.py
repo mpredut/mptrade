@@ -28,7 +28,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from botcore import load_local_module  # noqa: E402
+from botcore import load_local_module, normalize_trend_direction  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
 log = _common_mod.log
@@ -46,14 +46,7 @@ NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
 
 def _normalize_signal_trend(raw: object) -> str:
     """Normalize a signal trend token ('up'/'bull'/'bullish'/'long' -> 'up', 'down'/'bear'/'bearish'/'short' -> 'down')."""
-    if not isinstance(raw, str):
-        return "neutral"
-    t = raw.strip().lower()
-    if t in ("up", "bull", "bullish", "long"):
-        return "up"
-    if t in ("down", "bear", "bearish", "short"):
-        return "down"
-    return "neutral"
+    return normalize_trend_direction(raw, default="neutral", allow_long_short=True) or "neutral"
 
 
 def _builtin_trend(client, coin: str) -> dict:

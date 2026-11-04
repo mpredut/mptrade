@@ -9,7 +9,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import exact_int, safe_pos_int
+from botcore import exact_int, safe_pos_int, strict_ascii_int
 from state_io import read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2
@@ -85,11 +85,7 @@ def trade_records_digest(
 
 
 def _strict_int_field(val: Any) -> int:
-    if isinstance(val, str):
-        cleaned = val.strip().removesuffix(".0").lstrip("+-")
-        if not cleaned or not cleaned.isascii() or not cleaned.isdigit():
-            raise ValueError("invalid Trade row field type")
-    parsed = exact_int(val, default=None) if isinstance(val, (int, float, str)) else None
+    parsed = strict_ascii_int(val, default=None, allow_float_str=True)
     if parsed is None:
         raise ValueError("invalid Trade row field type")
     return parsed

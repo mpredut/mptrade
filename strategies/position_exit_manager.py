@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     are_close,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -356,10 +357,7 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
 
 def _resolve_now_s(current_time_s: Optional[float]) -> float:
     """Resolve explicit simulation/snapshot timestamp or fall back to wall-clock time."""
-    tf = safe_nonneg_float(current_time_s, default=None)
-    if tf is None:
-        return time.time()
-    return tf / 1000.0 if tf > 1e11 else tf
+    return resolve_now_ts(current_time_s, allow_zero=True)
 
 
 def _clamp_state_ts(state_dict: Dict[str, Any], key: str, now: float) -> float:

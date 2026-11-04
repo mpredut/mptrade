@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import canonical_base_asset
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
-from intelligence.macro_sentiment_ssot import safe_float, safe_pos_float
+from intelligence.macro_sentiment_ssot import normalize_epoch_sec, safe_float, safe_pos_float
 
 KalmanTrend: Any = None
 
@@ -682,10 +682,15 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
         dt_min = max(win_min, (t_now - ref_t) / 60.0)
         if ref_p > 0 and dt_min > 0:
             slope_v = round(((p_now - ref_p) / ref_p) / dt_min, 6) + 0.0
-            g_v = round(slope_v * win_min * 1000.0, 2) + 0.0
+            half_t = t_now - 0.5 * win_sec
+            ref_t_h, ref_p_h = min(pts[:-1], key=lambda item: abs(item[0] - half_t))
+            dt_min_h = max(0.5 * win_min, (t_now - ref_t_h) / 60.0)
+            slope_half = (((p_now - ref_p_h) / ref_p_h) / dt_min_h) if (ref_p_h > 0 and dt_min_h > 0) else slope_v
+            g_v = round(0.35 * slope_v + 0.65 * slope_half, 6) + 0.0
+            win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
             out[g_key] = g_v
-            out[t_key] = 1 if g_v >= 0.25 else (-1 if g_v <= -0.25 else 0)
+            out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)
     if "slope_3_7m" in out:
         out["gradient_recent_fast"] = out["slope_3_7m"]
     return out
@@ -701,12 +706,11 @@ def _extract_ohlc_series_points(
     """Extract `[ts_ms, close, (vol)]` rows from an OHLC series within `[min_ts, max_ts]`."""
     vols = getattr(ohlc_obj, "volumes", ()) or ()
     has_vols = isinstance(vols, (list, tuple)) and bool(vols)
-    min_s = (min_ts / 1000.0 if 1e11 < min_ts < float("inf") else min_ts) if math.isfinite(min_ts) else 0.0
-    max_s = (max_ts / 1000.0 if 1e11 < max_ts < float("inf") else max_ts) if math.isfinite(max_ts) else float("inf")
+    min_s = normalize_epoch_sec(min_ts, default=0.0, allow_zero=True) or 0.0
+    max_s = (normalize_epoch_sec(max_ts, default=float("inf")) or float("inf")) if math.isfinite(max_ts) else float("inf")
     pts: List[List[Any]] = []
     for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()) or (), getattr(ohlc_obj, "closes", ()) or ())):
-        ts_f, px_f = safe_pos_float(ts, 0.0) or 0.0, safe_pos_float(px, 0.0) or 0.0
-        ts_s = ts_f / 1000.0 if ts_f > 1e11 else ts_f
+        ts_s, px_f = normalize_epoch_sec(ts, default=0.0) or 0.0, safe_pos_float(px, 0.0) or 0.0
         if ts_s > 0.0 and min_s <= ts_s <= max_s and px_f > 0.0:
             v_f = safe_pos_float(vols[idx], 0.0) or 0.0 if (has_vols and idx < len(vols)) else 0.0
             if require_positive_volume and v_f <= 0.0:

@@ -336,7 +336,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
         m_tr = re.search(
             r"(?:([0-9]+\.[0-9]+)\s*(?:taker\s+(?:buy/sell\s+)?|buy/sell\s+)ratio"
             r"|taker\s+(?:buy/sell\s+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-            r"|taker\s+(?:(?:buy|sell|buying|selling)\s+)?(?:flow|pressure|dominance|balance|absorption)(?:\s+has\s+\w+)?(?:\s+to)?[\s(]*([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
+            r"|taker\s+(?:(?:buy|sell|buying|selling|buy/sell)\s+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
             sentiment_advisor["summary"],
             re.IGNORECASE,
         )
@@ -345,33 +345,68 @@ def enrich_sentiment_advisor_live_flow_divergence(
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
     cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
     flow_lbl = ", ".join(x for x in (tr_s, cvd_s) if x)
-    if (
+    is_bear_posture = (
         sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
         or sa_bias == "BEARISH"
         or (cited_tr is not None and cited_tr <= 0.65)
-    ) and (
-        (live_tr is not None and live_tr >= 1.25)
-        or (live_cvd is not None and live_cvd >= 5_000_000.0)
-        or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h >= 1.25 and (live_cvd_1h is None or live_cvd_1h >= 1_500_000.0))
-    ):
-        ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr <= 0.65 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-        sentiment_advisor["live_flow_divergence"] = f"LIVE_BUY_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
-    elif (
+    )
+    is_bull_posture = (
         sa_act == "ACCUMULATE"
         or sa_bias == "BULLISH"
         or (cited_tr is not None and cited_tr >= 1.35)
-    ) and (
-        (live_tr is not None and live_tr <= 0.75)
-        or (live_cvd is not None and live_cvd <= -5_000_000.0)
-        or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h <= 0.72 and (live_cvd_1h is None or live_cvd_1h <= -1_500_000.0))
+    )
+    is_neutral_posture = (
+        (sa_act in ("", "HOLD") or sa_bias == "NEUTRAL")
+        and not is_bear_posture
+        and not is_bull_posture
+    )
+    if (
+        is_bear_posture
+        and (
+            (live_tr is not None and live_tr >= 1.25)
+            or (live_cvd is not None and live_cvd >= 5_000_000.0)
+            or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h >= 1.25 and (live_cvd_1h is None or live_cvd_1h >= 1_500_000.0))
+        )
+    ) or (
+        is_neutral_posture
+        and (
+            (live_cvd is not None and live_cvd >= 5_000_000.0)
+            or (live_tr is not None and live_tr >= 1.35 and (live_cvd is None or live_cvd >= 2_500_000.0))
+            or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h >= 1.35 and live_cvd_1h is not None and live_cvd_1h >= 5_000_000.0)
+        )
     ):
-        ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
+        if is_neutral_posture:
+            posture_s = f"{sa_bias}/{sa_act}" if (sa_bias and sa_act) else (sa_act or sa_bias or "NEUTRAL")
+            ref_lbl = f"{posture_s} (advisor ratio={cited_tr:.2f})" if cited_tr is not None else posture_s
+        else:
+            ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr <= 0.65 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
+        sentiment_advisor["live_flow_divergence"] = f"LIVE_BUY_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
+    elif (
+        is_bull_posture
+        and (
+            (live_tr is not None and live_tr <= 0.75)
+            or (live_cvd is not None and live_cvd <= -5_000_000.0)
+            or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h <= 0.72 and (live_cvd_1h is None or live_cvd_1h <= -1_500_000.0))
+        )
+    ) or (
+        is_neutral_posture
+        and (
+            (live_cvd is not None and live_cvd <= -5_000_000.0)
+            or (live_tr is not None and live_tr <= 0.65 and (live_cvd is None or live_cvd <= -2_500_000.0))
+            or (sa_age >= 15.0 and live_tr_1h is not None and live_tr_1h <= 0.72 and (live_cvd_1h is None or live_cvd_1h <= -5_000_000.0))
+        )
+    ):
+        if is_neutral_posture:
+            posture_s = f"{sa_bias}/{sa_act}" if (sa_bias and sa_act) else (sa_act or sa_bias or "NEUTRAL")
+            ref_lbl = f"{posture_s} (advisor ratio={cited_tr:.2f})" if cited_tr is not None else posture_s
+        else:
+            ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
         sentiment_advisor["live_flow_divergence"] = f"LIVE_SELL_REVERSAL ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     elif (
         sa_age >= 15.0
         and cited_tr is not None
         and live_tr is not None
-        and abs(live_tr - cited_tr) >= 0.35
+        and abs(live_tr - cited_tr) >= 0.30
     ):
         shift_dir = "LIVE_FLOW_RECOVERY" if live_tr > cited_tr else "LIVE_FLOW_FADE"
         sentiment_advisor["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"

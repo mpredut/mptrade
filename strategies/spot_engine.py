@@ -17,7 +17,8 @@ from typing import Callable
 
 from alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, are_close, log, defined_env, required_env,
+    _parse_bool_flag, are_close, log, defined_env, normalize_epoch_sec,
+    require_finite_float, require_int, required_env,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
 )
@@ -165,16 +166,10 @@ class StratParams:
 
     def __post_init__(self):
         def finite(name: str, value) -> float:
-            parsed = safe_float(value, default=None)
-            if parsed is None:
-                raise ValueError(f"{name} must be finite")
-            return parsed
+            return require_finite_float(value, name)
 
         def integer(name: str, value) -> int:
-            val_f = finite(name, value)
-            if not val_f.is_integer():
-                raise ValueError(f"{name} must be an integer")
-            return int(val_f)
+            return require_int(require_finite_float(value, name), error_msg=f"{name} must be an integer")
 
         self.trend_topup = finite("STRAT_TREND_TOPUP", self.trend_topup)
         self.entry_discount_pct = finite("STRAT_ENTRY_DISCOUNT_PCT", self.entry_discount_pct)
@@ -1485,10 +1480,7 @@ class Strategy(BaseSpotMixin):
                     )
                     if dict_rows:
                         def _row_ts_sec(row: dict) -> float:
-                            ts_v = _clean_pos_float(row.get("timestamp"))
-                            if ts_v is None:
-                                return 0.0
-                            return ts_v / 1000.0 if ts_v > 1e11 else ts_v
+                            return normalize_epoch_sec(row.get("timestamp"), default=0.0) or 0.0
 
                         _, latest_buy = max(
                             dict_rows,

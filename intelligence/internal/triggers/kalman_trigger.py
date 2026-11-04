@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Optional, Tuple
 
-from botcore import float_env, pos_float_env, safe_float, safe_pos_float
+from botcore import float_env, normalize_epoch_sec, pos_float_env, safe_float, safe_pos_float
 from intelligence.internal.triggers.trigger_event import TriggerEvent
 
 
@@ -46,7 +46,7 @@ class KalmanTrend:
 
     def update(self, ts: float, price: float, epsilon: float | None) -> dict:
         """Run one predict/update step and return velocity and trend fields."""
-        ts_f = safe_float(ts, default=None)
+        ts_f = normalize_epoch_sec(ts, allow_zero=True)
         price_f = safe_pos_float(price, default=None)
         if ts_f is None or price_f is None:
             return {
@@ -55,16 +55,12 @@ class KalmanTrend:
                 "trend": self.trend,
                 "old_trend": self.trend,
             }
-        if ts_f > 1e11:
-            ts_f /= 1000.0
         ts, price = ts_f, price_f
         eps_f = safe_pos_float(epsilon, default=None)
         eps = eps_f if eps_f is not None else max(price * 1e-4, 1e-9)
         R = eps * eps
 
-        last_ts_f = safe_float(self.last_ts, default=None)
-        if last_ts_f is not None and last_ts_f > 1e11:
-            last_ts_f /= 1000.0
+        last_ts_f = normalize_epoch_sec(self.last_ts, allow_zero=True)
         if self.x is None or last_ts_f is None:
             self._reset_state(price, R, ts)
             return self._out(price, old_trend=self.trend)
@@ -156,9 +152,7 @@ class KalmanTrendTrigger:
         trigger_event: Optional[TriggerEvent] = None
         if trend != old_trend and trend != 0:
             price_f = safe_pos_float(price, default=0.0) or 0.0
-            ts_f = safe_float(ts, default=0.0) or 0.0
-            if ts_f > 1e11:
-                ts_f /= 1000.0
+            ts_f = normalize_epoch_sec(ts, default=0.0, allow_zero=True) or 0.0
             confidence = (
                 abs(out["vel"]) / max(out["vel_std"], 1e-6)
                 if out["vel_std"] > 0

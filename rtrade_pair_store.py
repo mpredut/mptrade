@@ -6,9 +6,9 @@ import hashlib
 import threading
 import time
 
-from botcore import _parse_bool_flag, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from botcore import _parse_bool_flag, require_pos_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
 from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
-from providers.base import _clean_single_order_id, normalize_side
+from providers.base import _clean_single_order_id, clean_order_id_str, normalize_side
 from lock import FileLock
 from state_io import atomic_write_json, read_json_file
 
@@ -32,10 +32,7 @@ class RTradePairStore:
         self._mem_data = {"version": 1, "pairs": {}}
         self.terminal_retention = safe_nonneg_int(terminal_retention, default=200)
 
-    @staticmethod
-    def _clean_store_id(value) -> str:
-        res = _clean_single_order_id(value)
-        return res if res is not None else ""
+    _clean_store_id = staticmethod(clean_order_id_str)
 
     @staticmethod
     def _clean_pair_id(pair_id):
@@ -53,10 +50,7 @@ class RTradePairStore:
 
     @staticmethod
     def _finite_positive(value, field):
-        parsed = safe_pos_float(value, default=None)
-        if parsed is None:
-            raise ValueError(f"invalid rtrade pair-store {field}")
-        return parsed
+        return require_pos_float(value, field, error_msg=f"invalid rtrade pair-store {field}")
 
     @staticmethod
     def _new_pair_record(symbol, pair_id: str, start_side: str, qty: float, now: float) -> dict:

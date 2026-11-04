@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 
-from botcore import _parse_bool_flag, safe_pos_float
+from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float
 
 ORDER_CACHE_CLASSES = frozenset({"CacheOrder", "CacheOrderManager"})
 TRADE_CACHE_CLASSES = frozenset({"CacheTrade", "CacheTradeManager"})
@@ -67,12 +67,7 @@ def mark_ws_unhealthy() -> None:
             cm._ws_is_healthy = False
 
 
-def _normalize_manager_name(cls_name: object) -> str:
-    if isinstance(cls_name, type):
-        return cls_name.__name__
-    if isinstance(cls_name, str):
-        return cls_name.strip()
-    return ""
+_normalize_manager_name = normalize_class_name
 
 
 def clear_ws_rest_resync_for_manager(cls_name: str) -> None:

@@ -129,9 +129,11 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         if whale_telemetry:
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
         try:
-            cache_dir = os.path.dirname(os.path.abspath(self._effective_cache_file()))
+            from cachepaths import resolve_cachedb_filepath
+
+            cache_dir = self._effective_cache_dir()
             if any(
-                os.path.exists(os.path.join(cache_dir, fn))
+                os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
                 for fn in (
                     "price_24h_BTCUSDC.json",
                     "price_24h_BTCUSDT.json",
@@ -140,19 +142,19 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 )
             ):
                 from intelligence.sentiment.collectors.microstructure_collector import (
-                    _parse_ts_px_row,
                     compute_24h_price_metrics,
                     load_symbol_price_series,
                 )
+                from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
                 from intelligence.macro_sentiment_ssot import safe_float, safe_pos_float
 
                 btc_pts, _ = load_symbol_price_series(cache_dir, "BTCUSDC", include_7d=False)
                 btc_m = compute_24h_price_metrics(btc_pts) if btc_pts else {}
                 if btc_m:
                     b_struct = str(btc_m.get("bottom_structure_6h") or "NONE")
-                    parsed_btc_pts = [pt for row in (btc_pts or ()) if (pt := _parse_ts_px_row(row)) is not None]
+                    parsed_btc_pts = _extract_sorted_ts_px(btc_pts or [])
                     last_px = (
-                        max(parsed_btc_pts, key=lambda x: x[0])[1]
+                        parsed_btc_pts[-1][1]
                         if parsed_btc_pts
                         else (safe_pos_float(btc_m.get("high_24h"), default=0.0) or 0.0)
                     )

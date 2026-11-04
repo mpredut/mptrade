@@ -7,7 +7,7 @@ import time
 
 
 from typing import Optional, Union, Iterable
-from botcore import safe_nonneg_int
+from botcore import safe_nonneg_int, sanitize_identifier
 from providers.base import MANUAL_CID_PREFIXES, clean_order_id
 
 CLIENT_ORDER_ID_MAX_LEN = 36
@@ -88,10 +88,7 @@ def _derive_process_name(stem):
 
 
 def _sanitize_name(value, default="unknown"):
-    if isinstance(value, bool):
-        value = ""
-    safe = _SAFE_NAME_RE.sub("_", str(value or "")).strip("_")
-    return safe or default
+    return sanitize_identifier(value, default=default, sep="_", allow_dots_hyphens=False, strip_chars="_")
 
 
 def _base36(value):

@@ -730,14 +730,29 @@ def resolve_kraken_lookup_symbol(symbol: object) -> str:
     return f"{base}USD"
 
 
-def resolve_cache_dir_path(cache_dir: object) -> str | None:
+def resolve_cache_dir_path(cache_dir: object, *, fallback_default: bool = False) -> str | None:
     """Resolve a collector ``cache_dir`` argument (e.g. ``'cachedb'``) to its effective directory path."""
     raw = _clean_path_str(cache_dir)
     if not raw:
-        return None
+        return get_cachedb_dir() if fallback_default else None
     if raw == "cachedb":
         return get_cachedb_dir()
     return raw
+
+
+def cachedb_root_for_file(filepath: object) -> str:
+    """Return the root ``cachedb`` directory containing ``filepath``, stripping any thematic subdomain directory."""
+    raw = _clean_path_str(filepath)
+    if not raw:
+        return ""
+    d = os.path.dirname(raw)
+    parent = os.path.dirname(d)
+    if parent and f"{os.path.basename(parent)}/{os.path.basename(d)}" in CACHEDB_SUBDOMAINS:
+        gp = os.path.dirname(parent)
+        return gp if gp != parent else d
+    if os.path.basename(d) in CACHEDB_SUBDOMAINS and parent != d:
+        return parent
+    return d
 
 
 def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) -> str | None:

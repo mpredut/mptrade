@@ -22,27 +22,16 @@ if TYPE_CHECKING:
         NewsHeadline,
     )
 
-__all__ = [
-    "NewsFeedCollector",
-    "NewsFeedSnapshot",
-    "NewsHeadline",
-    "GeopoliticalThreatAnalyzer",
-    "GeopoliticalThreatAssessment",
-    "GeopoliticalShockGuard",
-]
+from botcore import bind_lazy_module_exports
 
+_LAZY_IMPORTS: dict[str, str] = {
+    "NewsFeedCollector": "intelligence.macro.news_feed_collector",
+    "NewsFeedSnapshot": "intelligence.macro.news_feed_collector",
+    "NewsHeadline": "intelligence.macro.news_feed_collector",
+    "GeopoliticalThreatAnalyzer": "intelligence.macro.geopolitical_analyzer",
+    "GeopoliticalThreatAssessment": "intelligence.macro.geopolitical_analyzer",
+    "GeopoliticalShockGuard": "intelligence.macro.geopolitical_guard",
+}
 
-def __getattr__(name: str) -> Any:
-    if name in ("NewsFeedCollector", "NewsFeedSnapshot", "NewsHeadline"):
-        from intelligence.macro import news_feed_collector as _nfc
-
-        return getattr(_nfc, name)
-    if name in ("GeopoliticalThreatAnalyzer", "GeopoliticalThreatAssessment"):
-        from intelligence.macro import geopolitical_analyzer as _ga
-
-        return getattr(_ga, name)
-    if name == "GeopoliticalShockGuard":
-        from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-
-        return GeopoliticalShockGuard
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = list(_LAZY_IMPORTS)
+bind_lazy_module_exports(globals(), _LAZY_IMPORTS)

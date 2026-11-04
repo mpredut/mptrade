@@ -12,7 +12,7 @@ import contextlib
 import os
 import time
 
-from botcore import safe_float
+from botcore import require_finite_float, safe_float
 import log
 
 _BT_ENV_KEYS = (
@@ -50,10 +50,7 @@ def backtest_isolation_context(quiet: bool = False):
 
 
 def _clean_ts(val: float) -> float:
-    f = safe_float(val, default=None)
-    if f is None:
-        raise ValueError("SimClock timestamp must be a finite number, not bool/None")
-    return f
+    return require_finite_float(val, error_msg="SimClock timestamp must be a finite number, not bool/None")
 
 
 class SimClock:

@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, resolve_patched_attr, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import (
     cache_symbol_variants,
     canonical_symbol_key,
@@ -181,18 +181,19 @@ def _resolve_module_fn(cls_or_self: Any, attr_name: str, default_fn: Callable[..
     """Resolve a helper function from the concrete collector's module or `orderbook_depth_collector` if monkeypatched."""
     orig_fn = _ORIG_MODULE_FNS.get(attr_name, default_fn)
     cls = cls_or_self if isinstance(cls_or_self, type) else type(cls_or_self)
-    for mod_name in (
-        getattr(cls, "__module__", ""),
-        "intelligence.external.collectors.orderbook_depth_collector",
-        "intelligence.external.collectors.orderbook_depth",
-        "intelligence.external.collectors.base_collector",
-        "intelligence.macro_sentiment_ssot",
-    ):
-        if mod_name and (mod := sys.modules.get(mod_name)) is not None:
-            cand = getattr(mod, attr_name, None)
-            if callable(cand) and cand is not orig_fn:
-                return cand
-    return default_fn
+    return resolve_patched_attr(
+        attr_name,
+        default_fn,
+        defaults=(orig_fn,),
+        modules=(
+            getattr(cls, "__module__", ""),
+            "intelligence.external.collectors.orderbook_depth_collector",
+            "intelligence.external.collectors.orderbook_depth",
+            "intelligence.external.collectors.base_collector",
+            "intelligence.macro_sentiment_ssot",
+        ),
+        require_callable=True,
+    )
 
 
 class _DiskBackedSymbolCollector:

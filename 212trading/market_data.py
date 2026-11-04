@@ -23,25 +23,18 @@ except ImportError:
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
-from providers.base import validate_ohlc_candle_bar
+from providers.base import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
 
 
 def parse_interval_minutes(value: str) -> int:
     """Parse interval strings like '5m', '1h', '1d' into integer minutes."""
-    if not isinstance(value, str):
-        raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
-    cleaned = value.strip()
-    num_part = cleaned[:-1]
-    if len(cleaned) < 2 or not (num_part.isascii() and num_part.isdigit()):
-        raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d")
-    units = {"m": 1, "h": 60, "d": 1440}
-    try:
-        minutes = int(num_part) * units[cleaned[-1].lower()]
-    except (KeyError, ValueError, IndexError, TypeError) as exc:
-        raise ValueError(f"invalid Yahoo interval: {value!r}; examples: 5m, 1h, 1d") from exc
-    if minutes <= 0:
-        raise ValueError("the interval must be positive")
-    return minutes
+    return parse_ohlc_interval_minutes(
+        value,
+        str_to_min={},
+        allow_unit_multiplier=True,
+        require_unit_suffix=True,
+        venue_label="Yahoo",
+    )
 
 
 def fetch_yahoo_candles(

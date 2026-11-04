@@ -2433,15 +2433,30 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     )
     from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
 
-    open_orders = [{"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 78950.0, "qty": 0.01}]
+    open_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 78950.0, "qty": 0.01},
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 78950.0, "qty": 0.01},
+    ]
     enrich_open_limit_orders_tca(
-        open_orders,
+        open_orders[:1],
         {"BTCUSDC": {"price": 77812.35}},
         {"BTCUSDC": {"ask_wall_px": 77832.39, "ask_wall_usd": 144901.0, "ask_depth_usd": 160000.0}},
     )
     assert open_orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
     assert open_orders[0]["ask_wall_ahead_px"] == 77832.39
     assert "recommended_front_run_px" not in open_orders[0]
+
+    enrich_open_limit_orders_tca(
+        open_orders[1:],
+        {"BTCUSDC": {"price": 77783.39}},
+        {"BTCUSDC": {"ask_wall_px": 77862.06, "ask_wall_usd": 122179.0, "ask_depth_usd": 140000.0}},
+    )
+    assert open_orders[1]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert "recommended_front_run_px" not in open_orders[1]
+
+    from orchestratorOS.supervisor.prompt_sections import _fmt_px
+
+    assert _fmt_px(85.6505) == "$85.6505"
 
     btc_geom = {"price": 77812.35, "recent_tape_15m": ["-15m:77750", "now:77800"]}
     recalculate_live_price_geometry(btc_geom, 77812.35)
@@ -2629,5 +2644,900 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
 
 
 
+
+def test_open_lots_lowest_buy_px_geopolitical_deescalation_and_hl_nsigfigs3(monkeypatch):
+    """Verify active open_lots lowest_buy_px, geopolitical zero-high-sev de-escalation, intra-clause taker flow regex, and HL nSigFigs=3 walls."""
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.calendar_ssot import (
+        compute_dynamic_geopolitical_interval,
+        compute_dynamic_sentiment_interval,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+    )
+
+    # 1. lowest_buy_px uses active open_lots (91.21) instead of closed-cycle recent_buys (75.55)
+    pos_list = [{"venue": "kraken", "symbol": "HYPEUSD", "free_base": 0.54, "price": 85.8}]
+    venue_ro = {
+        "kraken": {
+            "HYPEUSD": {
+                "last_action_side": "SELL",
+                "active_avg_buy_px": 91.209992,
+                "last_buy": {"price": 91.209992, "qty": 4.9358},
+                "last_sell": {"price": 87.120002, "qty": 2.2951},
+                "recent_buys": [
+                    {"price": 79.04, "qty": 0.295},
+                    {"price": 77.41, "qty": 4.198},
+                    {"price": 75.55, "qty": 1.382},
+                    {"price": 91.209992, "qty": 4.9358},
+                ],
+                "open_lots": [{"lot_id": "L4", "qty": 0.54, "entry_px": 91.209992}],
+            }
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_list,
+        {"HYPEUSD": {"price": 85.8}},
+        {},
+        venue_ro,
+        {},
+        {"HYPEUSD": {"qty": 0.54, "avg_cost_px": 91.209992, "entry_price": 91.209992}},
+        {},
+        {},
+        {},
+    )
+    assert pos_list[0]["lowest_buy_px"] == 91.209992
+
+    # 2. Geopolitical de-escalation recheck when high_severity_count == 0 under ELEVATED
+    geo_itv, geo_reason = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=1_700_000_000.0,
+        now_ts=1_700_002_000.0,
+        cached_assessment={"threat_level": "ELEVATED", "is_fallback": False},
+        news_snapshot={"headlines": [{"title": "Routine earnings update", "is_high_severity": False}], "high_severity_count": 0},
+        headlines_changed=False,
+    )
+    assert geo_reason == "threat_deescalation_zero_high_sev_recheck"
+    assert geo_itv <= 3600.0
+
+    # 3. Intra-clause taker flow phrase "(0.8732 ratio, 1h CVD -$1.73M)" extracts 0.8732
+    sa_clause = {
+        "market_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 25.0,
+        "summary": "24h breadth remains positive while short-term Asian session taker flow is mildly subdued (0.8732 ratio, 1h CVD -$1.73M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_clause,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.28, "cvd_15m_usd": 2_100_000.0}},
+    )
+    assert "LIVE_FLOW_RECOVERY" in sa_clause.get("live_flow_divergence", "")
+    assert "advisor ratio=0.87" in sa_clause.get("live_flow_divergence", "")
+
+    # Sudden BTC selloff under NEUTRAL / HOLD / risk=LOW triggers LIVE_SELL_REVERSAL
+    sa_selloff_neutral = {
+        "market_bias": "NEUTRAL",
+        "risk_level": "LOW",
+        "recommended_action": "HOLD",
+        "age_min": 33.0,
+        "summary": "24h breadth remains positive while short-term Asian session taker flow is mildly subdued (0.8732 ratio, 1h CVD -$1.73M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_selloff_neutral,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 0.5552, "cvd_15m_usd": -43_300_000.0, "cvd_1h_usd": -48_400_000.0}},
+    )
+    assert "LIVE_SELL_REVERSAL" in sa_selloff_neutral.get("live_flow_divergence", "")
+    assert "NEUTRAL/HOLD (advisor ratio=0.87)" in sa_selloff_neutral.get("live_flow_divergence", "")
+
+    # Symmetric bullish surge under NEUTRAL / HOLD triggers LIVE_BUY_REVERSAL
+    sa_surge_neutral = {
+        "market_bias": "NEUTRAL",
+        "risk_level": "LOW",
+        "recommended_action": "HOLD",
+        "age_min": 33.0,
+        "summary": "24h breadth remains positive while short-term Asian session taker flow is mildly subdued (0.8732 ratio, 1h CVD -$1.73M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_surge_neutral,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.42, "cvd_15m_usd": 18_500_000.0}},
+    )
+    assert "LIVE_BUY_REVERSAL" in sa_surge_neutral.get("live_flow_divergence", "")
+    assert "NEUTRAL/HOLD (advisor ratio=0.87)" in sa_surge_neutral.get("live_flow_divergence", "")
+
+    _, adv_reason = compute_dynamic_sentiment_interval(
+        base_interval_sec=10800.0,
+        last_eval_ts=1_700_000_000.0,
+        now_ts=1_700_001_800.0,
+        cached_assessment=sa_clause,
+        btc_taker_ratio=1.30,
+        prev_btc_taker_ratio=None,
+    )
+    assert adv_reason == "btc_whale_flow_regime_flip_0.87_to_1.30"
+
+    _, adv_sell_reason = compute_dynamic_sentiment_interval(
+        base_interval_sec=10800.0,
+        last_eval_ts=1_700_000_000.0,
+        now_ts=1_700_001_800.0,
+        cached_assessment=sa_selloff_neutral,
+        btc_taker_ratio=0.5552,
+        prev_btc_taker_ratio=None,
+    )
+    assert adv_sell_reason == "btc_whale_flow_regime_flip_0.87_to_0.56"
+
+    # 4. OrderbookDepthCollector extends HL l2Book to nSigFigs=3 when nSigFigs=4 is <1% deep & skips <10bps micro-ticks
+    ob_col = OrderbookDepthCollector(cache_ttl_sec=60.0, cache_dir=None)
+    hl_calls = []
+
+    def _fake_hl_fetch(url, label, lookup_sym, **kwargs):
+        hl_calls.append(url)
+        if "nSigFigs=3" in url:
+            return {
+                "levels": [
+                    [{"px": "85.50", "sz": "100.0"}, {"px": "85.10", "sz": "2500.0"}, {"px": "84.50", "sz": "900.0"}],
+                    [{"px": "86.00", "sz": "100.0"}, {"px": "86.60", "sz": "2200.0"}, {"px": "87.00", "sz": "800.0"}],
+                ]
+            }
+        if "nSigFigs=4" in url:
+            return {
+                "levels": [
+                    [{"px": "85.77", "sz": "800.0"}, {"px": "85.60", "sz": "200.0"}],
+                    [{"px": "85.81", "sz": "400.0"}, {"px": "85.95", "sz": "200.0"}],
+                ]
+            }
+        return {
+            "levels": [
+                [{"px": "85.774", "sz": "500.0"}, {"px": "85.772", "sz": "900.0"}],
+                [{"px": "85.775", "sz": "400.0"}, {"px": "85.808", "sz": "450.0"}],
+            ]
+        }
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_hl_fetch)
+    snap_hl = ob_col.fetch("HYPEUSDC", allow_network=True, now=1_780_000_100.0)
+    assert snap_hl is not None
+    assert any("nSigFigs=4" in u for u in hl_calls)
+    assert any("nSigFigs=3" in u for u in hl_calls)
+    assert snap_hl.largest_bid_wall_price == 85.10
+    assert snap_hl.largest_ask_wall_price == 86.60
+
+    # 5. Per-symbol locked_quote_usd & replace_max_buy_usd isolation in Section 3C vs venue_quote_cash
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+    from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line, _format_recent_order_line
+
+    def _mk_binance_inst(sym, base, free_b, open_ords):
+        return SimpleNamespace(
+            symbol=sym,
+            provider_name="binance",
+            base=base,
+            quote="USDC",
+            params={},
+            _provider=SimpleNamespace(
+                get_current_price=lambda s: {"BTCUSDC": 75800.0, "TAOUSDC": 235.5, "ARBUSDC": 0.1235}.get(s, 0.0),
+                free_balance=lambda a: free_b if a == base else 1288.04,
+            ),
+            open_orders=lambda: open_ords,
+        )
+
+    inst_map_bn = {
+        "BINANCE_BTC": _mk_binance_inst(
+            "BTCUSDC", "BTC", 0.05,
+            [{"orderId": 1001, "symbol": "BTCUSDC", "side": "BUY", "type": "LIMIT", "price": "75000.0", "origQty": "0.01333", "executedQty": "0.0", "status": "NEW"}],
+        ),
+        "BINANCE_TAO": _mk_binance_inst(
+            "TAOUSDC", "TAO", 4.28,
+            [{"orderId": 721126902, "symbol": "TAOUSDC", "side": "BUY", "type": "LIMIT", "price": "220.0", "origQty": "2.2727", "executedQty": "0.0", "status": "NEW"}],
+        ),
+        "BINANCE_ARB": _mk_binance_inst(
+            "ARBUSDC", "ARB", 2441.5,
+            [{"orderId": 105396008, "symbol": "ARBUSDC", "side": "SELL", "type": "LIMIT", "price": "0.165", "origQty": "1220.7", "executedQty": "0.0", "status": "NEW"}],
+        ),
+    }
+    pos_list, _, venue_cash, _ = harvest_tradable_positions_and_orders(
+        inst_map_bn,
+        {"BTCUSDC": {"price": 75800.0}, "TAOUSDC": {"price": 235.5}, "ARBUSDC": {"price": 0.1235}},
+        {},
+        {},
+        gateway_max_usd=2000.0,
+    )
+    # Venue-level cash tracks total locked quote across all symbols on binance ($999.75 + $499.99 = $1499.74)
+    assert venue_cash["binance:USDC"]["locked_quote_usd"] == 1499.74
+    pos_by_sym = {p["symbol"]: p for p in pos_list}
+    # ARBUSDC has 0 BUY open orders -> no symbol-level locked_quote_usd or replace_max_buy_usd inflation
+    assert pos_by_sym["ARBUSDC"].get("locked_quote_usd", 0.0) == 0.0
+    assert "replace_max_buy_usd" not in pos_by_sym["ARBUSDC"]
+    # TAOUSDC only locks $499.99 in its own BUY order -> replace_max_buy_usd is (1288.04 + 499.99)*0.995 = 1779.09
+    assert pos_by_sym["TAOUSDC"]["locked_quote_usd"] == 499.99
+    assert pos_by_sym["TAOUSDC"]["replace_max_buy_usd"] == 1779.09
+    # BTCUSDC locks $999.75 in its own BUY order -> replace_max_buy_usd is capped at max_order_usd ($2000.0)
+    assert pos_by_sym["BTCUSDC"]["locked_quote_usd"] == 999.75
+    assert pos_by_sym["BTCUSDC"]["replace_max_buy_usd"] == 2000.0
+
+    # 6. _same_anchor_px preserves distinct multi-tranche tactical_avg_buy_px on BTCUSDC (1.5 bps diff vs last_buy_px) and locked_* is not duplicated in limits(...)
+    btc_pos_line = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "free_base": 0.05288,
+            "free_quote": 1288.04,
+            "locked_base_qty": 0.01,
+            "locked_quote_usd": 999.75,
+            "price": 75807.29,
+            "value_usd": 4008.69,
+            "active_avg_buy_px": 77959.914388,
+            "tactical_avg_buy_px": 77590.206667,
+            "swing_subcycle_avg_px": 77376.950854,
+            "last_buy_px": 77578.56,
+        }
+    )
+    assert "avg_buy_px=77959.914388" in btc_pos_line
+    assert "tactical_avg_px=77590.206667" in btc_pos_line
+    assert "swing_avg_px=77376.950854" in btc_pos_line
+    assert "last_buy_px=77578.56" in btc_pos_line
+    assert btc_pos_line.count("locked_base_qty=") == 1
+    assert btc_pos_line.count("locked_quote_usd=") == 1
+
+    btc_ord_line = _format_recent_order_line(
+        "BTCUSDC",
+        {
+            "venue": "binance",
+            "last_action_side": "BUY",
+            "active_avg_buy_px": 77959.914388,
+            "tactical_avg_buy_px": 77590.206667,
+            "swing_subcycle_avg_px": 77376.950854,
+            "last_buy": {"price": 77578.56, "qty": 0.00644, "time": "2026-10-30 22:08:52 UTC"},
+        },
+        1700000000000.0,
+    )
+    assert "Tactical Sub-Cycle Avg BUY=77590.206667" in btc_ord_line
+    assert "Swing Sub-Cycle Avg BUY=77376.950854" in btc_ord_line
+
+    # 7. T212 cycle last_buy_price/last_sell_price sync in crypto scope & 4-decimal _US_EQ 7d range rounding
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    t212_cycs = {
+        "NVDA_US_EQ": {"qty": 0.03, "avg_cost_px": 208.0, "entry_price": 207.9271, "last_buy_price": 207.9271, "dd_pct": -1.15},
+    }
+    v_ro = {
+        "t212": {
+            "NVDA_US_EQ": {
+                "last_buy": {"price": 207.93, "qty": 0.96, "ts_ms": 1793720000000},
+                "last_sell": {"price": 207.9, "qty": 0.93, "ts_ms": 1793724706000},
+                "recent_buys": [{"price": 207.93, "qty": 0.96, "ts_ms": 1793720000000}],
+                "recent_sells": [{"price": 207.9, "qty": 0.93, "ts_ms": 1793724706000}],
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders({}, {}, t212_cycs, v_ro, {}, {"NVDA_US_EQ": {"price": 205.6}})
+    assert t212_cycs["NVDA_US_EQ"]["last_buy_price"] == 207.93
+    assert t212_cycs["NVDA_US_EQ"]["last_sell_price"] == 207.9
+    cmc = build_cross_market_context({"NVDA_US_EQ": {"price": 205.6, "chg_15m_pct": -0.28}}, {}, t212_cycs)
+    assert cmc["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["last_buy_price"] == 207.93
+    assert cmc["equity_bellwethers"]["NVDA_US_EQ"]["t212_cycle"]["last_sell_price"] == 207.9
+
+    pt_eq = {"SPCX_US_EQ": {"price": 139.72, "trend": 0, "growth_coefficient": 0.0}}
+    enrich_cross_venue_trends(
+        pt_eq,
+        {},
+        {},
+        {},
+        {},
+        {},
+        {"SPCX": [[1793100000000, 148.5800018310547], [1793400000000, 134.6649932861328], [1793700000000, 141.31]]},
+    )
+    assert pt_eq["SPCX_US_EQ"]["low_7d"] == 134.665
+    assert pt_eq["SPCX_US_EQ"]["high_7d"] == 148.58
+    assert pt_eq["SPCX_US_EQ"]["chg_7d_pct"] == round(((141.31 - 148.5800018310547) / 148.5800018310547) * 100.0, 2)
+
+    # 8. Post-DCA last_exit_kind remains REDUCE when a partial sell occurred below pre-DCA entry_price
+    k_cycs_dca = {
+        "HYPEUSD": {
+            "qty": 6.492657,
+            "cost_usd": 549.28,
+            "avg_cost_px": 84.597119,
+            "entry_price": 91.209992,
+            "_entry_ts_ms": 1793690000000,
+            "last_buy_price": 84.0,
+            "last_sell_price": 93.299997,
+            "last_exit_kind": "TP",
+            "realized_pnl": -189.93,
+            "dd_pct": 0.44,
+        }
+    }
+    v_ro_dca = {
+        "kraken": {
+            "HYPEUSD": {
+                "last_buy": {"price": 84.0, "qty": 5.95238095, "ts_ms": 1793752000000},
+                "last_sell": {"price": 87.120002, "qty": 2.2951572, "ts_ms": 1793721000000},
+                "recent_buys": [
+                    {"price": 91.209992, "qty": 2.835433, "ts_ms": 1793690000000},
+                    {"price": 84.0, "qty": 5.95238095, "ts_ms": 1793752000000},
+                ],
+                "recent_sells": [
+                    {"price": 87.120002, "qty": 2.2951572, "ts_ms": 1793721000000},
+                ],
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        k_cycs_dca,
+        {},
+        {},
+        v_ro_dca,
+        {("kraken", "HYPEUSD"): 6.492657},
+        {"HYPEUSD": {"price": 84.97}},
+    )
+    assert k_cycs_dca["HYPEUSD"]["last_sell_price"] == 87.120002
+    assert k_cycs_dca["HYPEUSD"]["last_exit_kind"] == "REDUCE"
+
+
+
+
+def test_post_rth_equities_series_enrichment_short_slopes_scale_and_daemon_log_recovery(tmp_path):
+    """Verify:
+    - enrich_24h_and_microstructure seeds pos:t212:* positions (e.g. SPCX_US_EQ) from venue_balances_state.json even without a .state_*.json file
+    - post-RTH US equity series (>20m since RTH close) do not append a multi-hour gap that collapses 15m/30m/1h/3h and resets kalman_vel, while recalculating live range/24h/7d geometry
+    - _compute_short_slopes_from_series keeps growth_* on the same scale as slope_* instead of inflating by 150,000x
+    - harvest_log_anomalies_from_dirs deduplicates unstamped command stdout echoed in ERROR lines and clears resolved daemon errors after 'Daemon status: active'
+    """
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.evaluators.price_series_evaluator import _compute_short_slopes_from_series
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Post-RTH SPCX_US_EQ seeded from venue_balances_state.json + 24h RTH series ending 3 hours ago
+    cache_dir = tmp_path / "cachedb"
+    prices_dir = cache_dir / "prices"
+    state_dir = cache_dir / "state"
+    for d in (prices_dir, state_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    now_ts = 1_793_751_600.0
+    rth_close_ms = int((now_ts - 3.0 * 3600.0) * 1000)
+    rth_bars = []
+    for idx in range(78):
+        t_ms = rth_close_ms - (77 - idx) * 300_000
+        px = round(140.0 + 0.02 * idx + (0.15 if idx % 3 == 0 else -0.05), 4)
+        rth_bars.append([t_ms, px])
+    # Force distinct 15m, 30m, 1h, 3h bars before RTH close (last bar = 141.31)
+    rth_bars[-1][1] = 141.31
+    rth_bars[-4][1] = 141.60   # 15m before close
+    rth_bars[-7][1] = 141.95   # 30m before close
+    rth_bars[-13][1] = 141.81  # 1h before close
+    rth_bars[-37][1] = 140.90  # 3h before close
+
+    (prices_dir / "cache_24_price_SPCX_US_EQ.json").write_text(
+        json.dumps({"items": {"SPCX_US_EQ": rth_bars}}),
+        encoding="utf-8",
+    )
+    (state_dir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:SPCX_US_EQ": {"symbol": "SPCX_US_EQ", "free": 12.14, "price": 141.20}}),
+        encoding="utf-8",
+    )
+
+    pt_map = {"SPCX_US_EQ": {"price": 141.31, "trend": 0, "growth_coefficient": 0.0}}
+    enrich_24h_and_microstructure(str(cache_dir), str(tmp_path), pt_map, {}, {}, {}, now_ts)
+    spcx = pt_map["SPCX_US_EQ"]
+    assert abs(spcx["price"] - 141.20) < 1e-6
+    # 15m, 30m, 1h, 3h must reflect distinct RTH session horizons rather than collapsing to identical values
+    assert len({spcx["chg_15m_pct"], spcx["chg_30m_pct"], spcx["chg_1h_pct"], spcx["chg_3h_pct"]}) >= 3
+    assert abs(spcx["kalman_vel"]) > 0.0
+    assert "recent_tape_15m" not in spcx
+
+    # 2. _compute_short_slopes_from_series keeps growth_2_5h on the same scale as slope_2_5h
+    slopes = _compute_short_slopes_from_series(rth_bars)
+    assert "slope_2_5h" in slopes and "growth_2_5h" in slopes
+    assert abs(slopes["growth_2_5h"]) < 0.05
+
+    # 3. harvest_log_anomalies_from_dirs deduplicates unstamped echo and suppresses recovered manage_agy daemon errors
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    s_fmt = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s - ago))  # noqa: E731
+    agy_log = log_dir / "manage_agy.log"
+    agy_log.write_text(
+        f"[{s_fmt(1800)}] [manage_agy] WARNING: Daemon inactive/dead. Attempting automatic recovery...\n"
+        "Remote-control daemon stopped.\n"
+        "  Error: not signed in: run `agy`, sign in, then run `agy remote-control start`\n"
+        f"[{s_fmt(1797)}] [manage_agy] ERROR: Failed to recover daemon. Output: Remote-control daemon stopped.   Error: not signed in: run `agy`, sign in, then run `agy remote-control start`\n"
+        f"[{s_fmt(600)}] [manage_agy] Remote-control daemon started.\n"
+        f"[{s_fmt(600)}] [manage_agy] Daemon status: active\n",
+        encoding="utf-8",
+    )
+    summary_recovered = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=1.0)
+    assert summary_recovered.error_count == 0
+    assert summary_recovered.persistent_errors == []
+
+    # When the failure is at the very tail without subsequent recovery, it is counted once (not double-counted)
+    agy_log.write_text(
+        f"[{s_fmt(60)}] [manage_agy] WARNING: Daemon inactive/dead. Attempting automatic recovery...\n"
+        "  Error: not signed in: run `agy`, sign in, then run `agy remote-control start`\n"
+        f"[{s_fmt(58)}] [manage_agy] ERROR: Failed to recover daemon. Output: Error: not signed in: run `agy`, sign in, then run `agy remote-control start`\n",
+        encoding="utf-8",
+    )
+    summary_unrecovered = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=1.0)
+    assert summary_unrecovered.error_count == 1
+    assert len(summary_unrecovered.persistent_errors) == 1
+    assert summary_unrecovered.persistent_errors[0]["unresolved_at_tail"] is True
+
+
+def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_traceback_harvesting(tmp_path):
+    """Verify:
+    - Bug 8: SentimentAdvisor._effective_cache_dir strips CACHEDB_SUBDOMAINS ('macro') and resolves prices/cache_24_price_BTCUSDC.json so BTC Intraday Structure is included in prompt
+    - Bug 9: populate_market_and_portfolio_snapshot enriches sentiment_advisor live_flow_divergence before scope='equities' clears snapshot.microstructure
+    - Bug 10: compute_dynamic_sentiment_interval extracts fallback prev_fg_val and prev_adv from cached_assessment summary/key_risks after daemon restart
+    - Bug 11: collect_pretrade_telemetry scales orderbook wall threshold by total depth, prefers same-quote-family venue fills (HYPEUSDC vs HYPEUSD), and formats missing last_sell as 'none'
+    - Bug 12: harvest_log_anomalies_from_dirs captures Python terminal exception lines (RuntimeError:, TimeoutError:, ReadTimeout:) while skipping interior traceback boilerplate
+    """
+    from types import SimpleNamespace
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
+    from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        apply_asset_scope_filter,
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Bug 8: SentimentAdvisor with cache_file inside cachedb/macro/ finds cachedb/prices/cache_24_price_BTCUSDC.json
+    c_root = tmp_path / "cachedb"
+    (c_root / "macro").mkdir(parents=True, exist_ok=True)
+    (c_root / "prices").mkdir(parents=True, exist_ok=True)
+    now_ms = int(1_793_751_600 * 1000)
+    btc_pts = [[now_ms - (30 - i) * 300_000, 76000.0 + i * 25.0] for i in range(31)]
+    (c_root / "prices" / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": btc_pts}}),
+        encoding="utf-8",
+    )
+    captured_prompts = []
+
+    class _DummyGemini:
+        def query_json(self, prompt, **kw):
+            captured_prompts.append(prompt)
+            return {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.7,
+                "summary": "Balanced market.",
+                "key_risks": ["Macro"],
+                "recommended_action": "HOLD",
+            }
+
+    adv = SentimentAdvisor(
+        gemini_client=_DummyGemini(),
+        cache_file=str(c_root / "macro" / "sentiment_eval.json"),
+    )
+    assert adv._effective_cache_dir() == str(c_root)
+    adv.review(force_refresh=True, now_ts=1_793_751_600.0)
+    assert captured_prompts and "- BTC Intraday Structure:" in captured_prompts[0]
+
+    # 2. Bug 9: enrich_sentiment_advisor_live_flow_divergence runs before equities scope clears microstructure
+    sa_dict = {
+        "market_bias": "BEARISH",
+        "recommended_action": "DEFENSIVE",
+        "age_min": 40.0,
+        "summary": "Seller dominance with weak taker buy/sell ratio (0.5627).",
+    }
+    micro = {"BTCUSDC": {"taker_buy_sell_ratio": 1.15, "cvd_15m_usd": 1_500_000.0}}
+    enrich_sentiment_advisor_live_flow_divergence(sa_dict, micro)
+    _, filtered_micro = apply_asset_scope_filter({}, micro, {}, "equities", {}, {})
+    assert filtered_micro == {}
+    assert "live_flow_divergence" in sa_dict
+    assert "LIVE_FLOW_RECOVERY" in sa_dict["live_flow_divergence"]
+
+    # 3. Bug 10: compute_dynamic_sentiment_interval fallback extraction of prev_fg_val and prev_adv from cached_assessment
+    cached_assess = SimpleNamespace(
+        risk_level="MODERATE",
+        market_bias="NEUTRAL",
+        recommended_action="HOLD",
+        summary="24h breadth shows 80.9% advancing whileperp flow cools.",
+        key_risks=["Sticky macro fear (F&G at 26) despite relief."],
+    )
+    iv_fg, reason_fg = compute_dynamic_sentiment_interval(
+        base_interval_sec=3600.0,
+        last_eval_ts=1000.0,
+        now_ts=2000.0,
+        cached_assessment=cached_assess,
+        fear_greed=SimpleNamespace(value=35, is_extreme_fear=False, is_extreme_greed=False),
+        breadth=SimpleNamespace(advance_ratio=0.75, median_change_pct=1.0, regime="BULLISH"),
+        prev_fear_greed_val=None,
+        prev_advance_ratio=None,
+    )
+    assert reason_fg == "fear_greed_jump_+9pts"
+    assert iv_fg <= 900.0
+
+    iv_br, reason_br = compute_dynamic_sentiment_interval(
+        base_interval_sec=3600.0,
+        last_eval_ts=1000.0,
+        now_ts=2000.0,
+        cached_assessment=cached_assess,
+        fear_greed=SimpleNamespace(value=28, is_extreme_fear=False, is_extreme_greed=False),
+        breadth=SimpleNamespace(advance_ratio=0.45, median_change_pct=-0.5, regime="NEUTRAL"),
+        prev_fear_greed_val=None,
+        prev_advance_ratio=None,
+    )
+    assert reason_br == "breadth_shift_-0.36"
+    assert iv_br <= 900.0
+
+    # 4. Bug 11: load_symbol_best_recent_fills prefers same-quote-family venue fills (HYPEUSDC -> Hyperliquid over Kraken HYPEUSD)
+    orders_dir = c_root / "orders"
+    orders_dir.mkdir(parents=True, exist_ok=True)
+    (orders_dir / "cache_trade_kraken.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPEUSD": [
+                    {"order_id": "K1", "side": "buy", "status": "closed", "executed_qty": 5.95, "price": 84.0, "update_time": 2000}
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    (orders_dir / "cache_trade_hyperliquid.json").write_text(
+        json.dumps({
+            "items": {
+                "HYPE": [
+                    {"order_id": "HL1", "side": "buy", "status": "filled", "executed_qty": 1.64, "price": 87.267, "update_time": 1500}
+                ]
+            }
+        }),
+        encoding="utf-8",
+    )
+    hl_fills = load_symbol_best_recent_fills(str(c_root), "HYPEUSDC", ["HYPEUSDC", "HYPEUSDT", "HYPEUSD", "HYPE"])
+    kr_fills = load_symbol_best_recent_fills(str(c_root), "HYPEUSD", ["HYPEUSD", "HYPEUSDC", "HYPEUSDT", "HYPE"])
+    assert hl_fills is not None and abs(float(hl_fills["last_buy"]["price"]) - 87.267) < 1e-4
+    assert kr_fills is not None and abs(float(kr_fills["last_buy"]["price"]) - 84.0) < 1e-4
+
+    # 5. Bug 12: harvest_log_anomalies_from_dirs captures Python terminal exception lines and skips traceback boilerplate
+    tb_dir = tmp_path / "tb_logs"
+    tb_dir.mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    clk = time.strftime("%H:%M:%S", time.localtime(now_s - 30))
+    (tb_dir / "HL-bot.log").write_text(
+        f"[{clk}]   [STRAT] state loaded\n"
+        "Traceback (most recent call last):\n"
+        '  File "/app/urllib3/util/retry.py", line 474, in increment\n'
+        "    raise reraise(type(error), error, _stacktrace)\n"
+        "urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='api.hyperliquid.xyz', port=443): Read timed out.\n\n"
+        "The above exception was the direct cause of the following exception:\n\n"
+        "Traceback (most recent call last):\n"
+        '  File "/app/strategies/spot_engine.py", line 402, in __init__\n'
+        '    raise RuntimeError(f"Cannot start {pair}: venue precision is unavailable") from exc\n'
+        "RuntimeError: Cannot start HYPE: venue precision is unavailable\n",
+        encoding="utf-8",
+    )
+    tb_summary = harvest_log_anomalies_from_dirs([str(tb_dir)], lookback_hours=1.0)
+    samples = [pe["sample"] for pe in tb_summary.persistent_errors]
+    assert any("RuntimeError: Cannot start HYPE: venue precision is unavailable" in s for s in samples)
+    assert any("ReadTimeoutError:" in s for s in tb_summary.critical_events)
+    assert not any(s == "Traceback (most recent call last):" for s in tb_summary.critical_events)
+    assert not any("The above exception was the direct cause" in s for s in tb_summary.critical_events)
+    assert not any("raise reraise" in s for s in tb_summary.critical_events)
+
+    # 6. Bug 13: parse_venue_cycle_state sets last_exit_kind="REDUCE" when last_exit_kind is None and sell_p < avg_cost_px * 0.995
+    from intelligence.sentiment.evaluators.portfolio_evaluator import parse_venue_cycle_state
+    spcx_cyc = parse_venue_cycle_state(
+        {
+            "qty": 13.71,
+            "cost_usd": 2033.24,
+            "last_sell_price": 138.9,
+            "last_exit_kind": None,
+            "realized_pnl": -115.65,
+            "entry_ts": 1700000000000,
+        },
+        "SPCX_US_EQ",
+        {},
+    )
+    assert spcx_cyc["last_exit_kind"] == "REDUCE"
+
+    # 7. Bug 14: enrich_24h_and_microstructure recenters stale ob_mid_price and walls on multi-venue USD pair (HYPEUSD)
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    ob_dir = tmp_path / "ob_recenter"
+    (ob_dir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (ob_dir / "telemetry" / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSD",
+                "timestamp": now_s,
+                "mid_price": 86.405,
+                "best_bid": 86.38,
+                "best_ask": 86.43,
+                "spread_bps": 5.79,
+                "imbalance_ratio": 0.12,
+                "bid_depth_usd": 45000.0,
+                "ask_depth_usd": 35000.0,
+                "largest_bid_wall_price": 85.50,
+                "largest_bid_wall_usd": 12000.0,
+                "largest_ask_wall_price": 87.24,
+                "largest_ask_wall_usd": 11000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_hype = {"HYPEUSD": {"price": 83.79}, "HYPEUSDC": {"price": 83.8075}}
+    micro_hype: dict = {}
+    enrich_24h_and_microstructure(str(ob_dir), str(tmp_path), pt_hype, micro_hype, {}, {}, now_s)
+    assert abs(float(micro_hype["HYPEUSD"]["ob_mid_price"]) - 83.79) < 1e-4
+    assert float(micro_hype["HYPEUSD"]["bid_wall_px"]) < 83.79
+    assert float(micro_hype["HYPEUSD"]["ask_wall_px"]) > 83.79
+
+    # 8. Bug 15: build_cross_market_context includes last_exit_kind, pos_peak, dd_from_peak_pct, realized_pnl_usd in t212_cycle
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    cm_ctx = build_cross_market_context(
+        {"SPCX_US_EQ": {"price": 138.36}},
+        {},
+        {"SPCX_US_EQ": spcx_cyc},
+    )
+    assert cm_ctx["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]["last_exit_kind"] == "REDUCE"
+    assert cm_ctx["equity_bellwethers"]["SPCX_US_EQ"]["t212_cycle"]["realized_pnl_usd"] == -115.65
+
+    # 9. Bug 16: _format_market_prices_section omits vs_btc(7d=...) when symbol has sub-24h history matching 24h range
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
+    pt_short: dict = {
+        "BTCUSDC": {
+            "price": 75575.56,
+            "trend": -1,
+            "growth_coefficient": -0.5,
+            "chg_15m_pct": -0.10,
+            "chg_1h_pct": -0.30,
+            "chg_24h_pct": -2.10,
+            "chg_7d_pct": -4.82,
+        },
+        "ADAUSD": {
+            "price": 0.18783,
+            "trend": 0,
+            "growth_coefficient": 0.0,
+            "chg_15m_pct": 0.05,
+            "chg_1h_pct": 0.10,
+            "chg_7d_pct": -1.22,
+            "low_24h": 0.186567,
+            "high_24h": 0.191635,
+            "low_7d": 0.186567,
+            "high_7d": 0.191635,
+        },
+    }
+    pt_lines = _format_market_prices_section(pt_short)
+    ada_line = next(l for l in pt_lines if "ADAUSD:" in l)
+    assert "1h=+0.40%" in ada_line
+    assert "7d=+3.60%" not in ada_line
+    assert "7d_range=" not in ada_line
+
+    # 10. Bug 17: build_cross_market_context omits sub-24h chg_7d_pct on crypto_bellwethers when matching 24h range
+    cm_short = build_cross_market_context(pt_short, {}, {})
+    assert "chg_7d_pct" not in cm_short["crypto_bellwethers"]["ADA"]
+    assert cm_short["crypto_bellwethers"]["BTC"]["chg_7d_pct"] == -4.82
+
+    # 11. Bug 18: enrich_open_limit_orders_tca provides recommended_front_run_px across the full BEHIND_BID_WALL window (<=1.5% from wall, >=15bps from spot)
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    tao_orders = [
+        {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "price": 220.0, "qty": 2.2727}
+    ]
+    enrich_open_limit_orders_tca(
+        tao_orders,
+        {"TAOUSDC": {"price": 223.4, "vol_1h_pct": 1.23}},
+        {
+            "TAOUSDC": {
+                "ob_mid_price": 223.4,
+                "best_bid": 223.3,
+                "best_ask": 223.5,
+                "spread_bps": 8.95,
+                "bid_wall_px": 222.9,
+                "bid_wall_usd": 14276.0,
+            }
+        },
+    )
+    assert tao_orders[0]["wall_queue_pos"] == "BEHIND_BID_WALL"
+    assert tao_orders[0]["recommended_front_run_px"] == 222.92
+
+    # 12. Bug 19: _populate_cycle_fallback_recent_order populates ro["last_sell"] from cycle last_sell_price when missing from trade cache
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    ada_pos = [{"venue": "kraken", "symbol": "ADAUSD", "free_base": 4294.02, "price": 0.18783}]
+    ada_ro = {
+        "last_action_side": "BUY",
+        "last_action_actor": "BOT",
+        "last_buy": {"price": 0.224378, "qty": 1448.45, "actor": "BOT"},
+        "last_sell": None,
+        "active_avg_buy_px": 0.227623,
+        "recent_buys": [{"price": 0.229281, "qty": 2834.95}, {"price": 0.224378, "qty": 1448.45}],
+    }
+    ada_ro_map = {"ADAUSD": ada_ro}
+    enrich_positions_with_orders_and_cycles(
+        ada_pos,
+        {"ADAUSD": {"price": 0.18783}},
+        {},
+        {"kraken": ada_ro_map},
+        ada_ro_map,
+        {"ADAUSD": {"qty": 4294.02, "avg_cost_px": 0.227623, "last_buy_price": 0.224378, "last_sell_price": 0.238254}},
+        {},
+        {},
+        {},
+    )
+    assert ada_ro["last_sell"] is not None
+    assert ada_ro["last_sell"]["price"] == 0.238254
+
+    # 13. Bugs 20, 21, 22: collect_pretrade_telemetry includes bimodal sec_POC/LVN/shape, recenters stale USD orderbook walls, and formats price-only fills
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc_mod
+    pt_cache = tmp_path / "pt_cache"
+    pt_cache.mkdir(parents=True, exist_ok=True)
+    (pt_cache / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({
+            "symbol": "HYPEUSD",
+            "imbalance_ratio": 0.45,
+            "mid_price": 86.405,
+            "best_bid": 86.38,
+            "best_ask": 86.43,
+            "spread_bps": 5.79,
+            "bid_depth_usd": 450000.0,
+            "ask_depth_usd": 470000.0,
+            "depth_1pct_bid_usd": 310000.0,
+            "depth_1pct_ask_usd": 330000.0,
+            "largest_bid_wall_price": 85.50,
+            "largest_bid_wall_usd": 384025.0,
+            "largest_ask_wall_price": 87.24,
+            "largest_ask_wall_usd": 391866.0,
+        }),
+        encoding="utf-8",
+    )
+    bimodal_pts = (
+        [[now_ms - (40 - i) * 300_000, 86.40 + (i % 3) * 0.02] for i in range(20)]
+        + [[now_ms - (20 - i) * 300_000, 83.75 + (i % 3) * 0.02] for i in range(19)]
+        + [[now_ms, 83.79]]
+    )
+    (pt_cache / "cache_24_price_HYPEUSD.json").write_text(
+        json.dumps({"items": {"HYPEUSD": bimodal_pts}}),
+        encoding="utf-8",
+    )
+    (pt_cache / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSD": {"price": 83.79}}}),
+        encoding="utf-8",
+    )
+    orig_best_fills = ptc_mod.load_symbol_best_recent_fills
+    try:
+        ptc_mod.load_symbol_best_recent_fills = lambda *a, **kw: {
+            "last_action_side": "BUY",
+            "last_buy": {"price": 84.0, "qty": 5.95, "actor": "BOT"},
+            "last_sell": {"price": 87.12, "qty": None, "actor": "CYCLE"},
+        }
+        pt_hype = ptc_mod.collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(pt_cache))
+    finally:
+        ptc_mod.load_symbol_best_recent_fills = orig_best_fills
+    vp_str = pt_hype.get("24h Volume Profile (POC / Value Area)", "")
+    assert "sec_POC=$" in vp_str and "LVN=$" in vp_str and "shape=BIMODAL" in vp_str
+    # Bid wall at $85.50 on stale mid $86.405 is recentered below live $83.79 (~$82.91)
+    assert "@ $82.91" in pt_hype.get("Orderbook Bid Wall Ahead", "")
+    assert "@ $84.60" in pt_hype.get("Orderbook Ask Wall Ahead", "")
+    assert "Last SELL=87.12 (by=CYCLE)" in pt_hype.get("Recent Venue Fills", "")
+
+    # 14. Bugs 23, 24, 25: _format_recent_order_line 20bps swing dedup, build_cross_market_context bimodal/spot_cvd fields, and macro_intelligence.conf config audit
+    from orchestratorOS.supervisor.prompt_sections import _format_recent_order_line
+    from orchestratorOS.lib.technical_repair_ssot import audit_workspace_configs
+    hype_ro_line = _format_recent_order_line(
+        "HYPEUSDC",
+        {
+            "last_action_side": "BUY",
+            "last_action_actor": "AI",
+            "last_buy": {"price": 87.267, "qty": 1.64, "actor": "AI"},
+            "last_sell": {"price": 87.733, "qty": 1.7, "actor": "AI"},
+            "active_avg_buy_px": 86.861664,
+            "swing_subcycle_avg_px": 86.852582,
+        },
+        now_ms,
+    )
+    assert "Active Cycle Avg BUY=86.861664" in hype_ro_line
+    assert "Swing Sub-Cycle Avg BUY=" not in hype_ro_line
+
+    cm_bimodal = build_cross_market_context(
+        {
+            "ARBUSDC": {
+                "price": 0.15565,
+                "poc_px": 0.158096,
+                "sec_poc_px": 0.152523,
+                "lvn_px": 0.154393,
+                "vah_px": 0.1626,
+                "val_px": 0.153654,
+                "va_regime": "INSIDE_VA_LOWER",
+                "profile_shape": "BIMODAL",
+            }
+        },
+        {
+            "ARBUSDC": {
+                "cvd_15m_usd": 48073.0,
+                "cvd_regime": "aggressive_buying",
+                "spot_cvd_15m_usd": 12300.0,
+                "spot_perp_flow_regime": "SYNCHRONIZED_SPOT_PERP_BUYING",
+                "perp_spot_basis_bps": -0.2,
+            }
+        },
+        {},
+    )
+    arb_cb = cm_bimodal["crypto_bellwethers"]["ARB"]
+    assert arb_cb["sec_poc_px"] == 0.152523
+    assert arb_cb["lvn_px"] == 0.154393
+    assert arb_cb["profile_shape"] == "BIMODAL"
+    assert arb_cb["spot_cvd_15m_usd"] == 12300.0
+    assert arb_cb["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+    assert arb_cb["perp_spot_basis_bps"] == -0.2
+
+    bad_cfg_ws = tmp_path / "bad_cfg_ws"
+    bad_cfg_ws.mkdir(parents=True, exist_ok=True)
+    (bad_cfg_ws / "macro_intelligence.conf").write_text("[feeds]\nonly_feeds = 1\n", encoding="utf-8")
+    cfg_res = audit_workspace_configs(str(bad_cfg_ws))
+    assert "macro_intelligence.conf" in cfg_res["checked_files"]
+    assert any("missing required [sessions] section" in iss for iss in cfg_res["issues"])
+
+    # Bugs 26, 27 & 28:
+    # - extract_high_severity_headlines_and_digest filters reference/encyclopedia articles and syndicated semantic duplicates
+    # - compute_dynamic_geopolitical_interval ignores syndicated rewrites of already-digested headlines
+    # - GeopoliticalThreatAnalyzer._headline_age_suffix formats age=...m for recent headlines
+    from intelligence.macro_sentiment_ssot import (
+        compute_dynamic_geopolitical_interval,
+        extract_high_severity_headlines_and_digest,
+    )
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+
+    raw_snap_syndicated = {
+        "headlines": [
+            {
+                "title": "Binance fake job interviews linked to $6.3bn crypto hack - Reuters",
+                "source": "Reuters",
+                "url": "https://example.com/reuters-1",
+                "is_high_severity": True,
+                "first_seen_ts": (now_ms / 1000.0) - 180.0 * 60.0,
+            },
+            {
+                "title": "Hackers used fake job interviews in $6.3bn Binance crypto hack - Bloomberg",
+                "source": "Bloomberg",
+                "url": "https://example.com/bloomberg-2",
+                "is_high_severity": True,
+                "first_seen_ts": (now_ms / 1000.0) - 40.0 * 60.0,
+            },
+            {
+                "title": "2026 Iran war | Oil, Explained, History - Britannica",
+                "source": "Britannica",
+                "url": "https://www.britannica.com/event/2026-iran-war",
+                "is_high_severity": True,
+                "first_seen_ts": (now_ms / 1000.0) - 20.0 * 60.0,
+            },
+        ],
+        "high_severity_count": 3,
+        "has_critical_shock_keywords": False,
+    }
+    high_sev_dedup, digest_dedup = extract_high_severity_headlines_and_digest(raw_snap_syndicated)
+    assert len(high_sev_dedup) == 1
+    assert "Reuters" in digest_dedup
+    assert "Bloomberg" not in digest_dedup
+    assert "Britannica" not in digest_dedup
+
+    itv_synd, reason_synd = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=(now_ms / 1000.0) - 1200.0,
+        now_ts=(now_ms / 1000.0),
+        cached_assessment={"threat_level": "ELEVATED", "is_fallback": False},
+        news_snapshot={
+            "headlines": [
+                {
+                    "title": "Hackers used fake job interviews in $6.3bn Binance crypto hack - Bloomberg",
+                    "source": "Bloomberg",
+                    "is_high_severity": True,
+                }
+            ],
+            "high_severity_count": 1,
+            "has_critical_shock_keywords": False,
+        },
+        headlines_changed=True,
+        last_headlines_digest="Binance fake job interviews linked to $6.3bn crypto hack - Reuters",
+    )
+    assert itv_synd == 16200.0
+    assert reason_synd == "standard_geopolitical_ttl_elevated"
+
+    age_sfx = GeopoliticalThreatAnalyzer._headline_age_suffix(
+        high_sev_dedup[0],
+        now_ms / 1000.0,
+    )
+    assert age_sfx == ", age=180m"
 
 

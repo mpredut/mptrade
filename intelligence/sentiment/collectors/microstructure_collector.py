@@ -18,7 +18,11 @@ from cachepaths import (
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
     clean_scale,
+    lookup_symbol_cache_items,
+    normalize_epoch_sec,
     obj_attr,
+    resolve_now_ts,
+    resolve_read_json_cached,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -59,6 +63,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_volume_profile_metrics,
     pct_delta,
     range_position_pct,
+    recalculate_live_price_geometry,
     round_opt_px,
 )
 from instrument_registry import casefold_get
@@ -75,24 +80,7 @@ logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
 
 def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    _defaults = (_default_read_json_cached, read_json_recovering)
-    if callable(read_json_fn) and read_json_fn not in _defaults:
-        return read_json_fn
-    if callable(read_json_cached) and read_json_cached not in _defaults:
-        return read_json_cached
-    import sys as _sys
-
-    for _mod_name in (
-        "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-        "intelligence.sentiment.guards.high_stake_guard",
-        "intelligence.sentiment.collectors.macro_telemetry_collector",
-        "intelligence.macro_sentiment_ssot",
-    ):
-        _mod = _sys.modules.get(_mod_name)
-        _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
-        if callable(_cand) and _cand not in _defaults:
-            return _cand
-    return read_json_fn if callable(read_json_fn) else read_json_cached
+    return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached)
 
 
 def _filter_ohlc_closes_since(
@@ -104,41 +92,29 @@ def _filter_ohlc_closes_since(
     cl_seq = getattr(series_obj, "closes", None) or ()
     if not isinstance(ts_seq, (list, tuple)) or not isinstance(cl_seq, (list, tuple)):
         return []
-    cutoff_s = cutoff_ts / 1000.0 if cutoff_ts > 1e11 else cutoff_ts
-    max_s = (max_ts / 1000.0 if max_ts > 1e11 else max_ts) if max_ts is not None else None
+    cutoff_s = normalize_epoch_sec(cutoff_ts, default=0.0, allow_zero=True) or 0.0
+    max_s = normalize_epoch_sec(max_ts, default=None, allow_zero=True) if max_ts is not None else None
     timed_out: List[Tuple[float, float]] = []
     for raw_ts, raw_px in zip(ts_seq, cl_seq):
-        ts_v = safe_pos_float(raw_ts, default=None)
+        ts_s = normalize_epoch_sec(raw_ts, default=None)
         px_v = safe_pos_float(raw_px, default=None)
-        if ts_v is None or px_v is None:
-            continue
-        ts_s = ts_v / 1000.0 if ts_v > 1e11 else ts_v
-        if ts_s >= cutoff_s and (max_s is None or ts_s <= max_s):
+        if ts_s is not None and px_v is not None and ts_s >= cutoff_s and (max_s is None or ts_s <= max_s):
             timed_out.append((ts_s, px_v))
     return [px_v for _, px_v in sorted(timed_out, key=lambda x: x[0])]
 
 
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
-    if isinstance(data, list):
-        return data
-    if not isinstance(data, dict):
-        return []
-    raw_items = data.get("items") if "items" in data else data
-    if isinstance(raw_items, dict):
-        for k_cand in cands:
-            if isinstance((ser := casefold_get(raw_items, k_cand, [])), list) and ser:
-                return ser
-        if "items" in data and len(raw_items) == 1 and cands:
-            only_k, first_val = next(iter(raw_items.items()))
-            if (
-                isinstance(first_val, list)
-                and canonical_base_asset(only_k) == canonical_base_asset(cands[0])
-                and compatible_quote_suffixes(only_k) == compatible_quote_suffixes(cands[0])
-            ):
-                return first_val
-    elif isinstance(raw_items, list):
-        return raw_items
-    return []
+    return (
+        lookup_symbol_cache_items(
+            data,
+            cand_keys=cands,
+            allow_base_fallback=False,
+            single_item_quote_fallback=True,
+            require_list=True,
+            unwrap_items=True,
+        )
+        or []
+    )
 
 
 def load_symbol_price_series(
@@ -452,11 +428,9 @@ def ensure_fresh_symbol_microstructure(
     if "PYTEST_CURRENT_TEST" in os.environ or not cache_dir or not os.path.isdir(cache_dir):
         return
     sym_u = str(symbol or "").strip().upper()
-    if not sym_u:
+    if not sym_u or "PYTEST_CURRENT_TEST" in os.environ:
         return
-    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
-    if eff_now > 1e11:
-        eff_now /= 1000.0
+    eff_now = resolve_now_ts(now_ts)
 
     def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
         fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{prefix}{sym_u}.json")))
@@ -542,24 +516,32 @@ def enrich_24h_and_microstructure(
     read_json_fn: Any = None,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
-    now_ts = (now_ts / 1000.0 if now_ts > 1e11 else now_ts) if (now_ts := safe_pos_float(now_ts, default=None)) is not None else _time.time()
+    now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn)
     btc_series_24h, btc_vals_7d = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True)
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
     t212_seeded_from_cache: set[str] = set()
-    for _, ticker in _iter_t212_state_files(workspace_dir):
+    t212_seed_tickers = [ticker for _, ticker in _iter_t212_state_files(workspace_dir)]
+    for bkey, bval in cached_bals.items():
+        if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict):
+            bticker = str(bval.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
+            if bticker and bticker not in t212_seed_tickers and (
+                bticker in prices_and_trends or (safe_pos_float(bval.get("free"), default=0.0) or 0.0) > 0.0
+            ):
+                t212_seed_tickers.append(bticker)
+    for ticker in t212_seed_tickers:
         cached_pos = cached_bals.get(f"pos:t212:{ticker}")
         cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
-        had_live_px = ticker in prices_and_trends and (safe_pos_float(prices_and_trends[ticker].get("price"), default=0.0) or 0.0) > 0.0
+        if cached_t212_px is not None:
+            cached_t212_px = round(cached_t212_px, 4)
         t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
         if cached_t212_px is not None and (
             ticker not in inst_by_sym or (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0
         ):
             t_entry["price"] = cached_t212_px
-            if not had_live_px or ticker not in inst_by_sym:
-                t212_seeded_from_cache.add(ticker)
+            t212_seeded_from_cache.add(ticker)
     from instruments_config import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
@@ -573,18 +555,25 @@ def enrich_24h_and_microstructure(
             prices_and_trends[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)
+        is_eq_sym = sym.endswith(("_EQ", "_US_EQ"))
         if sym == "BTCUSDC" and btc_series_24h:
             matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
         else:
             matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
         if sym_px_cur > 0 and matched_series_24h:
-            last_24_px = safe_float(matched_series_24h[-1][1], 0.0)
+            last_24_pt = _parse_ts_px_row(matched_series_24h[-1])
+            last_24_px = last_24_pt[1] if last_24_pt is not None else safe_float(matched_series_24h[-1][1], 0.0)
             if _prices_diverged(sym_px_cur, last_24_px):
                 matched_series_24h = []
             elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
-                matched_series_24h = list(matched_series_24h) + [[int(now_ts * 1000), sym_px_cur]]
-        if sym_px_cur > 0 and arch_vals_7d and _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
-            arch_vals_7d = []
+                now_ms_24 = int(now_ts * 1000)
+                if not is_eq_sym or (last_24_pt is not None and (now_ms_24 - last_24_pt[0]) <= 20 * 60 * 1000):
+                    matched_series_24h = list(matched_series_24h) + [[now_ms_24, sym_px_cur]]
+        if sym_px_cur > 0 and arch_vals_7d:
+            if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
+                arch_vals_7d = []
+            elif abs(sym_px_cur - safe_float(arch_vals_7d[-1], 0.0)) > 1e-9:
+                arch_vals_7d = list(arch_vals_7d) + [sym_px_cur]
         if safe_float(prices_and_trends[sym].get("price"), 0.0) <= 0.0:
             if matched_series_24h:
                 prices_and_trends[sym]["price"] = matched_series_24h[-1][1]
@@ -593,9 +582,17 @@ def enrich_24h_and_microstructure(
         s24_p0 = _parse_ts_px_row(matched_series_24h[0]) if len(matched_series_24h) >= 2 else None
         s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
+        post_rth_px_override: Optional[float] = None
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
+        if is_eq_sym and m24 and s24_p1 is not None and (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000:
+            for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                m24.pop(k_stale, None)
+            if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
+                post_rth_px_override = round(sym_px_cur, 4)
+                if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
+                    m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
         if arch_vals_7d and len(arch_vals_7d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
-            prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d))
+            prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
         ohlc_fn = getattr(getattr(inst_by_sym.get(sym), "_provider", None), "ohlc_series", None)
         if not callable(ohlc_fn) and "PYTEST_CURRENT_TEST" not in os.environ:
             sym_u = sym.upper()
@@ -630,9 +627,9 @@ def enrich_24h_and_microstructure(
                     if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                         s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
                         s60_ts = sorted(
-                            (ts_v / 1000.0 if ts_v > 1e11 else ts_v)
+                            ts_s
                             for raw_ts in (getattr(s60, "timestamps", None) or ())
-                            if (ts_v := safe_pos_float(raw_ts, default=None)) is not None
+                            if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
                         )
                         vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
                         if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
@@ -698,38 +695,39 @@ def enrich_24h_and_microstructure(
                 if pts_5d:
                     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
                     now_ms_i = int(now_ts * 1000)
-                    chart_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
-                    if chart_px > 0.0 and (
-                        not is_t212_inst
-                        or sym in t212_seeded_from_cache
-                        or sym_px_cur <= 0.0
-                        or abs(sym_px_cur - chart_px) < 1e-4
-                        or (chart_bar_fresh and abs(sym_px_cur - chart_px) > chart_px * 0.0025)
-                    ):
+                    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                    if chart_px > 0.0 and (sym_px_cur <= 0.0 or abs(sym_px_cur - chart_px) < 1e-4 or (not is_t212_inst and rth_bar_fresh)):
                         prices_and_trends[sym]["price"] = chart_px
                         sym_px_cur = chart_px
                     cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
                     pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
                     if len(pts_24h) < 10:
                         pts_24h = list(pts_5d[-78:])
-                    if (
-                        pts_24h
-                        and chart_bar_fresh
-                        and sym not in t212_seeded_from_cache
-                        and sym_px_cur > 0
-                        and not _prices_diverged(sym_px_cur, pts_24h[-1][1])
-                        and 1e-4 < abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) <= pts_24h[-1][1] * 0.0025
-                    ):
+                    px_diff_from_chart = bool(
+                        pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4
+                    )
+                    if px_diff_from_chart and rth_bar_fresh:
                         pts_24h = list(pts_24h) + [[now_ms_i, round(sym_px_cur, 4)]]
                     if m24 := (compute_24h_price_metrics(pts_24h) or {}):
                         matched_series_24h = pts_24h
+                        if not rth_bar_fresh:
+                            for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                                m24.pop(k_stale, None)
+                            if px_diff_from_chart:
+                                post_rth_px_override = round(sym_px_cur, 4)
+                                if "chg_24h_pct" in m24 and pts_24h[0][1] > 0:
+                                    m24["chg_24h_pct"] = pct_delta(post_rth_px_override, pts_24h[0][1])
                     vals_5d = [pt[1] for pt in pts_5d]
-                    if len(vals_5d) >= 2 and "chg_7d_pct" not in prices_and_trends[sym]:
+                    if post_rth_px_override is not None:
+                        vals_5d.append(post_rth_px_override)
+                    if len(vals_5d) >= 2:
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
             except Exception:
                 pass
         if m24:
             _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
+            if post_rth_px_override is not None:
+                recalculate_live_price_geometry(prices_and_trends[sym], post_rth_px_override)
 
         if sym.upper() in ("HYPEUSD", "TAOUSD", "ADAUSD"):
             ensure_fresh_symbol_microstructure(
@@ -746,6 +744,27 @@ def enrich_24h_and_microstructure(
                 if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
+                elif (
+                    not _prices_diverged(sym_px_m, ob_mid_m)
+                    and is_exact_ob_sym
+                    and str(sym).strip().upper().endswith("USD")
+                    and (
+                        bool(matched_series_24h)
+                        or any(
+                            pk != sym
+                            and canonical_base_asset(pk) == canonical_base_asset(sym)
+                            and (p_sib := safe_pos_float((pv if isinstance(pv, dict) else {}).get("price"), default=None)) is not None
+                            and abs(sym_px_m - p_sib) / max(sym_px_m, p_sib) <= 0.01
+                            for pk, pv in prices_and_trends.items()
+                        )
+                    )
+                ):
+                    scale_r = sym_px_m / ob_mid_m
+                    px_dec = _auto_px_decimals(sym_px_m)
+                    m_info["ob_mid_price"] = round(sym_px_m, px_dec)
+                    for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+                        if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
+                            m_info[k_sc] = round(v_sc * scale_r, px_dec)
             elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, ob_mid_m)):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     m_info.pop(k_strip, None)

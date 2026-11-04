@@ -21,7 +21,7 @@ QUOTE_SUFFIXES = (
 
 
 def _clean_fill_id(val: object) -> str:
-    return _clean_single_order_id(val) or ""
+    return clean_order_id_str(val)
 
 
 def remaining_average_cost(fills, held_qty):
@@ -572,6 +572,7 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
 from .base import (  # noqa: E402
     _clean_single_order_id,
     clean_order_id,
+    clean_order_id_str,
     extract_order_fee,
     extract_order_price,
     extract_order_qty,

@@ -59,6 +59,7 @@ from botcore import (
     fetch_public_json as _fetch_public_json,
     is_cache_fresh,
     is_interval_due,
+    normalize_epoch_sec,
     obj_attr,
     obj_float,
     parse_dotenv,
@@ -66,6 +67,7 @@ from botcore import (
     required_float_env,
     resolve_now_ts,
     resolve_order_notional,
+    resolve_patched_attr,
     safe_float,
     safe_int,
     safe_nonneg_float,  # re-exported for intelligence.sentiment.guards
@@ -83,6 +85,7 @@ from cachepaths import (
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    compatible_quote_suffixes,
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
@@ -93,10 +96,12 @@ from state_io import (
     read_json_dict,
     read_json_dict_cached,
     read_json_dict_recovering as _default_read_json_dict_recovering,
+    read_json_recovering as _default_read_json_recovering,
     read_text_lines,
-    save_json_state,
+    save_json_state as _default_save_json_state,
 )
 
+save_json_state = _default_save_json_state
 read_json_dict_recovering = _default_read_json_dict_recovering
 read_json_cached = _default_read_json_dict_recovering
 
@@ -122,11 +127,25 @@ def extract_high_severity_headlines_and_digest(
 ) -> Tuple[List[Any], str]:
     """Extract high-severity headlines list and canonical digest string from a NewsFeedSnapshot."""
     raw_hl = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
-    high_sev = (
-        [h for h in raw_hl if _parse_bool_flag(obj_attr(h, "is_high_severity", False), False)]
-        if isinstance(raw_hl, (list, tuple))
-        else []
-    )
+    high_sev: List[Any] = []
+    if isinstance(raw_hl, (list, tuple)):
+        kept_titles: List[str] = []
+        for h in raw_hl:
+            if not _parse_bool_flag(obj_attr(h, "is_high_severity", False), False):
+                continue
+            title_s = str(obj_attr(h, "title", None) or "").strip()
+            src_s = str(obj_attr(h, "source", None) or "").strip()
+            url_s = str(obj_attr(h, "url", None) or obj_attr(h, "link", None) or "").strip()
+            if is_excluded_reference_news_item(title_s, src_s, url_s):
+                continue
+            if title_s and any(
+                title_s.lower() == kt.lower() or headlines_are_semantic_duplicates(title_s, kt)
+                for kt in kept_titles
+            ):
+                continue
+            if title_s:
+                kept_titles.append(title_s)
+            high_sev.append(h)
     digest = " || ".join(str(obj_attr(h, "title", None) or "") for h in high_sev[:max_digest_items])
     return high_sev, digest
 
@@ -435,12 +454,57 @@ def normalize_recommended_brake(value: Any, threat_level: Optional[str] = None) 
 # 5. Unified Cached Telemetry & Assessment Loaders (SSOT)
 # ============================================================================
 
-def _resolve_ssot_json_reader(read_json_fn: Any = None) -> Callable[[str], Any]:
-    if callable(read_json_fn):
+_TELEMETRY_PATCH_MODULES = (
+    "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+    "intelligence.sentiment.guards.high_stake_guard",
+    "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "intelligence.sentiment.collectors.microstructure_collector",
+    "intelligence.sentiment.collectors.portfolio_collector",
+    "intelligence.macro_sentiment_ssot",
+)
+
+
+def resolve_read_json_cached(
+    read_json_fn: Any = None,
+    *,
+    local_fn: Any = None,
+    default_fn: Any = None,
+) -> Callable[[str], Any]:
+    """Resolve ``read_json_cached`` across telemetry collectors and SSOT modules, honoring monkeypatches."""
+    _defaults = (_default_read_json_dict_recovering, _default_read_json_recovering)
+    if callable(read_json_fn) and read_json_fn not in _defaults:
         return read_json_fn
-    if callable(read_json_cached) and read_json_cached is not _default_read_json_dict_recovering:
-        return read_json_cached
-    return read_json_dict_recovering
+    eff_default = default_fn if callable(default_fn) else (local_fn if callable(local_fn) else read_json_cached)
+    return resolve_patched_attr(  # type: ignore[return-value]
+        "read_json_cached",
+        read_json_fn if callable(read_json_fn) else eff_default,
+        local_val=local_fn if callable(local_fn) else read_json_cached,
+        defaults=_defaults,
+        modules=_TELEMETRY_PATCH_MODULES,
+        require_callable=True,
+    )
+
+
+def resolve_save_json_state(
+    save_json_fn: Any = None,
+    *,
+    local_fn: Any = None,
+) -> Callable[..., Any]:
+    """Resolve ``save_json_state`` across telemetry collectors and SSOT modules, honoring monkeypatches."""
+    if callable(save_json_fn) and save_json_fn is not _default_save_json_state:
+        return save_json_fn
+    eff_local = local_fn if callable(local_fn) else save_json_state
+    return resolve_patched_attr(  # type: ignore[return-value]
+        "save_json_state",
+        save_json_fn if callable(save_json_fn) else eff_local,
+        local_val=eff_local,
+        defaults=(_default_save_json_state,),
+        modules=_TELEMETRY_PATCH_MODULES,
+        require_callable=True,
+    )
+
+
+_resolve_ssot_json_reader = resolve_read_json_cached
 
 
 def read_first_cached_dict(
@@ -634,35 +698,73 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
 
 def lookup_symbol_cache_items(
     mapping: Any,
-    symbol: Any,
+    symbol: Any = "",
     *,
     cand_keys: Optional[Sequence[Any]] = None,
     allow_base_fallback: bool = True,
+    single_item_quote_fallback: bool = False,
     require_list: bool = False,
+    require_dict: bool = False,
+    unwrap_items: bool = False,
 ) -> Any:
-    """Resolve symbol entries from a cache dictionary across symbol variants and optional base-asset fallback."""
-    if not isinstance(mapping, dict) or not isinstance(symbol, str) or not symbol.strip():
+    """Resolve symbol entries from a cache dictionary (or list) across symbol variants and optional base-asset fallback."""
+    if unwrap_items and isinstance(mapping, list) and require_list:
+        return mapping
+    if not isinstance(mapping, dict):
         return None
-    sym_u = symbol.strip().upper()
-    sym_clean = clean_symbol_key(sym_u)
-    sym_canon = canonical_symbol_key(sym_u)
-    cands: Sequence[Any] = (
-        cand_keys
-        if cand_keys is not None
-        else (symbol, sym_u, sym_clean, *( [sym_canon] if sym_canon else [] ), *cache_symbol_variants(symbol))
-    )
+    has_items_wrapper = "items" in mapping
+    target_map: Any = mapping
+    if unwrap_items and has_items_wrapper and (not isinstance(symbol, str) or not symbol or symbol not in mapping):
+        raw_items = mapping.get("items")
+        if isinstance(raw_items, list) and require_list:
+            return raw_items
+        if isinstance(raw_items, dict):
+            target_map = raw_items
+    if not isinstance(target_map, dict):
+        return None
+
+    def _valid(val: Any) -> bool:
+        if not val:
+            return False
+        if require_list and not isinstance(val, list):
+            return False
+        if require_dict and not isinstance(val, dict):
+            return False
+        return True
+
+    sym_str = symbol.strip() if isinstance(symbol, str) else ""
+    if cand_keys is not None:
+        cands: Sequence[Any] = cand_keys
+        primary_sym = sym_str or (str(cand_keys[0]).strip() if cand_keys and cand_keys[0] else "")
+    elif sym_str:
+        sym_u = sym_str.upper()
+        sym_clean = clean_symbol_key(sym_u)
+        sym_canon = canonical_symbol_key(sym_u)
+        cands = (sym_str, sym_u, sym_clean, *([sym_canon] if sym_canon else []), *cache_symbol_variants(sym_str))
+        primary_sym = sym_str
+    else:
+        return None
+
     for cand in cands:
         if not cand:
             continue
-        items = casefold_get(mapping, cand)
-        if items and (not require_list or isinstance(items, list)):
+        items = casefold_get(target_map, cand)
+        if _valid(items):
             return items
-    if allow_base_fallback:
-        s_base = canonical_base_asset(symbol)
+    if allow_base_fallback and primary_sym:
+        s_base = canonical_base_asset(primary_sym)
         if s_base:
-            for k, v in mapping.items():
-                if v and (not require_list or isinstance(v, list)) and canonical_base_asset(str(k)) == s_base:
+            for k, v in target_map.items():
+                if _valid(v) and canonical_base_asset(str(k)) == s_base:
                     return v
+    elif single_item_quote_fallback and has_items_wrapper and len(target_map) == 1 and primary_sym:
+        only_k, first_val = next(iter(target_map.items()))
+        if (
+            _valid(first_val)
+            and canonical_base_asset(str(only_k)) == canonical_base_asset(primary_sym)
+            and compatible_quote_suffixes(str(only_k)) == compatible_quote_suffixes(primary_sym)
+        ):
+            return first_val
     return None
 
 

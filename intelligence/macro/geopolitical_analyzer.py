@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from intelligence.macro.news_feed_collector import NewsFeedSnapshot
+from intelligence.macro.news_feed_collector import NewsFeedCollector, NewsFeedSnapshot
 from intelligence.macro_sentiment_ssot import (
     CachedTopicAssessmentAgent,
     clean_scale,
@@ -24,6 +24,7 @@ from intelligence.macro.lexicon_ssot import (
     demote_dynamic_acute_terms,
     get_active_acute_shock_phrases,
     has_acute_shock_keywords,
+    headlines_are_semantic_duplicates,
     record_dynamic_crisis_terms_from_assessment,
 )
 from intelligence.macro.calendar_ssot import resolve_global_trading_session
@@ -148,6 +149,29 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
     def _as_bool_flag(val: Any) -> bool:
         return _parse_bool_flag(val, False)
 
+    @staticmethod
+    def _headline_age_suffix(h: Any, now: float) -> str:
+        raw_age = obj_attr(h, "age_min", None)
+        if raw_age is not None and not isinstance(raw_age, bool):
+            try:
+                age_f = float(raw_age)
+                if 0.0 <= age_f <= 2880.0:
+                    return f", age={int(round(age_f))}m"
+            except (TypeError, ValueError):
+                pass
+        ts_val = safe_nonneg_ts(
+            obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+            0.0,
+        )
+        if ts_val <= 0.0:
+            pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
+            ts_val = pub_ts if pub_ts is not None else 0.0
+        if 0.0 < ts_val <= now + 300.0:
+            age_m = max(0, int(round(max(0.0, now - ts_val) / 60.0)))
+            if age_m <= 2880:
+                return f", age={age_m}m"
+        return ""
+
     def assess(
         self,
         news_snapshot: Optional[NewsFeedSnapshot],
@@ -169,10 +193,20 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         raw_headlines = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
         high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
         if high_sev:
-            state_cache_dir = os.path.dirname(os.path.abspath(self._effective_state_file()))
+            state_cache_dir = self._effective_cache_dir()
             active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
         else:
             active_acute_phrases = ()
+        prev_titles = (
+            [
+                p.strip()
+                for part in self._last_headlines_digest.split("||")
+                for p in part.split("|")
+                if p.strip()
+            ]
+            if self._last_headlines_digest
+            else []
+        )
         has_new_acute_phrase = bool(
             high_sev
             and (
@@ -180,7 +214,9 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 or (
                     headline_digest != self._last_headlines_digest
                     and any(
-                        phrase in str(obj_attr(h, "title", None) or "").lower()
+                        (t_h := str(obj_attr(h, "title", None) or "").strip())
+                        and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
+                        and phrase in t_h.lower()
                         and phrase not in self._last_headlines_digest.lower()
                         for h in high_sev[:12]
                         for phrase in active_acute_phrases
@@ -234,7 +270,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
 
         session_ctx = resolve_global_trading_session(now)
         headline_list = "\n".join(
-            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'})"
+            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_age_suffix(h, now)})"
             for h in high_sev[:12]
         )
         prompt = (

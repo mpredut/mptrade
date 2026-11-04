@@ -20,6 +20,7 @@ from botcore import (
     parse_dotenv,
     required_float_env,
     resolve_now_ts,
+    resolve_patched_attr,
     safe_float,
     safe_nonneg_float as safe_nonneg_ts,
     safe_pos_float,
@@ -56,18 +57,13 @@ def _resolve_daemon_helper(
     default_fn: Any,
     owner_mod_name: Optional[str] = None,
 ) -> Any:
-    if owner_mod_name:
-        owner_mod = sys.modules.get(owner_mod_name)
-        cand_owner = getattr(owner_mod, name, None) if owner_mod is not None else None
-        if callable(cand_owner) and cand_owner is not default_fn:
-            return cand_owner
-    ssot_mod = sys.modules.get("intelligence.macro_sentiment_ssot")
-    cand_ssot = getattr(ssot_mod, name, None) if ssot_mod is not None else None
-    if callable(cand_ssot) and cand_ssot is not default_fn:
-        return cand_ssot
-    if callable(local_fn) and local_fn is not default_fn:
-        return local_fn
-    return local_fn
+    return resolve_patched_attr(
+        name,
+        local_fn,
+        defaults=(default_fn,),
+        modules=(owner_mod_name or "", "intelligence.macro_sentiment_ssot"),
+        require_callable=True,
+    )
 
 
 def detect_active_binance_symbols(
@@ -628,6 +624,11 @@ class CachedTopicAssessmentAgent:
 
     _effective_cache_file = _effective_state_file
 
+    def _effective_cache_dir(self) -> str:
+        from cachepaths import cachedb_root_for_file
+
+        return cachedb_root_for_file(os.path.abspath(self._effective_state_file()))
+
     def _deserialize_from_disk(self, data: Dict[str, Any]) -> Any:
         return self._build_assessment(data)  # type: ignore[attr-defined]
 
@@ -713,7 +714,7 @@ class CachedTopicAssessmentAgent:
                 crisis_summary,
                 crisis_items,
                 is_acute_shock=is_acute_shock,
-                cache_dir=os.path.dirname(os.path.abspath(self._effective_state_file())),
+                cache_dir=self._effective_cache_dir(),
                 now_ts=now,
             )
         self._cached_assessment = assessment

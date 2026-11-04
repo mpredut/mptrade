@@ -41,10 +41,11 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from active_intents import build_active_intent_index
-from botcore import safe_float, safe_int, safe_pos_float, safe_pos_int
+from botcore import lru_dict_put, safe_float, safe_int, safe_pos_float, safe_pos_int, sanitize_pipe_field
 from state_io import append_text_line, atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
+from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from cachepaths import cache_path, cache_symbol_variants, get_cachedb_dir, resolve_cachedb_filepath
 from instrument_registry import casefold_get, symbols_for
 LOGGER_DIR = os.path.join(ROOT, "logger")
@@ -67,8 +68,7 @@ WEEK_SECONDS = 7 * DAY_SECONDS
 MEMORY_TRIM_SECONDS = 300
 
 
-def _sanitize_field(value):
-    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ") if value is not None else ""
+_sanitize_field = sanitize_pipe_field
 
 
 def _daily_log_path(prefix, date):
@@ -132,18 +132,20 @@ def _read_pipe_log(path, ncols):
         if len(parts) < ncols:
             continue
         rows.append(parts)
-    _PIPE_LOG_CACHE[path] = (
-        consumed,
-        ncols,
-        rows,
-        read_stat.st_dev,
-        read_stat.st_ino,
-        read_stat.st_size,
-        read_stat.st_mtime_ns,
+    lru_dict_put(
+        _PIPE_LOG_CACHE,
+        path,
+        (
+            consumed,
+            ncols,
+            rows,
+            read_stat.st_dev,
+            read_stat.st_ino,
+            read_stat.st_size,
+            read_stat.st_mtime_ns,
+        ),
+        _PIPE_LOG_CACHE_MAX_FILES,
     )
-    _PIPE_LOG_CACHE.move_to_end(path)
-    while len(_PIPE_LOG_CACHE) > _PIPE_LOG_CACHE_MAX_FILES:
-        _PIPE_LOG_CACHE.popitem(last=False)
     return rows
 
 
@@ -700,15 +702,7 @@ def format_state_text(entry, header, pending=None, exposure=None):
 
 
 def _lookup_symbol_dict(mapping, symbol):
-    if not isinstance(mapping, dict):
-        return None
-    if symbol not in mapping and isinstance(mapping.get("items"), dict):
-        mapping = mapping["items"]
-    for cand in cache_symbol_variants(symbol, include_original=True):
-        val = casefold_get(mapping, cand)
-        if isinstance(val, dict):
-            return val
-    return None
+    return lookup_symbol_cache_items(mapping, symbol, allow_base_fallback=False, require_dict=True, unwrap_items=True)
 
 
 def build_analysis_state_text(symbol, active_summary=None):

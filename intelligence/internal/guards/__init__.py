@@ -18,17 +18,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "NoiseFloorGuard": "intelligence.internal.guards.noise_guard",
 }
 
+from botcore import bind_lazy_module_exports
+
 __all__ = list(_LAZY_IMPORTS)
-
-
-def __getattr__(name: str) -> Any:
-    mod_name = _LAZY_IMPORTS.get(name)
-    if mod_name is not None:
-        val = getattr(importlib.import_module(mod_name), name)
-        globals()[name] = val
-        return val
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+bind_lazy_module_exports(globals(), _LAZY_IMPORTS)

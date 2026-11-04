@@ -111,10 +111,13 @@ def parse_venue_cycle_state(
     )
     if abs(realized_pnl := safe_float(raw_realized, 0.0) or 0.0) > 1e-9:
         cyc_entry["realized_pnl_usd"] = round(realized_pnl, 2)
-    ref_entry_px = safe_pos_float(avg_cost or cyc_entry.get("entry_price") or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+    entry_px_f = safe_pos_float(cyc_entry.get("entry_price"), default=0.0) or 0.0
+    ref_entry_px = safe_pos_float(avg_cost or entry_px_f or cyc_entry.get("last_buy_price"), default=0.0) or 0.0
+    if realized_pnl < 0.0 and entry_px_f > ref_entry_px:
+        ref_entry_px = entry_px_f
     last_sell_px_f = safe_pos_float(cyc_entry.get("last_sell_price"), default=0.0) or 0.0
     if (
-        str(cyc_entry.get("last_exit_kind") or "").strip().upper() == "TP"
+        str(cyc_entry.get("last_exit_kind") or "").strip().upper() in ("", "TP")
         and ref_entry_px > 0.0
         and last_sell_px_f > 0.0
         and last_sell_px_f < ref_entry_px * 0.995
@@ -531,15 +534,15 @@ def _populate_cycle_fallback_recent_order(
         }
         recent_orders[p_sym] = v_ro_map[p_sym] = ro
         created_ro = True
-    if isinstance(ro, dict) and (p_venue == "t212" or created_ro):
-        if cyc_avg > 0:
+    if isinstance(ro, dict):
+        if (p_venue == "t212" or created_ro) and cyc_avg > 0:
             ro["active_avg_buy_px"] = round(cyc_avg, 6)
-        if ro.get("last_buy") is None and cyc_lb is not None:
+        if (p_venue == "t212" or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
             lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
             if not ro.get("recent_buys"):
                 lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
             ro["last_buy"] = lb_d
-        if ro.get("last_sell") is None and cyc_ls is not None and (p_venue == "t212" or cyc_ls_ts is not None or not cyc_has_open_qty):
+        if ro.get("last_sell") is None and cyc_ls is not None:
             ro["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
     return ro
 
@@ -569,8 +572,6 @@ def reconcile_venue_cycles_with_recent_orders(
                 for cand in c_cands:
                     cyc_sell_ts_map.setdefault((c_venue, str(cand).upper()), sell_ts_i)
                 cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = sell_ts_i
-            if not entry_ts_ms or cyc.get("resting_orders"):
-                continue
             ro_c = next(
                 (
                     val
@@ -579,13 +580,20 @@ def reconcile_venue_cycles_with_recent_orders(
                 ),
                 None,
             )
+            cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
+            if isinstance(ro_c, dict) and c_venue == "t212" and cyc_qty_cur > 1e-8:
+                lb_ro = ro_c.get("last_buy") if isinstance(ro_c.get("last_buy"), dict) else {}
+                ls_ro = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
+                if ro_c.get("recent_buys") and (lb_px_ro := safe_pos_float(lb_ro.get("price"), default=None)) is not None:
+                    cyc["last_buy_price"] = round(lb_px_ro, avg_dec)
+                if ro_c.get("recent_sells") and (ls_px_ro := safe_pos_float(ls_ro.get("price"), default=None)) is not None:
+                    cyc["last_sell_price"] = round(ls_px_ro, avg_dec)
             if not isinstance(ro_c, dict):
                 continue
             ls_c = ro_c.get("last_sell") if isinstance(ro_c.get("last_sell"), dict) else {}
             ls_ts_ms = safe_pos_float(ls_c.get("ts_ms"), default=0.0) or 0.0
             ls_qty = safe_pos_float(ls_c.get("qty"), default=0.0) or 0.0
             ls_px = safe_pos_float(ls_c.get("price"), default=0.0) or 0.0
-            cyc_qty_cur = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
             r_buys_c = ro_c.get("recent_buys") if isinstance(ro_c.get("recent_buys"), list) else []
             buys_after = [
                 b for b in r_buys_c
@@ -594,8 +602,16 @@ def reconcile_venue_cycles_with_recent_orders(
                 and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
                 and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
             ]
+            buys_before = [
+                b for b in r_buys_c
+                if isinstance(b, dict)
+                and 0.0 < (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) <= ls_ts_ms
+                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+            ]
             reconciled_external_buy = bool(
-                buys_after
+                entry_ts_ms
+                and not cyc.get("resting_orders")
+                and buys_after
                 and cyc_qty_cur > 1e-8
                 and float(entry_ts_ms) > (safe_pos_float(buys_after[-1].get("ts_ms"), default=0.0) or 0.0) + 5000.0
                 and abs(sum(float(b["qty"]) for b in buys_after) - cyc_qty_cur) <= max(1e-4, cyc_qty_cur * 0.02)
@@ -603,7 +619,8 @@ def reconcile_venue_cycles_with_recent_orders(
             rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
             live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
             already_deducted_partial = bool(
-                not buys_after
+                not reconciled_external_buy
+                and (not buys_after or ls_qty < cyc_qty_cur * 0.95)
                 and cyc_qty_cur > 1e-8
                 and (
                     (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0)
@@ -615,14 +632,19 @@ def reconcile_venue_cycles_with_recent_orders(
             def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
                 if sell_p <= 0.0:
                     return
+                pre_sell_ref = (
+                    (safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None)
+                    or safe_pos_float(c_dict.get("entry_price"), default=None)
+                ) if buys_after else None
                 ref_avg = (
-                    safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
+                    pre_sell_ref
+                    or safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
                     or safe_pos_float(c_dict.get("avg_cost_px"), default=None)
                     or safe_pos_float(c_dict.get("entry_price"), default=None)
                     or safe_pos_float(c_dict.get("last_buy_price"), default=None)
                 )
                 if ref_avg is not None and ref_avg > 0.0:
-                    if sell_p < ref_avg * 0.995 and str(c_dict.get("last_exit_kind") or "").strip().upper() == "TP":
+                    if sell_p < ref_avg * 0.995 and str(c_dict.get("last_exit_kind") or "").strip().upper() in ("", "TP"):
                         c_dict["last_exit_kind"] = "REDUCE"
                     elif sell_p >= ref_avg * 1.001 and not c_dict.get("last_exit_kind"):
                         c_dict["last_exit_kind"] = "TP"
@@ -631,7 +653,10 @@ def reconcile_venue_cycles_with_recent_orders(
                 if ls_px > 0:
                     cyc["last_sell_price"] = round(ls_px, avg_dec)
                     _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
-            elif (
+                continue
+            if not entry_ts_ms or cyc.get("resting_orders"):
+                continue
+            if (
                 not buys_after
                 and ls_ts_ms > float(entry_ts_ms)
                 and cyc_qty_cur > 1e-8

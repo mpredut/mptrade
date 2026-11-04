@@ -17,7 +17,14 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import websockets
 
-from botcore import safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    async_interruptible_sleep,
+    normalize_epoch_sec,
+    resolve_now_ts,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import cache_symbol_variants
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import clean_symbol_key, parse_symbol_list
@@ -154,12 +161,7 @@ class BybitLiquidationCollector:
                 self._ingest(raw)
 
     async def _sleep(self, delay: float, step: float = 0.2) -> None:
-        eff_delay = safe_pos_float(delay, 0.0)
-        eff_step = safe_pos_float(step, 0.2)
-        elapsed = 0.0
-        while elapsed < eff_delay and not self._stop.is_set():
-            await asyncio.sleep(min(eff_step, eff_delay - elapsed))
-            elapsed += eff_step
+        await async_interruptible_sleep(self._stop, delay, step, sleep_fn=asyncio.sleep)
 
     def _ingest(self, raw: str) -> None:
         try:
@@ -196,11 +198,9 @@ class BybitLiquidationCollector:
         side_norm = _normalize_liq_side(side)
         if side_norm is None:
             return
-        now = safe_pos_float(ts, default=None) if ts is not None else time.time()
+        now = normalize_epoch_sec(ts) if ts is not None else time.time()
         if now is None:
             return
-        if now > 1e11:
-            now /= 1000.0
         with self._lock:
             dq = self._events.setdefault(sym_norm, deque())
             dq.append((now, side_norm, notional))
@@ -245,9 +245,7 @@ class BybitLiquidationCollector:
             if not isinstance(row, (list, tuple)) or len(row) < 3:
                 continue
             ts, side, notional = row[0], row[1], row[2]
-            ts_f = safe_float(ts, default=None)
-            if ts_f is not None and ts_f > 1e11:
-                ts_f /= 1000.0
+            ts_f = normalize_epoch_sec(ts, allow_zero=True)
             if ts_f is None or ts_f < cutoff or (max_ts is not None and ts_f > max_ts):
                 continue
             notional_f = safe_pos_float(notional, default=None)
@@ -274,9 +272,7 @@ class BybitLiquidationCollector:
         """Aggregate liquidation metrics for symbol over window_sec."""
         items = self._lookup_symbol_events(symbol)
         symbol = clean_symbol_key(symbol)
-        now_ts = safe_pos_float(now, default=None) or time.time()
-        if now_ts > 1e11:
-            now_ts /= 1000.0
+        now_ts = resolve_now_ts(now)
         win_sec = safe_pos_float(window_sec, default=300.0) or 300.0
 
         long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(
@@ -304,9 +300,7 @@ class BybitLiquidationCollector:
         """Aggregate liquidations for ``symbol`` over the last ``window_sec`` as a dict."""
         symbol_str = str(symbol or "").strip().upper()
         eff_win = safe_pos_float(window_sec, 300.0)
-        now_ts = safe_pos_float(now, default=None) or time.time()
-        if now_ts > 1e11:
-            now_ts /= 1000.0
+        now_ts = resolve_now_ts(now)
         items = self._lookup_symbol_events(symbol_str)
         long_usd, short_usd, long_n, short_n, last_ts = self._aggregate_window(items, now_ts - eff_win, max_ts=now_ts + 5.0)
         return {
@@ -330,7 +324,7 @@ class BybitLiquidationCollector:
         """Intensity of recent LONG-liquidation burst relative to baseline rate."""
         eff_win = safe_pos_float(window_sec, 120.0)
         eff_base = max(safe_pos_float(baseline_sec, 3600.0), eff_win)
-        now_ts = safe_pos_float(now, default=None) or time.time()
+        now_ts = resolve_now_ts(now)
         recent = self.get_signal(symbol, eff_win, now=now_ts)["long_liq_usd"]
         base = self.get_signal(symbol, eff_base, now=now_ts)["long_liq_usd"]
         recent_rate = recent / max(eff_win, 1.0)

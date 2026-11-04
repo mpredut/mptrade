@@ -290,7 +290,7 @@ def enrich_open_limit_orders_tca(
                 aw_px = safe_pos_float(m_entry.get("ask_wall_px"), default=None)
                 aw_usd = safe_pos_float(m_entry.get("ask_wall_usd"), default=0.0) or 0.0
                 if aw_px is not None and aw_px > 0.0 and aw_usd >= 5000.0 and (not spot_px or aw_px >= spot_px * 1.0002):
-                    can_front_run = (not spot_px or aw_px >= spot_px * 1.0025) and abs(lim_px - aw_px) / aw_px <= 0.013
+                    can_front_run = (not spot_px or aw_px >= spot_px * 1.0015) and abs(lim_px - aw_px) / aw_px <= 0.015
                     raw_fr = aw_px - max(tick_step, min(aw_px * 0.0001, 5.0))
                     floor_ask = max(best_ask_px or 0.0, (spot_px or 0.0) * 1.0002)
                     if floor_ask > 0.0:
@@ -315,7 +315,7 @@ def enrich_open_limit_orders_tca(
                 bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
                 bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
                 if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0 and (not spot_px or bw_px <= spot_px * 0.9998):
-                    can_front_run = (not spot_px or bw_px <= spot_px * 0.9975) and abs(lim_px - bw_px) / bw_px <= 0.013
+                    can_front_run = (not spot_px or bw_px <= spot_px * 0.9985) and abs(lim_px - bw_px) / bw_px <= 0.015
                     raw_fr = bw_px + max(tick_step, min(bw_px * 0.0001, 5.0))
                     ceil_bid = min(
                         best_bid_px if best_bid_px and best_bid_px > 0.0 else bw_px * 2.0,
@@ -514,7 +514,7 @@ def build_cross_market_context(
     raw_horizon_keys = (
         "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
         "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
-        "chg_7d_pct", "pos_24h_pct", "poc_px", "vah_px", "val_px", "va_regime",
+        "chg_7d_pct", "pos_24h_pct", "poc_px", "sec_poc_px", "lvn_px", "vah_px", "val_px", "va_regime", "profile_shape",
         "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
     )
     _round_slope_keys = {"slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
@@ -523,12 +523,20 @@ def build_cross_market_context(
     for b_canon, (sym, pinfo) in sorted(by_base.items()):
         if sym.endswith(("_EQ", "_US_EQ")) or (px_f := safe_float(pinfo.get("price"), 0.0) or 0.0) <= 0:
             continue
+        is_sub24h_dup_7d = (
+            "chg_24h_pct" not in pinfo
+            and pinfo.get("low_24h") is not None
+            and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+        )
         cb_entry: Dict[str, Any] = {
             "symbol": sym, "price": round(px_f, 6),
             **{
                 k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
-                if pinfo.get(k) is not None and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
+                if pinfo.get(k) is not None
+                and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
+                and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
+                and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
             },
         }
         sym_quotes = compatible_quote_suffixes(sym)
@@ -541,7 +549,8 @@ def build_cross_market_context(
         if isinstance(m_info, dict):
             for mk_copy in (
                 "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
-                "cvd_15m_usd", "cvd_regime", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+                "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
+                "depth_1pct_bid_usd", "depth_1pct_ask_usd",
                 *(("long_liq_px", "long_liq_usd", "short_liq_px", "short_liq_usd", "liq_magnet_bias") if m_same_quote else ()),
             ):
                 if m_info.get(mk_copy) is not None:
@@ -574,7 +583,22 @@ def build_cross_market_context(
             },
         }
         if t_cyc:
-            eq_entry["t212_cycle"] = {k: t_cyc.get(k) for k in ("qty", "avg_cost_px", "entry_price", "last_buy_price", "dd_pct") if t_cyc.get(k) is not None}
+            eq_entry["t212_cycle"] = {
+                k: t_cyc.get(k)
+                for k in (
+                    "qty",
+                    "avg_cost_px",
+                    "entry_price",
+                    "last_buy_price",
+                    "last_sell_price",
+                    "last_exit_kind",
+                    "dd_pct",
+                    "pos_peak",
+                    "dd_from_peak_pct",
+                    "realized_pnl_usd",
+                )
+                if t_cyc.get(k) is not None
+            }
         if len(eq_entry) > 1:
             equity_bellwethers[eq_sym] = eq_entry
     if equity_bellwethers:

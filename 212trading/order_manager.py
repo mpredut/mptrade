@@ -21,7 +21,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT_DIR = os.path.dirname(_HERE)
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
-from botcore import ensure_local_module_priority  # noqa: E402
+from botcore import ensure_local_module_priority, sanitize_identifier  # noqa: E402
 ensure_local_module_priority(_HERE, "ipo_common", "ipo_notify", "market_data", "t212_client")
 
 from state_io import atomic_write_json, previous_generation_path, read_json_dict
@@ -110,10 +110,7 @@ def _read_marker(path: str) -> dict | None:
 
 
 def _safe_marker_component(value: str) -> str:
-    if isinstance(value, bool):
-        return "unknown"
-    component = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
-    return component.strip("._") or "unknown"
+    return sanitize_identifier(value, sep="_", allow_dots_hyphens=True, strip_chars="._")
 
 
 def _marker_path(ticker: str, *, test: bool = False) -> str:

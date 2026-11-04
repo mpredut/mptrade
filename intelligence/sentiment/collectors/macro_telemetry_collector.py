@@ -26,9 +26,12 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_book_url,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
+    normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
     resolve_macro_economic_calendar,
+    resolve_patched_attr,
+    resolve_read_json_cached,
     safe_float,
     safe_nonneg_ts,
     safe_pos_float,
@@ -103,15 +106,13 @@ logger = logging.getLogger("intelligence.sentiment.macro_telemetry_collector")
 
 
 def _resolve_macro_ssot_attr(name: str, local_val: Any, default_val: Any) -> Any:
-    if local_val is not default_val and callable(local_val):
-        return local_val
-    import sys as _sys
-
-    _ssot = _sys.modules.get("intelligence.macro_sentiment_ssot")
-    _cand = getattr(_ssot, name, None) if _ssot is not None else None
-    if callable(_cand) and _cand is not default_val:
-        return _cand
-    return local_val
+    return resolve_patched_attr(
+        name,
+        default_val,
+        local_val=local_val,
+        modules=("intelligence.macro_sentiment_ssot",),
+        require_callable=True,
+    )
 
 
 def collect_macro_benchmarks_snapshot(
@@ -258,15 +259,7 @@ def collect_macro_benchmarks_snapshot(
 
 
 def _resolve_read_json_cached(read_json_fn: Any = None, *, default_fn: Any = None) -> Any:
-    _defaults = (_default_read_json_cached, read_json_recovering)
-    if callable(read_json_fn) and read_json_fn not in _defaults:
-        return read_json_fn
-    _patched = _resolve_macro_ssot_attr("read_json_cached", read_json_cached, _default_read_json_cached)
-    if callable(_patched) and _patched not in _defaults:
-        return _patched
-    if callable(read_json_fn):
-        return read_json_fn
-    return default_fn if callable(default_fn) else read_json_cached
+    return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached, default_fn=default_fn)
 
 
 def _read_first_cached_dict(
@@ -488,10 +481,9 @@ def harvest_portfolio_and_venue_cycles(
     last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
     if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
         portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
-        av_ts = extract_timestamp_s(last_av) or safe_pos_float(last_av.get("t"), default=None)
-        if av_ts is not None and now_ts is not None and now_ts > 0.0:
-            eff_now_s = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
-            av_ts_s = av_ts / 1000.0 if av_ts > 1e11 else av_ts
+        av_ts_s = normalize_epoch_sec(extract_timestamp_s(last_av) or last_av.get("t"))
+        eff_now_s = normalize_epoch_sec(now_ts)
+        if av_ts_s is not None and eff_now_s is not None:
             portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
 
     kraken_cycles, hyperliquid_cycles, all_t212_cycles = harvest_venue_cycles(
@@ -518,10 +510,9 @@ def harvest_portfolio_and_venue_cycles(
         if isinstance(last_ps := read_last_jsonl_dict(os.path.join(l_dir, "portfolio_snapshot.jsonl"), tail_bytes=4096), dict):
             if isinstance(last_ps.get("hl"), dict):
                 hl_ro = dict(last_ps["hl"])
-                ps_ts = extract_timestamp_s(last_ps) or safe_pos_float(last_ps.get("t"), default=None)
-                if ps_ts is not None and now_ts is not None and now_ts > 0.0:
-                    eff_now_s = float(now_ts) / 1000.0 if float(now_ts) > 1e11 else float(now_ts)
-                    ps_ts_s = ps_ts / 1000.0 if ps_ts > 1e11 else ps_ts
+                ps_ts_s = normalize_epoch_sec(extract_timestamp_s(last_ps) or last_ps.get("t"))
+                eff_now_s = normalize_epoch_sec(now_ts)
+                if ps_ts_s is not None and eff_now_s is not None:
                     hl_ro["snapshot_age_min"] = round(max(0.0, eff_now_s - ps_ts_s) / 60.0, 1)
                 portfolio_summary["hyperliquid_readonly"] = hl_ro
             break
@@ -678,11 +669,11 @@ def populate_market_and_portfolio_snapshot(
     snapshot.portfolio_summary.update(
         harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))
     )
+    enrich_sentiment_advisor_live_flow_divergence(getattr(snapshot, "sentiment_advisor", None), snapshot.microstructure)
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends, snapshot.microstructure, snapshot.portfolio_summary, scope, inst_by_sym, t212_cycles
     )
     reconcile_live_venue_equity_summary(snapshot.portfolio_summary)
-    enrich_sentiment_advisor_live_flow_divergence(getattr(snapshot, "sentiment_advisor", None), snapshot.microstructure)
     if isinstance(mb_snap := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap and snapshot.portfolio_summary:
         snapshot.portfolio_summary["macro_benchmarks"] = mb_snap
         if isinstance(cmc := snapshot.portfolio_summary.get("cross_market_context"), dict):

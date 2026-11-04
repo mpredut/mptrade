@@ -479,18 +479,22 @@ def compute_dynamic_sentiment_interval(
     if prev_tr is None and cached_assessment is not None:
         summary_s = str(obj_attr(cached_assessment, "summary", "") or "")
         m_tr = re.search(
-            r"(?:([0-9]+\.[0-9]+)\s*taker\s+buy/sell\s+ratio|taker\s+buy/sell\s+ratio(?:\s*(?:of|at|=|:|is))?\s*([0-9]+\.[0-9]+)(?!%))",
+            r"(?:([0-9]+\.[0-9]+)\s*(?:taker\s+(?:buy/sell\s+)?|buy/sell\s+)ratio"
+            r"|taker\s+(?:buy/sell\s+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
+            r"|taker\s+(?:(?:buy|sell|buying|selling|buy/sell)\s+)?(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity)(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:buy/sell\s+)?ratio|\))(?![0-9%]))",
             summary_s,
             re.IGNORECASE,
         )
         if m_tr:
-            prev_tr = safe_pos_float(m_tr.group(1) or m_tr.group(2), default=None)
+            prev_tr = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
     if cur_tr is not None:
         if prev_tr is not None and (
             (prev_tr <= 0.75 and cur_tr >= 1.25)
             or (prev_tr >= 1.25 and cur_tr <= 0.75)
             or (prev_tr <= 0.65 and cur_tr >= 0.90)
             or (prev_tr >= 1.35 and cur_tr <= 1.10)
+            or (prev_tr >= 0.80 and cur_tr <= 0.60)
+            or (prev_tr <= 1.20 and cur_tr >= 1.40)
             or abs(cur_tr - prev_tr) >= 0.40
         ):
             return min(min_interval, 300.0), f"btc_whale_flow_regime_flip_{prev_tr:.2f}_to_{cur_tr:.2f}"
@@ -500,11 +504,49 @@ def compute_dynamic_sentiment_interval(
             return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
         if (cached_act == "ACCUMULATE" or "BULL" in cached_bias) and cur_tr <= 0.65:
             return min(min_interval, 300.0), f"btc_seller_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
+        if (cached_act == "HOLD" or cached_bias == "NEUTRAL") and (prev_tr is None or 0.75 <= prev_tr <= 1.25):
+            if cur_tr <= 0.60:
+                return min(min_interval, 300.0), f"btc_seller_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
+            if cur_tr >= 1.40:
+                return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
     cur_fg_val = safe_int(obj_attr(fear_greed, "value", None), None)
     prev_fg_val = safe_int(prev_fear_greed_val, None)
+    prev_adv = clean_scale(prev_advance_ratio, default=None, allow_percent=True)
+    if (prev_fg_val is None or prev_adv is None) and cached_assessment is not None:
+        cached_sum_txt = str(obj_attr(cached_assessment, "summary", "") or "")
+        raw_kr = obj_attr(cached_assessment, "key_risks", None)
+        kr_txt = " ".join(str(x) for x in raw_kr) if isinstance(raw_kr, (list, tuple)) else str(raw_kr or "")
+        combined_cached_txt = f"{cached_sum_txt} {kr_txt}".strip()
+        if prev_fg_val is None and combined_cached_txt:
+            m_fg = re.search(
+                r"(?:F&G(?:\s+Index)?(?:\s*(?:at|of|=|:|is))?\s*([0-9]{1,3})\b|Fear\s*(?:&|and)\s*Greed(?:\s+Index)?[^0-9]{0,20}?([0-9]{1,3})(?:/100|\b))",
+                combined_cached_txt,
+                re.IGNORECASE,
+            )
+            if m_fg:
+                cand_fg = safe_int(m_fg.group(1) or m_fg.group(2), None)
+                if cand_fg is not None and 0 <= cand_fg <= 100:
+                    prev_fg_val = cand_fg
+        if prev_adv is None and combined_cached_txt:
+            m_adv_pct = re.search(
+                r"([0-9]+(?:\.[0-9]+)?)%\s+advancing\b",
+                combined_cached_txt,
+                re.IGNORECASE,
+            )
+            if m_adv_pct:
+                cand_pct = safe_float(m_adv_pct.group(1), None)
+                if cand_pct is not None and 0.0 <= cand_pct <= 100.0:
+                    prev_adv = cand_pct / 100.0
+            else:
+                m_adv_ratio = re.search(
+                    r"advance_ratio\s*[=:]\s*([0-9]+\.[0-9]+)",
+                    combined_cached_txt,
+                    re.IGNORECASE,
+                )
+                if m_adv_ratio:
+                    prev_adv = safe_float(m_adv_ratio.group(1), None)
     if cur_fg_val is not None and prev_fg_val is not None and abs(cur_fg_val - prev_fg_val) >= 8:
         return min_interval, f"fear_greed_jump_{cur_fg_val - prev_fg_val:+d}pts"
-    prev_adv = clean_scale(prev_advance_ratio, default=None, allow_percent=True)
     if cur_adv is not None and prev_adv is not None and abs(cur_adv - prev_adv) >= 0.18:
         return min_interval, f"breadth_shift_{cur_adv - prev_adv:+.2f}"
 
@@ -574,16 +616,29 @@ def compute_dynamic_geopolitical_interval(
     if changed_b and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
+        prev_titles = [
+            p.strip()
+            for part in last_headlines_digest.split("||")
+            for p in part.split("|")
+            if p.strip()
+        ]
         if high_sev:
             new_high_sev_count = sum(
                 1
                 for h in high_sev[:12]
-                if (str(obj_attr(h, "title", None) or "").strip().lower() not in prev_lower)
+                if (
+                    (t_h := str(obj_attr(h, "title", None) or "").strip())
+                    and t_h.lower() not in prev_lower
+                    and not any(_ssot.headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
+                )
             )
         if threat_level in ("NORMAL", "ELEVATED"):
             active_acute_phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=ts)
             has_new_acute = any(
-                phrase in str(obj_attr(h, "title", None) or "").lower() and phrase not in prev_lower
+                (t_h := str(obj_attr(h, "title", None) or "").strip())
+                and not any(_ssot.headlines_are_semantic_duplicates(t_h, pt) for pt in prev_titles)
+                and phrase in t_h.lower()
+                and phrase not in prev_lower
                 for h in high_sev[:12]
                 for phrase in active_acute_phrases
             )
@@ -607,6 +662,9 @@ def compute_dynamic_geopolitical_interval(
         if not session_ctx.is_active_western_session:
             return min(max_geo_itv, base * 1.3333), "global_overnight_calm_6h"
         return min(max_geo_itv, base * 1.15), "global_daytime_calm"
+
+    if high_sev_count == 0 and threat_level in ("ELEVATED", "CRITICAL_SHOCK") and news_snapshot is not None:
+        return min(base, min_geo_itv * 2.0), "threat_deescalation_zero_high_sev_recheck"
 
     return base, f"standard_geopolitical_ttl_{threat_level.lower()}"
 

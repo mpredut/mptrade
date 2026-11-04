@@ -18,6 +18,8 @@ from cachepaths import (
     split_symbol_assets,
 )
 from intelligence.macro_sentiment_ssot import (
+    resolve_read_json_cached,
+    resolve_save_json_state,
     safe_float,
     safe_nonneg_float,
     safe_nonneg_ts,
@@ -103,42 +105,11 @@ logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
 
 
 def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    _defaults = (_default_read_json_cached, read_json_recovering)
-    if callable(read_json_fn) and read_json_fn not in _defaults:
-        return read_json_fn
-    if callable(read_json_cached) and read_json_cached not in _defaults:
-        return read_json_cached
-    import sys as _sys
-
-    for _mod_name in (
-        "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-        "intelligence.sentiment.guards.high_stake_guard",
-        "intelligence.sentiment.collectors.macro_telemetry_collector",
-        "intelligence.macro_sentiment_ssot",
-    ):
-        _mod = _sys.modules.get(_mod_name)
-        _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
-        if callable(_cand) and _cand not in _defaults:
-            return _cand
-    return read_json_fn if callable(read_json_fn) else read_json_cached
+    return resolve_read_json_cached(read_json_fn, local_fn=read_json_cached)
 
 
 def _resolve_save_json_state() -> Any:
-    if callable(save_json_state) and save_json_state is not _default_save_json_state:
-        return save_json_state
-    import sys as _sys
-
-    for _mod_name in (
-        "intelligence.sentiment.collectors.pretrade_telemetry_collector",
-        "intelligence.sentiment.guards.high_stake_guard",
-        "intelligence.sentiment.collectors.macro_telemetry_collector",
-        "intelligence.macro_sentiment_ssot",
-    ):
-        _mod = _sys.modules.get(_mod_name)
-        _cand = getattr(_mod, "save_json_state", None) if _mod is not None else None
-        if callable(_cand) and _cand is not _default_save_json_state:
-            return _cand
-    return save_json_state
+    return resolve_save_json_state(local_fn=save_json_state)
 
 _ORDER_CACHE_FILES: Tuple[Tuple[str, str], ...] = (
     ("cache_order.json", "binance"),
@@ -902,14 +873,19 @@ def load_symbol_best_recent_fills(
     ai_intents_list = intents_raw if isinstance(intents_raw, list) else None
     audit_origin_map = _load_recent_audit_origins(cachedb_dir)
     fills: Optional[Dict[str, Any]] = None
-    best_fill_ts = -1.0
+    best_fill_key: Tuple[int, int, float] = (-1, -1, -1.0)
+    sym_upper = str(symbol or "").strip().upper()
+    sym_quotes = compatible_quote_suffixes(sym_upper)
+    base_upper = canonical_base_asset(sym_upper)
     for ord_file, cache_venue in _ORDER_CACHE_FILES:
         ord_data = _rj(os.path.join(cachedb_dir, ord_file))
         o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
-        orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(o_items, cand))), [])
+        matched_cand = next((cand for cand in quote_variants if casefold_get(o_items, cand)), None)
+        orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
         if not orders_for_sym and cache_venue in ("hyperliquid", "t212"):
             audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
-            orders_for_sym = next((val for cand in quote_variants if (val := casefold_get(audit_items, cand))), [])
+            matched_cand = next((cand for cand in quote_variants if casefold_get(audit_items, cand)), None)
+            orders_for_sym = casefold_get(audit_items, matched_cand) if matched_cand else []
         v_ai_intents = (
             [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
             if ai_intents_list is not None
@@ -922,12 +898,21 @@ def load_symbol_best_recent_fills(
             ai_intents=v_ai_intents,
             symbol=symbol,
         ):
+            cand_u = str(matched_cand or "").strip().upper()
+            cand_quotes = (
+                compatible_quote_suffixes(f"{base_upper}USDC")
+                if cache_venue == "hyperliquid" and cand_u == base_upper
+                else compatible_quote_suffixes(cand_u)
+            )
+            same_quote_fam = 1 if (not sym_quotes or cand_quotes == sym_quotes) else 0
+            exact_sym = 1 if (cand_u == sym_upper or (cache_venue == "hyperliquid" and cand_u == base_upper and sym_upper == f"{base_upper}USDC")) else 0
             cand_ts = max(
                 safe_nonneg_ts((cand_fills.get("last_buy") or {}).get("ts_ms"), 0.0),
                 safe_nonneg_ts((cand_fills.get("last_sell") or {}).get("ts_ms"), 0.0),
             )
-            if fills is None or cand_ts > best_fill_ts:
-                fills, best_fill_ts = cand_fills, cand_ts
+            cand_key = (same_quote_fam, exact_sym, cand_ts)
+            if fills is None or cand_key > best_fill_key:
+                fills, best_fill_key = cand_fills, cand_key
     return fills
 
 

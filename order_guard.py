@@ -20,8 +20,11 @@ import time
 from botcore import (
     _parse_bool_flag,
     exact_nonneg_int,
+    normalize_epoch_sec,
     obj_attr,
     parse_dotenv,
+    normalize_trend_direction,
+    resolve_now_ts,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -1144,14 +1147,7 @@ _normalize_base_asset = canonical_base_asset
 
 
 def _normalize_trend_dir_token(raw_dir: Any) -> Optional[str]:
-    if not isinstance(raw_dir, str):
-        return None
-    d = raw_dir.strip().lower()
-    if d in ("up", "bull", "uptrend", "bullish"):
-        return "bull" if d in ("uptrend", "bullish") else d
-    if d in ("down", "bear", "downtrend", "bearish"):
-        return "bear" if d in ("downtrend", "bearish") else d
-    return None
+    return normalize_trend_direction(raw_dir, default=None, preserve_bull_bear=True)
 
 
 _resolve_cachedb_dir = get_cachedb_dir
@@ -1169,7 +1165,7 @@ def _read_cached_long_trend_entries(symbol: str) -> Optional[list]:
         p = os.path.join(_resolve_cachedb_dir(), "cache_long_trend.json")
         data = _read_json_recovering(p)
         if isinstance(data, dict):
-            return lookup_symbol_cache_items(data.get("items"), symbol, require_list=True)
+            return lookup_symbol_cache_items(data, symbol, require_list=True, unwrap_items=True)
     except Exception:
         pass
     return None
@@ -1278,9 +1274,7 @@ def _read_cached_price_history(
     if not su:
         return None
     win_sec = safe_pos_float(window_seconds, 7200.0)
-    now_ts = safe_pos_float(now, default=None) or time.time()
-    if now_ts > 1e11:
-        now_ts /= 1000.0
+    now_ts = resolve_now_ts(now)
     cachedb_dir = _resolve_cachedb_dir()
     cutoff_ts = now_ts - win_sec
     history: List[Tuple[float, float]] = []
@@ -1288,22 +1282,15 @@ def _read_cached_price_history(
 
     def _parse_tick(item: Any) -> Optional[Tuple[float, float]]:
         if isinstance(item, dict):
-            ts_raw = safe_pos_float(
-                item.get("ts") if item.get("ts") is not None else item.get("timestamp"),
-                default=None,
-            )
-            px = safe_pos_float(
-                item.get("price") if item.get("price") is not None else item.get("close"),
-                default=None,
-            )
+            ts_raw = item.get("ts") if item.get("ts") is not None else item.get("timestamp")
+            px_raw = item.get("price") if item.get("price") is not None else item.get("close")
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
-            ts_raw = safe_pos_float(item[0], default=None)
-            px = safe_pos_float(item[1], default=None)
+            ts_raw, px_raw = item[0], item[1]
         else:
             return None
-        if ts_raw is None or px is None:
-            return None
-        return (ts_raw / 1000.0 if ts_raw > 1e11 else ts_raw), px
+        ts_sec = normalize_epoch_sec(ts_raw)
+        px = safe_pos_float(px_raw, default=None)
+        return (ts_sec, px) if (ts_sec is not None and px is not None) else None
 
     def _extract_valid_ticks(raw_items: Any) -> None:
         if isinstance(raw_items, list) and len(raw_items) > 512:
@@ -1350,15 +1337,11 @@ def _read_cached_price_history(
         if not isinstance(data, (dict, list)):
             continue
         try:
-            if isinstance(data, list):
-                raw_items = data
-            else:
-                items_map = data.get("items", {})
-                raw_items = (
-                    items_map
-                    if isinstance(items_map, list)
-                    else lookup_symbol_cache_items(items_map, su, cand_keys=cand_symbols)
-                )
+            raw_items = (
+                data
+                if isinstance(data, list)
+                else lookup_symbol_cache_items(data, su, cand_keys=cand_symbols, require_list=True, unwrap_items=True)
+            )
             _extract_valid_ticks(raw_items)
             if history:
                 break
