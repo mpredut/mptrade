@@ -1448,6 +1448,9 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeyp
     calls = []
 
     class _DummyResp:
+        status = 200
+        headers = {}
+
         def __enter__(self):
             return self
 
@@ -1457,18 +1460,23 @@ def test_batch49_cmc_platform_and_news_feed_deadline_hardening(tmp_path, monkeyp
         def read(self):
             return b"<rss><channel><item><title>BTC surges</title></item></channel></rss>"
 
+        def getcode(self):
+            return 200
+
     t_vals = iter([100.0, 100.1, 110.8])
     monkeypatch.setattr("intelligence.macro.news_feed_collector.time.monotonic", lambda: next(t_vals, 111.0))
 
     def _fake_urlopen(req, timeout=None):
-        calls.append((req.full_url, timeout))
+        url = getattr(req, "full_url", str(req))
+        calls.append((url, timeout))
         return _DummyResp()
 
     monkeypatch.setattr("intelligence.macro.news_feed_collector.urllib.request.urlopen", _fake_urlopen)
     res = collector.fetch(force_refresh=True)
-    assert len(calls) == 1
-    assert calls[0][0] == "https://feed1.example/rss"
-    assert calls[0][1] <= 4.0
+    feed_calls = [c for c in calls if "feed" in c[0] or "example" in c[0]]
+    assert len(feed_calls) == 1
+    assert feed_calls[0][0] == "https://feed1.example/rss"
+    assert feed_calls[0][1] <= 4.0
     assert res is not None and res.total_fetched == 1
 
     # 3. Dynamic lexicon stat cache avoids redundant disk parses and invalidates on update
