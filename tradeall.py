@@ -13,7 +13,7 @@ import symbols as sym
 from instrument_registry import casefold_get, select_instruments, symbols_for
 from binance_api import bapi as api
 from binance_api import bapi_trades as apitrades
-import order_outcomes_log
+import order_lifecycle as order_outcomes_log
 from providers.base import extract_order_id, normalize_side
 from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt      # Single guarded proxy (Instrument.place).

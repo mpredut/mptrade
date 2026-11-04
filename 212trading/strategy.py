@@ -42,6 +42,8 @@ from providers.t212_provider import T212Provider, _t212_tickers_match
 from strategies.base_spot_mixin import (
     BaseSpotMixin,
     SpotParamsMixin,
+    adapt_ladder_rungs,
+    generate_tp_ladder,
     load_common_core_strat_env,
     load_common_mhdpa_env,
     parse_max_dca_buys_env,
@@ -57,7 +59,9 @@ from strategies.state_store import (
 from strategies.position_exit_manager import (
     PositionExitManager, PositionExitConfig, PositionSnapshot, ExitAction, ReentrySnapshot,
 )
-from order_rollback import restore_cancelled_orders
+import order_lifecycle as _order_lifecycle
+from order_lifecycle import restore_cancelled_orders
+sys.modules.setdefault("order_rollback", _order_lifecycle)
 from intelligence.internal.state.volatility import (
     resolve_cached_volatility_1h, resolve_cached_volatility_1h_pct, vol_pct_to_ratio,
 )
@@ -73,76 +77,6 @@ def log(msg: str) -> None:
 
 def state_path_for(ticker: str) -> str:
     return _shared_state_path_for(ticker, _HERE)
-
-
-def generate_tp_ladder(
-    min_pct: float, max_pct: float, steps: int = 10, curve: str = "linear"
-) -> list[tuple[float, float]]:
-    """Generate a scale-out take-profit ladder from min_pct to max_pct across `steps` rungs."""
-    if isinstance(min_pct, bool) or isinstance(max_pct, bool) or isinstance(steps, bool):
-        raise ValueError("generate_tp_ladder parameters cannot be bool")
-    min_f = safe_float(min_pct, default=None)
-    max_f = safe_float(max_pct, default=None)
-    steps_i = exact_int(steps, default=None)
-    if min_f is None or max_f is None or steps_i is None:
-        raise ValueError("generate_tp_ladder requires finite min_pct, max_pct, and integer steps")
-    if steps_i < 1:
-        return []
-    if steps_i > 1 and max_f < min_f:
-        raise ValueError("generate_tp_ladder requires max_pct >= min_pct")
-    if steps_i == 1:
-        return [(round(min_f, 1), 1.0)]
-    steps = steps_i
-    curve_lower = str(curve or "linear").strip().lower()
-    if curve_lower not in (
-        "linear", "uniform", "bell", "gaussian", "normal", "pyramid",
-        "front_heavy", "back_heavy", "geometric",
-    ):
-        raise ValueError(f"unsupported generate_tp_ladder curve: {curve!r}")
-
-    if curve_lower == "geometric":
-        r_start, r_end = 1.0 + min_f / 100.0, 1.0 + max_f / 100.0
-        if r_start <= 0.0 or r_end <= 0.0:
-            raise ValueError("geometric generate_tp_ladder requires min_pct > -100 and max_pct > -100")
-        ratio = (r_end / r_start) ** (1.0 / (steps - 1)) if steps > 1 else 1.0
-        levels = [round(((r_start * (ratio ** i)) - 1.0) * 100.0, 1) for i in range(steps)]
-    else:
-        step_size = (max_f - min_f) / (steps - 1)
-        levels = [round(min_f + i * step_size, 1) for i in range(steps)]
-
-    if curve_lower in ("bell", "gaussian", "normal", "pyramid"):
-        center = (steps - 1) / 2.0
-        sigma = max(0.5, (steps - 1) / 2.8) if steps > 1 else 1.0
-        weights = [math.exp(-0.5 * ((i - center) / sigma) ** 2) for i in range(steps)]
-    elif curve_lower == "front_heavy":
-        weights = [float(steps - i) for i in range(steps)]
-    elif curve_lower == "back_heavy":
-        weights = [float(i + 1) for i in range(steps)]
-    else:
-        weights = [1.0 for _ in range(steps)]
-
-    total_w = sum(weights)
-    return [(lvl, round(w / total_w, 4)) for lvl, w in zip(levels, weights)]
-
-
-def adapt_ladder_rungs(
-    remaining: list[tuple[float, float]], held: float, min_tranche_qty: float = 0.01
-) -> list[tuple[float, float]]:
-    """Dynamically clamp remaining rungs so each order has viable trading quantity."""
-    held_f = _clean_pos_float(held)
-    if not remaining or held_f is None or held_f <= 1e-9:
-        return []
-    min_q = _clean_pos_float(min_tranche_qty) or 0.01
-    max_viable_rungs = max(1, int(held_f / max(1e-6, min_q)))
-    if len(remaining) <= max_viable_rungs:
-        return list(remaining)
-    if max_viable_rungs == 1:
-        return [remaining[-1]]
-    indices = [
-        int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1)))
-        for i in range(max_viable_rungs)
-    ]
-    return [remaining[idx] for idx in sorted(set(indices))]
 
 
 @dataclass
@@ -263,13 +197,15 @@ def _sanitize_t212_state(st: dict) -> dict:
         bool_keys=("tr_alerted", "tr_armed", "sl_alerted", "sl_pending"),
         dict_keys=("sl_bounce_state", "sl_episode_state", "tp_ride_state", "reentry_state"),
         nullable_dict_keys=("pending_submit", "tp_pending_exit", "sl_pending_exit"),
+        pos_float_list_keys=("tp_sold_levels",),
+        epoch_keys=("buy_backoff_until", "locked_zero_until", "tr_fail_until", "sl_fail_until"),
+        epoch_dict_keys=("tp_fail_until",),
         sanitize_orders=False,
     )
     if isinstance(st.get("pending_submit"), dict):
         ps = st["pending_submit"]
         ps_side = str(ps.get("side") or "").strip().upper()
-        ps_qty = _clean_pos_float(ps.get("qty"))
-        ps_limit = _clean_pos_float(ps.get("limit"))
+        ps_qty, ps_limit = _clean_pos_float(ps.get("qty")), _clean_pos_float(ps.get("limit"))
         ps_intent = T212Client._clean_order_id(ps.get("intent_id"))
         if ps_side not in ("BUY", "SELL") or ps_qty is None or ps_limit is None or ps_intent is None:
             st["pending_submit"] = None
@@ -277,8 +213,7 @@ def _sanitize_t212_state(st: dict) -> dict:
             ps_copy = dict(ps)
             ps_copy.update(
                 side=ps_side, qty=ps_qty, limit=ps_limit, intent_id=ps_intent,
-                market=_parse_bool_flag(ps.get("market"), False),
-                level=_clean_pos_float(ps.get("level")),
+                market=_parse_bool_flag(ps.get("market"), False), level=_clean_pos_float(ps.get("level")),
             )
             if "ts" in ps_copy and ps_copy.get("ts") is not None:
                 ps_copy["ts"] = normalize_epoch_sec(ps_copy.get("ts"), default=0.0, allow_zero=True)
@@ -318,33 +253,6 @@ def _sanitize_t212_state(st: dict) -> dict:
         st["orders"] = clean_orders
     else:
         st["orders"] = []
-    raw_sold = st.get("tp_sold_levels")
-    if isinstance(raw_sold, list):
-        clean_sold = []
-        for item in raw_sold:
-            lvl_f = _clean_pos_float(item)
-            if lvl_f is not None and lvl_f not in clean_sold:
-                clean_sold.append(lvl_f)
-        st["tp_sold_levels"] = clean_sold
-    else:
-        st["tp_sold_levels"] = []
-    for k in ("buy_backoff_until", "locked_zero_until", "tr_fail_until", "sl_fail_until"):
-        if k in st:
-            cleaned = normalize_epoch_sec(st.get(k), default=None, allow_zero=True)
-            if cleaned is not None:
-                st[k] = cleaned
-            else:
-                st.pop(k, None)
-    if "tp_fail_until" in st:
-        raw_fails = st.get("tp_fail_until")
-        if isinstance(raw_fails, dict):
-            st["tp_fail_until"] = {
-                str(fk): cv
-                for fk, fv in raw_fails.items()
-                if (cv := normalize_epoch_sec(fv, default=None)) is not None
-            }
-        else:
-            st.pop("tp_fail_until", None)
     return st
 
 
@@ -567,19 +475,6 @@ class Strategy(BaseSpotMixin):
         )
         self._persist_pending_submit(None)
         return "retryable"
-
-    def _record_tp_sold_level(self, level: object) -> None:
-        lvl_f = _clean_pos_float(level)
-        if lvl_f is not None:
-            sold = self.s.setdefault("tp_sold_levels", [])
-            if lvl_f not in sold:
-                sold.append(lvl_f)
-
-    def _all_tp_ladder_levels_sold(self) -> bool:
-        if not self.p.tp_ladder:
-            return False
-        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder}
-        return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
 
     def _sync_real_position_cost(
         self, real_qty: float, avg_price: float, *, sync_spent_only_when_held: bool = False

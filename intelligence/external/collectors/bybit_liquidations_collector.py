@@ -330,3 +330,37 @@ class BybitLiquidationCollector:
         recent_rate = recent / max(eff_win, 1.0)
         base_rate = base / max(eff_base, 1.0)
         return recent_rate / base_rate if base_rate > 0 else 0.0
+
+
+import sys as _sys
+
+BYBIT_URL = BYBIT_WS_URL
+_safe_pos_float = safe_pos_float
+_clean_liq_symbol = clean_symbol_key
+
+
+class LiquidationSignal(BybitLiquidationCollector):
+    """Background thread holding a rolling window of Bybit liquidations."""
+
+    def start(self, name: str = "LiquidationWS", daemon: bool = True) -> "LiquidationSignal":
+        super().start(name=name, daemon=daemon)
+        return self
+
+
+_singleton: Optional[LiquidationSignal] = None
+_singleton_lock = threading.Lock()
+
+
+def get_liquidation_signal(symbols: Optional[List[str]] = None) -> LiquidationSignal:
+    """Return the shared liquidation signal, starting its stream on first use."""
+    global _singleton
+    with _singleton_lock:
+        if _singleton is None:
+            _singleton = LiquidationSignal(symbols=symbols)
+        if not _singleton.is_running:
+            _singleton.start()
+    return _singleton
+
+
+_sys.modules.setdefault("liquidation_signal", _sys.modules[__name__])
+

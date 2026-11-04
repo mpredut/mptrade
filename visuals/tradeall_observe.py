@@ -41,7 +41,7 @@ import sys
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from active_intents import build_active_intent_index
-from botcore import lru_dict_put, safe_float, safe_int, safe_pos_float, safe_pos_int, sanitize_pipe_field
+from botcore import lru_dict_put, normalize_trend_direction, safe_float, safe_int, safe_pos_float, safe_pos_int, sanitize_pipe_field
 from state_io import append_text_line, atomic_file_path, atomic_write_text, read_json_dict, read_tail_jsonl_dicts
 from providers.base import normalize_side
 from intelligence.internal.state.volatility import get_kalman_state_path
@@ -224,11 +224,15 @@ def _parse_price_sample_rows(rows, symbol, *, require_pos_ts: bool = False):
     return ts_list, px_list
 
 
-def load_price_samples(symbol, days_back):
+def _read_daily_pipe_rows(prefix, ncols, days_back):
     rows = []
     for d in reversed(_log_dates(days_back)):
-        rows.extend(_read_pipe_log(_daily_log_path(PRICE_SAMPLES_PREFIX, d), 3))
-    return _parse_price_sample_rows(rows, symbol, require_pos_ts=False)
+        rows.extend(_read_pipe_log(_daily_log_path(prefix, d), ncols))
+    return rows
+
+
+def load_price_samples(symbol, days_back):
+    return _parse_price_sample_rows(_read_daily_pipe_rows(PRICE_SAMPLES_PREFIX, 3, days_back), symbol, require_pos_ts=False)
 
 
 def _cachedb_dir() -> str:
@@ -317,10 +321,7 @@ def _parse_trend_start_rows(rows, symbol):
 
 
 def load_trend_starts(symbol, days_back):
-    rows = []
-    for d in reversed(_log_dates(days_back)):
-        rows.extend(_read_pipe_log(_daily_log_path(DECISIONS_PREFIX, d), 7))
-    return _parse_trend_start_rows(rows, symbol)
+    return _parse_trend_start_rows(_read_daily_pipe_rows(DECISIONS_PREFIX, 7, days_back), symbol)
 
 
 def _is_tradeall_order(caller: str, motivation: str) -> bool:
@@ -354,10 +355,7 @@ def _parse_order_event_rows(rows, symbol, *, filter_caller: bool = True):
 
 def load_order_events(symbol, days_back):
     """Load only tradeall.py events from the fleet-wide outcome log."""
-    rows = []
-    for d in reversed(_log_dates(days_back)):
-        rows.extend(_read_pipe_log(_daily_log_path(OUTCOMES_PREFIX, d), 9))
-    return _parse_order_event_rows(rows, symbol, filter_caller=True)
+    return _parse_order_event_rows(_read_daily_pipe_rows(OUTCOMES_PREFIX, 9, days_back), symbol, filter_caller=True)
 
 
 def _parse_shadow_rows(rows, symbol):
@@ -381,10 +379,7 @@ def _parse_shadow_rows(rows, symbol):
 
 
 def load_shadow_events(symbol, days_back):
-    rows = []
-    for d in reversed(_log_dates(days_back)):
-        rows.extend(_read_pipe_log(_daily_log_path(SHADOW_PREFIX, d), 9))
-    return _parse_shadow_rows(rows, symbol)
+    return _parse_shadow_rows(_read_daily_pipe_rows(SHADOW_PREFIX, 9, days_back), symbol)
 
 
 def load_backtest_shadow_events(directory, symbol):
@@ -663,12 +658,10 @@ def format_state_text(entry, header, pending=None, exposure=None):
         if iv in trend_map:
             return trend_map[iv]
         if isinstance(val, str):
-            s = val.strip().upper()
-            if s in ("UP", "BULL"):
-                return "UP"
-            if s in ("DOWN", "BEAR"):
-                return "DOWN"
-            if s in ("FLAT", "HOLD", "NEUTRAL"):
+            d = normalize_trend_direction(val, default=None)
+            if d:
+                return d.upper()
+            if val.strip().upper() in ("FLAT", "HOLD", "NEUTRAL"):
                 return "FLAT"
         return "?"
 
@@ -901,20 +894,27 @@ def render_backtest_chunks(symbol, directory, chunk_hours=24, out_dir=None):
 
 # -- Static, serverless HTML with day/week toggle and auto-refresh. ------------
 
+_BASE_CHART_CSS = """body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin: 16px; }
+img { max-width: 100%; border: 1px solid #333; border-radius: 4px; }
+.chart { margin-bottom: 24px; }
+.chart-wrap { position: relative; display: inline-block; max-width: 100%; }
+.state-overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                  opacity: 0; transition: opacity .15s; pointer-events: none;
+                  max-width: 45%; border: none; }
+.chart-wrap:hover .state-overlay { opacity: 1; }"""
+
+
 def write_html(symbols, live_minutes=60, active_summary=None):
     live_minutes = safe_pos_float(live_minutes, default=60.0)
-    blocks = []
-    for s in symbols:
-        blocks.append(f'''
-  <div class="chart">
-    <h3>{s}</h3>
-    <div class="chart-wrap">
-      <img class="view-live" src="tradeall_live_{s}_live.png" alt="{s} live">
-      <img class="view-day" src="tradeall_live_{s}_ziua.png" alt="{s} day" style="display:none">
-      <img class="view-week" src="tradeall_live_{s}_saptamana.png" alt="{s} week" style="display:none">
-      <img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">
-    </div>
-  </div>''')
+    blocks = [
+        f'\n  <div class="chart">\n    <h3>{s}</h3>\n    <div class="chart-wrap">\n'
+        f'      <img class="view-live" src="tradeall_live_{s}_live.png" alt="{s} live">\n'
+        f'      <img class="view-day" src="tradeall_live_{s}_ziua.png" alt="{s} day" style="display:none">\n'
+        f'      <img class="view-week" src="tradeall_live_{s}_saptamana.png" alt="{s} week" style="display:none">\n'
+        f'      <img class="state-overlay" src="tradeall_live_{s}_state.png" alt="{s} state">\n'
+        f'    </div>\n  </div>'
+        for s in symbols
+    ]
 
     summary_html = ""
     if isinstance(active_summary, dict) and active_summary:
@@ -930,20 +930,13 @@ def write_html(symbols, live_minutes=60, active_summary=None):
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>tradeall — live monitor</title>
 <style>
-body {{ font-family: -apple-system, sans-serif; background:#111; color:#eee; margin: 16px; }}
-img {{ max-width: 100%; border: 1px solid #333; border-radius: 4px; }}
+{_BASE_CHART_CSS}
 button {{ margin: 4px 6px 14px 0; padding: 6px 16px; border-radius: 4px; border: 1px solid #444;
          background:#222; color:#eee; cursor:pointer; }}
 button.active {{ background:#1f6feb; border-color:#1f6feb; }}
 .summary-bar {{ background: #1c2128; border: 1px solid #30363d; border-radius: 6px; padding: 10px 16px;
                 margin-bottom: 18px; display: flex; flex-wrap: wrap; gap: 20px; font-family: monospace; font-size: 13px; }}
 .summary-bar span strong {{ color: #58a6ff; }}
-.chart {{ margin-bottom: 24px; }}
-.chart-wrap {{ position: relative; display: inline-block; max-width: 100%; }}
-.state-overlay {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                  opacity: 0; transition: opacity .15s; pointer-events: none;
-                  max-width: 45%; border: none; }}
-.chart-wrap:hover .state-overlay {{ opacity: 1; }}
 </style></head>
 <body>
 <h2>tradeall — live monitor</h2>
@@ -981,14 +974,7 @@ def write_backtest_html(directory, symbols):
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>tradeall — backtest</title>
 <style>
-body {{ font-family: -apple-system, sans-serif; background:#111; color:#eee; margin: 16px; }}
-img {{ max-width: 100%; border: 1px solid #333; border-radius: 4px; }}
-.chart {{ margin-bottom: 24px; }}
-.chart-wrap {{ position: relative; display: inline-block; max-width: 100%; }}
-.state-overlay {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                  opacity: 0; transition: opacity .15s; pointer-events: none;
-                  max-width: 45%; border: none; }}
-.chart-wrap:hover .state-overlay {{ opacity: 1; }}
+{_BASE_CHART_CSS}
 </style></head>
 <body>
 <h2>tradeall — backtest ({os.path.basename(directory)})</h2>

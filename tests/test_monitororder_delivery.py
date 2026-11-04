@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import accepted_order_persistence
+import order_lifecycle as accepted_order_persistence
 import monitororder
 import order_retry_worker
 from providers.strategy_executor import OrderStatus

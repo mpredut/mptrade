@@ -27,10 +27,12 @@ KRAKEN_DIR = os.path.join(ROOT, "kraken")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from shadow_runtime import (  # noqa: E402
-    load_shadow_environment, prepare_shadow_runtime, require_shadow_interval,
+from botcore import (  # noqa: E402
+    load_shadow_environment,
+    prepare_shadow_runtime,
+    require_shadow_interval,
+    required_env,
 )
-from botcore import required_env  # noqa: E402
 from providers.base import validate_ohlc_candle_bar  # noqa: E402
 from strategies.spot_engine import StratParams  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE, KRAKEN_DIR)

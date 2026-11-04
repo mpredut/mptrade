@@ -6,22 +6,33 @@ and venue status reconciliation from the shared persistent JSONL retry outbox.
 """
 from __future__ import annotations
 
+import os
+import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from datetime import datetime
+from typing import Any, Callable, Dict, Optional
 
 from botcore import (
     _parse_bool_flag,
     exact_pos_int,
+    load_root_config,
+    required_float_env,
+    required_int_env,
     safe_float,
     safe_nonneg_int,
     safe_pos_float,
 )
+from intelligence.macro_sentiment_ssot import obj_attr as _regime_attr
+from notify_engine import alertnotifiers as alert
 from providers.base import (
+    _clean_single_order_id as _clean_id,
     extract_order_id,
     extract_order_price,
     extract_order_qty,
+    extract_order_side,
     extract_orig_qty,
+    extract_remaining_qty,
     normalize_side,
 )
 from providers.strategy_executor import (
@@ -32,6 +43,7 @@ from providers.strategy_executor import (
     capture_submission,
     reconciliation_capabilities_of,
 )
+from state_io import append_text_line
 
 PersistPending = Callable[[Optional[dict]], None]
 SubmitIntent = Callable[[], object]
@@ -503,3 +515,320 @@ class TrackedOrderLifecycle:
         persist(dict(pending))
         self._audit("cancel_pending", pending, status=post_cancel.status, filled_qty=post_cancel.filled_qty)
         return TrackedOrderResult("active", pending, post_cancel)
+
+
+# ─── Accepted Order Claim Persistence (formerly accepted_order_persistence.py) ───
+
+load_root_config()
+
+ACCEPTED_TRACKING_PERSIST_ATTEMPTS = required_int_env("ACCEPTED_TRACKING_PERSIST_ATTEMPTS")
+ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC = required_float_env("ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC")
+
+if not 2 <= ACCEPTED_TRACKING_PERSIST_ATTEMPTS <= 10:
+    raise ValueError("ACCEPTED_TRACKING_PERSIST_ATTEMPTS must be between 2 and 10")
+if not 0 < ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC <= 5:
+    raise ValueError("ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC must be finite, > 0, and <= 5")
+
+
+def _claim_client_order_id(record) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    pk = record.get("place_kwargs")
+    return _clean_id(pk.get("client_order_id")) if isinstance(pk, dict) else None
+
+
+def _accepted_is_durable(order_retry_module, claim, order) -> bool:
+    """Recognize a first attempt that committed before reporting an I/O error."""
+    try:
+        if not isinstance(claim, dict):
+            return False
+        claim_id = _clean_id(claim.get("id"))
+        expected_order_id = _clean_id(order_retry_module.order_id_from_response(order))
+        expected_client_id = _claim_client_order_id(claim)
+        if claim_id is None or expected_order_id is None or expected_client_id is None:
+            return False
+        for record in (order_retry_module.load_all() or ()):
+            if not isinstance(record, dict) or _clean_id(record.get("id")) != claim_id:
+                continue
+            current_client_id = _claim_client_order_id(record)
+            current_order_id = _clean_id(record.get("order_id"))
+            return (
+                str(record.get("lifecycle") or "").strip().lower() == "accepted"
+                and current_order_id == expected_order_id
+                and current_client_id == expected_client_id
+            )
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+_ALERTED_PERSISTENCE_FAILURES: dict[tuple, float] = {}
+_PERSISTENCE_ALERT_COOLDOWN_SEC = 1800.0
+
+
+def complete_accepted_claim(
+    order_retry_module, claim, *, order, provider_name, symbol, side
+) -> bool:
+    """Persist venue acceptance under the exact claim, retrying transient I/O."""
+    last_error = None
+    for attempt in range(ACCEPTED_TRACKING_PERSIST_ATTEMPTS):
+        try:
+            res = order_retry_module.complete_claim(
+                claim, "accepted", order=order, provider_name=provider_name
+            )
+            if res is True or (not isinstance(res, (bool, str, float, dict, list, tuple, set)) and bool(res)):
+                return True
+            last_error = RuntimeError("exact accepted-order claim completion returned false")
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+        if _accepted_is_durable(order_retry_module, claim, order):
+            return True
+        if attempt + 1 < ACCEPTED_TRACKING_PERSIST_ATTEMPTS:
+            time.sleep(ACCEPTED_TRACKING_PERSIST_RETRY_DELAY_SEC)
+
+    try:
+        order_id = _clean_id(order_retry_module.order_id_from_response(order))
+    except Exception:
+        order_id = None
+    claim_dict = claim if isinstance(claim, dict) else {}
+    client_order_id = _claim_client_order_id(claim_dict)
+    qty = claim_dict.get("qty")
+    px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
+    qty_f = safe_float(qty, default=None)
+    px_f = safe_float(px, default=None)
+    if isinstance(qty, (bool, float)) and qty_f is None:
+        qty = None
+    if isinstance(px, (bool, float)) and px_f is None:
+        px = None
+    val_f = safe_float(qty_f * px_f, default=None) if (qty_f is not None and px_f is not None) else None
+    val_str = f"~${val_f:.2f}" if val_f is not None else "N/A"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    detail = (
+        f"venue={provider_name} symbol={symbol} side={side} "
+        f"qty={qty} price={px} value={val_str} time={now_str} "
+        f"order_id={order_id} client_order_id={client_order_id} "
+        f"attempts={ACCEPTED_TRACKING_PERSIST_ATTEMPTS} error={last_error}"
+    )
+    print(f"CRITICAL: accepted order tracking could not be persisted: {detail}")
+    dedup_key = (str(provider_name or ""), str(symbol or ""), str(side or ""), str(order_id or client_order_id or ""))
+    now_mono = time.monotonic()
+    last_alert_ts = _ALERTED_PERSISTENCE_FAILURES.get(dedup_key)
+    if last_alert_ts is None or (now_mono - last_alert_ts) >= _PERSISTENCE_ALERT_COOLDOWN_SEC:
+        _ALERTED_PERSISTENCE_FAILURES[dedup_key] = now_mono
+        while len(_ALERTED_PERSISTENCE_FAILURES) > 1000:
+            _ALERTED_PERSISTENCE_FAILURES.pop(next(iter(_ALERTED_PERSISTENCE_FAILURES)), None)
+        alert.notify(
+            title="🛑 CRITICAL accepted order tracking persistence failure",
+            body=detail,
+            source="order-persistence",
+            symbol=str(symbol),
+            email=True,
+        )
+    return False
+
+
+# ─── Order Outcomes Log (formerly order_outcomes_log.py) ───
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+ORDER_OUTCOMES_LOG_DIR = os.path.join(ROOT, "logger")
+_INVALID_LOG_STRINGS = {"nan", "null", "none", "inf", "-inf", "+inf"}
+
+
+def _sanitize_outcome_field(value):
+    """Remove characters that would break the pipe-delimited record format."""
+    if value is None or isinstance(value, (bool, dict, list, tuple, set, frozenset)):
+        return ""
+    if isinstance(value, float) and safe_float(value, default=None) is None:
+        return ""
+    text = str(value).replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+    return "" if text.lower() in _INVALID_LOG_STRINGS else text
+
+
+def _clean_numeric_field(value):
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        return ""
+    f = safe_float(value, default=None)
+    if f is None:
+        return ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    s = str(value).strip()
+    return s if s.lower() not in _INVALID_LOG_STRINGS else ""
+
+
+def _clean_bool_field(value) -> str:
+    if value is None or isinstance(value, (dict, list, tuple, set, frozenset)):
+        return ""
+    parsed = _parse_bool_flag(value, default=None)
+    return str(parsed) if parsed is not None else ""
+
+
+def log_order_outcome(
+    symbol,
+    side,
+    price,
+    qty,
+    outcome,
+    refuse_reason,
+    motivation,
+    caller=None,
+    *,
+    regime_context=None,
+):
+    """Append one submission-attempt record with optional market regime telemetry."""
+    try:
+        os.makedirs(ORDER_OUTCOMES_LOG_DIR, exist_ok=True)
+        path = os.path.join(
+            ORDER_OUTCOMES_LOG_DIR, f"order_outcomes_{datetime.now().strftime('%Y-%m-%d')}.log"
+        )
+        cols = [
+            time.time(),
+            _sanitize_outcome_field(symbol),
+            _sanitize_outcome_field(side),
+            _clean_numeric_field(price),
+            _clean_numeric_field(qty),
+            _sanitize_outcome_field(outcome),
+            _sanitize_outcome_field(refuse_reason),
+            _sanitize_outcome_field(caller),
+            _sanitize_outcome_field(motivation),
+        ]
+        if regime_context is not None and not isinstance(
+            regime_context, (bool, int, float, str, bytes, list, tuple, set, frozenset)
+        ):
+            sf = safe_float(_regime_attr(regime_context, "strength", None), default=None)
+            strength_str = f"{sf:.4f}" if sf is not None else ""
+
+            def _clean_regime_str(val) -> str:
+                if isinstance(val, str):
+                    return _sanitize_outcome_field(val)
+                if val is not None and not isinstance(
+                    val, (bool, int, float, bytes, dict, list, tuple, set, frozenset)
+                ):
+                    inner = getattr(val, "value", getattr(val, "name", None))
+                    if isinstance(inner, str):
+                        return _sanitize_outcome_field(inner)
+                return ""
+
+            cols.extend([
+                _clean_regime_str(_regime_attr(regime_context, "regime", "")),
+                strength_str,
+                _clean_regime_str(_regime_attr(regime_context, "source", "")),
+                _clean_bool_field(_regime_attr(regime_context, "fresh", None)),
+                _clean_bool_field(_regime_attr(regime_context, "fallback_used", None)),
+                _clean_regime_str(_regime_attr(regime_context, "reason", "")),
+            ])
+        line = "|".join(
+            str(c).replace("|", "/").replace("\r", " ").replace("\n", " ") if c is not None else ""
+            for c in cols
+        )
+        append_text_line(path, line)
+    except Exception as e:
+        print(f"[log_order_outcome] error writing outcomes log: {e}")
+
+
+# ─── Atomic Order Rollback (formerly order_rollback.py) ───
+
+_finite_pos_float = safe_pos_float
+
+
+def extract_order_restore_params(order: dict) -> dict[str, Any]:
+    """Normalize resting order dictionaries across venues for restoration after a failed replacement/exit."""
+    if not isinstance(order, dict):
+        order = {}
+    side = extract_order_side(order) or "SELL"
+    price = extract_order_price(order, default=0.0)
+    qty = _finite_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
+    level_f = _finite_pos_float(order.get("level"), default=0.0)
+    level = level_f if level_f > 0.0 else None
+    raw_kind = order.get("kind")
+    kind = (
+        raw_kind.strip()
+        if (
+            isinstance(raw_kind, str)
+            and raw_kind.strip()
+            and raw_kind.strip().lower() not in {"nan", "inf", "-inf", "+inf", "none", "null"}
+        )
+        else ("TP" if side == "SELL" else "ENTRY")
+    )
+    prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
+    amount = _finite_pos_float(order.get("amount"), default=_finite_pos_float(prod, default=0.0))
+    return {
+        "side": side,
+        "qty": qty,
+        "price": price,
+        "limit": price,
+        "kind": kind,
+        "level": level,
+        "amount": amount,
+        "raw": order,
+    }
+
+
+def restore_cancelled_orders(
+    cancelled_orders: list[dict],
+    restore_fn: Callable[[dict[str, Any]], Any],
+    log_fn: Callable[[str], None] = print,
+    reason: str = "",
+) -> int:
+    """Best-effort restoration of resting orders if replacement/exit fails."""
+    if not cancelled_orders or not isinstance(cancelled_orders, (list, tuple)):
+        return 0
+    clean_reason = reason.strip() if isinstance(reason, str) else ""
+    tag = f" ({clean_reason})" if clean_reason else ""
+    log_fn(f"  ! [ATOMIC_ROLLBACK] restoring {len(cancelled_orders)} cancelled order(s){tag}")
+    restored = 0
+    for raw_ord in cancelled_orders:
+        if not isinstance(raw_ord, dict):
+            continue
+        params = extract_order_restore_params(raw_ord)
+        if not (_finite_pos_float(params.get("qty"), default=None) and _finite_pos_float(params.get("limit"), default=None)):
+            continue
+        try:
+            if restore_fn(params) is not False:
+                restored += 1
+        except Exception as exc:
+            log_fn(f"  ! [ATOMIC_ROLLBACK] failed restoring order: {exc}")
+    return restored
+
+
+class AtomicOrderRollbackGuard:
+    """Context manager for atomic cancel-and-replace / exit operations."""
+
+    def __init__(
+        self,
+        cancelled_orders: list[dict],
+        restore_fn: Callable[[dict[str, Any]], Any],
+        log_fn: Callable[[str], None] = print,
+        reason: str = "",
+    ):
+        self.cancelled_orders = list(cancelled_orders) if isinstance(cancelled_orders, (list, tuple)) else []
+        self.restore_fn = restore_fn
+        self.log_fn = log_fn
+        self.reason = reason
+        self.committed = False
+        self.rolled_back = False
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> int:
+        if self.rolled_back:
+            return 0
+        self.rolled_back = True
+        return restore_cancelled_orders(
+            self.cancelled_orders, self.restore_fn, log_fn=self.log_fn, reason=self.reason
+        )
+
+    def __enter__(self) -> AtomicOrderRollbackGuard:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if (not self.committed or exc_type is not None) and not self.rolled_back:
+            self.rollback()
+        return False
+
+
+sys.modules.setdefault("accepted_order_persistence", sys.modules[__name__])
+sys.modules.setdefault("order_outcomes_log", sys.modules[__name__])
+sys.modules.setdefault("order_rollback", sys.modules[__name__])
+

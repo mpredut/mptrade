@@ -19,7 +19,7 @@ from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument as _Instrument
 import order_guard
 import order_retry
-from order_rollback import restore_cancelled_orders
+from order_lifecycle import restore_cancelled_orders
 from providers.base import (
     extract_order_id,
     extract_order_price,

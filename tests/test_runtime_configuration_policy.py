@@ -178,3 +178,339 @@ def test_tracked_text_files_use_unix_line_endings():
         if b"\r" in path.read_bytes()
     ]
     assert offenders == [], f"tracked text files contain CR/CRLF: {offenders}"
+
+
+import os
+import sys
+import tempfile
+import textwrap
+import unittest
+from verify_tools.ownership_inventory import build_inventory, find_overlaps
+
+
+def _write_inv(root: Path, relative: str, text: str) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _ownership_fixture() -> Path:
+    root = Path(tempfile.mkdtemp())
+    _write_inv(root, "procs.conf", """
+dn_bot.py$|x|x|DN|||bot
+kraken_bot.py|x|x|Kraken|||bot
+kraken/trailing_stop.py|x|x|Trail|||bot
+monitortrades.py|x||MT|||fleet
+""")
+    _write_inv(root, "config.txt", "trade_enabled=true\n")
+    _write_inv(root, "config.env", "BINANCE_ACCOUNT_REF=binance-main\n")
+    _write_inv(root, "kraken/config.env", """
+KRAKEN_PAIR=HYPEUSD
+STRAT_EXECUTE=true
+KRAKEN_ACCOUNT_REF=kraken-main
+""")
+    _write_inv(root, "kraken/.env", "KRAKEN_LIVE_ORDERS=true\n")
+    _write_inv(root, "kraken/trailing.conf", "KRAKEN_TRAILING_ENABLED=true\n")
+    _write_inv(root, "hyperliquid/config.env", """
+HL_COIN=HYPE
+HL_SPOT_TOKEN=HYPE
+STRAT_EXECUTE=true
+HL_LIVE_ORDERS=true
+""")
+    _write_inv(root, "instruments.conf", """
+[KRAKEN_HYPE]
+provider=kraken
+symbol=HYPEUSD
+base=HYPE
+quote=USD
+enabled=yes
+mt.gain=9
+
+[HYPERLIQUID_HYPE]
+provider=hyperliquid
+symbol=HYPEUSDC
+base=HYPE
+quote=USDC
+enabled=no
+mt.gain=9
+""")
+    _write_inv(root, "symbols.py", "symbols=[]\ntaosymbol='TAOUSDC'\n")
+    _write_inv(root, "binance_api/trailing.conf", "TRAILING_ENABLED=false\n")
+    return root
+
+
+class OwnershipInventoryTest(unittest.TestCase):
+    def _make_fixture(self) -> Path:
+        root = _ownership_fixture()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        return root
+
+    def test_two_primary_kraken_owners_are_warning_but_trailing_is_protective(self):
+        root = self._make_fixture()
+        owners = build_inventory(root)
+        overlap = next(
+            item for item in find_overlaps(owners)
+            if item["venue"] == "kraken" and item["symbol"] == "HYPEUSD"
+        )
+        self.assertEqual(overlap["severity"], "warning")
+        self.assertEqual(set(overlap["primary_owners"]), {"kraken-spot-dca", "monitortrades:KRAKEN_HYPE"})
+        self.assertIn("kraken-trailing", overlap["owners"])
+
+    def test_running_scope_omits_disabled_dn_and_non_running_trailing(self):
+        root = self._make_fixture()
+        owners = build_inventory(root, commands=["python3 kraken_bot.py", "python monitortrades.py"])
+        dn = next(owner for owner in owners if owner.owner_id == "hyperliquid-dn")
+        self.assertTrue(dn.configured)
+        self.assertTrue(dn.live_enabled)
+        self.assertFalse(dn.active(require_running=True))
+        overlap = next(
+            item for item in find_overlaps(owners, require_running=True)
+            if item["venue"] == "kraken"
+        )
+        self.assertNotIn("kraken-trailing", overlap["owners"])
+
+    def test_running_scope_detects_owner_started_outside_manifest(self):
+        root = self._make_fixture()
+        owners = build_inventory(root, commands=["python3 hl_bot.py"])
+        spot = next(owner for owner in owners if owner.owner_id == "hyperliquid-spot-dca")
+        self.assertFalse(spot.configured)
+        self.assertTrue(spot.live_enabled)
+        self.assertTrue(spot.active(require_running=True))
+
+    def test_explicit_monitortrades_account_removes_false_conflict(self):
+        root = self._make_fixture()
+        instruments = root / "instruments.conf"
+        instruments.write_text(
+            instruments.read_text(encoding="utf-8").replace(
+                "enabled=yes\nmt.gain=9",
+                "enabled=yes\nownership.account_ref=kraken-spare\nmt.gain=9",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        owners = build_inventory(root)
+        warnings = [
+            item for item in find_overlaps(owners)
+            if item["severity"] == "warning" and item["venue"] == "kraken"
+        ]
+        self.assertEqual(warnings, [])
+
+    def test_same_coordination_domain_is_informational_not_warning(self):
+        root = self._make_fixture()
+        _write_inv(root, "procs.conf", """
+tradeall.py|x||tradeall|||fleet
+monitortrades.py|x||monitortrades|||fleet
+""")
+        _write_inv(root, "symbols.py", "symbols=['BTCUSDC']\ntaosymbol='TAOUSDC'\n")
+        _write_inv(root, "instruments.conf", """
+[BINANCE_BTC]
+provider=binance
+symbol=BTCUSDC
+base=BTC
+quote=USDC
+enabled=yes
+mt.gain=5
+""")
+        overlaps = find_overlaps(build_inventory(root))
+        overlap = next(item for item in overlaps if item["venue"] == "binance")
+        self.assertEqual(overlap["severity"], "info")
+        self.assertEqual(overlap["primary_coordination_domains"], ["binance-order-pipeline"])
+
+    def test_config_txt_trade_enabled_false_overrides_config_env_true(self):
+        root = self._make_fixture()
+        _write_inv(root, "config.env", "BINANCE_ACCOUNT_REF=binance-main\nTRADE_ENABLED=true\n")
+        _write_inv(root, "config.txt", "trade_enabled=false\n")
+        owners = build_inventory(root)
+        mt_owner = next(owner for owner in owners if owner.owner_id == "monitortrades:KRAKEN_HYPE")
+        self.assertFalse(mt_owner.live_enabled)
+
+
+class RuntimeImportSafetyTest(unittest.TestCase):
+    def test_provider_layer_imports_without_binance_key_module(self):
+        code = textwrap.dedent(
+            """
+            import sys
+            import types
+            import importlib
+
+            keys = types.ModuleType("keys")
+            keys.__path__ = []
+            sys.modules["keys"] = keys
+            sys.modules.pop("keys.apikeys", None)
+
+            from providers.t212_provider import T212Provider
+            from providers import market_api
+            importlib.import_module("212trading.t212_client")
+
+            if market_api._bapi is not None:
+                raise AssertionError("Binance bapi a fost importat eager")
+            T212Provider()
+            if market_api.api.provider_by_name("t212") is None:
+                raise AssertionError("T212 is missing from the registry after a direct import")
+
+            from binance_api import bapi_ws
+            if bapi_ws.api_key_ws:
+                raise AssertionError("the test loaded a private key")
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=dict(os.environ, BINANCE_AUTO_START_WEBSOCKETS="0", BINANCE_API_KEY_WS=""),
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_cache_manager_import_is_network_and_worker_free(self):
+        code = textwrap.dedent(
+            """
+            import threading
+            import binance.client
+
+            class ForbiddenClient:
+                def __init__(self, *args, **kwargs):
+                    raise AssertionError("Binance Client construit la import")
+
+            binance.client.Client = ForbiddenClient
+            import cacheManager
+            from binance_api import bapi_trades
+
+            forbidden = {
+                "BinanceTimeResync", "CacheTrade", "CacheTradeManager",
+                "CacheOrder", "CacheOrderManager",
+                "CacheCurrentPrice", "CacheCurrentPriceManager", "NonBinanceTrendPoller",
+                "InstantTrendFullEval", "InstantTrendFlush",
+            }
+            active = {thread.name for thread in threading.enumerate()}
+            leaked = sorted(active & forbidden)
+            if leaked:
+                raise AssertionError(f"thread-uri pornite la import: {leaked}")
+            """
+        )
+        env = dict(os.environ, BINANCE_AUTO_START_WEBSOCKETS="0",
+                   BINANCE_API_KEY="", BINANCE_API_SECRET="", BINANCE_API_KEY_WS="")
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=env, capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_rest_credentials_fail_before_client_construction(self):
+        code = textwrap.dedent('''
+            from unittest.mock import patch
+            from binance_api import bapi_client
+            from keys import apikeys
+            assert apikeys.api_key_ws == "", "REST key must not substitute for the Ed25519 key"
+            with patch.object(bapi_client, "Client") as client:
+                try:
+                    bapi_client.getClient()
+                except ValueError as exc:
+                    assert "BINANCE_API_SECRET" in str(exc)
+                else:
+                    raise AssertionError("Missing credentials were accepted")
+                client.assert_not_called()
+        ''')
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=dict(os.environ, BINANCE_API_KEY="test-only", BINANCE_API_SECRET="",
+                     BINANCE_API_KEY_WS="", BINANCE_AUTO_START_WEBSOCKETS="0"),
+            text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bapi_client_recvwindow_and_minus_1021_resync_retry(self):
+        from unittest.mock import MagicMock, patch
+        from binance_api import bapi_client
+
+        class _RecvWindowError(Exception):
+            code = -1021
+
+        calls = []
+
+        class _DummyClient:
+            def __init__(self):
+                self.session = MagicMock()
+                self.REQUEST_RECVWINDOW = None
+                self.timestamp_offset = 0
+
+            def get_server_time(self):
+                return {"serverTime": 1_700_000_005_000}
+
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                data = kwargs.get("data")
+                calls.append(dict(data) if isinstance(data, dict) else data)
+                if len(calls) == 1:
+                    if isinstance(data, dict):
+                        data["timestamp"] = 111
+                        data["signature"] = "stale_sig"
+                    raise _RecvWindowError("Timestamp outside recvWindow")
+                return {"ok": True, "data": data}
+
+        dummy = _DummyClient()
+        bapi_client._install_recvwindow_retry(dummy)
+        with patch.object(bapi_client, "_client", dummy):
+            res = dummy._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
+        self.assertEqual(res["ok"], True)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1], {"symbol": "BTCUSDC"})
+        self.assertEqual(bapi_client.REQUEST_RECVWINDOW_MS, 30000)
+
+        class _Html500Error(Exception):
+            code = 0
+            status_code = 500
+            def __init__(self):
+                self.message = "Invalid JSON error message from Binance: <html>\r\n<head><title>500 Internal Server Error</title></head>\r\n</html>"
+            def __str__(self):
+                return f"APIError(code={self.code}): {self.message}"
+
+        class _Failing500Client:
+            def __init__(self):
+                self.calls = 0
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                self.calls += 1
+                raise _Html500Error()
+
+        fail500 = _Failing500Client()
+        bapi_client._install_recvwindow_retry(fail500)
+        with self.assertRaises(_Html500Error) as ctx:
+            fail500._request("get", "https://api.binance.com/api/v3/account", True, data={"symbol": "BTCUSDC"})
+        self.assertEqual(fail500.calls, 2)
+        self.assertNotIn("\n", str(ctx.exception))
+        self.assertNotIn("\r", str(ctx.exception))
+
+    def test_get_client_disables_init_ping_and_installs_retries_before_sync(self):
+        from unittest.mock import MagicMock, patch
+        from binance_api import bapi_client
+        from keys import apikeys
+
+        init_kwargs = {}
+        events = []
+
+        class _FakeSdkClient:
+            def __init__(self, api_key, api_secret, **kwargs):
+                init_kwargs.update(kwargs)
+                self.session = MagicMock()
+                self.REQUEST_RECVWINDOW = None
+                self.timestamp_offset = 0
+
+            def _request(self, method, uri, signed, force_params=False, **kwargs):
+                return {"ok": True}
+
+            def get_server_time(self):
+                events.append(("get_server_time", getattr(self, "_recvwindow_retry_installed", False)))
+                return {"serverTime": 1_700_000_005_000}
+
+        with (
+            patch.object(bapi_client, "_client", None),
+            patch.object(bapi_client, "Client", _FakeSdkClient),
+            patch.object(bapi_client, "_start_periodic_resync"),
+            patch.object(apikeys, "api_key", "k"),
+            patch.object(apikeys, "api_secret", "s"),
+        ):
+            cl = bapi_client.getClient()
+
+        self.assertIs(init_kwargs.get("ping"), False)
+        self.assertEqual(events, [("get_server_time", True)])
+        self.assertEqual(cl.REQUEST_RECVWINDOW, bapi_client.REQUEST_RECVWINDOW_MS)
+

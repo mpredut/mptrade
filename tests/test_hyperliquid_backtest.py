@@ -689,13 +689,10 @@ def test_hyperliquid_reconcile_real_marginal_dca_fill_price():
 
 
 def test_hyperliquid_price_analysis_and_signals_edge_cases(tmp_path):
-    spec_pa = importlib.util.spec_from_file_location("hl_pa_module", os.path.join(_HL_DIR, "price_analysis.py"))
-    price_analysis = importlib.util.module_from_spec(spec_pa)
-    spec_pa.loader.exec_module(price_analysis)
-
     spec_sig = importlib.util.spec_from_file_location("hl_sig_module", os.path.join(_HL_DIR, "signals.py"))
     signals = importlib.util.module_from_spec(spec_sig)
     spec_sig.loader.exec_module(signals)
+    price_analysis = signals
 
     class FakeCandleClient:
         def candles(self, coin, interval, lookback_hours=None):

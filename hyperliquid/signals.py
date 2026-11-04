@@ -28,10 +28,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
-from botcore import load_local_module, normalize_trend_direction  # noqa: E402
+from botcore import load_local_module, normalize_epoch_sec, normalize_trend_direction  # noqa: E402
+from priceAnalysis import detect_long_term_trend as _root_detect_long_term_trend  # noqa: E402
+from state_io import read_json_dict  # noqa: E402
 
 _common_mod = load_local_module(_HERE, "common")
 log = _common_mod.log
+load_env_stack = _common_mod.load_env_stack
 load_hl_local = _common_mod.load_hl_local
 required_env = _common_mod.required_env
 required_float_env = _common_mod.required_float_env
@@ -39,9 +42,84 @@ required_int_env = _common_mod.required_int_env
 safe_float = _common_mod.safe_float
 safe_nonneg_float = _common_mod.safe_nonneg_float
 safe_pos_float = _common_mod.safe_pos_float
-from state_io import read_json_dict
 
+load_env_stack(os.path.join(_HERE, ".env"))
+
+MIN_POINTS_PER_WINDOW = 3
 NEUTRAL = {"trend": "neutral", "confidence": 0.0, "source": "neutral"}
+
+
+def detect_long_term_trend(
+    timestamps,
+    prices,
+    window_hours=24,
+    step_hours=8,
+    min_consecutive_blocks=3,
+    noise_tolerance=2,
+    min_points_per_window=MIN_POINTS_PER_WINDOW,
+):
+    """Port priceAnalysis.detect_long_term_trend with gap/density robustness."""
+    res = _root_detect_long_term_trend(
+        timestamps,
+        prices,
+        window_hours=window_hours,
+        step_hours=step_hours,
+        min_consecutive_blocks=min_consecutive_blocks,
+        noise_tolerance=noise_tolerance,
+        min_points_per_window=min_points_per_window,
+        detection_lag_hours=0.0,
+        mk_alpha=None,
+    )
+    if res is None:
+        return None
+    res.pop("blocks", None)
+    return res
+
+
+def analyze(client, coin: str) -> dict | None:
+    """Run analysis over HL candles for the coin."""
+    window_hours = required_int_env("ANALYSIS_WINDOW_H")
+    step_hours = required_int_env("ANALYSIS_STEP_H")
+    if window_hours <= 0 or step_hours <= 0:
+        return None
+    lookback = window_hours + step_hours * 14
+    candles = client.candles(coin, "1h", lookback_hours=lookback)
+    pts: list[tuple[float, float]] = []
+    for c in candles or []:
+        if not isinstance(c, dict):
+            continue
+        t_ms = safe_pos_float(c.get("t"), default=None)
+        c_v = safe_pos_float(c.get("c"), default=None)
+        if t_ms is not None and c_v is not None:
+            pts.append((t_ms / 1000.0 if t_ms >= 1e11 else t_ms, c_v))
+    if len(pts) < window_hours:
+        return None
+    return detect_long_term_trend([p[0] for p in pts], [p[1] for p in pts], window_hours, step_hours)
+
+
+def signal(client, coin: str) -> dict:
+    """Return a bot-format signal: {trend, confidence, source, detail}."""
+    res = analyze(client, coin)
+    if not res:
+        return {"trend": "neutral", "confidence": 0.0, "source": "analysis(insuf.)"}
+    last_px = None
+    try:
+        last_px = safe_pos_float(client.mid(coin), None)
+    except Exception:  # noqa: BLE001
+        pass
+    slope_pct_h = abs(res["current_slope_h"]) / last_px * 100 if last_px is not None else 0.0
+    dur_h = res["duration_seconds"] / 3600.0
+    conf = round(min(1.0, slope_pct_h / 0.3 * 0.6 + min(dur_h / 48.0, 1.0) * 0.4), 2)
+    return {
+        "trend": res["direction"],
+        "confidence": conf,
+        "source": "analysis",
+        "estimated_future_hours": round(res["estimated_future_hours"], 1),
+        "detail": (
+            f"durata {dur_h:.0f}h, est. continuare ~{res['estimated_future_hours']:.0f}h, "
+            f"panta {res['current_slope_h']:+.4f}/h ({slope_pct_h:.2f}%/h)"
+        ),
+    }
 
 
 def _normalize_signal_trend(raw: object) -> str:
@@ -83,11 +161,9 @@ def _file_signal(path: str) -> dict:
     ts = d.get("ts") if d.get("ts") is not None else d.get("timestamp")
     max_age = required_float_env("SIGNAL_MAX_AGE_MIN") * 60
     if ts is not None:
-        ts_f = safe_pos_float(ts, 0.0)
+        ts_f = normalize_epoch_sec(ts, default=0.0) or 0.0
         if ts_f <= 0:
             return {**NEUTRAL, "source": "file(expired)"}
-        if ts_f >= 100_000_000_000.0:
-            ts_f /= 1000.0
         age = time.time() - ts_f
         max_age_f = safe_pos_float(max_age, default=None)
         if max_age_f is None or age > max_age_f or age < -60.0:
@@ -105,10 +181,17 @@ def get_signal(client, coin: str) -> dict:
         try:
             from price_analysis import signal as analysis_signal
         except ImportError:
-            analysis_signal = load_hl_local("price_analysis").signal
+            analysis_signal = signal
         return analysis_signal(client, coin)
     if src == "file":
         return _file_signal(required_env("SIGNAL_FILE"))
     if src == "off":
         return {**NEUTRAL, "source": "off"}
     raise ValueError(f"Invalid SIGNAL_SOURCE: {src!r}")
+
+
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("price_analysis", _self_mod)
+    sys.modules.setdefault("hyperliquid.price_analysis", _self_mod)
+

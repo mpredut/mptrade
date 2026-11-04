@@ -36,4 +36,4 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load_hl_local(name: str):
     """Load a sibling module from ``hyperliquid/`` without colliding with other venue modules."""
-    return load_local_module(_HERE, name)
+    return load_local_module(_HERE, "signals" if name == "price_analysis" else name)

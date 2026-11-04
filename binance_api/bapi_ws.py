@@ -37,12 +37,16 @@ from botcore import (
     safe_nonneg_int,
 )
 
-try:
-    from keys.apikeys import api_key_ws
-except (ModuleNotFoundError, ImportError):
+import sys
+import credentials as _credentials
+
+if "keys" in sys.modules and "keys.apikeys" not in sys.modules:
     # Read-only and test imports must not require secrets. The private stream
     # refuses to start below when the key is unavailable.
     api_key_ws = os.environ.get("BINANCE_API_KEY_WS", "")
+else:
+    _ak_mod = sys.modules.get("keys.apikeys", _credentials)
+    api_key_ws = getattr(_ak_mod, "api_key_ws", _credentials.api_key_ws)
 
 logger = logging.getLogger("binance.ws")
 

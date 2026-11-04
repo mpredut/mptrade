@@ -1,9 +1,11 @@
 ####Binance
+import sys
 import time
 import threading
 
 from binance.client import Client
 from botcore import exact_pos_int, safe_nonneg_float
+import credentials as _credentials
 from providers.http_resilience import mount_connect_retry
 
 ####MYLIB
@@ -169,7 +171,9 @@ def getClient():
         return _client
     with _client_lock:
         if _client is None:
-            from keys.apikeys import api_key, api_secret
+            _ak_mod = sys.modules.get("keys.apikeys", _credentials)
+            api_key = getattr(_ak_mod, "api_key", _credentials.api_key)
+            api_secret = getattr(_ak_mod, "api_secret", _credentials.api_secret)
             if not api_key or not api_secret:
                 raise ValueError("BINANCE_API_KEY and BINANCE_API_SECRET are required for the REST client")
             try:

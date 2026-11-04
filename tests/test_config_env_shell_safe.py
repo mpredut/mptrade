@@ -264,7 +264,7 @@ def test_alertnotifiers_and_hl_hardening(tmp_path, monkeypatch):
 
     hl_client = _load_hl_mod("hl_client")
     hl_signals = _load_hl_mod("signals")
-    hl_pa = _load_hl_mod("price_analysis")
+    hl_pa = hl_signals
 
     state_file = tmp_path / "notif_state.json"
     monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))

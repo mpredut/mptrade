@@ -9,7 +9,7 @@ from binance.exceptions import BinanceAPIException
 
 #### MYLIB
 import order_guard
-import order_outcomes_log as _outcomes_log
+import order_lifecycle as _outcomes_log
 import symbols as sym
 import config as cfg
 import priceAnalysis as pa  # Kept at module namespace for monkeypatching in tests

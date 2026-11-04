@@ -29,8 +29,8 @@ from providers.execution_audit import ExecutionAudit
 from providers.quantity import check_order_filter_refusal, resolve_assets, round_provider_qty
 from providers.strategy_executor import SubmissionRefused
 import order_guard
-import order_outcomes_log as _outcomes_log
-import accepted_order_persistence
+import order_lifecycle as _outcomes_log
+import order_lifecycle as accepted_order_persistence
 import order_retry
 import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 

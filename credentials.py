@@ -7,8 +7,27 @@ to hide the mistake by falling back to another account.
 from __future__ import annotations
 
 import os
+import sys
+import types
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+
+from botcore import load_dotenv
+
+if not ("keys" in sys.modules and "keys.apikeys" not in sys.modules):
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+api_key = os.environ.get("BINANCE_API_KEY", "").strip()
+api_secret = os.environ.get("BINANCE_API_SECRET", "").strip()
+# The Ed25519 stream key is distinct from the HMAC REST credential.
+api_key_ws = os.environ.get("BINANCE_API_KEY_WS", "").strip()
+
+if "keys" not in sys.modules:
+    _keys_pkg = types.ModuleType("keys")
+    _keys_pkg.__path__ = []
+    _keys_pkg.apikeys = sys.modules[__name__]
+    sys.modules["keys"] = _keys_pkg
+    sys.modules["keys.apikeys"] = sys.modules[__name__]
 
 
 class CredentialConfigurationError(RuntimeError):

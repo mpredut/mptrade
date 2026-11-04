@@ -40,7 +40,12 @@ from intelligence.internal.state.volatility import (
 
 from . import spot_rules as sr
 from .base_spot_mixin import (
-    BaseSpotMixin, SpotParamsMixin, load_common_core_strat_env, load_common_mhdpa_env, sanitize_common_spot_state,
+    BaseSpotMixin,
+    SpotParamsMixin,
+    _parse_tranches,
+    load_common_core_strat_env,
+    load_common_mhdpa_env,
+    sanitize_common_spot_state,
 )
 from .state_store import (
     JsonStateStore, build_strategy_exit_manager,
@@ -234,21 +239,6 @@ class StratParams(SpotParamsMixin):
             if not 0 < value <= 100:
                 raise ValueError(f"{name} must be in (0, 100] when percentage sizing is configured")
 
-    def pct_sizing_on(self) -> bool:
-        return self.total_budget > 0
-
-    def allocated_budget(self) -> float:
-        return self.total_budget * self.alloc_pct / 100.0 if self.pct_sizing_on() else self.max_budget
-
-    def effective_entry_amount(self) -> float:
-        return self.allocated_budget() * self.entry_pct / 100.0 if self.pct_sizing_on() else self.entry_amount
-
-    def effective_dca_amount_base(self) -> float:
-        return self.allocated_budget() * self.dca_pct / 100.0 if self.pct_sizing_on() else self.dca_amount
-
-    def effective_max_budget(self) -> float:
-        return self.allocated_budget()
-
     _DEFAULT_DICT_FIELDS = {
         "currency": "USDC", "entry_amount": 50.0, "entry_discount_pct": 0.2,
         "dca_amount": 30.0, "dca_drop_pct": 2.0, "check_minutes": 60.0,
@@ -299,29 +289,6 @@ class StratParams(SpotParamsMixin):
             dca_vol_interval=i("STRAT_DCA_VOL_INTERVAL", env),
             **load_common_mhdpa_env(env, include_spot_sl=True),
         )
-
-
-def _parse_tranches(spec: str) -> list:
-    """Parse ``3:50,6:50`` into percentage/share pairs whose shares total 100."""
-    if isinstance(spec, bool):
-        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}")
-    if spec is None or not str(spec).strip():
-        return []
-    spec = str(spec)
-    out = []
-    try:
-        for part in spec.split(","):
-            p_str, s_str = part.split(":")
-            pct = safe_nonneg_float(p_str, default=None)
-            share = safe_pos_float(s_str, default=None)
-            if pct is None or share is None:
-                raise ValueError("Invalid tranche values")
-            out.append((pct, share))
-        if abs(sum(share for _, share in out) - 100) >= 1e-6:
-            raise ValueError("Tranche shares must total 100")
-    except ValueError as exc:
-        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}") from exc
-    return out
 
 
 def _new_state() -> dict:
@@ -1037,40 +1004,6 @@ class Strategy(BaseSpotMixin):
             body=f"TP+{self.p.takeprofit_pct}% DCA-{self.p.dca_drop_pct}% SL{self.p.stop_loss_pct}%",
             source=f"{self.notification_source}-bot", price=self.p.adopt_cost, desktop=self.desktop,
         )
-
-    # -- Percentage sizing; all-zero settings retain fixed sizing --------------
-    def _pct_sizing_on(self) -> bool:
-        return self.p.pct_sizing_on()
-
-    def _alloc_budget(self) -> float:
-        return self.p.allocated_budget()
-
-    def _effective_entry_amount(self) -> float:
-        return self.p.effective_entry_amount()
-
-    def _effective_max_budget(self) -> float:
-        return self.p.effective_max_budget()
-
-    def _base_dca_amount(self) -> float:
-        return self.p.effective_dca_amount_base()
-
-    def _effective_dca_amount(self) -> float:
-        """Scale base DCA size by volatility when enabled, falling back during warm-up."""
-        base = self._base_dca_amount()
-        k_val = safe_float(float(self.p.dca_vol_scale_k), default=0.0)
-        ref_val = safe_pos_float(float(self.p.dca_vol_ref), default=None)
-        if not k_val or ref_val is None:
-            return base
-        try:
-            vol = safe_pos_float(self._dca_vol_1h(), default=None)
-            if vol is None:
-                return base
-            scale = safe_pos_float((ref_val / vol) ** k_val, default=None)
-            if scale is None:
-                return base
-        except (ArithmeticError, TypeError, ValueError):
-            return base
-        return base * max(0.3, min(3.0, scale))
 
     _REPLAY_REGIME_CACHE: dict = {}
 

@@ -868,7 +868,7 @@ def select_patch_pytest_targets(real_target: str, workspace_dir: str) -> List[st
         candidates.sort(key=lambda item: (item[0], item[1], item[2]))
         return [item[2] for item in candidates[:5]]
 
-    return [f"tests/{fname}" for fname in ("test_import_safety.py", "test_config_env_shell_safe.py") if fname in test_files] or ["tests/"]
+    return [f"tests/{fname}" for fname in ("test_runtime_configuration_policy.py", "test_config_env_shell_safe.py") if fname in test_files] or ["tests/"]
 
 
 def _rollback_patched_file(real_target: str, content: Optional[str], workspace_dir: str) -> None:

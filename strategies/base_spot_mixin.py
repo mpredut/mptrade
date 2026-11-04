@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable
 
 from botcore import (
-    _parse_bool_flag, are_close, exact_nonneg_int, exact_pos_int, log,
+    _parse_bool_flag, are_close, exact_int, exact_nonneg_int, exact_pos_int, log,
     normalize_epoch_sec, optional_env,
     required_bool_env, required_env, required_float_env, required_int_env,
     safe_float, safe_int, safe_nonneg_float, safe_pos_float, safe_pos_int,
@@ -28,17 +28,119 @@ from providers.base import clean_order_id as _clean_order_id, normalize_side
 from .position_exit_manager import ExitAction, PositionExitManager, PositionSnapshot, ReentrySnapshot
 from .state_store import (
     JsonStateStore, build_dataclass_from_dict, build_strategy_exit_manager,
+    clean_pos_float as _clean_pos_float,
     compute_adaptive_reentry_pullback_pct, find_open_order, update_post_sell_anchors,
 )
 
 
 class SpotParamsMixin:
-    """Shared from_dict constructor for spot and T212 StratParams dataclasses."""
+    """Shared from_dict constructor and percentage-sizing helpers for StratParams dataclasses."""
 
     @classmethod
     def from_dict(cls, values: dict, *, defaults: dict | None = None, warn_dropped: bool = False):
         """Build StratParams from a dict (e.g. a stored baseline report), ignoring removed fields."""
         return build_dataclass_from_dict(cls, values, defaults=defaults, warn_dropped=warn_dropped)
+
+    def pct_sizing_on(self) -> bool:
+        return getattr(self, "total_budget", 0.0) > 0
+
+    def allocated_budget(self) -> float:
+        return self.total_budget * self.alloc_pct / 100.0 if self.pct_sizing_on() else self.max_budget
+
+    def effective_entry_amount(self) -> float:
+        return self.allocated_budget() * self.entry_pct / 100.0 if self.pct_sizing_on() else self.entry_amount
+
+    def effective_dca_amount_base(self) -> float:
+        return self.allocated_budget() * self.dca_pct / 100.0 if self.pct_sizing_on() else self.dca_amount
+
+    def effective_max_budget(self) -> float:
+        return self.allocated_budget()
+
+
+def generate_tp_ladder(
+    min_pct: float, max_pct: float, steps: int = 10, curve: str = "linear"
+) -> list[tuple[float, float]]:
+    """Generate a scale-out take-profit ladder from min_pct to max_pct across `steps` rungs."""
+    if isinstance(min_pct, bool) or isinstance(max_pct, bool) or isinstance(steps, bool):
+        raise ValueError("generate_tp_ladder parameters cannot be bool")
+    min_f = safe_float(min_pct, default=None)
+    max_f = safe_float(max_pct, default=None)
+    steps_i = exact_int(steps, default=None)
+    if min_f is None or max_f is None or steps_i is None:
+        raise ValueError("generate_tp_ladder requires finite min_pct, max_pct, and integer steps")
+    if steps_i < 1:
+        return []
+    if steps_i > 1 and max_f < min_f:
+        raise ValueError("generate_tp_ladder requires max_pct >= min_pct")
+    if steps_i == 1:
+        return [(round(min_f, 1), 1.0)]
+    steps = steps_i
+    curve_lower = str(curve or "linear").strip().lower()
+    if curve_lower not in (
+        "linear", "uniform", "bell", "gaussian", "normal", "pyramid", "front_heavy", "back_heavy", "geometric",
+    ):
+        raise ValueError(f"unsupported generate_tp_ladder curve: {curve!r}")
+    if curve_lower == "geometric":
+        r_start, r_end = 1.0 + min_f / 100.0, 1.0 + max_f / 100.0
+        if r_start <= 0.0 or r_end <= 0.0:
+            raise ValueError("geometric generate_tp_ladder requires min_pct > -100 and max_pct > -100")
+        ratio = (r_end / r_start) ** (1.0 / (steps - 1)) if steps > 1 else 1.0
+        levels = [round(((r_start * (ratio ** i)) - 1.0) * 100.0, 1) for i in range(steps)]
+    else:
+        step_size = (max_f - min_f) / (steps - 1)
+        levels = [round(min_f + i * step_size, 1) for i in range(steps)]
+    if curve_lower in ("bell", "gaussian", "normal", "pyramid"):
+        center = (steps - 1) / 2.0
+        sigma = max(0.5, (steps - 1) / 2.8) if steps > 1 else 1.0
+        weights = [math.exp(-0.5 * ((i - center) / sigma) ** 2) for i in range(steps)]
+    elif curve_lower == "front_heavy":
+        weights = [float(steps - i) for i in range(steps)]
+    elif curve_lower == "back_heavy":
+        weights = [float(i + 1) for i in range(steps)]
+    else:
+        weights = [1.0 for _ in range(steps)]
+    total_w = sum(weights)
+    return [(lvl, round(w / total_w, 4)) for lvl, w in zip(levels, weights)]
+
+
+def adapt_ladder_rungs(
+    remaining: list[tuple[float, float]], held: float, min_tranche_qty: float = 0.01
+) -> list[tuple[float, float]]:
+    """Dynamically clamp remaining rungs so each order has viable trading quantity."""
+    held_f = _clean_pos_float(held)
+    if not remaining or held_f is None or held_f <= 1e-9:
+        return []
+    min_q = _clean_pos_float(min_tranche_qty) or 0.01
+    max_viable_rungs = max(1, int(held_f / max(1e-6, min_q)))
+    if len(remaining) <= max_viable_rungs:
+        return list(remaining)
+    if max_viable_rungs == 1:
+        return [remaining[-1]]
+    indices = [int(round(i * (len(remaining) - 1) / (max_viable_rungs - 1))) for i in range(max_viable_rungs)]
+    return [remaining[idx] for idx in sorted(set(indices))]
+
+
+def _parse_tranches(spec: str) -> list:
+    """Parse ``3:50,6:50`` into percentage/share pairs whose shares total 100."""
+    if isinstance(spec, bool):
+        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}")
+    if spec is None or not str(spec).strip():
+        return []
+    spec = str(spec)
+    out = []
+    try:
+        for part in spec.split(","):
+            p_str, s_str = part.split(":")
+            pct = safe_nonneg_float(p_str, default=None)
+            share = safe_pos_float(s_str, default=None)
+            if pct is None or share is None:
+                raise ValueError("Invalid tranche values")
+            out.append((pct, share))
+        if abs(sum(share for _, share in out) - 100) >= 1e-6:
+            raise ValueError("Tranche shares must total 100")
+    except ValueError as exc:
+        raise ValueError(f"Invalid STRAT_TP_TRANCHES: {spec!r}") from exc
+    return out
 
 
 
@@ -203,6 +305,9 @@ def sanitize_common_spot_state(
     bool_keys: tuple[str, ...],
     dict_keys: tuple[str, ...],
     nullable_dict_keys: tuple[str, ...] = (),
+    pos_float_list_keys: tuple[str, ...] = (),
+    epoch_keys: tuple[str, ...] = (),
+    epoch_dict_keys: tuple[str, ...] = (),
     sanitize_orders: bool = True,
     order_id_key: str = "txid",
     lowercase_order_side: bool = True,
@@ -247,6 +352,33 @@ def sanitize_common_spot_state(
     for ndkey in nullable_dict_keys:
         if not isinstance(state.get(ndkey), dict):
             state[ndkey] = None
+    for lkey in pos_float_list_keys:
+        raw_lst = state.get(lkey)
+        clean_lst: list[float] = []
+        if isinstance(raw_lst, list):
+            for item in raw_lst:
+                val_f = _clean_pos_float(item)
+                if val_f is not None and val_f not in clean_lst:
+                    clean_lst.append(val_f)
+        state[lkey] = clean_lst
+    for ekey in epoch_keys:
+        if ekey in state:
+            cleaned = normalize_epoch_sec(state.get(ekey), default=None, allow_zero=True)
+            if cleaned is not None:
+                state[ekey] = cleaned
+            else:
+                state.pop(ekey, None)
+    for edkey in epoch_dict_keys:
+        if edkey in state:
+            raw_ed = state.get(edkey)
+            if isinstance(raw_ed, dict):
+                state[edkey] = {
+                    str(fk): cv
+                    for fk, fv in raw_ed.items()
+                    if (cv := normalize_epoch_sec(fv, default=None)) is not None
+                }
+            else:
+                state.pop(edkey, None)
     if sanitize_orders:
         if isinstance(state.get("orders"), list):
             clean_orders = []
@@ -520,6 +652,53 @@ class BaseSpotMixin:
     def _restore_reentry_state(self) -> None:
         if self.exit_manager is not None:
             self.exit_manager.restore_reentry_state(self._symbol_id)
+
+    def _record_tp_sold_level(self, level: object) -> None:
+        lvl_f = _clean_pos_float(level)
+        if lvl_f is not None:
+            sold = self.s.setdefault("tp_sold_levels", [])
+            if lvl_f not in sold:
+                sold.append(lvl_f)
+
+    def _all_tp_ladder_levels_sold(self) -> bool:
+        if not getattr(self.p, "tp_ladder", None):
+            return False
+        ladder_levels = {lvl for (lvl, _) in self.p.tp_ladder}
+        return bool(ladder_levels and ladder_levels.issubset(set(self.s.get("tp_sold_levels", []))))
+
+    # -- Percentage & Volatility-Scaled Sizing ---------------------------------
+    def _pct_sizing_on(self) -> bool:
+        return self.p.pct_sizing_on()
+
+    def _alloc_budget(self) -> float:
+        return self.p.allocated_budget()
+
+    def _effective_entry_amount(self) -> float:
+        return self.p.effective_entry_amount()
+
+    def _effective_max_budget(self) -> float:
+        return self.p.effective_max_budget()
+
+    def _base_dca_amount(self) -> float:
+        return self.p.effective_dca_amount_base()
+
+    def _effective_dca_amount(self) -> float:
+        """Scale base DCA size by volatility when enabled, falling back during warm-up."""
+        base = self._base_dca_amount()
+        k_val = safe_float(float(self.p.dca_vol_scale_k), default=0.0)
+        ref_val = safe_pos_float(float(self.p.dca_vol_ref), default=None)
+        if not k_val or ref_val is None:
+            return base
+        try:
+            vol = safe_pos_float(self._dca_vol_1h(), default=None)
+            if vol is None:
+                return base
+            scale = safe_pos_float((ref_val / vol) ** k_val, default=None)
+            if scale is None:
+                return base
+        except (ArithmeticError, TypeError, ValueError):
+            return base
+        return base * max(0.3, min(3.0, scale))
 
     # -- Volatility Tuple & Adaptive Thresholds --------------------------------
     @staticmethod

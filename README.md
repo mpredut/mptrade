@@ -249,7 +249,7 @@ Heavy multi-hour parameter sweeps and walk-forward evaluations are offloaded to 
 | **Sync Code & Data to DEV** | `bash offline/runners/sync_cache_to.sh dev` |
 | **Launch Overnight Master Suite on DEV** | `ssh -p 32238 predut@192.168.0.138 "nohup bash ~/mptrade/offline/runners/run_overnight_master_suite.sh > ~/mptrade/logs/overnight_runs/master_suite_current.log 2>&1 &"` |
 | **Tail DEV Master Suite Log** | `ssh -p 32238 predut@192.168.0.138 "tail -f ~/mptrade/logs/overnight_runs/master_suite_current.log"` |
-| **Run Core Test Regressions** | `./myenv/bin/python -m pytest tests/test_instrument_guards.py tests/test_order_guard_pillars.py tests/test_spot_explicit_configuration.py` |
+| **Run Core Test Regressions** | `./myenv/bin/python -m pytest tests/test_instrument_guards.py tests/test_order_guard_pillars.py tests/test_config_extraction.py` |
 
 ---
 

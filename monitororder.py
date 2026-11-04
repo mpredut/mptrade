@@ -27,7 +27,7 @@ from cachepaths import split_symbol_assets
 from providers.market_api import api as mkt  # Single guarded proxy (Instrument.place).
 from providers.strategy_executor import SubmissionRefused
 import order_retry
-import accepted_order_persistence
+import order_lifecycle as accepted_order_persistence
 import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
     float_env,

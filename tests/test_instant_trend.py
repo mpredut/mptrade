@@ -1990,6 +1990,131 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(stm.is_trend_up("BTCUSDT", now=now_sec))
 
 
+from binance_api.bapi_ws import BinanceWebSocketManager
+
+_WS_BRIDGE_SYMBOLS = ["BTCUSDC"]
+
+
+class TestBapiWsSubscriber(unittest.TestCase):
+    def setUp(self):
+        self.ws = BinanceWebSocketManager()
+
+    def test_subscribe_adds_subscriber(self):
+        sub = MagicMock()
+        self.ws.subscribe(sub)
+        self.assertIn(sub, self.ws._subscribers)
+
+    def test_subscribe_no_duplicates(self):
+        sub = MagicMock()
+        self.ws.subscribe(sub)
+        self.ws.subscribe(sub)
+        self.assertEqual(self.ws._subscribers.count(sub), 1)
+
+    def test_unsubscribe_removes_subscriber(self):
+        sub = MagicMock()
+        self.ws.subscribe(sub)
+        self.ws.unsubscribe(sub)
+        self.assertNotIn(sub, self.ws._subscribers)
+
+    def test_notify_calls_on_items_update(self):
+        sub = MagicMock()
+        self.ws.subscribe(sub)
+        self.ws._notify_subscribers("BTCUSDC", [50000.0])
+        sub.on_items_update.assert_called_once_with("BTCUSDC", [50000.0])
+
+    def test_notify_multiple_subscribers(self):
+        subs = [MagicMock() for _ in range(3)]
+        for s in subs:
+            self.ws.subscribe(s)
+        self.ws._notify_subscribers("TAOUSDC", [300.0])
+        for s in subs:
+            s.on_items_update.assert_called_once_with("TAOUSDC", [300.0])
+
+    def test_notify_subscriber_exception_doesnt_stop_others(self):
+        bad = MagicMock()
+        bad.on_items_update.side_effect = RuntimeError("boom")
+        good = MagicMock()
+        self.ws.subscribe(bad)
+        self.ws.subscribe(good)
+        self.ws._notify_subscribers("BTCUSDC", [1.0])
+        good.on_items_update.assert_called_once()
+
+
+def _make_current_price_manager(tmp_dir, price=50000.0):
+    mock_api.get_current_price.return_value = price
+    mgr = cm.CacheCurrentPriceManager(
+        sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS,
+        filename=os.path.join(tmp_dir, "cache_current_price.json"),
+        ws_manager=None, api_client=mock_api, market_api=mock_api,
+    )
+    mgr.enable_save_state_to_file()
+    return mgr
+
+
+def _make_ws_cache24_manager(tmp_dir, current_price_manager):
+    with patch.object(cm, "get_current_price_manager", return_value=current_price_manager):
+        mgr = cm.Cache24PriceManager(
+            sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS,
+            filename=os.path.join(tmp_dir, "cache_24_price_BTCUSDC.json"),
+            api_client=mock_api,
+        )
+    mgr.enable_save_state_to_file()
+    return mgr
+
+
+class TestWsBridgeIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        mock_api.get_current_price.return_value = 50000.0
+        self.ws = BinanceWebSocketManager(symbols=["BTCUSDC"])
+        self.cur = _make_current_price_manager(self.tmp)
+        self.h24 = _make_ws_cache24_manager(self.tmp, self.cur)
+        self.ws.subscribe(self.cur)
+        self.cur.subscribe_price(self.h24)
+
+    def test_ws_event_updates_current_price(self):
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 55000.0]])
+        self.assertEqual(self.cur.get_price_value("BTCUSDC"), 55000.0)
+
+    def test_ws_event_propagates_to_cache24(self):
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 56000.0]])
+        with self.h24.lock:
+            entries = self.h24.cache.get("BTCUSDC", [])
+        self.assertIn(56000.0, [e[1] for e in entries])
+
+    def test_multiple_ws_events_all_recorded_in_cache24(self):
+        prices = [50000.0, 50100.0, 50200.0, 50300.0]
+        base_ms = int(cm.time.time() * 1000)
+        for idx, p in enumerate(prices):
+            self.ws._notify_subscribers("BTCUSDC", [[base_ms + idx, p]])
+        with self.h24.lock:
+            recorded = [e[1] for e in self.h24.cache.get("BTCUSDC", [])]
+        for p in prices:
+            self.assertIn(p, recorded)
+
+    def test_current_price_snapshot_not_history(self):
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 57000.0]])
+        with self.cur.lock:
+            self.assertEqual(len(self.cur.cache.get("BTCUSDC", [])), 1)
+
+    def test_persistence_currentprice(self):
+        self.cur.enable_save_state_to_file()
+        now_ms = int(cm.time.time() * 1000)
+        self.ws._notify_subscribers("BTCUSDC", [[now_ms, 58000.0]])
+        self.cur.save_state_to_file_if_enabled()
+        mgr2 = cm.CacheCurrentPriceManager(
+            sync_ts=9999, symbols=_WS_BRIDGE_SYMBOLS,
+            filename=self.cur.filename, api_client=mock_api, market_api=mock_api,
+        )
+        with mgr2.lock:
+            entries = mgr2.cache.get("BTCUSDC", [])
+        self.assertTrue(entries, "empty cache after load")
+        self.assertEqual(entries[0][1], 58000.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

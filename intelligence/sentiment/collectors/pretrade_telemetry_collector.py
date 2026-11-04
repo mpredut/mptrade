@@ -51,6 +51,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
     compute_volume_profile_metrics,
+    pct_delta,
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
@@ -247,7 +248,10 @@ def collect_pretrade_telemetry(
             import time as _pt_time
 
             now_ms_eq = int(_pt_time.time() * 1000)
-            rth_fresh_eq = (now_ms_eq - last_alt_pt[0]) <= 20 * 60 * 1000
+            rth_fresh_eq = (
+                (now_ms_eq - last_alt_pt[0]) <= 20 * 60 * 1000
+                and (live_cur_px <= 0.0 or abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) <= 0.005)
+            )
             if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1]) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
                 cur_px_est = round(live_cur_px, 4)
                 if rth_fresh_eq:
@@ -255,6 +259,9 @@ def collect_pretrade_telemetry(
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
                     recalculate_live_price_geometry(m24, cur_px_est)
+                    first_alt_pt = _parse_ts_px_row(alt_series_24h[0]) if alt_series_24h else None
+                    if "chg_24h_pct" in m24 and first_alt_pt is not None and first_alt_pt[1] > 0:
+                        m24["chg_24h_pct"] = pct_delta(cur_px_est, first_alt_pt[1])
             if not rth_fresh_eq and m24:
                 for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                     m24.pop(k_stale_eq, None)
@@ -262,16 +269,29 @@ def collect_pretrade_telemetry(
             try:
                 import time as _pt_time
 
-                sym_u_pt = str(symbol).strip().upper()
-                ohlc_fn_pt = _resolve_fallback_ohlc_fn(sym_u_pt)
-                if callable(ohlc_fn_pt):
-                    now_s_pt = _pt_time.time()
-                    pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
-                    if len(pts_vp_pt) >= 8 and (pts_vp_pt[-1][0] - pts_vp_pt[0][0]) >= 18 * 3600 * 1000:
-                        if cur_px_est > 0 and not _prices_diverged(cur_px_est, pts_vp_pt[-1][1]):
-                            pts_vp_pt.append([int(now_s_pt * 1000), cur_px_est, 0.0])
-                        if (vp_real_pt := compute_volume_profile_metrics(pts_vp_pt)) and vp_real_pt.get("vp_source") == "REAL_VOL":
-                            m24.update(vp_real_pt)
+                now_s_pt = _pt_time.time()
+                if last_alt_pt is None or abs(now_s_pt * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0:
+                    sym_u_pt = str(symbol).strip().upper()
+                    ohlc_fn_pt = _resolve_fallback_ohlc_fn(sym_u_pt)
+                    if callable(ohlc_fn_pt):
+                        pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
+                        if len(pts_vp_pt) >= 8 and (pts_vp_pt[-1][0] - pts_vp_pt[0][0]) >= 18 * 3600 * 1000:
+                            vp_last_pt = safe_pos_float(pts_vp_pt[-1][1], default=0.0) or 0.0
+                            if cur_px_est <= 0.0 or (vp_last_pt > 0.0 and abs(cur_px_est - vp_last_pt) / max(cur_px_est, vp_last_pt) <= 0.015):
+                                l24_pt = safe_pos_float(m24.get("low_24h"), default=None)
+                                h24_pt = safe_pos_float(m24.get("high_24h"), default=None)
+                                vp_pxs_pt = [float(p[1]) for p in pts_vp_pt if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
+                                if (
+                                    l24_pt is None
+                                    or h24_pt is None
+                                    or (vp_pxs_pt and min(vp_pxs_pt) >= l24_pt * 0.985 and max(vp_pxs_pt) <= h24_pt * 1.015)
+                                ):
+                                    if l24_pt is not None and h24_pt is not None:
+                                        pts_vp_pt = [[p[0], min(h24_pt, max(l24_pt, float(p[1]))), *p[2:]] for p in pts_vp_pt]
+                                    if cur_px_est > 0:
+                                        pts_vp_pt.append([int(now_s_pt * 1000), cur_px_est, 0.0])
+                                    if (vp_real_pt := compute_volume_profile_metrics(pts_vp_pt)) and vp_real_pt.get("vp_source") == "REAL_VOL":
+                                        m24.update(vp_real_pt)
             except Exception:
                 pass
 
@@ -406,6 +426,7 @@ def collect_pretrade_telemetry(
             if arch_vals_7d and len(arch_vals_7d) >= 2
             else {}
         )
+        partial_w_7d_span = False
         if isinstance(w_data := _rj(os.path.join(cachedb_dir, "cache_watcher_all_price.json")), dict) and isinstance(w_items := w_data.get("items"), dict):
             sym_quotes_7d = compatible_quote_suffixes(symbol)
             for ck in sym_variants:
@@ -421,26 +442,30 @@ def collect_pretrade_telemetry(
                 if ck != symbol and (compatible_quote_suffixes(ck) != sym_quotes_7d or (cur_px_est > 0.0 and _prices_diverged(cur_px_est, vals_7d[-1]))):
                     continue
                 w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
-                if m7d and (is_eq or (w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000)):
+                w_span_7d = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
+                if m7d and (is_eq or (0.0 <= w_span_7d < 5 * 86400 * 1000)):
                     continue
                 if m7d_w := compute_7d_range_metrics(vals_7d, decimals=4 if is_eq else 6):
                     m7d = m7d_w
+                    partial_w_7d_span = 0.0 <= w_span_7d < 5 * 86400 * 1000
                     break
         if (
             not is_eq
             and "PYTEST_CURRENT_TEST" not in os.environ
-            and (not m7d or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
+            and (not m7d or partial_w_7d_span or 0.0 < _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0) < 5 * 86400 * 1000)
         ):
             try:
                 import time as _pt_time
 
-                sym_u_7d = str(symbol).strip().upper()
-                ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
-                if callable(ohlc_fn_7d):
-                    vals_7d_ohlc = _load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, _pt_time.time(), m24, cur_px_est)
-                    if len(vals_7d_ohlc) >= 2 and (not m7d or len(vals_7d_ohlc) >= 24):
-                        if m7d_ohlc := compute_7d_range_metrics(vals_7d_ohlc, decimals=6):
-                            m7d = m7d_ohlc
+                now_s_7d = _pt_time.time()
+                if last_alt_pt is None or abs(now_s_7d * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0:
+                    sym_u_7d = str(symbol).strip().upper()
+                    ohlc_fn_7d = _resolve_fallback_ohlc_fn(sym_u_7d)
+                    if callable(ohlc_fn_7d):
+                        vals_7d_ohlc = _load_stitched_7d_ohlc_closes(ohlc_fn_7d, sym_u_7d, now_s_7d, m24, cur_px_est)
+                        if len(vals_7d_ohlc) >= 2 and (not m7d or len(vals_7d_ohlc) >= 24):
+                            if m7d_ohlc := compute_7d_range_metrics(vals_7d_ohlc, decimals=6):
+                                m7d = m7d_ohlc
             except Exception:
                 pass
         if m7d:
@@ -500,6 +525,17 @@ def collect_pretrade_telemetry(
                 ):
                     apply_live_24trend_windows(t_entry, l24)
                     break
+            if isinstance(k_data := _rj(os.path.join(cachedb_dir, "cache_kalman_price.json")), dict):
+                k_items = k_data.get("items") if isinstance(k_data.get("items"), dict) else k_data
+                if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
+                    k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
+                    k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
+                    if not (k_vel is not None and abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)) or t_entry.get("kalman_vel") is None:
+                        t_entry["kalman_vel"] = k_sym.get("kalman_vel")
+                        t_entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
+                        t_entry["kalman_trend"] = k_sym.get("kalman_trend")
+                    if t_entry.get("vol_1h_pct") is None and (k_vol := safe_pos_float(k_sym.get("vol_1h_pct"), default=None)) is not None:
+                        t_entry["vol_1h_pct"] = k_vol
             s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
             if alt_series_24h and (
                 all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))

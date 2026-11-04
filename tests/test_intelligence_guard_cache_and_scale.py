@@ -7464,7 +7464,7 @@ def test_iteration49_hyperliquid_client_market_data_price_analysis_strategy_and_
         sys.path.insert(0, hl_dir)
         import hl_client as hlc
         import market_data as hl_md
-        import price_analysis as hl_pa
+        import signals as hl_pa
         import strategy as hl_strat
         import replay as hl_rep
     finally:
@@ -8504,7 +8504,7 @@ def test_iteration60_hl_strategy_price_analysis_xstock_and_t212_client_safety(tm
             sys.modules.pop(k, None)
         sys.path.insert(0, hl_dir)
         import strategy as hl_strat_mod
-        import price_analysis as hl_pa_mod
+        import signals as hl_pa_mod
     finally:
         sys.path[:] = orig_sys_path
         for k, v in saved_hl.items():
@@ -10484,7 +10484,7 @@ def test_iteration94_t212_client_bot_kraken_client_and_price_analysis_safety(mon
     assert res2 is not None and len(res2["blocks"]) >= 3
 
     spec_hl_pa = importlib.util.spec_from_file_location(
-        "hl_pa_iter94", os.path.join(root_dir, "hyperliquid", "price_analysis.py")
+        "hl_pa_iter94", os.path.join(root_dir, "hyperliquid", "signals.py")
     )
     hl_pa = importlib.util.module_from_spec(spec_hl_pa)
     monkeypatch.setitem(sys.modules, "hl_pa_iter94", hl_pa)

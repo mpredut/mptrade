@@ -1096,11 +1096,11 @@ def test_hl_price_analysis_mid_and_strategy_run_and_backtest_ranges_inline_comme
     assert hist[0]["timestamp_readable"].startswith("2023-11-")
     assert hist[1]["timestamp_readable"].startswith("2023-11-")
 
-    # 4. hyperliquid/price_analysis.signal handles non-numeric client.mid() without ValueError
+    # 4. hyperliquid/signals.signal handles non-numeric client.mid() without ValueError
     root_dir = Path(br.__file__).resolve().parents[2]
     with monkeypatch.context() as m:
         m.setattr(sys, "path", list(sys.path))
-        spec_pa = importlib.util.spec_from_file_location("hl_pa_mid_test", root_dir / "hyperliquid/price_analysis.py")
+        spec_pa = importlib.util.spec_from_file_location("hl_pa_mid_test", root_dir / "hyperliquid/signals.py")
         mod_pa = importlib.util.module_from_spec(spec_pa)
         spec_pa.loader.exec_module(mod_pa)
         m.setattr(
@@ -2767,9 +2767,9 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # 1. hyperliquid/price_analysis.py rejects fractional float block/point counts
+    # 1. hyperliquid/signals.py rejects fractional float block/point counts
     spec_hl_pa = importlib.util.spec_from_file_location(
-        "hl_pa_local", os.path.join(repo_root, "hyperliquid", "price_analysis.py")
+        "hl_pa_local", os.path.join(repo_root, "hyperliquid", "signals.py")
     )
     hl_pa = importlib.util.module_from_spec(spec_hl_pa)
     sys.modules[spec_hl_pa.name] = hl_pa
@@ -2983,7 +2983,7 @@ def test_batch5_hardening():
     import priceAnalysis
 
     from pathlib import Path
-    hl_pa_path = Path(__file__).resolve().parent.parent / "hyperliquid" / "price_analysis.py"
+    hl_pa_path = Path(__file__).resolve().parent.parent / "hyperliquid" / "signals.py"
     spec = importlib.util.spec_from_file_location("hl_price_analysis_local", hl_pa_path)
     assert spec is not None and spec.loader is not None
     hl_pa = importlib.util.module_from_spec(spec)
@@ -4434,7 +4434,7 @@ def test_batch29_cross_venue_module_collision_and_syspath_isolation():
         gate_mod.__file__ = fake_common_path
         sys.modules["common"] = gate_mod
 
-        for rel_file in ("hl_client.py", "market_data.py", "price_analysis.py", "signals.py", "hl_bot.py", "backtest.py"):
+        for rel_file in ("hl_client.py", "market_data.py", "signals.py", "hl_bot.py", "backtest.py"):
             sys.modules["common"] = gate_mod
             spec = importlib.util.spec_from_file_location(
                 f"_test_hl_isolated_{rel_file[:-3]}", os.path.join(hl_dir, rel_file)

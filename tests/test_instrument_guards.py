@@ -1467,7 +1467,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             self.assertEqual(len(p.placed), 1)
 
 
-from order_rollback import (
+from order_lifecycle import (
     AtomicOrderRollbackGuard,
     extract_order_restore_params,
     restore_cancelled_orders,
