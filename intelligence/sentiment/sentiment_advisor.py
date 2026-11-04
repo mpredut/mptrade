@@ -82,10 +82,11 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         raw_sum = data.get("summary")
         sum_str = "" if isinstance(raw_sum, bool) or raw_sum is None else str(raw_sum).strip()
         ts_val = ts_override if ts_override is not None else safe_nonneg_ts(data.get("ts", 0.0), 0.0)
+        raw_conf = data.get("confidence", 0.5)
         return SentimentAdvisorAssessment(
             market_bias=normalize_market_bias(data.get("market_bias"), default="NEUTRAL"),
             risk_level=normalize_risk_level(data.get("risk_level"), default="MODERATE"),
-            confidence=clean_scale(data.get("confidence", 0.5), default=0.5),
+            confidence=clean_scale(raw_conf, default=0.5, allow_percent=isinstance(raw_conf, str) and "%" in raw_conf),
             summary=sum_str,
             key_risks=key_risks,
             recommended_action=normalize_recommended_action(data.get("recommended_action"), default="HOLD"),
@@ -119,7 +120,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             fg_t7d = int(round(obj_float(fear_greed, "trend_7d_change", 0.0)))
             prompt_context.append(f"- Fear & Greed Index: {fg_val}/100 ({fg_cls}), 7d trend change: {fg_t7d:+d}")
         if breadth:
-            mb_adv = obj_float(breadth, "advance_ratio", 0.5)
+            mb_adv = clean_scale(obj_attr(breadth, "advance_ratio", 0.5), default=0.5, allow_percent=True)
             mb_med = obj_float(breadth, "median_change_pct", 0.0)
             mb_reg = str(obj_attr(breadth, "regime") or "NEUTRAL")
             prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%, regime: {mb_reg}")
@@ -147,9 +148,11 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 btc_m = compute_24h_price_metrics(btc_pts) if btc_pts else {}
                 if btc_m:
                     b_struct = str(btc_m.get("bottom_structure_6h") or "NONE")
-                    last_px = next(
-                        (pt[1] for row in reversed(btc_pts or ()) if (pt := _parse_ts_px_row(row)) is not None),
-                        safe_pos_float(btc_m.get("high_24h"), default=0.0) or 0.0,
+                    parsed_btc_pts = [pt for row in (btc_pts or ()) if (pt := _parse_ts_px_row(row)) is not None]
+                    last_px = (
+                        max(parsed_btc_pts, key=lambda x: x[0])[1]
+                        if parsed_btc_pts
+                        else (safe_pos_float(btc_m.get("high_24h"), default=0.0) or 0.0)
                     )
                     chg_24h_v = safe_float(btc_m.get("chg_24h_pct"), default=0.0) or 0.0
                     pos_24h_v = safe_float(btc_m.get("pos_24h_pct"), default=50.0)

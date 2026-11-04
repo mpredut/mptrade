@@ -92,7 +92,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     )
     if m_px is not None and m_px > 0.0:
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1))
-    ob_imb = safe_nonneg_float(minfo.get("ob_imbalance"), default=0.5)
+    ob_imb = clean_scale(minfo.get("ob_imbalance"), default=0.5, allow_percent=True)
     has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
     chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
@@ -262,7 +262,7 @@ def compute_liquidation_clusters(
     ) or 0.0
     chg_15m_v = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     taker_r = safe_nonneg_float(minfo.get("taker_buy_sell_ratio"), default=1.0)
-    ob_imb_v = safe_nonneg_float(minfo.get("ob_imbalance"), default=0.5)
+    ob_imb_v = clean_scale(minfo.get("ob_imbalance"), default=0.5, allow_percent=True)
     vel_sign = 1.0 if kalman_vel > 0.0 else (-1.0 if kalman_vel < 0.0 else 0.0)
     vel_tilt = max(
         -0.35,
@@ -373,13 +373,20 @@ def _resolve_non_static_prev_metric(
     min_diff: float,
 ) -> Optional[float]:
     """When `ref_val` is nearly identical to `cur_val`, scan recent history (3m-60m) for the last distinct value."""
+    is_scale_key = key in ("whale_long_pct", "ob_imbalance")
     if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
         for cand in reversed(h_list):
             if not isinstance(cand, dict):
                 continue
             cand_ts = safe_pos_float(cand.get("ts"), default=0.0) or 0.0
+            if cand_ts > 1e11:
+                cand_ts /= 1000.0
             if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
-                cand_v = safe_float(cand.get(key), None)
+                cand_v = (
+                    clean_scale(cand.get(key), default=None, allow_percent=True)
+                    if is_scale_key
+                    else safe_float(cand.get(key), None)
+                )
                 if cand_v is not None and abs(cur_val - cand_v) >= min_diff:
                     return cand_v
     return ref_val
@@ -395,6 +402,8 @@ def update_microstructure_cycle_deltas(
     if not cache_dir or not microstructure:
         return
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+    if eff_now > 1e11:
+        eff_now /= 1000.0
     mhist_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "microstructure_cycle_history.json")))
     repo_cachedb = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "cachedb"))
     is_repo_cachedb = os.path.abspath(mhist_path).startswith(repo_cachedb)
@@ -405,25 +414,37 @@ def update_microstructure_cycle_deltas(
     )
     mhist: Dict[str, Any] = dict(raw_mh) if isinstance(raw_mh, dict) else {}
     mhist_dirty = False
+
+    def _clean_hist_list(raw_seq: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_seq, list):
+            return []
+        items: List[Dict[str, Any]] = []
+        for x in raw_seq:
+            if not isinstance(x, dict):
+                continue
+            ts_v = safe_pos_float(x.get("ts"), default=0.0) or 0.0
+            if ts_v <= 0.0:
+                continue
+            ts_s = ts_v / 1000.0 if ts_v > 1e11 else ts_v
+            items.append({**x, "ts": ts_s} if ts_s != x.get("ts") else x)
+        items.sort(key=lambda d: float(d["ts"]))
+        return items
+
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):
             continue
-        cur_ob = safe_float(minfo.get("ob_imbalance"), None)
+        cur_ob = clean_scale(minfo.get("ob_imbalance"), default=None, allow_percent=True)
         cur_cvd = safe_float(minfo.get("cvd_15m_usd"), None)
-        cur_wl = safe_float(minfo.get("whale_long_pct"), None)
+        cur_wl = clean_scale(minfo.get("whale_long_pct"), default=None, allow_percent=True)
         cur_oi = safe_pos_float(minfo.get("oi_usd"), default=None)
         cur_tr = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
         if all(v is None for v in (cur_ob, cur_cvd, cur_wl, cur_oi, cur_tr)):
             continue
-        raw_sym_hist = casefold_get(mhist, msym)
-        h_list = [x for x in (raw_sym_hist if isinstance(raw_sym_hist, list) else []) if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
+        h_list = _clean_hist_list(casefold_get(mhist, msym))
         if not h_list:
             for ck in cache_symbol_variants(msym, include_base=True):
-                cand_hist = casefold_get(mhist, ck)
-                if isinstance(cand_hist, list):
-                    h_list = [x for x in cand_hist if isinstance(x, dict) and (safe_pos_float(x.get("ts"), default=0.0) or 0.0) > 0.0]
-                    if h_list:
-                        break
+                if h_list := _clean_hist_list(casefold_get(mhist, ck)):
+                    break
         ref_snap: Optional[Dict[str, Any]] = next(
             (s for s in reversed(h_list) if 330.0 <= (eff_now - float(s["ts"])) <= 7200.0),
             None,
@@ -435,7 +456,7 @@ def update_microstructure_cycle_deltas(
             ref_snap = h_list[0]
         if isinstance(ref_snap, dict):
             delta_d: Dict[str, Any] = {"dt_min": round((eff_now - float(ref_snap["ts"])) / 60.0, 1)}
-            if cur_ob is not None and (p_ob := safe_float(ref_snap.get("ob_imbalance"), None)) is not None:
+            if cur_ob is not None and (p_ob := clean_scale(ref_snap.get("ob_imbalance"), default=None, allow_percent=True)) is not None:
                 delta_d["ob_imbalance_delta"] = round(cur_ob - p_ob, 4)
                 delta_d["prev_ob_imbalance"] = round(p_ob, 4)
             p_cvd = _resolve_non_static_prev_metric(
@@ -446,7 +467,7 @@ def update_microstructure_cycle_deltas(
                 delta_d["cvd_15m_delta_usd"] = round(cur_cvd - p_cvd, 2)
                 delta_d["prev_cvd_15m_usd"] = round(p_cvd, 2)
             p_wl = _resolve_non_static_prev_metric(
-                h_list, eff_now, "whale_long_pct", cur_wl, safe_float(ref_snap.get("whale_long_pct"), None),
+                h_list, eff_now, "whale_long_pct", cur_wl, clean_scale(ref_snap.get("whale_long_pct"), default=None, allow_percent=True),
                 static_tol=1e-5, min_diff=1e-4,
             )
             if cur_wl is not None and p_wl is not None:

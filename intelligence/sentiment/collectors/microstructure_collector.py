@@ -102,15 +102,18 @@ def _filter_ohlc_closes_since(
     cl_seq = getattr(series_obj, "closes", None) or ()
     if not isinstance(ts_seq, (list, tuple)) or not isinstance(cl_seq, (list, tuple)):
         return []
-    out: List[float] = []
+    cutoff_s = cutoff_ts / 1000.0 if cutoff_ts > 1e11 else cutoff_ts
+    max_s = (max_ts / 1000.0 if max_ts > 1e11 else max_ts) if max_ts is not None else None
+    timed_out: List[Tuple[float, float]] = []
     for raw_ts, raw_px in zip(ts_seq, cl_seq):
         ts_v = safe_pos_float(raw_ts, default=None)
         px_v = safe_pos_float(raw_px, default=None)
         if ts_v is None or px_v is None:
             continue
-        if ts_v >= cutoff_ts and (max_ts is None or ts_v <= max_ts):
-            out.append(px_v)
-    return out
+        ts_s = ts_v / 1000.0 if ts_v > 1e11 else ts_v
+        if ts_s >= cutoff_s and (max_s is None or ts_s <= max_s):
+            timed_out.append((ts_s, px_v))
+    return [px_v for _, px_v in sorted(timed_out, key=lambda x: x[0])]
 
 
 def _extract_cached_items_series(data: Any, cands: list[str]) -> list:
@@ -421,6 +424,8 @@ def ensure_fresh_symbol_microstructure(
     if not sym_u:
         return
     eff_now = safe_pos_float(now_ts, default=None) or _time.time()
+    if eff_now > 1e11:
+        eff_now /= 1000.0
 
     def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
         fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{prefix}{sym_u}.json")))
@@ -506,6 +511,7 @@ def enrich_24h_and_microstructure(
     read_json_fn: Any = None,
 ) -> None:
     """Enrich prices_and_trends with 24h/7d metrics, fallback OHLC/Yahoo chart series, and microstructure."""
+    now_ts = (now_ts / 1000.0 if now_ts > 1e11 else now_ts) if (now_ts := safe_pos_float(now_ts, default=None)) is not None else _time.time()
     _rj = _resolve_read_json_cached(read_json_fn)
     btc_series_24h, _ = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
@@ -585,10 +591,11 @@ def enrich_24h_and_microstructure(
                                 m24 = m24_full
                     if "chg_7d_pct" not in prices_and_trends[sym] or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                         s60, cutoff_7d = ohlc_fn(sym, 60), now_ts - 7 * 86400.0
-                        s60_ts = [
-                            ts_v for raw_ts in (getattr(s60, "timestamps", None) or ())
+                        s60_ts = sorted(
+                            (ts_v / 1000.0 if ts_v > 1e11 else ts_v)
+                            for raw_ts in (getattr(s60, "timestamps", None) or ())
                             if (ts_v := safe_pos_float(raw_ts, default=None)) is not None
-                        ]
+                        )
                         vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
                         if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
                             try:

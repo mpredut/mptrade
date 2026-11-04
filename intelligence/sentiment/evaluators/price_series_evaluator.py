@@ -311,7 +311,8 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
     try:
         def _clean_buckets(series: list) -> Dict[int, float]:
-            return {int(round(pt[0] / 300000.0)): pt[1] for row in series if (pt := _parse_ts_px_row(row)) is not None}
+            pts = sorted((pt for row in series if (pt := _parse_ts_px_row(row)) is not None), key=lambda x: x[0])
+            return {int(round(pt[0] / 300000.0)): pt[1] for pt in pts}
 
         a_map, b_map = _clean_buckets(alt_series), _clean_buckets(btc_series)
         if len(a_map) < 4 or len(b_map) < 4:
@@ -360,16 +361,34 @@ def compute_cross_btc_metrics(alt_series: Any, btc_series: Any) -> Dict[str, Any
         return {}
 
 
+def _extract_ordered_prices(series_or_vals: Any) -> list[float]:
+    if not isinstance(series_or_vals, (list, tuple)) or len(series_or_vals) < 2:
+        return []
+    timed: list[Tuple[float, float]] = []
+    scalars: list[float] = []
+    for item in series_or_vals:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            if (pt := _parse_ts_px_row(item)) is not None:
+                timed.append(pt)
+            elif (v := safe_pos_float(item[1], default=0.0) or 0.0) > 0.0:
+                scalars.append(v)
+        elif not isinstance(item, (list, tuple)) and (v := safe_pos_float(item, default=0.0) or 0.0) > 0.0:
+            scalars.append(v)
+    if timed and not scalars:
+        return [px for _, px in sorted(timed, key=lambda x: x[0])]
+    return [
+        v for item in series_or_vals
+        if (v := safe_pos_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, default=0.0) or 0.0) > 0.0
+    ]
+
+
 def compute_swing_wave_metrics(
     series_or_vals: list[Any], *, reversal_pct: float = 3.0, decimals: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Extract raw ZigZag swing waves (>=3% reversals), active swing low/high, and rally/pullback % from a price series."""
-    if not isinstance(series_or_vals, list) or len(series_or_vals) < 2:
+    if not isinstance(series_or_vals, (list, tuple)) or len(series_or_vals) < 2:
         return {}
-    vals = [
-        v for item in series_or_vals
-        if (v := safe_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, 0.0)) > 0.0
-    ]
+    vals = _extract_ordered_prices(series_or_vals)
     if len(vals) < 2:
         return {}
 
@@ -444,10 +463,7 @@ def compute_7d_range_metrics(vals: list[float], decimals: Optional[int] = None) 
     """Compute 7-day range geometry (low, high, drawdown, bounce, span, position) and 3%–8% swing waves from a price series."""
     if not isinstance(vals, (list, tuple)):
         return {}
-    clean_vals = [
-        v for item in vals
-        if (v := safe_pos_float(item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item, default=0.0) or 0.0) > 0.0
-    ]
+    clean_vals = _extract_ordered_prices(vals)
     if len(clean_vals) < 2:
         return {}
     eff_dec = decimals if decimals is not None else 6
@@ -554,7 +570,10 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
 
 def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any]]:
     """Derive Kalman velocity (% per min), std, and trend from a 24h price series when cache_kalman_trend lacks the symbol."""
-    pts = [(parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None]
+    pts = sorted(
+        ((parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None),
+        key=lambda x: x[0],
+    )
     if len(pts) < 5:
         return None
     cutoff_s = pts[-1][0] - 7200.0
@@ -598,7 +617,10 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
 
 def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
     """Derive fallback multi-horizon slopes (90s, 3.7m, 15m, 2.5h) and growth coefficients from a 24h series."""
-    pts = [(parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None and parsed[1] > 0]
+    pts = sorted(
+        ((parsed[0] / 1000.0, parsed[1]) for row in series_24h if (parsed := _parse_ts_px_row(row)) is not None and parsed[1] > 0),
+        key=lambda x: x[0],
+    )
     if len(pts) < 3:
         return {}
     t_now, p_now = pts[-1]
@@ -633,14 +655,18 @@ def _extract_ohlc_series_points(
     """Extract `[ts_ms, close, (vol)]` rows from an OHLC series within `[min_ts, max_ts]`."""
     vols = getattr(ohlc_obj, "volumes", ()) or ()
     has_vols = isinstance(vols, (list, tuple)) and bool(vols)
+    min_s = (min_ts / 1000.0 if 1e11 < min_ts < float("inf") else min_ts) if math.isfinite(min_ts) else 0.0
+    max_s = (max_ts / 1000.0 if 1e11 < max_ts < float("inf") else max_ts) if math.isfinite(max_ts) else float("inf")
     pts: List[List[Any]] = []
     for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()) or (), getattr(ohlc_obj, "closes", ()) or ())):
         ts_f, px_f = safe_pos_float(ts, 0.0) or 0.0, safe_pos_float(px, 0.0) or 0.0
-        if ts_f > 0.0 and min_ts <= ts_f <= max_ts and px_f > 0.0:
+        ts_s = ts_f / 1000.0 if ts_f > 1e11 else ts_f
+        if ts_s > 0.0 and min_s <= ts_s <= max_s and px_f > 0.0:
             v_f = safe_pos_float(vols[idx], 0.0) or 0.0 if (has_vols and idx < len(vols)) else 0.0
             if require_positive_volume and v_f <= 0.0:
                 continue
-            pts.append([int(ts_f * 1000), px_f, v_f] if v_f > 0.0 else [int(ts_f * 1000), px_f])
+            pts.append([int(round(ts_s * 1000.0)), px_f, v_f] if v_f > 0.0 else [int(round(ts_s * 1000.0)), px_f])
+    pts.sort(key=lambda x: x[0])
     return pts
 
 
@@ -744,8 +770,9 @@ def _apply_24h_series_enrichment(
     """Enrich a symbol's `prices_and_trends` entry with 24h metrics, cross-BTC beta/corr, Kalman, slopes, and 1h vol."""
     entry.update(m24)
     if series_24h and safe_float(entry.get("price"), 0.0) <= 0.0:
-        if (last_pt_24 := _parse_ts_px_row(series_24h[-1])) is not None:
-            entry["price"] = last_pt_24[1]
+        parsed_pts_24 = [pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None]
+        if parsed_pts_24:
+            entry["price"] = max(parsed_pts_24, key=lambda x: x[0])[1]
         elif isinstance(series_24h[-1], (list, tuple)) and len(series_24h[-1]) >= 2:
             if (px_last_24 := safe_pos_float(series_24h[-1][1], default=None)) is not None:
                 entry["price"] = px_last_24
@@ -795,7 +822,7 @@ def _apply_24h_series_enrichment(
                 ):
                     entry[sk] = sv
         if len(series_24h) >= 20:
-            all_pts_m = [pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None]
+            all_pts_m = sorted((pt for r in series_24h if (pt := _parse_ts_px_row(r)) is not None), key=lambda x: x[0])
             tail_pts_m: List[Tuple[float, float]] = []
             has_dense_1h_bars = False
             if len(all_pts_m) >= 10:

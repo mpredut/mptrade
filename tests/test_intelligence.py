@@ -2667,8 +2667,94 @@ def test_iter60_kalman_ms_timestamps_bybit_lookup_and_whale_percent_scales(tmp_p
     assert slg.min_whale_long_pct == pytest.approx(0.65)
 
 
+def test_iter61_whale_spread_flow_sentiment_advisor_and_price_series_ordering(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import external_order_guard as eog
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.sentiment.collectors.microstructure_collector import _filter_ohlc_closes_since
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _compute_short_slopes_from_series,
+        _extract_ohlc_series_points,
+        compute_7d_range_metrics,
+        compute_cross_btc_metrics,
+        compute_swing_wave_metrics,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_microstructure_cvd,
+        update_microstructure_cycle_deltas,
+    )
+
+    # 1. evaluate_whale_spread_flow & resolve_whale_spread_adjustment support side aliases, dict snapshots, and no-kwarg collectors
+    class _DictCollector:
+        def fetch(self, symbol):
+            return {"taker_buy_sell_ratio": 0.95, "oi_1h_chg_pct": 2.4, "div_regime": "aggressive_shorting"}
+
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: _DictCollector())
+    blocked, reason = eog.evaluate_whale_spread_flow("BTCUSDC", "bid", enforced=True)
+    assert blocked is True and "aggressive_shorting_divergence (OI=+2.4%)" in reason
+
+    class _PressureCollector:
+        def fetch(self, symbol):
+            return {"taker_buy_sell_ratio": 0.85}
+
+    monkeypatch.setattr(eog, "get_whale_collector", lambda: _PressureCollector())
+    assert eog.resolve_whale_spread_adjustment("BTCUSDC", "0.002", enforced=True) == pytest.approx(0.003)
+
+    # 2. SentimentAdvisor & GeopoliticalThreatAnalyzer percent string confidence/risk_score and breadth advance_ratio
+    sa_built = SentimentAdvisor._build_assessment({"confidence": "80%", "market_bias": "BULLISH", "risk_level": "LOW"}, ts_override=100.0)
+    assert sa_built.confidence == pytest.approx(0.80)
+    ga = GeopoliticalThreatAnalyzer(state_file=str(tmp_path / "geo_iter61.json"))
+    ga_built = ga._build_assessment({"risk_score": "75%", "threat_level": "ELEVATED"}, ts=100.0)
+    assert ga_built.risk_score == pytest.approx(0.75)
+
+    captured_prompts = []
+    sa = SentimentAdvisor(cache_file=str(tmp_path / "sent_iter61.json"))
+    monkeypatch.setattr(sa, "_query_topic", lambda prompt, **kw: captured_prompts.append(prompt) or {"confidence": "75%", "market_bias": "BULLISH"})
+    sa.review(breadth={"advance_ratio": "55%", "median_change_pct": 1.2, "regime": "BROAD_ADVANCE"}, force_refresh=True, now_ts=200.0)
+    assert any("55.0% advancing" in p for p in captured_prompts)
+
+    # 3. Price series evaluators sort unsorted (ts, price) rows and normalize ms OHLC timestamps
+    unsorted_7d = [[2000.0, 110.0], [1000.0, 100.0], [1500.0, 105.0]]
+    m7d = compute_7d_range_metrics(unsorted_7d)
+    assert m7d["chg_7d_pct"] == pytest.approx(10.0)
+    sw = compute_swing_wave_metrics([[2000.0, 110.0], [1000.0, 100.0], [1500.0, 95.0]])
+    assert sw["rally_from_swing_low_pct"] == pytest.approx(((110.0 / 95.0) - 1.0) * 100.0, abs=0.05)
+
+    slopes = _compute_short_slopes_from_series([[1700000180000.0, 103.0], [1700000000000.0, 100.0], [1700000090000.0, 101.5]])
+    assert slopes.get("slope_90s", 0.0) > 0.0
+
+    ohlc_ms = SimpleNamespace(timestamps=[1700000120000.0, 1700000000000.0, 1700000060000.0], closes=[102.0, 100.0, 101.0], volumes=[10.0, 10.0, 10.0])
+    pts_ohlc = _extract_ohlc_series_points(ohlc_ms, min_ts=1700000000.0, max_ts=1700000120.0)
+    assert [p[0] for p in pts_ohlc] == [1700000000000, 1700000060000, 1700000120000]
+    assert _filter_ohlc_closes_since(ohlc_ms, cutoff_ts=1700000000.0, max_ts=1700000120.0) == [100.0, 101.0, 102.0]
+
+    alt_unsorted = [[1700000010000.0, 200.0], [1700000000000.0, 100.0], [1700000300000.0, 205.0], [1700000600000.0, 210.0], [1700000900000.0, 215.0]]
+    btc_sorted = [[1700000000000.0, 50000.0], [1700000300000.0, 50000.0], [1700000600000.0, 50000.0], [1700000900000.0, 50000.0]]
+    c_btc = compute_cross_btc_metrics(alt_unsorted, btc_sorted)
+    assert c_btc.get("alt_btc_pos_24h_pct") == pytest.approx(100.0)
+
+    # 4. Microstructure evaluator normalizes percent ob_imbalance / whale_long_pct and ms timestamps in cycle deltas
+    minfo = {"ob_imbalance": "65%", "whale_long_pct": "68%", "taker_buy_vol_usd": 1000.0, "taker_sell_vol_usd": 1500.0}
+    enrich_microstructure_cvd(minfo)
+    assert minfo["cvd_regime"] == "spot_absorbing"
+
+    hist_file = tmp_path / "microstructure_cycle_history.json"
+    hist_file.write_text(
+        '{"BTCUSDC": [{"ts": 1700000000000.0, "ob_imbalance": "55%", "whale_long_pct": "60%"}]}',
+        encoding="utf-8",
+    )
+    micro_map = {"BTCUSDC": {"ob_imbalance": "65%", "whale_long_pct": "68%"}}
+    update_microstructure_cycle_deltas(str(tmp_path), micro_map, now_ts=1700000600000.0)
+    cd = micro_map["BTCUSDC"].get("cycle_delta")
+    assert isinstance(cd, dict)
+    assert cd["ob_imbalance_delta"] == pytest.approx(0.10)
+    assert cd["whale_long_delta_pct"] == pytest.approx(0.08)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

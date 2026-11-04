@@ -15,7 +15,7 @@ import logging
 import sys
 from typing import Any, Dict, Optional, Tuple
 
-from botcore import _parse_bool_flag, safe_float
+from botcore import _parse_bool_flag, obj_attr, safe_float
 from guard_hierarchy import GUARD_REGISTRY, normalize_bypassed_guards
 import intelligence.external.guards.funding_crowding_guard as fcg
 import intelligence.external.guards.orderbook_wall_guard as owg
@@ -261,7 +261,7 @@ def evaluate_whale_spread_flow(
     enforced: Optional[bool] = None,
 ) -> Tuple[bool, str]:
     """Check if whale taker flow or OI divergence conflicts with initiating a spread round."""
-    side_u = (side or "").upper()
+    side_u = normalize_side(side)
     if side_u not in {"BUY", "SELL"}:
         return False, "ok"
     if not (is_gi_whale_enforced(bypass_guards) if enforced is None else enforced):
@@ -270,12 +270,15 @@ def evaluate_whale_spread_flow(
         collector = get_whale_collector()
         if collector is None:
             return False, "no_collector"
-        snap = collector.fetch(symbol, allow_network=False)
+        snap = fetch_guard_snapshot(collector, symbol, allow_network=False)
         if snap is None:
             return False, "no_snapshot"
-        ratio = safe_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0
-        oi_pct = safe_float(getattr(snap, "open_interest_1h_change_pct", None), default=0.0) or 0.0
-        div_regime = getattr(snap, "divergence_regime", None)
+        ratio = safe_pos_float(obj_attr(snap, "taker_buy_sell_ratio"), 0.0) or 0.0
+        raw_oi = obj_attr(snap, "open_interest_1h_change_pct")
+        if raw_oi is None:
+            raw_oi = obj_attr(snap, "oi_1h_chg_pct")
+        oi_pct = safe_float(raw_oi, default=0.0) or 0.0
+        div_regime = obj_attr(snap, "divergence_regime") or obj_attr(snap, "div_regime")
         if side_u == "BUY":
             if 0.0 < ratio < 0.80:
                 return True, f"taker_sell_dominance (ratio={ratio:.2f} < 0.80)"
@@ -304,10 +307,12 @@ def resolve_whale_spread_adjustment(
     try:
         collector = get_whale_collector()
         if collector is not None:
-            snap = collector.fetch(symbol, allow_network=False)
-            ratio = (safe_pos_float(getattr(snap, "taker_buy_sell_ratio", None), 0.0) or 0.0) if snap is not None else 0.0
+            snap = fetch_guard_snapshot(collector, symbol, allow_network=False)
+            ratio = (safe_pos_float(obj_attr(snap, "taker_buy_sell_ratio"), 0.0) or 0.0) if snap is not None else 0.0
             if ratio > 0.0 and (ratio < 0.90 or ratio > (1.0 / 0.90)):
-                return base_adjustment * 1.5
+                base_f = safe_float(base_adjustment, default=None)
+                if base_f is not None:
+                    return base_f * 1.5
     except Exception:
         pass
     return base_adjustment
