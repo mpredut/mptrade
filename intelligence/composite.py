@@ -198,12 +198,22 @@ class CompositeMarketIntelligence:
                 return veto
 
         # 4. External Liquidation Cascade Guard
-        if liquidation_summary is not None and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard"):
-            if (veto := _apply_guard_dec(self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now))) is not None:
+        if (
+            (liquidation_summary is not None or getattr(self.cascade_guard, "collector", None) is not None)
+            and not _is_bypassed(None, "cascade_guard", "liquidationcascadeguard")
+        ):
+            try:
+                casc_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary, now=now)
+            except TypeError:
+                casc_dec = self.cascade_guard.check(symbol, side, summary=liquidation_summary)
+            if (veto := _apply_guard_dec(casc_dec)) is not None:
                 return veto
 
         # 5. External Funding Rate Crowding Guard (GI_FUNDING)
-        if derivatives_telemetry is not None and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard"):
+        if (
+            (derivatives_telemetry is not None or getattr(self.funding_guard, "collector", None) is not None)
+            and not _is_bypassed("GI_FUNDING", "funding_guard", "fundingcrowdingguard")
+        ):
             try:
                 fund_dec = self.funding_guard.check(symbol, side, telemetry=derivatives_telemetry, now=now)
             except TypeError:
@@ -302,8 +312,11 @@ class CompositeMarketIntelligence:
             if g_event:
                 triggered_events.append(g_event)
 
-        if liquidation_summary is not None:
-            l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
+        if liquidation_summary is not None or getattr(self.liquidation_trigger, "collector", None) is not None:
+            try:
+                l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary, now=now_ts)
+            except TypeError:
+                l_res = self.liquidation_trigger.evaluate(symbol, price, liquidation_summary)
             l_event = l_res[1] if isinstance(l_res, tuple) else l_res
             if l_event:
                 triggered_events.append(l_event)

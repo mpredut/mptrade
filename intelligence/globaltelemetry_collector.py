@@ -112,10 +112,29 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
     def _save_dual_cache(self, prefix: str, payload: Dict[str, Any]) -> None:
         save_json_state(os.path.join(self.cache_dir, f"{prefix}_collect.json"), payload, indent=2)
 
-    def update_news(self, force: bool = False) -> bool:
+    def _resolve_step_now(self, now: Optional[float] = None) -> Optional[float]:
+        if now is not None:
+            return safe_pos_float(now, default=None)
+        return safe_pos_float(getattr(self, "_active_cycle_ts", None), default=None)
+
+    @staticmethod
+    def _call_collector_fetch(collector: Any, *, force_refresh: bool, now_ts: Optional[float]) -> Any:
+        if now_ts is not None:
+            try:
+                return collector.fetch(force_refresh=force_refresh, now_ts=now_ts)
+            except TypeError:
+                pass
+        return collector.fetch(force_refresh=force_refresh)
+
+    def update_news(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro RSS headlines and update local rolling pool (zero LLM)."""
         try:
-            news_snap = self.news_collector.fetch(force_refresh=_parse_bool_flag(force, False))
+            eff_now = self._resolve_step_now(now)
+            news_snap = self._call_collector_fetch(
+                self.news_collector,
+                force_refresh=_parse_bool_flag(force, False),
+                now_ts=eff_now,
+            )
             if news_snap:
                 logger.debug("RSS news pool updated: %d headlines in pool", news_snap.total_fetched)
                 return True
@@ -123,10 +142,16 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating RSS news feed: %s", e)
         return False
 
-    def update_fear_greed(self, force: bool = False) -> bool:
+    def update_fear_greed(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Crypto Fear & Greed Index and persist snapshot to cachedb/."""
         try:
-            snap = self.fear_greed_collector.fetch(force_refresh=_parse_bool_flag(force, False))
+            eff_now = self._resolve_step_now(now)
+            now_val = resolve_now_ts(eff_now)
+            snap = self._call_collector_fetch(
+                self.fear_greed_collector,
+                force_refresh=_parse_bool_flag(force, False),
+                now_ts=eff_now,
+            )
             if snap:
                 self._save_dual_cache(
                     "fear_greed",
@@ -138,8 +163,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                         "trend_7d_change": snap.trend_7d_change,
                         "is_extreme_fear": snap.is_extreme_fear,
                         "is_extreme_greed": snap.is_extreme_greed,
-                        "index_timestamp": safe_pos_float(getattr(snap, "timestamp", None), time.time()),
-                        "ts": time.time(),
+                        "index_timestamp": safe_pos_float(getattr(snap, "timestamp", None), now_val),
+                        "ts": now_val,
                     },
                 )
                 logger.debug("Fear & Greed index updated: %d (%s)", snap.value, snap.classification)
@@ -148,10 +173,16 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             logger.warning("Failed updating Fear & Greed index: %s", e)
         return False
 
-    def update_market_breadth(self, force: bool = False) -> bool:
+    def update_market_breadth(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch Binance 24h market breadth and persist snapshot to cachedb/."""
         try:
-            breadth = self.breadth_collector.fetch(force_refresh=_parse_bool_flag(force, False))
+            eff_now = self._resolve_step_now(now)
+            now_val = resolve_now_ts(eff_now)
+            breadth = self._call_collector_fetch(
+                self.breadth_collector,
+                force_refresh=_parse_bool_flag(force, False),
+                now_ts=eff_now,
+            )
             if breadth:
                 raw_gainers = getattr(breadth, "top_gainers", None) or ()
                 raw_losers = getattr(breadth, "top_losers", None) or ()
@@ -170,7 +201,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                     "declining_count": breadth.declining_count,
                     "top_gainers": [list(x) for x in raw_gainers if isinstance(x, (list, tuple))],
                     "top_losers": [list(x) for x in raw_losers if isinstance(x, (list, tuple))],
-                    "ts": safe_pos_float(getattr(breadth, "ts", None), time.time()),
+                    "ts": safe_pos_float(getattr(breadth, "ts", None), now_val),
                 }
                 for rot_k in (
                     "btc_price", "btc_chg_24h_pct", "eth_price", "eth_chg_24h_pct",
@@ -218,33 +249,37 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         }
 
         self.write_heartbeat(results)
-        self._step_external_symbols(
-            current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
-        )
+        self._active_cycle_ts = current_ts
+        try:
+            self._step_external_symbols(
+                current_ts, force, results, bounded=True, on_symbol_done=lambda: self.write_heartbeat(results)
+            )
 
-        scheduled_tasks = (
-            (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
-            (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
-            (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
-            (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
-        )
-        for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
-            if enabled:
-                run_scheduled_step(
-                    self,
-                    current_ts=current_ts,
-                    ts_attr=ts_attr,
-                    interval_sec=itv_sec,
-                    fn=fn,
-                    fn_args=fn_args,
-                    force=force,
-                    bounded=True,
-                    timeout_sec=timeout_s,
-                    label=lbl,
-                    results=results,
-                    result_key=res_key,
-                    on_done=on_done_cb,
-                )
+            scheduled_tasks = (
+                (not self.skip_news, "_last_news_ts", self.news_interval_sec, self.update_news, (force,), 15.0, "news", "news_updated", lambda: self.write_heartbeat(results)),
+                (True, "_last_fear_greed_ts", self.fear_greed_interval_sec, self.update_fear_greed, (force,), 12.0, "fear_greed", "fear_greed_updated", None),
+                (True, "_last_breadth_ts", self.breadth_interval_sec, self.update_market_breadth, (force,), 15.0, "breadth", "breadth_updated", None),
+                (not self.skip_external, "_last_macro_benchmarks_ts", self.macro_benchmarks_interval_sec, self.update_macro_benchmarks, (force,), 15.0, "macro_benchmarks", "macro_benchmarks_updated", None),
+            )
+            for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
+                if enabled:
+                    run_scheduled_step(
+                        self,
+                        current_ts=current_ts,
+                        ts_attr=ts_attr,
+                        interval_sec=itv_sec,
+                        fn=fn,
+                        fn_args=fn_args,
+                        force=force,
+                        bounded=True,
+                        timeout_sec=timeout_s,
+                        label=lbl,
+                        results=results,
+                        result_key=res_key,
+                        on_done=on_done_cb,
+                    )
+        finally:
+            self._active_cycle_ts = None
 
         if is_interval_due(current_ts, self._last_stdout_hb_ts, 60.0, force=force):
             logger.info("Global telemetry cycle active: %d symbols monitored (PID=%d)", len(self.symbols), os.getpid())

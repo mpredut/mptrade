@@ -66,9 +66,22 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
             if std is not None:
                 return _std_to_vol1h_pct(std, sample_rate_sec)
 
+    seq_sig = None
+    if p0 is not None and pn is not None:
+        try:
+            if np is not None and isinstance(prices, np.ndarray):
+                if prices.ndim == 1 and prices.dtype.kind in ("f", "i", "u"):
+                    seq_sig = prices.astype(float, copy=False).tobytes()
+            elif n <= 512:
+                cand_tup = tuple(prices)
+                hash(cand_tup)
+                seq_sig = cand_tup
+        except Exception:
+            seq_sig = None
+
     cache_key = (
-        (n, p0, pn, round(float(sample_rate_sec), 3))
-        if (p0 is not None and pn is not None)
+        (n, p0, pn, round(float(sample_rate_sec), 3), seq_sig)
+        if (p0 is not None and pn is not None and seq_sig is not None)
         else None
     )
     if cache_key is not None:

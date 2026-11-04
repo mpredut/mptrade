@@ -54,7 +54,7 @@ def resolve_hierarchical_guard_mode(
     pillar_master = normalize_guard_mode(m.get(pillar_master_key, default), default=default)
     if intel_master == "off" or pillar_master == "off":
         return "off"
-    if pillar_master == "shadow" and mode == "enforce":
+    if (intel_master == "shadow" or pillar_master == "shadow") and mode == "enforce":
         return "shadow"
     return mode
 

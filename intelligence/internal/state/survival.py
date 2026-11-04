@@ -39,6 +39,16 @@ _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
 
 
+def _resolve_facade_attr(name: str, current: Any, default: Any) -> Any:
+    if current is not default:
+        return current
+    facade = sys.modules.get("forecast.trend_survival")
+    cand = getattr(facade, name, None) if facade is not None else None
+    if cand is not None and cand is not default:
+        return cand
+    return current
+
+
 def _effective_t_cache_file() -> str:
     if isinstance(T_CACHE_FILE, str) and T_CACHE_FILE.strip() and T_CACHE_FILE != _DEFAULT_T_CACHE_FILE:
         return T_CACHE_FILE
@@ -372,9 +382,10 @@ def estimate_T(
                 candidates.append(cand)
     ts = px = None
     used = None
+    _fk = _resolve_facade_attr("fetch_klines", fetch_klines, _ORIG_FETCH_KLINES)
     for sym in candidates:
         try:
-            ts, px = fetch_klines(sym, days)
+            ts, px = _fk(sym, days)
             if len(ts) >= 100:
                 used = sym
                 break
@@ -401,12 +412,15 @@ def estimate_T(
     res["source_symbol"] = used
     res["ts"] = time.time()
     cache_key = clean_sym_u if clean_sym_u else str(symbol or "")
-    cache[cache_key] = res
-    try:
-        save_json_state(t_cache_path, cache, indent=2)
-        _T_CACHE_FILE_MEMO.clear()
-    except OSError:
-        pass
+    if (safe_pos_float(res.get("n"), default=0.0) or 0.0) > 0 or not (
+        isinstance(ent, dict) and (safe_pos_float(ent.get("n"), default=0.0) or 0.0) > 0
+    ):
+        cache[cache_key] = res
+        try:
+            save_json_state(t_cache_path, cache, indent=2)
+            _T_CACHE_FILE_MEMO.clear()
+        except OSError:
+            pass
     return res
 
 
@@ -427,7 +441,11 @@ def get_trend_survival_metrics(
         median_d = safe_pos_float(ent_dict.get("median_d"), default=median_d)
         p90_d = safe_pos_float(ent_dict.get("p90_d"), default=p90_d)
         t_cand = safe_pos_float(ent_dict.get("T"), default=0.0)
-        if t_cand > 0.0 and (not require_n or safe_pos_float(ent_dict.get("n"), default=0.0) > 0):
+        has_valid_n = (
+            ("n" not in ent_dict and not require_n)
+            or (safe_pos_float(ent_dict.get("n"), default=0.0) or 0.0) > 0
+        )
+        if t_cand > 0.0 and has_valid_n:
             T_val = cached_t = t_cand
 
     cached_entry = get_cached_t_entry(symbol)
@@ -435,7 +453,8 @@ def get_trend_survival_metrics(
         _apply_entry(cached_entry)
     elif _parse_bool_flag(allow_network, False):
         try:
-            if est := estimate_T(symbol):
+            _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+            if est := _est_fn(symbol):
                 _apply_entry(est, require_n=True)
         except Exception:
             pass
@@ -467,11 +486,13 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.estimate:
-        est = estimate_T(args.symbol, days=args.days, window_h=args.window, step_h=args.step, prior_T=args.T)
+        _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+        est = _est_fn(args.symbol, days=args.days, window_h=args.window, step_h=args.step, prior_T=args.T)
         print(f"[{args.symbol}] Estimated T = {est['T']} days (P90 {est.get('p90_d')}d, median {est.get('median_d')}d)")
         return 0
 
-    ts, px = fetch_klines(args.symbol, args.days)
+    _fk = _resolve_facade_attr("fetch_klines", fetch_klines, _ORIG_FETCH_KLINES)
+    ts, px = _fk(args.symbol, args.days)
     if len(ts) < 100:
         print(f"Not enough data for {args.symbol}")
         return 1
@@ -484,6 +505,10 @@ def main() -> int:
     if cont:
         print("    " + verdict(cont, args.T / 2))
     return 0
+
+
+_ORIG_FETCH_KLINES = fetch_klines
+_ORIG_ESTIMATE_T = estimate_T
 
 
 if __name__ == "__main__":

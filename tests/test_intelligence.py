@@ -2226,8 +2226,160 @@ def test_iter56_pretrade_null_safety_hl_list_wrapping_and_external_guard_aliases
     assert ev.reason == "whale_aggressive_accumulation"
 
 
+def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision(tmp_path, monkeypatch):
+    import forecast.trend_survival as fts_mod
+    from intelligence.composite import CompositeMarketIntelligence
+    from intelligence.external.collectors.bybit_liquidations_collector import LiquidationSummary
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+    from intelligence.external.guards.cascade_guard import LiquidationCascadeGuard
+    from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
+    from intelligence.external.triggers.liquidation_trigger import LiquidationCapitulationTrigger
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.internal.guards.guard_decision import BrakeAction, resolve_hierarchical_guard_mode
+    from intelligence.internal.state import survival as surv_mod
+    from intelligence.internal.state import volatility as vol_mod
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
+
+    # 1. resolve_hierarchical_guard_mode cascades "shadow" from intelligence_guards_mode
+    assert (
+        resolve_hierarchical_guard_mode(
+            {"intelligence_guards_mode": "shadow", "pillar2_external_guards_mode": "enforce", "whale_divergence_guard_mode": "enforce"},
+            "whale_divergence_guard_mode",
+            "pillar2_external_guards_mode",
+        )
+        == "shadow"
+    )
+
+    # 2. CompositeMarketIntelligence invokes collector-backed cascade_guard, funding_guard, and liquidation_trigger when explicit snapshots are None
+    liq_snap = LiquidationSummary(
+        symbol="BTCUSDC",
+        window_sec=60.0,
+        long_liq_usd=5_000_000.0,
+        short_liq_usd=100_000.0,
+        net_usd=-4_900_000.0,
+        capitulation_ratio=5_000_000.0 / 5_100_000.0,
+        squeeze_ratio=100_000.0 / 5_100_000.0,
+        events_count=50,
+        last_event_ts=1700000000.0,
+    )
+    deriv_snap = DerivativesTelemetry(
+        symbol="BTCUSDC",
+        funding_rate=0.0025,
+        predicted_funding_rate=0.0025,
+        open_interest=1000.0,
+        open_interest_usd=95_000_000.0,
+        ts=1700000000.0,
+    )
+
+    class _DummyLiqCol:
+        def get_summary(self, symbol, **kwargs):
+            return liq_snap
+
+    class _DummyDerivCol:
+        def fetch(self, symbol, **kwargs):
+            return deriv_snap
+
+    comp = CompositeMarketIntelligence(max_active_cascade_usd=1_000_000.0, max_long_funding_rate=0.0005)
+    comp.cascade_guard.collector = _DummyLiqCol()
+    comp.funding_guard.collector = _DummyDerivCol()
+    comp.liquidation_trigger.collector = _DummyLiqCol()
+
+    dec_casc = comp.evaluate_guards("BTCUSDC", "BUY", 95000.0, now=1700000000.0)
+    assert dec_casc.allowed is False
+    assert dec_casc.brake_action == BrakeAction.DEFER_WAIT
+    assert dec_casc.guard_name == "LiquidationCascadeGuard"
+
+    dec_fund = comp.evaluate_guards("BTCUSDC", "BUY", 95000.0, bypass_guards=["cascade_guard"], now=1700000000.0)
+    assert dec_fund.guard_name == "FundingCrowdingGuard"
+    assert dec_fund.suggested_scale < 1.0
+
+    eval_res = comp.evaluate("BTCUSDC", 95000.0, ts=1700000000.0, bypass_guards=["cascade_guard", "funding_guard"])
+    assert any(ev.source in ("liquidation_trigger", "LiquidationCapitulationTrigger") for ev in eval_res.triggers)
+
+    # 3. GlobalTelemetryCollector propagates now_ts to update_news, update_fear_greed, and update_market_breadth
+    gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_external=True)
+    seen_now = {}
+
+    class _MockNews:
+        def fetch(self, force_refresh=False, now_ts=None):
+            seen_now["news"] = now_ts
+            return SimpleNamespace(total_fetched=3)
+
+    class _MockFG:
+        def fetch(self, force_refresh=False, now_ts=None):
+            seen_now["fg"] = now_ts
+            return FearGreedSnapshot(
+                value=22,
+                classification="Extreme Fear",
+                timestamp=0.0,
+                historical_values=(22, 25),
+                trend_7d_change=-3,
+                is_extreme_fear=True,
+                is_extreme_greed=False,
+            )
+
+    class _MockBreadth:
+        def fetch(self, force_refresh=False, now_ts=None):
+            seen_now["breadth"] = now_ts
+            return MarketBreadthSnapshot(
+                total_count=10,
+                advancing_count=7,
+                declining_count=3,
+                advance_ratio=0.7,
+                median_change_pct=1.2,
+                mean_change_pct=1.5,
+                dispersion_std=2.0,
+                top_gainers=(("BTCUSDC", 3.0),),
+                top_losers=(("ETHUSDC", -1.0),),
+                regime="broad_advance",
+                ts=0.0,
+            )
+
+    gtc.news_collector = _MockNews()
+    gtc.fear_greed_collector = _MockFG()
+    gtc.breadth_collector = _MockBreadth()
+    fixed_now = 1711111111.0
+    gtc.run_cycle(force=True, now=fixed_now)
+    assert seen_now == {"news": fixed_now, "fg": fixed_now, "breadth": fixed_now}
+    fg_saved = json.loads((tmp_path / "fear_greed_collect.json").read_text(encoding="utf-8"))
+    mb_saved = json.loads((tmp_path / "market_breadth_collect.json").read_text(encoding="utf-8"))
+    assert fg_saved["ts"] == pytest.approx(fixed_now)
+    assert fg_saved["index_timestamp"] == pytest.approx(fixed_now)
+    assert mb_saved["ts"] == pytest.approx(fixed_now)
+
+    # 4. calculate_volatility_1h does not collide in _vol_memo_cache when interior prices differ
+    vol_mod._vol_memo_cache.clear()
+    flat_series = [100.0] * 30
+    spike_series = [100.0] + [110.0, 90.0] * 14 + [100.0]
+    assert len(flat_series) == len(spike_series)
+    assert flat_series[0] == spike_series[0] and flat_series[-1] == spike_series[-1]
+    v_flat = vol_mod.calculate_volatility_1h(flat_series, 60.0)
+    v_spike = vol_mod.calculate_volatility_1h(spike_series, 60.0)
+    assert v_flat == 0.0
+    assert v_spike is not None and v_spike > 50.0
+
+    # 5. survival respects monkeypatches on forecast.trend_survival and ignores n=0 cached entries for gaussian_horizon_days
+    t_cache_file = tmp_path / "cache_T_iter57.json"
+    t_cache_file.write_text(
+        json.dumps({"NEWCOINUSDC": {"T": 14, "n": 0, "w": 0.0, "median_d": None, "p90_d": None, "ts": fixed_now}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fts_mod, "T_CACHE_FILE", str(t_cache_file))
+    surv_mod._T_CACHE_FILE_MEMO.clear()
+    m_zero_n = surv_mod.get_trend_survival_metrics("NEWCOINUSDC", trend_duration_seconds=86400.0)
+    assert m_zero_n["gaussian_horizon_days"] is None
+    assert m_zero_n["T"] == pytest.approx(8.0)
+
+    monkeypatch.setattr(fts_mod, "estimate_T", lambda sym: {"T": 9.5, "n": 12, "median_d": 3.5, "p90_d": 8.0})
+    m_net = surv_mod.get_trend_survival_metrics("UNLISTEDCOIN", trend_duration_seconds=86400.0, allow_network=True)
+    assert m_net["T"] == pytest.approx(9.5)
+    assert m_net["gaussian_horizon_days"] == pytest.approx(round(9.5 * 1.4, 4))
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 
