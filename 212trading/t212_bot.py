@@ -163,15 +163,19 @@ def main() -> int:
 
     log(f"=== t212_bot: {len(assets)} assets in ONE process ({'PAPER forced' if args.paper else 'config'}) ===")
     client.list_instruments()  # warm the cache ONCE so threads avoid the expensive call
+    STOP.clear()
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
     threads = []
     for name, path in assets:
+        if STOP.is_set():
+            break
         cfg = parse_dotenv(path)
         t = threading.Thread(target=run_asset, name=name, daemon=True,
                              args=(name, cfg, client, args.paper, args.skip_wait))
         t.start()
         threads.append(t)
-        time.sleep(0.5)  # stagger startup to avoid simultaneous API calls
+        if STOP.wait(0.5):  # stagger startup to avoid simultaneous API calls
+            break
 
     asset_names = [name for name, _ in assets]
     try:

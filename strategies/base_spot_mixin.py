@@ -1008,7 +1008,13 @@ class BaseSpotMixin:
         if stop is None and threading.current_thread() is threading.main_thread():
             try:
                 prev_sigterm = signal.getsignal(signal.SIGTERM)
-                signal.signal(signal.SIGTERM, lambda *_: sigterm_ev.set())
+
+                def _on_sigterm(signum, frame):
+                    sigterm_ev.set()
+                    if callable(prev_sigterm):
+                        prev_sigterm(signum, frame)
+
+                signal.signal(signal.SIGTERM, _on_sigterm)
             except (ValueError, OSError):
                 prev_sigterm = None
 
@@ -1049,6 +1055,8 @@ class BaseSpotMixin:
                     continue
                 status_log_fn(price)
                 _delay()
+            if getattr(self, "_state_save_failed", False):
+                self._save()
         except KeyboardInterrupt:
             self._log_msg("  [STRAT] stopped manually.")
             self._save()

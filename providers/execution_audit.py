@@ -1859,7 +1859,7 @@ def _intent_order_ids(item: dict[str, Any]) -> set[str]:
         ids.add(str(oid_rec))
     for h_entry in (item.get("history") if isinstance(item.get("history"), list) else ()):
         if isinstance(h_entry, dict):
-            h_oid = extract_order_id(h_entry.get("order_id") or h_entry.get("payload"), default="")
+            h_oid = extract_order_id(h_entry.get("order_id"), default="") or extract_order_id(h_entry.get("payload"), default="")
             if h_oid:
                 ids.add(str(h_oid))
     return ids
@@ -1964,6 +1964,8 @@ def find_duplicate_ai_open_limit_order(
         if not isinstance(raw_open, list):
             return None
         ai_oids = collect_known_ai_order_ids(intents, known_ai_order_ids)
+        if isinstance(intents, dict):
+            intents = intents.get("intents")
         intent_notional_by_id: dict[str, tuple[float, float]] = {}
         if require_notional_match and isinstance(intents, list):
             for item in intents:

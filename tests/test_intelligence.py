@@ -4233,6 +4233,128 @@ def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_it
     assert not stale_dir.exists()
 
 
+def test_iter76_execution_audit_intent_ids_scope_filter_and_self_healing_loop_shutdown():
+    import threading
+    import types
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        apply_asset_scope_filter,
+        enrich_sentiment_advisor_live_flow_divergence,
+        reconcile_live_venue_equity_summary,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
+    )
+    from providers.execution_audit import (
+        _intent_order_ids,
+        find_duplicate_ai_open_limit_order,
+    )
+    from strategies.base_spot_mixin import BaseSpotMixin
+
+    # 1. _intent_order_ids falls back to payload orderId when history["order_id"] is sentinel "0"
+    ids = _intent_order_ids(
+        {
+            "id": "intent_1",
+            "history": [{"order_id": "0", "payload": {"orderId": "987654"}}],
+        }
+    )
+    assert "987654" in ids
+
+    # 2. find_duplicate_ai_open_limit_order unwraps {"intents": [...]} for notional matching
+    inst = types.SimpleNamespace(
+        open_orders=lambda: [
+            {
+                "orderId": "987654",
+                "side": "BUY",
+                "price": "100.0",
+                "origQty": "0.5",
+                "executedQty": "0.0",
+            }
+        ]
+    )
+    dup_id = find_duplicate_ai_open_limit_order(
+        inst,
+        "BUY",
+        100.0,
+        100.0,
+        intents={
+            "intents": [
+                {
+                    "id": "intent_1",
+                    "suggested_notional_usd": 100.0,
+                    "clamped_notional_usd": 50.0,
+                    "execution_payload": {"orderId": "987654"},
+                }
+            ]
+        },
+        require_notional_match=True,
+    )
+    assert dup_id == "987654"
+
+    # 3. apply_asset_scope_filter("equities") removes live_binance_equity_usdc so equities risk metrics exclude Binance
+    portfolio_summary = {
+        "tradable_positions": [{"venue": "t212", "symbol": "NVDA_US_EQ", "value_usd": 500.0}],
+        "venue_quote_cash": {"t212:USD": {"venue": "t212", "free": "invalid", "free_usd": 200.0}},
+        "live_binance_equity_usdc": 3000.0,
+        "live_hl_spot_equity_usd": 400.0,
+    }
+    apply_asset_scope_filter({}, {}, portfolio_summary, "equities", {}, {"NVDA_US_EQ": {}})
+    assert "live_binance_equity_usdc" not in portfolio_summary
+    assert "live_hl_spot_equity_usd" not in portfolio_summary
+    risk = compute_enterprise_portfolio_risk_metrics(
+        portfolio_summary,
+        {"NVDA_US_EQ": {"corr_btc_24h": 45.0}},
+        {},
+    )
+    assert "binance" not in risk.get("venue_nav_breakdown_usd", {})
+    assert risk["corr_vs_btc_24h"]["NVDA"] == 0.45
+
+    # 4. reconcile_live_venue_equity_summary falls back to free_usd when free is non-numeric
+    pf_bn = {
+        "tradable_positions": [],
+        "venue_quote_cash": {"binance:USDC": {"venue": "binance", "free": "n/a", "free_usd": 125.5}},
+    }
+    reconcile_live_venue_equity_summary(pf_bn)
+    assert pf_bn["live_binance_equity_usdc"] == 125.5
+
+    # 5. enrich_sentiment_advisor_live_flow_divergence clears stale divergence and falls back to 1h taker ratio
+    sa = {
+        "age_min": 20.0,
+        "recommended_action": "HOLD",
+        "directional_bias": "NEUTRAL",
+        "summary": "BTC taker_ratio=0.70 shows selling pressure",
+        "live_flow_divergence": "STALE_DIV",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(sa, {"BTCUSDC": {"taker_ratio_1h": 1.05}})
+    assert "LIVE_FLOW_RECOVERY" in sa.get("live_flow_divergence", "")
+    sa["age_min"] = 2.0
+    enrich_sentiment_advisor_live_flow_divergence(sa, {"BTCUSDC": {"taker_ratio_1h": 1.05}})
+    assert "live_flow_divergence" not in sa
+
+    # 6. BaseSpotMixin._run_self_healing_loop flushes dirty state on stop when _state_save_failed is True
+    saved_calls = []
+
+    class _DummySpot(BaseSpotMixin):
+        def __init__(self):
+            self.p = types.SimpleNamespace(check_minutes=0.01)
+            self._state_save_failed = True
+
+        def _mod_global(self, name, default):
+            return default
+
+        def _touch_strategy_heartbeat(self, *args, **kwargs):
+            pass
+
+        def _save(self):
+            saved_calls.append(True)
+            self._state_save_failed = False
+
+    stop_ev = threading.Event()
+    stop_ev.set()
+    _DummySpot()._run_strategy_loop(price_fn=lambda: 100.0, status_log_fn=lambda _: None, stop=stop_ev)
+    assert saved_calls == [True]
+
+
+
 
 
 

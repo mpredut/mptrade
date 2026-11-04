@@ -385,7 +385,10 @@ def compute_enterprise_portfolio_risk_metrics(
 
             is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
             beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
-            corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
+            raw_corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
+            if 1.0 < abs(raw_corr_v) <= 100.0:
+                raw_corr_v = raw_corr_v / 100.0
+            corr_v = max(-1.0, min(1.0, raw_corr_v))
             vol_1h_raw = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=None)
             if vol_1h_raw is not None:
                 daily_vol_pct = min(25.0, max(0.8, vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)))

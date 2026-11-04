@@ -182,7 +182,8 @@ def apply_asset_scope_filter(
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
         microstructure = {}
         for crypto_key in (
-            "total_value_usdc", "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
+            "total_value_usdc", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
+            "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
             "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
         ):
             portfolio_summary.pop(crypto_key, None)
@@ -277,7 +278,12 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                 continue
             if isinstance(c, dict):
                 v_cash_sum += (
-                    (safe_pos_float(c.get("free") or c.get("free_quote_usd") or c.get("free_usd"), default=0.0) or 0.0)
+                    (
+                        safe_pos_float(c.get("free"), default=None)
+                        or safe_pos_float(c.get("free_quote_usd"), default=None)
+                        or safe_pos_float(c.get("free_usd"), default=0.0)
+                        or 0.0
+                    )
                     + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
                 )
             else:
@@ -316,6 +322,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
     """Detect and annotate live BTC taker/CVD flow divergence against a stale (>=10m) sentiment_advisor posture."""
     if not isinstance(sentiment_advisor, dict) or not isinstance(microstructure, dict):
         return
+    sentiment_advisor.pop("live_flow_divergence", None)
     sa_age = safe_float(sentiment_advisor.get("age_min"), 0.0) or 0.0
     btc_m = next(
         (
@@ -403,10 +410,10 @@ def enrich_sentiment_advisor_live_flow_divergence(
     elif (
         sa_age >= 15.0
         and cited_tr is not None
-        and live_tr is not None
-        and abs(live_tr - cited_tr) >= 0.30
+        and (eff_live_tr := (live_tr if live_tr is not None else live_tr_1h)) is not None
+        and abs(eff_live_tr - cited_tr) >= 0.30
     ):
-        shift_dir = "LIVE_FLOW_RECOVERY" if live_tr > cited_tr else "LIVE_FLOW_FADE"
+        shift_dir = "LIVE_FLOW_RECOVERY" if eff_live_tr > cited_tr else "LIVE_FLOW_FADE"
         sentiment_advisor["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
 
 
