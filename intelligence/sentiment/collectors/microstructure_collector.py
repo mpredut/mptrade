@@ -276,12 +276,13 @@ def load_symbol_price_series(
             cur_item = casefold_get(current_price_items, cand)
             if isinstance(cur_item, list) and cur_item:
                 cand_pts = [
-                    [pt_parsed[0], pt_parsed[1]]
+                    [pt[0], pt[1]]
                     for pt in cur_item
-                    if (pt_parsed := _parse_ts_px_row(pt)) is not None
+                    if isinstance(pt, (list, tuple)) and len(pt) >= 2 and _parse_ts_px_row(pt) is not None
                 ]
-                if cand_pts:
-                    if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_pts[-1][1]):
+                cand_last = _parse_ts_px_row(cand_pts[-1]) if cand_pts else None
+                if cand_pts and cand_last is not None:
+                    if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
                         continue
                     series_24h = list(series_24h) + cand_pts
                     break
