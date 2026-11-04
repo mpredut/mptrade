@@ -188,6 +188,16 @@ def _parse_bool_flag(val, default: bool | None = False):
     return fb
 
 
+def _set_dotenv_env_key(key: str, value: str, *, is_root: bool) -> None:
+    os.environ[key] = value
+    if is_root:
+        _ROOT_CONFIG_KEYS.add(key)
+        _ROOT_CONFIG_VALUES[key] = value
+    else:
+        _ROOT_CONFIG_KEYS.discard(key)
+        _ROOT_CONFIG_VALUES.pop(key, None)
+
+
 def load_dotenv(path: str | os.PathLike | None = None, override: bool = False) -> None:
     """Load KEY=VALUE entries from ``path`` (defaulting to root ``config.env`` when ``None``) without overriding existing env."""
     target = _ROOT_CONFIG_PATH if path is None else os.fspath(path)
@@ -197,18 +207,8 @@ def load_dotenv(path: str | os.PathLike | None = None, override: bool = False) -
         return
     is_root = os.path.abspath(target) == _ROOT_CONFIG_PATH
     for key, value in pairs:
-        if not key:
-            continue
-        if is_root:
-            if override or key not in os.environ:
-                os.environ[key] = value
-                _ROOT_CONFIG_KEYS.add(key)
-                _ROOT_CONFIG_VALUES[key] = value
-        else:
-            if override or key not in os.environ or _is_unmodified_root_key(key):
-                os.environ[key] = value
-                _ROOT_CONFIG_KEYS.discard(key)
-                _ROOT_CONFIG_VALUES.pop(key, None)
+        if key and (override or key not in os.environ or (not is_root and _is_unmodified_root_key(key))):
+            _set_dotenv_env_key(key, value, is_root=is_root)
     _log_dotenv_loaded_once(target, override=bool(override))
 
 
@@ -236,34 +236,16 @@ def load_env_stack(
         else os.path.join(os.path.dirname(env_path), cfg_str)
     )
 
-    # Process keys are those in os.environ that were NOT set (or were modified since being set) by root config.env
     unmodified_root_keys = {k for k in tuple(_ROOT_CONFIG_KEYS) if _is_unmodified_root_key(k)}
     protected = set() if override else (set(os.environ.keys()) - unmodified_root_keys)
 
-    # 1. Load adjacent versioned configuration (venue defaults)
-    cfg_pairs, cfg_loaded = _dotenv_pairs(cfg_path)
-    if cfg_loaded:
-        is_root_cfg = os.path.abspath(cfg_path) == _ROOT_CONFIG_PATH
-        for key, value in cfg_pairs:
-            if key and key not in protected:
-                os.environ[key] = value
-                if is_root_cfg:
-                    _ROOT_CONFIG_KEYS.add(key)
-                    _ROOT_CONFIG_VALUES[key] = value
-                else:
-                    _ROOT_CONFIG_KEYS.discard(key)
-                    _ROOT_CONFIG_VALUES.pop(key, None)
-        _log_dotenv_loaded_once(cfg_path, override=bool(override))
-
-    # 2. Load secrets/profile configuration (precedence over venue config, but below process env)
-    env_pairs, env_loaded = _dotenv_pairs(env_path)
-    if env_loaded:
-        for key, value in env_pairs:
-            if key and key not in protected:
-                os.environ[key] = value
-                _ROOT_CONFIG_KEYS.discard(key)
-                _ROOT_CONFIG_VALUES.pop(key, None)
-        _log_dotenv_loaded_once(env_path, override=bool(override))
+    for path, is_root_cfg in ((cfg_path, os.path.abspath(cfg_path) == _ROOT_CONFIG_PATH), (env_path, False)):
+        pairs, loaded = _dotenv_pairs(path)
+        if loaded:
+            for key, value in pairs:
+                if key and key not in protected:
+                    _set_dotenv_env_key(key, value, is_root=is_root_cfg)
+            _log_dotenv_loaded_once(path, override=bool(override))
 
 
 def load_root_config(*, include_secrets: bool = False, override: bool = False) -> None:
@@ -776,6 +758,12 @@ def http_post_form(
     return http_request("POST", url, headers=headers, form=data)
 
 
+def _urlopen_json(req: urllib.request.Request, timeout: float) -> object:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+
+
 def _fetch_public_json_impl(
     url: str,
     *,
@@ -787,10 +775,7 @@ def _fetch_public_json_impl(
     req_headers = {"User-Agent": user_agent}
     if isinstance(headers, dict):
         req_headers.update(headers)
-    req = urllib.request.Request(url, headers=req_headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+    return _urlopen_json(urllib.request.Request(url, headers=req_headers), timeout)
 
 
 fetch_public_json = globals().get("fetch_public_json") or _fetch_public_json_impl
@@ -813,10 +798,7 @@ def fetch_json_post(
         data = bytes(payload)
     else:
         data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=req_headers)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-        return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
+    return _urlopen_json(urllib.request.Request(url, data=data, headers=req_headers), timeout)
 
 
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────

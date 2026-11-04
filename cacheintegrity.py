@@ -184,6 +184,18 @@ def nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
     return out
 
 
+def _normalize_cursor_map(
+    raw_cursor: Any,
+    fallback_fetchtime: dict[str, int],
+    label: str = "cache manifest rest_sync_cursor",
+    *,
+    error_message: str | None = None,
+) -> dict[str, int]:
+    if raw_cursor is None:
+        return dict(fallback_fetchtime)
+    return normalize_timestamp_map(raw_cursor, label, error_message=error_message)
+
+
 def build_account_meta_snapshot(
     *,
     data_version: str,
@@ -201,13 +213,10 @@ def build_account_meta_snapshot(
         fetchtime,
         error_message="invalid cache manifest fetchtime",
     )
-    normalized_rest_cursor = (
-        dict(normalized_fetchtime)
-        if rest_sync_cursor is None
-        else normalize_timestamp_map(
-            rest_sync_cursor,
-            error_message="invalid cache manifest rest_sync_cursor",
-        )
+    normalized_rest_cursor = _normalize_cursor_map(
+        rest_sync_cursor,
+        normalized_fetchtime,
+        error_message="invalid cache manifest rest_sync_cursor",
     )
     payload: dict[str, Any] = {
         "schema_version": schema_version,
@@ -257,10 +266,7 @@ def load_versioned_account_meta_file(
     if is_trade_cache:
         content_digest = metadata.get("content_digest")
         try:
-            if (
-                not isinstance(content_digest, str)
-                or not content_digest.startswith("chain:")
-            ):
+            if not content_digest:
                 raise ValueError("missing Trade content digest")
             trade_records_digest([], content_digest)
         except ValueError as exc:
@@ -281,14 +287,11 @@ def load_versioned_account_meta_file(
             fetchtime,
             error_message="invalid cache manifest fetchtime",
         )
-        raw_rest_cursor = metadata.get("rest_sync_cursor")
-        if raw_rest_cursor is None:
-            normalized_rest_cursor = dict(normalized_fetchtime)
-        else:
-            normalized_rest_cursor = normalize_timestamp_map(
-                raw_rest_cursor,
-                error_message="invalid cache manifest rest_sync_cursor",
-            )
+        normalized_rest_cursor = _normalize_cursor_map(
+            metadata.get("rest_sync_cursor"),
+            normalized_fetchtime,
+            error_message="invalid cache manifest rest_sync_cursor",
+        )
         normalized_counts = normalize_timestamp_map(
             counts,
             error_message="invalid cache manifest count",
@@ -433,11 +436,7 @@ def read_legacy_order_snapshot_strict(
     raw_cursor = data.get("rest_sync_cursor")
     if raw_cursor is None and legacy_meta is not None:
         raw_cursor = legacy_meta.get("rest_sync_cursor")
-    rest_sync_cursor = (
-        dict(fetchtime)
-        if raw_cursor is None
-        else normalize_timestamp_map(raw_cursor, "Order cache rest_sync_cursor")
-    )
+    rest_sync_cursor = _normalize_cursor_map(raw_cursor, fetchtime, "Order cache rest_sync_cursor")
     actual_counts = _validate_order_items_map(items)
     if legacy_meta is not None and "counts" in legacy_meta:
         expected_counts = legacy_meta["counts"]

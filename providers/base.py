@@ -720,6 +720,17 @@ class MarketDataProvider(ABC):
             use_memory_manager=(custom_path is None),
         )
 
+    @staticmethod
+    def _read_ssot_24price_entries(c24_path: str, cand: str) -> tuple[Optional[dict], Optional[list]]:
+        if not c24_path or not os.path.exists(c24_path):
+            return None, None
+        raw = read_json_dict_recovering(c24_path)
+        if not isinstance(raw, dict):
+            return None, None
+        items = raw.get("items")
+        entries = items if isinstance(items, list) else casefold_get(items if isinstance(items, dict) else raw, cand)
+        return (raw, entries) if isinstance(entries, list) and entries else (raw, None)
+
     def get_ssot_price_history(
         self,
         symbol: str,
@@ -745,18 +756,9 @@ class MarketDataProvider(ABC):
                 if custom_dir
                 else cache_path(f"cache_24_price_{cand}.json")
             )
-            if not os.path.exists(c24_path):
-                continue
             try:
-                raw = read_json_dict_recovering(c24_path)
-                if not isinstance(raw, dict):
-                    continue
-                if isinstance(raw.get("items"), list):
-                    entries = raw.get("items")
-                else:
-                    items_map = raw.get("items") if isinstance(raw.get("items"), dict) else raw
-                    entries = casefold_get(items_map, cand)
-                if not isinstance(entries, list) or len(entries) < 2:
+                _, entries = self._read_ssot_24price_entries(c24_path, cand)
+                if not entries or len(entries) < 2:
                     continue
                 valid: list[tuple[int, float]] = []
                 for entry in entries:
@@ -956,6 +958,15 @@ class MarketDataProvider(ABC):
         """Return normalized L2 orderbook ``{'bids': [(px, qty), ...], 'asks': [(px, qty), ...]}`` for ``symbol``."""
         return None
 
+    def _matching_ssot_cache_keys(self, mapping: dict, symbol: str, match_fn: Any = None) -> list[str]:
+        if callable(match_fn):
+            return [k for k in mapping if isinstance(k, str) and match_fn(symbol, k)]
+        cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
+        return [
+            k for k in mapping
+            if isinstance(k, str) and (k.upper() in cands or clean_symbol_key(k) in cands)
+        ]
+
     def read_ssot_fills_cache(
         self,
         symbol: str,
@@ -975,11 +986,7 @@ class MarketDataProvider(ABC):
         ft = data.get("fetchtime")
         if not isinstance(items, dict) or not isinstance(ft, dict):
             return None
-        if callable(match_fn):
-            keys = [k for k in items if match_fn(symbol, k)]
-        else:
-            cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
-            keys = [k for k in items if isinstance(k, str) and clean_symbol_key(k) in cands]
+        keys = self._matching_ssot_cache_keys(items, symbol, match_fn)
         if not keys:
             return None
         now_s = time.time()
@@ -1027,20 +1034,10 @@ class MarketDataProvider(ABC):
             data = read_json_dict_recovering(str(cache_file), default=None)
             if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
                 return
-            cands = {c.upper() for c in self._ssot_symbol_candidates(symbol) if c}
-            changed = False
-            for k in list(data["fetchtime"].keys()):
-                if not isinstance(k, str):
-                    continue
-                matched = (
-                    bool(match_fn(symbol, k))
-                    if callable(match_fn)
-                    else (k.upper() in cands or clean_symbol_key(k) in cands)
-                )
-                if matched:
-                    data["fetchtime"].pop(k, None)
-                    changed = True
-            if changed:
+            keys = self._matching_ssot_cache_keys(data["fetchtime"], symbol, match_fn)
+            for k in keys:
+                data["fetchtime"].pop(k, None)
+            if keys:
                 save_json_state(str(cache_file), data)
         except Exception:
             pass
@@ -1090,14 +1087,9 @@ def resolve_ssot_price_from_cache(
 
     for cand in cands:
         c24_path = str(resolve_cachedb_filepath(os.path.join(eff_dir, f"cache_24_price_{cand}.json")))
-        if not os.path.exists(c24_path):
-            continue
         try:
-            raw = read_json_dict_recovering(c24_path)
-            if not isinstance(raw, dict):
-                continue
-            entries = raw.get("items") if isinstance(raw.get("items"), list) else casefold_get(raw.get("items") if isinstance(raw.get("items"), dict) else raw, cand)
-            if not isinstance(entries, list) or not entries:
+            raw, entries = MarketDataProvider._read_ssot_24price_entries(c24_path, cand)
+            if not entries or raw is None:
                 continue
             parsed = MarketDataProvider._parse_ssot_price_point(entries[-1], fallback_ts=extract_timestamp_s(raw, default=None))
             if parsed is not None:
