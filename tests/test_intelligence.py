@@ -4110,6 +4110,77 @@ def test_iter73_warmup_shadow_prices_cost_basis_fill_id_and_ohlc_window():
     assert end_ms - start_ms == 43200 * 1000
 
 
+def test_iter74_resolve_patched_attr_qlimit2_sub_bypasses_and_ssot_fills_freshest(tmp_path):
+    import json
+    import sys
+    import time
+    import types
+    import botcore
+    from guard_hierarchy import resolve_qlimit2_sub_bypasses
+    from intelligence.macro_sentiment_ssot import has_new_acute_shock_headline
+    from providers.kraken_provider import KrakenProvider
+
+    # 1. resolve_patched_attr treats local_val / module attr as patched when defaults=(orig_fn,) is passed
+    #    even if default_val is also set to the monkeypatched local_val
+    orig_fn = lambda: "orig"
+    patched_local = lambda: "patched_local"
+    other_mod_fn = lambda: "other_mod"
+    mod_name = "_dummy_iter74_mod"
+    dummy_mod = types.ModuleType(mod_name)
+    dummy_mod.fn = other_mod_fn
+    sys.modules[mod_name] = dummy_mod
+    try:
+        resolved = botcore.resolve_patched_attr(
+            "fn",
+            patched_local,
+            local_val=patched_local,
+            defaults=(orig_fn,),
+            modules=(mod_name,),
+            require_callable=True,
+        )
+        assert resolved is patched_local
+    finally:
+        sys.modules.pop(mod_name, None)
+
+    # 2. resolve_qlimit2_sub_bypasses recognizes legacy sub-tokens and mixed parabolic+weibull bypass sets
+    _, p_only, w_only = resolve_qlimit2_sub_bypasses({"parabolic_guard"})
+    assert p_only is True and w_only is False
+    _, p_only_w, w_only_w = resolve_qlimit2_sub_bypasses({"exhaustion_guard"})
+    assert p_only_w is False and w_only_w is True
+    _, p_both, w_both = resolve_qlimit2_sub_bypasses({"parabolic_surge", "exhaustion_guard"})
+    assert p_both is False and w_both is False
+
+    # 3. has_new_acute_shock_headline with empty last_digest requires an actual acute phrase match
+    assert has_new_acute_shock_headline([{"title": "Routine market update"}], "", ("strait closure",)) is False
+    assert has_new_acute_shock_headline([{"title": "Sudden strait closure reported"}], "", ("strait closure",)) is True
+
+    # 4. read_ssot_fills_cache selects the freshest matching alias key and invalidate_ssot_fills_cache clears case-variant fetchtime
+    kp = KrakenProvider(client=types.SimpleNamespace())
+    fills_path = tmp_path / "kraken_fills.json"
+    now_ms = int(time.time() * 1000)
+    fills_path.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "XBTUSD": [{"id": "old-1", "price": 90000.0}],
+                    "BTCUSD": [{"id": "new-2", "price": 91000.0}],
+                },
+                "fetchtime": {
+                    "XBTUSD": now_ms - 30_000,
+                    "btcusd": now_ms - 1_000,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    rows = kp.read_ssot_fills_cache("BTCUSD", str(fills_path), max_stale_sec=90.0)
+    assert rows == [{"id": "new-2", "price": 91000.0}]
+
+    kp.invalidate_ssot_fills_cache("BTCUSD", str(fills_path))
+    assert kp.read_ssot_fills_cache("BTCUSD", str(fills_path), max_stale_sec=90.0) is None
+
+
+
 
 
 

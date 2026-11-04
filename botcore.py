@@ -1468,7 +1468,7 @@ def resolve_patched_attr(
     require_callable: bool = False,
 ) -> object:
     """Resolve ``attr_name`` across ``local_val`` and ``sys.modules[modules]`` when monkeypatched away from ``defaults``."""
-    unpatched = tuple(d for d in (default_val, *defaults) if d is not None)
+    unpatched = tuple(d for d in (defaults if defaults else (default_val,)) if d is not None)
 
     def _is_valid(cand: object) -> bool:
         if cand is _UNSET or cand is None:

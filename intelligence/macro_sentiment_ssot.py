@@ -172,19 +172,19 @@ def has_new_acute_shock_headline(
     prev_titles: Optional[Sequence[str]] = None,
 ) -> bool:
     """Return True if any headline in ``high_sev[:max_items]`` introduces a non-duplicate acute shock phrase."""
-    if not high_sev:
+    if not high_sev or not active_acute_phrases:
         return False
-    if not last_digest:
-        return True
-    titles = split_headlines_digest(last_digest) if prev_titles is None else prev_titles
-    prev_lower = last_digest.lower()
+    digest_s = last_digest if isinstance(last_digest, str) else ""
+    titles = split_headlines_digest(digest_s) if prev_titles is None else prev_titles
+    prev_lower = digest_s.lower()
+    phrases = [p.strip().lower() for p in active_acute_phrases if isinstance(p, str) and p.strip()]
+    if not phrases:
+        return False
     return any(
         (t_h := str(obj_attr(h, "title", None) or "").strip())
         and not any(headlines_are_semantic_duplicates(t_h, pt) for pt in titles)
-        and phrase in t_h.lower()
-        and phrase not in prev_lower
+        and any(phrase in t_h.lower() and phrase not in prev_lower for phrase in phrases)
         for h in high_sev[:max_items]
-        for phrase in active_acute_phrases
     )
 
 

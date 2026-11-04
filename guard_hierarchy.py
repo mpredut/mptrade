@@ -488,22 +488,26 @@ _QLIMIT2_GROUP_TOKENS: frozenset[str] = frozenset({
     "all",
     "*",
 })
+_QLIMIT2_PARABOLIC_TOKENS: frozenset[str] = frozenset({
+    "parabolic_surge",
+    "parabolic_guard",
+    "parabolicsurgeguard",
+})
+_QLIMIT2_WEIBULL_TOKENS: frozenset[str] = frozenset({
+    "weibull_exhaustion",
+    "exhaustion_guard",
+    "weibullexhaustionguard",
+})
 
 
 def resolve_qlimit2_sub_bypasses(bypass_guards: object) -> tuple[set[str], bool, bool]:
     """Return ``(raw_bypass_tokens, parabolic_only_bypass, weibull_only_bypass)`` for ``G_QLIMIT2``."""
     raw_bypass_tokens = BaseGuard._coerce_bypass_set(bypass_guards) if bypass_guards else set()
     has_group = bool(raw_bypass_tokens & _QLIMIT2_GROUP_TOKENS)
-    parabolic_only = (
-        ("parabolic_surge" in raw_bypass_tokens)
-        and ("weibull_exhaustion" not in raw_bypass_tokens)
-        and not has_group
-    )
-    weibull_only = (
-        ("weibull_exhaustion" in raw_bypass_tokens)
-        and ("parabolic_surge" not in raw_bypass_tokens)
-        and not has_group
-    )
+    has_parabolic = bool(raw_bypass_tokens & _QLIMIT2_PARABOLIC_TOKENS)
+    has_weibull = bool(raw_bypass_tokens & _QLIMIT2_WEIBULL_TOKENS)
+    parabolic_only = has_parabolic and not has_weibull and not has_group
+    weibull_only = has_weibull and not has_parabolic and not has_group
     return raw_bypass_tokens, parabolic_only, weibull_only
 
 

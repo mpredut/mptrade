@@ -991,16 +991,24 @@ class MarketDataProvider(ABC):
             return None
         now_s = time.time()
         max_stale_s = safe_pos_float(max_stale_sec, default=90.0) or 90.0
+        sym_clean = clean_symbol_key(symbol) or str(symbol).strip().upper()
+        best_rows: Optional[List[dict]] = None
+        best_rank: Optional[tuple[float, int]] = None
         for key in keys:
             if not isinstance(items.get(key), list):
                 continue
             ft_val = safe_pos_float(casefold_get(ft, key), default=None)
             if ft_val is None or not _is_fresh_obs_ts(_ts_ms_to_s(ft_val), now_s, max_stale_s):
                 continue
-            if callable(normalize_fn):
-                return [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
-            return [dict(t) for t in items[key] if isinstance(t, dict)]
-        return None
+            rank = (_ts_ms_to_s(ft_val), 1 if key.strip().upper() == sym_clean else 0)
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best_rows = (
+                    [normalize_fn(t) for t in items[key] if isinstance(t, dict)]
+                    if callable(normalize_fn)
+                    else [dict(t) for t in items[key] if isinstance(t, dict)]
+                )
+        return best_rows
 
     def write_ssot_fills_cache(self, symbol: str, cache_file: str, fills: List[dict]) -> bool:
         """Persist ``fills`` for ``symbol`` into the shared SSOT trade cache file (`items` + `fetchtime`)."""
@@ -1034,7 +1042,10 @@ class MarketDataProvider(ABC):
             data = read_json_dict_recovering(str(cache_file), default=None)
             if not isinstance(data, dict) or not isinstance(data.get("fetchtime"), dict):
                 return
-            keys = self._matching_ssot_cache_keys(data["fetchtime"], symbol, match_fn)
+            keys = set(self._matching_ssot_cache_keys(data["fetchtime"], symbol, match_fn))
+            if isinstance(data.get("items"), dict):
+                item_cf = {k.casefold() for k in self._matching_ssot_cache_keys(data["items"], symbol, match_fn)}
+                keys.update(k for k in data["fetchtime"] if isinstance(k, str) and k.casefold() in item_cf)
             for k in keys:
                 data["fetchtime"].pop(k, None)
             if keys:
