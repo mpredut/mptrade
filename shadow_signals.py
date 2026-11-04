@@ -138,11 +138,37 @@ class KalmanStateTracker:
     def _write_state(self, now: float) -> None:
         if self._last_state_write > now:
             self._last_state_write = 0.0
-        if not self.state_path or (now - self._last_state_write) < self.state_min_interval:
+        has_new_symbols = len(self._state) > getattr(self, "_last_written_count", 0)
+        if not self.state_path or (not has_new_symbols and (now - self._last_state_write) < self.state_min_interval):
             return
         try:
-            save_json_state(self.state_path, self._state)
+            merged = dict(self._state)
+            if os.path.exists(self.state_path):
+                existing = read_json_dict(self.state_path, default=None, recover_previous=True)
+                if isinstance(existing, dict):
+                    for k, v in existing.items():
+                        if not isinstance(v, dict):
+                            continue
+                        cur_v = merged.get(k)
+                        if cur_v is None:
+                            merged[k] = v
+                        elif (
+                            safe_nonneg_float(cur_v.get("kalman_vel_std"), 6.0) >= 5.99
+                            and abs(safe_float(cur_v.get("kalman_vel"), 0.0)) < 1e-12
+                            and safe_nonneg_float(v.get("kalman_vel_std"), 6.0) < 5.99
+                        ):
+                            merged[k] = {
+                                **cur_v,
+                                **{
+                                    fk: v[fk]
+                                    for fk in ("kalman_vel", "kalman_vel_std", "kalman_trend")
+                                    if fk in v
+                                },
+                            }
+                    self._state = merged
+            save_json_state(self.state_path, merged)
             self._last_state_write = now
+            self._last_written_count = len(merged)
         except Exception as e:  # noqa: BLE001
             print(f"[shadow_signals] error writing shadow state: {e}")
 
@@ -196,7 +222,7 @@ class KalmanStateTracker:
         }
 
     def update(self, symbol: str, ts: float, price: float, epsilon: float | None,
-               big_prices, big_sample_rate: float) -> dict:
+               big_prices, big_sample_rate: float, *, precomputed_vol_1h_pct: float | None = None) -> dict:
         # Feed only at KALMAN_SAMPLE_SEC and reuse fields between feeds so the
         # snapshot remains populated.
         if isinstance(symbol, str):
@@ -220,11 +246,19 @@ class KalmanStateTracker:
         last_fed = self._last_fed.get(symbol, -1e18)
         if last_fed > ts:
             last_fed = -1e18
-        if ts - last_fed >= KALMAN_SAMPLE_SEC:
+        is_cold = len(self._fed_prices.get(symbol, ())) < 2
+        has_big_warmup = (
+            big_prices is not None
+            and not isinstance(big_prices, (str, bytes, dict))
+            and hasattr(big_prices, "__len__")
+            and len(big_prices) >= 3
+        )
+        if ts - last_fed >= KALMAN_SAMPLE_SEC or (is_cold and has_big_warmup):
             kf = self._kalman.get(symbol)
             fed = self._fed_prices.setdefault(symbol, [])
-            if kf is None:
+            if kf is None or (is_cold and has_big_warmup):
                 kf = self._kalman[symbol] = KalmanTrend(qr=KALMAN_QR, gap_reset_sec=GAP_RESET_SEC)
+                fed.clear()
                 if (
                     big_prices is not None
                     and not isinstance(big_prices, (str, bytes, dict))
@@ -233,6 +267,8 @@ class KalmanStateTracker:
                 ):
                     seq_prices = big_prices if isinstance(big_prices, (list, tuple)) else list(big_prices)
                     step_n = max(1, int(round(KALMAN_SAMPLE_SEC / max(sr_val, 0.1))))
+                    if step_n * 2 >= len(seq_prices):
+                        step_n = max(1, (len(seq_prices) - 1) // 2)
                     raw_hist = seq_prices[-1 - step_n :: -step_n][:60]
                     if not raw_hist and len(seq_prices) >= 2:
                         raw_hist = [seq_prices[0]]
@@ -281,7 +317,11 @@ class KalmanStateTracker:
             k = self._last_kfields.get(symbol,
                                         {"vel": 0.0, "vel_std": 0.0, "trend": 0, "old_trend": 0})
 
-        if self.compute_vol:
+        if precomputed_vol_1h_pct is not None:
+            v1h = safe_nonneg_float(precomputed_vol_1h_pct, default=None)
+            self._last_vol_time[symbol] = ts
+            self._last_vol_fields[symbol] = v1h
+        elif self.compute_vol:
             # Throttle heavy volatility & log-return computation on big_prices (thousands of points)
             last_vol_t = self._last_vol_time.get(symbol, -1e18)
             if last_vol_t > ts:

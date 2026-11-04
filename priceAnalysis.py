@@ -27,13 +27,13 @@ from botcore import (
     safe_pos_int,
     touch_module_heartbeat,
 )
-from cachepaths import cache_path, canonical_base_asset, canonical_symbol_key
+from cachepaths import cache_path, cache_symbol_variants, canonical_base_asset, canonical_symbol_key
 from intelligence.internal.state.persistence import (
     calculate_hurst_exponent as hurst_rs,
     calculate_mann_kendall as mann_kendall,
     classify_hurst_regime as hurst_regime,
 )
-from intelligence.internal.state.survival import estimate_T
+from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours, fetch_klines
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
 from instrument_registry import casefold_get
 from providers.base import normalize_side
@@ -185,6 +185,36 @@ def weighted_moving_average(prices: np.ndarray, window: int) -> np.ndarray:
     return wma
 
 
+_ORIG_PRICE_LST_FOR = priceLstFor
+_OHLC_BACKFILL_MEMO: dict[str, Tuple[float, List[Tuple[float, float]]]] = {}
+_OHLC_BACKFILL_TTL_SEC = 1800.0
+
+
+def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tuple[float, float]]:
+    """Fetch and memoize 1h OHLC points for symbols whose local sparse price cache spans < 7 days."""
+    sym_u = str(symbol or "").strip().upper()
+    if not sym_u:
+        return []
+    now_s = time.time()
+    cached = _OHLC_BACKFILL_MEMO.get(sym_u)
+    if cached is not None and 0.0 <= (now_s - cached[0]) < _OHLC_BACKFILL_TTL_SEC:
+        return cached[1]
+    days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
+    cands = cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
+    pts: List[Tuple[float, float]] = []
+    for cand in cands:
+        try:
+            ts_arr, px_arr = fetch_klines(cand, days=days_int, interval="1h")
+            if len(ts_arr) >= 48 and len(ts_arr) == len(px_arr):
+                pts = [(float(t), float(p)) for t, p in zip(ts_arr, px_arr) if t > 0 and p > 0]
+                if pts:
+                    break
+        except Exception:
+            continue
+    _OHLC_BACKFILL_MEMO[sym_u] = (now_s, pts)
+    return pts
+
+
 def _load_sorted_price_series(
     symbol: str,
     lookback_days: Optional[float] = None,
@@ -192,10 +222,34 @@ def _load_sorted_price_series(
     log_insufficient: bool = False,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     data: List[Tuple[int, float]] = priceLstFor(symbol)
-    if len(data) < 2:
-        return None
     norm_data = [(ts / 1000.0 if ts >= 1e11 else float(ts), p) for ts, p in data]
     norm_data.sort(key=lambda x: x[0])
+    min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
+    cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
+    if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
+        oldest_ts = norm_data[0][0] if norm_data else float("inf")
+        for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
+            sib_raw = priceLstFor(sib)
+            if len(sib_raw) >= 2:
+                sib_norm = sorted(
+                    ((ts / 1000.0 if ts >= 1e11 else float(ts), p) for ts, p in sib_raw),
+                    key=lambda x: x[0],
+                )
+                older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
+                if older_pts:
+                    norm_data = older_pts + norm_data
+                    oldest_ts = norm_data[0][0]
+                    cur_span_s = norm_data[-1][0] - norm_data[0][0]
+                    if cur_span_s >= min_req_span_s:
+                        break
+        if cur_span_s < min_req_span_s and "PYTEST_CURRENT_TEST" not in os.environ:
+            ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
+            if ohlc_pts:
+                older_ohlc = [pt for pt in ohlc_pts if pt[0] < oldest_ts - 1.0]
+                if older_ohlc:
+                    norm_data = older_ohlc + norm_data
+    if len(norm_data) < 2:
+        return None
     if lookback_days is not None:
         cutoff_timestamp = time.time() - (lookback_days * 86400)
         norm_data = [(ts, p) for ts, p in norm_data if ts > cutoff_timestamp]
@@ -741,12 +795,13 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     if _parse_bool_flag(draw, True):
         drawPriceLst(timestamps, prices, res['blocks'], symbol, direction, dur / 3600.0)
 
+    est_future_h = estimate_remaining_trend_hours(dur / 3600.0, symbol=symbol)
     return {
         'timestamp': int(time.time()),
         'direction': direction,
         'start_timestamp': res['start_timestamp'],
         'duration_seconds': dur,
-        'estimated_future_hours': res['estimated_future_hours'],
+        'estimated_future_hours': est_future_h if est_future_h > 0.0 else res['estimated_future_hours'],
     }
 
 # Persist all trend results with human-readable output.

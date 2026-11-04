@@ -607,7 +607,20 @@ def load_symbol_microstructure(
                 val_w = clean_scale(val_w, default=None, allow_percent=True)
             if val_w is not None or dst_k not in m_info:
                 m_info[dst_k] = val_w
-        if not safe_pos_float(m_info.get("oi_usd"), default=None) and (w_oi := safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)) is not None:
+        w_oi = safe_pos_float(obj_attr(whale, "open_interest_usd", obj_attr(whale, "oi_usd")), default=None)
+        deriv_oi = safe_pos_float(m_info.get("oi_usd"), default=None)
+        if not deriv_oi and w_oi is not None:
+            m_info["oi_usd"] = w_oi
+        elif (
+            deriv_oi is not None
+            and w_oi is not None
+            and deriv_oi > w_oi * 1.35
+            and (
+                (safe_pos_float(m_info.get("taker_buy_vol_usd"), default=0.0) or 0.0) > 0.0
+                or abs((safe_float(m_info.get("whale_long_pct"), default=0.5) or 0.5) - 0.5) > 1e-4
+            )
+        ):
+            m_info["native_l1_oi_usd"] = round(deriv_oi, 2)
             m_info["oi_usd"] = w_oi
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr

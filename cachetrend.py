@@ -546,15 +546,54 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         w_big = wins.get(self.window_seconds[-1])
         v1h = None
+        adapt_reentry = None
+        adapt_dca = None
+        kalman_extra = {}
         if w_big is not None:
             try:
                 from intelligence.internal.state.volatility import (
+                    adaptive_thresholds,
                     calculate_volatility_1h,
                 )
                 with getattr(w_big, "_lock", threading.RLock()):
                     v1h = calculate_volatility_1h(
                         w_big.prices, w_big.sample_rate_sec
                     )
+                if v1h is not None:
+                    adapt_reentry, adapt_dca = adaptive_thresholds(v1h)
+            except Exception:
+                pass
+        if (
+            self.writer
+            and self._full_eval_thread is not None
+            and "PYTEST_CURRENT_TEST" not in os.environ
+        ):
+            try:
+                import shadow_signals
+
+                k_tracker = getattr(self, "_kalman_tracker", None)
+                if k_tracker is None:
+                    k_path = os.path.join(os.path.dirname(self.filename), "cache_kalman_trend.json")
+                    k_tracker = shadow_signals.KalmanStateTracker(state_path=k_path)
+                    self._kalman_tracker = k_tracker
+                with getattr(w_big, "_lock", threading.RLock()) if w_big is not None else threading.RLock():
+                    big_seq = list(w_big.prices) if w_big is not None else ()
+                    big_sr = float(w_big.sample_rate_sec) if w_big is not None else 1.0
+                k_fields = k_tracker.update(
+                    symbol,
+                    observed_at,
+                    current_price,
+                    epsilon=eps_primary,
+                    big_prices=big_seq,
+                    big_sample_rate=big_sr,
+                    precomputed_vol_1h_pct=v1h,
+                )
+                if isinstance(k_fields, dict):
+                    kalman_extra = {
+                        k: k_fields[k]
+                        for k in ("kalman_vel", "kalman_vel_std", "kalman_trend")
+                        if k in k_fields
+                    }
             except Exception:
                 pass
 
@@ -574,9 +613,12 @@ class CacheShortTrendManager(CacheManagerInterface):
             window_seconds=float(primary),
             sample_rate_sec=float(pwin.sample_rate_sec),
             vol_1h_pct=v1h,
+            adapt_reentry_pct=adapt_reentry,
+            adapt_dca_pct=adapt_dca,
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,
+            **kalman_extra,
         )
 
     def _published_dynamic_windows(self, symbol, now=None):

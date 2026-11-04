@@ -120,6 +120,8 @@ _AI_BRAKE_MAP = {
 
 def _fmt_liq_usd(val: Any) -> str:
     vf = _parse_finite_float(val, 0.0)
+    if vf >= 1_000_000_000.0:
+        return f"${vf / 1_000_000_000.0:.2f}B"
     if vf >= 1_000_000.0:
         return f"${vf / 1_000_000.0:.2f}M"
     if vf >= 1_000.0:
@@ -815,6 +817,13 @@ def _format_microstructure_section(
                 cd_parts.append(f"d_oi={d_oi:+.2f}%")
             if len(cd_parts) > 1:
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
+        l1_oi_v = _parse_finite_float(minfo.get("native_l1_oi_usd"), None)
+        oi_v = _parse_finite_float(minfo.get("oi_usd"), None)
+        oi_lbl = (
+            f"{minfo.get('oi_usd')} (l1_oi={_fmt_liq_usd(l1_oi_v)})"
+            if (l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
+            else f"{minfo.get('oi_usd')}"
+        )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
@@ -824,7 +833,7 @@ def _format_microstructure_section(
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
             f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}, "
             f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-            f"oi_usd={minfo.get('oi_usd')}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
+            f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
         )
     return lines
 

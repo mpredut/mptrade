@@ -11,6 +11,7 @@ Estimates trend longevity distributions (Weibull / Kaplan-Meier) and calibrated 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -468,6 +469,65 @@ def get_trend_survival_metrics(
         "duration_ratio_to_p90": round(ratio, 2),
         "is_exhausted": is_exhausted,
     }
+
+
+def estimate_remaining_trend_hours(
+    duration_hours: float,
+    median_d: Optional[float] = None,
+    p90_d: Optional[float] = None,
+    p_cont: Optional[Dict[str, Any]] = None,
+    symbol: Optional[str] = None,
+) -> float:
+    """Estimate conditional remaining trend duration (hours) from Weibull + empirical survival distribution."""
+    dur_h = safe_nonneg_float(duration_hours, default=0.0) or 0.0
+    if dur_h <= 0.0:
+        return 0.0
+    med_f = safe_pos_float(median_d, default=None)
+    p90_f = safe_pos_float(p90_d, default=None)
+    if (med_f is None or p90_f is None) and isinstance(symbol, str) and symbol.strip():
+        cached_ent = get_cached_t_entry(symbol)
+        if isinstance(cached_ent, dict):
+            if med_f is None:
+                med_f = safe_pos_float(cached_ent.get("median_d"), default=None)
+            if p90_f is None:
+                p90_f = safe_pos_float(cached_ent.get("p90_d"), default=None)
+            if p_cont is None and isinstance(cached_ent.get("p_cont"), dict):
+                p_cont = cached_ent.get("p_cont")
+    if med_f is None or p90_f is None or p90_f <= med_f:
+        return round(dur_h * 0.5, 1)
+    k = max(0.8, min(3.5, math.log(math.log(10.0) / math.log(2.0)) / math.log(p90_f / med_f)))
+    lam = med_f / (math.log(2.0) ** (1.0 / k))
+    t_d = dur_h / 24.0
+    base_pow = (t_d / lam) ** k
+    step = 0.05
+    rem_d = 0.0
+    for i in range(1, 600):
+        u = (i - 0.5) * step
+        s_cond = math.exp(base_pow - ((t_d + u) / lam) ** k)
+        rem_d += s_cond * step
+        if s_cond < 1e-4:
+            break
+    weibull_rem_h = rem_d * 24.0
+    if isinstance(p_cont, dict) and p_cont:
+        day_idx = max(1, int(math.floor(t_d)))
+        valid_days = [int(x) for x in p_cont if str(x).isdigit()]
+        if valid_days:
+            target_d = min(day_idx, max(valid_days))
+            p_vals = [
+                pf
+                for k_s, v in p_cont.items()
+                if str(k_s).isdigit()
+                and int(k_s) >= target_d
+                and (pf := safe_pos_float(v, default=0.0) or 0.0) > 0.05
+                and pf < 0.98
+            ]
+            if p_vals:
+                p_local = sum(p_vals) / len(p_vals)
+                if t_d > p90_f:
+                    p_local *= max(0.35, p90_f / t_d)
+                emp_rem_h = -24.0 / math.log(max(0.05, min(0.95, p_local)))
+                weibull_rem_h = 0.65 * weibull_rem_h + 0.35 * emp_rem_h
+    return round(max(1.0, weibull_rem_h), 1)
 
 
 def main() -> int:

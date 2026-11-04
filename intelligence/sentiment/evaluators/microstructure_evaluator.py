@@ -122,7 +122,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     b_depth = safe_nonneg_float(minfo.get("bid_depth_usd"), default=0.0) or 0.0
     a_depth = safe_nonneg_float(minfo.get("ask_depth_usd"), default=0.0) or 0.0
     tot_depth = b_depth + a_depth
-    if (minfo.get("spot_cvd_15m_usd") is None or pinfo is not None) and tot_depth > 0.0:
+    if tot_depth > 0.0 and not minfo.get("_cross_venue_spot_cvd"):
         tb_v = safe_nonneg_float(minfo.get("taker_buy_vol_usd"), default=0.0) or 0.0
         ts_v = safe_nonneg_float(minfo.get("taker_sell_vol_usd"), default=0.0) or 0.0
         tot_vol = tb_v + ts_v
@@ -131,6 +131,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         vel_adj = ref_scale * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
         max_spot_cvd = ref_scale * 0.85
         minfo["spot_cvd_15m_usd"] = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * ob_net_pct * 0.35 + vel_adj)), 0)
+        minfo["_synthetic_spot_cvd"] = True
     spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     cvd_5m = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
@@ -560,6 +561,7 @@ def enrich_cross_venue_trends(
     ) -> Tuple[Optional[Dict[str, Any]], bool, float]:
         if not src_map:
             return None, False, 0.0
+        saw_neutral = False
         for ck in cands:
             if not ck or not isinstance(ck, str):
                 continue
@@ -568,7 +570,8 @@ def enrich_cross_venue_trends(
                 continue
             raw_val = src_map[real_k]
             if raw_val is None or (isinstance(raw_val, list) and raw_val and raw_val[-1] is None):
-                return None, True, root_ts
+                saw_neutral = True
+                continue
             parsed = scan_latest_long_trend_value(
                 raw_val,
                 lambda e: e if e.get("direction") else None,
@@ -577,7 +580,7 @@ def enrich_cross_venue_trends(
             if isinstance(parsed, dict):
                 item_ts = safe_pos_float(parsed.get("timestamp"), default=root_ts) or root_ts
                 return parsed, False, item_ts
-        return None, False, root_ts
+        return None, saw_neutral, root_ts
 
     for sym, entry in list((prices_and_trends if isinstance(prices_and_trends, dict) else {}).items()):
         if not isinstance(entry, dict):
@@ -633,11 +636,11 @@ def enrich_cross_venue_trends(
                     if entry.get(ak) is None and k_sym.get(ak) is not None:
                         entry[ak] = k_sym[ak]
 
-        if (eff_vol := safe_pos_float(entry.get("vol_1h_pct"), default=None)) is not None and (entry.get("adapt_reentry_pct") is None or entry.get("adapt_dca_pct") is None):
+        if (eff_vol := safe_pos_float(entry.get("vol_1h_pct"), default=None)) is not None:
             calc_re, calc_dca = adaptive_thresholds(eff_vol)
-            if entry.get("adapt_reentry_pct") is None and calc_re is not None:
+            if calc_re is not None and entry.get("adapt_reentry_pct") is None:
                 entry["adapt_reentry_pct"] = calc_re
-            if entry.get("adapt_dca_pct") is None and calc_dca is not None:
+            if calc_dca is not None and entry.get("adapt_dca_pct") is None:
                 entry["adapt_dca_pct"] = calc_dca
 
         pa_obj, pa_neutral, pa_item_ts = _resolve_source_long_trend(pa_map, pa_cf_keys, cand_keys, pa_root_ts)
@@ -670,8 +673,10 @@ def enrich_cross_venue_trends(
             )
             if pa_neutral or lt_neutral or (any_neutral_regime and not sym.endswith(("_EQ", "_US_EQ"))):
                 entry["long_trend_neutral"] = True
+        tt_p_cont: Optional[Dict[str, Any]] = None
         if isinstance(t_trend_map, dict) and isinstance(tt := _first_variant_dict(t_trend_map, cand_keys), dict):
             entry["weibull_median_d"], entry["weibull_p90_d"] = tt.get("median_d"), tt.get("p90_d")
+            tt_p_cont = tt.get("p_cont") if isinstance(tt.get("p_cont"), dict) else None
         elif (
             entry.get("weibull_median_d") is None
             and not sym.endswith(("_EQ", "_US_EQ"))
@@ -682,10 +687,23 @@ def enrich_cross_venue_trends(
 
                 if isinstance(est_tt := estimate_T(sym), dict) and est_tt.get("median_d") is not None:
                     entry["weibull_median_d"], entry["weibull_p90_d"] = est_tt.get("median_d"), est_tt.get("p90_d")
+                    tt_p_cont = est_tt.get("p_cont") if isinstance(est_tt.get("p_cont"), dict) else None
                     if isinstance(t_trend_map, dict):
                         t_trend_map[sym] = est_tt
             except Exception:
                 pass
+        cur_est_rem = safe_float(entry.get("long_trend_est_rem_hours"), default=None)
+        if (
+            (lt_h := safe_pos_float(entry.get("long_trend_hours"), default=0.0) or 0.0) > 0.0
+            and (w_med := safe_pos_float(entry.get("weibull_median_d"), default=None)) is not None
+            and (w_p90 := safe_pos_float(entry.get("weibull_p90_d"), default=None)) is not None
+            and (cur_est_rem is None or abs(cur_est_rem - lt_h * 0.5) <= 0.15)
+        ):
+            from intelligence.internal.state.survival import estimate_remaining_trend_hours
+
+            entry["long_trend_est_rem_hours"] = estimate_remaining_trend_hours(
+                lt_h, median_d=w_med, p90_d=w_p90, p_cont=tt_p_cont
+            )
         if isinstance(watcher_price_items, dict):
             sym_px_cur = safe_float(entry.get("price"), 0.0)
             for ck in cand_keys:
@@ -861,6 +879,27 @@ def reconcile_sibling_flow_and_liq_regimes(
         ]
         if len(non_div) < 2:
             continue
+        agg_b = sum(safe_nonneg_float(m_s.get("bid_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
+        agg_a = sum(safe_nonneg_float(m_s.get("ask_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
+        agg_tot = agg_b + agg_a
+        if agg_tot > 0.0 and any(m_s.get("_synthetic_spot_cvd") for _, m_s in non_div):
+            tb_v = safe_nonneg_float(prim_m.get("taker_buy_vol_usd"), 0.0) or 0.0
+            ts_v = safe_nonneg_float(prim_m.get("taker_sell_vol_usd"), 0.0) or 0.0
+            tot_vol = tb_v + ts_v
+            ref_scale = min(agg_tot, max(tot_vol * 0.65, agg_tot * 0.20)) if tot_vol > 0.0 else agg_tot
+            agg_ob_net_pct = (agg_b - agg_a) / agg_tot
+            p_d = prim_p_dict if isinstance(prim_p_dict, dict) else {}
+            has_chg_15m = "chg_15m_pct" in p_d and p_d.get("chg_15m_pct") is not None
+            chg_15m = safe_float(p_d.get("chg_15m_pct"), 0.0) or 0.0
+            vel_adj = ref_scale * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
+            max_spot_cvd = ref_scale * 0.85
+            unified_spot_cvd = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * agg_ob_net_pct * 0.35 + vel_adj)), 0)
+            for _, m_s in non_div:
+                if m_s.get("_synthetic_spot_cvd") or m_s.get("_cross_venue_spot_cvd"):
+                    m_s["spot_cvd_15m_usd"] = unified_spot_cvd
+                    m_s["_cross_venue_spot_cvd"] = True
+            prim_m["_cross_venue_spot_cvd"] = True
+            enrich_microstructure_cvd(prim_m, p_d if p_d else None)
         prim_mag = prim_m.get("liq_magnet_bias")
         prim_cvd_reg = prim_m.get("cvd_regime")
         prim_cvd_15m = safe_float(prim_m.get("cvd_15m_usd"), None)

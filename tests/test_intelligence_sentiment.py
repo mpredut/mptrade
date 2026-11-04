@@ -4676,6 +4676,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert k_aw["kalman_vel"] > 0.0
     assert k_aw["kalman_vel_std"] < 5.0
 
+<<<<<<< Updated upstream
     # Wave 14: Bugs 74-78
     from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
     from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
@@ -4712,5 +4713,130 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         },
     )
     assert liq_77["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+=======
+    # Wave 14: Bugs 1-6 (Sibling Long Trend Inheritance, Weibull est_rem, Cross-Venue Spot CVD, Flow-Venue OI vs L1 OI, Fill-Time Execution Status, and Kalman/Short-Trend Vol Sync)
+    from intelligence.internal.state.survival import estimate_remaining_trend_hours
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+        enrich_microstructure_cvd,
+        reconcile_sibling_flow_and_liq_regimes,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+    from providers.execution_audit import (
+        build_last_cycle_execution_status,
+        extract_intent_notional,
+        reconcile_intents_from_execution_audit,
+    )
+
+    # Bug 1 & Bug 2: HYPEUSDC inherits HYPEUSD long_trend when HYPEUSDC is None in priceanalysis.json, and est_rem uses Weibull conditional remaining life
+    pt_b12 = {"HYPEUSDC": {"price": 86.25}, "HYPEUSD": {"price": 86.25}}
+    pa_b12 = {
+        "timestamp": 1_793_830_000,
+        "items": {
+            "HYPEUSDC": None,
+            "HYPEUSD": {"direction": "up", "duration_seconds": 240.0 * 3600.0, "estimated_future_hours": 120.0, "timestamp": 1_793_830_000},
+        },
+    }
+    lt_b12 = {
+        "timestamp": 1_793_820_000,
+        "items": {
+            "HYPEUSDC": [{"direction": "up", "duration_seconds": 392.0 * 3600.0, "estimated_future_hours": 196.0, "timestamp": 1_793_820_000}],
+            "HYPEUSD": [{"direction": "up", "duration_seconds": 240.0 * 3600.0, "estimated_future_hours": 120.0, "timestamp": 1_793_830_000}],
+        },
+    }
+    tt_b12 = {"HYPEUSD": {"median_d": 3.6, "p90_d": 6.8, "p_cont": {"10": 0.25}}}
+    enrich_cross_venue_trends(pt_b12, {}, {}, lt_b12, pa_b12, tt_b12, {})
+    assert pt_b12["HYPEUSDC"]["long_trend_hours"] == 240.0
+    assert pt_b12["HYPEUSD"]["long_trend_hours"] == 240.0
+    assert pt_b12["HYPEUSDC"]["long_trend_est_rem_hours"] == pt_b12["HYPEUSD"]["long_trend_est_rem_hours"]
+    assert pt_b12["HYPEUSDC"]["long_trend_est_rem_hours"] < 80.0
+    assert estimate_remaining_trend_hours(240.0, median_d=3.6, p90_d=6.8, p_cont={"10": 0.25}) < 80.0
+
+    # Bug 3: Cross-venue Spot CVD unification across HYPEUSDC and HYPEUSD prevents opposite-sign synthetic spot_cvd_15m_usd
+    micro_b3 = {
+        "HYPEUSDC": {
+            "ob_imbalance": 0.441,
+            "bid_depth_usd": 620_000.0,
+            "ask_depth_usd": 785_000.0,
+            "taker_buy_vol_usd": 1_500_000.0,
+            "taker_sell_vol_usd": 1_915_600.0,
+        },
+        "HYPEUSD": {
+            "ob_imbalance": 0.564,
+            "bid_depth_usd": 650_000.0,
+            "ask_depth_usd": 502_000.0,
+            "taker_buy_vol_usd": 1_500_000.0,
+            "taker_sell_vol_usd": 1_915_600.0,
+        },
+    }
+    enrich_microstructure_cvd(micro_b3["HYPEUSDC"], {"price": 86.25, "chg_15m_pct": -0.1})
+    enrich_microstructure_cvd(micro_b3["HYPEUSD"], {"price": 86.25, "chg_15m_pct": -0.1})
+    reconcile_sibling_flow_and_liq_regimes(micro_b3, {"HYPEUSDC": {"price": 86.25, "chg_15m_pct": -0.1}, "HYPEUSD": {"price": 86.25, "chg_15m_pct": -0.1}})
+    assert micro_b3["HYPEUSDC"]["spot_cvd_15m_usd"] == micro_b3["HYPEUSD"]["spot_cvd_15m_usd"]
+
+    # Bug 4: Flow-venue OI ($403.2M) vs Native L1 OI ($1.86B) in load_symbol_microstructure and Section 3B formatting
+    cdir_b4 = tmp_path / "cachedb_b4"
+    cdir_b4.mkdir(exist_ok=True)
+    m_b4 = load_symbol_microstructure(
+        str(cdir_b4),
+        "HYPEUSDC",
+        ob={"symbol": "HYPEUSDC", "mid_price": 86.25, "imbalance_ratio": 0.52, "bid_depth_usd": 500_000.0, "ask_depth_usd": 460_000.0},
+        deriv={"open_interest_usd": 1_863_328_553.78, "funding_rate": 0.0000125},
+        whale={"open_interest_usd": 403_209_711.39, "top_traders_long_pct": 0.6909, "taker_buy_vol_usd": 1_730_000.0, "taker_sell_vol_usd": 1_520_000.0},
+    )
+    assert m_b4 is not None
+    assert m_b4["oi_usd"] == 403_209_711.39
+    assert m_b4["native_l1_oi_usd"] == 1_863_328_553.78
+    sec3b_b4 = "\n".join(_format_microstructure_section({"HYPEUSDC": m_b4}, {"HYPEUSDC": {"price": 86.25}}))
+    assert "oi_usd=403209711.39 (l1_oi=$1.86B)" in sec3b_b4
+
+    # Bug 5: Fill-time age_min & 60m terminal cutoff in build_last_cycle_execution_status + filled_at backfill in reconcile_intents_from_execution_audit
+    aud_dir_b5 = tmp_path / "audit_b5"
+    aud_dir_b5.mkdir(exist_ok=True)
+    (aud_dir_b5 / "execution_audit_2026-11-04.jsonl").write_text(
+        json.dumps({
+            "ts": 1_793_821_786.0,
+            "event": "order_terminal",
+            "intent_id": "intent_1793805953_buy_hypeusdc",
+            "order_id": "594571495032",
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "side": "BUY",
+            "venue_status": "FILLED",
+            "lifecycle_status": "filled",
+            "filled_qty": 9.3,
+            "price": 86.0,
+            "cost": 799.8,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    intents_b5 = [
+        {
+            "intent_id": "intent_1793805953_buy_hypeusdc",
+            "timestamp": 1_793_805_953.8,
+            "decision": "BUY",
+            "symbol": "HYPEUSDC",
+            "venue": "hyperliquid",
+            "order_type": "LIMIT",
+            "limit_price": 86.0,
+            "reference_price": 86.44,
+            "suggested_notional_usd": 800.0,
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": 594571495032, "status": "FILLED", "executedQty": "9.3", "price": 86.0, "reconciled_terminal": True},
+        }
+    ]
+    assert reconcile_intents_from_execution_audit(intents_b5, str(aud_dir_b5)) is True
+    assert intents_b5[0]["execution_payload"]["filled_at"] == 1_793_821_786.0
+    assert reconcile_intents_from_execution_audit(intents_b5, str(aud_dir_b5)) is False
+    # 12 minutes after fill (even though placed 4.6 hours earlier): reported with age_min=12.0 and placed_age_min=275.9
+    st_fresh_b5 = build_last_cycle_execution_status(intents_b5, "crypto", 1_793_821_786.0 + 720.0, extract_intent_notional)
+    assert isinstance(st_fresh_b5, dict)
+    assert st_fresh_b5["age_min"] == 12.0
+    assert st_fresh_b5["placed_age_min"] == 275.9
+    # 2.5 hours after fill: expired from last_cycle_execution_status (>60m terminal cutoff)
+    assert build_last_cycle_execution_status(intents_b5, "crypto", 1_793_821_786.0 + 9000.0, extract_intent_notional) is None
+
+>>>>>>> Stashed changes
 
 

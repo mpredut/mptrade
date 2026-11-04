@@ -886,11 +886,20 @@ class TrendCoordinator:
                 st_prev = casefold_get(self._kalman_state._state, symbol)
                 if st_prev:
                     prev_ktrend = st_prev.get("kalman_trend")
+                ssot_vol = None
+                if hasattr(self.instant_mgr, "_read_file") and "PYTEST_CURRENT_TEST" not in os.environ:
+                    try:
+                        disk_st = casefold_get(self.instant_mgr._read_file(), symbol)
+                        if isinstance(disk_st, dict):
+                            ssot_vol = safe_pos_float(disk_st.get("vol_1h_pct"), default=None)
+                    except Exception:
+                        ssot_vol = None
                 kalman_fields = self._kalman_state.update(
                     symbol, time.time(), current_price,
                     epsilon=win.get_noise_epsilon(),
                     big_prices=win_big.prices,
                     big_sample_rate=win_big.sample_rate_sec,
+                    precomputed_vol_1h_pct=ssot_vol,
                 ) or {}
                 new_ktrend = kalman_fields.get("kalman_trend")
             except Exception as _e:  # noqa: BLE001

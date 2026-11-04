@@ -633,7 +633,12 @@ def reconcile_intents_from_execution_audit(
             failed_by_id[clean_id] = item
         elif st_up == "EXECUTED":
             exec_pay = item.get("execution_payload") if isinstance(item.get("execution_payload"), dict) else {}
-            if not exec_pay.get("reconciled_terminal"):
+            needs_ts_backfill = (
+                bool(exec_pay.get("reconciled_terminal"))
+                and "filled_at" not in exec_pay
+                and "terminal_ts" not in exec_pay
+            )
+            if not exec_pay.get("reconciled_terminal") or needs_ts_backfill:
                 cur_v_st = str(exec_pay.get("status") or "").strip().upper()
                 item_oid = clean_order_id(extract_order_id(exec_pay, default=None))
                 has_fill_metrics = (
@@ -642,7 +647,8 @@ def reconcile_intents_from_execution_audit(
                 )
                 is_resting_msg = str(exec_pay.get("msg") or "").strip().lower() == "resting"
                 if (
-                    item_oid
+                    not needs_ts_backfill
+                    and item_oid
                     and item_oid in canceled_prior_oids
                     and cur_v_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
                     and extract_executed_qty(exec_pay, default=0.0) <= 0.0
@@ -655,9 +661,9 @@ def reconcile_intents_from_execution_audit(
                     item["execution_payload"] = exec_pay
                     updated = True
                     continue
-                if cur_v_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+                if not needs_ts_backfill and cur_v_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
                     continue
-                if has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
+                if not needs_ts_backfill and has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
                     continue
                 executed_incomplete_by_id[clean_id] = item
     if (not failed_by_id and not executed_incomplete_by_id) or not os.path.isdir(audit_dir):
@@ -747,11 +753,15 @@ def reconcile_intents_from_execution_audit(
         }
         if f_px is not None:
             exec_payload["price"] = f_px
+        rec_ts_f = safe_pos_float(rec.get("ts"), default=None)
+        if rec_ts_f is not None and raw_v_status == "FILLED":
+            exec_payload["filled_at"] = rec_ts_f
+            exec_payload["terminal_ts"] = rec_ts_f
         intent["execution_payload"] = exec_payload
         _record_intent_state(
             intent,
             "EXECUTED",
-            safe_pos_float(rec.get("ts"), time.time()),
+            rec_ts_f if rec_ts_f is not None else time.time(),
             action="RECONCILED_EXECUTED",
             order_id=rec.get("order_id"),
             payload=exec_payload,
@@ -762,6 +772,7 @@ def reconcile_intents_from_execution_audit(
         intent = executed_incomplete_by_id[iid]
         exec_pay = dict(intent.get("execution_payload")) if isinstance(intent.get("execution_payload"), dict) else {}
         v_stat, l_stat, filled_qty, f_q, raw_cost, cost_f, f_px, is_fill = _extract_audit_fill_metrics(rec)
+        rec_ts = safe_pos_float(rec.get("ts"), default=None)
         if is_fill:
             norm_st = "PARTIALLY_FILLED" if (v_stat == "PARTIALLY_FILLED" or l_stat == "partially_filled") else "FILLED"
             if rec.get("order_id") is not None and not extract_order_id(exec_pay, default=None):
@@ -776,6 +787,9 @@ def reconcile_intents_from_execution_audit(
                 exec_pay["cost"] = raw_cost
             if f_px is not None and f_px > 0:
                 exec_pay["price"] = f_px
+            if rec_ts is not None:
+                exec_pay["filled_at"] = rec_ts
+                exec_pay["terminal_ts"] = rec_ts
             if str(exec_pay.get("msg") or "").strip().lower() == "resting":
                 exec_pay.pop("msg", None)
             if norm_st != "PARTIALLY_FILLED":
@@ -785,14 +799,19 @@ def reconcile_intents_from_execution_audit(
                 updated = True
         else:
             cur_st = str(exec_pay.get("status") or "").strip().upper()
-            if cur_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING"):
+            if cur_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING") or (
+                exec_pay.get("reconciled_terminal") and "terminal_ts" not in exec_pay and rec_ts is not None
+            ):
                 norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
                 exec_pay["status"] = norm_cancel
+                if rec_ts is not None:
+                    exec_pay["terminal_ts"] = rec_ts
                 if str(exec_pay.get("msg") or "").strip().lower() == "resting":
                     exec_pay.pop("msg", None)
                 exec_pay["reconciled_terminal"] = True
-                intent["execution_payload"] = exec_pay
-                updated = True
+                if exec_pay != intent.get("execution_payload"):
+                    intent["execution_payload"] = exec_pay
+                    updated = True
 
     return updated
 
@@ -978,6 +997,13 @@ def _resolve_intent_execution_details(
                     fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
                 if filled_qty <= 0:
                     filled_qty = safe_pos_float(last_fill.get("qty"), default=0.0) or 0.0
+                matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+            else:
+                matched_fill_ts_ms = 0
+        else:
+            matched_fill_ts_ms = 0
+    else:
+        matched_fill_ts_ms = 0
     is_unfilled_resting_limit = (
         order_type == "LIMIT"
         and (venue_st in _UNFILLED_ORDER_STATUSES or not venue_st)
@@ -1069,6 +1095,28 @@ def _resolve_intent_execution_details(
         if order_type == "LIMIT"
         else None
     )
+    fill_ts_val = ts_val
+    if isinstance(exec_pay, dict):
+        for _ftk in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
+            _fcand = exec_pay.get(_ftk)
+            if _fcand is None:
+                continue
+            _fparsed = _parse_epoch_or_iso_s(_fcand)
+            if _fparsed is not None and _fparsed > 0.0:
+                _f_s = _ts_ms_to_s(_fparsed)
+                if _f_s >= ts_val:
+                    fill_ts_val = max(fill_ts_val, _f_s)
+                    break
+    if matched_fill_ts_ms > 0:
+        _mf_s = _ts_ms_to_s(float(matched_fill_ts_ms))
+        if _mf_s > fill_ts_val:
+            fill_ts_val = _mf_s
+    if fill_ts_val <= ts_val and str(last_hist.get("action") or "") == "RECONCILED_EXECUTED":
+        _lh_parsed = _parse_epoch_or_iso_s(last_hist.get("ts"))
+        if _lh_parsed is not None and _lh_parsed > 0.0:
+            _lh_s = _ts_ms_to_s(_lh_parsed)
+            if _lh_s > fill_ts_val:
+                fill_ts_val = _lh_s
     return {
         "venue": venue,
         "symbol": symbol,
@@ -1087,6 +1135,7 @@ def _resolve_intent_execution_details(
         "slippage_bps": slippage_bps,
         "ts": ts_raw,
         "ts_val": ts_val,
+        "fill_ts_val": fill_ts_val,
     }
 
 
@@ -1141,8 +1190,11 @@ def summarize_recent_ai_intents(
             intent_summary["filled_qty"] = det["filled_qty"]
         if det["slippage_bps"] is not None:
             intent_summary["slippage_bps"] = det["slippage_bps"]
-        if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
-            intent_summary["age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
+        eff_ts_val = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
+        if eff_ts_val > 0 and now_ts >= eff_ts_val:
+            intent_summary["age_h"] = round((now_ts - eff_ts_val) / 3600.0, 2)
+        if det["ts_val"] > 0 and eff_ts_val > det["ts_val"] + 60.0 and now_ts >= det["ts_val"]:
+            intent_summary["placed_age_h"] = round((now_ts - det["ts_val"]) / 3600.0, 2)
         return intent_summary
 
     recent_rev: list[dict[str, Any]] = []
@@ -1226,10 +1278,20 @@ def build_last_cycle_execution_status(
     scoped_intents = _filter_intents_by_scope(intents_data, scope)
     if not scoped_intents:
         return None
-    last_ts = safe_float(scoped_intents[-1].get("timestamp"), 0.0)
+    def _eff_intent_ts(intent_obj: dict[str, Any]) -> float:
+        base_t = safe_float(intent_obj.get("timestamp"), 0.0) or 0.0
+        ep = intent_obj.get("execution_payload")
+        if isinstance(ep, dict):
+            for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
+                ft = _parse_epoch_or_iso_s(ep.get(k))
+                if ft is not None and ft > 0:
+                    base_t = max(base_t, _ts_ms_to_s(ft))
+        return base_t
+
+    last_ts = max((_eff_intent_ts(i) for i in scoped_intents), default=0.0)
     if last_ts > 0:
         cycle_intents = [
-            i for i in scoped_intents if abs(safe_float(i.get("timestamp"), 0.0) - last_ts) <= 90.0
+            i for i in scoped_intents if abs(_eff_intent_ts(i) - last_ts) <= 90.0
         ]
     else:
         cycle_intents = [scoped_intents[-1]]
@@ -1256,8 +1318,11 @@ def build_last_cycle_execution_status(
             rec["limit_px"] = det["limit_px"]
         if det["order_id"] is not None:
             rec["order_id"] = det["order_id"]
-        if det["ts_val"] > 0 and now_ts >= det["ts_val"]:
-            rec["age_min"] = round((now_ts - det["ts_val"]) / 60.0, 1)
+        eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
+        if eff_ts > 0 and now_ts >= eff_ts:
+            rec["age_min"] = round((now_ts - eff_ts) / 60.0, 1)
+        if det["ts_val"] > 0 and eff_ts > det["ts_val"] + 60.0 and now_ts >= det["ts_val"]:
+            rec["placed_age_min"] = round((now_ts - det["ts_val"]) / 60.0, 1)
         return rec
 
     out: list[dict[str, Any]] = []
@@ -1273,6 +1338,15 @@ def build_last_cycle_execution_status(
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
         )
+        eff_ts_det = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
+        if (
+            not _is_open_resting_detail(det)
+            and det.get("exec_status") not in ("OPEN_RESTING", "PARTIALLY_FILLED")
+            and eff_ts_det > 0
+            and now_ts > eff_ts_det
+            and (now_ts - eff_ts_det) > 3600.0
+        ):
+            continue
         if det["order_id"] is not None:
             seen_oids.add(str(det["order_id"]))
         if _is_open_resting_detail(det):
