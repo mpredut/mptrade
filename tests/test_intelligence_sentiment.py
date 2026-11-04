@@ -4676,7 +4676,6 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert k_aw["kalman_vel"] > 0.0
     assert k_aw["kalman_vel_std"] < 5.0
 
-<<<<<<< Updated upstream
     # Wave 14: Bugs 74-78
     from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
     from intelligence.sentiment.evaluators.price_series_evaluator import apply_short_trend_item
@@ -4713,7 +4712,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         },
     )
     assert liq_77["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
-=======
+
     # Wave 14: Bugs 1-6 (Sibling Long Trend Inheritance, Weibull est_rem, Cross-Venue Spot CVD, Flow-Venue OI vs L1 OI, Fill-Time Execution Status, and Kalman/Short-Trend Vol Sync)
     from intelligence.internal.state.survival import estimate_remaining_trend_hours
     from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
@@ -4836,7 +4835,5 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert st_fresh_b5["placed_age_min"] == 275.9
     # 2.5 hours after fill: expired from last_cycle_execution_status (>60m terminal cutoff)
     assert build_last_cycle_execution_status(intents_b5, "crypto", 1_793_821_786.0 + 9000.0, extract_intent_notional) is None
-
->>>>>>> Stashed changes
 
 
