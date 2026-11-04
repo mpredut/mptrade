@@ -45,12 +45,8 @@ def _to_prod_remote_path(path: str) -> str:
 
 
 def ssh_cat(remote_path: str) -> dict | list | str | None:
-    if os.path.isfile(remote_path):
-        data = read_json_file(remote_path, default=None)
-        if data is not None:
-            return data
     prod_path = _to_prod_remote_path(remote_path)
-    cmd = ["ssh", "mptrade-prod", f"cat {prod_path}"]
+    cmd = ["ssh", "-o", "BatchMode=yes", "mptrade-prod", f"cat {prod_path}"]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
         try:
@@ -63,7 +59,7 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 def inspect_fleet(json_output: bool = False):
     raw_balances = ssh_cat(cache_path("venue_balances_state.json"))
     balances = raw_balances if isinstance(raw_balances, dict) else {}
-    raw_topic = ssh_cat(cache_path("llm_topic_threads.json"))
+    raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
     raw_orders = ssh_cat(cache_path("cache_order.json"))
     orders_data = raw_orders if isinstance(raw_orders, dict) else {}
