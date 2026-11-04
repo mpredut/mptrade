@@ -23,8 +23,8 @@ import sys
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
-_ROOT_DIR = os.path.dirname(_HL_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
+_HL_DIR = os.path.join(_ROOT_DIR, "hyperliquid")
 for _p in (_ROOT_DIR, _HL_DIR, _HERE):
     if _p in sys.path:
         sys.path.remove(_p)

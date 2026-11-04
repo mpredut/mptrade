@@ -888,6 +888,376 @@ def test_hyperliquid_uppercase_interval_and_zero_qty_reconcile_reset():
     assert _clean_client_order_id("valid-coid-1") == "valid-coid-1"
 
 
+# ─── Delta-Neutral & Funding Scanner Tests (from test_dn.py & test_funding_scan.py) ───
+
+import json as _json
+import time as _time
+import unittest as _unittest
+from botcore import load_local_module
+
+_DN_DIR = os.path.join(_ROOT, "archive", "hyperliquid", "delta_neutral")
+if _DN_DIR not in sys.path:
+    sys.path.insert(0, _DN_DIR)
+
+dn = load_local_module(_DN_DIR, "delta_neutral", module_key="hl_delta_neutral_test_mod")
+DeltaNeutral = dn.DeltaNeutral
+DNParams = dn.DNParams
+state_path_for = dn.state_path_for
+_funding_scan = load_local_module(_DN_DIR, "funding_scan", module_key="hl_funding_scan_test_mod")
+rank = _funding_scan.rank
+
+_DN_COIN = "TSTDN"
 
 
+def _dn_params(**over) -> DNParams:
+    base = dict(
+        coin=_DN_COIN, spot_pair="@999", spot_token=_DN_COIN, notional=100.0,
+        entry_funding_hr=0.0, exit_funding_hr=-0.00005, funding_window_h=4.0,
+        min_hold_h=6.0, rebalance_pct=5.0, check_minutes=5.0, sz_decimals=2,
+        liq_alert_pct=20.0, auto_protect=True, reduce_pct=25.0, perp_leverage=1,
+        allow_scale_up=False, fee_pct=0.035,
+    )
+    base.update(over)
+    return DNParams(**base)
+
+
+class _FakeDNClient:
+    exchange = None
+
+    def __init__(self):
+        self.orders: list[tuple] = []
+        self.fail_orders = False
+        self.raise_account = False
+        self.spot_bal = 2.0
+        self.perp_szi = -2.0
+        self.liq_px = 0.0
+        self.free = 100000.0
+
+    def withdrawable(self):
+        return self.free
+
+    def spot_balance(self, token):
+        return self.free if token == "USDC" else self.spot_bal
+
+    def spot_mid(self, pair):
+        return 50.0
+
+    def mid(self, coin):
+        return 50.0
+
+    def funding_rate(self, coin):
+        return 0.0000125
+
+    def spot_balance_strict(self, token):
+        if self.raise_account:
+            raise RuntimeError("API down")
+        return self.spot_bal
+
+    def position_strict(self, coin):
+        if self.raise_account:
+            raise RuntimeError("API down")
+        return self.perp_szi, 50.0
+
+    def position_full(self, coin):
+        return {"szi": self.perp_szi, "liquidationPx": self.liq_px}
+
+    def spot_order(self, pair, is_buy, sz, px, szd):
+        if self.fail_orders:
+            return False, None, "err: margin"
+        self.orders.append(("spot", "buy" if is_buy else "sell", sz))
+        return True, 1, "ok"
+
+    def place_limit(self, coin, is_buy, sz, px, reduce_only=False):
+        if self.fail_orders:
+            return False, None, "err: margin"
+        self.orders.append(("perp", "buy" if is_buy else "sell", sz))
+        return True, 2, "ok"
+
+    def set_leverage(self, coin, lev):
+        pass
+
+    def open_orders(self, coin=None):
+        return []
+
+    def cancel(self, coin, oid):
+        return True
+
+
+def _dn_legs(spot_qty=2.0, perp_szi=-2.0, funding=0.0000125):
+    return {
+        "spot_px": 50.0, "perp_px": 50.0, "funding": funding,
+        "spot_qty": spot_qty, "perp_szi": perp_szi,
+    }
+
+
+class _DNBase(_unittest.TestCase):
+    def setUp(self):
+        self._env = dict(os.environ)
+        self.alerts: list[str] = []
+        self._notify = dn.notify
+        dn.notify = lambda **kw: self.alerts.append(kw.get("title", ""))
+        self._cleanup_state()
+        self.c = _FakeDNClient()
+
+    def tearDown(self):
+        dn.notify = self._notify
+        self._cleanup_state()
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    @staticmethod
+    def _cleanup_state():
+        for suf in ("", ".lock", ".tmp"):
+            p = state_path_for(_DN_COIN) + suf
+            if os.path.exists(p):
+                os.remove(p)
+
+    def make(self, dry=False, **over) -> DeltaNeutral:
+        return DeltaNeutral(self.c, _dn_params(**over), dry_run=dry, desktop=False)
+
+    def opened(self, d: DeltaNeutral, target=2.0):
+        d.s["status"] = "open"
+        d.s["target_sz"] = target
+        d.s["opened_ts"] = _time.time()
+
+
+class TestFailedReads(_DNBase):
+    def test_an_account_api_error_does_not_guess_and_does_not_trade(self):
+        d = self.make()
+        self.c.raise_account = True
+        self.assertIsNone(d.legs(), "a failed read -> None, not a false 0")
+        self.assertEqual(self.c.orders, [])
+
+    def test_a_missing_price_gives_none(self):
+        d = self.make()
+        self.c.spot_mid = lambda pair: None
+        self.assertIsNone(d.legs())
+
+
+class TestPiciorOrfan(_DNBase):
+    def test_a_single_suspicious_tick_does_not_act(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        self.assertEqual(self.c.orders, [], "anti-glitch: it does not act on the first reading")
+        self.assertEqual(d.s["orphan_count"], 1)
+
+    def test_a_liquidated_short_closes_the_spot_after_confirmation(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        sells = [o for o in self.c.orders if o[0] == "spot" and o[1] == "sell"]
+        self.assertEqual(len(sells), 1, "sell the remaining spot leg to de-risk")
+        self.assertEqual(d.s["status"], "flat")
+        self.assertGreater(d.s["cooldown_until"], _time.time(), "cooldown anti-thrash")
+        self.assertTrue(any("a leg is gone" in a for a in self.alerts))
+
+    def test_a_recovered_glitch_resets_the_counter(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        d.tick(_dn_legs())
+        self.assertEqual(d.s["orphan_count"], 0)
+        self.assertEqual(d.s["status"], "open")
+
+    def test_both_legs_gone_goes_flat_without_orders(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0))
+        d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0))
+        self.assertEqual(self.c.orders, [], "there is nothing to close")
+        self.assertEqual(d.s["status"], "flat")
+
+    def test_without_auto_protect_it_only_alerts(self):
+        d = self.make(auto_protect=False)
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        d.tick(_dn_legs(spot_qty=2.0, perp_szi=0.0))
+        self.assertEqual(self.c.orders, [])
+        self.assertTrue(any("MANUAL INTERVENTION" in a for a in self.alerts))
+
+
+class TestDriftSiDust(_DNBase):
+    def test_a_large_drift_needs_confirmation_over_2_ticks(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=0.8, perp_szi=-2.0))
+        self.assertEqual(self.c.orders, [], "the first tick: it only observes")
+        d.tick(_dn_legs(spot_qty=0.8, perp_szi=-2.0))
+        buys = [o for o in self.c.orders if o[0] == "spot" and o[1] == "buy"]
+        self.assertEqual(len(buys), 1)
+
+    def test_a_small_drift_is_corrected_immediately(self):
+        d = self.make()
+        self.opened(d)
+        d.tick(_dn_legs(spot_qty=1.6, perp_szi=-2.0))
+        buys = [o for o in self.c.orders if o[0] == "spot" and o[1] == "buy"]
+        self.assertEqual(len(buys), 1, "normal drift is corrected without delay")
+
+    def test_dust_below_the_minimum_sends_no_order(self):
+        d = self.make()
+        self.opened(d, target=2.0)
+        d._buy_spot(0.1, 50.0)
+        self.assertEqual(self.c.orders, [])
+
+
+class TestFailedOrders(_DNBase):
+    def test_alerts_after_3_consecutive_failures(self):
+        d = self.make()
+        self.opened(d)
+        self.c.fail_orders = True
+        for _ in range(3):
+            d._buy_spot(1.0, 50.0)
+        self.assertTrue(any("3 consecutive failed orders" in a for a in self.alerts))
+        self.c.fail_orders = False
+        d._buy_spot(1.0, 50.0)
+        self.assertEqual(d.s["order_fails"], 0, "succesul reseteaza contorul")
+
+
+class TestCooldownSiIntrare(_DNBase):
+    def test_the_cooldown_blocks_reopening(self):
+        d = self.make()
+        d.s["cooldown_until"] = _time.time() + 600
+        d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0, funding=0.001))
+        self.assertEqual(d.s["status"], "flat")
+        self.assertEqual(self.c.orders, [])
+
+    def test_after_the_cooldown_it_opens(self):
+        d = self.make()
+        d.s["cooldown_until"] = _time.time() - 1
+        d.tick(_dn_legs(spot_qty=0.0, perp_szi=0.0, funding=0.001))
+        self.assertEqual(d.s["status"], "open")
+        self.assertEqual(len(self.c.orders), 2, "ambele picioare plasate")
+
+
+class TestIesireInteligenta(_DNBase):
+    def _force_avg(self, d, val):
+        d.s["funding_hist"] = [[_time.time(), val]] * 5
+
+    def test_negative_funding_held_briefly_does_not_close(self):
+        d = self.make()
+        self.opened(d)
+        self._force_avg(d, -0.0002)
+        d.tick(_dn_legs(funding=-0.0002))
+        self.assertEqual(d.s["status"], "open", "min_hold is not met yet")
+
+    def test_negative_funding_held_long_enough_closes(self):
+        d = self.make()
+        self.opened(d)
+        d.s["opened_ts"] = _time.time() - 7 * 3600
+        self._force_avg(d, -0.0002)
+        d.tick(_dn_legs(funding=-0.0002))
+        self.assertEqual(d.s["status"], "flat")
+        self.assertEqual(len(self.c.orders), 2, "it sells the spot and covers the perp")
+
+
+class TestInfrastructura(_DNBase):
+    def test_the_second_instance_is_refused_by_the_lock(self):
+        d1 = self.make()
+        self.assertTrue(d1._acquire_lock())
+        d2 = self.make()
+        self.assertFalse(d2._acquire_lock(), "lacatul previne dublarea ordinelor")
+        d1._lock_fh.close()
+        d3 = self.make()
+        self.assertTrue(d3._acquire_lock(), "after the stop the lock is released")
+        d3._lock_fh.close()
+
+    def test_the_save_is_atomic_and_valid(self):
+        d = self.make()
+        self.opened(d)
+        d._save()
+        with open(d.state_file) as f:
+            st = _json.load(f)
+        self.assertEqual(st["status"], "open")
+        self.assertFalse(os.path.exists(d.state_file + ".tmp"))
+
+    def test_it_adopts_the_existing_position_on_a_restart(self):
+        d = self.make()
+        d.tick(_dn_legs(spot_qty=1.7, perp_szi=-1.71))
+        self.assertEqual(d.s["status"], "open", "it adopts instead of opening a double position")
+        self.assertAlmostEqual(d.s["target_sz"], 1.705, places=3)
+        self.assertEqual(self.c.orders, [], "adoption places no new orders")
+
+
+class TestLiquidationProtection(_DNBase):
+    def test_auto_protect_reduces_both_legs(self):
+        d = self.make()
+        self.opened(d)
+        self.c.liq_px = 55.0
+        d.tick(_dn_legs())
+        covers = [o for o in self.c.orders if o[0] == "perp" and o[1] == "buy"]
+        sells = [o for o in self.c.orders if o[0] == "spot" and o[1] == "sell"]
+        self.assertEqual((len(covers), len(sells)), (1, 1), "reduce ambele picioare")
+        self.assertTrue(any("LIQUIDATION" in a or "reduced" in a for a in self.alerts))
+
+
+class TestScaleUp(_DNBase):
+    def test_disabled_does_nothing(self):
+        d = self.make(dry=True, allow_scale_up=False, notional=400.0)
+        self.opened(d, target=2.0)
+        d._maybe_scale_up(_dn_legs())
+        self.assertEqual(d.s["target_sz"], 2.0)
+
+    def test_it_bumps_the_target_to_the_notional(self):
+        d = self.make(dry=True, allow_scale_up=True, notional=400.0)
+        self.opened(d, target=2.0)
+        d._maybe_scale_up(_dn_legs())
+        self.assertAlmostEqual(d.s["target_sz"], 8.0)
+
+    def test_it_does_not_grow_past_the_target(self):
+        d = self.make(dry=True, allow_scale_up=True, notional=400.0)
+        self.opened(d, target=8.0)
+        d._maybe_scale_up(_dn_legs())
+        self.assertEqual(d.s["target_sz"], 8.0)
+
+    def test_partial_when_the_collateral_is_small(self):
+        d = self.make(dry=False, allow_scale_up=True, notional=400.0)
+        self.opened(d, target=2.0)
+        self.c.free = 100.0
+        d._maybe_scale_up(_dn_legs())
+        self.assertGreater(d.s["target_sz"], 2.0)
+        self.assertLess(d.s["target_sz"], 8.0)
+
+    def test_a_tick_executes_the_scale_up_and_buys_both_legs(self):
+        d = self.make(dry=False, allow_scale_up=True, notional=400.0)
+        self.opened(d, target=2.0)
+        d.tick(_dn_legs())
+        d.tick(_dn_legs())
+        buys_spot = [o for o in self.c.orders if o[0] == "spot" and o[1] == "buy"]
+        buys_perp = [o for o in self.c.orders if o[0] == "perp" and o[1] == "sell"]
+        self.assertTrue(buys_spot and buys_perp, "the scale-up buys spot and shorts perp (staying neutral)")
+
+
+class TestRank(_unittest.TestCase):
+    def setUp(self):
+        self.uni = [{"name": "AAA"}, {"name": "BBB"}, {"name": "CCC"}, {"name": "DDD"}]
+        self.ctxs = [
+            {"funding": "0.00005", "dayNtlVlm": "50000000", "markPx": "10", "openInterest": "1000"},
+            {"funding": "0.0001",  "dayNtlVlm": "1000000",  "markPx": "5",  "openInterest": "200"},
+            {"funding": "0.00002", "dayNtlVlm": "80000000", "markPx": "60", "openInterest": "500"},
+            {"funding": "-0.0001", "dayNtlVlm": "90000000", "markPx": "3",  "openInterest": "100"},
+        ]
+
+    def test_filtreaza_ilichid(self):
+        r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
+        coins = [x["coin"] for x in r]
+        self.assertNotIn("BBB", coins)
+
+    def test_filtreaza_funding_negativ(self):
+        r = rank(self.uni, self.ctxs, min_vol_usd=0)
+        self.assertNotIn("DDD", [x["coin"] for x in r])
+
+    def test_claseaza_desc_pe_funding(self):
+        r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
+        self.assertEqual(r[0]["coin"], "AAA")
+        self.assertEqual(r[1]["coin"], "CCC")
+
+    def test_apr_corect(self):
+        r = rank(self.uni, self.ctxs, min_vol_usd=10_000_000)
+        aaa = next(x for x in r if x["coin"] == "AAA")
+        self.assertAlmostEqual(aaa["apr"], 0.00005 * 24 * 365 * 100, places=2)
+
+    def test_top_limiteaza(self):
+        self.assertLessEqual(len(rank(self.uni, self.ctxs, 0, top=1)), 1)
 

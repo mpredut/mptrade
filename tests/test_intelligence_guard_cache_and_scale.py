@@ -14900,8 +14900,8 @@ def test_iteration153_t212_order_manager_hl_shadow_and_delta_neutral_safety(tmp_
 
     om = _load_mod("t212_order_manager_it153", "212trading/order_manager.py")
     hl_sl = _load_mod("hl_shadow_longterm_it153", "hyperliquid/shadow_longterm.py")
-    f_scan = _load_mod("hl_funding_scan_it153", "hyperliquid/archive/delta_neutral/funding_scan.py")
-    dn_mod = _load_mod("hl_delta_neutral_it153", "hyperliquid/archive/delta_neutral/delta_neutral.py")
+    f_scan = _load_mod("hl_funding_scan_it153", "archive/hyperliquid/delta_neutral/funding_scan.py")
+    dn_mod = _load_mod("hl_delta_neutral_it153", "archive/hyperliquid/delta_neutral/delta_neutral.py")
 
     # 1. 212trading/order_manager: waiting with sentinel order_id="0" returns False, not True
     monkeypatch.setattr(om, "_marker_path", lambda ticker, test=False: str(tmp_path / f"marker_{ticker}.json"))

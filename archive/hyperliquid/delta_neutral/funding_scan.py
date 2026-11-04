@@ -24,8 +24,8 @@ import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_HL_DIR = os.path.abspath(os.path.join(_HERE, "..", ".."))
-_ROOT_DIR = os.path.dirname(_HL_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
+_HL_DIR = os.path.join(_ROOT_DIR, "hyperliquid")
 for _p in (_HERE, _HL_DIR, _ROOT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)

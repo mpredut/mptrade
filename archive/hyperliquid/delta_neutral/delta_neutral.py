@@ -20,8 +20,8 @@ import sys
 import time
 from dataclasses import dataclass
 
-_HL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_ROOT_DIR = os.path.dirname(_HL_DIR)
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+_HL_DIR = os.path.join(_ROOT_DIR, "hyperliquid")
 for _p in (_HL_DIR, _ROOT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
