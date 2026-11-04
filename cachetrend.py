@@ -2122,6 +2122,11 @@ class _NonBinanceTrendPoller:
         if self.thread is not threading.current_thread():
             self.thread.join(timeout=timeout)
         self.pool.shutdown(wait=False, cancel_futures=True)
+        try:
+            for th in list(getattr(self.pool, "_threads", ())):
+                _futures.thread._threads_queues.pop(th, None)
+        except Exception:
+            pass
         return not self.thread.is_alive()
 
 

@@ -110,6 +110,16 @@ def _shutdown(caches, current_price_mgr, ws_module=bapi_ws, nb_poller=None):
                 ws_ev.set()
         except Exception:
             pass
+    for obj in (
+        *(caches or ()),
+        *([current_price_mgr] if current_price_mgr is not None else ()),
+    ):
+        try:
+            ev = getattr(obj, "_stop_event", None)
+            if ev is not None:
+                ev.set()
+        except Exception:
+            pass
     for cache in (caches or ()):
         if current_price_mgr is not None:
             try:
