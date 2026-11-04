@@ -1,6 +1,6 @@
 [
   {
-    "ts": "2026-11-03T14:08:22",
+    "ts": "2026-11-04T02:10:25",
     "full_key": "BINANCE_BTC.mt.lost",
     "section": "BINANCE_BTC",
     "key": "mt.lost",
@@ -9,12 +9,12 @@
     "winner_value": 2.3,
     "margin_vs_current": {
       "half1": 108.2,
-      "half2": 783.92
+      "half2": 786.96
     },
-    "dev_commit": "6871e69b"
+    "dev_commit": "53911deb"
   },
   {
-    "ts": "2026-11-03T14:08:22",
+    "ts": "2026-11-04T02:10:25",
     "full_key": "BINANCE_BTC.trailing.pct",
     "section": "BINANCE_BTC",
     "key": "trailing.pct",
@@ -23,36 +23,36 @@
     "winner_value": 12.0,
     "margin_vs_current": {
       "half1": 51.76,
-      "half2": 404.39
+      "half2": 404.4
     },
-    "dev_commit": "6871e69b"
+    "dev_commit": "53911deb"
   },
   {
-    "ts": "2026-11-03T14:08:22",
+    "ts": "2026-11-04T02:10:25",
     "full_key": "BINANCE_TAO.mt.gain",
     "section": "BINANCE_TAO",
     "key": "mt.gain",
     "symbol": "TAOUSDC",
-    "current_on_dev": 9.2,
+    "current_on_dev": 10.6,
     "winner_value": 12.0,
     "margin_vs_current": {
-      "half1": 99.54,
-      "half2": 318.63
+      "half1": 52.43,
+      "half2": 36.91
     },
-    "dev_commit": "6871e69b"
+    "dev_commit": "53911deb"
   },
   {
-    "ts": "2026-11-03T14:08:22",
-    "full_key": "BINANCE_TAO.mt.maxage_days",
-    "section": "BINANCE_TAO",
+    "ts": "2026-11-04T02:10:25",
+    "full_key": "KRAKEN_HYPE.mt.maxage_days",
+    "section": "KRAKEN_HYPE",
     "key": "mt.maxage_days",
-    "symbol": "TAOUSDC",
-    "current_on_dev": 13.5,
+    "symbol": "HYPEUSD",
+    "current_on_dev": 15.5,
     "winner_value": 10.0,
     "margin_vs_current": {
-      "half1": 165.37,
-      "half2": 580.25
+      "half1": 1516.77,
+      "half2": 7.54
     },
-    "dev_commit": "6871e69b"
+    "dev_commit": "53911deb"
   }
 ]
