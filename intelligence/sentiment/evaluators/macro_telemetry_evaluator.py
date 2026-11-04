@@ -150,9 +150,16 @@ def apply_asset_scope_filter(
     t212_cycles: Dict[str, Any],
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Filter prices_and_trends, microstructure, and portfolio_summary by asset_scope ('equities' | 'crypto')."""
-    if scope not in ("equities", "crypto"):
+    prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+    microstructure = microstructure if isinstance(microstructure, dict) else {}
+    if not isinstance(portfolio_summary, dict):
+        portfolio_summary = {}
+    inst_by_sym = inst_by_sym if isinstance(inst_by_sym, dict) else {}
+    t212_cycles = t212_cycles if isinstance(t212_cycles, dict) else {}
+    scope_norm = str(scope or "").strip().lower()
+    if scope_norm not in ("equities", "crypto"):
         return prices_and_trends, microstructure
-    want_t212 = scope == "equities"
+    want_t212 = scope_norm == "equities"
     t212_sym_set = {str(s).upper() for s in t212_cycles} | {
         str(s).split(":", 1)[-1].upper() for s, iv in inst_by_sym.items() if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212"
     }
@@ -207,6 +214,8 @@ def apply_asset_scope_filter(
 def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_items: Any) -> Dict[str, float]:
     """Build fallback price map from orderbook mid-prices and watcher_all_price series for cycle state parsing."""
     cycle_fallback_prices: Dict[str, float] = {}
+    if not isinstance(microstructure, dict):
+        microstructure = {}
     for m_sym, m_dict in microstructure.items():
         if isinstance(m_dict, dict):
             ob_mid_v = safe_pos_float(m_dict.get("ob_mid_price"), default=0.0) or 0.0

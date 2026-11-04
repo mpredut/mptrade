@@ -251,11 +251,23 @@ def collect_macro_benchmarks_snapshot(
     return payload
 
 
+def _resolve_read_json_cached(read_json_fn: Any = None, *, default_fn: Any = None) -> Any:
+    _defaults = (_default_read_json_cached, read_json_recovering)
+    if callable(read_json_fn) and read_json_fn not in _defaults:
+        return read_json_fn
+    _patched = _resolve_macro_ssot_attr("read_json_cached", read_json_cached, _default_read_json_cached)
+    if callable(_patched) and _patched not in _defaults:
+        return _patched
+    if callable(read_json_fn):
+        return read_json_fn
+    return default_fn if callable(default_fn) else read_json_cached
+
+
 def _read_first_cached_dict(
     cache_dir: str, group_key: str, default_file: str, read_json_fn: Any = None,
 ) -> tuple[Optional[Dict[str, Any]], str]:
     """Read the first non-empty dict matching `get_cache_filenames(group_key)` (or `default_file`) in `cache_dir`."""
-    eff_rj = _resolve_macro_ssot_attr("read_json_cached", read_json_cached, _default_read_json_cached) if read_json_fn is None else read_json_fn
+    eff_rj = _resolve_read_json_cached(read_json_fn)
     return read_first_cached_dict(cache_dir, group_key, default_file, read_json_fn=eff_rj)
 
 
@@ -263,8 +275,8 @@ def harvest_macro_and_news_sensors(
     cache_dir: str, now_ts: float, read_json_fn: Any = None,
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
-    _rj = read_json_fn or read_json_recovering
-    _rj_any = read_json_recovering if _rj is read_json_cached else _rj
+    _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
+    _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
 
     def _with_age_min(payload: Dict[str, Any], fpath: str, *, is_fear_greed: bool = False) -> Dict[str, Any]:
         enriched = dict(payload)
@@ -347,7 +359,8 @@ def harvest_macro_and_news_sensors(
                         if (rot_v := getattr(breadth_snap, rot_k, None)) is not None:
                             mb_payload[rot_k] = rot_v
                     mb_path = os.path.join(cache_dir, "market_breadth_collect.json")
-                    save_json_state(mb_path, mb_payload, indent=2)
+                    _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+                    _save_fn(mb_path, mb_payload, indent=2)
                     macro_sensors["market_breadth"] = _with_age_min(mb_payload, mb_path)
             except Exception:
                 pass
@@ -520,8 +533,8 @@ def populate_market_and_portfolio_snapshot(
     log: Optional[Any] = None,
 ) -> Any:
     """Populate market, macro, microstructure, portfolio, cycles, fills, and runtime states on a TelemetrySensorSnapshot."""
-    _rj = read_json_fn or read_json_recovering
-    _rj_any = read_json_recovering if _rj is read_json_cached else _rj
+    _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
+    _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
         setattr(snapshot, attr, val)

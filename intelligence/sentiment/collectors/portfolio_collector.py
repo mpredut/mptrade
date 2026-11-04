@@ -103,9 +103,10 @@ logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
 
 
 def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    if read_json_fn is not None and callable(read_json_fn):
+    _defaults = (_default_read_json_cached, read_json_recovering)
+    if callable(read_json_fn) and read_json_fn not in _defaults:
         return read_json_fn
-    if callable(read_json_cached) and read_json_cached is not _default_read_json_cached:
+    if callable(read_json_cached) and read_json_cached not in _defaults:
         return read_json_cached
     import sys as _sys
 
@@ -115,9 +116,9 @@ def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
     ):
         _mod = _sys.modules.get(_mod_name)
         _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
-        if callable(_cand) and _cand is not _default_read_json_cached:
+        if callable(_cand) and _cand not in _defaults:
             return _cand
-    return read_json_cached
+    return read_json_fn if callable(read_json_fn) else read_json_cached
 
 
 def _resolve_save_json_state() -> Any:
@@ -1056,11 +1057,14 @@ def harvest_recent_orders_and_enrich_positions(
 
 def harvest_bot_runtime_states(
     cache_dir: str,
-    now_ts: float,
+    now_ts: Any = None,
     read_json_fn: Any = None,
     tradable_positions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Harvest active retry queue, monitortrades, assetguardian, and smart_stop_loss states."""
+    if callable(now_ts) and read_json_fn is None:
+        read_json_fn, now_ts = now_ts, None
+    eff_now = safe_pos_float(now_ts, default=None) or _time.time()
     _rj = _resolve_read_json_cached(read_json_fn)
     out: Dict[str, Any] = {}
     retry_q_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "order_retry_queue.jsonl")))
@@ -1071,7 +1075,14 @@ def harvest_bot_runtime_states(
             _oq = None
         terminal_ai_intent_ids: set[str] = set()
         intents_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "autonomous_trade_intents_state.json")))
-        intents_raw = read_json_file(intents_path, default=[], recover_previous=True) if os.path.exists(intents_path) else []
+        intents_raw: Any = None
+        if _rj not in (_default_read_json_cached, read_json_recovering):
+            try:
+                intents_raw = _rj(os.path.join(cache_dir, "autonomous_trade_intents_state.json"))
+            except Exception:
+                intents_raw = None
+        if not intents_raw and os.path.exists(intents_path):
+            intents_raw = read_json_file(intents_path, default=[], recover_previous=True)
         intents_iter = intents_raw.get("intents") if isinstance(intents_raw, dict) else (intents_raw if isinstance(intents_raw, list) else ())
         if isinstance(intents_iter, list):
             for it in intents_iter:
@@ -1102,12 +1113,12 @@ def harvest_bot_runtime_states(
             if _oq is not None and (rec.get("created_ts") is not None or rec.get("ttl_started_ts") is not None):
                 try:
                     checked_oq_expiry = True
-                    if _oq.is_expired(rec, now_ts):
+                    if _oq.is_expired(rec, eff_now):
                         continue
                 except Exception:
                     checked_oq_expiry = False
             if lifecycle in ("submit_pending", "awaiting_cancel", "pending", "active") and (
-                checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > now_ts
+                checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > eff_now
             ):
                 active_retries.append({
                     "venue": str(rec.get("provider_name") or "").lower(),

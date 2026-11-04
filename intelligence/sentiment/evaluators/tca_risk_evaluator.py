@@ -467,6 +467,8 @@ def build_cross_market_context(
     all_t212_cycles: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
+    prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
+    microstructure = microstructure if isinstance(microstructure, dict) else {}
     all_t212_cycles = all_t212_cycles if isinstance(all_t212_cycles, dict) else {}
     ctx: Dict[str, Any] = {}
 
@@ -495,9 +497,9 @@ def build_cross_market_context(
         cb_entry: Dict[str, Any] = {
             "symbol": sym, "price": round(px_f, 6),
             **{
-                k: (round(float(pinfo[k]), 6) if (k in _round_slope_keys and isinstance(pinfo[k], (int, float))) else pinfo[k])
+                k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
-                if pinfo.get(k) is not None
+                if pinfo.get(k) is not None and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
             },
         }
         sym_quotes = compatible_quote_suffixes(sym)
@@ -535,9 +537,11 @@ def build_cross_market_context(
             "symbol": eq_sym,
             **({"price": round(eq_px_f, 6)} if eq_px_f is not None else {}),
             **{
-                k: (round(float(pinfo[k]), 6) if (k in _round_slope_keys and isinstance(pinfo[k], (int, float))) else pinfo[k])
+                k: (round(sf_v, 6) if k in _round_slope_keys else pinfo[k])
                 for k in raw_horizon_keys
-                if pinfo.get(k) is not None and not (k == "kalman_vel" and abs(safe_float(pinfo.get(k), 0.0) or 0.0) < 1e-12)
+                if pinfo.get(k) is not None
+                and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
+                and not (k == "kalman_vel" and abs(sf_v) < 1e-12)
             },
         }
         if t_cyc:

@@ -1717,8 +1717,121 @@ def test_iter52_repair_ssot_monkeypatch_portfolio_scope_and_trailing_pct_lookup(
     assert rec_zero is not None and rec_zero["suggested_notional_usd"] == pytest.approx(10.0)
 
 
+def test_iter53_runtime_states_callable_arg_collector_monkeypatch_and_evaluator_guards(monkeypatch, tmp_path):
+    import json
+    import time as _time
+    import intelligence.macro_sentiment_ssot as ssot
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc
+    import intelligence.sentiment.collectors.microstructure_collector as mc
+    import intelligence.sentiment.collectors.portfolio_collector as pc
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        apply_asset_scope_filter,
+        build_cycle_fallback_prices,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from state_io import read_json_recovering
+
+    # 1. harvest_bot_runtime_states supports 2nd-positional callable read_json_fn even when order_retry_queue.jsonl exists
+    now = _time.time()
+    retry_q = tmp_path / "order_retry_queue.jsonl"
+    retry_q.write_text(
+        json.dumps(
+            {
+                "provider_name": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "lifecycle": "submit_pending",
+                "expires_at_ts": now + 300.0,
+                "intent_id": "term_1",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "provider_name": "binance",
+                "symbol": "ETHUSDC",
+                "side": "BUY",
+                "qty": 0.1,
+                "lifecycle": "submit_pending",
+                "expires_at_ts": now + 300.0,
+                "intent_id": "active_2",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _mock_reader(path: str):
+        if path.endswith("autonomous_trade_intents_state.json"):
+            return {"intents": [{"intent_id": "term_1", "status": "EXECUTED"}]}
+        if path.endswith("smart_stop_loss_state.json"):
+            return {"BTCUSDC": {"armed": True}}
+        return {}
+
+    rt_out = pc.harvest_bot_runtime_states(str(tmp_path), _mock_reader)
+    assert "active_retry_queue" in rt_out
+    assert [r["symbol"] for r in rt_out["active_retry_queue"]] == ["ETHUSDC"]
+    assert rt_out.get("smart_stop_loss_state") == {"BTCUSDC": {"armed": True}}
+
+    # 2. _resolve_read_json_cached honors monkeypatched read_json_cached even when default read_json_recovering is passed
+    def _patched_cached(path: str, *a, **kw):
+        if path.endswith("fear_greed_collect.json"):
+            return {"value": 28, "classification": "Fear", "ts": now}
+        return {"patched": True}
+
+    monkeypatch.setattr(ssot, "read_json_cached", _patched_cached)
+    assert pc._resolve_read_json_cached(read_json_recovering) is _patched_cached
+    assert mc._resolve_read_json_cached(read_json_recovering) is _patched_cached
+    sensors, _ = mtc.harvest_macro_and_news_sensors(str(tmp_path), now, read_json_fn=read_json_recovering)
+    assert sensors.get("fear_greed", {}).get("value") == 28
+
+    # 3. build_cross_market_context guards against None inputs and non-finite/bool slope values
+    assert build_cross_market_context(None, None, None) == {}
+    cmc = build_cross_market_context(
+        {
+            "BTCUSDC": {
+                "price": 85000.0,
+                "slope_15m": True,
+                "slope_2_5h": float("nan"),
+                "slope_3_7m": 0.1234567,
+            },
+            "NVDA_US_EQ": {
+                "price": 125.0,
+                "slope_15m": False,
+                "kalman_vel": float("inf"),
+                "slope_3_7m": -0.0543219,
+            },
+        },
+        None,
+        None,
+    )
+    btc_bw = cmc["crypto_bellwethers"]["BTC"]
+    assert "slope_15m" not in btc_bw
+    assert "slope_2_5h" not in btc_bw
+    assert btc_bw["slope_3_7m"] == pytest.approx(0.123457)
+    nvda_bw = cmc["equity_bellwethers"]["NVDA_US_EQ"]
+    assert "slope_15m" not in nvda_bw
+    assert "kalman_vel" not in nvda_bw
+    assert nvda_bw["slope_3_7m"] == pytest.approx(-0.054322)
+
+    # 4. apply_asset_scope_filter normalizes scope case/whitespace and guards None dicts; build_cycle_fallback_prices guards None
+    pt_filtered, ms_filtered = apply_asset_scope_filter(
+        {"BTCUSDC": {"price": 85000.0}, "NVDA_US_EQ": {"price": 125.0}},
+        {"BTCUSDC": {"ob_imbalance": 0.2}},
+        {"total_value_usdc": 1000.0},
+        " EQUITIES ",
+        None,
+        None,
+    )
+    assert list(pt_filtered.keys()) == ["NVDA_US_EQ"]
+    assert ms_filtered == {}
+    assert build_cycle_fallback_prices(None, None) == {}
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

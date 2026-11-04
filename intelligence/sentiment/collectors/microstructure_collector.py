@@ -62,6 +62,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
 from instrument_registry import casefold_get
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
+    read_json_recovering,
     read_tail_jsonl_records,
     resolve_cachedb_filepath,
 )
@@ -72,9 +73,10 @@ logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
 
 def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
-    if read_json_fn is not None and callable(read_json_fn):
+    _defaults = (_default_read_json_cached, read_json_recovering)
+    if callable(read_json_fn) and read_json_fn not in _defaults:
         return read_json_fn
-    if callable(read_json_cached) and read_json_cached is not _default_read_json_cached:
+    if callable(read_json_cached) and read_json_cached not in _defaults:
         return read_json_cached
     import sys as _sys
 
@@ -84,9 +86,9 @@ def _resolve_read_json_cached(read_json_fn: Any = None) -> Any:
     ):
         _mod = _sys.modules.get(_mod_name)
         _cand = getattr(_mod, "read_json_cached", None) if _mod is not None else None
-        if callable(_cand) and _cand is not _default_read_json_cached:
+        if callable(_cand) and _cand not in _defaults:
             return _cand
-    return read_json_cached
+    return read_json_fn if callable(read_json_fn) else read_json_cached
 
 
 def _filter_ohlc_closes_since(
