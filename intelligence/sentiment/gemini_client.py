@@ -504,6 +504,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
                             self._cache[prompt] = (now, output)
                         if use_topic_session:
                             def _finalize_topic_turn(release_lock: bool = False) -> None:
+                                prev_finalize_rules = getattr(self._JSON_MODE_LOCAL, "include_repo_rules", False)
+                                self._JSON_MODE_LOCAL.include_repo_rules = include_repo_rules
                                 try:
                                     compacted_ok = False
                                     if session.compact and turn_cid and not replaced_conversation:
@@ -561,6 +563,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                     except Exception as e:
                                         logger.debug("Failed recording topic turn for %s: %s", topic_key, e)
                                 finally:
+                                    self._JSON_MODE_LOCAL.include_repo_rules = prev_finalize_rules
                                     if release_lock and topic_lock is not None:
                                         topic_lock.release()
 

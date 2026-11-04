@@ -561,7 +561,7 @@ class CacheShortTrendManager(CacheManagerInterface):
         if (
             self.writer
             and self._full_eval_thread is not None
-            and "PYTEST_CURRENT_TEST" not in os.environ
+            and ("PYTEST_CURRENT_TEST" not in os.environ or getattr(self, "_enable_kalman_tracker", False))
         ):
             try:
                 import shadow_signals
@@ -586,13 +586,15 @@ class CacheShortTrendManager(CacheManagerInterface):
                 if isinstance(k_fields, dict):
                     kalman_extra = {
                         k: k_fields[k]
-                        for k in ("kalman_vel", "kalman_vel_std", "kalman_trend")
-                        if k in k_fields
+                        for k in (
+                            "kalman_vel",
+                            "kalman_vel_std",
+                            "kalman_trend",
+                            "adapt_reentry_pct",
+                            "adapt_dca_pct",
+                        )
+                        if k_fields.get(k) is not None
                     }
-                if adapt_reentry is not None:
-                    kalman_extra["adapt_reentry_pct"] = adapt_reentry
-                if adapt_dca is not None:
-                    kalman_extra["adapt_dca_pct"] = adapt_dca
             except Exception:
                 pass
 
@@ -1392,10 +1394,10 @@ class CacheShortTrendManager(CacheManagerInterface):
                 for win in (self.windows.get(sym_key) or {}).values():
                     unsubscribe(win)
         for thread in (self._full_eval_thread, self._flush_thread):
-            if thread is not None and thread is not threading.current_thread():
+            if thread is not None and thread is not threading.current_thread() and hasattr(thread, "join"):
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))
         stopped = base_stopped and all(
-            thread is None or not thread.is_alive()
+            thread is None or not getattr(thread, "is_alive", lambda: False)()
             for thread in (self._full_eval_thread, self._flush_thread)
         )
         if stopped:

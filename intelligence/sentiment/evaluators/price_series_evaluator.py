@@ -1050,9 +1050,13 @@ def _apply_24h_series_enrichment(
                 entry[ck] = cross_btc[ck]
     k_cur_vel = safe_float(entry.get("kalman_vel"), default=None)
     k_cur_std = safe_float(entry.get("kalman_vel_std"), default=None)
-    unseeded_kalman = k_cur_vel is None or abs(k_cur_vel) < 1e-9 or (abs(k_cur_vel) < 1e-12 and (k_cur_std is None or k_cur_std >= 5.99))
-    if unseeded_kalman and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
-        if k_cur_vel is None or (k_cur_std is None or k_cur_std >= 5.99) or abs(safe_float(k_fb.get("kalman_vel"), 0.0)) >= 1e-5:
+    unseeded_kalman = (
+        k_cur_vel is None
+        or abs(k_cur_vel) < 1e-9
+        or (abs(k_cur_vel) < 1e-12 and (k_cur_std is None or k_cur_std >= 5.99))
+    )
+    if (unseeded_kalman or k_cur_std is None) and series_24h and isinstance(k_fb := _compute_kalman_from_series(series_24h), dict):
+        if k_cur_vel is None or k_cur_std is None or k_cur_std >= 5.99 or abs(safe_float(k_fb.get("kalman_vel"), 0.0)) >= 1e-5:
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv

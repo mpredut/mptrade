@@ -1141,6 +1141,7 @@ def enrich_24h_and_microstructure(
                     sym_px_m = ob_mid_m
                     if active_7d_vals and len(active_7d_vals) >= 2 and not _prices_diverged(ob_mid_m, safe_float(active_7d_vals[0], 0.0)):
                         prices_and_trends[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(active_7d_vals[0], 0.0))
+                    recalculate_live_price_geometry(prices_and_trends[sym], ob_mid_m)
                 elif (
                     not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym

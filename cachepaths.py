@@ -271,10 +271,16 @@ def resolve_cachedb_filepath(path: object) -> object:
                 try:
                     os.makedirs(os.path.dirname(sub_path), exist_ok=True)
                     os.replace(old_p, sub_path)
+                    for sfx in (".previous", ".meta"):
+                        if os.path.isfile(old_p + sfx) and not os.path.exists(sub_path + sfx):
+                            os.replace(old_p + sfx, sub_path + sfx)
                 except OSError:
                     pass
-        if not os.path.exists(sub_path) and os.path.exists(flat_path):
-            return flat_path
+        if not os.path.exists(sub_path) and not os.path.exists(sub_path + ".previous"):
+            if legacy_sys_path and (os.path.exists(legacy_sys_path) or os.path.exists(legacy_sys_path + ".previous")):
+                return legacy_sys_path
+            if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
+                return flat_path
         return sub_path
     if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
         return sub_path

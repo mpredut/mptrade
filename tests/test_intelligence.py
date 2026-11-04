@@ -2297,6 +2297,8 @@ def test_iter57_hierarchical_shadow_mode_collector_guards_and_vol_memo_collision
     assert any(ev.source in ("liquidation_trigger", "LiquidationCapitulationTrigger") for ev in eval_res.triggers)
 
     # 3. GlobalTelemetryCollector propagates now_ts to update_news, update_fear_greed, and update_market_breadth
+    from types import SimpleNamespace
+
     gtc = GlobalTelemetryCollector(cache_dir=str(tmp_path), symbols=["BTCUSDC"], skip_external=True)
     seen_now = {}
 
@@ -5692,6 +5694,144 @@ def test_iter87_kalman_multiprocess_merge_execution_audit_cancel_ts_and_archive_
     # 5. estimate_remaining_trend_hours handles extreme duration_hours without OverflowError
     rem = estimate_remaining_trend_hours(duration_hours=1e160, p_cont=0.6)
     assert isinstance(rem, float) and rem > 0.0
+
+
+def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_and_sidecar_migration(
+    tmp_path, monkeypatch
+):
+    import json
+    import subprocess
+    from types import SimpleNamespace
+    import cachetrend
+    from cachepaths import resolve_cachedb_filepath
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        update_microstructure_cycle_deltas,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _apply_24h_series_enrichment,
+    )
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from orchestratorOS.agy.topics import TopicSession
+
+    # 1. CacheShortTrendManager.evaluate_full populates adapt_reentry_pct and adapt_dca_pct
+    #    from KalmanStateTracker without raising NameError on undefined adapt_reentry/adapt_dca
+    pw = cachetrend.pw
+
+    st_file = tmp_path / "cache_short_trend.json"
+    mgr = cachetrend.CacheShortTrendManager(
+        sync_ts=1.0,
+        symbols=["BTCUSDC"],
+        filename=str(st_file),
+        read_only=True,
+    )
+    mgr.writer = True
+    mgr._full_eval_thread = object()
+    mgr._enable_kalman_tracker = True
+    mgr.current_price_mgr = SimpleNamespace(
+        get_cached_price_observation=lambda sym, stale: (1_700_003_600.0, 70600.0),
+    )
+    mgr.windows["BTCUSDC"] = {}
+    mgr.analyzers["BTCUSDC"] = {}
+    for sec in mgr.window_seconds:
+        w = pw.PriceWindow("BTCUSDC", window_size=60, sample_rate_sec=60.0)
+        mgr.windows["BTCUSDC"][sec] = w
+        mgr.analyzers["BTCUSDC"][sec] = pw.WindowAnalyzer(w)
+    for i in range(60):
+        px = 70000.0 + (i % 5) * 40.0 + i * 10.0
+        for w in mgr.windows["BTCUSDC"].values():
+            w.prices.append(px)
+            w.sample_rate_sec = 60.0
+    mgr.evaluate_full("BTCUSDC")
+    btc_snap = mgr.get_snapshot("BTCUSDC")
+    assert "kalman_vel" in btc_snap
+    assert "adapt_reentry_pct" in btc_snap and btc_snap["adapt_reentry_pct"] is not None
+    assert "adapt_dca_pct" in btc_snap and btc_snap["adapt_dca_pct"] is not None
+
+    # 2. GeminiClient._finalize_topic_turn preserves include_repo_rules=True during /compact
+    #    for can_self_heal=True topics (e.g. technical_repair)
+    fake_bin = tmp_path / "agy-bot"
+    fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    bot_cli_base = tmp_path / "bot_cli"
+    bot_cli_base.mkdir()
+    seen_repo_rules = []
+
+    client = GeminiClient(cli_path=str(fake_bin), project_id="autonommptrade")
+
+    def _fake_exec_cli(resume, text, call_timeout, cli_model, cli_base, run_env, is_mocked, *, include_repo_rules=None):
+        eff_rules = (
+            bool(getattr(client._JSON_MODE_LOCAL, "include_repo_rules", False))
+            if include_repo_rules is None
+            else bool(include_repo_rules)
+        )
+        seen_repo_rules.append((text, eff_rules))
+        return subprocess.CompletedProcess(
+            ["agy"], 0, stdout=json.dumps({"response": '{"status": "ok"}', "conversation_id": "cid-rep"}), stderr=""
+        )
+
+    monkeypatch.setattr(client, "_execute_cli", _fake_exec_cli)
+    monkeypatch.setattr(
+        "intelligence.sentiment.gemini_client.prepare_topic_session",
+        lambda *_a, **_kw: TopicSession("cid-rep", "", True),
+    )
+    monkeypatch.setattr("intelligence.sentiment.gemini_client.record_topic_turn", lambda **_kw: None)
+    out_rep = client.query_text("repair system", topic_key="auto_technical_repair")
+    assert out_rep == '{"status": "ok"}'
+    assert len(seen_repo_rules) == 2
+    assert seen_repo_rules[0][1] is True
+    assert "/compact" in seen_repo_rules[1][0] and seen_repo_rules[1][1] is True
+
+    # 3. update_microstructure_cycle_deltas preserves 4-decimal whale_long_pct deltas and
+    #    bidirectional native_l1_oi_usd scale matching
+    cdir = tmp_path / "cachedb_m"
+    cdir.mkdir()
+    mhist_f = cdir / "microstructure_cycle_history.json"
+    mhist_f.write_text(
+        json.dumps(
+            {
+                "HYPEUSDC": [
+                    {
+                        "ts": 1000.0,
+                        "whale_long_pct": 0.6605,
+                        "oi_usd": 60_000_000.0,
+                        "native_l1_oi_usd": 1_200_000_000.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    micro_hype = {
+        "HYPEUSDC": {
+            "whale_long_pct": 0.6645,
+            "oi_usd": 1_260_000_000.0,
+        }
+    }
+    update_microstructure_cycle_deltas(str(cdir), micro_hype, now_ts=1600.0)
+    cd = micro_hype["HYPEUSDC"]["cycle_delta"]
+    assert cd["whale_long_delta_pct"] == pytest.approx(0.004)
+    assert cd["prev_whale_long_pct"] == pytest.approx(0.6605)
+    assert cd["oi_delta_pct"] == pytest.approx(5.0)
+    assert cd["prev_oi_usd"] == pytest.approx(1_200_000_000.0)
+
+    # 4. _apply_24h_series_enrichment backfills missing kalman_vel_std without clobbering seeded kalman_vel
+    entry_k = {"price": 105.0, "kalman_vel": 0.123, "kalman_trend": 1}
+    ser_24 = [[1_700_000_000_000 + i * 60_000, 100.0 + i * 0.2] for i in range(30)]
+    _apply_24h_series_enrichment("SOLUSDC", entry_k, {"chg_1h_pct": 1.0}, ser_24, None)
+    assert entry_k["kalman_vel"] == pytest.approx(0.123)
+    assert entry_k.get("kalman_vel_std") is not None and entry_k["kalman_vel_std"] < 5.99
+
+    # 5. resolve_cachedb_filepath migrates .previous and .meta sidecars along with the main cache file
+    sub_cdir = tmp_path / "cachedb_sub"
+    (sub_cdir / "trends").mkdir(parents=True)
+    flat_f = sub_cdir / "cache_short_trend.json"
+    flat_f.write_text("{}", encoding="utf-8")
+    (sub_cdir / "cache_short_trend.json.previous").write_text('{"prev": 1}', encoding="utf-8")
+    (sub_cdir / "cache_short_trend.json.meta").write_text('{"meta": 1}', encoding="utf-8")
+    resolved_p = resolve_cachedb_filepath(str(flat_f))
+    assert str(resolved_p).endswith("trends/cache_short_trend.json")
+    assert (sub_cdir / "trends" / "cache_short_trend.json.previous").is_file()
+    assert (sub_cdir / "trends" / "cache_short_trend.json.meta").is_file()
+
 
 
 

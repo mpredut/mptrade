@@ -505,23 +505,29 @@ def update_microstructure_cycle_deltas(
                 static_tol=1e-5, min_diff=1e-4,
             )
             if cur_wl is not None and p_wl is not None:
-                delta_d["whale_long_delta_pct"] = round(cur_wl - p_wl, 2)
-                delta_d["prev_whale_long_pct"] = round(p_wl, 2)
+                delta_d["whale_long_delta_pct"] = round(cur_wl - p_wl, 4)
+                delta_d["prev_whale_long_pct"] = round(p_wl, 4)
             if cur_oi is not None and (p_oi := safe_pos_float(ref_snap.get("oi_usd"), default=None)) is not None and p_oi > 0.0:
                 l1_oi = safe_pos_float(minfo.get("native_l1_oi_usd"), default=None)
-                eff_cur_oi = (
-                    l1_oi
-                    if (
-                        l1_oi is not None
-                        and abs(p_oi - l1_oi) / max(p_oi, l1_oi) <= 0.25
-                        and abs(cur_oi - p_oi) / max(cur_oi, p_oi) > 0.35
-                    )
-                    else cur_oi
-                )
-                oi_d_pct = round(((eff_cur_oi - p_oi) / p_oi) * 100.0, 2)
+                p_l1_oi = safe_pos_float(ref_snap.get("native_l1_oi_usd"), default=None)
+                eff_cur_oi = cur_oi
+                eff_p_oi = p_oi
+                if (
+                    l1_oi is not None
+                    and abs(p_oi - l1_oi) / max(p_oi, l1_oi) <= 0.25
+                    and abs(cur_oi - p_oi) / max(cur_oi, p_oi) > 0.35
+                ):
+                    eff_cur_oi = l1_oi
+                elif (
+                    p_l1_oi is not None
+                    and abs(cur_oi - p_l1_oi) / max(cur_oi, p_l1_oi) <= 0.25
+                    and abs(cur_oi - p_oi) / max(cur_oi, p_oi) > 0.35
+                ):
+                    eff_p_oi = p_l1_oi
+                oi_d_pct = round(((eff_cur_oi - eff_p_oi) / eff_p_oi) * 100.0, 2)
                 if abs(oi_d_pct) <= 80.0:
                     delta_d["oi_delta_pct"] = oi_d_pct
-                    delta_d["prev_oi_usd"] = round(p_oi, 2)
+                    delta_d["prev_oi_usd"] = round(eff_p_oi, 2)
             if cur_tr is not None and (p_tr := safe_pos_float(ref_snap.get("taker_buy_sell_ratio"), default=None)) is not None:
                 delta_d["taker_ratio_delta"] = round(cur_tr - p_tr, 4)
                 delta_d["prev_taker_ratio"] = round(p_tr, 4)
@@ -529,11 +535,13 @@ def update_microstructure_cycle_deltas(
                 minfo["cycle_delta"] = delta_d
         if not own_h_list or (eff_now - float(own_h_list[-1]["ts"])) >= 60.0:
             new_rec: Dict[str, Any] = {"ts": round(eff_now, 2)}
+            cur_l1_oi = safe_pos_float(minfo.get("native_l1_oi_usd"), default=None)
             for k_rec, v_rec, dec_r in (
                 ("ob_imbalance", cur_ob, 4),
                 ("cvd_15m_usd", cur_cvd, 2),
-                ("whale_long_pct", cur_wl, 2),
+                ("whale_long_pct", cur_wl, 4),
                 ("oi_usd", cur_oi, 2),
+                ("native_l1_oi_usd", cur_l1_oi, 2),
                 ("taker_buy_sell_ratio", cur_tr, 4),
             ):
                 if v_rec is not None:
