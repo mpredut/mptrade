@@ -34,7 +34,6 @@ from botcore import (
 from cachepaths import cache_path, canonical_base_asset
 from .base import (
     MarketDataProvider,
-    _clean_single_order_id,
     _derive_128bit_client_order_id,
     aggregate_fills_by_order_id,
     bool_env,
@@ -706,9 +705,32 @@ class HyperliquidProvider(MarketDataProvider):
                         kind: Optional[str] = None) -> None:
         """Reject a BUY that free USDC cannot fund in full."""
         self.validate_symbol(symbol)
-        self._preflight_buy_quote_balance(
-            symbol, side, qty, price, quote_asset="USDC", market=market, kind=kind
-        )
+        if normalize_side(side) != "BUY" or qty is None:
+            return
+        qty_f = safe_pos_float(qty, default=None)
+        if qty_f is None:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
+        if price is None:
+            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
+            if mid_f is None:
+                raise ProviderError(f"preflight_order({symbol}): price unavailable")
+            price_f = mid_f * (1.05 if _parse_bool_flag(market, False) else 1.0)
+        else:
+            price_f = safe_pos_float(price, default=None)
+            if price_f is None:
+                raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
+        required = safe_pos_float(qty_f * price_f, default=None)
+        if required is None:
+            raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
+        avail_f = safe_nonneg_float(self.free_balance("USDC"), default=None)
+        if avail_f is None:
+            raise ProviderError(f"preflight_order({symbol}): the USDC balance cannot be confirmed")
+        tolerance = max(1e-9, required * 1e-12)
+        if avail_f + tolerance < required:
+            raise ProviderError(
+                f"preflight_order({symbol}) {kind or 'BUY'}: insufficient USDC balance "
+                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
+            )
 
     def order_by_client_id(self, symbol: str, client_order_id: str):
         """Recover a Hyperliquid spot order by CLOID when supported by the SDK."""

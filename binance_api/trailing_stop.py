@@ -57,7 +57,7 @@ from trailing_core import (  # noqa: E402  (re-export should_sell for tests/comp
     should_sell,
 )
 should_sell = should_sell  # Re-exported for test compatibility
-from botcore import (bounded_float, load_dotenv, log, required_bool_env, required_float_env,
+from botcore import (load_dotenv, log, required_bool_env, required_float_env,
                      required_int_env, safe_float, safe_nonneg_float, safe_pos_float)  # noqa: E402
 from cachepaths import cache_path, canonical_symbol_key  # noqa: E402
 
@@ -105,7 +105,21 @@ if not 1 <= REBUY_TREND_DAYS < 1000:
     raise ValueError("TRAILING_REBUY_TREND_DAYS must be in [1, 999] for the kline request")
 
 
-_finite = bounded_float
+def _finite(
+    value: object,
+    *,
+    name: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    parsed = safe_float(value, default=None)
+    if parsed is None:
+        raise ValueError(f"{name} must be a finite number")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return parsed
 
 
 class TrailingStop(TrailingAdapterBase):

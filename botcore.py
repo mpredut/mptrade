@@ -325,24 +325,6 @@ def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
     return i if (i is not None and i >= 0) else default
 
 
-def bounded_float(
-    value: object,
-    *,
-    name: str,
-    minimum: float | None = None,
-    maximum: float | None = None,
-) -> float:
-    """Validate and coerce ``value`` to a finite float within ``[minimum, maximum]``."""
-    parsed = safe_float(value, default=None)
-    if parsed is None:
-        raise ValueError(f"{name} must be a finite number")
-    if minimum is not None and parsed < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    if maximum is not None and parsed > maximum:
-        raise ValueError(f"{name} must be <= {maximum}")
-    return parsed
-
-
 def obj_attr(obj: object, key: str, default: object = None) -> object:
     """Extract ``key`` uniformly from either a ``dict`` or an object attribute."""
     if obj is None or isinstance(obj, (str, bytes, bytearray)):
@@ -1202,10 +1184,7 @@ def validate_required_env_keys(
 ) -> None:
     """Abort startup with the complete list of missing or empty mandatory environment keys."""
     src = os.environ if env is None else env
-    missing = [
-        name for name in keys
-        if src.get(name) is None or not str(src[name]).split("#", 1)[0].strip()
-    ]
+    missing = [name for name in keys if not _clean_env_str(src.get(name))]
     if missing:
         raise ValueError(f"Missing or empty mandatory {label} settings: " + ", ".join(missing))
 

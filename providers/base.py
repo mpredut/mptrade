@@ -147,6 +147,14 @@ def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optiona
     return int(round(numeric))
 
 
+def _ts_ms_to_s(ts_ms: float | int) -> float:
+    return ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
+
+
+def _is_fresh_obs_ts(obs_ts_s: Optional[float], now_s: float, max_age_s: float) -> bool:
+    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
+
+
 def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[int]:
     """Extract and normalize an order/fill timestamp in milliseconds from any venue shape."""
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_timestamp_ms(v, default=None), default)
@@ -155,9 +163,7 @@ def extract_timestamp_ms(order: Any, default: Optional[int] = None) -> Optional[
 def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional[float]:
     """Extract and normalize an order/fill timestamp in seconds from any venue shape."""
     numeric = _first_mapped(order, _TIMESTAMP_KEYS, _parse_epoch_or_iso_s)
-    if numeric is None:
-        return default
-    return numeric / 1000.0 if numeric >= 100_000_000_000.0 else numeric
+    return default if numeric is None else _ts_ms_to_s(numeric)
 
 
 def clean_order_id(val: Any) -> Optional[str]:
@@ -1063,69 +1069,6 @@ def validate_ohlc_candle_bar(
     }
 
 
-def read_client_ohlc_series(
-    client_or_factory: Any,
-    symbol: str,
-    interval_min: int,
-    *,
-    err_prefix: Optional[str] = None,
-):
-    """Read a ``ClosedPriceSeries`` from a client or executor supporting ``ohlc_series`` or ``ohlc_closes*``."""
-    from market_regime import ClosedPriceSeries
-
-    pfx = err_prefix or f"ohlc_series({symbol})"
-    direct_series = getattr(client_or_factory, "ohlc_series", None)
-    if callable(direct_series):
-        return direct_series(symbol, interval_min)
-    interval_i = exact_pos_int(interval_min, default=None)
-    if interval_i is None:
-        raise ProviderError(f"{pfx}: invalid interval_min={interval_min!r}")
-    try:
-        client = (
-            client_or_factory()
-            if callable(client_or_factory) and not hasattr(client_or_factory, "ohlc_closes")
-            else client_or_factory
-        )
-        series_reader = getattr(client, "ohlc_closes_with_timestamps", None)
-        if callable(series_reader):
-            closes, timestamps = series_reader(symbol, interval_i)
-            timestamps = tuple(timestamps) if timestamps is not None else ()
-            observed_at = timestamps[-1] if timestamps else None
-        else:
-            reader = getattr(client, "ohlc_closes_with_timestamp", None)
-            if callable(reader):
-                closes, observed_at = reader(symbol, interval_i)
-            else:
-                closes = client.ohlc_closes(symbol, interval_i)
-                observed_at = None
-            timestamps = ()
-        vols_map = getattr(client, "_last_ohlc_volumes", None)
-        if isinstance(vols_map, dict):
-            sym_strip = str(symbol).strip() if isinstance(symbol, str) else symbol
-            vols = vols_map.get((symbol, interval_i)) or vols_map.get((sym_strip, interval_i)) or ()
-        else:
-            vols = ()
-        return ClosedPriceSeries(
-            tuple(closes) if closes is not None else (),
-            interval_i,
-            observed_at,
-            timestamps,
-            tuple(vols) if vols else (),
-        )
-    except ProviderError:
-        raise
-    except Exception as exc:
-        raise ProviderError(f"{pfx}: {exc}") from exc
-
-
-def _ts_ms_to_s(ts_ms: float | int) -> float:
-    return ts_ms / 1000.0 if ts_ms >= 100_000_000_000 else float(ts_ms)
-
-
-def _is_fresh_obs_ts(obs_ts_s: Optional[float], now_s: float, max_age_s: float) -> bool:
-    return obs_ts_s is not None and -5.0 <= (now_s - obs_ts_s) <= max_age_s
-
-
 class MarketDataProvider(ABC):
     """Shared market-data, account, order, and policy-hook interface."""
 
@@ -1314,67 +1257,6 @@ class MarketDataProvider(ABC):
         if live_override is None:
             return bool_env(env_key, folder)
         return _parse_bool_flag(live_override, False)
-
-    def _preflight_sell_base_balance(self, symbol: str, side: str, qty: float) -> None:
-        """Reject an impossible SELL before creating a durable submit intent."""
-        if normalize_side(side) != "SELL" or qty is None:
-            return
-        requested = safe_pos_float(qty, default=None)
-        if requested is None:
-            raise ProviderError(f"preflight_order {symbol}: an invalid SELL quantity")
-        precision = self.pair_precision(symbol)
-        base_asset = precision.base_asset if precision else ""
-        if not base_asset:
-            raise ProviderError(f"preflight_order {symbol}: base asset is unavailable")
-        avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
-        if avail_f is None:
-            raise ProviderError(f"preflight_order {symbol}: {base_asset} balance is unavailable")
-        decimals = exact_nonneg_int(getattr(precision, "volume_decimals", None), default=8)
-        tolerance = 0.5 * (10.0 ** -min(decimals, 18))
-        if requested > avail_f + tolerance:
-            raise ProviderError(
-                f"preflight_order {symbol}: insufficient funds SELL "
-                f"qty={requested} available={avail_f} {base_asset}"
-            )
-
-    def _preflight_buy_quote_balance(
-        self,
-        symbol: str,
-        side: str,
-        qty: float,
-        price: Optional[float] = None,
-        *,
-        quote_asset: str = "USDC",
-        market: bool = False,
-        kind: Optional[str] = None,
-    ) -> None:
-        """Reject a BUY that free quote currency cannot fund in full."""
-        if normalize_side(side) != "BUY" or qty is None:
-            return
-        qty_f = safe_pos_float(qty, default=None)
-        if qty_f is None:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY quantity")
-        if price is None:
-            mid_f = safe_pos_float(self.get_current_price(symbol), default=None)
-            if mid_f is None:
-                raise ProviderError(f"preflight_order({symbol}): price unavailable")
-            price_f = mid_f * (1.05 if _parse_bool_flag(market, False) else 1.0)
-        else:
-            price_f = safe_pos_float(price, default=None)
-            if price_f is None:
-                raise ProviderError(f"preflight_order({symbol}): invalid BUY price")
-        required = safe_pos_float(qty_f * price_f, default=None)
-        if required is None:
-            raise ProviderError(f"preflight_order({symbol}): invalid BUY notional")
-        avail_f = safe_nonneg_float(self.free_balance(quote_asset), default=None)
-        if avail_f is None:
-            raise ProviderError(f"preflight_order({symbol}): the {quote_asset} balance cannot be confirmed")
-        tolerance = max(1e-9, required * 1e-12)
-        if avail_f + tolerance < required:
-            raise ProviderError(
-                f"preflight_order({symbol}) {kind or 'BUY'}: insufficient {quote_asset} balance "
-                f"({avail_f:.8f} < {required:.8f}) — the order was not sent"
-            )
 
     def execution_enabled(self) -> bool:
         """Return whether this provider may create a real venue order now.
@@ -2022,18 +1904,13 @@ class MarketDataProvider(ABC):
             keys = [k for k in items if isinstance(k, str) and clean_symbol_key(k) in cands]
         if not keys:
             return None
-        now_ms = time.time() * 1000.0
-        max_stale_ms = (safe_pos_float(max_stale_sec, default=90.0) or 90.0) * 1000.0
+        now_s = time.time()
+        max_stale_s = safe_pos_float(max_stale_sec, default=90.0) or 90.0
         for key in keys:
             if not isinstance(items.get(key), list):
                 continue
             ft_val = safe_pos_float(casefold_get(ft, key), default=None)
-            if ft_val is None:
-                continue
-            if ft_val < 1e11:
-                ft_val *= 1000.0
-            age_ms = now_ms - ft_val
-            if age_ms < -5000.0 or age_ms > max_stale_ms:
+            if ft_val is None or not _is_fresh_obs_ts(_ts_ms_to_s(ft_val), now_s, max_stale_s):
                 continue
             if callable(normalize_fn):
                 return [normalize_fn(t) for t in items[key] if isinstance(t, dict)]

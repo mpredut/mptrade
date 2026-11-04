@@ -27,19 +27,18 @@ from botcore import (
 )
 from .base import (
     MarketDataProvider,
-    _clean_single_order_id,
     _derive_128bit_client_order_id,
-    _normalize_order,
     aggregate_fills_by_order_id,
     bool_env,
     build_open_order_entry,
     build_price_history_points,
+    clean_order_id,
     env_values_map,
     extract_client_order_id,
     extract_order_fee,
     extract_timestamp_ms,
+    normalize_order,
     normalize_side,
-    read_client_ohlc_series,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -140,14 +139,14 @@ def _kraken_balance_asset_candidates(asset: str) -> List[str]:
 
 def _normalize_kraken_fill(raw: dict) -> dict:
     """Normalize a Kraken fill while preserving ordertxid/orderId and fee metadata."""
-    norm = _normalize_order(raw)
+    norm = normalize_order(raw)
     if isinstance(raw, dict):
-        order_id = _clean_single_order_id(raw.get("ordertxid")) or _clean_single_order_id(raw.get("orderId"))
+        order_id = clean_order_id(raw.get("ordertxid")) or clean_order_id(raw.get("orderId"))
         if order_id is not None:
             norm["orderId"] = order_id
         else:
             norm.pop("orderId", None)
-        fill_id = _clean_single_order_id(raw.get("id")) or _clean_single_order_id(raw.get("trade_id"))
+        fill_id = clean_order_id(raw.get("id")) or clean_order_id(raw.get("trade_id"))
         if fill_id is not None:
             norm["id"] = fill_id
         fee_info = extract_order_fee(raw)
@@ -697,7 +696,25 @@ class KrakenProvider(MarketDataProvider):
                         price: Optional[float] = None, *, market: bool = False,
                         kind: Optional[str] = None) -> None:
         """Reject an impossible SELL before creating a durable submit intent."""
-        self._preflight_sell_base_balance(symbol, side, qty)
+        if normalize_side(side) != "SELL" or qty is None:
+            return
+        requested = safe_pos_float(qty, default=None)
+        if requested is None:
+            raise ProviderError(f"preflight_order {symbol}: an invalid SELL quantity")
+        precision = self.pair_precision(symbol)
+        base_asset = precision.base_asset if precision else ""
+        if not base_asset:
+            raise ProviderError(f"preflight_order {symbol}: base asset is unavailable")
+        avail_f = safe_nonneg_float(self.free_balance(base_asset), default=None)
+        if avail_f is None:
+            raise ProviderError(f"preflight_order {symbol}: {base_asset} balance is unavailable")
+        decimals = exact_nonneg_int(getattr(precision, "volume_decimals", None), default=8)
+        tolerance = 0.5 * (10.0 ** -min(decimals, 18))
+        if requested > avail_f + tolerance:
+            raise ProviderError(
+                f"preflight_order {symbol}: insufficient funds SELL "
+                f"qty={requested} available={avail_f} {base_asset}"
+            )
 
     def order_status(self, symbol: str, order_id: str) -> OrderStatus:
         clean_id = _clean_kraken_order_id(order_id, "order_status")
@@ -832,6 +849,38 @@ class KrakenProvider(MarketDataProvider):
             raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
-        return read_client_ohlc_series(
-            self._client, symbol, interval_min, err_prefix=f"ohlc_series {symbol}"
-        )
+        interval_i = exact_pos_int(interval_min, default=None)
+        if interval_i is None:
+            raise ProviderError(f"ohlc_series {symbol}: invalid interval_min={interval_min!r}")
+        try:
+            client = self._client()
+            series_reader = getattr(client, "ohlc_closes_with_timestamps", None)
+            if callable(series_reader):
+                closes, timestamps = series_reader(symbol, interval_i)
+                timestamps = tuple(timestamps) if timestamps is not None else ()
+                observed_at = timestamps[-1] if timestamps else None
+            else:
+                reader = getattr(client, "ohlc_closes_with_timestamp", None)
+                if callable(reader):
+                    closes, observed_at = reader(symbol, interval_i)
+                else:
+                    closes = client.ohlc_closes(symbol, interval_i)
+                    observed_at = None
+                timestamps = ()
+            vols_map = getattr(client, "_last_ohlc_volumes", None)
+            if isinstance(vols_map, dict):
+                sym_strip = str(symbol).strip() if isinstance(symbol, str) else symbol
+                vols = vols_map.get((symbol, interval_i)) or vols_map.get((sym_strip, interval_i)) or ()
+            else:
+                vols = ()
+            return ClosedPriceSeries(
+                tuple(closes) if closes is not None else (),
+                interval_i,
+                observed_at,
+                timestamps,
+                tuple(vols) if vols else (),
+            )
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(f"ohlc_series {symbol}: {exc}") from exc

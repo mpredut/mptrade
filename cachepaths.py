@@ -786,47 +786,40 @@ def cache_symbol_variants(
         return [symbol] if include_original else []
     cleaned = clean_symbol_key(raw)
     variants: list = []
+
+    def _add(cand: object) -> None:
+        if cand and cand not in variants:
+            variants.append(cand)
+
     if include_original:
         variants.append(symbol)
-        for cand in (raw, cleaned):
-            if cand and cand not in variants:
-                variants.append(cand)
+        _add(raw)
+        _add(cleaned)
     else:
-        for cand in (cleaned, raw):
-            if cand and cand not in variants:
-                variants.append(cand)
+        _add(cleaned)
+        _add(raw)
     if cleaned != "USDCUSDT":
         base = normalize_cache_base_asset(symbol)
-        bases = [base] if base else []
-        for eq_b in _CROSS_VENUE_BASE_EQUIVALENTS.get(base, ()):
-            if eq_b not in bases:
-                bases.append(eq_b)
+        bases = list(dict.fromkeys([base, *_CROSS_VENUE_BASE_EQUIVALENTS.get(base, ())])) if base else []
         sym_parts = split_symbol_assets(cleaned)
         sym_quote = sym_parts[1] if sym_parts is not None else ""
         if sym_quote and sym_quote in quotes:
             for b in bases:
-                cand = f"{b}{sym_quote}"
-                if cand and cand not in variants:
-                    variants.append(cand)
+                _add(f"{b}{sym_quote}")
         for suffix in quotes:
             for b in bases:
-                cand = f"{b}{suffix}"
-                if cand and cand not in variants:
-                    variants.append(cand)
+                _add(f"{b}{suffix}")
         include_usd_equities = any(q in ("USDC", "USDT", "USD", "FDUSD") for q in quotes)
         for b in bases:
-            if include_base and b not in variants:
-                variants.append(b)
+            if include_base:
+                _add(b)
             if include_usd_equities:
-                eq_cand = f"{b}_US_EQ"
-                if eq_cand not in variants:
-                    variants.append(eq_cand)
+                _add(f"{b}_US_EQ")
                 for xst_cand in (
                     f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
                     f"{b}x/USD", f"{b}xUSD", f"{b}/USDC", f"{b}/USD",
                 ):
-                    if xst_cand not in variants:
-                        variants.append(xst_cand)
+                    _add(xst_cand)
     return variants
 
 
