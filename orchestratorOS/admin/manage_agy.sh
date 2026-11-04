@@ -162,8 +162,9 @@ do_status() {
 do_ui_sync() {
     exec 200>"$LOCK_FILE"
     flock -w 10 200 || exit 0
-    local ssot_vals idle_sec="" min_interval_sec="" rc=0
-    ssot_vals="$(/usr/bin/python3 -c "import sys; sys.path[:0] = ['$ROOT/intelligence', '$ROOT']; from macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null || true)"
+    local python_bin="$ROOT/.venv/bin/python3" ssot_vals idle_sec="" min_interval_sec="" rc=0
+    [ -x "$python_bin" ] || python_bin="/usr/bin/python3"
+    ssot_vals="$("$python_bin" -c "import sys; sys.path[:0] = ['$ROOT/intelligence', '$ROOT']; from macro_sentiment_ssot import resolve_derived_telemetry_intervals; d = resolve_derived_telemetry_intervals(); print(f\"{int(d['ui_sync_idle_sec'])} {int(d['ui_sync_interval_sec'])}\")" 2>/dev/null || true)"
     read -r idle_sec min_interval_sec <<< "$ssot_vals"
     [ -z "$idle_sec" ] && idle_sec="$(env_get AGY_UI_SYNC_IDLE_SEC)"
     [ -z "$min_interval_sec" ] && min_interval_sec=720
@@ -172,7 +173,7 @@ do_ui_sync() {
         exit 1
     fi
     is_active || exit 0
-    /usr/bin/python3 "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" --min-interval-sec "$min_interval_sec" >/dev/null 2>&1 || rc=$?
+    "$python_bin" "$SCRIPT_DIR/agy_store_fix.py" ui-sync-check --idle-sec "$idle_sec" --min-interval-sec "$min_interval_sec" >/dev/null 2>&1 || rc=$?
     case "$rc" in
         0)  log "ui-sync: store diverged from daemon and idle >= ${idle_sec}s (cadence >= ${min_interval_sec}s); restarting to surface threads."
             do_restart ;;
