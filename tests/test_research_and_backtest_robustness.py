@@ -1690,7 +1690,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
         PairCoordinator.from_state(
             MagicMock(),
             MagicMock(step_interval_sec=1.0),
-            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "paired", "tickets": ["not_a_dict"]},
+            {"pair_id": "p1", "qty": 1.0, "start_side": "BUY", "phase": "quoting", "tickets": ["not_a_dict"]},
         )
 
     checker_cache = MagicMock()
