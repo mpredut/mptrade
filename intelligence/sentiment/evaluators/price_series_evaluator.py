@@ -419,7 +419,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 low_6h = min(prior_low, recent_low)
                 dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
                 pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
-                if dd_low_6h <= -1.75 and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
+                if dd_low_6h <= -1.45 and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
                     eff_dec = _auto_px_decimals(cur_px)
                     if recent_low < prior_low and cur_px > prior_low:
                         out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
@@ -662,6 +662,17 @@ def apply_short_trend_item(
     for k in ("gradient_recent_fast", "epsilon", "vol_1h_pct"):
         if not require_any_slope or tinfo.get(k) is not None:
             entry[k] = tinfo.get(k)
+    if abs(safe_float(entry.get("gradient_recent"), 0.0)) < 5e-8:
+        for w_fb in (wins["222"], wins["90"], wins["900"]):
+            if (gr_fb := safe_float(w_fb.get("gradient_recent"), default=None)) is not None and abs(gr_fb) >= 5e-8:
+                entry["gradient_recent"] = gr_fb
+                break
+    if entry.get("gradient_recent_fast") is not None and abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 5e-8:
+        for w_fb in (wins["90"], wins["222"]):
+            gf_fb = safe_float(w_fb.get("gradient_recent_fast") or w_fb.get("gradient_recent") or w_fb.get("slope_full"), default=None)
+            if gf_fb is not None and abs(gf_fb) >= 5e-8:
+                entry["gradient_recent_fast"] = gf_fb
+                break
     if not require_any_slope:
         entry["trend_fast"] = tinfo.get("trend_fast", trend)
     t_vol, t_re = safe_pos_float(tinfo.get("vol_1h_pct"), default=None), safe_pos_float(tinfo.get("adapt_reentry_pct"), default=None)
@@ -697,10 +708,11 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
         entry["price"] = live_px
     entry.setdefault("trend", w222.get("final_trend", 0))
     entry.setdefault("growth_coefficient", w222.get("growth_coefficient", 0.0))
-    if entry.get("gradient_recent") is None and w222.get("gradient_recent") is not None:
-        entry["gradient_recent"] = w222.get("gradient_recent")
-    if entry.get("gradient_recent_fast") is None:
-        if (gf_live := w90.get("gradient_recent_fast") or w222.get("gradient_recent_fast") or w90.get("gradient_recent")) is not None:
+    if entry.get("gradient_recent") is None or abs(safe_float(entry.get("gradient_recent"), 0.0)) < 5e-8:
+        if (gr_live := w222.get("gradient_recent") or w90.get("gradient_recent") or w900.get("gradient_recent")) is not None:
+            entry["gradient_recent"] = gr_live
+    if entry.get("gradient_recent_fast") is None or abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 5e-8:
+        if (gf_live := w90.get("gradient_recent_fast") or w222.get("gradient_recent_fast") or w90.get("gradient_recent") or w90.get("slope_full")) is not None:
             entry["gradient_recent_fast"] = gf_live
     if entry.get("epsilon") is None and (eps_live := w222.get("epsilon") or w90.get("epsilon")) is not None:
         entry["epsilon"] = eps_live

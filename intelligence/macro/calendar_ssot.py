@@ -382,7 +382,8 @@ def resolve_macro_economic_calendar(
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0
             time_lbl = f"{ev_dt.strftime('%a')} {hh:02d}:{mm:02d} {tz_abbr}" if day_offset > 0 else f"{hh:02d}:{mm:02d} {tz_abbr}"
-            if -20.0 <= delta_min <= 0.0 and active_window is None:
+            max_ago_min = -15.0 if code == "US_WALL_STREET_CLOSE" else -20.0
+            if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
                 win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
                 active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
             elif delta_min > 0.0:

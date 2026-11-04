@@ -234,11 +234,13 @@ def collect_pretrade_telemetry(
             (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
             0.0,
         )
+        vb_pos_ts = 0.0
         if live_cur_px <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if str(vb_v.get("symbol") or "").strip().upper() == str(symbol).strip().upper():
                         live_cur_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
+                        vb_pos_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
                         if live_cur_px > 0.0:
                             break
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
@@ -252,19 +254,36 @@ def collect_pretrade_telemetry(
                 (now_ms_eq - last_alt_pt[0]) <= 20 * 60 * 1000
                 and (live_cur_px <= 0.0 or abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) <= 0.005)
             )
+            if (
+                rth_fresh_eq
+                and live_cur_px > 0.0
+                and last_alt_pt[0] > 1e11
+                and (vb_pos_ts <= 0.0 or (last_alt_pt[0] / 1000.0) > vb_pos_ts)
+            ):
+                live_cur_px = round(last_alt_pt[1], 4)
+            if not rth_fresh_eq and m24:
+                for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                    m24.pop(k_stale_eq, None)
             if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1]) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
                 cur_px_est = round(live_cur_px, 4)
                 if rth_fresh_eq:
                     alt_series_24h = list(alt_series_24h) + [[now_ms_eq, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
+                    if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005 and len(alt_series_24h) >= 2:
+                        last_alt_tail = (
+                            list(alt_series_24h[-1][2:])
+                            if isinstance(alt_series_24h[-1], (list, tuple)) and len(alt_series_24h[-1]) >= 3
+                            else []
+                        )
+                        alt_series_24h = list(alt_series_24h[:-1]) + [[last_alt_pt[0], cur_px_est, *last_alt_tail]]
+                        m24 = compute_24h_price_metrics(alt_series_24h) or m24
+                        for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                            m24.pop(k_stale_eq, None)
                     recalculate_live_price_geometry(m24, cur_px_est)
                     first_alt_pt = _parse_ts_px_row(alt_series_24h[0]) if alt_series_24h else None
                     if "chg_24h_pct" in m24 and first_alt_pt is not None and first_alt_pt[1] > 0:
                         m24["chg_24h_pct"] = pct_delta(cur_px_est, first_alt_pt[1])
-            if not rth_fresh_eq and m24:
-                for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
-                    m24.pop(k_stale_eq, None)
         if m24 and m24.get("vp_source") == "TPO" and not str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ:
             try:
                 import time as _pt_time
@@ -421,6 +440,11 @@ def collect_pretrade_telemetry(
                     telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
 
         is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
+        if cur_px_est > 0.0 and arch_vals_7d:
+            if _prices_diverged(cur_px_est, safe_float(arch_vals_7d[-1], 0.0)):
+                arch_vals_7d = []
+            elif abs(cur_px_est - safe_float(arch_vals_7d[-1], 0.0)) > 1e-9:
+                arch_vals_7d = list(arch_vals_7d) + [cur_px_est]
         m7d: Dict[str, Any] = (
             compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq else 6)
             if arch_vals_7d and len(arch_vals_7d) >= 2
@@ -525,7 +549,10 @@ def collect_pretrade_telemetry(
                 ):
                     apply_live_24trend_windows(t_entry, l24)
                     break
-            if isinstance(k_data := _rj(os.path.join(cachedb_dir, "cache_kalman_price.json")), dict):
+            k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_trend.json"))
+            if not isinstance(k_data, dict):
+                k_data = _rj(os.path.join(cachedb_dir, "cache_kalman_price.json"))
+            if isinstance(k_data, dict):
                 k_items = k_data.get("items") if isinstance(k_data.get("items"), dict) else k_data
                 if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
                     k_vel = safe_float(k_sym.get("kalman_vel"), default=None)

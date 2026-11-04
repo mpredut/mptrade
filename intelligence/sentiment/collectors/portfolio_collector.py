@@ -749,7 +749,7 @@ def harvest_tradable_positions_and_orders(
             if params.get("mt.gain") or params.get("mt.lost"):
                 pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
             tradable_positions.append(pos_entry)
-            updated_bals[f"pos:{v_norm}:{sym}"] = dict(pos_entry)
+            updated_bals[f"pos:{v_norm}:{sym}"] = {**pos_entry, "ts": round(now_ts_oo, 3)}
 
             if callable(open_fn := getattr(inst, "open_orders", None)):
                 oo_key = f"open_orders:{v_norm}:{sym}"

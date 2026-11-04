@@ -4410,6 +4410,35 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "24h Volume Profile (POC / Value Area)" in pt_spcx_64
     assert "7d Price Range & Swing Structure" in pt_spcx_64
 
+    # Bugs 66, 67 & 68:
+    # - Bug 66: Market-closed flat runs (>=4 identical prices) in cache_watcher_all_price.json are collapsed for equities so RTH horizons, slopes, vol_1h_pct, and TPO POC are not zeroed/distorted by overnight/post-close duplicate ticks
+    # - Bug 67: collect_pretrade_telemetry reads cache_kalman_trend.json (as well as cache_kalman_price.json)
+    cdir_66 = tmp_path / "cachedb_66"
+    cdir_66.mkdir(exist_ok=True)
+    spcx_flat_runs = (
+        [[now_ms_w3 - (28 * 12 - i) * 300_000, 136.3699951171875] for i in range(180)]
+        + [[now_ms_w3 - (13 * 12 - i) * 300_000, 140.50 + (i % 7) * 0.15 + i * 0.01] for i in range(78)]
+        + [[now_ms_w3 - (6 * 12 - i) * 300_000, 141.30999755859375] for i in range(72)]
+    )
+    (cdir_66 / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"SPCX": spcx_flat_runs}}),
+        encoding="utf-8",
+    )
+    (cdir_66 / "cache_kalman_trend.json").write_text(
+        json.dumps({"items": {"SPCX": {"kalman_vel": -0.02388, "kalman_vel_std": 0.49, "kalman_trend": "FLAT"}}}),
+        encoding="utf-8",
+    )
+    pt_66 = {"SPCX_US_EQ": {"price": 138.36}}
+    enrich_24h_and_microstructure(str(cdir_66), str(tmp_path), pt_66, {}, {}, {}, now_ms_w3 / 1000.0)
+    assert pt_66["SPCX_US_EQ"].get("chg_15m_pct") != 0.0
+    assert pt_66["SPCX_US_EQ"].get("slope_15m") != 0.0
+    assert (pt_66["SPCX_US_EQ"].get("vol_1h_pct") or 0.0) > 0.0
+    assert (pt_66["SPCX_US_EQ"].get("poc_px") or 0.0) > 140.0
+    assert pt_66["SPCX_US_EQ"].get("low_24h") == 136.37
+    pt_spcx_66 = collect_pretrade_telemetry("SPCX_US_EQ", cachedb_dir=str(cdir_66))
+    assert "15m=+0.00%, 30m=+0.00%, 1h=+0.00%" not in pt_spcx_66.get("24h Multi-Horizon Price Evolution", "")
+    assert "POC=$136." not in pt_spcx_66.get("24h Volume Profile (POC / Value Area)", "")
+
     # Wave 11: Discrepancies AN, AP, AQ
     # - Discrepancy AP: grizzly bear attack headline with "killed" excluded from [HIGH-SEV] crisis keywords
     from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
@@ -4490,6 +4519,74 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     enrich_microstructure_cvd(ada_m, ada_p)
     assert ada_m["cvd_regime"] == "ask_absorbing"
     assert ada_m["spot_perp_flow_regime"] != "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+    # Wave 12: Discrepancies AR, AS, AT, AU
+    from datetime import datetime, timezone
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+    from intelligence.sentiment.evaluators.price_series_evaluator import apply_live_24trend_windows, apply_short_trend_item
+
+    # AR: At 23:20 EET (21:20 UTC on a Wednesday in standard time), US_WALL_STREET_CLOSE (23:00 EET) is no longer ACTIVE VOLATILITY WINDOW
+    cal_ar = resolve_macro_economic_calendar(datetime(2026, 11, 4, 21, 20, 0, tzinfo=timezone.utc).timestamp())
+    assert cal_ar["session_key"] == "ASIA_OVERNIGHT_CALM"
+    assert "US Wall Street Cash Close" not in cal_ar["next_high_impact_event"]
+
+    # AS: apply_short_trend_item / apply_live_24trend_windows fall back to non-zero 90s/222s/900s gradients when primary window is 0.0
+    ada_entry_as: dict = {}
+    apply_short_trend_item(
+        ada_entry_as,
+        {"gradient_recent": 0.0, "gradient_recent_fast": 0.0, "epsilon": 1.6e-05, "trend": 0, "slope": -3.19e-07},
+    )
+    apply_live_24trend_windows(
+        ada_entry_as,
+        {
+            "90": {"slope_full": 6.46e-06, "gradient_recent_fast": 6.46e-06, "gradient_recent": 6.46e-06},
+            "222": {"slope_full": 0.0, "gradient_recent_fast": 0.0, "gradient_recent": 0.0},
+            "900": {"slope_full": 2.83e-06, "gradient_recent": 2.83e-06},
+        },
+    )
+    assert abs(ada_entry_as["gradient_recent_fast"] - 6.46e-06) < 1e-10
+    assert abs(ada_entry_as["gradient_recent"] - 6.46e-06) < 1e-10
+
+    # AT & AU: T212 cached equity position adopts fresh (<20m) post-market bar even when venue_balances_state.json mtime is newer;
+    # and when post-RTH price differs by >0.5% (e.g. RGNT_US_EQ $1.31 vs $1.36), m24 horizons, slopes, and kalman_vel reflect $1.31
+    cdir_at = tmp_path / "cachedb_at"
+    (cdir_at / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir_at / "state").mkdir(parents=True, exist_ok=True)
+    now_at = 1_793_827_200.0
+    nvda_bars_at = [
+        [int((now_at - (32 - i) * 300) * 1000), round(195.0 - i * 0.1, 4), 1000.0]
+        for i in range(30)
+    ] + [[int((now_at - 300) * 1000), 191.51, 1200.0]]
+    rgnt_bars_au = [
+        [int((now_at - (30 - i) * 300 - 1800) * 1000), 1.36, 500.0]
+        for i in range(31)
+    ]
+    rgnt_bars_au[0][1] = 1.41
+    (cdir_at / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": nvda_bars_at}}),
+        encoding="utf-8",
+    )
+    (cdir_at / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_bars_au}}),
+        encoding="utf-8",
+    )
+    (cdir_at / "state" / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 0.032, "price": 191.95, "ts": now_at - 1800.0},
+                "pos:t212:RGNT_US_EQ": {"symbol": "RGNT_US_EQ", "free": 122.51, "price": 1.31, "ts": now_at - 1800.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_at: dict = {}
+    enrich_24h_and_microstructure(str(cdir_at), str(tmp_path), pt_at, {}, {}, {}, now_at)
+    assert pt_at["NVDA_US_EQ"]["price"] == 191.51
+    assert pt_at["RGNT_US_EQ"]["price"] == 1.31
+    assert pt_at["RGNT_US_EQ"]["chg_15m_pct"] < 0.0
+    assert pt_at["RGNT_US_EQ"]["slope_3_7m"] < 0.0
+    assert pt_at["RGNT_US_EQ"]["kalman_vel"] < 0.0
+
 
 
 
