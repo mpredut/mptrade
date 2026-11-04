@@ -20,6 +20,8 @@ from botcore import (
     load_ini_config,
     lru_dict_put,
     parse_env_file,
+    register_module_aliases,
+    resolve_patched_attr,
     safe_float,
     safe_pos_float,
 )
@@ -261,6 +263,14 @@ def tracked_price_instruments(role=None, *, path=None):
 
 def _import_instrument_cls():
     """Import Instrument, reloading stale local modules once if a mid-run git pull updated disk files."""
+    patched = resolve_patched_attr(
+        "Instrument",
+        None,
+        modules=(__name__, "instruments_config"),
+        require_callable=True,
+    )
+    if patched is not None:
+        return patched
     try:
         from instrument import Instrument
 
@@ -627,9 +637,7 @@ def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
     return float("nan")
 
 
-_self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    sys.modules.setdefault("instruments_config", _self_mod)
+register_module_aliases(__name__, "instruments_config")
 
 
 if __name__ == "__main__":

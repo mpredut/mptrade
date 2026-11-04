@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from botcore import _parse_bool_flag, clean_json_value, exact_pos_int, load_ini_config, safe_float, safe_pos_float
+from botcore import _parse_bool_flag, clean_json_value, exact_pos_int, load_ini_config, register_module_aliases, safe_float, safe_pos_float
 from cachepaths import resolve_cachedb_filepath
 from state_io import read_json_dict, save_json_state
 
@@ -577,8 +577,5 @@ def describe_last_trade(symbol):
             f"clientId={last.get('client_order_id')} | binId={last.get('binance_order_id')}")
 
 
-_self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    sys.modules.setdefault("lock.file_lock", _self_mod)
-    sys.modules.setdefault("lock.trade_cooldown", _self_mod)
+register_module_aliases(__name__, "lock.file_lock", "lock.trade_cooldown")
 

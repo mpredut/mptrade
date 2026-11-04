@@ -10,7 +10,7 @@ import time
 from typing import Any, Callable, Optional, Tuple
 
 
-from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import _parse_bool_flag, register_module_aliases, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 from .order_ohlc_utils import (
     clean_order_id_str,
@@ -777,9 +777,7 @@ def decimal_places(step: Decimal | str | int | float) -> int:
     return max(0, -int(parsed.normalize().as_tuple().exponent))
 
 
-_self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    sys.modules.setdefault("providers.binance_filters", _self_mod)
+register_module_aliases(__name__, "providers.binance_filters")
 
 
 

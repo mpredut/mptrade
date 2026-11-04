@@ -22,6 +22,7 @@ from botcore import (
     extract_current_price_item,
     normalize_epoch_sec,
     obj_attr,
+    register_module_aliases,
     resolve_now_ts,
     safe_float,
     safe_int,
@@ -1166,7 +1167,5 @@ def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
         return False
 
 
-_self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    sys.modules.setdefault("providers.http_resilience", _self_mod)
+register_module_aliases(__name__, "providers.http_resilience")
 

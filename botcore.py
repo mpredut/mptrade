@@ -1654,7 +1654,24 @@ def require_shadow_interval(interval: int, expected: int, label: str) -> None:
         raise ValueError(f"{label} accepts only the native {expected}m interval")
 
 
-sys.modules.setdefault("shadow_runtime", sys.modules[__name__])
+def register_module_aliases(module_name: str, *aliases: str) -> None:
+    """Bind ``aliases`` in ``sys.modules`` (and parent package attributes) to ``sys.modules[module_name]``."""
+    self_mod = sys.modules.get(module_name)
+    if self_mod is None:
+        return
+    self_file = getattr(self_mod, "__file__", None)
+    for alias in aliases:
+        prev = sys.modules.get(alias)
+        if prev is None or prev is self_mod or getattr(prev, "__file__", None) == self_file:
+            sys.modules[alias] = self_mod
+            if "." in alias:
+                parent_name, child_attr = alias.rsplit(".", 1)
+                parent_pkg = sys.modules.get(parent_name)
+                if parent_pkg is not None:
+                    setattr(parent_pkg, child_attr, self_mod)
+
+
+register_module_aliases(__name__, "shadow_runtime")
 
 
 _MERGED_MODULE_TARGETS = {

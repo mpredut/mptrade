@@ -20,6 +20,7 @@ import websockets
 from botcore import (
     async_interruptible_sleep,
     normalize_epoch_sec,
+    register_module_aliases,
     resolve_now_ts,
     safe_float,
     safe_nonneg_float,
@@ -362,5 +363,5 @@ def get_liquidation_signal(symbols: Optional[List[str]] = None) -> LiquidationSi
     return _singleton
 
 
-_sys.modules.setdefault("liquidation_signal", _sys.modules[__name__])
+register_module_aliases(__name__, "liquidation_signal")
 

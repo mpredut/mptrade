@@ -23,12 +23,28 @@ from cachepaths import cache_path
 from state_io import read_json_file
 
 
+_PROD_ROOT = "/home/predut/mptrade"
+
+
+def _to_prod_remote_path(path: str) -> str:
+    norm = os.path.abspath(path).replace("\\", "/")
+    root_norm = os.path.abspath(_ROOT_DIR).replace("\\", "/")
+    if norm == root_norm or norm.startswith(root_norm + "/"):
+        rel = norm[len(root_norm):].lstrip("/")
+        return f"{_PROD_ROOT}/{rel}" if rel else _PROD_ROOT
+    if "/cachedb/" in norm:
+        tail = norm.split("/cachedb/", 1)[1]
+        return f"{_PROD_ROOT}/cachedb/{tail}"
+    return path
+
+
 def ssh_cat(remote_path: str) -> dict | list | str | None:
     if os.path.isfile(remote_path):
         data = read_json_file(remote_path, default=None)
         if data is not None:
             return data
-    cmd = ["ssh", "mptrade-prod", f"cat {remote_path}"]
+    prod_path = _to_prod_remote_path(remote_path)
+    cmd = ["ssh", "mptrade-prod", f"cat {prod_path}"]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode == 0 and res.stdout.strip():
         try:
@@ -39,13 +55,16 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    balances = ssh_cat(cache_path("venue_balances_state.json")) or {}
-    topic_data = ssh_cat(cache_path("llm_topic_threads.json")) or {}
-    orders_data = ssh_cat(cache_path("cache_order.json")) or {}
+    raw_balances = ssh_cat(cache_path("venue_balances_state.json"))
+    balances = raw_balances if isinstance(raw_balances, dict) else {}
+    raw_topic = ssh_cat(cache_path("llm_topic_threads.json"))
+    topic_data = raw_topic if isinstance(raw_topic, dict) else {}
+    raw_orders = ssh_cat(cache_path("cache_order.json"))
+    orders_data = raw_orders if isinstance(raw_orders, dict) else {}
 
     # 1. Balances & Positions
-    cash = {k: v for k, v in balances.items() if k.startswith("cash:") and isinstance(v, dict)}
-    positions = {k: v for k, v in balances.items() if k.startswith("pos:") and isinstance(v, dict)}
+    cash = {k: v for k, v in balances.items() if isinstance(k, str) and k.startswith("cash:") and isinstance(v, dict)}
+    positions = {k: v for k, v in balances.items() if isinstance(k, str) and k.startswith("pos:") and isinstance(v, dict)}
 
     total_free_cash = sum(safe_float(v.get("free"), 0.0) or 0.0 for v in cash.values())
     total_locked_cash = sum(safe_float(v.get("locked_quote_usd"), 0.0) or 0.0 for v in cash.values())
@@ -58,9 +77,15 @@ def inspect_fleet(json_output: bool = False):
     cash_pct = (cash_reserves / total_unified_val * 100.0) if total_unified_val > 0 else 0.0
 
     # 2. Topic State
-    auto_topic = topic_data.get("auto_cryptotrade_executor", {}) if isinstance(topic_data, dict) else {}
-    history = auto_topic.get("rolling_history") or []
-    latest_summary = history[-1].get("summary", "") if history else ""
+    raw_auto_topic = topic_data.get("auto_cryptotrade_executor")
+    auto_topic = raw_auto_topic if isinstance(raw_auto_topic, dict) else {}
+    raw_history = auto_topic.get("rolling_history")
+    history = raw_history if isinstance(raw_history, list) else []
+    latest_summary = (
+        history[-1].get("summary", "")
+        if history and isinstance(history[-1], dict)
+        else ""
+    )
 
     # 3. Active Resting Orders from venue_balances_state (open_orders:*) or cache_order fallback
     active_orders = []
@@ -119,8 +144,8 @@ def inspect_fleet(json_output: bool = False):
     }
 
     if json_output:
-        print(json.dumps(result, indent=2))
-        return
+        sys.stdout.write(json.dumps(result, indent=2) + "\n")
+        return result
 
     print("=== CASH BALANCES ===")
     for k, v in cash.items():

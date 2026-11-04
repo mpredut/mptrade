@@ -5209,6 +5209,131 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
     assert "SHORT_SQUEEZE_MAGNET_UP" in telem.get("Liquidation Clusters (LONG vs SHORT)", "")
 
 
+def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes(tmp_path, monkeypatch, capsys):
+    import importlib
+    import json
+    import sys
+    from types import SimpleNamespace
+    import binance_api
+    import instrument_registry
+    import lock
+    import lock.cooldown as lock_cooldown
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+    from verify_tools import inspect_prod_fleet
+
+    # 1. Reloading host modules refreshes Package E/H aliases in sys.modules and parent packages
+    ir_reloaded = importlib.reload(instrument_registry)
+    assert sys.modules.get("instruments_config") is ir_reloaded
+
+    lc_reloaded = importlib.reload(lock_cooldown)
+    assert sys.modules.get("lock.file_lock") is lc_reloaded
+    assert sys.modules.get("lock.trade_cooldown") is lc_reloaded
+    assert lock.file_lock is lc_reloaded
+    assert lock.trade_cooldown is lc_reloaded
+
+    # Lazy __getattr__ on binance_api and lock resolves merged submodule aliases even after delattr/pop
+    sys.modules.pop("binance_api.bapi_ws_health", None)
+    binance_api.__dict__.pop("bapi_ws_health", None)
+    ws_h = binance_api.bapi_ws_health
+    assert ws_h.__name__ == "binance_api.bapi_ws_bridge"
+    assert sys.modules.get("binance_api.bapi_ws_health") is ws_h
+
+    # Monkeypatching instrument_registry.Instrument is respected by _import_instrument_cls / _bind
+    sentinel_cls = lambda **kw: SimpleNamespace(**kw)
+    monkeypatch.setattr(ir_reloaded, "Instrument", sentinel_cls, raising=False)
+    assert ir_reloaded._import_instrument_cls() is sentinel_cls
+
+    # 2. inspect_prod_fleet translates local workspace cachedb paths to /home/predut/mptrade on SSH fallback
+    #    and tolerates non-dict / None fields without AttributeError
+    local_Fake_path = str(
+        tmp_path / "nonexistent_dir" / "cachedb" / "state" / "venue_balances_state.json"
+    )
+    assert (
+        inspect_prod_fleet._to_prod_remote_path(local_Fake_path)
+        == "/home/predut/mptrade/cachedb/state/venue_balances_state.json"
+    )
+    captured_cmds = []
+
+    def _fake_run(cmd, capture_output=True, text=True):
+        captured_cmds.append(cmd)
+        if "venue_balances_state.json" in cmd[-1]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "cash:binance:USDC": {"free": "250.5", "locked_quote_usd": None},
+                        "pos:t212:NVDA_US_EQ": {"value_usd": "100.0", "locked_base_usd": "24.5"},
+                    }
+                ),
+            )
+        if "llm_topic_threads.json" in cmd[-1]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"auto_cryptotrade_executor": {"rolling_history": ["not-a-dict"]}}),
+            )
+        return SimpleNamespace(returncode=0, stdout="non-json-string")
+
+    monkeypatch.setattr(inspect_prod_fleet.subprocess, "run", _fake_run)
+    monkeypatch.setattr(inspect_prod_fleet.os.path, "isfile", lambda p: False)
+    inspect_prod_fleet.inspect_fleet(json_output=True)
+    out_json = json.loads(capsys.readouterr().out)
+    assert out_json["total_free_cash_usd"] == pytest.approx(250.5)
+    assert out_json["total_free_assets_usd"] == pytest.approx(100.0)
+    assert out_json["total_locked_assets_usd"] == pytest.approx(24.5)
+    assert out_json["unified_nav_usd"] == pytest.approx(375.0)
+    assert out_json["topic_state"]["latest_summary"] == ""
+    assert all("/home/predut/mptrade/cachedb/" in c[-1] for c in captured_cmds)
+
+    # 3. collect_pretrade_telemetry prunes stale 3.7m slope on post-RTH equities without price override,
+    #    and recomputes negative slopes/kalman when post-RTH price diverged by >0.5%
+    eq_dir = tmp_path / "cachedb_eq_pt"
+    eq_dir.mkdir(parents=True, exist_ok=True)
+    old_base_ms = 1_700_000_000_000
+    nvda_bars = [[old_base_ms - (30 - i) * 300_000, round(190.0 + i * 0.15, 4), 1000.0] for i in range(31)]
+    (eq_dir / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": nvda_bars}}),
+        encoding="utf-8",
+    )
+    telem_nvda = ptc.collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(eq_dir))
+    assert "3.7m=" not in telem_nvda.get("Dynamic Multi-Window Slopes", "")
+    assert "15m=" in telem_nvda.get("Dynamic Multi-Window Slopes", "")
+    assert "2.5h=" in telem_nvda.get("Dynamic Multi-Window Slopes", "")
+
+    # Now add a >0.5% lower post-RTH price in venue_balances_state.json + stale positive cache_short_trend.json
+    (eq_dir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "NVDA_US_EQ": {
+                        "slope_3_7m": 0.0025,
+                        "slope_15m": 0.0020,
+                        "slope_2_5h": 0.0010,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (eq_dir / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:NVDA_US_EQ": {
+                    "symbol": "NVDA_US_EQ",
+                    "free": 1.0,
+                    "price": 185.0,
+                    "ts": (old_base_ms / 1000.0) + 600.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem_nvda_div = ptc.collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(eq_dir))
+    slopes_str = telem_nvda_div.get("Dynamic Multi-Window Slopes", "")
+    assert "3.7m=-" in slopes_str
+    assert "15m=-" in slopes_str
+
+
+
 
 
 

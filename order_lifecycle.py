@@ -18,6 +18,7 @@ from botcore import (
     exact_pos_int,
     load_root_config,
     obj_attr as _regime_attr,
+    register_module_aliases,
     required_float_env,
     required_int_env,
     safe_float,
@@ -824,7 +825,10 @@ class AtomicOrderRollbackGuard:
         return False
 
 
-sys.modules.setdefault("accepted_order_persistence", sys.modules[__name__])
-sys.modules.setdefault("order_outcomes_log", sys.modules[__name__])
-sys.modules.setdefault("order_rollback", sys.modules[__name__])
+register_module_aliases(
+    __name__,
+    "accepted_order_persistence",
+    "order_outcomes_log",
+    "order_rollback",
+)
 

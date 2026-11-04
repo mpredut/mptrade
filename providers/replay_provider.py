@@ -20,7 +20,7 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-from botcore import exact_pos_int, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import exact_pos_int, register_module_aliases, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
 from providers.quantity import resolve_assets
@@ -396,7 +396,5 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return True
 
 
-_self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    sys.modules.setdefault("providers.replay_clock", _self_mod)
+register_module_aliases(__name__, "providers.replay_clock")
 

@@ -42,6 +42,7 @@ from intelligence.sentiment.evaluators.microstructure_evaluator import (
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     _apply_24h_series_enrichment,
     _auto_px_decimals,
+    _compute_kalman_from_series,
     _compute_short_slopes_from_series,
     _load_stitched_24h_ohlc_points,
     _parse_ts_px_row,
@@ -245,11 +246,15 @@ def collect_pretrade_telemetry(
                         if live_cur_px > 0.0:
                             break
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
+        is_eq_sym = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+        rth_fresh_eq = True
+        eq_post_rth_override = False
+        eq_px_diverged_05pct = False
         if not cur_px_est or cur_px_est <= 0.0:
             cur_px_est = live_cur_px
         if (
             not m24
-            and str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+            and is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
         ):
             try:
@@ -290,7 +295,7 @@ def collect_pretrade_telemetry(
                         cur_px_est = last_alt_pt[1]
             except Exception:
                 pass
-        if str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and last_alt_pt is not None:
+        if is_eq_sym and last_alt_pt is not None:
             import time as _pt_time
 
             now_ms_eq = int(_pt_time.time() * 1000)
@@ -314,7 +319,9 @@ def collect_pretrade_telemetry(
                     alt_series_24h = list(alt_series_24h) + [[now_ms_eq, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
+                    eq_post_rth_override = True
                     if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005 and len(alt_series_24h) >= 2:
+                        eq_px_diverged_05pct = True
                         last_alt_tail = (
                             list(alt_series_24h[-1][2:])
                             if isinstance(alt_series_24h[-1], (list, tuple)) and len(alt_series_24h[-1]) >= 3
@@ -651,13 +658,32 @@ def collect_pretrade_telemetry(
                     if t_entry.get("vol_1h_pct") is None and (k_vol := safe_pos_float(k_sym.get("vol_1h_pct"), default=None)) is not None:
                         t_entry["vol_1h_pct"] = k_vol
             s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
-            if alt_series_24h and (
+            if eq_px_diverged_05pct and alt_series_24h:
+                for k_ov in (
+                    "slope_90s", "growth_90s", "trend_90s",
+                    "slope_3_7m", "growth_3_7m", "trend_3_7m",
+                    "slope_15m", "growth_15m", "trend_15m",
+                    "slope_2_5h", "growth_2_5h", "trend_2_5h",
+                    "gradient_recent_fast", "gradient_recent",
+                ):
+                    t_entry.pop(k_ov, None)
+                t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
+                if isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
+                    t_entry.update(k_recomp)
+            elif alt_series_24h and (
                 all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
                 or (s15_val is not None and s25_val is not None and s15_val != 0.0 and s15_val == s25_val)
             ):
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
+            if is_eq_sym and last_alt_pt is not None and not rth_fresh_eq and not eq_post_rth_override:
+                for k_stale_s in (
+                    "slope_90s", "growth_90s", "trend_90s",
+                    "slope_3_7m", "growth_3_7m", "trend_3_7m",
+                    "gradient_recent_fast",
+                ):
+                    t_entry.pop(k_stale_s, None)
         except Exception:
             pass
 
