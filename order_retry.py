@@ -796,7 +796,8 @@ def get_accepted_order_ttl_map() -> dict:
     """Return a mapping of order_id and client_order_id to custom ttl_sec for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        if str(r.get("lifecycle") or "").lower() != "accepted":
+        lc = str(r.get("lifecycle") or "").lower()
+        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
             continue
         ttl_val = safe_pos_float(r.get("ttl_sec"), default=None)
         if ttl_val is not None:
@@ -842,7 +843,8 @@ def get_accepted_order_owner_map() -> dict:
     """Return a mapping of order_id and client_order_id to logical bot owner for active accepted orders."""
     res = {}
     for r in _safe_load_all():
-        if str(r.get("lifecycle") or "").lower() != "accepted":
+        lc = str(r.get("lifecycle") or "").lower()
+        if lc != "accepted" and not (lc == "submit_pending" and r.get("order_id") is None):
             continue
         inferred = infer_record_owner(r)
         if not inferred or inferred in {"unknown", "unspecified", "order_retry"} or str(inferred).startswith("alt:"):
