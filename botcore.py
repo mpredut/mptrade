@@ -1012,6 +1012,32 @@ _AMBIGUOUS_LOCAL_MODULES = (
 )
 
 
+_LEGACY_ARCHIVE_DIR: str | None = None
+
+
+def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
+    global _LEGACY_ARCHIVE_DIR
+    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")):
+        return abs_dir
+    archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
+    if not os.path.isfile(archive_tar):
+        return abs_dir
+    rel = os.path.relpath(abs_dir, _REPO_ROOT)
+    if not (rel == "archive" or rel.startswith("archive" + os.sep)):
+        return abs_dir
+    if _LEGACY_ARCHIVE_DIR is None or not os.path.isdir(_LEGACY_ARCHIVE_DIR):
+        import atexit
+        import shutil
+        import tarfile
+        import tempfile
+        _LEGACY_ARCHIVE_DIR = tempfile.mkdtemp(prefix="mptrade_legacy_archive_")
+        atexit.register(shutil.rmtree, _LEGACY_ARCHIVE_DIR, True)
+        with tarfile.open(archive_tar, "r:gz") as tf:
+            tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
+    extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
+    return extracted_dir if os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) else abs_dir
+
+
 def load_local_module(
     directory: str,
     name: str,
@@ -1022,8 +1048,8 @@ def load_local_module(
 ):
     """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
     with _LOCAL_MODULE_LOCK:
-        abs_dir = os.path.abspath(directory)
         stem = name[:-3] if name.endswith(".py") else name
+        abs_dir = _resolve_archived_module_dir(os.path.abspath(directory), stem)
         key = module_key or stem
         if register and not reload:
             mod = sys.modules.get(key)
@@ -1053,6 +1079,10 @@ def load_local_module(
             while _REPO_ROOT in sys.path:
                 sys.path.remove(_REPO_ROOT)
             sys.path.insert(0, _REPO_ROOT)
+            if "hyperliquid" in abs_dir:
+                hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
+                if os.path.isdir(hl_dir) and hl_dir not in sys.path:
+                    sys.path.insert(0, hl_dir)
             sys.path.insert(0, abs_dir)
             spec = importlib.util.spec_from_file_location(key, os.path.join(abs_dir, f"{stem}.py"))
             mod = importlib.util.module_from_spec(spec)

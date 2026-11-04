@@ -14890,13 +14890,14 @@ def test_iteration153_t212_order_manager_hl_shadow_and_delta_neutral_safety(tmp_
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
     def _load_mod(name, rel):
-        import sys
+        from botcore import load_local_module
         p = os.path.join(root, rel)
-        spec = importlib.util.spec_from_file_location(name, p)
-        m = importlib.util.module_from_spec(spec)
-        sys.modules[name] = m
-        spec.loader.exec_module(m)
-        return m
+        return load_local_module(
+            os.path.dirname(p),
+            os.path.splitext(os.path.basename(p))[0],
+            module_key=name,
+            reload=True,
+        )
 
     om = _load_mod("t212_order_manager_it153", "212trading/order_manager.py")
     hl_sl = _load_mod("hl_shadow_longterm_it153", "hyperliquid/shadow_longterm.py")

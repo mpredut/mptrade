@@ -87,7 +87,7 @@ def test_specialized_atomic_writers_are_explicitly_bounded():
 
 
 def test_dead_trade_cache_manager_is_archived_not_packaged():
-    assert (ROOT / "archive/tradeCacheManager.py").is_file()
+    assert (ROOT / "archive/legacy_archive.tar.gz").is_file()
     assert not (ROOT / "tradeCacheManager.py").exists()
     packaging = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"tradeCacheManager"' not in packaging
@@ -112,7 +112,6 @@ def test_tracked_order_compatibility_shim_is_removed_after_consumer_migration():
 def test_live_launcher_env_defaults_are_location_based():
     for relative in (
         "kraken/kraken_bot.py",
-        "archive/hyperliquid/delta_neutral/dn_bot.py",
         "hyperliquid/hl_bot.py",
     ):
         text = (ROOT / relative).read_text(encoding="utf-8")

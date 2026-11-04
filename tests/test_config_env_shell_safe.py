@@ -50,13 +50,6 @@ def test_shell_launchers_source_env_common_correctly():
         spcx_text = fh.read()
     assert 'source "$HERE/../orchestratorOS/lib/env_common.sh"\n\nSTRAT_ENTRY=800' in spcx_text
 
-    with open(
-        os.path.join(ROOT, "archive", "hyperliquid", "delta_neutral", "dn_close.sh"),
-        encoding="utf-8",
-    ) as fh:
-        dn_text = fh.read()
-    assert 'source "$HERE/../../../orchestratorOS/lib/env_common.sh"' in dn_text
-
 
 def test_env_common_env_get_works_under_set_u_without_home():
     proc = subprocess.run(

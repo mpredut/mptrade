@@ -168,7 +168,7 @@ def test_live_trailing_rejects_corrupt_state_but_paper_can_reset(tmp_path):
 
 def test_hyperliquid_live_engines_declare_fail_closed_reads():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for relative in ("hyperliquid/strategy.py", "archive/hyperliquid/delta_neutral/delta_neutral.py"):
+    for relative in ("hyperliquid/strategy.py",):
         text = open(os.path.join(root, relative), encoding="utf-8").read()
         assert "fail_closed=not self.dry_run" in text
 

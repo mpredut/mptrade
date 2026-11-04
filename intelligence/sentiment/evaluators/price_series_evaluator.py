@@ -684,12 +684,21 @@ def apply_short_trend_item(
         w_dict = wins[wk]
         is_90 = wk == "90"
         if w_dict.get("slope_full") is not None or (require_any_slope and not is_90):
-            entry[s_key] = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
+            s_val = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
+            if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
+                for fb_s in (w_dict.get("gradient_recent"), w_dict.get("growth_coefficient")):
+                    if fb_s is not None and abs(safe_float(fb_s, 0.0)) >= 5e-8:
+                        s_val = fb_s
+                        break
+            entry[s_key] = s_val
             entry[t_key] = w_dict.get("final_trend", trend)
         if w_dict.get("growth_coefficient") is not None:
             g_val = w_dict.get("growth_coefficient")
-            if is_90 and abs(safe_float(g_val, 0.0)) < 5e-8 and abs(s_90 := safe_float(w_dict.get("slope_full"), 0.0)) >= 5e-8:
-                g_val = s_90
+            if abs(safe_float(g_val, 0.0)) < 5e-8:
+                for fb_g in (w_dict.get("slope_full"), w_dict.get("gradient_recent")):
+                    if fb_g is not None and abs(safe_float(fb_g, 0.0)) >= 5e-8:
+                        g_val = fb_g
+                        break
             entry[g_key] = g_val
     return True
 
@@ -723,18 +732,27 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
         w_dict = wins[wk]
         if not w_dict:
             continue
+        s_val = w_dict.get("slope_full", entry.get(s_key, 0.0)) if wk != "90" else w_dict.get("slope_full")
+        if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
+            for fb_s in (w_dict.get("gradient_recent"), w_dict.get("growth_coefficient")):
+                if fb_s is not None and abs(safe_float(fb_s, 0.0)) >= 5e-8:
+                    s_val = fb_s
+                    break
         if wk != "90":
-            entry[s_key] = w_dict.get("slope_full", entry.get(s_key, 0.0))
+            entry[s_key] = s_val
             entry[t_key] = w_dict.get("final_trend", entry.get(t_key, 0))
         else:
-            if w_dict.get("slope_full") is not None:
-                entry[s_key] = w_dict.get("slope_full")
+            if s_val is not None:
+                entry[s_key] = s_val
             if w_dict.get("final_trend") is not None:
                 entry[t_key] = w_dict.get("final_trend")
         if w_dict.get("growth_coefficient") is not None:
             g_val = w_dict.get("growth_coefficient")
-            if wk == "90" and abs(safe_float(g_val, 0.0)) < 5e-8 and abs(s_90 := safe_float(w_dict.get("slope_full"), 0.0)) >= 5e-8:
-                g_val = s_90
+            if abs(safe_float(g_val, 0.0)) < 5e-8:
+                for fb_g in (w_dict.get("slope_full"), w_dict.get("gradient_recent")):
+                    if fb_g is not None and abs(safe_float(fb_g, 0.0)) >= 5e-8:
+                        g_val = fb_g
+                        break
             entry[g_key] = g_val
 
 

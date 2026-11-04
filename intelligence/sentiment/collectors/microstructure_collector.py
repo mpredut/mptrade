@@ -1108,6 +1108,8 @@ def enrich_24h_and_microstructure(
                 if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
+                    if arch_vals_7d and len(arch_vals_7d) >= 2 and not _prices_diverged(ob_mid_m, safe_float(arch_vals_7d[0], 0.0)):
+                        prices_and_trends[sym]["chg_7d_pct"] = pct_delta(ob_mid_m, safe_float(arch_vals_7d[0], 0.0))
                 elif (
                     not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym
@@ -1180,6 +1182,8 @@ def enrich_24h_and_microstructure(
                     if ser_24h and (m24_ref := compute_24h_price_metrics(ser_24h)):
                         _apply_24h_series_enrichment(msym, p_ref, m24_ref, ser_24h, btc_series_24h)
                     if vals_7d and len(vals_7d) >= 2:
+                        if not _prices_diverged(ref_px, safe_float(vals_7d[-1], 0.0)) and abs(ref_px - safe_float(vals_7d[-1], 0.0)) > 1e-9:
+                            vals_7d = list(vals_7d) + [ref_px]
                         p_ref.update(compute_7d_range_metrics(vals_7d))
                     prices_and_trends[msym] = p_ref
             enrich_microstructure_cvd(m_info_ref, p_ref)
