@@ -81,6 +81,8 @@ class BinanceWSBase:
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_task: Optional[asyncio.Task] = None
         self._retry_delay = WS_RETRY_INITIAL
         self._start_lock = threading.Lock()
 
@@ -100,6 +102,13 @@ class BinanceWSBase:
 
     def stop(self, timeout: float = WS_STOP_TIMEOUT) -> bool:
         self._stop_event.set()
+        loop = getattr(self, "_loop", None)
+        task = getattr(self, "_main_task", None)
+        if loop is not None and task is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError:
+                pass
         eff_timeout = _sanitize_timeout(timeout, default=WS_STOP_TIMEOUT)
         if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=eff_timeout)
@@ -115,10 +124,12 @@ class BinanceWSBase:
     def _thread_worker(self) -> None:
         try:
             asyncio.run(self._main())
-        except Exception as e:
-            if not self._is_shutdown_error(e):
+        except (asyncio.CancelledError, Exception) as e:
+            if not isinstance(e, asyncio.CancelledError) and not self._is_shutdown_error(e):
                 logger.exception("WS thread crashed: %s", e)
         finally:
+            self._loop = None
+            self._main_task = None
             logger.info("WS thread exited")
 
     # Generic reconnect loop.
@@ -135,11 +146,20 @@ class BinanceWSBase:
         # including clean disconnects, as the rate-limit safeguard
         # to prevent reconnect storms. Reset backoff only after a stable session;
         # repeated flapping therefore increases the delay.
+        try:
+            self._loop = asyncio.get_running_loop()
+            self._main_task = asyncio.current_task()
+        except RuntimeError:
+            pass
         while not self._stop_event.is_set():
             t0 = time.time()
             exc = None
             try:
                 await body()                          # Return or raise when the session ends.
+            except asyncio.CancelledError:
+                if self._stop_event.is_set():
+                    break
+                raise
             except Exception as e:
                 exc = e
                 if self._is_shutdown_error(e):
@@ -591,7 +611,11 @@ class BinanceAccountStream(BinanceWSBase):
 
     async def _connect_and_run(self) -> None:
         async with websockets.connect(
-            WS_API_URL, ping_interval=WS_PING_INTERVAL, ping_timeout=WS_PING_INTERVAL) as ws:
+            WS_API_URL,
+            ping_interval=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_INTERVAL,
+            close_timeout=WS_CLOSE_TIMEOUT,
+        ) as ws:
             # Login
             await ws.send(self._signed_logon_msg("login"))
             resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))

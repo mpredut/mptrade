@@ -3965,14 +3965,31 @@ if __name__ == "__main__":
     finally:
         account_cache_health.disable_writer()
         print("Cleanup / releasing resources...")
+        if _ws_bridge is not None:
+            try:
+                _ws_bridge._stop_event.set()
+            except Exception:
+                pass
+        try:
+            from binance_api import bapi_ws as _bws
+            if getattr(_bws, "bapi_ws_manager", None) is not None:
+                _bws.bapi_ws_manager._stop_event.set()
+        except Exception:
+            pass
         if _nb_poller is not None:
             _nb_poller.stop(timeout=0.5)
         if _trend_mgr is not None:
             _trend_mgr.shutdown(timeout=1.0)
-        CacheFactory.shutdown_all(timeout=1.5)
+        CacheFactory.shutdown_all(timeout=1.0)
         if _current_price_instance is not None:
             _current_price_instance.shutdown(timeout=0.5)
         if _ws_bridge is not None:
-            _ws_bridge.stop()
+            _ws_bridge.stop(timeout=0.5)
+        try:
+            from binance_api import bapi_ws as _bws
+            if getattr(_bws, "bapi_ws_manager", None) is not None:
+                _bws.bapi_ws_manager.stop(timeout=0.5)
+        except Exception:
+            pass
         from binance_api import bapi_client
         bapi_client.stop_periodic_resync()
