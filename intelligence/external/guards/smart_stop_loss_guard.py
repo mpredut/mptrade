@@ -251,8 +251,7 @@ class SmartStopLossGuard:
         self.max_threshold_pct = safe_pos_float(max_threshold_pct, 6.0)
         self.grace_seconds = safe_nonneg_float(grace_seconds, 120.0)
         self.disaster_buffer_pct = safe_nonneg_float(disaster_buffer_pct, 0.85)
-        allow_w_pct = not (isinstance(min_whale_long_pct, (int, float)) and 1.0 < min_whale_long_pct < 5.0)
-        self.min_whale_long_pct = clean_scale(min_whale_long_pct, default=0.60, allow_percent=allow_w_pct)
+        self.min_whale_long_pct = clean_scale(min_whale_long_pct, default=0.60, allow_percent=True)
         self.min_taker_ratio = safe_pos_float(min_taker_ratio, 0.85)
 
     def evaluate(

@@ -64,7 +64,7 @@ class WeibullExhaustionGuard:
     ):
         self.default_p90_days = safe_pos_float(default_p90_days, default=7.0) or 7.0
         self.policy = str(policy or "downscale").strip().lower() if not isinstance(policy, bool) else "downscale"
-        self.exhausted_scale = clean_scale(exhausted_scale, default=0.25, allow_percent=True, min_positive=True)
+        self.exhausted_scale = clean_scale(exhausted_scale, default=0.25, allow_percent=True, min_positive=True, clamp=True)
 
     def check(
         self,

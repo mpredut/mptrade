@@ -64,7 +64,7 @@ class WhalePositioningSnapshot:
         raw_reg = data.get("divergence_regime") if data.get("divergence_regime") is not None else data.get("div_regime")
         reg_str = raw_reg.strip() if isinstance(raw_reg, str) and raw_reg.strip() else "neutral"
         raw_long_val = data.get("top_traders_long_pct") if data.get("top_traders_long_pct") is not None else data.get("whale_long_pct")
-        long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True)
+        long_pct_clean = clean_scale(raw_long_val, default=0.5, allow_percent=True, clamp=True)
         ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
         if ts_val > 1e11:
             ts_val /= 1000.0

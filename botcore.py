@@ -1107,18 +1107,21 @@ def clean_scale(
     allow_percent: bool = False,
     allow_percentage: bool = False,
     min_positive: bool = False,
+    clamp: bool = False,
 ) -> float:
-    """Normalize a scale factor into [0.0, 1.0], optionally converting (1.0, 100.0] or '%' percentages."""
+    """Normalize a scale factor into [0.0, 1.0], optionally converting [5.0, 100.0] or '%' percentages."""
     allow_pct = allow_percent or allow_percentage
     if allow_pct and isinstance(val, str) and val.strip().endswith("%"):
         pct = safe_nonneg_float(val.strip()[:-1].strip(), default=None)
         f = round(pct / 100.0, 4) if (pct is not None and pct <= 100.0) else -1.0
     else:
         f = safe_float(val, -1.0)
-        if allow_pct and 1.0 < f <= 100.0:
+        if allow_pct and 5.0 <= f <= 100.0:
             f = round(f / 100.0, 4)
     if f < 0.0 or (min_positive and f <= 0.0):
         return default
+    if clamp and f > 1.0:
+        return 1.0
     return f if 0.0 <= f <= 1.0 else default
 
 

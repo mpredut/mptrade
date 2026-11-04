@@ -90,7 +90,7 @@ class OrderbookSnapshot:
         d1_bid = _clean_dict_float(data, "depth_1pct_bid_usd", 0.0, nonneg=True) or (round(bid_depth * (1.0 / 1.5), 2) if bid_depth > 0.0 else 0.0)
         d1_ask = _clean_dict_float(data, "depth_1pct_ask_usd", 0.0, nonneg=True) or (round(ask_depth * (1.0 / 1.5), 2) if ask_depth > 0.0 else 0.0)
         raw_imb_val = data.get("imbalance_ratio") if data.get("imbalance_ratio") is not None else data.get("ob_imbalance")
-        imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True)
+        imb_clean = clean_scale(raw_imb_val, default=0.5, allow_percent=True, clamp=True)
         ts_val = _clean_dict_float(data, "ts", 0.0, "timestamp", nonneg=True)
         if ts_val > 1e11:
             ts_val /= 1000.0

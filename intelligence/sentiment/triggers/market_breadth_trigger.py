@@ -22,11 +22,9 @@ class MarketBreadthTrigger:
         blowoff_advance_threshold: float = 0.88,
         blowoff_median_threshold: float = 6.0,
     ) -> None:
-        allow_w_pct = not (isinstance(washout_advance_threshold, (int, float)) and 1.0 < washout_advance_threshold < 5.0)
-        allow_b_pct = not (isinstance(blowoff_advance_threshold, (int, float)) and 1.0 < blowoff_advance_threshold < 5.0)
-        self.washout_advance_threshold = clean_scale(washout_advance_threshold, 0.15, allow_percent=allow_w_pct)
+        self.washout_advance_threshold = clean_scale(washout_advance_threshold, 0.15, allow_percent=True)
         self.washout_median_threshold = safe_float(washout_median_threshold, -4.0)
-        self.blowoff_advance_threshold = clean_scale(blowoff_advance_threshold, 0.88, allow_percent=allow_b_pct)
+        self.blowoff_advance_threshold = clean_scale(blowoff_advance_threshold, 0.88, allow_percent=True)
         self.blowoff_median_threshold = safe_float(blowoff_median_threshold, 6.0)
         if self.washout_advance_threshold > self.blowoff_advance_threshold:
             self.washout_advance_threshold, self.blowoff_advance_threshold = (

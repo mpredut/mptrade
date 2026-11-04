@@ -30,8 +30,7 @@ class PanicWashoutGuard:
         downscale_factor: float = 0.50,
     ) -> None:
         self.severe_panic_fng_threshold = safe_thresh(severe_panic_fng_threshold, 12)
-        allow_adv_pct = not (isinstance(panic_advance_threshold, (int, float)) and 1.0 < panic_advance_threshold < 5.0)
-        self.panic_advance_threshold = clean_scale(panic_advance_threshold, 0.10, allow_percent=allow_adv_pct)
+        self.panic_advance_threshold = clean_scale(panic_advance_threshold, 0.10, allow_percent=True)
         self.downscale_factor = clean_scale(downscale_factor, 0.50, allow_percent=True, min_positive=True)
 
     def check(

@@ -31,8 +31,7 @@ class LiquidationCapitulationTrigger:
     ) -> None:
         self.collector = collector
         self.min_notional_usd = safe_pos_float(min_notional_usd, default=100_000.0) or 100_000.0
-        allow_rt_pct = not (isinstance(ratio_threshold, (int, float)) and 1.0 < ratio_threshold < 5.0)
-        self.ratio_threshold = clean_scale(ratio_threshold, default=0.75, min_positive=True, allow_percent=allow_rt_pct)
+        self.ratio_threshold = clean_scale(ratio_threshold, default=0.75, min_positive=True, allow_percent=True)
         self.window_sec = safe_pos_float(window_sec, default=300.0) or 300.0
 
     def evaluate(
