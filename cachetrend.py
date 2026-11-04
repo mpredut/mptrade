@@ -546,21 +546,16 @@ class CacheShortTrendManager(CacheManagerInterface):
 
         w_big = wins.get(self.window_seconds[-1])
         v1h = None
-        adapt_reentry = None
-        adapt_dca = None
         kalman_extra = {}
         if w_big is not None:
             try:
                 from intelligence.internal.state.volatility import (
-                    adaptive_thresholds,
                     calculate_volatility_1h,
                 )
                 with getattr(w_big, "_lock", threading.RLock()):
                     v1h = calculate_volatility_1h(
                         w_big.prices, w_big.sample_rate_sec
                     )
-                if v1h is not None:
-                    adapt_reentry, adapt_dca = adaptive_thresholds(v1h)
             except Exception:
                 pass
         if (
@@ -613,8 +608,6 @@ class CacheShortTrendManager(CacheManagerInterface):
             window_seconds=float(primary),
             sample_rate_sec=float(pwin.sample_rate_sec),
             vol_1h_pct=v1h,
-            adapt_reentry_pct=adapt_reentry,
-            adapt_dca_pct=adapt_dca,
             current_price=current_price,
             ts=observed_at,
             dynamic=published_dyn,
