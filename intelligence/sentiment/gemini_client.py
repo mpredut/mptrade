@@ -58,6 +58,14 @@ FALLBACK_MODELS_RAW = required_env("LLM_FALLBACK_MODELS")
 DEFAULT_FALLBACK_MODELS = split_csv(FALLBACK_MODELS_RAW)
 AGY_CLI_PATH = resolve_agy_bot_bin()
 
+_ORIG_SUBPROCESS_RUN = subprocess.run
+_ORIG_URLOPEN = urllib.request.urlopen
+_ORIG_FETCH_JSON_POST = fetch_json_post
+_ORIG_PREPARE_TOPIC_SESSION = prepare_topic_session
+_ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC = getattr(
+    GeminiQuotaRouterMixin.probe_live_model_quota, "__func__", GeminiQuotaRouterMixin.probe_live_model_quota
+)
+
 
 class GeminiClient(GeminiQuotaRouterMixin):
     """Wrapper for querying LLM models.
@@ -263,23 +271,38 @@ class GeminiClient(GeminiQuotaRouterMixin):
             logger.debug("Gemini LLM query suppressed in backtest/replay mode.")
             return None
 
-        if (
-            "PYTEST_CURRENT_TEST" in os.environ
-            and not hasattr(subprocess.run, "_mock_name")
-            and not hasattr(urllib.request.urlopen, "_mock_name")
-        ):
+        in_pytest = "PYTEST_CURRENT_TEST" in os.environ
+        cli_mocked = (
+            hasattr(subprocess.run, "_mock_name")
+            or subprocess.run is not _ORIG_SUBPROCESS_RUN
+            or hasattr(self._execute_cli, "_mock_name")
+            or "_execute_cli" in self.__dict__
+            or getattr(type(self), "_execute_cli", None) is not GeminiClient._execute_cli
+        )
+        rest_mocked = (
+            hasattr(urllib.request.urlopen, "_mock_name")
+            or urllib.request.urlopen is not _ORIG_URLOPEN
+            or hasattr(fetch_json_post, "_mock_name")
+            or fetch_json_post is not _ORIG_FETCH_JSON_POST
+        )
+        if in_pytest and not cli_mocked and not rest_mocked:
             logger.debug("Gemini LLM external query suppressed under pytest.")
             return None
 
         # 2. Local authenticated CLI runner (subscription mode)
-        if self.cli_path and os.path.exists(self.cli_path):
+        if self.cli_path and os.path.exists(self.cli_path) and (not in_pytest or cli_mocked):
             topic_lock: Optional[threading.Lock] = None
             topic_lock_transferred = False
             try:
                 bot_cli_base = resolve_bot_cli_base()
-                is_mocked = hasattr(subprocess.run, "_mock_name")
+                is_mocked = cli_mocked
                 use_topic_session = bool(
-                    topic_key and (not is_mocked or hasattr(prepare_topic_session, "_mock_name"))
+                    topic_key
+                    and (
+                        not is_mocked
+                        or hasattr(prepare_topic_session, "_mock_name")
+                        or prepare_topic_session is not _ORIG_PREPARE_TOPIC_SESSION
+                    )
                 )
                 if use_topic_session and topic_key:
                     topic_lock = self._get_topic_lock(topic_key)
@@ -298,7 +321,13 @@ class GeminiClient(GeminiQuotaRouterMixin):
 
                 # Attempt primary model followed by fallback models if CLI call fails
                 raw_candidates = self.get_model_candidates(selected_model)
-                enable_pre_quota = not is_mocked or hasattr(self.probe_live_model_quota, "_mock_name")
+                pre_quota_fn = getattr(self.probe_live_model_quota, "__func__", self.probe_live_model_quota)
+                pre_quota_mocked = (
+                    hasattr(self.probe_live_model_quota, "_mock_name")
+                    or "probe_live_model_quota" in self.__dict__
+                    or pre_quota_fn is not _ORIG_PROBE_LIVE_MODEL_QUOTA_FUNC
+                )
+                enable_pre_quota = not is_mocked or pre_quota_mocked
                 if enable_pre_quota:
                     quota_snapshot = self.probe_live_model_quota(bot_cli_base=bot_cli_base)
                     models_to_try = self.filter_models_with_confirmed_credits(raw_candidates, quota_snapshot)

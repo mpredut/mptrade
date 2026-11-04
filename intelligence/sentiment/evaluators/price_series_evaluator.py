@@ -7,8 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cachepaths import canonical_base_asset
 from intelligence.internal.state.volatility import adaptive_thresholds, calculate_volatility_1h
-from intelligence.internal.triggers.kalman_trigger import KalmanTrend
 from intelligence.macro_sentiment_ssot import safe_float, safe_pos_float
+
+KalmanTrend: Any = None
 
 
 def round_opt_px(val: Any, decimals: int = 6) -> Optional[float]:
@@ -559,7 +560,15 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
         subsampled = pts[-min(len(pts), 30) :]
     if len(subsampled) < 5:
         return None
-    kf = KalmanTrend(gap_reset_sec=7200.0)
+    kalman_cls = KalmanTrend
+    if kalman_cls is None:
+        try:
+            from intelligence.internal.triggers.kalman_trigger import KalmanTrend as _KalmanTrend
+
+            kalman_cls = _KalmanTrend
+        except Exception:
+            return None
+    kf = kalman_cls(gap_reset_sec=7200.0)
     fed: List[float] = []
     last_out: Optional[Dict[str, Any]] = None
     for ts_s, px_v in subsampled[-60:]:
@@ -615,12 +624,13 @@ def _extract_ohlc_series_points(
     vols = getattr(ohlc_obj, "volumes", ()) or ()
     has_vols = isinstance(vols, (list, tuple)) and bool(vols)
     pts: List[List[Any]] = []
-    for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()), getattr(ohlc_obj, "closes", ()))):
-        if min_ts <= ts <= max_ts and float(px) > 0:
+    for idx, (ts, px) in enumerate(zip(getattr(ohlc_obj, "timestamps", ()) or (), getattr(ohlc_obj, "closes", ()) or ())):
+        ts_f, px_f = safe_pos_float(ts, 0.0) or 0.0, safe_pos_float(px, 0.0) or 0.0
+        if ts_f > 0.0 and min_ts <= ts_f <= max_ts and px_f > 0.0:
             v_f = safe_pos_float(vols[idx], 0.0) or 0.0 if (has_vols and idx < len(vols)) else 0.0
             if require_positive_volume and v_f <= 0.0:
                 continue
-            pts.append([int(ts * 1000), float(px), v_f] if v_f > 0.0 else [int(ts * 1000), float(px)])
+            pts.append([int(ts_f * 1000), px_f, v_f] if v_f > 0.0 else [int(ts_f * 1000), px_f])
     return pts
 
 
@@ -724,7 +734,11 @@ def _apply_24h_series_enrichment(
     """Enrich a symbol's `prices_and_trends` entry with 24h metrics, cross-BTC beta/corr, Kalman, slopes, and 1h vol."""
     entry.update(m24)
     if series_24h and safe_float(entry.get("price"), 0.0) <= 0.0:
-        entry["price"] = series_24h[-1][1]
+        if (last_pt_24 := _parse_ts_px_row(series_24h[-1])) is not None:
+            entry["price"] = last_pt_24[1]
+        elif isinstance(series_24h[-1], (list, tuple)) and len(series_24h[-1]) >= 2:
+            if (px_last_24 := safe_pos_float(series_24h[-1][1], default=None)) is not None:
+                entry["price"] = px_last_24
     cur_e_px = safe_pos_float(entry.get("price"), default=None)
     l24_e, h24_e = safe_pos_float(entry.get("low_24h"), default=None), safe_pos_float(entry.get("high_24h"), default=None)
     l7d_e, h7d_e = safe_pos_float(entry.get("low_7d"), default=None), safe_pos_float(entry.get("high_7d"), default=None)
@@ -750,11 +764,13 @@ def _apply_24h_series_enrichment(
             if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                 entry[kk] = kv
     if not is_eq and series_24h:
+        s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)
+        s_15m = safe_float(entry.get("slope_15m"), default=None)
         stale_short_cache = (
-            entry.get("slope_2_5h") is not None
-            and entry.get("slope_15m") is not None
-            and abs(float(entry["slope_2_5h"]) - float(entry["slope_15m"])) < 1e-12
-            and abs(float(entry.get("growth_2_5h") or 0.0) - float(entry.get("growth_15m") or 0.0)) < 1e-9
+            s_2_5h is not None
+            and s_15m is not None
+            and abs(s_2_5h - s_15m) < 1e-12
+            and abs(safe_float(entry.get("growth_2_5h"), 0.0) - safe_float(entry.get("growth_15m"), 0.0)) < 1e-9
         )
         if (entry.get("slope_3_7m") is None or stale_short_cache) and (s_fb := _compute_short_slopes_from_series(series_24h)):
             for sk, sv in s_fb.items():
@@ -764,7 +780,7 @@ def _apply_24h_series_enrichment(
                     stale_short_cache
                     and (
                         sk in ("slope_2_5h", "growth_2_5h", "trend_2_5h")
-                        or (sk in ("slope_90s", "growth_90s", "trend_90s") and abs(float(entry.get("slope_90s") or 0.0)) < 1e-12)
+                        or (sk in ("slope_90s", "growth_90s", "trend_90s") and abs(safe_float(entry.get("slope_90s"), 0.0)) < 1e-12)
                     )
                 ):
                     entry[sk] = sv

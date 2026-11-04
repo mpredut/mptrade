@@ -551,15 +551,19 @@ def reconcile_venue_cycles_with_recent_orders(
             if not isinstance(cyc, dict):
                 continue
             entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
+            c_quotes = compatible_quote_suffixes(c_sym)
+            c_cands = (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes))
             if sell_ts_ms:
-                cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = int(sell_ts_ms)
+                sell_ts_i = int(sell_ts_ms)
+                for cand in c_cands:
+                    cyc_sell_ts_map.setdefault((c_venue, str(cand).upper()), sell_ts_i)
+                cyc_sell_ts_map[(c_venue, str(c_sym).upper())] = sell_ts_i
             if not entry_ts_ms or cyc.get("resting_orders"):
                 continue
-            c_quotes = compatible_quote_suffixes(c_sym)
             ro_c = next(
                 (
                     val
-                    for cand in (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes))
+                    for cand in c_cands
                     if isinstance((val := casefold_get(v_ro_c, cand)), dict)
                 ),
                 None,

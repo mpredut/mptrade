@@ -1,95 +1,162 @@
 """Collectors for market sentiment, microstructure, portfolio state, and macro telemetry."""
 from __future__ import annotations
 
-from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
-from intelligence.sentiment.collectors.macro_telemetry_collector import (
-    collect_macro_benchmarks_snapshot,
-    harvest_initial_prices_and_trends,
-    harvest_macro_and_news_sensors,
-    harvest_portfolio_and_venue_cycles,
-    populate_market_and_portfolio_snapshot,
-)
-from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
-from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
-from intelligence.sentiment.collectors.microstructure_collector import (
-    discover_reference_microstructure_symbols,
-    enrich_24h_and_microstructure,
-    ensure_fresh_symbol_microstructure,
-    load_symbol_microstructure,
-    load_symbol_price_series,
-)
-from intelligence.sentiment.collectors.portfolio_collector import (
-    harvest_bot_runtime_states,
-    harvest_kraken_xstocks,
-    harvest_recent_orders_and_enrich_positions,
-    harvest_tradable_positions_and_orders,
-    harvest_venue_cycles,
-    load_symbol_best_recent_fills,
-    load_venue_trailing_maps,
-)
-from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-    MACRO_BENCHMARK_SPECS,
-    apply_asset_scope_filter,
-    build_cycle_fallback_prices,
-    format_bottom_structure_6h_parts,
-    format_macro_benchmarks_summary_line,
-)
-from intelligence.sentiment.evaluators.microstructure_evaluator import (
-    compute_cross_venue_arb_metrics,
-    compute_liquidation_clusters,
-    enrich_cross_venue_trends,
-    enrich_microstructure_cvd,
-    sync_sibling_symbol_telemetry,
-    update_microstructure_cycle_deltas,
-)
-from intelligence.sentiment.evaluators.portfolio_evaluator import (
-    build_cross_market_context,
-    compute_enterprise_portfolio_risk_metrics,
-    enrich_open_limit_orders_tca,
-    enrich_positions_with_orders_and_cycles,
-    enrich_recent_orders_markout,
-    extract_symbol_recent_fills,
-    parse_venue_cycle_state,
-    reconcile_venue_cycles_with_recent_orders,
-    resolve_symbol_price,
-    resolve_venue_fee_and_limits,
-    set_pos_anchor,
-)
-from intelligence.sentiment.evaluators.price_series_evaluator import (
-    apply_live_24trend_windows,
-    apply_short_trend_item,
-    compute_7d_range_metrics,
-    compute_24h_price_metrics,
-    compute_cross_btc_metrics,
-    compute_swing_wave_metrics,
-    compute_volume_profile_metrics,
-    pct_delta,
-    range_position_pct,
-    recalculate_live_price_geometry,
-    round_opt_px,
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from intelligence.sentiment.collectors.fear_greed_collector import FearGreedCollector, FearGreedSnapshot
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        collect_macro_benchmarks_snapshot,
+        harvest_initial_prices_and_trends,
+        harvest_macro_and_news_sensors,
+        harvest_portfolio_and_venue_cycles,
+        populate_market_and_portfolio_snapshot,
+    )
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector, MarketBreadthSnapshot
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        discover_reference_microstructure_symbols,
+        enrich_24h_and_microstructure,
+        ensure_fresh_symbol_microstructure,
+        load_symbol_microstructure,
+        load_symbol_price_series,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        harvest_bot_runtime_states,
+        harvest_kraken_xstocks,
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+        harvest_venue_cycles,
+        load_symbol_best_recent_fills,
+        load_venue_trailing_maps,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        MACRO_BENCHMARK_SPECS,
+        apply_asset_scope_filter,
+        build_cycle_fallback_prices,
+        format_bottom_structure_6h_parts,
+        format_macro_benchmarks_summary_line,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_cross_venue_arb_metrics,
+        compute_liquidation_clusters,
+        enrich_cross_venue_trends,
+        enrich_microstructure_cvd,
+        sync_sibling_symbol_telemetry,
+        update_microstructure_cycle_deltas,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        build_cross_market_context,
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+        enrich_positions_with_orders_and_cycles,
+        enrich_recent_orders_markout,
+        extract_symbol_recent_fills,
+        parse_venue_cycle_state,
+        reconcile_venue_cycles_with_recent_orders,
+        resolve_symbol_price,
+        resolve_venue_fee_and_limits,
+        set_pos_anchor,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_live_24trend_windows,
+        apply_short_trend_item,
+        compute_7d_range_metrics,
+        compute_24h_price_metrics,
+        compute_cross_btc_metrics,
+        compute_swing_wave_metrics,
+        compute_volume_profile_metrics,
+        pct_delta,
+        range_position_pct,
+        recalculate_live_price_geometry,
+        round_opt_px,
+    )
+
+_LAZY_IMPORTS: dict[str, str] = {
+    "FearGreedCollector": "intelligence.sentiment.collectors.fear_greed_collector",
+    "FearGreedSnapshot": "intelligence.sentiment.collectors.fear_greed_collector",
+    "MACRO_BENCHMARK_SPECS": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    "MarketBreadthCollector": "intelligence.sentiment.collectors.market_breadth_collector",
+    "MarketBreadthSnapshot": "intelligence.sentiment.collectors.market_breadth_collector",
+    "apply_asset_scope_filter": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    "apply_live_24trend_windows": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "apply_short_trend_item": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "build_cross_market_context": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "build_cycle_fallback_prices": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    "collect_macro_benchmarks_snapshot": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "collect_pretrade_telemetry": "intelligence.sentiment.collectors.pretrade_telemetry_collector",
+    "compute_24h_price_metrics": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "compute_7d_range_metrics": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "compute_cross_btc_metrics": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "compute_cross_venue_arb_metrics": "intelligence.sentiment.evaluators.microstructure_evaluator",
+    "compute_enterprise_portfolio_risk_metrics": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "compute_liquidation_clusters": "intelligence.sentiment.evaluators.microstructure_evaluator",
+    "compute_swing_wave_metrics": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "compute_volume_profile_metrics": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "discover_reference_microstructure_symbols": "intelligence.sentiment.collectors.microstructure_collector",
+    "enrich_24h_and_microstructure": "intelligence.sentiment.collectors.microstructure_collector",
+    "enrich_cross_venue_trends": "intelligence.sentiment.evaluators.microstructure_evaluator",
+    "enrich_microstructure_cvd": "intelligence.sentiment.evaluators.microstructure_evaluator",
+    "enrich_open_limit_orders_tca": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "enrich_positions_with_orders_and_cycles": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "enrich_recent_orders_markout": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "ensure_fresh_symbol_microstructure": "intelligence.sentiment.collectors.microstructure_collector",
+    "extract_symbol_recent_fills": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "format_bottom_structure_6h_parts": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    "format_macro_benchmarks_summary_line": "intelligence.sentiment.evaluators.macro_telemetry_evaluator",
+    "harvest_bot_runtime_states": "intelligence.sentiment.collectors.portfolio_collector",
+    "harvest_initial_prices_and_trends": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "harvest_kraken_xstocks": "intelligence.sentiment.collectors.portfolio_collector",
+    "harvest_macro_and_news_sensors": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "harvest_portfolio_and_venue_cycles": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "harvest_recent_orders_and_enrich_positions": "intelligence.sentiment.collectors.portfolio_collector",
+    "harvest_tradable_positions_and_orders": "intelligence.sentiment.collectors.portfolio_collector",
+    "harvest_venue_cycles": "intelligence.sentiment.collectors.portfolio_collector",
+    "load_symbol_best_recent_fills": "intelligence.sentiment.collectors.portfolio_collector",
+    "load_symbol_microstructure": "intelligence.sentiment.collectors.microstructure_collector",
+    "load_symbol_price_series": "intelligence.sentiment.collectors.microstructure_collector",
+    "load_venue_trailing_maps": "intelligence.sentiment.collectors.portfolio_collector",
+    "parse_venue_cycle_state": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "pct_delta": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "populate_market_and_portfolio_snapshot": "intelligence.sentiment.collectors.macro_telemetry_collector",
+    "range_position_pct": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "recalculate_live_price_geometry": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "reconcile_venue_cycles_with_recent_orders": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "resolve_symbol_price": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "resolve_venue_fee_and_limits": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "round_opt_px": "intelligence.sentiment.evaluators.price_series_evaluator",
+    "set_pos_anchor": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "sync_sibling_symbol_telemetry": "intelligence.sentiment.evaluators.microstructure_evaluator",
+    "update_microstructure_cycle_deltas": "intelligence.sentiment.evaluators.microstructure_evaluator",
+}
+
+_SUBMODULES = frozenset(
+    {
+        "fear_greed_collector",
+        "macro_telemetry_collector",
+        "market_breadth_collector",
+        "microstructure_collector",
+        "portfolio_collector",
+        "pretrade_telemetry_collector",
+    }
 )
 
-__all__ = [
-    "FearGreedCollector", "FearGreedSnapshot", "MACRO_BENCHMARK_SPECS",
-    "MarketBreadthCollector", "MarketBreadthSnapshot",
-    "apply_asset_scope_filter", "apply_live_24trend_windows", "apply_short_trend_item",
-    "build_cross_market_context", "build_cycle_fallback_prices",
-    "collect_macro_benchmarks_snapshot", "collect_pretrade_telemetry",
-    "compute_24h_price_metrics", "compute_7d_range_metrics", "compute_cross_btc_metrics",
-    "compute_cross_venue_arb_metrics", "compute_enterprise_portfolio_risk_metrics",
-    "compute_liquidation_clusters", "compute_swing_wave_metrics", "compute_volume_profile_metrics",
-    "discover_reference_microstructure_symbols",
-    "enrich_24h_and_microstructure", "enrich_cross_venue_trends", "enrich_microstructure_cvd",
-    "enrich_open_limit_orders_tca", "enrich_positions_with_orders_and_cycles", "enrich_recent_orders_markout",
-    "ensure_fresh_symbol_microstructure",
-    "extract_symbol_recent_fills", "format_bottom_structure_6h_parts", "format_macro_benchmarks_summary_line",
-    "harvest_bot_runtime_states", "harvest_initial_prices_and_trends", "harvest_kraken_xstocks",
-    "harvest_macro_and_news_sensors", "harvest_portfolio_and_venue_cycles",
-    "harvest_recent_orders_and_enrich_positions", "harvest_tradable_positions_and_orders",
-    "harvest_venue_cycles", "load_symbol_best_recent_fills", "load_symbol_microstructure", "load_symbol_price_series",
-    "load_venue_trailing_maps", "parse_venue_cycle_state", "pct_delta",
-    "populate_market_and_portfolio_snapshot", "range_position_pct",
-    "recalculate_live_price_geometry", "reconcile_venue_cycles_with_recent_orders",
-    "resolve_symbol_price", "resolve_venue_fee_and_limits", "round_opt_px",
-    "set_pos_anchor", "sync_sibling_symbol_telemetry", "update_microstructure_cycle_deltas",
-]
+__all__ = list(_LAZY_IMPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    mod_name = _LAZY_IMPORTS.get(name)
+    if mod_name is not None:
+        val = getattr(importlib.import_module(mod_name), name)
+        globals()[name] = val
+        return val
+    if name in _SUBMODULES:
+        mod = importlib.import_module(f"{__name__}.{name}")
+        globals()[name] = mod
+        return mod
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

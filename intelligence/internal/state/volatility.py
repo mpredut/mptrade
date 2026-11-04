@@ -6,7 +6,10 @@ import math
 import os
 from typing import Optional, Sequence, Tuple
 
-import numpy as np
+try:
+    import numpy as np
+except Exception:
+    np = None  # type: ignore[assignment]
 
 from botcore import float_env, pos_float_env, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
@@ -43,7 +46,8 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
 
     p0 = None
     pn = None
-    if not isinstance(prices[0], (bool, np.bool_)) and not isinstance(prices[-1], (bool, np.bool_)):
+    _bool_types = (bool, np.bool_) if np is not None else (bool,)
+    if not isinstance(prices[0], _bool_types) and not isinstance(prices[-1], _bool_types):
         cand0 = safe_pos_float(prices[0], default=None)
         candn = safe_pos_float(prices[-1], default=None)
         if cand0 is not None and candn is not None:
@@ -72,35 +76,50 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float) -> 
         if cached is not None:
             return cached
 
-    if isinstance(prices, np.ndarray):
-        if prices.dtype == bool or prices.ndim != 1:
+    if np is not None:
+        if isinstance(prices, np.ndarray):
+            if prices.dtype == bool or prices.ndim != 1:
+                return None
+            try:
+                p = prices.astype(float, copy=False)
+            except (TypeError, ValueError):
+                return None
+        else:
+            try:
+                if any(isinstance(x, _bool_types) for x in prices):
+                    raise TypeError("bool in prices")
+                p = np.asarray(prices, dtype=float)
+            except (TypeError, ValueError):
+                clean_p = [
+                    xf for x in prices
+                    if not isinstance(x, _bool_types)
+                    and (xf := safe_pos_float(x, default=None)) is not None
+                ]
+                p = np.asarray(clean_p, dtype=float)
+                cache_key = None
+        p = p[np.isfinite(p) & (p > 0)]
+        if len(p) < 20:
             return None
-        try:
-            p = prices.astype(float, copy=False)
-        except (TypeError, ValueError):
-            return None
-    else:
-        try:
-            if any(isinstance(x, (bool, np.bool_)) for x in prices):
-                raise TypeError("bool in prices")
-            p = np.asarray(prices, dtype=float)
-        except (TypeError, ValueError):
-            clean_p = [
-                xf for x in prices
-                if not isinstance(x, (bool, np.bool_))
-                and (xf := safe_pos_float(x, default=None)) is not None
-            ]
-            p = np.asarray(clean_p, dtype=float)
+        if len(p) != n:
             cache_key = None
-    p = p[np.isfinite(p) & (p > 0)]
-    if len(p) < 20:
-        return None
-    if len(p) != n:
-        cache_key = None
 
-    # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
-    rets = np.log(p[1:] / p[:-1])
-    std = float(np.std(rets))
+        # Single-ratio logarithm: ln(p[i+1] / p[i]) instead of 2 * log calls
+        rets = np.log(p[1:] / p[:-1])
+        std = float(np.std(rets))
+    else:
+        clean_p = [
+            xf for x in prices
+            if not isinstance(x, _bool_types)
+            and (xf := safe_pos_float(x, default=None)) is not None
+        ]
+        if len(clean_p) < 20:
+            return None
+        if len(clean_p) != n:
+            cache_key = None
+        rets_py = [math.log(clean_p[i] / clean_p[i - 1]) for i in range(1, len(clean_p))]
+        mean_r = sum(rets_py) / len(rets_py)
+        std = math.sqrt(sum((r - mean_r) ** 2 for r in rets_py) / len(rets_py))
+
     res = _std_to_vol1h_pct(std, sample_rate_sec)
 
     if cache_key is not None:

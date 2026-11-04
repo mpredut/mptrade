@@ -626,7 +626,7 @@ def enrich_cross_venue_trends(
             sym_px_cur = safe_float(entry.get("price"), 0.0)
             for ck in cand_keys:
                 cand_ser = casefold_get(watcher_price_items, ck)
-                if not isinstance(cand_ser, list) or len(cand_ser) < 2:
+                if not isinstance(cand_ser, (list, tuple)) or len(cand_ser) < 2:
                     continue
                 last_m_px = safe_float(cand_ser[-1][1], 0.0) if isinstance(cand_ser[-1], (list, tuple)) and len(cand_ser[-1]) > 1 else 0.0
                 if ck != sym and (compatible_quote_suffixes(ck) != sym_quotes or _prices_diverged(sym_px_cur, last_m_px)):
@@ -634,7 +634,7 @@ def enrich_cross_venue_trends(
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
                 if "chg_7d_pct" in entry and w0 is not None and w1 is not None and 0.0 <= (w1[0] - w0[0]) < 5 * 86400 * 1000:
                     continue
-                vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, list) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
+                vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
                 entry.update(compute_7d_range_metrics(vals))
                 break
 

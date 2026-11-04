@@ -371,7 +371,12 @@ def compute_enterprise_portfolio_risk_metrics(
         if not isinstance(c, dict):
             continue
         v_name = normalize_venue_name(c.get("venue")) or "unknown"
-        f_u = safe_pos_float(c.get("free"), default=0.0) or 0.0
+        f_u = (
+            safe_pos_float(c.get("free"), default=None)
+            or safe_pos_float(c.get("free_quote_usd"), default=None)
+            or safe_pos_float(c.get("free_usd"), default=0.0)
+            or 0.0
+        )
         l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
         venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
         venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u

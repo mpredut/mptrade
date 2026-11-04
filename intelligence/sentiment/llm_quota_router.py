@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -23,6 +24,14 @@ logger = logging.getLogger("intelligence.sentiment.gemini_client")
 QUOTA_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
 LOAD_ASSIST_API_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 AGY_QUOTA_USER_AGENT = "antigravity/1.4.12"
+
+
+def _gc_attr(name: str, default: Any) -> Any:
+    """Resolve an attribute through `intelligence.sentiment.gemini_client` first so monkeypatches take effect."""
+    gc_mod = sys.modules.get("intelligence.sentiment.gemini_client")
+    if gc_mod is not None and hasattr(gc_mod, name):
+        return getattr(gc_mod, name)
+    return default
 
 
 def canonical_rest_model(model_name: str) -> str:
@@ -107,7 +116,7 @@ class GeminiQuotaRouterMixin:
     @staticmethod
     def _get_quota_state_path() -> str:
         """Return shared SSOT cache path for live LLM model quota & credit status."""
-        return cache_path("llm_quota_status.json")
+        return _gc_attr("cache_path", cache_path)("llm_quota_status.json")
 
     @staticmethod
     def _extract_available_credits(load_assist_payload: Any) -> float:
@@ -163,6 +172,13 @@ class GeminiQuotaRouterMixin:
         now = time.time()
         ttl_sec = max(5.0, safe_float(os.environ.get("LLM_QUOTA_CACHE_TTL_SEC"), 30.0))
         state_path = cls._get_quota_state_path()
+        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
+        _save_json_state = _gc_attr("save_json_state", save_json_state)
+        _fetch_json_post = _gc_attr("fetch_json_post", fetch_json_post)
+        _resolve_bot_cli_base = _gc_attr("resolve_bot_cli_base", resolve_bot_cli_base)
+        _resolve_ui_cli_base = _gc_attr("resolve_ui_cli_base", resolve_ui_cli_base)
+        _quota_api_url = _gc_attr("QUOTA_API_URL", QUOTA_API_URL)
+        _load_assist_api_url = _gc_attr("LOAD_ASSIST_API_URL", LOAD_ASSIST_API_URL)
 
         with cls._QUOTA_LOCK:
             mem = cls._QUOTA_MEM_CACHE
@@ -173,7 +189,7 @@ class GeminiQuotaRouterMixin:
             ):
                 return dict(mem)
 
-            disk = read_json_dict(state_path, default={})
+            disk = _read_json_dict(state_path, default={})
             if (
                 isinstance(disk, dict)
                 and isinstance(disk.get("buckets"), dict)
@@ -185,14 +201,14 @@ class GeminiQuotaRouterMixin:
         cli_bases = []
         if bot_cli_base and isinstance(bot_cli_base, str):
             cli_bases.append(bot_cli_base)
-        for resolved_base in (resolve_bot_cli_base(), resolve_ui_cli_base()):
+        for resolved_base in (_resolve_bot_cli_base(), _resolve_ui_cli_base()):
             if resolved_base and resolved_base not in cli_bases:
                 cli_bases.append(resolved_base)
 
         access_token = ""
         for base_dir in cli_bases:
             tok_path = os.path.join(base_dir, "antigravity-oauth-token")
-            tok_data = read_json_dict(tok_path, default={})
+            tok_data = _read_json_dict(tok_path, default={})
             if not tok_data:
                 continue
             nested_tok = tok_data.get("token") if isinstance(tok_data.get("token"), dict) else {}
@@ -216,7 +232,7 @@ class GeminiQuotaRouterMixin:
 
         buckets: Dict[str, float] = {}
         try:
-            quota_payload = fetch_json_post(QUOTA_API_URL, timeout=2.5, headers=headers)
+            quota_payload = _fetch_json_post(_quota_api_url, timeout=2.5, headers=headers)
             if not isinstance(quota_payload, dict) or not isinstance(quota_payload.get("buckets"), list):
                 return None
             for b in quota_payload.get("buckets", []):
@@ -244,7 +260,7 @@ class GeminiQuotaRouterMixin:
         available_credits = 0.0
         tier_id = ""
         try:
-            assist_payload = fetch_json_post(LOAD_ASSIST_API_URL, timeout=2.0, headers=headers)
+            assist_payload = _fetch_json_post(_load_assist_api_url, timeout=2.0, headers=headers)
             if isinstance(assist_payload, dict):
                 available_credits = cls._extract_available_credits(assist_payload)
                 paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
@@ -254,7 +270,7 @@ class GeminiQuotaRouterMixin:
             logger.debug("Live LLM loadCodeAssist credit check failed (non-fatal): %s", exc)
 
         with cls._QUOTA_LOCK:
-            prev = read_json_dict(state_path, default={})
+            prev = _read_json_dict(state_path, default={})
             if not isinstance(prev, dict):
                 prev = {}
             runtime_exhausted: Dict[str, float] = {}
@@ -276,7 +292,7 @@ class GeminiQuotaRouterMixin:
             }
             cls._QUOTA_MEM_CACHE = dict(snapshot)
             try:
-                save_json_state(state_path, snapshot)
+                _save_json_state(state_path, snapshot)
             except Exception:
                 pass
 
@@ -327,9 +343,11 @@ class GeminiQuotaRouterMixin:
         now = time.time()
         exp_until = now + max(15.0, float(ttl_sec))
         state_path = cls._get_quota_state_path()
+        _read_json_dict = _gc_attr("read_json_dict", read_json_dict)
+        _save_json_state = _gc_attr("save_json_state", save_json_state)
         snapshot: Optional[Dict[str, Any]] = None
         with cls._QUOTA_LOCK:
-            data = read_json_dict(state_path, default={})
+            data = _read_json_dict(state_path, default={})
             if not isinstance(data, dict):
                 data = {}
             buckets = data.get("buckets") if isinstance(data.get("buckets"), dict) else {}
@@ -352,7 +370,7 @@ class GeminiQuotaRouterMixin:
             data["available_credits"] = 0.0
             cls._QUOTA_MEM_CACHE = dict(data)
             try:
-                save_json_state(state_path, data)
+                _save_json_state(state_path, data)
             except Exception:
                 pass
             snapshot = dict(data)
@@ -367,6 +385,7 @@ class GeminiQuotaRouterMixin:
         buckets = snapshot.get("buckets")
         if not isinstance(buckets, dict) or not buckets:
             return
+        _save_json_state = _gc_attr("save_json_state", save_json_state)
         available_credits = safe_float(snapshot.get("available_credits"), 0.0)
         warn_threshold = max(0.0, min(0.5, safe_float(os.environ.get("LLM_QUOTA_LOW_WARN_FRACTION"), 0.10)))
         cooldown_sec = max(300.0, safe_float(os.environ.get("LLM_QUOTA_ALERT_COOLDOWN_SEC"), 14400.0))
@@ -389,7 +408,7 @@ class GeminiQuotaRouterMixin:
                     snapshot["last_alert_tier"] = "ok"
                     cls._QUOTA_MEM_CACHE = dict(snapshot)
                     try:
-                        save_json_state(state_path, snapshot)
+                        _save_json_state(state_path, snapshot)
                     except Exception:
                         pass
             return
@@ -418,9 +437,13 @@ class GeminiQuotaRouterMixin:
         except Exception:
             return
 
+        ntfy_mocked = (
+            hasattr(watchdog_common.send_ntfy, "_mock_name")
+            or getattr(watchdog_common.send_ntfy, "__module__", "") != "orchestratorOS.lib.watchdog_common"
+        )
         if (
             "PYTEST_CURRENT_TEST" in os.environ
-            and not hasattr(watchdog_common.send_ntfy, "_mock_name")
+            and not ntfy_mocked
             and not _parse_bool_flag(os.environ.get("LLM_FORCE_QUOTA_ALERT_TEST"))
         ):
             return
@@ -452,6 +475,6 @@ class GeminiQuotaRouterMixin:
                 snapshot["last_alert_tier"] = alert_tier
                 cls._QUOTA_MEM_CACHE = dict(snapshot)
                 try:
-                    save_json_state(state_path, snapshot)
+                    _save_json_state(state_path, snapshot)
                 except Exception:
                     pass

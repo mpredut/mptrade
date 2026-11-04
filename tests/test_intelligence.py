@@ -1319,6 +1319,117 @@ def test_iter48_portfolio_locked_balances_ws_enqueue_threadsafe_and_bool_env_pat
     assert resolved.quote == "USDC"
 
 
+def test_iter49_lazy_sentiment_subpackages_gemini_quota_monkeypatch_and_evaluator_hardening(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import intelligence.sentiment.gemini_client as gc_mod
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        _populate_cycle_fallback_recent_order,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+
+    # 1. Importing collectors/evaluators subpackages when numpy is blocked succeeds via PEP 562 lazy loading
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.modules['numpy'] = None; "
+                "import intelligence.sentiment.collectors.portfolio_collector; "
+                "import intelligence.sentiment.evaluators.tca_risk_evaluator; "
+                "print('OK')"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == "OK"
+
+    import intelligence.internal.state.volatility as vol_mod
+    prices_sample = [100.0 + (i % 3) * 0.5 for i in range(25)]
+    vol_with_np = vol_mod.calculate_volatility_1h(prices_sample, 60.0)
+    vol_mod._vol_memo_cache.clear()
+    monkeypatch.setattr(vol_mod, "np", None)
+    vol_without_np = vol_mod.calculate_volatility_1h(prices_sample, 60.0)
+    assert vol_with_np is not None and vol_without_np == vol_with_np
+
+    # 2. GeminiClient.probe_live_model_quota and query_text (REST fallback) respect monkeypatches on gemini_client
+    cli_dir = tmp_path / "cli_base"
+    cli_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "llm_quota_status.json"
+    monkeypatch.setattr(gc_mod, "cache_path", lambda name: str(state_file))
+    monkeypatch.setattr(gc_mod, "resolve_bot_cli_base", lambda: str(cli_dir))
+    monkeypatch.setattr(gc_mod, "resolve_ui_cli_base", lambda: str(cli_dir))
+
+    def _fake_read_json(path, default=None):
+        if str(path).endswith("antigravity-oauth-token"):
+            return {"access_token": "tok_test_iter49", "expiry_timestamp": 9999999999.0}
+        return default if default is not None else {}
+
+    saved_payloads = []
+    monkeypatch.setattr(gc_mod, "read_json_dict", _fake_read_json)
+    monkeypatch.setattr(gc_mod, "save_json_state", lambda path, data: saved_payloads.append((path, dict(data))))
+
+    def _fake_fetch_post(url, *args, **kwargs):
+        if "retrieveUserQuota" in str(url):
+            return {"buckets": [{"modelId": "gemini-3.8-flash-tiered", "remainingFraction": 0.75}]}
+        if "loadCodeAssist" in str(url):
+            return {"paidTier": {"id": "pro", "availableCredits": [{"creditAmount": 42.0}]}}
+        if "generativelanguage.googleapis.com" in str(url):
+            return {"candidates": [{"content": {"parts": [{"text": '{"ok": true}'}]}}]}
+        return {}
+
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_fetch_post)
+    monkeypatch.setattr(gc_mod.GeminiClient, "_QUOTA_MEM_CACHE", {})
+    snap = gc_mod.GeminiClient.probe_live_model_quota(bot_cli_base=str(cli_dir), force_refresh=True)
+    assert isinstance(snap, dict)
+    assert snap["available_credits"] == 42.0
+    assert snap["buckets"].get("gemini-4-argon-medium") == 0.75
+    assert saved_payloads and saved_payloads[-1][0] == str(state_file)
+
+    client = gc_mod.GeminiClient(api_key="test-rest-key", cli_path="/nonexistent/agy")
+    assert client.query_json("ping") == {"ok": True}
+
+    # 3. reconcile_venue_cycles_with_recent_orders propagates sell_ts_ms across symbol variants (e.g. HYPE -> HYPEUSDC)
+    hl_cycles = {"HYPE": {"qty": 0.0, "last_sell_price": 27.5, "_last_sell_ts_ms": 1700001234000}}
+    sell_ts_map = reconcile_venue_cycles_with_recent_orders({}, hl_cycles, {}, {}, {}, {})
+    assert sell_ts_map.get(("hyperliquid", "HYPE")) == 1700001234000
+    assert sell_ts_map.get(("hyperliquid", "HYPEUSDC")) == 1700001234000
+    recent_orders: dict = {}
+    v_ro_map: dict = {}
+    ro_out = _populate_cycle_fallback_recent_order(
+        "hyperliquid", "HYPEUSDC", hl_cycles["HYPE"], False, None, recent_orders, v_ro_map, sell_ts_map
+    )
+    assert isinstance(ro_out, dict)
+    assert ro_out.get("last_sell", {}).get("ts_ms") == 1700001234000
+
+    # 4. compute_enterprise_portfolio_risk_metrics falls back to free_quote_usd when free is absent
+    risk_metrics = compute_enterprise_portfolio_risk_metrics(
+        {
+            "tradable_positions": [{"venue": "hyperliquid", "symbol": "HYPEUSDC", "base": "HYPE", "value_usd": 200.0}],
+            "venue_quote_cash": {
+                "hyperliquid:USDC": {"venue": "hyperliquid", "asset": "USDC", "free_quote_usd": 300.0, "locked_quote_usd": 50.0}
+            },
+        },
+        {"HYPEUSDC": {"price": 25.0, "vol_1h_pct": 1.2}},
+        {},
+    )
+    assert risk_metrics.get("global_free_cash_usd") == 300.0
+    assert risk_metrics.get("locked_quote_usd") == 50.0
+    assert risk_metrics.get("unified_nav_usd") == 550.0
+
+    # 5. enrich_cross_venue_trends accepts tuple rows in watcher_price_items
+    pt_map = {"SOLUSDC": {"price": 150.0}}
+    watcher_items = {"SOLUSDC": ((1700000000000, 120.0), (1700600000000, 160.0), (1700605000000, 150.0))}
+    enrich_cross_venue_trends(pt_map, {}, {}, {}, {}, {}, watcher_items)
+    assert pt_map["SOLUSDC"].get("low_7d") == 120.0
+    assert pt_map["SOLUSDC"].get("high_7d") == 160.0
+
+
 if __name__ == "__main__":
     unittest.main()
 

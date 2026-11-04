@@ -75,7 +75,9 @@ _LAZY_IMPORTS: dict[str, str] = {
     "HighStakeGuard": "intelligence.sentiment.guards.high_stake_guard",
 }
 
-_SUBMODULES = frozenset({"collectors", "evaluators", "gemini_client", "guards", "sentiment_advisor", "triggers"})
+_SUBMODULES = frozenset(
+    {"collectors", "evaluators", "gemini_client", "guards", "llm_quota_router", "sentiment_advisor", "triggers"}
+)
 
 __all__ = list(_LAZY_IMPORTS)
 
