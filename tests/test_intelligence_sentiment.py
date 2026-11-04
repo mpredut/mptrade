@@ -4189,3 +4189,96 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     m24_sparse = compute_24h_price_metrics(sparse_pts)
     assert "chg_6h_pct" in m24_sparse
     assert "chg_12h_pct" not in m24_sparse
+
+    # Bugs 13, 14, 15 & 16:
+    # - harvest_log_anomalies_from_dirs skips __orchestrator_intent__ IPC lines, deduplicates chained tracebacks, and clears pre-startup ImportError after clean strategy startup
+    # - enrich_sentiment_advisor_live_flow_divergence does not trigger LIVE_BUY_REVERSAL on NEUTRAL/HOLD when live_tr < 1.25 (e.g. 1.16)
+    # - _apply_24h_series_enrichment computes fallback slopes/vol_1h for equities; collect_pretrade_telemetry syncs live equity price and strips post-RTH short tape
+    ipc_log_dir = tmp_path / "ipc_and_krk_logs"
+    ipc_log_dir.mkdir(parents=True, exist_ok=True)
+    clk_now = time.strftime("%H:%M:%S", time.localtime(time.time() - 20))
+    (ipc_log_dir / "macro_analyzer.log").write_text(
+        '{"__orchestrator_intent__": "ntfy_webhook", "alerts": [{"title": "HARD_VETO_NEW_BUYS Error in feed"}]}\n',
+        encoding="utf-8",
+    )
+    (ipc_log_dir / "Kraken-HYPE.log").write_text(
+        "Traceback (most recent call last):\n"
+        '  File "/app/kraken/kraken_bot.py", line 25, in <module>\n'
+        "    from kraken.kraken_client import KrakenRestClient\n"
+        "ImportError: cannot import name 'normalize_epoch_sec' from 'botcore'\n\n"
+        "During handling of the above exception, another exception occurred:\n\n"
+        "Traceback (most recent call last):\n"
+        '  File "/app/kraken/kraken_bot.py", line 28, in <module>\n'
+        "    from kraken_client import KrakenRestClient\n"
+        "ImportError: cannot import name 'normalize_epoch_sec' from 'botcore'\n"
+        f"[{clk_now}]   [STRAT] state loaded\n"
+        "=== STRATEGIE KRAKEN PORNITA ===\n",
+        encoding="utf-8",
+    )
+    ipc_summary = harvest_log_anomalies_from_dirs([str(ipc_log_dir)], lookback_hours=1.0)
+    assert ipc_summary.error_count == 0
+    assert ipc_summary.warning_count == 0
+    assert ipc_summary.critical_events == []
+    assert ipc_summary.guard_interventions == []
+    assert ipc_summary.persistent_errors == []
+
+    sa_neutral_mild = {
+        "market_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 24.5,
+        "summary": "Balanced flow with taker buy/sell ratio (0.89).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_neutral_mild,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.1592, "cvd_15m_usd": 7_270_000.0, "taker_ratio_1h": 0.71, "cvd_1h_usd": -61_090_000.0}},
+    )
+    assert "live_flow_divergence" not in sa_neutral_mild
+    from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment
+
+    spcx_eq_entry: dict = {"price": 134.54}
+    spcx_eq_pts = [[now_ms_w3 - (30 - i) * 300_000, 132.0 + i * 0.08] for i in range(31)]
+    _apply_24h_series_enrichment("SPCX_US_EQ", spcx_eq_entry, compute_24h_price_metrics(spcx_eq_pts), spcx_eq_pts, None)
+    assert spcx_eq_entry.get("slope_15m") is not None and spcx_eq_entry.get("vol_1h_pct") is not None
+
+    # Bugs 61 & 62:
+    # - Section 3A clamps raw pinfo['va_pos_pct'] to [-100.0, 200.0]
+    # - enrich_sentiment_advisor_live_flow_divergence distinguishes LIVE_15M_BOUNCE_VS_1H_SELL under NEUTRAL/HOLD when 1h flow is deeply negative
+    lines_61 = _format_market_prices_section(
+        {"SPCX_US_EQ": {"price": 134.54, "poc_px": 141.18, "val_px": 140.36, "vah_px": 142.47, "va_pos_pct": -275.3, "va_regime": "BELOW_VAL"}}
+    )
+    assert "va_pos=-100.0%" in "\n".join(lines_61)
+
+    sa_62 = {
+        "market_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 40.0,
+        "summary": "Balanced flow with taker buy/sell ratio (0.87).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_62,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.38, "cvd_15m_usd": 26_040_000.0, "taker_ratio_1h": 0.78, "cvd_1h_usd": -117_130_000.0}},
+    )
+    assert sa_62["live_flow_divergence"].startswith("LIVE_15M_BOUNCE_VS_1H_SELL (")
+
+    # Discrepancy AJ & AK: NEUTRAL/HOLD advisor with cited_tr=0.58 still triggers LIVE_SELL_REVERSAL on heavy live dump;
+    # compute_swing_wave_metrics promotes prior completed trough when cur_v == lo_px on pullback
+    sa_neutral_cited_low = {
+        "market_bias": "NEUTRAL",
+        "recommended_action": "HOLD",
+        "age_min": 27.0,
+        "summary": "Voluntary long_unwinding (0.58 taker buy/sell ratio) with passive spot bids supporting HOLD.",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_neutral_cited_low,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 0.7363, "cvd_15m_usd": -13_020_000.0, "taker_ratio_1h": 0.81, "cvd_1h_usd": -34_370_000.0}},
+    )
+    assert "LIVE_SELL_REVERSAL" in sa_neutral_cited_low.get("live_flow_divergence", "")
+    assert "NEUTRAL/HOLD (advisor ratio=0.58)" in sa_neutral_cited_low.get("live_flow_divergence", "")
+
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_swing_wave_metrics
+
+    sw_ak = compute_swing_wave_metrics([0.193, 0.18252, 0.201272, 0.194847])
+    assert sw_ak["swing_low_px"] == 0.18252
+    assert sw_ak["swing_high_px"] == 0.201272
+    assert sw_ak["rally_from_swing_low_pct"] == 6.75
+    assert sw_ak["pullback_from_swing_high_pct"] == -3.19

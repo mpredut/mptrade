@@ -88,12 +88,12 @@ def _prices_diverged(px_a: Any, px_b: Any, threshold: float = 0.10) -> bool:
 
 def pct_delta(cur_px: float, ref_px: float, decimals: int = 2) -> float:
     """Compute percentage delta `((cur_px / ref_px) - 1.0) * 100.0` rounded to `decimals`."""
-    return round((cur_px / ref_px - 1.0) * 100.0, decimals)
+    return round((cur_px / ref_px - 1.0) * 100.0, decimals) + 0.0
 
 
 def range_position_pct(cur_px: float, low_px: float, high_px: float, decimals: int = 1) -> float:
     """Compute normalized [0..100] range position `((cur_px - low_px) / (high_px - low_px)) * 100.0`."""
-    return round(((cur_px - low_px) / (high_px - low_px)) * 100.0, decimals) if high_px > low_px else 50.0
+    return (round(((cur_px - low_px) / (high_px - low_px)) * 100.0, decimals) + 0.0) if high_px > low_px else 50.0
 
 
 def _build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px: float) -> Dict[str, Any]:
@@ -513,7 +513,12 @@ def compute_swing_wave_metrics(
     elif direction == -1 and pivots:
         swing_high_px, swing_low_px = pivots[-1][2], min(lo_px, cur_v)
         if len(pivots) >= 2 and pivots[-2][0] == "LOW" and pivots[-2][2] < swing_low_px:
-            major_low_px = pivots[-2][2]
+            if abs(cur_v - swing_low_px) / max(cur_v, 1e-12) < 5e-4:
+                swing_low_px = pivots[-2][2]
+                if len(pivots) >= 4 and pivots[-4][0] == "LOW" and pivots[-4][2] < swing_low_px:
+                    major_low_px = pivots[-4][2]
+            else:
+                major_low_px = pivots[-2][2]
     else:
         swing_low_px, swing_high_px = min(vals), max(vals)
 

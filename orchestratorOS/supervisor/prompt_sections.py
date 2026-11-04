@@ -425,7 +425,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 _parse_finite_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
                 for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
             )
-            va_pos = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
+            va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
+            va_pos = round(max(-100.0, min(200.0, _parse_finite_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
             va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
             sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
             sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""

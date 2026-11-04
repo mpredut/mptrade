@@ -39,6 +39,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     _apply_24h_series_enrichment,
     _auto_px_decimals,
     _compute_short_slopes_from_series,
+    _load_stitched_24h_ohlc_points,
     _parse_ts_px_row,
     _prices_diverged,
     apply_live_24trend_windows,
@@ -46,6 +47,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_7d_range_metrics,
     compute_24h_price_metrics,
     compute_cross_btc_metrics,
+    compute_volume_profile_metrics,
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
@@ -224,19 +226,63 @@ def collect_pretrade_telemetry(
         )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
-        cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
-        if not cur_px_est or cur_px_est <= 0.0:
-            cur_px_est = next(
-                (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
-                0.0,
-            )
-        if cur_px_est <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
+        live_cur_px = next(
+            (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
+            0.0,
+        )
+        if live_cur_px <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if str(vb_v.get("symbol") or "").strip().upper() == str(symbol).strip().upper():
-                        cur_px_est = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
-                        if cur_px_est > 0.0:
+                        live_cur_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
+                        if live_cur_px > 0.0:
                             break
+        cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
+        if not cur_px_est or cur_px_est <= 0.0:
+            cur_px_est = live_cur_px
+        elif str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and last_alt_pt is not None:
+            import time as _pt_time
+
+            now_ms_eq = int(_pt_time.time() * 1000)
+            rth_fresh_eq = (now_ms_eq - last_alt_pt[0]) <= 20 * 60 * 1000
+            if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1]) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
+                cur_px_est = round(live_cur_px, 4)
+                if rth_fresh_eq:
+                    alt_series_24h = list(alt_series_24h) + [[now_ms_eq, cur_px_est]]
+                    m24 = compute_24h_price_metrics(alt_series_24h) or m24
+                elif m24:
+                    recalculate_live_price_geometry(m24, cur_px_est)
+            if not rth_fresh_eq and m24:
+                for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                    m24.pop(k_stale_eq, None)
+        if m24 and m24.get("vp_source") == "TPO" and not str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ:
+            try:
+                import time as _pt_time
+
+                sym_u_pt = str(symbol).strip().upper()
+                ohlc_fn_pt = None
+                if sym_u_pt in ("ADAUSD", "TAOUSD", "HYPEUSD"):
+                    from providers.kraken_provider import KrakenProvider
+
+                    ohlc_fn_pt = KrakenProvider().ohlc_series
+                elif sym_u_pt == "HYPEUSDC":
+                    from providers.hyperliquid_provider import HyperliquidProvider
+
+                    ohlc_fn_pt = HyperliquidProvider().ohlc_series
+                elif sym_u_pt.endswith(("USDC", "USDT")):
+                    from providers.market_api import api as _mkt_api
+
+                    ohlc_fn_pt = getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
+                if callable(ohlc_fn_pt):
+                    now_s_pt = _pt_time.time()
+                    pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
+                    if len(pts_vp_pt) >= 8 and (pts_vp_pt[-1][0] - pts_vp_pt[0][0]) >= 18 * 3600 * 1000:
+                        if cur_px_est > 0 and not _prices_diverged(cur_px_est, pts_vp_pt[-1][1]):
+                            pts_vp_pt.append([int(now_s_pt * 1000), cur_px_est, 0.0])
+                        if (vp_real_pt := compute_volume_profile_metrics(pts_vp_pt)) and vp_real_pt.get("vp_source") == "REAL_VOL":
+                            m24.update(vp_real_pt)
+            except Exception:
+                pass
 
         cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:

@@ -605,6 +605,8 @@ def enrich_24h_and_microstructure(
             matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
         else:
             matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
+        raw_s24_last_pt = _parse_ts_px_row(matched_series_24h[-1]) if matched_series_24h else None
+        raw_s24_last_ts_ms = raw_s24_last_pt[0] if raw_s24_last_pt is not None else 0.0
         if sym_px_cur > 0 and matched_series_24h:
             last_24_pt = _parse_ts_px_row(matched_series_24h[-1])
             last_24_px = last_24_pt[1] if last_24_pt is not None else safe_float(matched_series_24h[-1][1], 0.0)
@@ -727,7 +729,22 @@ def enrich_24h_and_microstructure(
                     pass
         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
         is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
-        if not m24 and (is_t212_inst or (sym.endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ)):
+        p24_eq_path = (
+            str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+            if cache_dir and is_eq_sym
+            else ""
+        )
+        eq_cache_stale = False
+        if (
+            is_eq_sym
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and (raw_s24_last_ts_ms <= 0.0 or (int(now_ts * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000)
+        ):
+            try:
+                eq_cache_stale = not p24_eq_path or not os.path.exists(p24_eq_path) or (now_ts - os.path.getmtime(p24_eq_path)) >= 240.0
+            except Exception:
+                eq_cache_stale = True
+        if (not m24 and (is_t212_inst or (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ))) or eq_cache_stale:
             try:
                 _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
                 chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
@@ -767,13 +784,18 @@ def enrich_24h_and_microstructure(
                     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
                     now_ms_i = int(now_ts * 1000)
                     rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
-                    if chart_px > 0.0 and (sym_px_cur <= 0.0 or abs(sym_px_cur - chart_px) < 1e-4 or (not is_t212_inst and rth_bar_fresh)):
+                    if chart_px > 0.0 and (
+                        sym_px_cur <= 0.0
+                        or abs(sym_px_cur - chart_px) < 1e-4
+                        or (not is_t212_inst and sym not in t212_seeded_from_cache and rth_bar_fresh)
+                    ):
                         prices_and_trends[sym]["price"] = chart_px
                         sym_px_cur = chart_px
                     cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
-                    pts_24h = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
-                    if len(pts_24h) < 10:
-                        pts_24h = list(pts_5d[-78:])
+                    pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+                    if len(pts_24h_bars) < 10:
+                        pts_24h_bars = list(pts_5d[-78:])
+                    pts_24h = list(pts_24h_bars)
                     px_diff_from_chart = bool(
                         pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4
                     )
@@ -781,6 +803,7 @@ def enrich_24h_and_microstructure(
                         pts_24h = list(pts_24h) + [[now_ms_i, round(sym_px_cur, 4)]]
                     if m24 := (compute_24h_price_metrics(pts_24h) or {}):
                         matched_series_24h = pts_24h
+                        post_rth_px_override = None
                         if not rth_bar_fresh:
                             for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                                 m24.pop(k_stale, None)
@@ -791,15 +814,17 @@ def enrich_24h_and_microstructure(
                     vals_5d = [pt[1] for pt in pts_5d]
                     if post_rth_px_override is not None:
                         vals_5d.append(post_rth_px_override)
+                    elif rth_bar_fresh and px_diff_from_chart:
+                        vals_5d.append(round(sym_px_cur, 4))
                     if len(vals_5d) >= 2:
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
                         try:
                             from state_io import save_json_state
 
-                            if pts_24h:
-                                p24_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
-                                save_json_state(p24_eq_path, {"items": {sym: pts_24h}})
+                            if pts_24h_bars:
+                                p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+                                save_json_state(p24_target, {"items": {sym: pts_24h_bars}})
                             p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
                             save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
                         except Exception:

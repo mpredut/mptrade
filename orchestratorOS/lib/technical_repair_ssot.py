@@ -1178,18 +1178,19 @@ def harvest_heartbeats_and_state_files(
                     if not os.path.isfile(hb_full):
                         continue
                     data = _rj(hb_full)
+                    mtime = os.path.getmtime(hb_full)
                     if isinstance(data, dict) and data:
                         hb_ts = normalize_epoch_sec(data.get("ts") or data.get("timestamp"), default=None)
-                        if hb_ts is not None and hb_ts <= now_ts + 60.0:
+                        if mtime <= now_ts + 60.0 and (hb_ts is None or hb_ts < mtime - 60.0 or hb_ts > now_ts + 60.0):
+                            age_sec = max(0.0, now_ts - mtime)
+                        elif hb_ts is not None and hb_ts <= now_ts + 60.0:
                             age_sec = max(0.0, now_ts - hb_ts)
                         else:
-                            mtime = os.path.getmtime(hb_full)
                             age_sec = max(0.0, now_ts - mtime)
                         if age_sec > 1800.0:
                             continue
                         active_heartbeats[entry] = {**data, "age_seconds": round(age_sec, 1)}
                     else:
-                        mtime = os.path.getmtime(hb_full)
                         age_sec = max(0.0, now_ts - mtime)
                         if age_sec > 1800.0:
                             continue
