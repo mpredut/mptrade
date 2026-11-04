@@ -303,6 +303,25 @@ def load_symbol_price_series(
             if arch_span_ms >= 5.0 * 86400.0 * 1000.0 or sparse_7d_pts:
                 break
 
+    if not archive_pts and need_24h_supplement and not series_24h:
+        for w_path in _cand_paths("cache_watcher_all_price.json"):
+            if not os.path.exists(w_path):
+                continue
+            w_raw = lookup_symbol_cache_items(
+                _rj(w_path),
+                cand_keys=cands,
+                allow_base_fallback=False,
+                single_item_quote_fallback=False,
+                require_list=True,
+                unwrap_items=True,
+            )
+            w_rows = _sort_ts_rows(w_raw or [])
+            if len(w_rows) >= 10 and (w_last := _parse_ts_px_row(w_rows[-1])) is not None:
+                w_24 = [pt for r in w_rows if (pt := _parse_ts_px_row(r)) is not None and pt[0] >= w_last[0] - 86400.0 * 1000.0]
+                if len(w_24) >= 10 and (w_24[-1][0] - w_24[0][0]) >= 3600.0 * 1000.0:
+                    archive_pts = list(w_rows)
+                    break
+
     arch_7d_end_ts = 0.0
     arch_7d_span_ms = 0.0
     if archive_pts:
@@ -622,6 +641,12 @@ def enrich_24h_and_microstructure(
     btc_series_24h, btc_vals_7d = load_symbol_price_series(cache_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True)
     bcache_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb = _rj(bcache_path) if bcache_path and os.path.exists(bcache_path) else None
+    bcache_mtime = 0.0
+    if bcache_path and os.path.exists(bcache_path):
+        try:
+            bcache_mtime = os.path.getmtime(bcache_path)
+        except OSError:
+            bcache_mtime = 0.0
     cached_bals: Dict[str, Any] = raw_cb if isinstance(raw_cb, dict) else {}
     t212_seeded_from_cache: set[str] = set()
     t212_seed_tickers = [ticker for _, ticker in _iter_t212_state_files(workspace_dir)]
@@ -668,11 +693,26 @@ def enrich_24h_and_microstructure(
         if sym_px_cur > 0 and matched_series_24h:
             last_24_pt = _parse_ts_px_row(matched_series_24h[-1])
             last_24_px = last_24_pt[1] if last_24_pt is not None else safe_float(matched_series_24h[-1][1], 0.0)
+            if (
+                sym in t212_seeded_from_cache
+                and last_24_pt is not None
+                and last_24_px > 0.0
+                and last_24_pt[0] > 1e11
+                and bcache_mtime > 0.0
+                and (last_24_pt[0] / 1000.0) > bcache_mtime
+                and (int(now_ts * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
+                and not _prices_diverged(sym_px_cur, last_24_px)
+            ):
+                prices_and_trends[sym]["price"] = sym_px_cur = round(last_24_px, 4)
             if _prices_diverged(sym_px_cur, last_24_px):
                 matched_series_24h = []
             elif last_24_px > 0 and abs(sym_px_cur - last_24_px) > 1e-9:
                 now_ms_24 = int(now_ts * 1000)
-                if not is_eq_sym or (last_24_pt is not None and (now_ms_24 - last_24_pt[0]) <= 20 * 60 * 1000):
+                if not is_eq_sym or (
+                    last_24_pt is not None
+                    and (now_ms_24 - last_24_pt[0]) <= 20 * 60 * 1000
+                    and abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
+                ):
                     matched_series_24h = list(matched_series_24h) + [[now_ms_24, sym_px_cur]]
         if sym_px_cur > 0 and arch_vals_7d:
             if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
@@ -689,7 +729,10 @@ def enrich_24h_and_microstructure(
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
         post_rth_px_override: Optional[float] = None
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
-        if is_eq_sym and m24 and s24_p1 is not None and (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000:
+        if is_eq_sym and m24 and s24_p1 is not None and (
+            (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
+            or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
+        ):
             for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                 m24.pop(k_stale, None)
             if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
@@ -698,7 +741,8 @@ def enrich_24h_and_microstructure(
                     m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
         arch_span_7d_ms = _LAST_7D_SPAN_MS_BY_SYM.get(sym.upper(), 0.0)
         if arch_vals_7d and len(arch_vals_7d) >= 2 and (
-            "chg_7d_pct" not in prices_and_trends[sym]
+            is_eq_sym
+            or "chg_7d_pct" not in prices_and_trends[sym]
             or (
                 prices_and_trends[sym].get("_partial_7d_span_ms") is not None
                 and arch_span_7d_ms > safe_float(prices_and_trends[sym].get("_partial_7d_span_ms"), 0.0)
@@ -710,7 +754,12 @@ def enrich_24h_and_microstructure(
             else:
                 prices_and_trends[sym].pop("_partial_7d_span_ms", None)
         ohlc_fn = _resolve_fallback_ohlc_fn(sym, inst_by_sym)
-        if callable(ohlc_fn):
+        s24_is_live_clock = (
+            raw_s24_last_ts_ms <= 0.0
+            or abs(now_ts * 1000.0 - raw_s24_last_ts_ms) <= 30 * 60 * 1000.0
+            or sym in (inst_by_sym or {})
+        )
+        if callable(ohlc_fn) and s24_is_live_clock:
             if not m24 or (0.0 < span_24h_ms < 18 * 3600 * 1000):
                 try:
                     pts_24h = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0)
@@ -742,10 +791,22 @@ def enrich_24h_and_microstructure(
                 try:
                     pts_vp = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0, require_positive_volume=True)
                     if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
-                        if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_vp[-1][1]):
-                            pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
-                        if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
-                            m24.update(vp_real)
+                        vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
+                        if sym_px_cur <= 0.0 or (vp_last_px > 0.0 and abs(sym_px_cur - vp_last_px) / max(sym_px_cur, vp_last_px) <= 0.015):
+                            l24_b = safe_pos_float(m24.get("low_24h"), default=None)
+                            h24_b = safe_pos_float(m24.get("high_24h"), default=None)
+                            vp_pxs = [float(p[1]) for p in pts_vp if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
+                            if (
+                                l24_b is None
+                                or h24_b is None
+                                or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
+                            ):
+                                if l24_b is not None and h24_b is not None:
+                                    pts_vp = [[p[0], min(h24_b, max(l24_b, float(p[1]))), *p[2:]] for p in pts_vp]
+                                if sym_px_cur > 0:
+                                    pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
+                                if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
+                                    m24.update(vp_real)
                 except Exception:
                     pass
         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
@@ -808,7 +869,11 @@ def enrich_24h_and_microstructure(
                     if chart_px > 0.0 and (
                         sym_px_cur <= 0.0
                         or abs(sym_px_cur - chart_px) < 1e-4
-                        or (not is_t212_inst and sym not in t212_seeded_from_cache and rth_bar_fresh)
+                        or (
+                            not is_t212_inst
+                            and rth_bar_fresh
+                            and (sym not in t212_seeded_from_cache or (bcache_mtime > 0.0 and (pts_5d[-1][0] / 1000.0) > bcache_mtime))
+                        )
                     ):
                         prices_and_trends[sym]["price"] = chart_px
                         sym_px_cur = chart_px

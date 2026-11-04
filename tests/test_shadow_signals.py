@@ -273,6 +273,63 @@ class TestShadowRuntime(unittest.TestCase):
         self.assertEqual(m24.get("low_15m"), 232.8)
         self.assertEqual(m24.get("high_15m"), 233.95)
 
+    def test_wave11_sparse_horizon_bounds_7d_chg_clamp_and_5m_bull_flow_reversal(self):
+        """1h does not steal a 3.7h bar on sparse series, recalculate_live_price_geometry clamps chg_7d_pct >= dd_7d_high_pct, and 5m selloff triggers LIVE_SELL_REVERSAL."""
+        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+            enrich_sentiment_advisor_live_flow_divergence,
+        )
+        from intelligence.sentiment.evaluators.price_series_evaluator import (
+            compute_24h_price_metrics,
+            recalculate_live_price_geometry,
+        )
+
+        now_ms = 1_793_824_700_000
+        rgnt_series = [
+            [now_ms - int((1400 - i * 60) * 60_000), 1.40] for i in range(18)
+        ] + [
+            [now_ms - int(223.0 * 60_000), 1.37],
+            [now_ms - int(51.0 * 60_000), 1.375],
+            [now_ms - int(46.0 * 60_000), 1.37],
+            [now_ms - int(26.0 * 60_000), 1.36],
+            [now_ms - int(16.0 * 60_000), 1.2635],
+            [now_ms - int(11.0 * 60_000), 1.355],
+            [now_ms, 1.35],
+        ]
+        m24_rgnt = compute_24h_price_metrics(rgnt_series)
+        self.assertIn("chg_30m_pct", m24_rgnt)
+        self.assertNotIn("chg_1h_pct", m24_rgnt)
+        self.assertIn("chg_3h_pct", m24_rgnt)
+        self.assertEqual(m24_rgnt.get("recent_tape_15m"), ["-15m:1.2635", "-10m:1.355", "now:1.35"])
+        self.assertEqual(m24_rgnt.get("low_15m"), 1.2635)
+        self.assertEqual(m24_rgnt.get("high_15m"), 1.355)
+
+        pinfo_7d = {"low_7d": 129.79, "high_7d": 145.23, "chg_7d_pct": -7.70}
+        recalculate_live_price_geometry(pinfo_7d, 134.09)
+        self.assertEqual(pinfo_7d["dd_7d_high_pct"], -7.67)
+        self.assertEqual(pinfo_7d["chg_7d_pct"], -7.67)
+
+        sa_bull = {
+            "directional_bias": "BULLISH",
+            "recommended_action": "ACCUMULATE",
+            "age_min": 18.7,
+            "summary": "BTC holding $80,000 with taker buyers regaining control (1.064 taker buy/sell ratio, positive 5m CVD of +$0.82M).",
+        }
+        enrich_sentiment_advisor_live_flow_divergence(
+            sa_bull,
+            {
+                "BTCUSDC": {
+                    "taker_buy_sell_ratio": 0.9027,
+                    "cvd_15m_usd": -2_940_000.0,
+                    "taker_ratio_5m": 0.40,
+                    "cvd_5m_usd": -6_610_000.0,
+                    "taker_ratio_1h": 1.03,
+                    "cvd_1h_usd": 8_630_000.0,
+                }
+            },
+        )
+        self.assertIn("LIVE_SELL_REVERSAL", sa_bull.get("live_flow_divergence", ""))
+
+
 
 if __name__ == "__main__":
     unittest.main()

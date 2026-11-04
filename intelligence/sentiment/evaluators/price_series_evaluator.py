@@ -322,8 +322,11 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
         dedup_sparse_samples = len(clean_series) >= 12
         for key, mins, min_span_ms, max_gap_mins in (
             ("chg_1m_pct", 1.0, 60000.0, 1.999), ("chg_3m_pct", 3.0, 180000.0, 1.999), ("chg_5m_pct", 5.0, 300000.0, 4.5),
-            ("chg_15m_pct", 15.0, 0.0, 0.0), ("chg_30m_pct", 30.0, 0.0, 0.0), ("chg_1h_pct", 60.0, 0.0, 0.0),
-            ("chg_3h_pct", 180.0, 0.0, 0.0), ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
+            ("chg_15m_pct", 15.0, 0.0, 14.99 if dedup_sparse_samples else 0.0),
+            ("chg_30m_pct", 30.0, 0.0, 29.99 if dedup_sparse_samples else 0.0),
+            ("chg_1h_pct", 60.0, 0.0, 119.99 if dedup_sparse_samples else 0.0),
+            ("chg_3h_pct", 180.0, 0.0, 179.99 if dedup_sparse_samples else 0.0),
+            ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
             ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
             tms, p_ref = _sample_at(mins)
@@ -335,7 +338,7 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 out[key] = pct_delta(cur_px, p_ref)
 
         recent_15m = [p_v for tms, p_v in clean_series if tms >= now_ms - 15.0 * 60000.0]
-        if len(recent_15m) >= 3:
+        if len(recent_15m) >= 2:
             eff_dec_15m = _auto_px_decimals(cur_px)
             tape_pts: list[str] = []
             tape_vals: list[float] = []
@@ -354,12 +357,13 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 seen_tape_tms.add(t_tap)
                 tape_pts.append(f"{lbl}:{f'{round(p_tap, eff_dec_15m):.{eff_dec_15m}f}'.rstrip('0').rstrip('.')}")
                 tape_vals.append(p_tap)
-            all_15m_vals = recent_15m + tape_vals if len(tape_pts) >= 3 else recent_15m
-            l15, h15 = round(min(all_15m_vals), eff_dec_15m), round(max(all_15m_vals), eff_dec_15m)
-            out["low_15m"], out["high_15m"] = l15, h15
-            if h15 > l15 > 0:
-                out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
-                out["span_15m_pct"] = pct_delta(h15, l15)
+            if len(recent_15m) >= 3 or len(tape_pts) >= 3:
+                all_15m_vals = recent_15m + tape_vals if len(tape_pts) >= 3 else recent_15m
+                l15, h15 = round(min(all_15m_vals), eff_dec_15m), round(max(all_15m_vals), eff_dec_15m)
+                out["low_15m"], out["high_15m"] = l15, h15
+                if h15 > l15 > 0:
+                    out["pos_15m_pct"] = range_position_pct(cur_px, l15, h15)
+                    out["span_15m_pct"] = pct_delta(h15, l15)
             if len(tape_pts) >= 3:
                 out["recent_tape_15m"] = tape_pts
         if span_ms >= 3600000.0 * 2.0:
@@ -819,12 +823,24 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
     if l24 is not None and h24 is not None:
         l24, h24 = round(min(l24, p_cur), 6), round(max(h24, p_cur), 6)
         pinfo.update(_compute_horizon_range_dict(p_cur, l24, h24, "24h"))
+        if (c24 := safe_float(pinfo.get("chg_24h_pct"), default=None)) is not None:
+            dd24, b24 = safe_float(pinfo.get("dd_24h_high_pct"), default=None), safe_float(pinfo.get("bounce_24h_low_pct"), default=None)
+            if dd24 is not None and c24 < dd24:
+                pinfo["chg_24h_pct"] = dd24
+            elif b24 is not None and c24 > b24:
+                pinfo["chg_24h_pct"] = b24
     l7d = safe_pos_float(pinfo.get("low_7d"), default=None)
     h7d = safe_pos_float(pinfo.get("high_7d"), default=None)
     if l7d is not None and h7d is not None:
         eff_l7d = min(l7d, p_cur, *([l24] if l24 is not None else []))
         eff_h7d = max(h7d, p_cur, *([h24] if h24 is not None else []))
         pinfo.update(_compute_horizon_range_dict(p_cur, round(eff_l7d, 6), round(eff_h7d, 6), "7d"))
+        if (c7d := safe_float(pinfo.get("chg_7d_pct"), default=None)) is not None:
+            dd7, b7 = safe_float(pinfo.get("dd_7d_high_pct"), default=None), safe_float(pinfo.get("bounce_7d_low_pct"), default=None)
+            if dd7 is not None and c7d < dd7:
+                pinfo["chg_7d_pct"] = dd7
+            elif b7 is not None and c7d > b7:
+                pinfo["chg_7d_pct"] = b7
     sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
     sw_hi = safe_pos_float(pinfo.get("swing_high_px"), default=None)
     if sw_lo is not None and sw_hi is not None:

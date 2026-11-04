@@ -336,6 +336,8 @@ def enrich_sentiment_advisor_live_flow_divergence(
         return
     live_tr = safe_pos_float(btc_m.get("taker_buy_sell_ratio"), default=None)
     live_cvd = safe_float(btc_m.get("cvd_15m_usd"), None)
+    live_tr_5m = safe_pos_float(btc_m.get("taker_ratio_5m"), default=None)
+    live_cvd_5m = safe_float(btc_m.get("cvd_5m_usd"), None)
     live_tr_1h = safe_pos_float(btc_m.get("taker_ratio_1h"), default=None)
     live_cvd_1h = safe_float(btc_m.get("cvd_1h_usd"), None)
     sa_act = str(sentiment_advisor.get("recommended_action") or "").upper()
@@ -370,6 +372,12 @@ def enrich_sentiment_advisor_live_flow_divergence(
         and (
             (live_tr is not None and live_tr >= 1.25)
             or (live_cvd is not None and live_cvd >= 5_000_000.0)
+            or (
+                live_cvd is not None
+                and live_cvd >= 2_500_000.0
+                and (live_tr is None or live_tr >= 1.08)
+                and ((live_cvd_5m is not None and live_cvd_5m >= 5_000_000.0) or (live_tr_5m is not None and live_tr_5m >= 1.80))
+            )
             or (
                 sa_age >= 15.0
                 and (live_tr is None or live_tr >= 1.15)
@@ -412,6 +420,12 @@ def enrich_sentiment_advisor_live_flow_divergence(
         and (
             (live_tr is not None and live_tr <= 0.75)
             or (live_cvd is not None and live_cvd <= -5_000_000.0)
+            or (
+                live_cvd is not None
+                and live_cvd <= -2_500_000.0
+                and (live_tr is None or live_tr <= 0.92)
+                and ((live_cvd_5m is not None and live_cvd_5m <= -5_000_000.0) or (live_tr_5m is not None and live_tr_5m <= 0.55))
+            )
             or (
                 sa_age >= 15.0
                 and (live_tr is None or live_tr <= 0.85)
