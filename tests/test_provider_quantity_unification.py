@@ -356,6 +356,19 @@ class TestCentralizedBalanceSingleSourceOfTruth(unittest.TestCase):
         self.assertTrue(ok_n)
         self.assertAlmostEqual(usd_n, 94.0, places=4)
 
+    def test_import_providers_quantity_first_without_circular_import(self):
+        """Importing providers.quantity before providers.base (as price_watcher does) must not raise ImportError."""
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [sys.executable, "-c", "from providers.quantity import resolve_assets, compute_fills_cost_basis; assert resolve_assets('BTCUSDC') == ('BTC', 'USDC')"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
