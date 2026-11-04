@@ -381,6 +381,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     for sk, sv in sib_info.items():
                         if pinfo.get(sk) is None and sv is not None:
                             pinfo[sk] = sv
+                        elif (
+                            sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast")
+                            and abs(_parse_finite_float(pinfo.get(sk), 0.0)) < 5e-8
+                            and abs(_parse_finite_float(sv, 0.0)) >= 5e-8
+                        ):
+                            pinfo[sk] = sv
                 if s_px > 0:
                     diff_s = ""
                     if px_f > 0 and abs(s_px - px_f) > 1e-9:

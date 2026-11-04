@@ -400,7 +400,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
             ref_lbl = f"{posture_s} (advisor ratio={cited_tr:.2f})" if cited_tr is not None else posture_s
             buy_div_tag = (
                 "LIVE_15M_BOUNCE_VS_1H_SELL"
-                if (live_tr_1h is not None and live_tr_1h < 0.85 and live_cvd_1h is not None and live_cvd_1h <= -20_000_000.0)
+                if (live_tr_1h is not None and live_tr_1h < 0.95 and live_cvd_1h is not None and live_cvd_1h <= -15_000_000.0)
                 else "LIVE_BUY_REVERSAL"
             )
         else:
@@ -441,7 +441,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
             ref_lbl = f"{posture_s} (advisor ratio={cited_tr:.2f})" if cited_tr is not None else posture_s
             sell_div_tag = (
                 "LIVE_15M_PULLBACK_VS_1H_BUY"
-                if (live_tr_1h is not None and live_tr_1h > 1.18 and live_cvd_1h is not None and live_cvd_1h >= 20_000_000.0)
+                if (live_tr_1h is not None and live_tr_1h > 1.05 and live_cvd_1h is not None and live_cvd_1h >= 15_000_000.0)
                 else "LIVE_SELL_REVERSAL"
             )
         else:

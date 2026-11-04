@@ -749,6 +749,13 @@ def sync_sibling_symbol_telemetry(
                         pinfo[k] = v
                     elif k in ("trend", "growth_coefficient") and pinfo.get(k) in (0, 0.0) and v not in (0, 0.0):
                         pinfo[k] = v
+                    elif (
+                        not px_diverged
+                        and k in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast")
+                        and abs(safe_float(pinfo.get(k), 0.0)) < 5e-8
+                        and abs(safe_float(v, 0.0)) >= 5e-8
+                    ):
+                        pinfo[k] = v
             sib_micro = casefold_get(microstructure, cand)
             if isinstance(sib_micro, dict) and sib_micro:
                 p_px_m = safe_float(pinfo.get("price"), 0.0)

@@ -4370,7 +4370,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     )
     assert sa_al.get("live_flow_divergence", "").startswith("LIVE_15M_BOUNCE_VS_1H_SELL")
 
-    assert _fmt_slope_val(2.68e-08, 5) == "+2.68e-08"
+    assert _fmt_slope_val(9.71e-08, 5) == "+9.71e-08"
     assert _fmt_slope_val(4.97e-10, 5) == "+0.00000"
 
     pt_sib_90s = {

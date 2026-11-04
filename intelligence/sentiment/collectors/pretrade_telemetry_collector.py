@@ -487,10 +487,12 @@ def collect_pretrade_telemetry(
             telemetry["7d Price Range & Swing Structure"] = ", ".join(p7_parts)
 
         t_entry: Dict[str, Any] = {}
+        has_st_tinfo = False
         try:
             if isinstance(st_data := _rj(os.path.join(cachedb_dir, "cache_short_trend.json")), dict):
                 st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
                 if isinstance(tinfo := _first_variant_dict(st_items, sym_variants), dict):
+                    has_st_tinfo = True
                     apply_short_trend_item(t_entry, tinfo)
             for cand in sym_variants:
                 if isinstance(l24 := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand}.json")), dict) and (
@@ -636,7 +638,7 @@ def collect_pretrade_telemetry(
                     f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
                     f"magnet={liq_c.get('liq_magnet_bias')}"
                 )
-        if any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
+        if has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
             _fmt_s = lambda v: f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}"
             s90_v = safe_float(t_entry.get("slope_90s"), default=None)
             s90_pfx = f"90s={_fmt_s(s90_v)}, " if s90_v is not None else ""
