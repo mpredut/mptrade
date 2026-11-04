@@ -3942,7 +3942,7 @@ def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tm
     )
     assert "age=1.0h" in ro_line
 
-    from instruments_config import resolve_instrument_live_price
+    from instrument_registry import resolve_instrument_live_price
     from intelligence.sentiment.guards.high_stake_guard import apply_asset_scope_filter
     from orchestratorOS.lib.technical_repair_ssot import (
         submit_supervisor_trading_decisions,
@@ -4521,7 +4521,7 @@ def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tm
     import math
     from types import SimpleNamespace
     from cachepaths import cache_symbol_variants
-    from instruments_config import resolve_instrument_live_price
+    from instrument_registry import resolve_instrument_live_price
 
     # 1. cache_symbol_variants prioritizes same-quote cross-venue equivalents and USD family before EUR
     v_xbtusd = cache_symbol_variants("XBTUSD")
@@ -4839,7 +4839,7 @@ def test_iteration29_prompt_sections_3a_and_3b_quote_family_grouping():
 def test_iteration30_submit_decisions_scope_xstock_guard_and_instrument_quote_resolution(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
-    from instruments_config import resolve_tradable_instrument
+    from instrument_registry import resolve_tradable_instrument
     from orchestratorOS.lib.technical_repair_ssot import (
         build_sensor_health_summary,
         submit_supervisor_trading_decisions,
@@ -5297,7 +5297,7 @@ def test_iteration34_microstructure_quote_isolation_near_parity_and_audit_reconc
 
 def test_iteration35_kraken_xstock_discovery_filter_and_external_guard_aliases(tmp_path):
     from types import SimpleNamespace
-    from instruments_config import discover_kraken_cache_pairs, resolve_tradable_instrument
+    from instrument_registry import discover_kraken_cache_pairs, resolve_tradable_instrument
     from intelligence.external.guards.funding_crowding_guard import FundingCrowdingGuard
     from intelligence.external.guards.orderbook_wall_guard import OrderbookWallGuard
     from intelligence.external.guards.whale_divergence_guard import WhaleDivergenceGuard

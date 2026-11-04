@@ -350,7 +350,7 @@ def test_process_all_pending_lifecycle(temp_workspace):
     mock_inst._provider.name = "binance"
     mock_inst._provider.get_current_price.return_value = 80000.0
 
-    with patch("instruments_config.load_instruments", return_value={"BTC": mock_inst}), \
+    with patch("instrument_registry.load_instruments", return_value={"BTC": mock_inst}), \
          patch("order_guard.daily_limit_guard", return_value=(True, None)), \
          patch.object(gw, "_dispatch_notify", return_value=True):
         processed = gw.process_all_pending()
@@ -408,7 +408,7 @@ def test_load_tradable_instruments_includes_kraken_cache_pairs(temp_workspace):
     mock_hl = MagicMock(enabled=False, symbol="HYPEUSDC", provider_name="hyperliquid")
 
     with patch(
-        "instruments_config.load_instruments",
+        "instrument_registry.load_instruments",
         return_value={"BINANCE_BTC": mock_btc, "KRAKEN_HYPE": mock_hype, "HL_HYPE": mock_hl},
     ):
         tradable = gw.load_tradable_instruments()

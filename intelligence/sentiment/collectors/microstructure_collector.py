@@ -757,7 +757,7 @@ def enrich_24h_and_microstructure(
         ):
             t_entry["price"] = cached_t212_px
             t212_seeded_from_cache.add(ticker)
-    from instruments_config import discover_hyperliquid_spot
+    from instrument_registry import discover_hyperliquid_spot
 
     for hl_sym, hl_base, hl_quote in discover_hyperliquid_spot(workspace_dir):
         ensure_fresh_symbol_microstructure(

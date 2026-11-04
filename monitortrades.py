@@ -26,7 +26,7 @@ import cacheManager as cm
 import cachepaths
 from guard_hierarchy import GUARD_REGISTRY
 from instrument import Instrument as _Instrument
-from instruments_config import load_for
+from instrument_registry import load_for
 from intelligence.internal.state.volatility import resolve_cached_volatility_1h
 import order_guard
 import pricewindow as pw

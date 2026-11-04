@@ -26,7 +26,9 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
+    safe_pos_int,
 )
 from cachepaths import (
     cache_path,
@@ -1122,3 +1124,49 @@ def resolve_ssot_price_from_cache(
         except Exception:
             continue
     return None
+
+
+def mount_connect_retry(session, *, attempts: int = 3, backoff: float = 0.4,
+                        read: int = 0, status_forcelist=None,
+                        raise_on_status: bool = False) -> bool:
+    """Mount an order-safe Retry adapter on ``session`` for https:// and http:// (best-effort)."""
+    try:
+        if session is None or isinstance(status_forcelist, (bool, str, bytes)):
+            return False
+        att_i = safe_nonneg_int(attempts, default=None)
+        read_i = safe_nonneg_int(read, default=None)
+        bo_f = safe_nonneg_float(backoff, default=None)
+        if att_i is None or read_i is None or bo_f is None:
+            return False
+        forcelist = None
+        if status_forcelist:
+            forcelist = []
+            for code in status_forcelist:
+                c_i = safe_pos_int(code, default=None)
+                if c_i is None:
+                    return False
+                forcelist.append(c_i)
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        retry = Retry(
+            total=att_i,
+            connect=att_i,
+            read=read_i,
+            status=att_i if forcelist else 0,
+            redirect=0,
+            backoff_factor=bo_f,
+            status_forcelist=forcelist if forcelist else None,
+            raise_on_status=_parse_bool_flag(raise_on_status, default=False),
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return True
+    except Exception:  # noqa: BLE001 -- retries are best-effort; the timeout still guards
+        return False
+
+
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("providers.http_resilience", _self_mod)
+

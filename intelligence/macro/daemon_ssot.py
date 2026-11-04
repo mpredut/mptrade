@@ -95,14 +95,14 @@ def detect_active_binance_symbols(
         except Exception:
             pass
         try:
-            from instruments_config import discover_hyperliquid_spot
+            from instrument_registry import discover_hyperliquid_spot
             for hl_sym, _, _ in discover_hyperliquid_spot(_ROOT_DIR):
                 _add_sym(hl_sym, skip_eq=True)
         except Exception:
             pass
     if not out:
         try:
-            from instruments_config import binance_symbols
+            from instrument_registry import binance_symbols
             for s in binance_symbols() or []:
                 _add_sym(s)
         except Exception:

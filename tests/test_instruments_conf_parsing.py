@@ -16,7 +16,7 @@ os.environ.setdefault("BINANCE_AUTO_START_WEBSOCKETS", "0")
 
 import instrument_registry as registry  # noqa: E402
 from instrument_registry import ROLES  # noqa: E402
-import instruments_config as ic  # noqa: E402
+import instrument_registry as ic  # noqa: E402
 
 
 NUMERIC_MT_KEYS = [
@@ -173,7 +173,7 @@ class TestInstrumentsSingleSource(unittest.TestCase):
 
     def test_registry_import_is_light(self):
         code = (
-            "import sys, instruments_config; "
+            "import sys, instrument_registry as instruments_config; "
             "assert 'providers.market_api' not in sys.modules, "
             "'instruments_config dragged in the provider stack'; "
             "print('ok')"

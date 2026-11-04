@@ -14,11 +14,15 @@ fidelity, and its results must be treated as a simplified backtest.
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
+import time
 from typing import Dict, List, Optional, Tuple
 
+import log
 import utils
-from botcore import exact_pos_int, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import exact_pos_int, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_base_asset, legacy_filenames_for
 from providers.base import MarketDataProvider, normalize_side
 from providers.strategy_executor import PairPrecision
@@ -27,6 +31,62 @@ from state_io import read_jsonl_dicts
 # Strip the quote suffix to obtain the base asset (BTCUSDC -> BTC). This was
 # centralized in utils on July 28 after being duplicated here and elsewhere.
 _base_asset = utils.base_asset
+
+_BT_ENV_KEYS = (
+    "BACKTEST_MODE",
+    "REPLAY_MODE",
+    "DISABLE_EXTERNAL_NOTIFICATIONS",
+    "DISABLE_GEMINI_LLM",
+)
+
+
+@contextlib.contextmanager
+def backtest_isolation_context(quiet: bool = False):
+    """Temporarily set backtest/replay isolation env flags and optional print suppression."""
+    if quiet:
+        try:
+            log.disable_print()
+        except Exception:
+            pass
+    orig_env = {k: os.environ.get(k) for k in _BT_ENV_KEYS}
+    for k in _BT_ENV_KEYS:
+        os.environ[k] = "1"
+    try:
+        yield
+    finally:
+        for k, v in orig_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if quiet:
+            try:
+                log.enable_print()
+            except Exception:
+                pass
+
+
+def _clean_ts(val: float) -> float:
+    return require_finite_float(val, error_msg="SimClock timestamp must be a finite number, not bool/None")
+
+
+class SimClock:
+    """Callable simulated time source whose ``ts`` (or ``value``) is set by its driver."""
+
+    def __init__(self, initial_ts: float | None = None):
+        self.ts: float = time.time() if initial_ts is None else _clean_ts(initial_ts)
+
+    @property
+    def value(self) -> float:
+        return self.ts
+
+    @value.setter
+    def value(self, new_val: float) -> None:
+        self.ts = _clean_ts(new_val)
+
+    def __call__(self) -> float:
+        return self.ts
+
 
 
 def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
@@ -330,3 +390,9 @@ class ReplayMarketDataProvider(MarketDataProvider):
         # ambiguous/fail-closed behavior. A future iteration may simulate that guard;
         # currently place_order executes directly without the additional layer.
         return True
+
+
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("providers.replay_clock", _self_mod)
+

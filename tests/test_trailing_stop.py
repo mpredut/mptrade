@@ -434,7 +434,7 @@ class TestPerCoin(Base):
             self.assertEqual(restarted._load(), saved)
 
         with self.subTest(msg="per_coin_threshold"):
-            import instruments_config as ic
+            import instrument_registry as ic
             self.tearDown(); self.setUp()
             ts = self.ts(FakeApi(1.0))
             expected_trails = ic.trail_pct_map()

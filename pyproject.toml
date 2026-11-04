@@ -77,7 +77,6 @@ py-modules = [
     "guard_hierarchy",
     "instrument",
     "instrument_registry",
-    "instruments_config",
     "llm_order_guard",
     "log",
     "market_regime",

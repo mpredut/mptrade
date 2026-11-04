@@ -4,13 +4,34 @@ All membership and per-instrument policy comes from instruments.conf. Loading th
 module does not import providers, read secrets, or start workers. Callers reload
 the file explicitly; long-running processes adopt configuration at restart.
 """
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import glob
+import os
 from pathlib import Path
 import configparser
 import re
+import sys
 
-from botcore import load_ini_config, lru_dict_put, safe_float
-from cachepaths import normalize_venue_name
+from botcore import (
+    _parse_bool_flag,
+    extract_current_price_item,
+    is_us_rth_open,
+    load_env_file_defaults,
+    load_ini_config,
+    lru_dict_put,
+    parse_env_file,
+    safe_float,
+    safe_pos_float,
+)
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    clean_symbol_key,
+    compatible_quote_suffixes,
+    normalize_venue_name,
+    split_symbol_assets,
+)
+from state_io import read_json_dict_recovering
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
 CORE = {"provider", "symbol", "base", "quote", "enabled", "isolation", "market_hours"}
@@ -232,6 +253,383 @@ def tracked_price_instruments(role=None, *, path=None):
 
     all_syms = list(dict.fromkeys(binance_syms + nb_syms))
     return all_syms, nb_syms, nb_providers
+
+
+# ---------------------------------------------------------------------------
+# Instrument Binding, Cross-Venue Discovery, Resolution & Live Price Lookup
+# ---------------------------------------------------------------------------
+
+def _import_instrument_cls():
+    """Import Instrument, reloading stale local modules once if a mid-run git pull updated disk files."""
+    try:
+        from instrument import Instrument
+
+        return Instrument
+    except ImportError:
+        import importlib
+
+        ws_root = os.path.dirname(os.path.abspath(__file__))
+        for mod_name, mod_obj in list(sys.modules.items()):
+            mod_file = getattr(mod_obj, "__file__", None)
+            if (
+                isinstance(mod_file, str)
+                and os.path.abspath(mod_file).startswith(ws_root)
+                and os.path.exists(mod_file)
+            ):
+                try:
+                    importlib.reload(mod_obj)
+                except Exception:
+                    pass
+        for stale_mod in ("order_guard", "instrument"):
+            sys.modules.pop(stale_mod, None)
+        from instrument import Instrument
+
+        return Instrument
+
+
+def _bind(specs, api):
+    Instrument = _import_instrument_cls()
+    return {name: Instrument(**asdict(spec), api=api) for name, spec in specs.items()}
+
+
+def load_instruments(path=None, api=None):
+    return _bind(load_registry(path), api)
+
+
+def load_for(consumer, path=None, api=None, only_enabled=True):
+    """Bind instruments explicitly enabled for the requested consumer role."""
+    return _bind(select_instruments(role=consumer, path=path,
+                                    only_enabled=only_enabled), api)
+
+
+def binance_symbols(path=None):
+    symbols = symbols_for("binance", path=path)
+    if not symbols:
+        raise ValueError("instruments.conf: no enabled Binance instruments")
+    return symbols
+
+
+def trail_pct_map(path=None):
+    return {spec.symbol: spec.number("trailing.pct") for spec in
+            select_instruments("binance", "trailing", path=path).values()}
+
+
+def tradeall_trade_symbols(path=None):
+    return set(symbols_for("binance", "tradeall_fire", path=path))
+
+
+def discover_kraken_cache_pairs(workspace_dir: str) -> list[tuple[str, str, str]]:
+    """Read KRAKEN_TRADABLE_PAIRS (or fallback KRAKEN_CACHE_PAIRS / instruments.conf), excluding read-only xStocks."""
+    kv = parse_env_file(os.path.join(workspace_dir, "kraken", "config.env"))
+    raw_pairs = kv.get("KRAKEN_TRADABLE_PAIRS") or kv.get("KRAKEN_CACHE_PAIRS") or ""
+    if not raw_pairs.strip():
+        ws_inst_conf = os.path.join(workspace_dir, "instruments.conf")
+        if os.path.exists(ws_inst_conf):
+            try:
+                raw_pairs = ",".join(symbols_for("kraken", path=ws_inst_conf))
+            except Exception:
+                raw_pairs = ""
+    out: list[tuple[str, str, str]] = []
+    seen_pairs: set[str] = set()
+    for item in raw_pairs.split(","):
+        pair = item.strip().upper()
+        if not pair or pair in seen_pairs or pair.endswith(("X.T", ".T", "X.T/USD", "X.TUSD")):
+            continue
+        split = split_symbol_assets(pair)
+        if split is not None and not split[0].endswith(("X.T", ".T")):
+            seen_pairs.add(pair)
+            out.append((pair, split[0], split[1]))
+    return out
+
+
+def discover_hyperliquid_spot(workspace_dir: str) -> list[tuple[str, str, str]]:
+    """Read hyperliquid/config.env to include live Hyperliquid spot pairs (e.g. HYPEUSDC)."""
+    cfg_path = os.path.join(workspace_dir, "hyperliquid", "config.env")
+    if not os.path.exists(cfg_path):
+        return []
+    kv = load_env_file_defaults(cfg_path)
+    if not _parse_bool_flag(kv.get("HL_LIVE_ORDERS"), False):
+        return []
+    token = (kv.get("HL_SPOT_TOKEN") or "HYPE").strip().upper()
+    if not token:
+        return []
+    return [(f"{token}USDC", token, "USDC")]
+
+
+def discover_t212_equities(workspace_dir: str) -> list[tuple[str, str, str, str]]:
+    """Read 212trading/config.*.env to discover configured Trading212 equity tickers."""
+    t212_dir = os.path.join(workspace_dir, "212trading")
+    if not os.path.isdir(t212_dir):
+        return []
+    out: list[tuple[str, str, str, str]] = []
+    seen: set[str] = set()
+    for cfg_path in sorted(glob.glob(os.path.join(glob.escape(t212_dir), "config.*.env"))):
+        kv = parse_env_file(cfg_path)
+        ticker = (kv.get("T212_TICKER") or kv.get("STRAT_PAIR") or "").upper()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            short = ticker.split("_", 1)[0]
+            out.append((f"T212_{short}", ticker, ticker, "USD"))
+    return out
+
+
+def load_tradable_instruments(
+    workspace_dir: str | None = None,
+    *,
+    only_workspace_conf: bool = False,
+    include_closed_rth: bool = False,
+    now_ts: float | None = None,
+    asset_scope: str = "all",
+    is_rth_open_fn=None,
+) -> dict:
+    """Load enabled instruments across Binance, Kraken, Hyperliquid, and Trading212 filtered by asset_scope."""
+    ws_dir = workspace_dir or os.path.dirname(os.path.abspath(__file__))
+    rth_check = is_rth_open_fn or is_us_rth_open
+    scope = (asset_scope or "all").strip().lower()
+    ws_inst_conf = os.path.join(ws_dir, "instruments.conf")
+    raw_map: dict = {}
+    if os.path.exists(ws_inst_conf) or not only_workspace_conf:
+        try:
+            raw_map = load_instruments(ws_inst_conf) if os.path.exists(ws_inst_conf) else load_instruments()
+        except Exception:
+            try:
+                Instrument = _import_instrument_cls()
+                reg_specs = load_registry(ws_inst_conf if os.path.exists(ws_inst_conf) else None)
+                for spec_name, spec in reg_specs.items():
+                    try:
+                        raw_map[spec_name] = Instrument(**asdict(spec), api=None)
+                    except Exception:
+                        continue
+            except Exception:
+                if only_workspace_conf:
+                    return {}
+                raw_map = {}
+
+    active_map: dict = {}
+
+    def _existing_syms(prov: str) -> set[str]:
+        return {
+            str(getattr(inst, "symbol", "")).upper()
+            for inst in active_map.values()
+            if normalize_venue_name(getattr(inst, "provider_name", "")) == prov
+        }
+
+    def _bind_inst(
+        name: str, prov: str, sym: str, base: str, quote: str,
+        *, live: bool = False, validity: str | None = None, **kw,
+    ) -> bool:
+        try:
+            Instrument = _import_instrument_cls()
+            inst = Instrument(name=name, provider=prov, symbol=sym, base=base, quote=quote, enabled=True, **kw)
+            if hasattr(inst, "_provider"):
+                if live:
+                    inst._provider._live_enabled = True
+                if validity:
+                    inst._provider._order_validity = validity
+            active_map[name] = inst
+            return True
+        except Exception:
+            return False
+
+    if scope in ("all", "crypto"):
+        for k, inst in raw_map.items():
+            if getattr(inst, "enabled", True) is False:
+                continue
+            if scope == "crypto" and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212":
+                continue
+            active_map[k] = inst
+
+        existing_kraken_syms = _existing_syms("kraken")
+        for pair, base, quote in discover_kraken_cache_pairs(ws_dir):
+            inst_key = f"KRAKEN_{base}" if f"KRAKEN_{base}" not in active_map else f"KRAKEN_{pair}"
+            if pair not in existing_kraken_syms and _bind_inst(inst_key, "kraken", pair, base, quote):
+                existing_kraken_syms.add(pair)
+
+        existing_hl_syms = _existing_syms("hyperliquid")
+        for pair, base, quote in discover_hyperliquid_spot(ws_dir):
+            if (
+                pair not in existing_hl_syms
+                and base not in existing_hl_syms
+                and _bind_inst(f"HYPERLIQUID_{base}", "hyperliquid", pair, base, quote, live=True)
+            ):
+                existing_hl_syms.add(pair)
+            else:
+                for inst in active_map.values():
+                    if (
+                        normalize_venue_name(getattr(inst, "provider_name", "")) == "hyperliquid"
+                        and str(getattr(inst, "symbol", "")).upper() in (pair, base)
+                        and hasattr(inst, "_provider")
+                    ):
+                        inst._provider._live_enabled = True
+
+    if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
+        if scope == "equities":
+            for k, inst in raw_map.items():
+                if (
+                    getattr(inst, "enabled", True) is not False
+                    and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212"
+                ):
+                    active_map[k] = inst
+        load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
+        existing_t212_syms = _existing_syms("t212")
+        for inst_name, ticker, base, quote in discover_t212_equities(ws_dir):
+            if ticker not in existing_t212_syms and _bind_inst(
+                inst_name, "t212", ticker, base, quote, live=True, validity="DAY", market_hours="rth"
+            ):
+                existing_t212_syms.add(ticker)
+
+    return active_map
+
+
+def resolve_tradable_instrument(
+    symbol: str,
+    venue: str | None = None,
+    instruments_map: dict | None = None,
+    *,
+    workspace_dir: str | None = None,
+):
+    """Resolve an enabled Instrument instance for the given symbol and venue."""
+    if instruments_map is None:
+        instruments_map = load_tradable_instruments(workspace_dir)
+
+    raw_sym_u = str(symbol or "").strip().upper()
+    sym_norm = clean_symbol_key(symbol)
+    if not sym_norm or isinstance(venue, bool) or raw_sym_u.endswith(("X.T", ".T", "X.T/USD", "X.TUSD")):
+        return None
+    venue_norm = normalize_venue_name(venue) or None
+    req_base = canonical_base_asset(symbol)
+    usd_quotes = ("USDC", "USDT", "USD", "FDUSD")
+    req_quotes = compatible_quote_suffixes(raw_sym_u, default_usd=usd_quotes)
+    variant_norms = {
+        clean_symbol_key(v)
+        for v in cache_symbol_variants(raw_sym_u, include_original=True, include_base=False, quotes=req_quotes)
+    }
+
+    candidates = [
+        inst for inst in instruments_map.values()
+        if getattr(inst, "enabled", True) is not False
+        and (not venue_norm or normalize_venue_name(str(getattr(inst, "provider_name", ""))) == venue_norm)
+        and not str(getattr(inst, "symbol", "") or "").strip().upper().endswith(("X.T", ".T", "X.T/USD", "X.TUSD"))
+        and compatible_quote_suffixes(
+            str(getattr(inst, "symbol", "") or "").strip().upper(),
+            getattr(inst, "quote", None),
+            default_usd=usd_quotes,
+        ) == req_quotes
+    ]
+
+    for inst in candidates:
+        if clean_symbol_key(inst.symbol) == sym_norm:
+            return inst
+    for inst in candidates:
+        if clean_symbol_key(inst.symbol) in variant_norms:
+            return inst
+    if req_base:
+        for inst in candidates:
+            inst_sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+            raw_b = getattr(inst, "base", None)
+            b_str = raw_b if isinstance(raw_b, str) and raw_b.strip() else inst_sym_u
+            if canonical_base_asset(b_str) == req_base:
+                return inst
+    for inst in candidates:
+        inst_sym_n = clean_symbol_key(inst.symbol)
+        if inst_sym_n.startswith(sym_norm) or sym_norm.startswith(inst_sym_n):
+            return inst
+    return None
+
+
+def resolve_instrument_live_price(inst, cache_dir: str = "cachedb") -> float:
+    """Fetch live market price for ``inst`` from provider or ``cachedb`` fallbacks."""
+    try:
+        if hasattr(inst._provider, "get_current_price"):
+            px_f = safe_pos_float(inst._provider.get_current_price(inst.symbol), default=None)
+            if px_f is not None:
+                return px_f
+    except Exception:
+        pass
+
+    sym_u = str(getattr(inst, "symbol", "") or "").strip().upper()
+    raw_base = getattr(inst, "base", None)
+    inst_base = (
+        raw_base.strip().upper()
+        if isinstance(raw_base, str) and raw_base.strip()
+        else ((split_symbol_assets(sym_u) or (sym_u, ""))[0])
+    )
+    allowed_quotes = compatible_quote_suffixes(
+        sym_u,
+        getattr(inst, "quote", None),
+        default_usd=("USDC", "USDT", "USD", "FDUSD"),
+    )
+    is_usd_quote = "USD" in allowed_quotes
+
+    cache_path = os.path.join(cache_dir, "cache_current_price.json")
+    try:
+        cdata = read_json_dict_recovering(cache_path)
+        if isinstance(cdata, dict):
+            raw_items = cdata.get("items")
+            items = raw_items if isinstance(raw_items, dict) else {}
+            candidates = cache_symbol_variants(
+                inst.symbol,
+                include_original=True,
+                include_base=is_usd_quote,
+                quotes=allowed_quotes,
+            )
+            if inst_base and is_usd_quote:
+                for cand in cache_symbol_variants(
+                    str(inst_base),
+                    include_original=True,
+                    include_base=True,
+                    quotes=allowed_quotes,
+                ):
+                    if cand not in candidates:
+                        candidates.append(cand)
+
+            for cand in candidates:
+                px_f = extract_current_price_item(casefold_get(items, cand))
+                if px_f is not None:
+                    return px_f
+            if inst_base:
+                base_u = canonical_base_asset(str(inst_base))
+                for k, v in items.items():
+                    k_str = str(k).strip().upper()
+                    if compatible_quote_suffixes(k_str, default_usd=allowed_quotes if is_usd_quote else ("USD",)) != allowed_quotes:
+                        continue
+                    if not is_usd_quote and not (split_symbol_assets(k_str) or ("", ""))[1]:
+                        continue
+                    if canonical_base_asset(k_str) == base_u and (px_f := extract_current_price_item(v)) is not None:
+                        return px_f
+    except Exception:
+        pass
+
+    try:
+        from intelligence.sentiment.collectors.microstructure_collector import (
+            load_symbol_microstructure,
+            load_symbol_price_series,
+        )
+        ser_24h, _ = load_symbol_price_series(
+            cache_dir,
+            str(inst.symbol or ""),
+            include_7d=False,
+            quotes=allowed_quotes,
+        )
+        if ser_24h:
+            px_f = safe_pos_float(ser_24h[-1][1], default=None)
+            if px_f is not None:
+                return px_f
+        if is_usd_quote:
+            minfo = load_symbol_microstructure(cache_dir, str(inst.symbol or ""))
+            if isinstance(minfo, dict):
+                ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
+                if ob_mid is not None:
+                    return ob_mid
+    except Exception:
+        pass
+
+    return float("nan")
+
+
+_self_mod = sys.modules.get(__name__)
+if _self_mod is not None:
+    sys.modules.setdefault("instruments_config", _self_mod)
 
 
 if __name__ == "__main__":

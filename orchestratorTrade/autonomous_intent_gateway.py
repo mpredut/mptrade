@@ -41,7 +41,7 @@ from botcore import (
     load_key_value_conf,
     safe_float,
 )
-from instruments_config import (
+from instrument_registry import (
     discover_kraken_cache_pairs as _discover_kraken_cache_pairs,
     discover_t212_equities as _discover_t212_equities,
     load_tradable_instruments as _load_tradable_instruments,
