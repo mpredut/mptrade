@@ -669,7 +669,7 @@ class _InstrumentRegistryModule(_types.ModuleType):
         return _resolve_dynamic_symbol_attr(name)
 
     def __setattr__(self, name: str, value) -> None:
-        if getattr(value, "_from_dynamic_getattr", False):
+        if isinstance(value, (_DynamicSymbolsList, _DynamicSymbolStr)):
             self.__dict__.pop(name, None)
             return
         super().__setattr__(name, value)
