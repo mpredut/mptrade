@@ -250,11 +250,6 @@ def _not_found_reliability_status(mkt, record, now, provider_name):
     return True, None
 
 
-def _not_found_is_reliable(mkt, record, now, provider_name):
-    """Return whether this venue absence is recent enough to authorize submit."""
-    return _not_found_reliability_status(mkt, record, now, provider_name)[0]
-
-
 def _audit_event(record, event, **fields):
     place_kwargs = record.get("place_kwargs") if isinstance(record.get("place_kwargs"), dict) else {}
     payload = {

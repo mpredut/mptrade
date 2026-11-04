@@ -17,13 +17,14 @@ from botcore import (
     _parse_bool_flag,
     exact_pos_int,
     load_root_config,
+    obj_attr as _regime_attr,
     required_float_env,
     required_int_env,
     safe_float,
     safe_nonneg_int,
     safe_pos_float,
+    sanitize_pipe_field,
 )
-from intelligence.macro_sentiment_ssot import obj_attr as _regime_attr
 from notify_engine import alertnotifiers as alert
 from providers.base import (
     _clean_single_order_id as _clean_id,
@@ -640,7 +641,7 @@ def _sanitize_outcome_field(value):
         return ""
     if isinstance(value, float) and safe_float(value, default=None) is None:
         return ""
-    text = str(value).replace("|", "/").replace("\r", " ").replace("\n", " ").strip()
+    text = sanitize_pipe_field(value).strip()
     return "" if text.lower() in _INVALID_LOG_STRINGS else text
 
 
@@ -717,18 +718,13 @@ def log_order_outcome(
                 _clean_bool_field(_regime_attr(regime_context, "fallback_used", None)),
                 _clean_regime_str(_regime_attr(regime_context, "reason", "")),
             ])
-        line = "|".join(
-            str(c).replace("|", "/").replace("\r", " ").replace("\n", " ") if c is not None else ""
-            for c in cols
-        )
+        line = "|".join(sanitize_pipe_field(c) for c in cols)
         append_text_line(path, line)
     except Exception as e:
         print(f"[log_order_outcome] error writing outcomes log: {e}")
 
 
 # ─── Atomic Order Rollback (formerly order_rollback.py) ───
-
-_finite_pos_float = safe_pos_float
 
 
 def extract_order_restore_params(order: dict) -> dict[str, Any]:
@@ -737,8 +733,8 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
         order = {}
     side = extract_order_side(order) or "SELL"
     price = extract_order_price(order, default=0.0)
-    qty = _finite_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
-    level_f = _finite_pos_float(order.get("level"), default=0.0)
+    qty = safe_pos_float(extract_remaining_qty(order, default=0.0), default=0.0)
+    level_f = safe_pos_float(order.get("level"), default=0.0)
     level = level_f if level_f > 0.0 else None
     raw_kind = order.get("kind")
     kind = (
@@ -751,7 +747,7 @@ def extract_order_restore_params(order: dict) -> dict[str, Any]:
         else ("TP" if side == "SELL" else "ENTRY")
     )
     prod = qty * price if qty > 0.0 and price > 0.0 else 0.0
-    amount = _finite_pos_float(order.get("amount"), default=_finite_pos_float(prod, default=0.0))
+    amount = safe_pos_float(order.get("amount"), default=safe_pos_float(prod, default=0.0))
     return {
         "side": side,
         "qty": qty,
@@ -781,7 +777,7 @@ def restore_cancelled_orders(
         if not isinstance(raw_ord, dict):
             continue
         params = extract_order_restore_params(raw_ord)
-        if not (_finite_pos_float(params.get("qty"), default=None) and _finite_pos_float(params.get("limit"), default=None)):
+        if not (safe_pos_float(params.get("qty"), default=None) and safe_pos_float(params.get("limit"), default=None)):
             continue
         try:
             if restore_fn(params) is not False:

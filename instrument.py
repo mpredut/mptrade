@@ -26,7 +26,13 @@ from providers.base import extract_order_id, normalize_side, resolve_market_flag
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
-from providers.quantity import check_order_filter_refusal, resolve_assets, round_provider_qty
+from providers.quantity import (
+    check_order_filter_refusal,
+    extract_regime_buy_scale,
+    parse_scale_factor as _parse_scale_factor,
+    resolve_assets,
+    round_provider_qty,
+)
 from providers.strategy_executor import SubmissionRefused
 import order_guard
 import order_lifecycle as _outcomes_log
@@ -36,13 +42,6 @@ import lock.trade_cooldown as trade_cooldown  # noqa: F401 (re-export: test comp
 
 
 _EXECUTION_AUDIT = ExecutionAudit()
-
-
-def _parse_scale_factor(val: Any, default: Optional[float] = None) -> Optional[float]:
-    if isinstance(val, str) and val.strip().endswith("%"):
-        pct_val = safe_float(val.strip()[:-1].strip(), default=None)
-        return (pct_val / 100.0) if pct_val is not None else default
-    return safe_float(val, default=default)
 
 
 def _accepted_order_payload(payload):
@@ -55,10 +54,7 @@ def _accepted_order_payload(payload):
     return extract_order_id(payload) is not None
 
 
-def _order_id_from_payload(payload):
-    if not isinstance(payload, dict):
-        return None
-    return extract_order_id(payload)
+_order_id_from_payload = extract_order_id
 
 
 def _is_terminal_filter_refusal(reason) -> bool:
@@ -181,20 +177,7 @@ class Instrument:
         if regime_context is None or isinstance(qty, bool) or side_u != "BUY":
             return qty, applied_scale, None
         qty_f = safe_pos_float(qty, default=None)
-        raw_scale = (
-            regime_context.get("suggested_scale")
-            if isinstance(regime_context, dict)
-            else getattr(regime_context, "suggested_scale", None)
-        )
-        if raw_scale is None:
-            by_side = (
-                regime_context.get("_suggested_scale_by_side")
-                if isinstance(regime_context, dict)
-                else getattr(regime_context, "_suggested_scale_by_side", None)
-            )
-            if isinstance(by_side, dict):
-                raw_scale = by_side.get("BUY")
-        scale_f = _parse_scale_factor(raw_scale, default=None)
+        scale_f = extract_regime_buy_scale(regime_context)
         app_f = 1.0 if isinstance(applied_scale, bool) else safe_pos_float(applied_scale, default=None)
         if qty_f is None or scale_f is None or app_f is None or not (0.0 < scale_f < app_f):
             return qty, applied_scale, None

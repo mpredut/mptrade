@@ -62,8 +62,6 @@ from .base import (
     normalize_timestamp_ms,
     resolve_order_actor,
 )
-
-_clean_single_order_id = clean_order_id
 from .strategy_executor import (
     OrderStatus, ProviderError, SubmissionOutcome, SubmissionRefused,
     capture_submission, reconciliation_capabilities_of,
@@ -1092,6 +1090,22 @@ def _resolve_intent_execution_details(
     }
 
 
+def _is_open_resting_detail(det: dict[str, Any]) -> bool:
+    return bool(det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"))
+
+
+def _intent_venue_symbol_side_key(
+    venue: Any, symbol: Any, side: Any
+) -> tuple[str, str, tuple[str, ...], str]:
+    s_raw = str(symbol or "").strip().upper()
+    return (
+        normalize_venue_name(venue),
+        canonical_base_asset(s_raw) or s_raw,
+        compatible_quote_suffixes(s_raw),
+        str(side or "").strip().upper(),
+    )
+
+
 def summarize_recent_ai_intents(
     intents_data: list[dict[str, Any]],
     scope: str,
@@ -1134,7 +1148,7 @@ def summarize_recent_ai_intents(
     recent_rev: list[dict[str, Any]] = []
     non_resting_count = 0
     seen_oids: set[str] = set()
-    seen_sym_side: set[tuple[str, str, str]] = set()
+    seen_sym_side: set[tuple[str, str, tuple[str, ...], str]] = set()
     recent_indices: set[int] = set()
     for idx in range(len(scoped_intents) - 1, -1, -1):
         if non_resting_count >= 8 or len(recent_rev) >= 16:
@@ -1148,13 +1162,7 @@ def summarize_recent_ai_intents(
             open_orders=open_orders,
             verified_open_venues=verified_open_venues,
         )
-        det_sym = str(det.get("symbol") or "").strip().upper()
-        sym_side_key = (
-            normalize_venue_name(det.get("venue")),
-            canonical_base_asset(det_sym) or det_sym,
-            compatible_quote_suffixes(det_sym),
-            str(det.get("side") or "").strip().upper(),
-        )
+        sym_side_key = _intent_venue_symbol_side_key(det.get("venue"), det.get("symbol"), det.get("side"))
         if (
             det.get("exec_status")
             in ("CANCELED", "CANCELLED", "EXPIRED", "CANCELED_OR_EXPIRED", "SKIPPED_DUPLICATE_OPEN_ORDER")
@@ -1171,8 +1179,7 @@ def summarize_recent_ai_intents(
         if not (
             isinstance(open_orders, list)
             and open_orders
-            and det.get("is_open_in_venue")
-            and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
+            and _is_open_resting_detail(det)
             and (sum_item.get("age_h") or 0.0) > 0.5
         ):
             non_resting_count += 1
@@ -1194,8 +1201,7 @@ def summarize_recent_ai_intents(
                 verified_open_venues=verified_open_venues,
             )
             if (
-                det.get("is_open_in_venue")
-                and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
+                _is_open_resting_detail(det)
                 and (det["order_id"] is None or str(det["order_id"]) not in seen_oids)
             ):
                 if det["order_id"] is not None:
@@ -1229,10 +1235,9 @@ def build_last_cycle_execution_status(
         cycle_intents = [scoped_intents[-1]]
 
     def _intent_sym_key(intent_obj: dict[str, Any]) -> tuple[str, str, tuple[str, ...], str]:
-        v_norm = normalize_venue_name(intent_obj.get("venue"))
-        s_raw = str(intent_obj.get("symbol") or "").strip().upper()
-        side_norm = extract_intent_side(intent_obj)
-        return (v_norm, canonical_base_asset(s_raw), compatible_quote_suffixes(s_raw), side_norm)
+        return _intent_venue_symbol_side_key(
+            intent_obj.get("venue"), intent_obj.get("symbol"), extract_intent_side(intent_obj)
+        )
 
     def _build_status_rec(det: dict[str, Any]) -> dict[str, Any]:
         rec: dict[str, Any] = {
@@ -1270,7 +1275,7 @@ def build_last_cycle_execution_status(
         )
         if det["order_id"] is not None:
             seen_oids.add(str(det["order_id"]))
-        if det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED"):
+        if _is_open_resting_detail(det):
             seen_sym_keys.add(_intent_sym_key(i))
         out.append(_build_status_rec(det))
 
@@ -1289,7 +1294,7 @@ def build_last_cycle_execution_status(
                 open_orders=open_orders,
                 verified_open_venues=verified_open_venues,
             )
-            if not (det.get("is_open_in_venue") and det.get("exec_status") in ("OPEN_RESTING", "PARTIALLY_FILLED")):
+            if not _is_open_resting_detail(det):
                 continue
             oid_str = str(det["order_id"]) if det["order_id"] is not None else None
             s_key = _intent_sym_key(i)

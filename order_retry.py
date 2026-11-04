@@ -14,6 +14,7 @@ import json
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 
@@ -193,6 +194,26 @@ class RetryQueueCorruptionError(RuntimeError):
 
 def _ensure_dir():
     os.makedirs(os.path.dirname(str(resolve_cachedb_filepath(QUEUE_FILE))), exist_ok=True)
+
+
+@contextmanager
+def _locked_queue(*, validate: bool = False):
+    _ensure_dir()
+    with FileLock(LOCK_FILE):
+        yield _read_nolock(validate=validate)
+
+
+def _remove_matching_locked(predicate, *, validate: bool = False) -> list[dict]:
+    with _locked_queue(validate=validate) as existing:
+        removed, retained = [], []
+        for rec in existing:
+            if predicate(rec):
+                removed.append(rec)
+            else:
+                retained.append(rec)
+        if removed:
+            _write_nolock(retained)
+        return removed
 
 
 def _read_nolock(*, validate=False):
@@ -511,9 +532,7 @@ def enqueue(
         rec["submission_state"] = "producer_claimed"
         rec["producer_pid"] = producer_pid
         rec["producer_process_start_id"] = producer_process_start_id
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         if lifecycle == "awaiting_cancel":
             provider_key = normalize_venue_name(provider_name)
             sym_key = _canonical_queue_symbol(symbol)
@@ -708,9 +727,7 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     snapshot_client_id = _record_client_order_id(claim_snapshot)
     if q_val is None or not snapshot_client_id:
         return None
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for record in existing:
             if _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
                 _apply_claim_qty_and_scale(record, q_val, applied_scale)
@@ -734,9 +751,7 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
         current_start_identity = _process_start_identity(current_pid)
     except (OSError, ProcessLookupError, TypeError, ValueError, OverflowError):
         return None
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for record in existing:
             if _matches_exact_claim(record, claim_snapshot, snapshot_client_id):
                 _set_safe_to_discard(record, False)
@@ -756,9 +771,8 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
 
 def load_all(now=None):
     """Return all queued entries under lock, failing closed on any corruption."""
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        return _read_nolock()
+    with _locked_queue() as existing:
+        return existing
 
 
 def _safe_load_all() -> list:
@@ -863,16 +877,13 @@ def get_accepted_order_ids_for_owner(symbol: str, owner: str) -> list:
 
 def load_validated(now=None):
     """Return the queue only when every durable record is semantically valid."""
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        return _read_nolock(validate=True)
+    with _locked_queue(validate=True) as existing:
+        return existing
 
 
 def consolidate_deferred_streams():
     """Atomically keep only the newest pending record per deferred signal stream."""
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         kept_deferred = []
         keep_ids = set()
         removed = []
@@ -900,9 +911,8 @@ def get(record_id):
     """Return one current queue record by ID under lock, or ``None``."""
     if not record_id or isinstance(record_id, bool):
         return None
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        for rec in _read_nolock():
+    with _locked_queue() as existing:
+        for rec in existing:
             if rec.get("id") == record_id:
                 return dict(rec)
     return None
@@ -916,9 +926,7 @@ def mark_failure(record_id, failure_reason, *, now=None, client_order_id=None, s
         raise ValueError(f"invalid submission state: {submission_state!r}")
     now = _clean_now_sec(now)
     changed = False
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
@@ -999,9 +1007,7 @@ def mark_accepted(record_id, order, *, now=None, client_order_id=None, provider_
         return False
     now = _clean_now_sec(now)
     changed = False
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for rec in existing:
             if rec.get("id") != record_id:
                 continue
@@ -1018,25 +1024,15 @@ def resolve_record(record_id, *, client_order_id=None):
     """Legacy helper: remove one exact *unsubmitted* persisted revision."""
     if not record_id or isinstance(record_id, bool):
         return False
-    removed = False
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
-        remaining = []
-        for rec in existing:
-            matches = (
+    return bool(
+        _remove_matching_locked(
+            lambda rec: (
                 rec.get("id") == record_id
                 and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
+                and (client_order_id is None or _record_client_order_id(rec) == client_order_id)
             )
-            if matches and client_order_id is not None:
-                matches = _record_client_order_id(rec) == client_order_id
-            if matches:
-                removed = True
-            else:
-                remaining.append(rec)
-        if removed:
-            _write_nolock(remaining)
-    return removed
+        )
+    )
 
 
 def claim(ids, now=None, lease_sec=None):
@@ -1046,15 +1042,13 @@ def claim(ids, now=None, lease_sec=None):
     ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
-    _ensure_dir()
     now = _clean_now_sec(now)
     lease_f = safe_pos_float(RETRY_CLAIM_LEASE_SEC if lease_sec is None else lease_sec, default=None)
     if lease_f is None:
         raise ValueError("claim lease must be finite and positive")
     claimed = []
     token = uuid.uuid4().hex
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for rec in existing:
             if rec.get("id") not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
                 continue
@@ -1098,9 +1092,7 @@ def complete_claim(
         raise ValueError(f"invalid submission state: {submission_state!r}")
     now = _clean_now_sec(now)
     changed = False
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         remaining = []
         for rec in existing:
             if rec.get("id") != claimed.get("id") or rec.get("claim_token") != claimed.get("claim_token"):
@@ -1216,9 +1208,7 @@ def activate_claimed_replacement(claimed, qty, now=None):
     result = None
     replaced_order_id = None
     replaced_symbol = None
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
+    with _locked_queue() as existing:
         for index, rec in enumerate(existing):
             if not (
                 rec.get("id") == claimed.get("id")
@@ -1268,22 +1258,13 @@ def resolve_accepted_order(symbol, order_id) -> bool:
     target_oid = _clean_retry_order_id(order_id)
     if not target_sym or not target_oid:
         return False
-    removed_records: list[dict] = []
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
-        remaining = []
-        for rec in existing:
-            if (
-                str(rec.get("lifecycle") or "").lower() == "accepted"
-                and _canonical_queue_symbol(rec.get("symbol")) == target_sym
-                and _clean_retry_order_id(rec.get("order_id")) == target_oid
-            ):
-                removed_records.append(rec)
-            else:
-                remaining.append(rec)
-        if removed_records:
-            _write_nolock(remaining)
+    removed_records = _remove_matching_locked(
+        lambda rec: (
+            str(rec.get("lifecycle") or "").lower() == "accepted"
+            and _canonical_queue_symbol(rec.get("symbol")) == target_sym
+            and _clean_retry_order_id(rec.get("order_id")) == target_oid
+        )
+    )
     if removed_records:
         try:
             from providers.execution_audit import ExecutionAudit
@@ -1385,19 +1366,13 @@ def discard_expired(snapshots, now=None):
                 exact.add(key)
     if not exact:
         return []
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock(validate=True)
-        removed, retained = [], []
-        for record in existing:
-            key = (record.get("id"), _rev_int(record.get("revision"), 0), _record_client_order_id(record))
-            if key in exact and is_expired(record, now):
-                removed.append(record)
-            else:
-                retained.append(record)
-        if removed:
-            _write_nolock(retained)
-        return removed
+    return _remove_matching_locked(
+        lambda record: (
+            (record.get("id"), _rev_int(record.get("revision"), 0), _record_client_order_id(record)) in exact
+            and is_expired(record, now)
+        ),
+        validate=True,
+    )
 
 
 def discard(ids):
@@ -1407,13 +1382,7 @@ def discard(ids):
     ids = {i for i in ids if not isinstance(i, bool) and i}
     if not ids:
         return []
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
-        removed = [rec for rec in existing if rec.get("id") in ids]
-        if removed:
-            _write_nolock([rec for rec in existing if rec.get("id") not in ids])
-        return removed
+    return _remove_matching_locked(lambda rec: rec.get("id") in ids)
 
 
 load_queue = load_all
@@ -1426,21 +1395,15 @@ def resolve(symbol, side):
         return 0
     target_sym = _canonical_queue_symbol(symbol)
     side_u = normalize_side(side)
-    _ensure_dir()
-    with FileLock(LOCK_FILE):
-        existing = _read_nolock()
-        remaining = [
-            rec for rec in existing
-            if not (
+    return len(
+        _remove_matching_locked(
+            lambda rec: (
                 _canonical_queue_symbol(rec.get("symbol")) == target_sym
                 and str(rec.get("side") or "").strip().upper() == side_u
                 and str(rec.get("lifecycle") or "submit_pending").lower() == "submit_pending"
             )
-        ]
-        removed = len(existing) - len(remaining)
-        if removed:
-            _write_nolock(remaining)
-        return removed
+        )
+    )
 
 
 def _write_nolock(items):

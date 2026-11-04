@@ -13,8 +13,6 @@ from typing import Any, Callable, Optional, Tuple
 from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 from .order_ohlc_utils import (
-    _clean_single_order_id,
-    clean_order_id,
     clean_order_id_str,
     extract_order_fee,
     extract_order_price,
@@ -32,9 +30,7 @@ QUOTE_SUFFIXES = (
     "EUR", "GBP", "RON", "BTC", "ETH", "USD",
 )
 
-
-def _clean_fill_id(val: object) -> str:
-    return clean_order_id_str(val)
+_clean_fill_id = clean_order_id_str
 
 
 def remaining_average_cost(fills, held_qty):
@@ -446,6 +442,34 @@ def check_order_filter_refusal(
     return None
 
 
+def parse_scale_factor(val: Any, default: Optional[float] = None) -> Optional[float]:
+    """Parse a float or percentage string (e.g. ``'25%'`` -> ``0.25``) into a scale factor."""
+    if isinstance(val, str) and val.strip().endswith("%"):
+        pct_val = safe_float(val.strip()[:-1].strip(), default=None)
+        return (pct_val / 100.0) if pct_val is not None else default
+    return safe_float(val, default=default)
+
+
+def extract_regime_buy_scale(regime_context: Any, explicit_scale: Any = None) -> Optional[float]:
+    """Extract the BUY risk-reduction scale factor from ``explicit_scale`` or ``regime_context``."""
+    raw_scale = explicit_scale
+    if raw_scale is None and regime_context is not None:
+        raw_scale = (
+            regime_context.get("suggested_scale")
+            if isinstance(regime_context, dict)
+            else getattr(regime_context, "suggested_scale", None)
+        )
+        if raw_scale is None:
+            by_side = (
+                regime_context.get("_suggested_scale_by_side")
+                if isinstance(regime_context, dict)
+                else getattr(regime_context, "_suggested_scale_by_side", None)
+            )
+            if isinstance(by_side, dict):
+                raw_scale = by_side.get("BUY")
+    return parse_scale_factor(raw_scale, default=None)
+
+
 def decide_quantity(provider, symbol: str, side: str, price: float,
                     requested_qty: Optional[float], *, base: Optional[str] = None,
                     quote: Optional[str] = None, cancelorders: bool = False,
@@ -508,28 +532,7 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
     scale_applied = False
     applied_scale = 1.0
-    is_buy_side = side == "BUY"
-    effective_scale = scale if is_buy_side else None
-    if effective_scale is None and regime_context is not None and is_buy_side:
-        effective_scale = (
-            regime_context.get("suggested_scale")
-            if isinstance(regime_context, dict)
-            else getattr(regime_context, "suggested_scale", None)
-        )
-        if effective_scale is None:
-            by_side = (
-                regime_context.get("_suggested_scale_by_side")
-                if isinstance(regime_context, dict)
-                else getattr(regime_context, "_suggested_scale_by_side", None)
-            )
-            if isinstance(by_side, dict):
-                effective_scale = by_side.get("BUY")
-
-    if isinstance(effective_scale, str) and effective_scale.strip().endswith("%"):
-        pct_val = safe_float(effective_scale.strip()[:-1].strip(), default=None)
-        eff_scale_f = (pct_val / 100.0) if pct_val is not None else None
-    else:
-        eff_scale_f = safe_float(effective_scale, default=None)
+    eff_scale_f = extract_regime_buy_scale(regime_context, scale) if side == "BUY" else None
 
     if eff_scale_f is not None and eff_scale_f < 1.0 and final > 0:
         if eff_scale_f <= 0.0:
