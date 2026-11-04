@@ -16,6 +16,7 @@ import glob
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from unittest.mock import patch, ANY
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1572,6 +1573,415 @@ class TestOrderRollback(unittest.TestCase):
         except RuntimeError:
             pass
         self.assertEqual(len(restored), 1)
+
+
+# ---------------------------------------------------------------------------
+# Consolidated from tests/test_trade_cooldown.py & tests/test_active_intents.py
+# ---------------------------------------------------------------------------
+
+import multiprocessing as mp
+from active_intents import build_active_intent_index, format_summary
+
+
+def _proc_attempt(state_file, lock_file, q):
+    tc.STATE_FILE = state_file
+    tc.LOCK_FILE = lock_file
+    ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+    q.put(ok)
+
+
+class TestTradeCooldown(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        tc.STATE_FILE = os.path.join(self.tmp, "trade_cooldown.json")
+        tc.LOCK_FILE = os.path.join(self.tmp, "trade_cooldown.lock")
+
+    def test_first_allowed_second_blocked(self):
+        ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+        self.assertTrue(ok)
+        ok2, last = tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=180)
+        self.assertFalse(ok2)
+        self.assertEqual(last["side"], "BUY")
+
+    def test_per_symbol_independent(self):
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        self.assertTrue(tc.reserve_trade("BUY", "TAOUSDC", cooldown_sec=180)[0])
+
+    def test_allowed_after_cooldown(self):
+        with mock.patch("lock.cooldown.time.time") as now:
+            now.return_value = 1_000.0
+            self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=1)[0])
+            self.assertFalse(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=1)[0])
+            now.return_value = 1_001.1
+            self.assertTrue(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=1)[0])
+
+    def test_release_unblocks(self):
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        tc.release_trade("BTCUSDC")
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+
+    def test_update_binance_order_id(self):
+        tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+        tc.update_binance_order_id("BTCUSDC", 12345)
+        self.assertIn("12345", tc.describe_last_trade("BTCUSDC"))
+
+    def test_concurrent_threads_single_winner(self):
+        results = []
+        barrier = threading.Barrier(20)
+
+        def attempt():
+            barrier.wait()
+            ok, _ = tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+            results.append(ok)
+
+        threads = [threading.Thread(target=attempt) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sum(1 for r in results if r), 1)
+
+    def test_concurrent_processes_single_winner(self):
+        ctx = mp.get_context("spawn")
+        q = ctx.Queue()
+        procs = [ctx.Process(target=_proc_attempt, args=(tc.STATE_FILE, tc.LOCK_FILE, q))
+                 for _ in range(10)]
+        for p in procs:
+            p.start()
+        for p in procs:
+            p.join(timeout=10)
+        results = [q.get() for _ in range(10)]
+        q.close()
+        q.join_thread()
+        self.assertEqual(sum(1 for r in results if r), 1)
+
+    def test_slot_commit_keeps_reservation(self):
+        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+            self.assertTrue(slot.allowed)
+            slot.commit(999)
+        self.assertFalse(tc.reserve_trade("SELL", "BTCUSDC", cooldown_sec=180)[0])
+
+    def test_slot_no_commit_auto_releases(self):
+        with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+            self.assertTrue(slot.allowed)
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+
+    def test_slot_exception_auto_releases(self):
+        with self.assertRaises(RuntimeError):
+            with tc.trade_slot("BUY", "BTCUSDC", cooldown_sec=180) as slot:
+                self.assertTrue(slot.allowed)
+                raise RuntimeError("placement crashed")
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+
+    def test_slot_blocked_does_not_release_existing(self):
+        self.assertTrue(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+        with tc.trade_slot("SELL", "BTCUSDC", cooldown_sec=180) as slot:
+            self.assertFalse(slot.allowed)
+        self.assertFalse(tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)[0])
+
+    def test_get_last_trade_age(self):
+        self.assertIsNone(tc.get_last_trade_age("BTCUSDC"))
+        tc.reserve_trade("BUY", "BTCUSDC", cooldown_sec=180)
+        age = tc.get_last_trade_age("BTCUSDC")
+        self.assertIsNotNone(age)
+        self.assertLess(age, 5)
+
+    def test_pair_allows_one_buy_and_one_sell_inside_same_cooldown(self):
+        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
+            self.assertTrue(buy.allowed)
+            buy.commit(101)
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
+            self.assertTrue(sell.allowed)
+            sell.commit(102)
+
+        state = tc._cooldown().get("TAOUSDC")
+        self.assertCountEqual(state["group_committed"], ["BUY", "SELL"])
+        self.assertEqual(state["group_results"]["BUY"]["binance_order_id"], 101)
+        self.assertEqual(state["group_results"]["SELL"]["binance_order_id"], 102)
+
+    def test_pair_blocks_duplicate_side_and_unrelated_group(self):
+        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
+            self.assertTrue(buy.allowed)
+            buy.commit(101)
+
+        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as duplicate:
+            self.assertFalse(duplicate.allowed)
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-2") as outsider:
+            self.assertFalse(outsider.allowed)
+        self.assertFalse(tc.reserve_trade("SELL", "TAOUSDC", cooldown_sec=180)[0])
+
+    def test_failed_second_leg_rolls_back_only_that_leg(self):
+        with tc.trade_slot("BUY", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as buy:
+            buy.commit(101)
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
+            self.assertTrue(sell.allowed)
+
+        state = tc._cooldown().get("TAOUSDC")
+        self.assertEqual(state["group_members"], ["BUY"])
+        self.assertEqual(state["group_committed"], ["BUY"])
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as retry:
+            self.assertTrue(retry.allowed)
+
+    def test_legacy_reservation_still_blocks_pair(self):
+        self.assertTrue(tc.reserve_trade("BUY", "TAOUSDC", cooldown_sec=180)[0])
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as leg:
+            self.assertFalse(leg.allowed)
+
+    def test_canceled_pair_leg_can_be_replaced_without_opening_other_groups(self):
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as sell:
+            sell.commit(102)
+        self.assertTrue(tc.release_pair_leg("TAOUSDC", "pair-1", "SELL"))
+
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-2") as outsider:
+            self.assertFalse(outsider.allowed)
+        with tc.trade_slot("SELL", "TAOUSDC", cooldown_sec=180, pair_id="pair-1") as replacement:
+            self.assertTrue(replacement.allowed)
+            replacement.commit(103)
+
+
+def _write_intent_file(path, payload, *, lines=False):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = ("\n".join(json.dumps(row) for row in payload) + "\n"
+            if lines else json.dumps(payload))
+    path.write_text(text, encoding="utf-8")
+
+
+def test_normalizes_multiple_owners_without_writing(tmp_path):
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    t212 = tmp_path / "212trading/.state_NVDA_US_EQ.json"
+    rtrade = tmp_path / "cachedb/rtrade_pairs_state.json"
+    _write_intent_file(outbox, [{
+        "intent_id": "out-1", "provider_name": "Binance", "symbol": "TAOUSDC",
+        "side": "BUY", "qty": 2, "lifecycle": "submit_pending",
+    }], lines=True)
+    _write_intent_file(t212, {
+        "pending_submit": {"intent_id": "t-1", "side": "SELL", "qty": 1,
+                           "limit": 150, "submission_outcome": "unknown"},
+    })
+    _write_intent_file(rtrade, {"pairs": {"pair-1": {
+        "symbol": "BTCUSDC", "terminal": False,
+        "intents": {"limit:BUY": {
+            "intent_id": "r-1", "side": "BUY", "requested_qty": 0.1,
+            "client_order_id": "CID-R", "order_id": "77",
+        }},
+    }}})
+    before = {path: (path.read_bytes(), path.stat().st_mtime_ns)
+              for path in (outbox, t212, rtrade)}
+
+    result = build_active_intent_index(str(tmp_path))
+
+    assert result["read_only"] is True
+    assert {row["intent_id"] for row in result["intents"]} == {"out-1", "t-1", "r-1"}
+    assert next(row for row in result["intents"] if row["intent_id"] == "t-1")["status"] == "unknown"
+    assert next(row for row in result["intents"] if row["intent_id"] == "r-1")["symbol"] == "BTCUSDC"
+    for path, snapshot in before.items():
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == snapshot
+
+
+def test_excludes_terminal_intents_and_reports_corrupt_sources(tmp_path):
+    _write_intent_file(tmp_path / "cachedb/rtrade_pairs_state.json", {"pairs": {
+        "done": {"terminal": True, "intents": {"x": {
+            "intent_id": "done", "side": "SELL", "qty": 1,
+        }}},
+    }})
+    corrupt = tmp_path / "cachedb/assetguardian_state.json"
+    corrupt.write_text("{broken", encoding="utf-8")
+
+    result = build_active_intent_index(str(tmp_path))
+
+    assert result["intents"] == []
+    assert result["errors"][0]["source"] == "cachedb/assetguardian_state.json"
+
+
+def test_summary_calculates_pending_notional_and_net_exposures(tmp_path):
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    _write_intent_file(outbox, [
+        {"intent_id": "buy-1", "symbol": "BTCUSDC", "side": "BUY", "qty": 0.5, "requested_price": 60000.0, "lifecycle": "pending"},
+        {"intent_id": "sell-1", "symbol": "ETHUSDC", "side": "SELL", "qty": 2.0, "executed_qty": 0.5, "requested_price": 3000.0, "lifecycle": "pending"},
+    ], lines=True)
+
+    kraken = tmp_path / "kraken/.state_BTCUSDC.json"
+    _write_intent_file(kraken, {
+        "qty": 1.5, "cost": 90000.0, "entry_price": 60000.0, "entry_ts": 1700000000.0,
+    })
+
+    result = build_active_intent_index(str(tmp_path))
+
+    summary = result["summary"]
+    notional = summary["pending_notional"]
+    assert notional["total_buy"] == 30000.0
+    assert notional["total_sell"] == 4500.0
+    assert notional["by_symbol"]["BTCUSDC"]["buy"] == 30000.0
+    assert notional["by_symbol"]["ETHUSDC"]["sell"] == 4500.0
+
+    exposures = summary["net_exposures"]
+    assert exposures["total_cost"] == 90000.0
+    assert len(exposures["positions"]) == 1
+    assert exposures["positions"][0]["symbol"] == "BTCUSDC"
+    assert exposures["positions"][0]["qty"] == 1.5
+
+    formatted = format_summary(result)
+    assert "Pending BUY notional:  $30000.00" in formatted
+    assert "Pending SELL notional: $4500.00" in formatted
+    assert "Total cost basis:      $90000.00" in formatted
+    assert "BTCUSDC: 1.5 ($90000.00) [kraken]" in formatted
+
+
+def test_filters_backup_files_and_recognizes_id_fallback(tmp_path):
+    bak = tmp_path / "hyperliquid/.state_HYPE.pre_fee_reconcile.json"
+    _write_intent_file(bak, {"qty": 999.0, "cost": 999.0})
+
+    t212 = tmp_path / "212trading/.state_TEST_US_EQ.json"
+    _write_intent_file(t212, {
+        "qty": 10.0,
+        "cost_usd": 500.0,
+        "entry_price": 50.0,
+        "orders": [
+            {"id": "t212-order-99", "side": "SELL", "qty": 10.0, "limit": 60.0}
+        ]
+    })
+
+    result = build_active_intent_index(str(tmp_path))
+    assert not any(exp["symbol"] == "HYPE.pre_fee_reconcile" for exp in result["exposures"])
+    assert any(it["intent_id"] == "t212-order-99" and it["requested_price"] == 60.0 for it in result["intents"])
+    assert any(exp["symbol"] == "TEST_US_EQ" and exp["qty"] == 10.0 for exp in result["exposures"])
+
+
+def test_normalizes_kraken_vol_t212_limit_price_and_nested_outbox_client_order_id(tmp_path):
+    kraken = tmp_path / "kraken/.state_BTCUSDC.json"
+    t212_one_shot = tmp_path / "212trading/.t212_order.NVDA_US_EQ.json"
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    _write_intent_file(kraken, {
+        "orders": [{
+            "txid": "O-KRK-1",
+            "intent_id": "krk-intent-1",
+            "side": "buy",
+            "vol": 0.25,
+            "exec_vol": 0.10,
+            "price": 60000.0,
+        }],
+    })
+    _write_intent_file(t212_one_shot, {
+        "intent_id": "t212-one-shot-NVDA_US_EQ-1",
+        "ticker": "NVDA_US_EQ",
+        "side": "BUY",
+        "qty": 2.5,
+        "limit_price": 120.0,
+        "applied_fill_qty": 0.5,
+        "lifecycle": "accepted",
+        "order_id": "777",
+    })
+    _write_intent_file(outbox, [{
+        "symbol": "SOLUSDC",
+        "side": "BUY",
+        "qty": 3.0,
+        "ref_price": 150.0,
+        "place_kwargs": {"client_order_id": "CID-NESTED-1"},
+    }], lines=True)
+
+    result = build_active_intent_index(str(tmp_path))
+    by_id = {row["intent_id"]: row for row in result["intents"]}
+    assert by_id["krk-intent-1"]["requested_qty"] == 0.25
+    assert by_id["krk-intent-1"]["executed_qty"] == 0.10
+    assert by_id["t212-one-shot-NVDA_US_EQ-1"]["requested_price"] == 120.0
+    assert by_id["t212-one-shot-NVDA_US_EQ-1"]["executed_qty"] == 0.5
+    assert by_id["CID-NESTED-1"]["client_order_id"] == "CID-NESTED-1"
+    assert by_id["CID-NESTED-1"]["requested_price"] == 150.0
+
+
+def test_excludes_inactive_tickets_in_rtrade_pairs(tmp_path):
+    rtrade = tmp_path / "cachedb/rtrade_pairs_state.json"
+    _write_intent_file(rtrade, {
+        "pairs": {
+            "round-1": {
+                "symbol": "ETHUSDC",
+                "terminal": False,
+                "tickets": [
+                    {"order_id": "101", "side": "BUY", "price": 3000.0, "qty": 0.1, "active": False},
+                    {"order_id": "102", "side": "SELL", "price": 3100.0, "qty": 0.1, "active": True},
+                ],
+            }
+        }
+    })
+    result = build_active_intent_index(str(tmp_path))
+    ids = {row["intent_id"] for row in result["intents"]}
+    assert ids == {"102"}
+
+
+def test_normalizes_px_sz_filled_sz_side_and_venue_aliases(tmp_path):
+    hl_state = tmp_path / "hyperliquid/.state_HYPE.json"
+    _write_intent_file(hl_state, {
+        "venue": "HL",
+        "orders": [{
+            "id": 9001.0,
+            "side": "OPEN LONG",
+            "sz": 10.0,
+            "filled_sz": 2.0,
+            "px": 25.0,
+        }],
+    })
+    result = build_active_intent_index(str(tmp_path))
+    assert len(result["intents"]) == 1
+    it = result["intents"][0]
+    assert it["intent_id"] == "9001"
+    assert it["venue"] == "hyperliquid"
+    assert it["side"] == "BUY"
+    assert it["requested_qty"] == 10.0
+    assert it["executed_qty"] == 2.0
+    assert it["requested_price"] == 25.0
+    assert result["summary"]["pending_notional"]["total_buy"] == 200.0
+
+
+def test_iter67_terminal_shadowing_refused_status_negative_exec_qty_and_zero_notional_summary(tmp_path):
+    outbox = tmp_path / "cachedb/order_retry_queue.jsonl"
+    _write_intent_file(
+        outbox,
+        [
+            {
+                "intent_id": "term-shadow-1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "requested_price": 60000.0,
+                "submission_outcome": "accepted",
+                "last_status": "canceled",
+            },
+            {
+                "intent_id": "refused-1",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 1.0,
+                "requested_price": 60000.0,
+                "submission_outcome": "refused",
+                "submit_status": "refused_before_submit",
+            },
+            {
+                "intent_id": "active-partial-1",
+                "symbol": "ETHUSDC",
+                "side": "BUY",
+                "qty": 2.0,
+                "executed_qty": -1.0,
+                "requested_price": 3000.0,
+                "submission_outcome": "accepted",
+                "last_status": "partial",
+            },
+            {
+                "intent_id": "active-noprice-1",
+                "symbol": "SOLUSDC",
+                "side": "SELL",
+                "qty": 5.0,
+                "lifecycle": "pending",
+            },
+        ],
+        lines=True,
+    )
+    result = build_active_intent_index(str(tmp_path))
+    by_id = {row["intent_id"]: row for row in result["intents"]}
+    assert set(by_id.keys()) == {"active-partial-1", "active-noprice-1"}
+    assert by_id["active-partial-1"]["status"] == "partial"
+    assert result["summary"]["pending_notional"]["by_symbol"]["ETHUSDC"]["buy"] == 6000.0
+    formatted = format_summary(result)
+    assert "SOLUSDC: $0.00" in formatted
 
 
 if __name__ == "__main__":

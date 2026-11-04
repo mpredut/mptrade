@@ -2,10 +2,11 @@
 import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import rtrade
 from providers.strategy_executor import (
@@ -1548,6 +1549,116 @@ class RTradeThreadingTest(unittest.TestCase):
         self.assertIsNone(res)
         self.assertEqual(outcome_ctx.get("reason"), "aborted_by_caller")
         pg_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Consolidated from tests/test_thread_behavior.py
+# ---------------------------------------------------------------------------
+
+import json
+import cacheManager as cm
+
+_TB_SYMBOLS = ["BTCUSDC"]
+
+
+def _saved_file(tmp_dir, price, ts_ms=None):
+    ts_ms = ts_ms or int(time.time() * 1000)
+    fname = os.path.join(tmp_dir, "cache_current_price.json")
+    with open(fname, "w") as f:
+        json.dump({
+            "items": {"BTCUSDC": [[ts_ms, price]]},
+            "fetchtime": {"BTCUSDC": ts_ms},
+        }, f)
+    return fname
+
+
+def _make_mgr(filename, sync_ts, api_mock):
+    return cm.CacheCurrentPriceManager(
+        sync_ts=sync_ts,
+        symbols=_TB_SYMBOLS,
+        filename=filename,
+        ws_manager=None,
+        api_client=api_mock,
+        market_api=api_mock,
+    )
+
+
+class TestFallbackThreadBehavior(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        cm._current_price_instance = None
+        self.managers = []
+
+    def tearDown(self):
+        for manager in self.managers:
+            manager.shutdown()
+        cm._current_price_instance = None
+
+    def _manager(self, filename, sync_ts, api_mock):
+        manager = _make_mgr(filename, sync_ts, api_mock)
+        self.managers.append(manager)
+        manager.periodic_sync(save_state=False)
+        return manager
+
+    def test_loaded_cache_not_overwritten_immediately(self):
+        fname = _saved_file(self.tmp, price=99000.0)
+        api_mock = MagicMock()
+        api_mock.get_current_price.return_value = 50000.0
+
+        mgr = self._manager(fname, sync_ts=9999, api_mock=api_mock)
+
+        with mgr.lock:
+            entries = mgr.cache.get("BTCUSDC", [])
+
+        self.assertTrue(entries, "empty cache after loading from file")
+        self.assertEqual(entries[0][1], 99000.0)
+        api_mock.get_current_price.assert_not_called()
+
+    def test_ws_healthy_skips_http_poll(self):
+        fname = _saved_file(self.tmp, price=55000.0)
+        api_mock = MagicMock()
+        api_mock.get_current_price.return_value = 55000.0
+
+        mgr = self._manager(fname, sync_ts=1, api_mock=api_mock)
+        mgr._ws_last_event_ts = time.time()
+
+        time.sleep(2.5)
+        api_mock.get_current_price.assert_not_called()
+
+    def test_ws_dead_triggers_http_poll(self):
+        fname = _saved_file(self.tmp, price=55000.0)
+        api_mock = MagicMock()
+        api_mock.get_current_price.return_value = 55000.0
+
+        mgr = self._manager(fname, sync_ts=1, api_mock=api_mock)
+        mgr._ws_last_event_ts = 0.0
+
+        time.sleep(2.5)
+        api_mock.get_current_price.assert_called()
+
+    def test_ws_recovery_stops_polling(self):
+        fname = _saved_file(self.tmp, price=55000.0)
+        api_mock = MagicMock()
+        api_mock.get_current_price.return_value = 55000.0
+
+        mgr = self._manager(fname, sync_ts=1, api_mock=api_mock)
+        mgr._ws_last_event_ts = 0.0
+
+        time.sleep(1.5)
+        self.assertGreater(api_mock.get_current_price.call_count, 0)
+
+        api_mock.get_current_price.reset_mock()
+        mgr._ws_last_event_ts = time.time()
+
+        time.sleep(2.5)
+        self.assertEqual(api_mock.get_current_price.call_count, 0)
+
+    def test_shutdown_stops_waiting_thread(self):
+        fname = _saved_file(self.tmp, price=55000.0)
+        manager = self._manager(fname, sync_ts=9999, api_mock=MagicMock())
+        self.assertTrue(manager.thread.is_alive())
+        self.assertTrue(manager.shutdown(timeout=1.0))
+        self.assertIsNone(manager.thread)
 
 
 if __name__ == "__main__":

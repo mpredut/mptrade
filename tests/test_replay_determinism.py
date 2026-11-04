@@ -322,5 +322,309 @@ class ReplayDeterminismTest(unittest.TestCase):
             self.assertIn("fallback", src)
 
 
+# ---------------------------------------------------------------------------
+# Consolidated from tests/test_binance_backtest.py & tests/test_replay_provider.py
+# ---------------------------------------------------------------------------
+
+import json
+import tempfile
+import pytest
+
+from binance_api.market_data import (
+    fetch_ohlc_candles,
+    interval_to_binance_str,
+    parse_interval_minutes,
+)
+from strategies.spot_replay import (
+    StratParams as _ReplayStratParams,
+    make_binance_replay_adapter,
+    make_kraken_replay_adapter,
+    run_replay,
+)
+from offline.backtests.evaluation import evaluate_segment, evaluate_walk_forward
+from offline.backtests.metrics import validate_replay_metrics
+from providers.replay_provider import ReplayMarketDataProvider, load_price_series, _base_asset
+from providers.market_api import MarketApi
+from instrument import Instrument
+import monitortrades as mt
+
+SYMBOL = "ZZZTESTUSDC"
+
+
+def _sample_params() -> _ReplayStratParams:
+    return _ReplayStratParams(
+        currency="USDT",
+        entry_amount=100.0,
+        entry_discount_pct=0.2,
+        dca_amount=50.0,
+        dca_drop_pct=2.0,
+        takeprofit_pct=1.0,
+        max_budget=500.0,
+        max_dca_buys=2,
+        check_minutes=1.0,
+        enable_takeprofit=True,
+        order_ttl_min=60.0,
+        stop_loss_pct=5.0,
+    )
+
+
+def test_interval_parsing():
+    assert parse_interval_minutes(1) == 1
+    assert parse_interval_minutes(60) == 60
+    assert parse_interval_minutes("1h") == 60
+    assert parse_interval_minutes("4h") == 240
+    assert parse_interval_minutes("1d") == 1440
+    assert interval_to_binance_str(60) == "1h"
+    assert interval_to_binance_str(240) == "4h"
+    assert interval_to_binance_str("1h") == "1h"
+
+    with pytest.raises(ValueError):
+        parse_interval_minutes(0)
+    with pytest.raises(ValueError):
+        parse_interval_minutes("invalid_interval")
+    with pytest.raises(ValueError):
+        interval_to_binance_str(17)
+
+
+def test_fetch_ohlc_candles_mocked():
+    now_ms = 1700000000000
+    mock_batch = [
+        [now_ms - 7200000, "50000.0", "50500.0", "49500.0", "50200.0", "10.0", now_ms - 3600001, "0", 0, "0", "0", "0"],
+        [now_ms - 3600000, "50200.0", "51000.0", "50100.0", "50800.0", "15.0", now_ms - 1, "0", 0, "0", "0", "0"],
+        [now_ms, "50800.0", "51200.0", "50700.0", "51100.0", "5.0", now_ms + 3599999, "0", 0, "0", "0", "0"],
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(mock_batch).encode("utf-8")
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp), \
+         patch("time.time", return_value=now_ms / 1000.0):
+        candles = fetch_ohlc_candles("BTCUSDT", interval="1h", start_ms=now_ms - 8000000, end_ms=now_ms + 4000000, drop_incomplete=True)
+        assert len(candles) == 2
+        assert candles[0]["timestamp"] == (now_ms - 7200000) // 1000
+        assert candles[0]["open"] == 50000.0
+        assert candles[0]["close"] == 50200.0
+        assert candles[1]["close"] == 50800.0
+
+        all_candles = fetch_ohlc_candles("BTCUSDT", interval="1h", start_ms=now_ms - 8000000, end_ms=now_ms + 4000000, drop_incomplete=False)
+        assert len(all_candles) == 3
+
+
+def test_binance_replay_metrics_contract():
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 101.5, 99.0, 101.0),
+        (101.0, 103.0, 100.5, 102.5),
+    ]
+    params = _sample_params()
+    res = run_replay(ohlc, params, fee_pct=0.10, bar_minutes=60.0)
+
+    validate_replay_metrics(res)
+    assert res["account_currency"] == "USDT"
+    assert res["fees"] >= 0.0
+    assert "return_pct" in res
+    assert "sharpe" in res
+    assert "calmar" in res
+    assert "sortino" in res
+
+
+def test_binance_adapter_in_evaluate_walk_forward():
+    records = [
+        {"timestamp": 1000 + i * 3600, "open": 100.0 + (i % 5), "high": 102.0 + (i % 5),
+         "low": 98.0 + (i % 5), "close": 100.5 + (i % 5)}
+        for i in range(60)
+    ]
+    params = _sample_params()
+    adapter = make_binance_replay_adapter(params, fee_pct=0.10, bar_minutes=60.0)
+
+    seg = evaluate_segment(records[:20], adapter, validate_contract=True)
+    assert seg["bars"] == 20
+    validate_replay_metrics(seg["metrics"])
+
+    wf = evaluate_walk_forward(
+        records,
+        adapter,
+        train_size=20,
+        validation_size=10,
+        test_size=10,
+        step_size=10,
+        validate_contract=True,
+    )
+    assert wf["aggregate_test"]["fold_count"] > 0
+    assert "mean_return_pct" in wf["aggregate_test"]
+
+
+def test_cross_venue_alignment_matrix():
+    ohlc = [
+        (100.0, 100.5, 99.5, 100.0),
+        (100.0, 101.5, 99.0, 101.0),
+        (101.0, 102.5, 100.0, 102.0),
+    ]
+
+    bn_adapter = make_binance_replay_adapter(_sample_params(), fee_pct=0.10, bar_minutes=60.0)
+    bn_res = bn_adapter(ohlc, ())
+    validate_replay_metrics(bn_res)
+
+    kr_params = _sample_params()
+    kr_params.currency = "USD"
+    kr_adapter = make_kraken_replay_adapter(kr_params, fee_pct=0.25, bar_minutes=60.0)
+    kr_res = kr_adapter(ohlc, ())
+    validate_replay_metrics(kr_res)
+
+    if bn_res["fills"] > 0 and kr_res["fills"] > 0:
+        assert bn_res["fees"] < kr_res["fees"]
+
+
+def _make_provider(prices, start_ts=1_000_000.0, step_s=60.0):
+    series = [(start_ts + i * step_s, p) for i, p in enumerate(prices)]
+    return ReplayMarketDataProvider({SYMBOL: series})
+
+
+class TestLoadPriceSeries(unittest.TestCase):
+    def test_parses_real_cache_format(self):
+        tmpdir = tempfile.mkdtemp(prefix="replay_series_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmpdir, ignore_errors=True))
+        path = os.path.join(tmpdir, "price_series.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('{"s": "BTCUSDC", "i": [1756248610634, 111702.25]}\n')
+            f.write('{"s": "TAOUSDC", "i": [1756248611000, 200.0]}\n')
+            f.write('{"s": "BTCUSDC", "i": [1756248620944, 111720.0]}\n')
+            f.write('not json at all\n')
+        series = load_price_series(path, "BTCUSDC")
+        self.assertEqual(len(series), 2)
+        self.assertEqual(series[0], (1756248610634 / 1000.0, 111702.25))
+        self.assertEqual(series[1], (1756248620944 / 1000.0, 111720.0))
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(load_price_series("/tmp/does_not_exist_xyz.jsonl", "BTCUSDC"), [])
+
+
+class TestBaseAsset(unittest.TestCase):
+    def test_strips_known_quote_suffixes(self):
+        self.assertEqual(_base_asset("BTCUSDC"), "BTC")
+        self.assertEqual(_base_asset("TAOUSDC"), "TAO")
+        self.assertEqual(_base_asset("HYPEUSD"), "HYPE")
+
+    def test_symbol_without_known_suffix_unchanged(self):
+        self.assertEqual(_base_asset("WEIRD"), "WEIRD")
+
+
+class TestReplayMarketDataProvider(unittest.TestCase):
+    def test_price_none_before_first_advance(self):
+        p = _make_provider([100.0, 105.0])
+        self.assertIsNone(p.get_current_price(SYMBOL))
+
+    def test_advance_returns_sequential_prices(self):
+        p = _make_provider([100.0, 105.0, 110.0])
+        self.assertEqual(p.advance(SYMBOL), 100.0)
+        self.assertEqual(p.get_current_price(SYMBOL), 100.0)
+        self.assertEqual(p.advance(SYMBOL), 105.0)
+        self.assertEqual(p.advance(SYMBOL), 110.0)
+        self.assertIsNone(p.advance(SYMBOL))
+
+    def test_now_reflects_last_read_timestamp_not_wallclock(self):
+        p = _make_provider([100.0, 105.0], start_ts=1_000_000.0, step_s=60.0)
+        p.advance(SYMBOL)
+        self.assertEqual(p.now(SYMBOL), 1_000_000.0)
+        p.advance(SYMBOL)
+        self.assertEqual(p.now(SYMBOL), 1_000_060.0)
+
+    def test_place_buy_then_sell_updates_position_and_balance(self):
+        p = _make_provider([100.0, 100.0])
+        p.advance(SYMBOL)
+        p.place_order(SYMBOL, "BUY", 100.0, 2.0)
+        self.assertEqual(p.free_balance("ZZZTEST"), 2.0)
+        p.advance(SYMBOL)
+        p.place_order(SYMBOL, "SELL", 110.0, 2.0)
+        self.assertEqual(p.free_balance("ZZZTEST"), 0.0)
+
+    def test_oversized_sell_records_only_the_executed_quantity(self):
+        p = _make_provider([100.0, 110.0])
+        p.advance(SYMBOL)
+        p.place_order(SYMBOL, "BUY", 100.0, 1.0)
+        p.advance(SYMBOL)
+        p.place_order(SYMBOL, "SELL", 110.0, 2.0)
+
+        sells = p.get_orders(SYMBOL, "SELL", since_s=1e9)
+        self.assertEqual(sells[0]["qty"], 1.0)
+        self.assertEqual(p.position(SYMBOL), (0.0, 0.0))
+
+    def test_sell_without_holdings_is_refused_and_not_recorded(self):
+        p = _make_provider([110.0])
+        p.advance(SYMBOL)
+
+        self.assertIsNone(p.place_order(SYMBOL, "SELL", 110.0, 1.0))
+        self.assertEqual(p.get_orders(SYMBOL, "SELL", since_s=1e9), [])
+        self.assertEqual(p.position(SYMBOL), (0.0, 0.0))
+
+    def test_get_orders_filters_by_side_and_window(self):
+        p = _make_provider([100.0] * 5, start_ts=1_000_000.0, step_s=3600.0)
+        p.advance(SYMBOL)
+        p.place_order(SYMBOL, "BUY", 100.0, 1.0)
+        for _ in range(4):
+            p.advance(SYMBOL)
+        recent = p.get_orders(SYMBOL, "BUY", since_s=2 * 3600)
+        self.assertEqual(recent, [])
+        all_buys = p.get_orders(SYMBOL, "BUY", since_s=10 * 3600)
+        self.assertEqual(len(all_buys), 1)
+
+    def test_guards_internally_true_phase1_simplification(self):
+        p = _make_provider([100.0])
+        self.assertTrue(p.guards_internally())
+
+
+class TestNowFnDefaultsToRealTime(unittest.TestCase):
+    def test_get_relevant_trade_uses_real_time_by_default(self):
+        import time as real_time
+        trade_orders = [{"timestamp": int(real_time.time() * 1000) - 1000, "price": 42.0}]
+        _, trade_time, _ = mt.get_relevant_trade(trade_orders, "BUY", threshold_s=3600, symbol=SYMBOL)
+        self.assertAlmostEqual(trade_time, real_time.time(), delta=5)
+
+
+class TestMonitorPriceAndTradeIntegration(unittest.TestCase):
+    def test_full_cycle_buy_then_gain_triggers_sell(self):
+        prices = [100.0, 100.0, 100.0, 115.0]
+        provider = _make_provider(prices, start_ts=2_000_000.0, step_s=3600.0)
+        provider.advance(SYMBOL)
+        provider.place_order(SYMBOL, "BUY", 100.0, 1.0)
+
+        api = MarketApi([provider])
+        inst = Instrument(name="ZZZTEST", symbol=SYMBOL, provider="replay",
+                          base="ZZZTEST", quote="USDC", api=api)
+
+        provider.advance(SYMBOL)
+        provider.advance(SYMBOL)
+        provider.advance(SYMBOL)
+
+        mt.monitor_price_and_trade(inst, sbs=3600, maxage_trade_s=100000,
+                                    now_fn=lambda: provider.now(SYMBOL))
+
+        sells = provider.get_orders(SYMBOL, "SELL", since_s=1e9)
+        self.assertEqual(len(sells), 1, "it should have sold after +15% above gain_threshold")
+        self.assertAlmostEqual(sells[0]["price"], 115.0, places=2)
+
+
+class TestSimClock(unittest.TestCase):
+    def test_callable_returns_ts(self):
+        from providers.replay_clock import SimClock
+        clock = SimClock()
+        clock.ts = 12345.0
+        self.assertEqual(clock(), 12345.0)
+
+    def test_advancing_ts_reflected_immediately(self):
+        from providers.replay_clock import SimClock
+        clock = SimClock()
+        clock.ts = 100.0
+        self.assertEqual(clock(), 100.0)
+        clock.ts = 200.0
+        self.assertEqual(clock(), 200.0)
+
+    def test_tradeall_backtest_uses_shared_class(self):
+        from offline.backtests import tradeall as tb
+        from providers.replay_clock import SimClock
+        self.assertIs(tb._SimClock, SimClock)
+
+
 if __name__ == "__main__":
     unittest.main()
