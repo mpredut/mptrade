@@ -406,12 +406,29 @@ def load_symbol_price_series(
                             ):
                                 continue
                     clean_arch.append(item_a)
+                older_24_arch = []
                 for pt_t, pt_p, _, raw_t0 in clean_arch:
                     if pt_t >= cutoff_7d:
                         pts_7d_vals.append(pt_p)
                         pts_7d_ts.append(pt_t)
-                    if need_24h_supplement and pt_t >= cutoff_24h:
-                        pts_24.append([raw_t0, pt_p])
+                    if need_24h_supplement:
+                        if pt_t >= cutoff_24h:
+                            pts_24.append([raw_t0, pt_p])
+                        elif pt_t >= last_pt[0] - 36.0 * 3600.0 * 1000.0:
+                            older_24_arch.append([raw_t0, pt_p])
+                if (
+                    need_24h_supplement
+                    and older_24_arch
+                    and (
+                        not pts_24
+                        or (
+                            (p24_0 := _parse_ts_px_row(pts_24[0])) is not None
+                            and (p24_1 := _parse_ts_px_row(pts_24[-1])) is not None
+                            and (p24_1[0] - p24_0[0]) < 18.0 * 3600.0 * 1000.0
+                        )
+                    )
+                ):
+                    pts_24 = [older_24_arch[-1], *pts_24]
                 if len(watcher_7d_pts) >= 2:
                     pts_7d_vals = [pt[1] for pt in watcher_7d_pts]
                     pts_7d_ts = [pt[0] for pt in watcher_7d_pts]
@@ -428,9 +445,7 @@ def load_symbol_price_series(
                 if len(pts_7d_vals) >= 2:
                     vals_7d = pts_7d_vals
                 if need_24h_supplement and pts_24:
-                    s0_pt = _parse_ts_px_row(series_24h[0]) if series_24h else None
-                    if s0_pt is None or not _prices_diverged(pts_24[-1][1], s0_pt[1]):
-                        series_24h = (pts_24 + series_24h) if series_24h else pts_24
+                    series_24h = _prepend_older_non_diverged_points(series_24h, pts_24) if series_24h else pts_24
         except Exception:
             pass
     _LAST_7D_SPAN_MS_BY_SYM[str(symbol).strip().upper()] = arch_7d_span_ms
@@ -976,7 +991,11 @@ def enrich_24h_and_microstructure(
         if (
             is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
-            and (raw_s24_last_ts_ms <= 0.0 or (int(now_ts * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000)
+            and (
+                raw_s24_last_ts_ms <= 0.0
+                or (int(now_ts * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000
+                or "chg_24h_pct" not in m24
+            )
         ):
             try:
                 eq_cache_stale = not p24_eq_path or not os.path.exists(p24_eq_path) or (now_ts - os.path.getmtime(p24_eq_path)) >= 240.0

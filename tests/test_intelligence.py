@@ -5919,3 +5919,38 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
     )
     assert "RGNT_US_EQ" in pt_map
     assert pt_map["RGNT_US_EQ"].get("chg_24h_pct") == pytest.approx(round(((1.32 - 1.37) / 1.37) * 100.0, 2))
+
+    # 3. Discrepancy BD: load_symbol_price_series supplements <18h cache_24_price from cache_365_price
+    #    including the last prior-session bar (< cutoff_24h) across an overnight session gap
+    p24_spcx = tmp_path / "prices" / "cache_24_price_SPCX_US_EQ.json"
+    save_json_state(
+        str(p24_spcx),
+        {
+            "items": {
+                "SPCX_US_EQ": [
+                    [now_ms - 15 * 3600 * 1000, 134.74],
+                    [now_ms - 8 * 3600 * 1000, 135.20],
+                    [now_ms, 134.50],
+                ]
+            }
+        },
+    )
+    p365_spcx = tmp_path / "prices" / "cache_365_price_SPCX_US_EQ.json"
+    save_json_state(
+        str(p365_spcx),
+        {
+            "items": {
+                "SPCX_US_EQ": [
+                    [now_ms - 5 * 86400 * 1000, 143.40],
+                    [now_ms - int(24.25 * 3600 * 1000), 140.94],
+                    [now_ms - 15 * 3600 * 1000, 134.74],
+                    [now_ms, 134.50],
+                ]
+            }
+        },
+    )
+    s24_spcx, v7_spcx = load_symbol_price_series(str(tmp_path), "SPCX_US_EQ", include_7d=True)
+    assert s24_spcx[0][1] == pytest.approx(140.94)
+    assert (s24_spcx[-1][0] - s24_spcx[0][0]) >= 24 * 3600 * 1000
+    assert v7_spcx[0] == pytest.approx(143.40)
+
