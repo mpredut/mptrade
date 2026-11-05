@@ -432,9 +432,15 @@ _TAKER_PAREN_GROUP_RE = re.compile(
     re.IGNORECASE,
 )
 _PAREN_RATIO_ITEM_RE = re.compile(
-    r"(?:(?:(overall|aggregate|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s:=]*)([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
+    r"(?:(?:(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s:=]*)([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
     r"|([0-9]+\.[0-9]+)\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?\b"
-    r"|\b(overall|aggregate|15m|1h|4h|5m|3m|1m)[\s:=]+([0-9]+\.[0-9]+)(?![0-9%A-Za-z]))",
+    r"|\b(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
+    r"|([0-9]+\.[0-9]+)(?![0-9%A-Za-z])[\s:=]*(?:(?:on|in|for)\s+)?\b(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b"
+    r"|^\s*(?:(?:taker[\s_]+)?(?:buy(?:ing)?|sell(?:ing)?|buy[/_]sell)[\s:=]+)?([0-9]+\.[0-9]+)\s*$)",
+    re.IGNORECASE,
+)
+_HORIZON_TOKEN_RE = re.compile(
+    r"\b(?:overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b",
     re.IGNORECASE,
 )
 
@@ -465,11 +471,18 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
     best_val: Optional[float] = None
     for m_tr in _CITED_TAKER_RATIO_RE.finditer(text):
         val = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
-        if val is None:
+        if val is None or not (0.05 <= val <= 25.0):
             continue
         raw_prefix = text[max(0, m_tr.start() - 32) : m_tr.start()].lower()
-        clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_tr.group(0).lower()}"
-        rank = _rank_taker_ratio_context(clause_ctx)
+        m_grp0 = m_tr.group(0).lower()
+        raw_suffix = (
+            ""
+            if m_grp0.rstrip().endswith((",", ")", ";", "."))
+            else re.split(r"[.;,()\n]", text[m_tr.end() : min(len(text), m_tr.end() + 24)].lower())[0]
+        )
+        local_ctx = f"{m_grp0.split('(', 1)[-1]} {raw_suffix}"
+        clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_grp0} {raw_suffix}"
+        rank = _rank_taker_ratio_context(local_ctx if _HORIZON_TOKEN_RE.search(local_ctx) else clause_ctx)
         if rank > best_rank:
             best_rank = rank
             best_val = val
@@ -478,18 +491,21 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
         outer_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_pg.group(0).split('(', 1)[0].lower()}"
         for sub_item in re.split(r"[,;]", m_pg.group(2)):
             sub_low = sub_item.strip().lower()
-            if not sub_low or re.search(r"\b(?:cvd|oi|vol|volume|funding|change|chg)\b", sub_low):
+            if not sub_low or re.search(r"\b(?:cvd|oi|vol|volume|funding|change|chg|range|position|breadth|advancing)\b", sub_low):
                 continue
             m_sub = _PAREN_RATIO_ITEM_RE.search(sub_low)
             if m_sub is None:
                 continue
-            val = safe_pos_float(m_sub.group(2) or m_sub.group(3) or m_sub.group(5), default=None)
-            if val is None:
+            val = safe_pos_float(
+                m_sub.group(2) or m_sub.group(3) or m_sub.group(5) or m_sub.group(6) or m_sub.group(8),
+                default=None,
+            )
+            if val is None or not (0.05 <= val <= 25.0):
                 continue
-            sub_hz = m_sub.group(1) or m_sub.group(4) or sub_low
+            sub_hz = m_sub.group(1) or m_sub.group(4) or m_sub.group(7) or sub_low
             rank = (
                 _rank_taker_ratio_context(sub_hz)
-                if re.search(r"\b(?:overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b", sub_hz)
+                if _HORIZON_TOKEN_RE.search(sub_hz)
                 else _rank_taker_ratio_context(outer_ctx)
             )
             if rank > best_rank:

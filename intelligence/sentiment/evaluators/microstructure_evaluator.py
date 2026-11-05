@@ -308,6 +308,7 @@ def compute_liquidation_clusters(
     cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
     sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
     slope_15m_v = safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0
+    slope_3_7m_v = safe_float(p_dict.get("slope_3_7m"), default=0.0) or 0.0
     cvd_15m_v = safe_float(minfo.get("cvd_15m_usd"), default=0.0) or 0.0
     spot_cvd_15m_v = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
     tr_5m_v = safe_pos_float(minfo.get("taker_ratio_5m"), default=None)
@@ -318,8 +319,17 @@ def compute_liquidation_clusters(
         and (
             (
                 cvd_reg == "aggressive_buying"
-                and chg_15m_v >= 0.05
-                and (kalman_vel > 0.0 or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55))
+                and chg_15m_v >= 0.02
+                and (
+                    (kalman_vel > 0.0 and chg_15m_v >= 0.05)
+                    or (
+                        abs(kalman_vel) < 0.025
+                        and ob_imb_v >= 0.54
+                        and spot_cvd_15m_v > 0.0
+                        and (slope_3_7m_v > 0.0 or (tr_5m_v is not None and tr_5m_v >= 1.35 and cvd_5m_v > 0.0))
+                    )
+                    or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55 and chg_15m_v >= 0.05)
+                )
                 and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
             )
             or (
@@ -334,14 +344,34 @@ def compute_liquidation_clusters(
                     or (tr_5m_v is not None and tr_5m_v >= 1.35 and cvd_5m_v > 0.0)
                 )
             )
+            or (
+                cvd_15m_v > 0.0
+                and spot_cvd_15m_v > 0.0
+                and taker_r >= 1.0
+                and ob_imb_v >= 0.52
+                and chg_15m_v >= -0.15
+                and tr_5m_v is not None
+                and tr_5m_v >= 1.35
+                and cvd_5m_v > 0.0
+                and (tr_1h_v is None or tr_1h_v >= 1.0)
+            )
         )
     ) or (
         liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
         and (
             (
                 cvd_reg == "aggressive_market_dumps"
-                and chg_15m_v <= -0.05
-                and (kalman_vel < 0.0 or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45))
+                and chg_15m_v <= -0.02
+                and (
+                    (kalman_vel < 0.0 and chg_15m_v <= -0.05)
+                    or (
+                        abs(kalman_vel) < 0.025
+                        and ob_imb_v <= 0.46
+                        and spot_cvd_15m_v < 0.0
+                        and (slope_3_7m_v < 0.0 or (tr_5m_v is not None and tr_5m_v <= 0.65 and cvd_5m_v < 0.0))
+                    )
+                    or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45 and chg_15m_v <= -0.05)
+                )
                 and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
             )
             or (
@@ -355,6 +385,17 @@ def compute_liquidation_clusters(
                     or (ob_imb_v <= 0.42 and spot_cvd_15m_v < 0.0)
                     or (tr_5m_v is not None and tr_5m_v <= 0.65 and cvd_5m_v < 0.0)
                 )
+            )
+            or (
+                cvd_15m_v < 0.0
+                and spot_cvd_15m_v < 0.0
+                and taker_r <= 1.0
+                and ob_imb_v <= 0.48
+                and chg_15m_v <= 0.15
+                and tr_5m_v is not None
+                and tr_5m_v <= 0.65
+                and cvd_5m_v < 0.0
+                and (tr_1h_v is None or tr_1h_v <= 1.0)
             )
         )
     ):

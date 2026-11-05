@@ -1031,12 +1031,17 @@ def enrich_24h_and_microstructure(
         ensure_fresh_symbol_microstructure(
             cache_dir, hl_sym, now_ts=now_ts, max_age_ob_sec=180.0, max_age_whale_sec=360.0, include_derivatives=True
         )
+        hl_m_seed = load_symbol_microstructure(cache_dir, hl_sym, _rj) if hl_sym not in prices_and_trends else None
         if hl_sym not in prices_and_trends and (
             any(canonical_base_asset(k) == hl_base for k in prices_and_trends)
-            or load_symbol_microstructure(cache_dir, hl_sym, _rj)
+            or hl_m_seed
         ):
             cached_hl_pos = cached_bals.get(f"pos:hyperliquid:{hl_sym}")
-            hl_px = safe_pos_float(cached_hl_pos.get("price") if isinstance(cached_hl_pos, dict) else None, default=0.0) or resolve_symbol_price(hl_sym, prices_and_trends, explicit_quote=hl_quote)
+            hl_px = (
+                safe_pos_float((hl_m_seed or {}).get("ob_mid_price"), default=0.0)
+                or safe_pos_float(cached_hl_pos.get("price") if isinstance(cached_hl_pos, dict) else None, default=0.0)
+                or resolve_symbol_price(hl_sym, prices_and_trends, explicit_quote=hl_quote)
+            )
             prices_and_trends[hl_sym] = {"price": hl_px if hl_px > 0 else None, "trend": 0, "growth_coefficient": 0.0}
     for sym in list(prices_and_trends.keys()):
         sym_px_cur = safe_float(prices_and_trends[sym].get("price"), 0.0)

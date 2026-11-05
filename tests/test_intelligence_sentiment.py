@@ -6962,3 +6962,71 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow()
     )
     assert tao_liq["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
 
+    # 3. Parenthesized number-first horizon taker buying list ("taker buying (1.5385 overall, 2.0885 5m, 1.1871 1h)")
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+
+    sa_summary_iter19 = (
+        "European morning accumulation is actively underway as BTC advances to $80,487.51 (81% range position) "
+        "backed by expanding 24h market breadth (68.8% advancing) and aggressive multi-timeframe taker buying "
+        "(1.5385 overall, 2.0885 5m, 1.1871 1h)."
+    )
+    assert parse_cited_taker_ratio(sa_summary_iter19) == 1.5385
+    assert parse_cited_taker_ratio("taker ratio (0.566 5m, 1.0944 1h)") == 1.0944
+
+    sa_fade_iter19 = {
+        "age_min": 18.0,
+        "directional_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "summary": sa_summary_iter19,
+        "key_risks": [],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_fade_iter19,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.7541,
+                "cvd_15m_usd": -4_189_363.0,
+                "taker_ratio_5m": 0.80,
+                "cvd_5m_usd": -617_830.0,
+                "taker_ratio_1h": 1.07,
+                "cvd_1h_usd": 6_190_368.0,
+            }
+        },
+    )
+    assert "LIVE_FLOW_FADE" in sa_fade_iter19.get("live_flow_divergence", "")
+    assert "advisor ratio=1.54" in sa_fade_iter19.get("live_flow_divergence", "")
+
+    # 4. Multi-horizon positive flow alignment neutralizes LONG_SWEEP_MAGNET_DOWN on HYPEUSDC
+    hype_liq_iter19 = compute_liquidation_clusters(
+        {
+            "price": 83.2845,
+            "vol_1h_pct": 0.5017,
+            "kalman_vel": -0.00384,
+            "kalman_vel_std": 0.04,
+            "chg_15m_pct": -0.01,
+            "slope_3_7m": 0.00033,
+            "val_px": 84.033,
+            "vah_px": 86.987,
+            "low_24h": 82.7275,
+            "high_24h": 88.7365,
+        },
+        {
+            "oi_usd": 401_073_945.41,
+            "whale_long_pct": 0.7033,
+            "funding_rate": 0.0000125,
+            "ob_imbalance": 0.52,
+            "bid_wall_px": 82.9,
+            "ask_wall_px": 83.6,
+            "taker_buy_sell_ratio": 1.0426,
+            "cvd_15m_usd": 32_601.0,
+            "cvd_regime": "ask_absorbing",
+            "spot_cvd_15m_usd": 155_135.0,
+            "taker_ratio_5m": 1.51,
+            "cvd_5m_usd": 86_503.0,
+            "taker_ratio_1h": 1.03,
+            "cvd_1h_usd": 146_996.0,
+        },
+    )
+    assert hype_liq_iter19["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
+
