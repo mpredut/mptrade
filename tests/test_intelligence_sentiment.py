@@ -5865,3 +5865,59 @@ def test_bugs_96_to_98_breadth_base_dedup_multi_venue_orderbook_isolation_and_sl
     assert math.copysign(1.0, arb_cb["kalman_vel"]) == 1.0
 
 
+def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
+    """Verify:
+    - parse_cited_taker_ratio parses plural 'taker ratios (overall 0.60, 5m 0.67)' across summary + key_risks and ranks overall (0.60) above 1h (1.03)
+    - enrich_sentiment_advisor_live_flow_divergence does not emit false LIVE_SELL_REVERSAL on BULLISH/ACCUMULATE when key_risks already cited overall 0.60 and live taker_ratio improved to 0.70
+    - harvest_log_anomalies_from_dirs ignores informational '[GUARD] ... the historical price reference was explicitly bypassed' lines
+    """
+    import time
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    summary = (
+        "BTC orderbook depth is heavily bid-dominated (0.69 imbalance) with positive 1h net buying flow "
+        "(1h taker ratio 1.03, 1h CVD +$5.67M) and negative funding (-0.31 bps)."
+    )
+    key_risks = [
+        "Deeply negative 4h cumulative volume delta (-$107.7M) and sub-1.0 short-term taker ratios (overall 0.60, 5m 0.67) show persistent active selling into limit bids."
+    ]
+    assert parse_cited_taker_ratio((summary, key_risks)) == 0.60
+
+    sa_acc = {
+        "market_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 14.9,
+        "summary": summary,
+        "key_risks": key_risks,
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_acc,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.7035,
+                "cvd_15m_usd": -8_660_000.0,
+                "taker_ratio_5m": 0.7478,
+                "cvd_5m_usd": -2_870_000.0,
+                "taker_ratio_1h": 0.9613,
+                "cvd_1h_usd": -7_410_000.0,
+            }
+        },
+    )
+    assert "live_flow_divergence" not in sa_acc
+
+    log_file = tmp_path / "bot_tao.log"
+    log_file.write_text(
+        "04:41:11 [GUARD] SELL TAOUSDC: the historical price reference was explicitly bypassed; the quantity/weight guard remains active\n"
+        "04:41:12 [GUARD] BUY TAOUSDC: the historical price reference was explicitly bypassed; the quantity/weight guard remains active\n",
+        encoding="utf-8",
+    )
+    res = harvest_log_anomalies_from_dirs([str(tmp_path)], 1)
+    assert res.guard_interventions == []
+    assert res.critical_events == []
+
+
+

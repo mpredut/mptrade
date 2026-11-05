@@ -342,7 +342,9 @@ def enrich_sentiment_advisor_live_flow_divergence(
     live_cvd_1h = safe_float(btc_m.get("cvd_1h_usd"), None)
     sa_act = str(sentiment_advisor.get("recommended_action") or "").upper()
     sa_bias = str(sentiment_advisor.get("directional_bias") or sentiment_advisor.get("market_bias") or "").upper()
-    summary_cited_tr = parse_cited_taker_ratio(sentiment_advisor.get("summary"))
+    summary_cited_tr = parse_cited_taker_ratio(
+        (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks"))
+    )
     cited_tr = summary_cited_tr if sa_age >= 15.0 else None
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
     cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
@@ -352,24 +354,24 @@ def enrich_sentiment_advisor_live_flow_divergence(
     cvd_1h_s = f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if (live_cvd is not None and live_cvd_1h is not None) else ""
     flow_lbl = ", ".join(x for x in (tr_s, cvd_s, tr_5m_s, cvd_5m_s, tr_1h_s, cvd_1h_s) if x)
     already_cited_sell_on_hold = (
-        sa_act in ("", "HOLD")
+        sa_act in ("", "HOLD", "ACCUMULATE")
         and summary_cited_tr is not None
         and summary_cited_tr <= 0.75
         and (live_tr is None or live_tr > summary_cited_tr - 0.15)
     )
     already_cited_buy_on_hold = (
-        sa_act in ("", "HOLD")
+        sa_act in ("", "HOLD", "TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
         and summary_cited_tr is not None
         and summary_cited_tr >= 1.25
         and (live_tr is None or live_tr < summary_cited_tr + 0.15)
     )
     is_bear_posture = (
-        sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
+        (sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") and not already_cited_buy_on_hold)
         or (sa_bias == "BEARISH" and not already_cited_buy_on_hold)
         or (cited_tr is not None and cited_tr <= 0.65)
     )
     is_bull_posture = (
-        sa_act == "ACCUMULATE"
+        (sa_act == "ACCUMULATE" and not already_cited_sell_on_hold)
         or (sa_bias == "BULLISH" and not already_cited_sell_on_hold)
         or (cited_tr is not None and cited_tr >= 1.35)
     )

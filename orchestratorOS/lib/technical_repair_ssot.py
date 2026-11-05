@@ -667,6 +667,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"Exception ignored in:.*BaseSubprocessTransport\.__del__|RuntimeError:\s+Event loop is closed|"
         r"curl:\s*\(22\).*returned error:\s*429|deadman:\s*(?:curl ERROR after retries|ntfy rate-limited)|"
         r"In-place /compact for topic .* failed:|"
+        r"the historical price reference was explicitly bypassed;|"
         r"\[<stdin>:\d+\])",
         re.IGNORECASE,
     )

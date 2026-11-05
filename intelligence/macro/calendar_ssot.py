@@ -422,15 +422,23 @@ def resolve_macro_economic_calendar(
 
 
 _CITED_TAKER_RATIO_RE = re.compile(
-    r"(?:([0-9]+\.[0-9]+)\s*(?:taker[\s_]+(?:buy[/_]sell[\s_]+)?|buy[/_]sell[\s_]+)ratio"
-    r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratio(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratio|[),])(?![0-9%]))",
+    r"(?:([0-9]+\.[0-9]+)\s*(?:taker[\s_]+(?:buy[/_]sell[\s_]+)?|buy[/_]sell[\s_]+)ratios?"
+    r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratios?(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*(?:(?:overall|15m|1h|4h|5m|3m|1m)[\s:=]+)?([0-9]+\.[0-9]+)(?![0-9%])"
+    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:overall|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?|[),])(?![0-9%]))",
     re.IGNORECASE,
 )
 
 
 def parse_cited_taker_ratio(text: Any) -> Optional[float]:
-    """Extract a cited BTC taker buy/sell ratio from an advisor summary string, preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons."""
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons."""
+    if isinstance(text, (list, tuple)):
+        parts: List[str] = []
+        for item in text:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, (list, tuple)):
+                parts.extend(str(sub).strip() for sub in item if isinstance(sub, str) and str(sub).strip())
+        text = "\n".join(parts)
     if not isinstance(text, str) or not text:
         return None
     best_rank = -1
@@ -514,7 +522,12 @@ def compute_dynamic_sentiment_interval(
     cur_tr = safe_pos_float(btc_taker_ratio, default=None)
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
     cited_tr = (
-        parse_cited_taker_ratio(str(obj_attr(cached_assessment, "summary", "") or ""))
+        parse_cited_taker_ratio(
+            (
+                str(obj_attr(cached_assessment, "summary", "") or ""),
+                obj_attr(cached_assessment, "key_risks", None),
+            )
+        )
         if cached_assessment is not None
         else None
     )
