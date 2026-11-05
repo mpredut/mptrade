@@ -364,15 +364,22 @@ class _DiskBackedSymbolCollector:
             return None, 0.0, None, None, False
         now_f = _effective_now_ts(now)
         allow_net_bool = True if allow_network is None else self._as_bool_flag(allow_network, default=False)
-        has_exact_store = sym_clean in self._cache or bool((p_ex := self._disk_path(sym_clean)) and os.path.isfile(p_ex))
-        require_exact_venue_sym = bool(self._is_exact_venue_symbol(sym_clean) and (allow_net_bool or has_exact_store))
-        cached, fresh = self._lookup_cached(sym_clean, now_f, exact_only=require_exact_venue_sym)
-        if fresh is not None and (not require_exact_venue_sym or str(getattr(fresh, "symbol", "") or "").strip().upper() == sym_clean):
+        if self._is_exact_venue_symbol(sym_clean):
+            cached_ex, fresh_ex = self._lookup_cached(sym_clean, now_f, exact_only=True)
+            if fresh_ex is not None:
+                return sym_clean, now_f, cached_ex, fresh_ex, False
+            disk_ex = self._load_from_disk(sym_clean, now_f, exact_only=True)
+            if disk_ex is not None:
+                return sym_clean, now_f, cached_ex, disk_ex, False
+            if allow_net_bool:
+                return sym_clean, now_f, cached_ex, None, True
+        cached, fresh = self._lookup_cached(sym_clean, now_f, exact_only=False)
+        if fresh is not None:
             if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(fresh, "symbol", "") or "").strip().upper() != sym_clean:
                 self._sync_existing_sibling_disk_file(sym_clean, fresh)
             return sym_clean, now_f, cached, fresh, False
-        disk_snap = self._load_from_disk(sym_clean, now_f, exact_only=require_exact_venue_sym)
-        if disk_snap is not None and (not require_exact_venue_sym or str(getattr(disk_snap, "symbol", "") or "").strip().upper() == sym_clean):
+        disk_snap = self._load_from_disk(sym_clean, now_f, exact_only=False)
+        if disk_snap is not None:
             if allow_net_bool and not self._QUOTE_ISOLATED and str(getattr(disk_snap, "symbol", "") or "").strip().upper() != sym_clean:
                 self._sync_existing_sibling_disk_file(sym_clean, disk_snap)
             return sym_clean, now_f, cached, disk_snap, False

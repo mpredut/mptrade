@@ -127,12 +127,17 @@ def collect_pretrade_telemetry(
                 sym_u_p2 = str(symbol or "").strip().upper()
                 snap_sym_p2 = str(obj_attr(snap, "symbol") or "").strip().upper()
                 disk_sym_p2 = str(disk_d.get("symbol") or "").strip().upper()
-                if disk_sym_p2 == sym_u_p2 and snap_sym_p2 != sym_u_p2:
+                if snap_sym_p2 and disk_sym_p2 == sym_u_p2 and snap_sym_p2 != sym_u_p2:
                     return disk_d
-                if (disk_sym_p2 == sym_u_p2) == (snap_sym_p2 == sym_u_p2) and _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
+                if (
+                    snap_sym_p2
+                    and (disk_sym_p2 == sym_u_p2) == (snap_sym_p2 == sym_u_p2)
+                    and _snap_ts(snap) > 0.0
+                    and _snap_ts(disk_d) > _snap_ts(snap) + 1.0
+                ):
                     return disk_d
             elif prefix in ("whale_snapshot_", "derivatives_telemetry_"):
-                if _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
+                if _snap_ts(snap) > 0.0 and _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
                     return disk_d
         return snap if snap is not None else disk_d
 
