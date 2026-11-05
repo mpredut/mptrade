@@ -1838,6 +1838,8 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "EQUITY_BULLISH_DECOUPLING" in gp
         assert "CB_Premium" in gp
         assert "Options_Surface" in gp
+        assert "ETH_Options" in gp
+        assert "Futures_Lead" in gp
 
     sup_cr = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
     sup_eq = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_sharetrade_executor")
@@ -1845,6 +1847,8 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY" in sp
         assert "CRYPTO_BULLISH_DECOUPLING" in sp
         assert "EQUITY_BULLISH_DECOUPLING" in sp
+        assert "ETH_Options" in sp
+        assert "Futures_Lead" in sp
 
     # 7. VIX spike guard in compute_cross_asset_regime & live 24h BTC delta enrichment when IBIT is closed
     assert (
@@ -1898,8 +1902,19 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     harvested_sensors, _ = harvest_macro_and_news_sensors(str(cdir), now_ts=1_793_865_000.0)
     assert harvested_sensors["macro_benchmarks"]["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(harvested_sensors["macro_benchmarks"]["summary_line"])
+    eth_24h_pts = [
+        [now_ms_b - 24 * 3600 * 1000, 2900.0],
+        [now_ms_b - 12 * 3600 * 1000, 2860.0],
+        [now_ms_b - 2 * 3600 * 1000, 2820.0],
+        [now_ms_b, 2850.0],
+    ]
+    (cdir / "cache_24_price_ETHUSDC.json").write_text(json.dumps(eth_24h_pts), encoding="utf-8")
     sa.review(force_refresh=True, now_ts=1_793_865_000.0)
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_sa_prompts[-1]
+    assert "- BTC Intraday Structure:" in captured_sa_prompts[-1]
+    assert "- ETH Intraday Structure:" in captured_sa_prompts[-1]
+    assert "Futures_Lead" in captured_sa_prompts[-1]
+    assert "ETH_Options" in captured_sa_prompts[-1]
 
     # 8. Generalized Deribit Options Surface (BTC & ETH) and Pre-Market Futures Lead (NQ=F vs QQQ, ES=F vs SPY)
     from intelligence.macro_sentiment_ssot import get_deribit_options_currencies
