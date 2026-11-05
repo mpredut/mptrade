@@ -8478,6 +8478,81 @@ def test_iter105_same_venue_wallet_dedup_xstocks_px_and_cycle_equity_scope(tmp_p
     assert t212_cycs["COIN_US_EQ"]["qty"] == pytest.approx(2.0)
 
 
+def test_iter22_near_balanced_cvd_spot_absorbing_single_stock_shares_and_calm_geo_refresh(tmp_path):
+    import json
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+
+    # 1. Discrepancy BU: enrich_microstructure_cvd classifies mild negative 15m CVD with taker_ratio >= 0.90,
+    #    flat/positive 15m price change (>= -0.02%), and positive 5m momentum as spot_absorbing rather than aggressive_market_dumps
+    btc_m = {
+        "ob_imbalance": 0.451,
+        "divergence_regime": "neutral",
+        "taker_buy_sell_ratio": 0.9765,
+        "taker_buy_vol_usd": 54_209_373.39,
+        "taker_sell_vol_usd": 55_515_401.53,
+        "cvd_15m_usd": -1_310_000.0,
+        "cvd_5m_usd": 209_000.0,
+    }
+    enrich_microstructure_cvd(btc_m, {"price": 80354.70, "chg_15m_pct": 0.0, "chg_5m_pct": 0.02})
+    assert btc_m["cvd_regime"] == "spot_absorbing"
+
+    # 2. Discrepancy BV: single-stock headline matching only "shares" does not outrank broad macro/market wraps
+    assert has_financial_or_geopolitical_context("NextDC shares soar nearly 51% after Goodman, Digital Realty stake purchases") is False
+    assert has_financial_or_geopolitical_context("European shares climb ahead of inflation print") is True
+    assert has_financial_or_geopolitical_context("Asian shares edge higher on chip demand") is True
+
+    # 3. Discrepancy BW: harvest_macro_and_news_sensors refreshes NORMAL geopolitical_threat timestamp when >=60m old and 0 high-sev headlines
+    now_s = 1_793_865_000.0
+    cdir = tmp_path / "cachedb_iter22"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "geopolitical_eval.json").write_text(
+        json.dumps(
+            {
+                "threat_level": "NORMAL",
+                "risk_score": 0.1,
+                "summary": "Calm geopolitical and energy climate. No systemic shock detected.",
+                "recommended_brake": "NONE",
+                "headlines_analyzed": 1,
+                "ts": now_s - 242 * 60.0,
+                "is_fallback": False,
+                "headlines_digest": "",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "news_feed_collect.json").write_text(
+        json.dumps(
+            [
+                {
+                    "title": "NextDC shares soar nearly 51% after Goodman, Digital Realty stake purchases",
+                    "source": "CNBC",
+                    "first_seen_ts": now_s - 300.0,
+                    "is_high_severity": False,
+                    "matched_keywords": [],
+                },
+                {
+                    "title": "Asian Stocks to Rise as Oil Slides After US Vote: Markets Wrap",
+                    "source": "Bloomberg",
+                    "first_seen_ts": now_s - 900.0,
+                    "is_high_severity": False,
+                    "matched_keywords": [],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    sensors, b_news = harvest_macro_and_news_sensors(str(cdir), now_s)
+    assert b_news[0]["title"].startswith("Asian Stocks to Rise as Oil Slides")
+    assert sensors["geopolitical_threat"]["age_min"] == 0.0
+    assert sensors["geopolitical_threat"]["headlines_analyzed"] == 2
+
+
+
 
 
 

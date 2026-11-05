@@ -546,21 +546,35 @@ def harvest_macro_and_news_sensors(
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
             })
     gt_cur = macro_sensors.get("geopolitical_threat")
-    if (
-        isinstance(gt_cur, dict)
-        and (gt_digest := str(gt_cur.get("headlines_digest") or "").strip())
-        and not any(n.get("is_high_severity") for n in valid_news)
-    ):
-        gt_digest_titles = split_headlines_digest(gt_digest)
-        if gt_digest_titles and not any(
-            filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
-            for t in gt_digest_titles
+    if isinstance(gt_cur, dict) and valid_news and not any(n.get("is_high_severity") for n in valid_news):
+        gt_digest = str(gt_cur.get("headlines_digest") or "").strip()
+        gt_digest_invalid = False
+        if gt_digest:
+            gt_digest_titles = split_headlines_digest(gt_digest)
+            gt_digest_invalid = bool(
+                gt_digest_titles
+                and not any(
+                    filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
+                    for t in gt_digest_titles
+                )
+            )
+        newest_news_ts = max((safe_pos_float(n.get("first_seen_ts"), default=0.0) or 0.0 for n in valid_news), default=0.0)
+        has_fresh_calm_news = newest_news_ts > 0.0 and 0.0 <= (now_ts - newest_news_ts) <= 3600.0
+        gt_age_min = safe_float(gt_cur.get("age_min"), 0.0) or 0.0
+        if gt_digest_invalid or (
+            str(gt_cur.get("threat_level") or "NORMAL").upper() == "NORMAL"
+            and not gt_digest
+            and has_fresh_calm_news
+            and gt_age_min >= 60.0
         ):
             gt_cur["threat_level"] = "NORMAL"
             gt_cur["risk_score"] = 0.1
             gt_cur["recommended_brake"] = "NONE"
             gt_cur["summary"] = "Calm geopolitical and energy climate. No systemic shock detected."
             gt_cur["headlines_digest"] = ""
+            gt_cur["headlines_analyzed"] = len(valid_news)
+            gt_cur["ts"] = now_ts
+            gt_cur["age_min"] = 0.0
             if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)

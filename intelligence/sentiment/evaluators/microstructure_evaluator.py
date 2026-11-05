@@ -127,15 +127,31 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             )
             minfo["cvd_regime"] = "ask_absorbing" if is_ask_absorbing else "aggressive_buying"
         elif cvd_usd < 0.0:
+            tr_cur = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
+            chg_5m_cur = safe_float(p_dict.get("chg_5m_pct"), default=0.0) or 0.0
+            cvd_5m_cur = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
             is_bid_absorbing = (
                 (
                     chg_15m >= 0.05
-                    or (chg_15m >= -0.05 and (ob_imb >= 0.54 or div_reg in ("accumulation", "short_covering", "bullish_absorption")))
+                    or (
+                        chg_15m >= -0.05
+                        and (
+                            ob_imb >= 0.54
+                            or div_reg in ("accumulation", "short_covering", "bullish_absorption")
+                            or (
+                                chg_15m >= -0.02
+                                and tr_cur is not None
+                                and tr_cur >= 0.90
+                                and (chg_5m_cur >= 0.0 or cvd_5m_cur > 0.0)
+                                and div_reg not in ("distribution", "long_liquidation", "bearish_distribution", "aggressive_shorting")
+                            )
+                        )
+                    )
                     or (
                         chg_15m >= -0.15
                         and (
                             ob_imb >= 0.65
-                            or (ob_imb >= 0.60 and (safe_float(p_dict.get("chg_5m_pct"), default=0.0) or 0.0) >= 0.05)
+                            or (ob_imb >= 0.60 and chg_5m_cur >= 0.05)
                             or (ob_imb >= 0.54 and div_reg in ("accumulation", "short_covering", "bullish_absorption"))
                             or (ob_imb >= 0.57 and cvd_1h_cur > 0.0)
                         )
