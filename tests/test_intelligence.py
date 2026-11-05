@@ -7867,4 +7867,90 @@ def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_mic
     assert hl_ro_after["spot_positions"][0]["snapshot_age_min"] == 0.0
 
 
+def test_iter100_portfolio_collector_audit_origins_hl_active_cycle_best_fills_and_ag_dust(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _load_recent_audit_origins,
+        harvest_bot_runtime_states,
+        harvest_venue_cycles,
+        load_symbol_best_recent_fills,
+    )
+
+    ws_dir = tmp_path / "ws"
+    cdir = ws_dir / "cachedb"
+    hl_dir = ws_dir / "hyperliquid"
+    cdir.mkdir(parents=True, exist_ok=True)
+    hl_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. _load_recent_audit_origins merges module and rule across multiple events for the same order_id
+    audit_file = cdir / "execution_audit_20261105.jsonl"
+    audit_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"order_id": "oid-100", "origin_module": "monitortrades"}),
+                json.dumps({"order_id": "oid-100", "decision_rule": "tp_ride_step1"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    origins = _load_recent_audit_origins(str(cdir))
+    assert origins.get("oid-100") == ("monitortrades", "tp_ride_step1")
+
+    # 2. harvest_venue_cycles does not let a flat .state_HYPE.json overwrite an active .state_HYPE_LONG.json
+    (hl_dir / ".state_HYPE_LONG.json").write_text(
+        json.dumps(
+            {
+                "qty": 15.0,
+                "cost_usd": 600.0,
+                "avg_cost_px": 40.0,
+                "entry_price": 40.0,
+                "last_buy_price": 40.0,
+                "entry_ts": 1710000000.0,
+                "last_sell_price": 44.0,
+                "last_sell_ts": 1710003600.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (hl_dir / ".state_HYPE.json").write_text(
+        json.dumps({"qty": 0.0, "cost_usd": 0.0}),
+        encoding="utf-8",
+    )
+    _, hl_cycs, _ = harvest_venue_cycles(str(ws_dir), {"HYPEUSDC": {"price": 42.0}}, {})
+    assert hl_cycs["HYPEUSDC"]["qty"] == 15.0
+    assert hl_cycs["HYPEUSDC"]["_entry_ts_ms"] == 1710000000000
+
+    # 3. load_symbol_best_recent_fills populates last_buy["ts_ms"] from _entry_ts_ms on cycle fallback
+    best_fills = load_symbol_best_recent_fills(str(cdir), "HYPEUSDC", ["HYPEUSDC", "HYPE"])
+    assert best_fills is not None
+    assert best_fills["venue"] == "hyperliquid"
+    assert best_fills["last_buy"]["price"] == 40.0
+    assert best_fills["last_buy"]["ts_ms"] == 1710000000000
+    assert best_fills["last_sell"]["ts_ms"] == 1710003600000
+
+    # 4. harvest_bot_runtime_states strips non-pending assetguardian sell state when free_base == 0.0 and value_usd is None
+    (cdir / "assetguardian_state.json").write_text(
+        json.dumps(
+            {
+                "symbols": {
+                    "BTCUSDC": {
+                        "buy": {"active": True},
+                        "sell": {"pending": False, "total_filled_qty": 0.123456789},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    rt_states = harvest_bot_runtime_states(
+        str(cdir),
+        1710005000.0,
+        tradable_positions=[{"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.0, "value_usd": None}],
+    )
+    assert "sell" not in rt_states["assetguardian_state"]["BTCUSDC"]
+    assert rt_states["assetguardian_state"]["BTCUSDC"]["buy"] == {"active": True}
+
+
+
 

@@ -248,7 +248,8 @@ def _load_recent_audit_origins(cache_dir: str) -> Dict[str, tuple[Optional[str],
                 if mod or rule:
                     for k in ("order_id", "orderId", "client_order_id", "clientOrderId"):
                         if kv := str(rec.get(k) or "").strip():
-                            out.setdefault(kv, (mod, rule))
+                            prev_mod, prev_rule = out.get(kv, (None, None))
+                            out[kv] = (prev_mod or mod, prev_rule or rule)
         if out:
             break
     return out
@@ -326,9 +327,16 @@ def harvest_venue_cycles(
 
     def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int) -> None:
         if isinstance((st_data := _rj(st_path)), dict):
-            target[sym] = parse_venue_cycle_state(
+            parsed = parse_venue_cycle_state(
                 st_data, sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
             )
+            prev = target.get(sym)
+            if isinstance(prev, dict):
+                prev_active = (safe_nonneg_float(prev.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(prev.get("resting_orders"))
+                new_active = (safe_nonneg_float(parsed.get("qty"), default=0.0) or 0.0) > 1e-8 or bool(parsed.get("resting_orders"))
+                if prev_active and not new_active:
+                    return
+            target[sym] = parsed
 
     kraken_cycles: Dict[str, Any] = {}
     if os.path.isdir(kraken_dir := os.path.join(workspace_dir, "kraken")):
@@ -953,6 +961,7 @@ def load_symbol_best_recent_fills(
             )
             cand_key = (same_quote_fam, exact_sym, cand_ts)
             if fills is None or cand_key > best_fill_key:
+                cand_fills.setdefault("venue", cache_venue)
                 fills, best_venue, best_fill_key = cand_fills, cache_venue, cand_key
     if fills is None or fills.get("last_buy") is None or fills.get("last_sell") is None or best_venue == "t212":
         norm_cdir = os.path.normpath(os.path.abspath(cachedb_dir)) if cachedb_dir else ""
@@ -980,18 +989,25 @@ def load_symbol_best_recent_fills(
                 cyc_avg = safe_pos_float(matched_cyc.get("avg_cost_px") or matched_cyc.get("entry_price"), default=None)
                 cyc_qty = safe_nonneg_float(matched_cyc.get("qty"), default=0.0) or 0.0
                 cyc_ls_ts = matched_cyc.get("_last_sell_ts_ms")
+                cyc_lb_ts = matched_cyc.get("_entry_ts_ms")
                 if fills is None and (cyc_lb is not None or cyc_ls is not None or (cyc_avg is not None and cyc_avg > 0)):
+                    lb_init: Optional[Dict[str, Any]] = None
+                    if cyc_lb is not None:
+                        lb_init = {
+                            "price": cyc_lb,
+                            "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None,
+                            "actor": "BOT",
+                            "actor_tag": "BOT",
+                        }
+                        if cyc_lb_ts is not None:
+                            lb_init["ts_ms"] = cyc_lb_ts
                     fills = {
                         "venue": matched_cyc_venue,
                         "last_action_side": "BUY" if cyc_qty > 1e-8 else ("SELL" if cyc_ls is not None else "BUY"),
                         "last_action_actor": "BOT",
                         "last_action_actor_tag": "BOT",
                         "active_avg_buy_px": round(cyc_avg, 6) if (cyc_avg and cyc_qty > 1e-8) else None,
-                        "last_buy": (
-                            {"price": cyc_lb, "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None, "actor": "BOT", "actor_tag": "BOT"}
-                            if cyc_lb is not None
-                            else None
-                        ),
+                        "last_buy": lb_init,
                         "last_sell": (
                             {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
                             if cyc_ls is not None
@@ -1009,12 +1025,17 @@ def load_symbol_best_recent_fills(
                             fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
                         fills["active_avg_buy_px"] = round(cyc_avg, 6)
                     if fills.get("last_buy") is None and cyc_lb is not None:
-                        fills["last_buy"] = {
+                        lb_fb: Dict[str, Any] = {
                             "price": cyc_lb,
                             "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None,
                             "actor": "BOT",
                             "actor_tag": "BOT",
                         }
+                        if cyc_lb_ts is not None:
+                            lb_fb["ts_ms"] = cyc_lb_ts
+                        fills["last_buy"] = lb_fb
+                    elif isinstance(fills.get("last_buy"), dict) and fills["last_buy"].get("ts_ms") is None and cyc_lb_ts is not None:
+                        fills["last_buy"]["ts_ms"] = cyc_lb_ts
                     if fills.get("last_sell") is None and cyc_ls is not None:
                         fills["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
     return fills
@@ -1232,12 +1253,20 @@ def harvest_bot_runtime_states(
     ag_state = _rj(os.path.join(cache_dir, "assetguardian_state.json"))
     if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
         dust_binance_syms = {
-            str(pos.get("symbol") or "").upper()
+             str(pos.get("symbol") or "").upper()
             for pos in (tradable_positions or ())
             if isinstance(pos, dict) and normalize_venue_name(pos.get("venue")) == "binance"
-            and 0.0 <= safe_float(pos.get("value_usd"), -1.0)
-            and (safe_float(pos.get("value_usd"), 0.0) + max(0.0, safe_float(pos.get("locked_base_usd"), 0.0)))
-            < max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
+            and (
+                (
+                    0.0 <= safe_float(pos.get("value_usd"), -1.0)
+                    and (safe_float(pos.get("value_usd"), 0.0) + max(0.0, safe_float(pos.get("locked_base_usd"), 0.0)))
+                    < max(1.0, safe_float(pos.get("exchange_min_notional_usd") or pos.get("min_notional_usd"), 5.0))
+                )
+                or (
+                    0.0 <= safe_float(pos.get("free_base"), -1.0) <= 1e-8
+                    and (safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) <= 1e-8
+                )
+            )
         }
         cleaned_ag_syms: Dict[str, Any] = {}
         for ag_sym, ag_val in ag_state["symbols"].items():

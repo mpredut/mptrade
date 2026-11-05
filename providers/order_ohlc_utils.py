@@ -489,8 +489,8 @@ def resolve_order_origin(
     if actor == "AI" or not isinstance(order, dict):
         return actor, None, None
 
-    mod = _first_nonempty_str(order, ("module", "bot", "caller"), lower=True)
-    rule = _first_nonempty_str(order, ("rule", "trigger_rule", "kind", "role", "motivation"))
+    mod = _first_nonempty_str(order, ("module", "origin_module", "bot", "caller"), lower=True)
+    rule = _first_nonempty_str(order, ("rule", "decision_rule", "trigger_rule", "kind", "role", "motivation"))
     oid = extract_order_id(order, default="")
     raw_cid = extract_client_order_id(order, default="") or ""
 
