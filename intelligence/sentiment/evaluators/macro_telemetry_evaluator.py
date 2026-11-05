@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from cachepaths import normalize_venue_name
+from cachepaths import canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
@@ -270,17 +270,23 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
             p for p in t_pos_list
             if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
         ]
-        v_pos_sum = sum(
-            (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
-            for p in v_pos_list
-        )
-        v_cash_sum = 0.0
+        free_by_base: Dict[str, float] = {}
+        locked_by_sym: Dict[str, float] = {}
+        for p in v_pos_list:
+            b_k = canonical_base_asset(p.get("base") or p.get("symbol") or "") or str(p.get("symbol") or "").strip().upper()
+            s_k = str(p.get("symbol") or b_k).strip().upper()
+            free_by_base[b_k] = max(free_by_base.get(b_k, 0.0), safe_pos_float(p.get("value_usd"), default=0.0) or 0.0)
+            locked_by_sym[s_k] = max(locked_by_sym.get(s_k, 0.0), safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
+        v_pos_sum = sum(free_by_base.values()) + sum(locked_by_sym.values())
+        cash_by_asset: Dict[str, float] = {}
         for c_key, c in vq_cash_map.items():
-            c_venue = normalize_venue_name(c.get("venue") if isinstance(c, dict) and c.get("venue") else str(c_key or "").split(":", 1)[0])
+            k_parts = str(c_key or "").split(":", 1)
+            c_venue = normalize_venue_name(c.get("venue") if isinstance(c, dict) and c.get("venue") else k_parts[0])
             if c_venue != v_target:
                 continue
             if isinstance(c, dict):
-                v_cash_sum += (
+                c_asset_u = str(c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")).strip().upper()
+                c_val = (
                     (
                         safe_pos_float(c.get("free"), default=None)
                         or safe_pos_float(c.get("free_quote_usd"), default=None)
@@ -290,7 +296,10 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                     + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
                 )
             else:
-                v_cash_sum += safe_pos_float(c, default=0.0) or 0.0
+                c_asset_u = (k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD")
+                c_val = safe_pos_float(c, default=0.0) or 0.0
+            cash_by_asset[c_asset_u] = max(cash_by_asset.get(c_asset_u, 0.0), c_val)
+        v_cash_sum = sum(cash_by_asset.values())
         tot_v = round(v_pos_sum + v_cash_sum, 2)
         if tot_v > 0.0:
             if v_target == "binance":
@@ -302,10 +311,47 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                 )
                 hl_ro_d["snapshot_age_min"] = 0.0
                 if v_pos_list:
-                    hp0 = v_pos_list[0]
-                    live_q = (safe_nonneg_float(hp0.get("free_base"), default=0.0) or 0.0) + (
-                        safe_nonneg_float(hp0.get("locked_base_qty"), default=0.0) or 0.0
+                    sp0_coin = (
+                        hl_ro_d["spot_positions"][0].get("coin") or hl_ro_d["spot_positions"][0].get("symbol")
+                        if isinstance(hl_ro_d.get("spot_positions"), list)
+                        and hl_ro_d["spot_positions"]
+                        and isinstance(hl_ro_d["spot_positions"][0], dict)
+                        else ""
                     )
+                    ro_coin = canonical_base_asset(hl_ro_d.get("coin") or hl_ro_d.get("symbol") or sp0_coin)
+                    hp0 = next(
+                        (
+                            p for p in v_pos_list
+                            if ro_coin and canonical_base_asset(p.get("base") or p.get("symbol") or "") == ro_coin
+                        ),
+                        None,
+                    ) or next(
+                        (
+                            p for p in v_pos_list
+                            if (safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0)
+                            + (safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0)
+                            > 0.0
+                        ),
+                        v_pos_list[0],
+                    )
+                    hp0_base = canonical_base_asset(hp0.get("base") or hp0.get("symbol") or "")
+                    hp0_free_q = max(
+                        (
+                            safe_nonneg_float(p.get("free_base"), default=0.0) or 0.0
+                            for p in v_pos_list
+                            if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base
+                        ),
+                        default=0.0,
+                    )
+                    hp0_locked_by_sym: Dict[str, float] = {}
+                    for p in v_pos_list:
+                        if canonical_base_asset(p.get("base") or p.get("symbol") or "") == hp0_base:
+                            ps_k = str(p.get("symbol") or hp0_base).strip().upper()
+                            hp0_locked_by_sym[ps_k] = max(
+                                hp0_locked_by_sym.get(ps_k, 0.0),
+                                safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0,
+                            )
+                    live_q = hp0_free_q + sum(hp0_locked_by_sym.values())
                     if live_q > 0.0:
                         if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
                             hl_ro_d["qty"] = round(live_q, 6)

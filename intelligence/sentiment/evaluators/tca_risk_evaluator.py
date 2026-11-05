@@ -382,15 +382,29 @@ def compute_enterprise_portfolio_risk_metrics(
     venue_locked_quote_usd: Dict[str, float] = {}
     pos_exposures: List[Tuple[str, float, float, float, float]] = []
 
+    grouped_pos: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
     for p in t_pos:
         if not isinstance(p, dict):
             continue
         v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        val_u = (safe_pos_float(p.get("value_usd"), default=0.0) or 0.0) + (safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
+        sym_raw = str(p.get("symbol") or "").strip().upper()
+        is_eq_p = sym_raw.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
+        grp_k = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
+        grouped_pos.setdefault(grp_k, []).append(p)
+
+    for (v_name, _), grp_list in grouped_pos.items():
+        p = grp_list[0]
+        free_val_u = max((safe_pos_float(gp.get("value_usd"), default=0.0) or 0.0 for gp in grp_list), default=0.0)
+        locked_by_sym: Dict[str, float] = {}
+        for idx_g, gp in enumerate(grp_list):
+            s_g = str(gp.get("symbol") or f"SYM_{idx_g}").strip().upper()
+            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), safe_pos_float(gp.get("locked_base_usd"), default=0.0) or 0.0)
+        val_u = free_val_u + sum(locked_by_sym.values())
         venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
         if val_u >= 1.0:
             sym = str(p.get("symbol") or "").strip().upper()
-            base = canonical_base_asset(sym)
+            base = canonical_base_asset(p.get("base") or sym)
             p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
             if not isinstance(p_info, dict):
                 p_info = {}
@@ -420,10 +434,13 @@ def compute_enterprise_portfolio_risk_metrics(
                 daily_vol_pct = min(25.0, max(0.8, 1.0 * math.sqrt(24.0)))
             pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
 
+    dedup_cash: Dict[tuple[str, str], tuple[float, float]] = {}
     for c_key, c in vq_cash.items():
-        v_fallback = normalize_venue_name(str(c_key or "").split(":", 1)[0])
+        k_parts = str(c_key or "").split(":", 1)
+        v_fallback = normalize_venue_name(k_parts[0])
         if isinstance(c, dict):
             v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
+            c_asset_u = str(c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")).strip().upper()
             f_u = (
                 safe_pos_float(c.get("free"), default=None)
                 or safe_pos_float(c.get("free_quote_usd"), default=None)
@@ -436,7 +453,11 @@ def compute_enterprise_portfolio_risk_metrics(
             if f_u <= 0.0:
                 continue
             v_name = v_fallback or "unknown"
+            c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
             l_u = 0.0
+        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
+        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
+    for (v_name, _), (f_u, l_u) in dedup_cash.items():
         venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
         venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
         venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u

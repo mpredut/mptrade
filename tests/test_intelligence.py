@@ -8416,6 +8416,69 @@ def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_
     assert p_entry["chg_7d_pct"] == pytest.approx(p_entry["bounce_7d_low_pct"])
 
 
+def test_iter105_same_venue_wallet_dedup_xstocks_px_and_cycle_equity_scope(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_kraken_xstocks
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import reconcile_live_venue_equity_summary
+    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+
+    # 1. reconcile_live_venue_equity_summary & compute_enterprise_portfolio_risk_metrics deduplicate same-venue same-base spot wallets
+    ps = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "base": "BTC", "quote": "USDC", "value_usd": 1000.0, "locked_base_usd": 100.0},
+            {"venue": "binance", "symbol": "BTCUSDT", "base": "BTC", "quote": "USDT", "value_usd": 1000.0, "locked_base_usd": 50.0},
+            {"venue": "hyperliquid", "symbol": "HYPEUSDC", "base": "HYPE", "quote": "USDC", "free_base": 0.0, "value_usd": 0.0},
+            {"venue": "hyperliquid", "symbol": "BTCUSDC", "base": "BTC", "quote": "USDC", "free_base": 0.01, "value_usd": 850.0},
+        ],
+        "venue_quote_cash": {
+            "binance:USDC": {"venue": "binance", "asset": "USDC", "free": 500.0},
+            "BINANCE:USDC": {"venue": "BINANCE", "asset": "USDC", "free": 500.0},
+            "hyperliquid:USDC": {"venue": "hyperliquid", "asset": "USDC", "free": 150.0},
+        },
+        "hyperliquid_readonly": {
+            "qty": 0.005,
+            "value_usd": 400.0,
+            "perp_equity_usd": 50.0,
+            "spot_positions": [{"coin": "BTC", "qty": 0.005, "value_usd": 400.0}],
+        },
+    }
+    reconcile_live_venue_equity_summary(ps)
+    assert ps["live_binance_equity_usdc"] == pytest.approx(1650.0)
+    assert ps["hyperliquid_readonly"]["live_reconciled_spot_usd"] == pytest.approx(1000.0)
+    assert ps["hyperliquid_readonly"]["qty"] == pytest.approx(0.01)
+
+    risk = compute_enterprise_portfolio_risk_metrics(ps, {"BTCUSDC": {"price": 85000.0}}, {})
+    assert risk["invested_exposure_usd"] == pytest.approx(2000.0)
+    assert risk["global_free_cash_usd"] == pytest.approx(650.0)
+    assert risk["unified_nav_usd"] == pytest.approx(2650.0)
+
+    # 2. harvest_kraken_xstocks resolves live_price from SPCX_US_EQ even when listed_pair is SPCXUSD
+    kdir = tmp_path / "kraken"
+    kdir.mkdir(parents=True, exist_ok=True)
+    (kdir / "xstock_state.json").write_text(
+        json.dumps({"known_assets": {"SPCXx.T": 2.5}, "pair": "SPCXUSD"}),
+        encoding="utf-8",
+    )
+    xst = harvest_kraken_xstocks(str(kdir), {"SPCX_US_EQ": {"price": 112.5}}, {})
+    assert isinstance(xst, dict)
+    assert xst.get("live_price") == pytest.approx(112.5)
+
+    # 3. reconcile_venue_cycles_with_recent_orders isolates crypto vs equity variants in c_cands
+    t212_cycs = {"COIN_US_EQ": {"qty": 2.0, "avg_cost_px": 200.0, "cost_usd": 400.0, "_entry_ts_ms": 1_700_000_000_000}}
+    sell_map = reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        t212_cycs,
+        {"t212": {"COINUSDC": {"last_sell": {"price": 1.25, "qty": 2.0, "ts_ms": 1_710_000_000_000}}}},
+        {},
+        {"COIN_US_EQ": {"price": 210.0}, "COINUSDC": {"price": 1.25}},
+    )
+    assert ("t212:entry", "COINUSDC") not in sell_map
+    assert t212_cycs["COIN_US_EQ"]["qty"] == pytest.approx(2.0)
+
+
+
 
 
 

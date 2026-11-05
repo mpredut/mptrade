@@ -411,7 +411,11 @@ def harvest_kraken_xstocks(
     underlying = (xstock_cfg.get("xstock_yahoo") or "SPCX").strip().upper()
     t212_sib = f"{underlying}_US_EQ"
     alloc_px = safe_pos_float(xstock_cfg.get("xstock_alloc_price"), default=None)
-    live_px = resolve_symbol_price(listed_pair or underlying, prices_and_trends)
+    live_px = (
+        (resolve_symbol_price(listed_pair, prices_and_trends) if listed_pair else 0.0)
+        or resolve_symbol_price(t212_sib, prices_and_trends)
+        or resolve_symbol_price(underlying, prices_and_trends)
+    )
     xst_summary: Dict[str, Any] = {
         "underlying": underlying, "t212_sibling": t212_sib, "holdings": x_holdings,
         "allocated": alloc_info, "listed_pair": listed_pair, "alloc_price": alloc_px,
@@ -1131,7 +1135,9 @@ def harvest_recent_orders_and_enrich_positions(
             if pv and ps and (fb >= 0.0 or lb > 0.0):
                 held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
                 for sv in (ps, *cache_symbol_variants(ps, include_base=True)):
-                    live_held_by_venue_sym.setdefault((pv, sv.upper()), held_q)
+                    sv_k = (pv, sv.upper())
+                    if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
+                        live_held_by_venue_sym[sv_k] = held_q
     bcache_path_ro = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb_ro = _rj(bcache_path_ro) if bcache_path_ro and os.path.exists(bcache_path_ro) else None
     cached_bals_ro: Dict[str, Any] = raw_cb_ro if isinstance(raw_cb_ro, dict) else {}
@@ -1167,7 +1173,13 @@ def harvest_recent_orders_and_enrich_positions(
                 live_held_by_venue_sym[(c_venue_ro, t_sym_u)] = held_c
                 if c_venue_ro == "t212" and held_c > 1e-8:
                     t_cyc["qty"] = round(held_c, 6)
-                    t_px = resolve_symbol_price(t_sym_u, prices_and_trends)
+                    t_px = (
+                        resolve_symbol_price(
+                            t_sym_u if t_sym_u.endswith(("_EQ", "_US_EQ")) else f"{t_sym_u}_US_EQ",
+                            prices_and_trends,
+                        )
+                        or resolve_symbol_price(t_sym_u, prices_and_trends)
+                    )
                     if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
                         t_cyc["cost_usd"] = round(held_c * t_avg, 2)
                         if t_px > 0.0:
