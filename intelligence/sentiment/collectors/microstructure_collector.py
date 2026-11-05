@@ -1484,9 +1484,12 @@ def enrich_24h_and_microstructure(
                                 ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
                                 save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
                             p365_jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.jsonl")))
-                            if not os.path.exists(p365_jsonl_path) or os.path.getsize(p365_jsonl_path) < 16384:
-                                p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
-                                save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
+                            if not os.path.exists(p365_jsonl_path) and pts_5d:
+                                os.makedirs(os.path.dirname(p365_jsonl_path), exist_ok=True)
+                                with open(p365_jsonl_path, "w", encoding="utf-8") as _f365:
+                                    for _pt in pts_5d:
+                                        if isinstance(_pt, (list, tuple)) and len(_pt) >= 2:
+                                            _f365.write(f'{{"i": [{int(_pt[0])}, {_pt[1]}]}}\n')
                         except Exception:
                             pass
             except Exception:
