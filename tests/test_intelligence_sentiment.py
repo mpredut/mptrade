@@ -8152,6 +8152,20 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert vp_merged_nvda.get("vp_source") == "REAL_VOL"
     assert 184.0 <= vp_merged_nvda.get("poc_px", 0.0) <= 190.0
 
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+
+    dt_col_eq = DerivativesTelemetryCollector(cache_dir=str(cdir_eq_ohlc))
+    dt_col_eq._fetch_equity_market_context = lambda sym, now, **kw: {
+        "ticker": "RGNT",
+        "last_price": 1.24,
+        "call_oi": 0.0,
+        "put_oi": 0.0,
+        "bars": [(now - 3600.0, 1.20, 1.20, 1.20, 1.20, 500.0)],
+    }
+    rgnt_dt = dt_col_eq._fetch_equity_derivatives("RGNT_US_EQ", now_s_rec)
+    assert rgnt_dt is not None
+    assert rgnt_dt.perp_spot_basis_bps == 0.0
+
 
 
 

@@ -126,10 +126,17 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
         if mark_px <= 0.0:
             return None
-        idx_px = bars[-1][4] if bars else mark_px
         call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
         put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
         total_opt_contracts = call_oi + put_oi
+        last_bar_fresh = bool(
+            bars
+            and isinstance(bars[-1], (list, tuple))
+            and len(bars[-1]) >= 5
+            and (bar_ts_s := safe_pos_float(bars[-1][0], default=None)) is not None
+            and (now - (bar_ts_s / 1000.0 if bar_ts_s > 1e11 else bar_ts_s)) <= 360.0
+        )
+        idx_px = bars[-1][4] if (last_bar_fresh and total_opt_contracts > 0.0) else mark_px
         oi_shares = total_opt_contracts * 100.0
         oi_usd = round(oi_shares * mark_px, 2)
         call_share = (call_oi / total_opt_contracts) if total_opt_contracts > 0.0 else 0.5
