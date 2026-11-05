@@ -8111,6 +8111,75 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
     assert "ai-cid-77" not in sec_3c.split("Recent Autonomous Intents:")[-1]
 
 
+def test_iter102_pretrade_telemetry_quote_price_scope_and_micro_arb_isolation(tmp_path):
+    """Iter #102:
+    1. collect_pretrade_telemetry isolates _EQ/_US_EQ equities from crypto variants (so COINUSD never adopts COIN_US_EQ
+       price/trends/fills and COIN_US_EQ never adopts COINUSDC price/trends/fills), and does not leak foreign-quote
+       current_price from cache_short_trend.json / live_<SYM>.json into p_est["price"] on BTCEUR.
+    2. compute_cross_venue_arb_metrics, update_microstructure_cycle_deltas, and reconcile_sibling_flow_and_liq_regimes
+       isolate _EQ/_US_EQ symbols from crypto symbols.
+    """
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_cross_venue_arb_metrics,
+        reconcile_sibling_flow_and_liq_regimes,
+        update_microstructure_cycle_deltas,
+    )
+
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"COIN_US_EQ": 250.0}}),
+        encoding="utf-8",
+    )
+    (cdir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "COIN_US_EQ": {"current_price": 250.0, "slope_full": 0.005, "dynamic": {"900": {"slope_full": 0.005}}},
+                    "BTCUSDC": {"current_price": 85000.0, "slope_full": 0.002, "dynamic": {"900": {"slope_full": 0.002}}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "derivatives_telemetry_BTCUSDC.json").write_text(
+        json.dumps({"funding_rate": 0.0001, "open_interest_usd": 100_000_000.0}),
+        encoding="utf-8",
+    )
+
+    # COINUSD (crypto) must not inherit COIN_US_EQ's $250 price or slopes
+    tel_coin_crypto = collect_pretrade_telemetry("COINUSD", cachedb_dir=str(cdir))
+    assert "Dynamic Multi-Window Slopes" not in tel_coin_crypto
+
+    # BTCEUR without a EUR price on disk must inherit dimensionless slopes from BTCUSDC without leaking $85,000 USD into liquidation clusters
+    tel_btc_eur = collect_pretrade_telemetry("BTCEUR", cachedb_dir=str(cdir))
+    assert "Dynamic Multi-Window Slopes" in tel_btc_eur
+    assert "Liquidation Clusters (LONG vs SHORT)" not in tel_btc_eur
+
+    # 2. compute_cross_venue_arb_metrics and reconcile_sibling_flow_and_liq_regimes isolate COIN_US_EQ from COINUSD
+    micro_map = {
+        "COIN_US_EQ": {"ob_mid_price": 250.0, "bid_depth_usd": 50000.0, "ask_depth_usd": 50000.0, "liq_magnet_bias": "SHORT_SQUEEZE_MAGNET_UP"},
+        "COINUSD": {"ob_mid_price": 248.0, "bid_depth_usd": 10000.0, "ask_depth_usd": 10000.0, "liq_magnet_bias": "LONG_SWEEP_MAGNET_DOWN"},
+    }
+    pt_map = {"COIN_US_EQ": {"price": 250.0}, "COINUSD": {"price": 248.0}}
+    compute_cross_venue_arb_metrics("COINUSD", micro_map["COINUSD"], pt_map["COINUSD"], micro_map, pt_map)
+    assert "cross_venue_arb_bps" not in micro_map["COINUSD"]
+
+    reconcile_sibling_flow_and_liq_regimes(micro_map, pt_map)
+    assert micro_map["COINUSD"]["liq_magnet_bias"] == "LONG_SWEEP_MAGNET_DOWN"
+
+    # 3. update_microstructure_cycle_deltas does not copy COINUSD crypto history onto COIN_US_EQ
+    (cdir / "microstructure_cycle_history.json").write_text(
+        json.dumps({"COINUSD": [{"ts": 1710000000.0, "ob_imbalance": 0.40, "cvd_15m_usd": 1000.0}]}),
+        encoding="utf-8",
+    )
+    eq_micro = {"COIN_US_EQ": {"ob_imbalance": 0.60, "cvd_15m_usd": 5000.0}}
+    update_microstructure_cycle_deltas(str(cdir), eq_micro, now_ts=1710000600.0)
+    assert "cycle_delta" not in eq_micro["COIN_US_EQ"]
+
+
+
 
 
 

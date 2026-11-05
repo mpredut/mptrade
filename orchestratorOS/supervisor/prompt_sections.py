@@ -795,9 +795,10 @@ def _format_microstructure_section(
             for lk, lv in liq_lazy.items():
                 if minfo.get(lk) is None:
                     minfo[lk] = lv
-        if any(
+        if "USD" in sym_quotes_3b and any(
             other_s != sym
             and isinstance(other_m, dict)
+            and other_s.upper().endswith(("_EQ", "_US_EQ")) == sym_is_eq_3b
             and canonical_base_asset(other_s) == b_canon_3b
             and "USD" in compatible_quote_suffixes(other_s)
             for other_s, other_m in microstructure.items()
@@ -807,6 +808,7 @@ def _format_microstructure_section(
                 if (
                     other_s != sym
                     and isinstance(other_m, dict)
+                    and other_s.upper().endswith(("_EQ", "_US_EQ")) == sym_is_eq_3b
                     and canonical_base_asset(other_s) == b_canon_3b
                     and "USD" in compatible_quote_suffixes(other_s)
                 ):

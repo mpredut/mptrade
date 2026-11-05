@@ -103,8 +103,17 @@ def collect_pretrade_telemetry(
     sym_quotes = compatible_quote_suffixes(symbol)
     is_usd_sym = "USD" in sym_quotes
     is_eq_sym = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
-    sym_variants = cache_symbol_variants(symbol, include_base=True)
-    quote_variants = cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes)
+
+    def _scope_ok_variant(cand: Any) -> bool:
+        c_u = str(cand or "").strip().upper()
+        if not c_u:
+            return False
+        if not is_eq_sym:
+            return not c_u.endswith(("_EQ", "_US_EQ"))
+        return not c_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
+
+    sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]
+    quote_variants = [c for c in cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes) if _scope_ok_variant(c)]
     if (
         is_usd_sym
         and not is_eq_sym
@@ -776,14 +785,23 @@ def collect_pretrade_telemetry(
                 st_items = st_data.get("items") if isinstance(st_data.get("items"), dict) else st_data
                 if isinstance(st_items, dict):
                     st_items_map = st_items
-                if isinstance(tinfo := _first_variant_dict(st_items, sym_variants), dict):
-                    has_st_tinfo = True
-                    apply_short_trend_item(t_entry, tinfo)
+                    for cand_st in sym_variants:
+                        if isinstance(tinfo := casefold_get(st_items, cand_st), dict):
+                            has_st_tinfo = True
+                            apply_short_trend_item(
+                                t_entry,
+                                tinfo,
+                                allow_price_update=(compatible_quote_suffixes(cand_st) == sym_quotes),
+                            )
+                            break
             for cand in sym_variants:
                 if isinstance(l24 := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand}.json")), dict) and (
                     l24.get("windows") or any(wk in l24 for wk in ("90", "222", "900", "9000"))
                 ):
+                    had_t_px = t_entry.get("price") is not None
                     apply_live_24trend_windows(t_entry, l24)
+                    if not had_t_px and compatible_quote_suffixes(cand) != sym_quotes:
+                        t_entry.pop("price", None)
                     if abs(safe_float(t_entry.get("slope_90s"), 0.0)) < 5e-8:
                         for cand_sib in sym_variants:
                             if cand_sib == cand:
@@ -854,6 +872,8 @@ def collect_pretrade_telemetry(
                     t_entry.pop(k_stale_s, None)
         except Exception:
             pass
+        if (not cur_px_est or cur_px_est <= 0.0) and (t_px_est := safe_pos_float(t_entry.get("price"), default=None)) is not None:
+            cur_px_est = t_px_est
 
         if cur_m_info:
             if cur_m_info.get("spread_bps") is not None:
@@ -863,7 +883,7 @@ def collect_pretrade_telemetry(
             if d1_b > 0.0 or d1_a > 0.0:
                 slip_s = f", est_slip_2k={cur_m_info['est_slip_2k_bps']} bps" if cur_m_info.get("est_slip_2k_bps") is not None else ""
                 telemetry["Orderbook Depth Within 1%"] = f"bid=${d1_b:,.0f} / ask=${d1_a:,.0f}{slip_s}"
-            p_est: Dict[str, Any] = {k: v for k, v in t_entry.items() if v is not None}
+            p_est: Dict[str, Any] = {k: v for k, v in t_entry.items() if v is not None and k != "price"}
             if cur_px_est and cur_px_est > 0:
                 p_est["price"] = cur_px_est
             if m7d and not is_sub24h_dup_7d:

@@ -367,12 +367,14 @@ def compute_cross_venue_arb_metrics(
     if not (own_px and own_px > 0.0 and "USD" in msym_quotes):
         return
     mbase = canonical_base_asset(msym)
+    msym_is_eq = str(msym).strip().upper().endswith(("_EQ", "_US_EQ"))
     own_v, _, own_taker, own_hsp = _infer_symbol_venue_and_fees_bps(msym, minfo)
     peer_candidates = [
         (peer_sym, peer_m)
         for peer_sym, peer_m in microstructure.items()
         if peer_sym != msym
         and isinstance(peer_m, dict)
+        and str(peer_sym).strip().upper().endswith(("_EQ", "_US_EQ")) == msym_is_eq
         and canonical_base_asset(peer_sym) == mbase
         and "USD" in compatible_quote_suffixes(peer_sym)
     ]
@@ -484,7 +486,10 @@ def update_microstructure_cycle_deltas(
         h_list = own_h_list
         used_variant_hist = False
         if not h_list:
+            msym_is_eq_h = str(msym).strip().upper().endswith(("_EQ", "_US_EQ"))
             for ck in cache_symbol_variants(msym, include_base=True):
+                if str(ck or "").strip().upper().endswith(("_EQ", "_US_EQ")) != msym_is_eq_h:
+                    continue
                 if h_list := _clean_hist_list(casefold_get(orig_mhist, ck)):
                     used_variant_hist = True
                     break
@@ -911,7 +916,8 @@ def reconcile_sibling_flow_and_liq_regimes(
     usd_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for msym, minfo in microstructure.items():
         if isinstance(minfo, dict) and "USD" in compatible_quote_suffixes(msym):
-            usd_groups.setdefault(canonical_base_asset(msym), []).append((msym, minfo))
+            grp_k = f"EQ:{canonical_base_asset(msym)}" if str(msym).strip().upper().endswith(("_EQ", "_US_EQ")) else canonical_base_asset(msym)
+            usd_groups.setdefault(grp_k, []).append((msym, minfo))
     for _, grp in usd_groups.items():
         if len(grp) < 2:
             continue
