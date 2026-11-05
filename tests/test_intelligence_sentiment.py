@@ -7865,4 +7865,45 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert itv_deesc_res == 0.0
     assert rsn_deesc_res == "fresh_high_sev_after_90m_deescalation"
 
+    # 10. enrich_24h_and_microstructure caps stale T212 position ts against cur_p_items and folds sparse (<15m) post-gap premarket stubs
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+
+    cdir_rgnt_gap = tmp_path / "cachedb_rgnt_gap"
+    (cdir_rgnt_gap / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir_rgnt_gap / "state").mkdir(parents=True, exist_ok=True)
+    rth_end_ms = int((now_s_rec - 16.0 * 3600.0) * 1000)
+    rgnt_gap_bars = [
+        [rth_end_ms - (30 - i) * 300_000, round(1.38 - (i % 5) * 0.01, 4), 600.0]
+        for i in range(30)
+    ] + [
+        [rth_end_ms, 1.32, 708.0],
+        [int((now_s_rec - 300.0) * 1000), 1.27, 0.0],
+        [int((now_s_rec - 97.0) * 1000), 1.27, 0.0],
+    ]
+    (cdir_rgnt_gap / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_gap_bars}}),
+        encoding="utf-8",
+    )
+    (cdir_rgnt_gap / "state" / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:RGNT_US_EQ": {
+                    "symbol": "RGNT_US_EQ",
+                    "free": 122.51,
+                    "price": 1.27,
+                    "ts": now_s_rec - 60.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_rgnt_gap = {"RGNT_US_EQ": {"price": 1.32, "trend": 0, "growth_coefficient": 0.0}}
+    cur_p_rgnt = {"RGNT_US_EQ": [[rth_end_ms, 1.32]]}
+    enrich_24h_and_microstructure(str(cdir_rgnt_gap), str(tmp_path), pt_rgnt_gap, {}, cur_p_rgnt, {}, now_s_rec)
+    assert pt_rgnt_gap["RGNT_US_EQ"]["price"] == 1.27
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_15m_pct") is not None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_1h_pct") is not None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("slope_15m") is not None
+
+
 

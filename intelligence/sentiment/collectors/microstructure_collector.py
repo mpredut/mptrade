@@ -369,6 +369,20 @@ def load_symbol_price_series(
     def _strip_off_rth_flat_poller_tail(rows: list) -> list:
         if not is_eq_sym_load or len(rows) < 3:
             return rows
+        if len(rows) >= 10:
+            for split_idx in range(len(rows) - 1, max(4, len(rows) - 4), -1):
+                p_prev = _parse_ts_px_row(rows[split_idx - 1])
+                p_cur = _parse_ts_px_row(rows[split_idx])
+                p_last = _parse_ts_px_row(rows[-1])
+                if (
+                    p_prev is not None
+                    and p_cur is not None
+                    and p_last is not None
+                    and (p_cur[0] - p_prev[0]) > 2 * 3600 * 1000
+                    and (p_last[0] - p_cur[0]) < 15 * 60 * 1000
+                ):
+                    rows = rows[:split_idx]
+                    break
         last_ohlc_idx = max(
             (i for i, r in enumerate(rows) if isinstance(r, (list, tuple)) and len(r) >= 3),
             default=-1,
@@ -1013,6 +1027,9 @@ def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
     return out
 
 
+_LAST_T212_PORTFOLIO_POLL_TS: float = 0.0
+
+
 def _refresh_stale_t212_cached_positions(
     cached_bals: Dict[str, Any],
     bcache_path: Optional[str],
@@ -1021,6 +1038,7 @@ def _refresh_stale_t212_cached_positions(
     max_age_sec: float = 180.0,
 ) -> bool:
     """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in `cached_bals` from Trading212 live portfolio."""
+    global _LAST_T212_PORTFOLIO_POLL_TS
     if (
         "PYTEST_CURRENT_TEST" in os.environ
         or not isinstance(cached_bals, dict)
@@ -1036,12 +1054,13 @@ def _refresh_stale_t212_cached_positions(
     if not t212_ts_vals:
         return False
     max_t212_ts = max(t212_ts_vals)
-    if max_t212_ts <= 0.0 or (now_ts - max_t212_ts) < max_age_sec:
+    if max_t212_ts <= 0.0 or (now_ts - max(max_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
         return False
     try:
         from providers.t212_provider import T212Provider
         from state_io import save_json_state
 
+        _LAST_T212_PORTFOLIO_POLL_TS = now_ts
         t212_rows = T212Provider()._client().get_portfolio()
         if not isinstance(t212_rows, list) or not t212_rows:
             return False
@@ -1052,15 +1071,19 @@ def _refresh_stale_t212_cached_positions(
             rticker = str(row.get("ticker") or "").strip().upper()
             cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
             if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(f"pos:t212:{rticker}"), dict):
-                c_free = safe_pos_float(
-                    c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
-                    default=0.0,
-                ) or 0.0
-                c_pos["price"] = round(cur_px_r, 4)
-                if c_free > 0.0:
-                    c_pos["value_usd"] = round(c_free * cur_px_r, 2)
-                c_pos["ts"] = now_ts
-                t212_dirty = True
+                prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
+                prev_c_ts = safe_pos_float(c_pos.get("ts"), default=None)
+                new_c_px = round(cur_px_r, 4)
+                if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or prev_c_ts is None:
+                    c_free = safe_pos_float(
+                        c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
+                        default=0.0,
+                    ) or 0.0
+                    c_pos["price"] = new_c_px
+                    if c_free > 0.0:
+                        c_pos["value_usd"] = round(c_free * cur_px_r, 2)
+                    c_pos["ts"] = now_ts
+                    t212_dirty = True
         if t212_dirty:
             save_json_state(bcache_path, cached_bals, indent=2)
         return t212_dirty
@@ -1117,13 +1140,33 @@ def enrich_24h_and_microstructure(
         if cached_t212_px is not None:
             cached_t212_px = round(cached_t212_px, 4)
         pos_ts_val = safe_pos_float(cached_pos.get("ts") if isinstance(cached_pos, dict) else None, default=None)
+        cp_raw = cur_p_items.get(ticker) if isinstance(cur_p_items, dict) else None
+        cp_pt = _parse_ts_px_row(cp_raw[-1]) if isinstance(cp_raw, list) and cp_raw else None
+        if (
+            pos_ts_val is not None
+            and cached_t212_px is not None
+            and cp_pt is not None
+            and cp_pt[0] > 1e11
+            and abs(cached_t212_px - round(cp_pt[1], 4)) < 1e-4
+        ):
+            cp_ts_sec = cp_pt[0] / 1000.0
+            if 0.0 < cp_ts_sec < pos_ts_val:
+                pos_ts_val = cp_ts_sec
         if pos_ts_val is not None:
             t212_pos_ts[ticker] = pos_ts_val
         elif "PYTEST_CURRENT_TEST" in os.environ and bcache_mtime > 0.0:
             t212_pos_ts[ticker] = bcache_mtime
         t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
+        cur_t_px = safe_pos_float(t_entry.get("price"), default=0.0) or 0.0
         if cached_t212_px is not None and (
-            ticker not in inst_by_sym or (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0
+            ticker not in inst_by_sym
+            or cur_t_px <= 0.0
+            or abs(round(cur_t_px, 4) - cached_t212_px) < 1e-4
+            or (
+                cp_pt is not None
+                and abs(round(cur_t_px, 4) - round(cp_pt[1], 4)) < 1e-4
+                and (pos_ts_val or 0.0) > (cp_pt[0] / 1000.0)
+            )
         ):
             t_entry["price"] = cached_t212_px
             t212_seeded_from_cache.add(ticker)
@@ -1164,12 +1207,12 @@ def enrich_24h_and_microstructure(
                 and last_24_pt is not None
                 and last_24_px > 0.0
                 and last_24_pt[0] > 1e11
-                and (eff_t212_ts <= 0.0 or (last_24_pt[0] / 1000.0) > eff_t212_ts)
                 and (int(now_ts * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
                 and not _prices_diverged(sym_px_cur, last_24_px)
                 and (
-                    (eff_t212_ts > 0.0 and (last_24_pt[0] / 1000.0) > eff_t212_ts)
-                    or abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
+                    eff_t212_ts <= 0.0
+                    or (last_24_pt[0] / 1000.0) > eff_t212_ts
+                    or abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) > 0.005
                 )
             ):
                 prices_and_trends[sym]["price"] = sym_px_cur = round(last_24_px, 4)
@@ -1424,23 +1467,29 @@ def enrich_24h_and_microstructure(
                 if pts_5d:
                     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
                     now_ms_i = int(now_ts * 1000)
+                    raw_last_5d_ts = pts_5d[-1][0]
+                    if len(pts_5d) >= 10:
+                        for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):
+                            if (
+                                (pts_5d[split_idx][0] - pts_5d[split_idx - 1][0]) > 2 * 3600 * 1000
+                                and (pts_5d[-1][0] - pts_5d[split_idx][0]) < 15 * 60 * 1000
+                            ):
+                                pts_5d = pts_5d[:split_idx]
+                                break
                     rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                    chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
                     if chart_px > 0.0 and (
                         sym_px_cur <= 0.0
                         or abs(sym_px_cur - chart_px) < 1e-4
                         or (
                             (not is_t212_inst or ("PYTEST_CURRENT_TEST" not in os.environ and eq_cache_stale))
-                            and rth_bar_fresh
+                            and chart_tick_fresh
                             and not _prices_diverged(sym_px_cur, chart_px)
                             and (
                                 sym not in t212_seeded_from_cache
-                                or (
-                                    (t212_pos_ts.get(sym, 0.0) <= 0.0 or (pts_5d[-1][0] / 1000.0) > t212_pos_ts.get(sym, 0.0))
-                                    and (
-                                        (t212_pos_ts.get(sym, 0.0) > 0.0 and (pts_5d[-1][0] / 1000.0) > t212_pos_ts.get(sym, 0.0))
-                                        or abs(sym_px_cur - chart_px) / max(sym_px_cur, chart_px) <= 0.005
-                                    )
-                                )
+                                or t212_pos_ts.get(sym, 0.0) <= 0.0
+                                or (raw_last_5d_ts / 1000.0) > t212_pos_ts.get(sym, 0.0)
+                                or abs(sym_px_cur - chart_px) / max(sym_px_cur, chart_px) > 0.005
                             )
                         )
                     ):
