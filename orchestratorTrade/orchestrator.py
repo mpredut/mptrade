@@ -62,6 +62,7 @@ class BotManager:
         if self.zombie_cooldown_sec < 0:
             raise ValueError(f"Invalid ORCHESTRATOR_ZOMBIE_COOLDOWN_SEC: {self.zombie_cooldown_sec!r}")
         self._shutting_down = False
+        self._reloading = False
 
     @staticmethod
     def _resolve_venv() -> str:
@@ -284,7 +285,7 @@ class BotManager:
         self._shutting_down = True
         logging.info("Shutting down all bots gracefully...")
         self.running = False
-        for name in list(self.processes.keys()):
+        for name in reversed(list(self.processes.keys())):
             await self.stop_bot(name)
             self.processes.pop(name, None)
 
@@ -380,8 +381,12 @@ class BotManager:
 
             await self._reload_runtime_modules_and_manifest()
 
-            for name in list(self.processes.keys()):
-                await self.restart_bot(name)
+            self._reloading = True
+            try:
+                for name in reversed(list(self.processes.keys())):
+                    await self.restart_bot(name)
+            finally:
+                self._reloading = False
 
     async def supervise(self):
         try:
@@ -423,6 +428,8 @@ class BotManager:
                     continue
                 proc = self.processes.get(name)
                 if proc is None or proc.returncode is not None:
+                    if getattr(self, "_reloading", False):
+                        continue
                     next_allowed = self.restart_backoff.get(name, 0)
                     if next_allowed > now + 65.0:
                         next_allowed = now

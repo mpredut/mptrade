@@ -325,6 +325,21 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
                 [os.path.join(tmp, "cachedb/system/heartbeat/order_retry.heartbeat")],
             )
 
+    async def test_shutdown_stops_processes_in_reverse_dependency_order(self):
+        stop_order = []
+
+        async def _fake_stop(name, sig=None):
+            stop_order.append(name)
+
+        self.manager.processes["cacheManager"] = MagicMock()
+        self.manager.processes["tradeall"] = MagicMock()
+        self.manager.processes["rtrade"] = MagicMock()
+        self.manager.stop_bot = _fake_stop
+
+        await self.manager.shutdown()
+        self.assertEqual(stop_order, ["rtrade", "tradeall", "cacheManager"])
+        self.assertEqual(self.manager.processes, {})
+
 
 if __name__ == "__main__":
     unittest.main()

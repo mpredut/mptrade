@@ -154,7 +154,7 @@ def drawPriceLst(timestamps, prices, trend_block_indices, symbol, trend_directio
 
     ax.set_xlabel('Time')
     ax.set_ylabel('Price')
-    ax.set_title(f"{symbol} - Trend {trend_direction}, durata {duration_hours:.2f}h")
+    ax.set_title(f"{symbol} - Trend {trend_direction}, duration {duration_hours:.2f}h")
     ax.legend()
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
     fig.autofmt_xdate()
@@ -395,7 +395,7 @@ def getTrendLongTerm(symbol: str, window_hours: int = 24, step_hours: int = 8,
     window = max(1, min(int(round(points_per_hour * window_hours)), len(prices))) # Points per window.
     step = max(1, int(round(points_per_hour * step_hours)))     # Points per step.
     
-    _dbg(f"[DEBUG] {symbol}: numar puncte={len(prices)}, window={window}, step={step}, delta(s)={delta}")
+    _dbg(f"[DEBUG] {symbol}: point count={len(prices)}, window={window}, step={step}, delta(s)={delta}")
     _dbg(f"[DEBUG] {symbol}: window count={len(prices)/window}, step count in price {len(prices)/step}")
     _dbg(f"[DEBUG] {symbol}: slope_tolerance={slope_tolerance}")
  
@@ -909,16 +909,14 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f" No trend in cache for symbol {symbol}.")
         return None
 
+    est = None
     if T_quanta is None:
         try:
             est = estimate_T(symbol)
             T_quanta = est["T"]
-            print(f"[{symbol}] T AUTO (empiric hibrid): {T_quanta} zile  "
-                  f"(n={est['n']} episoade, w_empiric={est['w']}, "
-                  f"mediana={est.get('median_d')}z, P90={est.get('p90_d')}z)")
         except Exception as e:
             T_quanta = 14
-            print(f"[{symbol}] estimarea T failed ({e}) — using the prior T=14")
+            print(f"[{symbol}] T estimation failed ({e}) — using the prior T=14")
 
     dur_sec = safe_pos_float(trend.get("duration_seconds"), default=None)
     t_quanta_f = safe_pos_float(T_quanta, default=None)
@@ -933,9 +931,6 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
 
     duration_days = dur_sec / 86400.0
     start_ts_val = safe_float(trend.get("start_timestamp"), default=0.0)
-    print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
-    print(f"   Start trend:     {format_timestamp(start_ts_val)}")
-    print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
     timestamp = safe_pos_float(trend.get("timestamp"), default=None)
     # Include order type, T, and direction in the memo key because their weights differ
     # and automatic T or direction may change after re-estimation.
@@ -960,6 +955,16 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
             print(f"not new timestamp (age={cache_age:.1f}s), use weight from mem cache.")
             return float(cached_w[0])
 
+    if isinstance(est, dict):
+        print(
+            f"[{symbol}] T AUTO (empirical hybrid): {T_quanta} days  "
+            f"(n={est['n']} episodes, w_empirical={est['w']}, "
+            f"median={est.get('median_d')}d, P90={est.get('p90_d')}d)"
+        )
+    print(f"Trend read from the cache manager for symbol {symbol}: {trend}")
+    print(f"   Start trend:     {format_timestamp(start_ts_val)}")
+    print(f"   Duration:        {format_duration(dur_sec)} ({duration_days:.1f} days)")
+
     trend_len_quanta = dur_sec / quant_sec_f
     if safe_pos_float(trend_len_quanta, default=None) is None:
         print(f"[{symbol}] duration_seconds invalid, return None")
@@ -982,8 +987,8 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
         print(f"[{symbol}] Invalid weight: {current_weight}, returning None")
         return None
 
-    print(f"[{symbol}] primele 5 ponderi: {w[:5]}")
-    print(f"Suma tuturor {len(w)} ponderi = {w.sum():.4f}")
+    print(f"[{symbol}] first 5 weights: {w[:5]}")
+    print(f"Sum of all {len(w)} weights = {w.sum():.4f}")
 
     if _parse_bool_flag(draw, False):
         plt.plot(t, w, label=symbol)
@@ -1043,7 +1048,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
     # Zone 2: an over-age but persistent trend has strong aligned momentum.
     if T < trend_len <= T_extended:
         w_val = 0.86 if aligned else max_against_trend
-        _dbg(f"[DEBUG] Zona 2: trend_len={trend_len:.2f} exceeds T={T} but is below T_extended={T_extended}. Aligned={aligned}, return {w_val}  ")
+        _dbg(f"[DEBUG] Zone 2: trend_len={trend_len:.2f} exceeds T={T} but is below T_extended={T_extended}. Aligned={aligned}, return {w_val}  ")
         return np.array([0.0]), np.array([w_val])
 
     # Zone 3: use conservative weights in both directions for a very old trend.
@@ -1071,7 +1076,7 @@ def get_trade_weight(T, trend_len, trend, order_type,
         w01_full = w01_full.copy()
         w01_full[peak_i:] = 1.0
     t_seq, w01 = t_full[idx:], w01_full[idx:]
-    _dbg(f"[DEBUG] Zona 1: trend_len={trend_len:.2f}, slice from idx={idx} up to T={T}. Aligned={aligned}, gauss01[0]={w01[0]:.4f}")
+    _dbg(f"[DEBUG] Zone 1: trend_len={trend_len:.2f}, slice from idx={idx} up to T={T}. Aligned={aligned}, gauss01[0]={w01[0]:.4f}")
 
     if aligned:
         w_seq = w01 * peak_weight
