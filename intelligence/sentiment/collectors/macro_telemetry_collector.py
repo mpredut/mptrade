@@ -651,6 +651,10 @@ def harvest_portfolio_and_venue_cycles(
     if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
         av_inner = last_av["i"]
         portfolio_summary["total_value_usdc"] = av_inner.get("total_value_usdc")
+        if isinstance(av_inner.get("venues_usd"), dict) and av_inner["venues_usd"]:
+            portfolio_summary["venues_value_usd"] = av_inner["venues_usd"]
+        if av_inner.get("portfolio_total_usd") is not None:
+            portfolio_summary["portfolio_total_usd"] = av_inner.get("portfolio_total_usd")
         av_ts_s = normalize_epoch_sec(
             extract_timestamp_s(last_av)
             or extract_timestamp_s(av_inner)

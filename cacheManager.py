@@ -2985,6 +2985,56 @@ class CacheAssetValueManager(CacheManagerInterface):
                 last_times[symbol] = max(0, int(max_ts_sec * 1000) - 60_000)
         return last_times
 
+    def _resolve_venue_balances_usd(self, binance_total_val: float) -> dict[str, float]:
+        try:
+            fdir = os.path.dirname(os.path.abspath(str(self.filename or "")))
+            if os.path.basename(fdir) in ("orders", "prices", "state", "trends", "telemetry", "macro", "system"):
+                cache_root = os.path.dirname(fdir)
+            else:
+                cache_root = fdir
+            vb_data = None
+            for cand in (
+                os.path.join(cache_root, "state", "venue_balances_state.json"),
+                os.path.join(cache_root, "venue_balances_state.json"),
+            ):
+                if os.path.isfile(cand):
+                    vb_data = read_json_dict(cand, default=None)
+                    if isinstance(vb_data, dict) and vb_data:
+                        break
+            if not isinstance(vb_data, dict) or not vb_data:
+                return {}
+            other_venues: dict[str, float] = {}
+            for key, entry in vb_data.items():
+                if not isinstance(key, str) or not isinstance(entry, dict):
+                    continue
+                if key.startswith("cash:"):
+                    parts = key.split(":", 2)
+                    venue = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
+                    if not venue or venue == "binance":
+                        continue
+                    amt = (safe_nonneg_float(entry.get("free"), 0.0) or 0.0) + (
+                        safe_nonneg_float(entry.get("locked_quote_usd"), 0.0) or 0.0
+                    )
+                    other_venues[venue] = other_venues.get(venue, 0.0) + amt
+                elif key.startswith("pos:"):
+                    parts = key.split(":", 2)
+                    venue = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
+                    if not venue or venue == "binance":
+                        continue
+                    amt = (safe_nonneg_float(entry.get("value_usd"), 0.0) or 0.0) + (
+                        safe_nonneg_float(entry.get("locked_base_usd"), 0.0) or 0.0
+                    )
+                    other_venues[venue] = other_venues.get(venue, 0.0) + amt
+            if not other_venues:
+                return {}
+            venues_usd: dict[str, float] = {"binance": round(binance_total_val, 2)}
+            for venue in sorted(other_venues):
+                if other_venues[venue] > 0:
+                    venues_usd[venue] = round(other_venues[venue], 2)
+            return venues_usd if len(venues_usd) > 1 else {}
+        except Exception:
+            return {}
+
     def get_remote_items(self, symbol, startTime):
         try:
             total_usdc = self.api_client.get_total_assets_value_usdc(use_cache=False, raise_errors=True)
@@ -2996,13 +3046,17 @@ class CacheAssetValueManager(CacheManagerInterface):
         if total_val is None:
             print(f"[{self.cls_name}][Error] Invalid total value: {total_usdc}")
             return []
-            
+
         now_sec = int(time.time())
         snapshot = {
             "timestamp": now_sec,
             "datetime_local": datetime.now().isoformat(timespec="seconds"),
             "total_value_usdc": round(total_val, 8),
         }
+        venues_usd = self._resolve_venue_balances_usd(total_val)
+        if venues_usd:
+            snapshot["venues_usd"] = venues_usd
+            snapshot["portfolio_total_usd"] = round(sum(venues_usd.values()), 2)
         return [snapshot]
 
 

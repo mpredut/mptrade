@@ -940,6 +940,33 @@ class TestCacheAssetValueManager(unittest.TestCase):
             self.assertEqual(mgr.cache["TOTAL"][-1].get("total_value_usdc"), 2345.6)
             self.assertNotIn("total_value_usdt", mgr.cache["TOTAL"][-1])
 
+        with self.subTest(msg="multi_venue_balances_enriched_in_snapshot"):
+            orders_dir = os.path.join(self.tmp, "orders")
+            state_dir = os.path.join(self.tmp, "state")
+            os.makedirs(orders_dir, exist_ok=True)
+            os.makedirs(state_dir, exist_ok=True)
+            vb_path = os.path.join(state_dir, "venue_balances_state.json")
+            with open(vb_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "cash:kraken:USD": {"venue": "kraken", "asset": "USD", "free": 500.0, "locked_quote_usd": 100.0},
+                        "pos:kraken:HYPEUSD": {"venue": "kraken", "symbol": "HYPEUSD", "value_usd": 300.0, "locked_base_usd": 50.0},
+                        "cash:t212:USD": {"venue": "t212", "asset": "USD", "free": 14.0},
+                        "pos:t212:NVDA_US_EQ": {"venue": "t212", "symbol": "NVDA_US_EQ", "value_usd": 86.0},
+                    },
+                    handle,
+                )
+            api_mock = MagicMock()
+            api_mock.get_total_assets_value_usdc.return_value = 2000.0
+            av_file = os.path.join(orders_dir, "cache_asset_value.jsonl")
+            mgr = cm.CacheAssetValueManager(9999, ["TOTAL"], av_file, api_client=api_mock)
+            items = mgr.get_remote_items("TOTAL", 0)
+            self.assertEqual(len(items), 1)
+            snap = items[0]
+            self.assertEqual(snap["total_value_usdc"], 2000.0)
+            self.assertEqual(snap["venues_usd"], {"binance": 2000.0, "kraken": 950.0, "t212": 100.0})
+            self.assertEqual(snap["portfolio_total_usd"], 3050.0)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. CacheCurrentPriceManager
