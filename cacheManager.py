@@ -3841,28 +3841,47 @@ if __name__ == "__main__":
     finally:
         account_cache_health.disable_writer()
         print("Cleanup / releasing resources...")
+        shutdown_deadline = time.monotonic() + 2.5
         try:
             from binance_api import bapi_ws as _bws
             _bws_mgr = getattr(_bws, "bapi_ws_manager", None)
         except Exception:
             _bws_mgr = None
+        # Signal all stop events up front so no periodic loop (such as 24Price) starts
+        # a new disk flush while earlier components are being joined.
         for _ws_obj in (_ws_bridge, _bws_mgr):
             if _ws_obj is not None and hasattr(_ws_obj, "_stop_event"):
                 try:
                     _ws_obj._stop_event.set()
                 except Exception:
                     pass
+        if _nb_poller is not None and hasattr(_nb_poller, "stop_event"):
+            _nb_poller.stop_event.set()
+            for _nb_ws in getattr(_nb_poller, "ws_streams", ()):
+                if hasattr(_nb_ws, "_stop_event"):
+                    try:
+                        _nb_ws._stop_event.set()
+                    except Exception:
+                        pass
+        if _trend_mgr is not None and hasattr(_trend_mgr, "_stop_event"):
+            _trend_mgr._stop_event.set()
+        for _inst in list(CacheFactory._instances.values()):
+            for _mgr in CacheFactory._iter_managers(_inst):
+                if hasattr(_mgr, "_stop_event"):
+                    _mgr._stop_event.set()
+        if _current_price_instance is not None and hasattr(_current_price_instance, "_stop_event"):
+            _current_price_instance._stop_event.set()
         if _nb_poller is not None:
-            _nb_poller.stop(timeout=0.5)
+            _nb_poller.stop(timeout=min(0.5, max(0.05, shutdown_deadline - time.monotonic())))
         if _trend_mgr is not None:
-            _trend_mgr.shutdown(timeout=1.0)
-        CacheFactory.shutdown_all(timeout=1.0)
+            _trend_mgr.shutdown(timeout=min(0.8, max(0.05, shutdown_deadline - time.monotonic())))
+        CacheFactory.shutdown_all(timeout=min(1.0, max(0.05, shutdown_deadline - time.monotonic())))
         if _current_price_instance is not None:
-            _current_price_instance.shutdown(timeout=0.5)
+            _current_price_instance.shutdown(timeout=min(0.3, max(0.05, shutdown_deadline - time.monotonic())))
         for _ws_obj in (_ws_bridge, _bws_mgr):
             if _ws_obj is not None:
                 try:
-                    _ws_obj.stop(timeout=0.5)
+                    _ws_obj.stop(timeout=min(0.3, max(0.05, shutdown_deadline - time.monotonic())))
                 except Exception:
                     pass
         from binance_api import bapi_client

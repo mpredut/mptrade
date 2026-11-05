@@ -2127,7 +2127,11 @@ class _NonBinanceTrendPoller:
                     stop_ev.set()
             except Exception:
                 pass
-        ws_budget = min(2.0, float(timeout or 2.0))
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        if eff_timeout is None:
+            eff_timeout = 5.0
+        total_deadline = time.monotonic() + eff_timeout
+        ws_budget = min(2.0, eff_timeout)
         ws_deadline = time.monotonic() + ws_budget
         for ws in self.ws_streams:
             try:
@@ -2136,7 +2140,7 @@ class _NonBinanceTrendPoller:
             except Exception:
                 pass
         if self.thread is not threading.current_thread():
-            self.thread.join(timeout=timeout)
+            self.thread.join(timeout=max(0.0, total_deadline - time.monotonic()))
         self.pool.shutdown(wait=False, cancel_futures=True)
         try:
             for th in list(getattr(self.pool, "_threads", ())):
