@@ -7426,3 +7426,59 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert iv_w12 <= 300.0
     assert "btc_whale_flow_regime_flip_0.69_to_0.98" in rsn_w12
 
+    # 3. reconcile_sibling_flow_and_liq_regimes & update_microstructure_cycle_deltas unify shared perp OI and liq USD across USD siblings
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        reconcile_sibling_flow_and_liq_regimes,
+        update_microstructure_cycle_deltas,
+    )
+
+    m_tao = {
+        "TAOUSDC": {
+            "ob_mid_price": 235.55,
+            "ob_imbalance": 0.674,
+            "bid_depth_usd": 199619.0,
+            "ask_depth_usd": 96506.0,
+            "oi_usd": 53007961.68,
+            "oi_1h_chg_pct": -0.13,
+            "cvd_15m_usd": 119951.0,
+            "long_liq_usd": 485000.0,
+            "short_liq_usd": 255600.0,
+            "long_liq_deep_usd": 831500.0,
+            "short_liq_deep_usd": 438200.0,
+            "liq_magnet_bias": "SHORT_SQUEEZE_MAGNET_UP",
+        },
+        "TAOUSD": {
+            "ob_mid_price": 235.63,
+            "ob_imbalance": 0.581,
+            "bid_depth_usd": 672893.0,
+            "ask_depth_usd": 486217.0,
+            "oi_usd": 53057438.52,
+            "oi_1h_chg_pct": -0.13,
+            "cvd_15m_usd": 119951.0,
+            "long_liq_usd": 485500.0,
+            "short_liq_usd": 255900.0,
+            "long_liq_deep_usd": 832200.0,
+            "short_liq_deep_usd": 438700.0,
+            "liq_magnet_bias": "SHORT_SQUEEZE_MAGNET_UP",
+        },
+    }
+    reconcile_sibling_flow_and_liq_regimes(m_tao, {"TAOUSDC": {"price": 235.55}, "TAOUSD": {"price": 235.63}})
+    assert m_tao["TAOUSD"]["oi_usd"] == 53007961.68
+    assert m_tao["TAOUSD"]["long_liq_usd"] == 485000.0
+    assert m_tao["TAOUSD"]["short_liq_usd"] == 255600.0
+    cdir_tao = tmp_path / "cachedb_tao_cd"
+    cdir_tao.mkdir(parents=True, exist_ok=True)
+    (cdir_tao / "microstructure_cycle_history.json").write_text(
+        json.dumps(
+            {
+                "TAOUSDC": [{"ts": 1_793_866_320.0, "ob_imbalance": 0.637, "cvd_15m_usd": 254362.0, "oi_usd": 52878324.1}],
+                "TAOUSD": [{"ts": 1_793_866_320.0, "ob_imbalance": 0.569, "cvd_15m_usd": 254362.0, "oi_usd": 52877862.19}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_microstructure_cycle_deltas(str(cdir_tao), m_tao, now_ts=1_793_866_750.0)
+    assert m_tao["TAOUSD"]["cycle_delta"]["oi_delta_pct"] == m_tao["TAOUSDC"]["cycle_delta"]["oi_delta_pct"]
+    assert m_tao["TAOUSD"]["cycle_delta"]["ob_imbalance_delta"] != m_tao["TAOUSDC"]["cycle_delta"]["ob_imbalance_delta"]
+
+

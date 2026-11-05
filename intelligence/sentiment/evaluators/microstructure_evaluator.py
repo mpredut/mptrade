@@ -742,6 +742,35 @@ def update_microstructure_cycle_deltas(
                     new_rec[k_rec] = round(v_rec, dec_r)
             mhist[msym] = [x for x in own_h_list if eff_now - float(x["ts"]) <= 14400.0][-11:] + [new_rec]
             mhist_dirty = True
+    usd_delta_groups: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    for msym, minfo in microstructure.items():
+        if isinstance(minfo, dict) and isinstance(minfo.get("cycle_delta"), dict) and "USD" in compatible_quote_suffixes(msym):
+            grp_k = f"EQ:{canonical_base_asset(msym)}" if str(msym).strip().upper().endswith(("_EQ", "_US_EQ")) else canonical_base_asset(msym)
+            usd_delta_groups.setdefault(grp_k, []).append((msym, minfo))
+    for grp_items in usd_delta_groups.values():
+        if len(grp_items) < 2:
+            continue
+        grp_items.sort(key=lambda kv: (0 if str(kv[0]).upper().endswith("USDC") else 1, str(kv[0]).upper()))
+        _, prim_m_d = grp_items[0]
+        prim_cd = prim_m_d.get("cycle_delta")
+        if not isinstance(prim_cd, dict):
+            continue
+        prim_oi_d = safe_pos_float(prim_m_d.get("oi_usd"), default=None)
+        for _, sib_m_d in grp_items[1:]:
+            sib_cd = sib_m_d.get("cycle_delta")
+            sib_oi_d = safe_pos_float(sib_m_d.get("oi_usd"), default=None)
+            if (
+                isinstance(sib_cd, dict)
+                and prim_oi_d is not None
+                and sib_oi_d is not None
+                and abs(prim_oi_d - sib_oi_d) / max(prim_oi_d, sib_oi_d) <= 0.05
+            ):
+                for shared_dk in (
+                    "oi_delta_pct", "prev_oi_usd", "cvd_15m_delta_usd", "prev_cvd_15m_usd",
+                    "whale_long_delta_pct", "prev_whale_long_pct", "taker_ratio_delta", "prev_taker_ratio",
+                ):
+                    if shared_dk in prim_cd:
+                        sib_cd[shared_dk] = prim_cd[shared_dk]
     if mhist_dirty and ("PYTEST_CURRENT_TEST" not in os.environ or not is_repo_cachedb):
         try:
             os.makedirs(os.path.dirname(os.path.abspath(mhist_path)), exist_ok=True)
@@ -1163,7 +1192,20 @@ def reconcile_sibling_flow_and_liq_regimes(
             if (has_pos_sp and has_neg_sp) or prim_flow_reg == "BALANCED_CROSS_VENUE_FLOW"
             else prim_flow_reg
         )
+        prim_oi_val = safe_pos_float(prim_m.get("oi_usd"), default=None)
         for _, m_sib in non_div:
+            sib_oi_val = safe_pos_float(m_sib.get("oi_usd"), default=None)
+            if (
+                prim_oi_val is not None
+                and sib_oi_val is not None
+                and abs(prim_oi_val - sib_oi_val) / max(prim_oi_val, sib_oi_val) <= 0.05
+            ):
+                for shared_oi_k in (
+                    "oi_usd", "native_l1_oi_usd", "oi_1h_chg_pct",
+                    "long_liq_usd", "short_liq_usd", "long_liq_deep_usd", "short_liq_deep_usd",
+                ):
+                    if prim_m.get(shared_oi_k) is not None:
+                        m_sib[shared_oi_k] = prim_m[shared_oi_k]
             if prim_mag and m_sib.get("liq_magnet_bias"):
                 m_sib["liq_magnet_bias"] = prim_mag
             sib_cvd_15m = safe_float(m_sib.get("cvd_15m_usd"), None)
