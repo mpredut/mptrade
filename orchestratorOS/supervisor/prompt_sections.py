@@ -195,10 +195,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
             mb_rot_parts.append(f"BTCDOM={mb.get('btc_vol_share_pct')}%")
         if mb.get("alt_vol_share_pct") is not None:
             mb_rot_parts.append(f"TOTAL3_share={mb.get('alt_vol_share_pct')}%")
-        if mb.get("rotation_regime"):
-            mb_rot_parts.append(f"rotation={mb.get('rotation_regime')}")
     mb_line = (
-        f"advance_ratio={mb.get('advance_ratio', 'N/A')}, regime={mb.get('regime', 'N/A')}, "
+        f"advance_ratio={mb.get('advance_ratio', 'N/A')}, "
         f"median_chg={mb.get('median_change_pct', 'N/A')}%, "
         f"mean_chg={mb.get('mean_change_pct', 'N/A')}%, disp_std={mb.get('dispersion_std', 'N/A')}, "
         f"advancing={mb.get('advancing', 'N/A')}/{mb.get('total_symbols', 'N/A')}"
@@ -208,11 +206,17 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         + (f", age={mb.get('age_min')}m" if mb.get("age_min") is not None else "")
         if mb else "None"
     )
+    sa_flow_raw = str(sa.get("live_flow_divergence") or "").strip() if sa else ""
+    sa_flow_delta = (
+        sa_flow_raw[sa_flow_raw.find("("):]
+        if "(" in sa_flow_raw
+        else (f"({sa_flow_raw})" if sa_flow_raw else "")
+    )
     sa_line = (
         f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
         f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa)}"
-        + (f" | live_flow_override={sa.get('live_flow_divergence')}" if sa.get("live_flow_divergence") else "")
+        + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
         + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
         if sa else "None"
     )
@@ -274,9 +278,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     if breaking_news:
         lines.append("- Live Breaking News Feed (cachedb/news_feed_collect.json, 1m refresh):")
         for hn in breaking_news:
-            sev_tag = "[HIGH-SEV] " if hn.get("is_high_severity") else ""
-            kw_sfx = f" kw={hn.get('keywords')}" if hn.get("keywords") else ""
-            lines.append(f"  * {sev_tag}{hn.get('title')}{kw_sfx}{_age_sfx(hn, parens=True)}")
+            lines.append(f"  * {hn.get('title')}{_age_sfx(hn, parens=True)}")
     return lines
 
 
@@ -505,17 +507,15 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             )
             va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
             va_pos = round(max(-100.0, min(200.0, _parse_finite_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
-            va_reg = pinfo.get("va_regime") or fb_vp.get("va_regime") or "INSIDE_VA"
             sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
             sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
             lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
-            shape_sfx = f", shape={pinfo.get('profile_shape')}" if pinfo.get("profile_shape") == "BIMODAL" else ""
             vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
             extras.append(
                 f"vol_profile(POC={pinfo.get('poc_px')}[{poc_d:+.2f}%]{sec_poc_sfx}{lvn_sfx}, "
                 f"VAL={pinfo.get('val_px')}[{val_d:+.2f}%], "
                 f"VAH={pinfo.get('vah_px')}[{vah_d:+.2f}%], "
-                f"va_pos={va_pos}%, regime={va_reg}{shape_sfx}{vp_src_sfx})"
+                f"va_pos={va_pos}%{vp_src_sfx})"
             )
 
         is_sub24h_dup_7d = (
@@ -557,15 +557,15 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
 
         if pinfo.get("bottom_structure_6h"):
-            b_struct, b_parts = format_bottom_structure_6h_parts(
+            _, b_parts = format_bottom_structure_6h_parts(
                 pinfo,
                 btc_entry,
                 prior_label="prior_low",
                 px_prefix="",
-                check_smt=bool(is_non_btc_crypto and btc_entry),
+                check_smt=False,
             )
-            if b_struct:
-                extras.append(f"bottom_6h={b_struct}({', '.join(b_parts)})")
+            if b_parts:
+                extras.append(f"bottom_6h({', '.join(b_parts)})")
 
         if "chg_7d_pct" in pinfo and not is_sub24h_dup_7d:
             extras.append(
@@ -843,16 +843,15 @@ def _format_microstructure_section(
         cvd_sfx = ""
         if (cvd_usd_raw := minfo.get("cvd_15m_usd")) is not None:
             cvd_u = _parse_finite_float(cvd_usd_raw, 0.0)
-            cvd_reg = minfo.get("cvd_regime") or "balanced_flow"
             usd_s = f"{'+' if cvd_u >= 0.0 else '-'}{_fmt_liq_usd(abs(cvd_u))}"
             cvd_b = minfo.get("cvd_15m_base")
             cvd_b_s = f"{_parse_finite_float(cvd_b, 0.0):+.3f}".rstrip("0").rstrip(".") if cvd_b is not None else ""
             if cvd_b_s in ("+", "-", ""):
                 cvd_b_s = "+0"
             cvd_sfx = (
-                f", cvd_15m={cvd_b_s} {b_canon_3b} ({usd_s}, {cvd_reg})"
+                f", cvd_15m={cvd_b_s} {b_canon_3b} ({usd_s})"
                 if cvd_b is not None
-                else f", cvd_15m={usd_s} ({cvd_reg})"
+                else f", cvd_15m={usd_s}"
             )
             mh_parts: List[str] = []
             for h_lbl, tr_k, cvd_k in (
@@ -867,9 +866,9 @@ def _format_microstructure_section(
                     mh_parts.append(f"{h_lbl}=tr:{tr_v:.2f}/cvd:{c_s}")
             if mh_parts:
                 cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-            if (sp_cvd := _parse_finite_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_perp_flow_regime"):
+            if (sp_cvd := _parse_finite_float(minfo.get("spot_cvd_15m_usd"), None)) is not None:
                 sp_s = f"{'+' if sp_cvd >= 0.0 else '-'}{_fmt_liq_usd(abs(sp_cvd))}"
-                cvd_sfx += f", spot_cvd_15m={sp_s} ({minfo['spot_perp_flow_regime']})"
+                cvd_sfx += f", spot_cvd_15m={sp_s}"
 
         basis_sfx = ""
         basis_parts: List[str] = []
@@ -903,7 +902,6 @@ def _format_microstructure_section(
                 liq_parts.append(
                     f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {l_d:+.2f}%]"
                 )
-            liq_parts.append(f"magnet={minfo.get('liq_magnet_bias') or 'BALANCED_LIQ_MAGNET'}")
             liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
         cd_sfx = ""
         if isinstance(cd_map := minfo.get("cycle_delta"), dict):
@@ -932,7 +930,7 @@ def _format_microstructure_section(
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
             f"bid_wall={bw_px} (${minfo.get('bid_wall_usd')}{bw_dist}), "
             f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
-            f"whale_long_pct={minfo.get('whale_long_pct')}, div_regime={minfo.get('divergence_regime')}, "
+            f"whale_long_pct={minfo.get('whale_long_pct')}, "
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
             f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}, "
             f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
@@ -1125,7 +1123,6 @@ def _format_portfolio_section(
             f"portfolio_btc_beta={pre.get('portfolio_btc_beta')}",
             f"avg_corr_24h={pre.get('avg_corr_vs_btc_24h')}",
             f"intraday_var_95=${_parse_finite_float(pre.get('intraday_var_95_usd'), 0.0):,.2f} ({pre.get('intraday_var_95_pct')}%)",
-            f"regime={pre.get('concentration_regime')}",
         ])
         if pre.get("intraday_cvar_975_usd") is not None:
             pre_parts.append(
@@ -1187,7 +1184,16 @@ def _format_portfolio_section(
         else (ps.get("open_orders") if isinstance(ps.get("open_orders"), list) else [])
     )
     if open_lim:
-        _dup_oo_keys = {"orderId", "origQty", "executedQty", "clientOrderId", "client_order_id", "created_ts", "age_min"}
+        _dup_oo_keys = {
+            "orderId",
+            "origQty",
+            "executedQty",
+            "clientOrderId",
+            "client_order_id",
+            "created_ts",
+            "age_min",
+            "wall_queue_pos",
+        }
         clean_open_lim = [
             {
                 k: v
@@ -1239,13 +1245,30 @@ def _format_portfolio_section(
     if ps.get("cross_market_context"):
         cmc = ps["cross_market_context"]
         if isinstance(cmc, dict):
+            _cmc_label_keys = {
+                "bottom_structure_6h",
+                "va_regime",
+                "profile_shape",
+                "cvd_regime",
+                "spot_perp_flow_regime",
+                "liq_magnet_bias",
+                "futures_lead_regime",
+            }
+            _clean_bw = lambda bw_map: (
+                {
+                    sk: ({k: v for k, v in sv.items() if k not in _cmc_label_keys} if isinstance(sv, dict) else sv)
+                    for sk, sv in bw_map.items()
+                }
+                if isinstance(bw_map, dict)
+                else bw_map
+            )
             if cmc.get("crypto_bellwethers") and scope_s == "equities":
                 lines.append(
-                    f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {cmc['crypto_bellwethers']}"
+                    f"  * Cross-Market Live Crypto Telemetry (Raw 24/7 Prices, Multi-Horizon Deltas & Microstructure): {_clean_bw(cmc['crypto_bellwethers'])}"
                 )
             if cmc.get("equity_bellwethers") and scope_s != "equities":
                 lines.append(
-                    f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {cmc['equity_bellwethers']}"
+                    f"  * Cross-Market US Equities Telemetry (Trading212 Raw Prices, Multi-Horizon Deltas & Active Cycles): {_clean_bw(cmc['equity_bellwethers'])}"
                 )
     mb_bench_3c = (
         _extract_macro_benchmarks_line(

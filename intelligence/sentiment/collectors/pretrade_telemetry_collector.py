@@ -272,8 +272,7 @@ def collect_pretrade_telemetry(
                 telemetry["Whale Positioning"] = f"{lp_f * 100.0:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
             tr_f = safe_float(obj_attr(w_snap, "taker_buy_sell_ratio", None), default=None)
             if tr_f is not None:
-                div_reg = obj_attr(w_snap, "divergence_regime", obj_attr(w_snap, "div_regime", None)) or "neutral"
-                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f} (regime: {div_reg})"
+                telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f}"
     except Exception:
         pass
 
@@ -606,13 +605,12 @@ def collect_pretrade_telemetry(
                 sec_poc_val = m24.get("sec_poc_px") if m24.get("sec_poc_px") is not None else m24.get("hvn2_px")
                 sec_poc_s = f", sec_POC=${sec_poc_val}" if sec_poc_val is not None else ""
                 lvn_s = f", LVN=${m24['lvn_px']}" if m24.get("lvn_px") is not None else ""
-                shape_s = f", shape={m24['profile_shape']}" if m24.get("profile_shape") == "BIMODAL" else ""
                 vp_src_s = f", vp_source={m24['vp_source']}" if m24.get("vp_source") else ""
                 telemetry["24h Volume Profile (POC / Value Area)"] = (
                     f"POC=${m24.get('poc_px')} ({safe_float(m24.get('poc_dist_pct'), 0.0):+.2f}%){sec_poc_s}{lvn_s}, "
                     f"VAL=${m24.get('val_px')} ({safe_float(m24.get('val_dist_pct'), 0.0):+.2f}%), "
                     f"VAH=${m24.get('vah_px')} ({safe_float(m24.get('vah_dist_pct'), 0.0):+.2f}%), "
-                    f"va_pos={m24.get('va_pos_pct')}%, regime={m24.get('va_regime')}{shape_s}{vp_src_s}"
+                    f"va_pos={m24.get('va_pos_pct')}%{vp_src_s}"
                 )
             if canonical_base_asset(symbol) != "BTC" and not str(symbol).upper().endswith(("_EQ", "_US_EQ")):
                 btc_series_24h, btc_vals_7d = load_symbol_price_series(
@@ -665,11 +663,11 @@ def collect_pretrade_telemetry(
                             rel_str = f"{rel_str} | {', '.join(cross_parts)}" if rel_str else ", ".join(cross_parts)
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = rel_str
             if m24.get("bottom_structure_6h"):
-                b_struct, b_parts = format_bottom_structure_6h_parts(
-                    m24, btc_m24, prior_label="prior_6h_low", px_prefix="$", check_smt=bool(btc_m24)
+                _, b_parts = format_bottom_structure_6h_parts(
+                    m24, btc_m24, prior_label="prior_6h_low", px_prefix="$", check_smt=False
                 )
-                if b_struct:
-                    telemetry["6h Intraday Bottom Structure"] = f"{b_struct} ({', '.join(b_parts)})"
+                if b_parts:
+                    telemetry["6h Intraday Bottom Structure"] = ", ".join(b_parts)
 
         is_eq = str(symbol).upper().endswith(("_EQ", "_US_EQ"))
         if cur_px_est > 0.0 and arch_vals_7d:
@@ -1072,8 +1070,7 @@ def collect_pretrade_telemetry(
                         break
             if cur_m_info.get("cvd_15m_usd") is not None:
                 cvd_u = safe_float(cur_m_info.get("cvd_15m_usd"), 0.0)
-                cvd_reg = cur_m_info.get("cvd_regime") or "balanced_flow"
-                cvd_line = f"${cvd_u:+,.0f} ({cvd_reg})"
+                cvd_line = f"${cvd_u:+,.0f}"
                 mh_parts = [
                     f"{h_lbl}=tr:{tr_v:.2f}/cvd:${c_v:+,.0f}"
                     for h_lbl, tr_k, cvd_k in (
@@ -1087,8 +1084,8 @@ def collect_pretrade_telemetry(
                 if mh_parts:
                     cvd_line += f", flow_horizons({', '.join(mh_parts)})"
                 sp_cvd = safe_float(cur_m_info.get("spot_cvd_15m_usd"), default=None)
-                if sp_cvd is not None and cur_m_info.get("spot_perp_flow_regime"):
-                    cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f} ({cur_m_info['spot_perp_flow_regime']})"
+                if sp_cvd is not None:
+                    cvd_line += f", spot_cvd_15m=${sp_cvd:+,.0f}"
                 telemetry["15m Cumulative Volume Delta (CVD)"] = cvd_line
             if liq_c.get("long_liq_px") is not None and liq_c.get("short_liq_px") is not None:
                 deep_parts = [
@@ -1102,8 +1099,7 @@ def collect_pretrade_telemetry(
                 deep_sfx = f", {', '.join(deep_parts)}" if deep_parts else ""
                 telemetry["Liquidation Clusters (LONG vs SHORT)"] = (
                     f"LONG liq=${liq_c['long_liq_px']} (${safe_float(liq_c.get('long_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('long_liq_dist_pct'), 0.0):+.2f}%), "
-                    f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}, "
-                    f"magnet={liq_c.get('liq_magnet_bias')}"
+                    f"SHORT liq=${liq_c['short_liq_px']} (${safe_float(liq_c.get('short_liq_usd'), 0.0):,.0f}, {safe_float(liq_c.get('short_liq_dist_pct'), 0.0):+.2f}%){deep_sfx}"
                 )
         if has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
             _fmt_s = lambda v: "+0.00000" if abs(v) < 5e-8 else (f"{v:+.2e}" if 0.0 < abs(v) < 1e-4 else f"{v:+.5f}")

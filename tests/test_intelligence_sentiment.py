@@ -3436,7 +3436,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     finally:
         ptc_mod.load_symbol_best_recent_fills = orig_best_fills
     vp_str = pt_hype.get("24h Volume Profile (POC / Value Area)", "")
-    assert "sec_POC=$" in vp_str and "LVN=$" in vp_str and "shape=BIMODAL" in vp_str
+    assert "sec_POC=$" in vp_str and "LVN=$" in vp_str
     # Bid wall at $85.50 on stale mid $86.405 is recentered below live $83.79 (~$82.91)
     assert "@ $82.91" in pt_hype.get("Orderbook Bid Wall Ahead", "")
     assert "@ $84.60" in pt_hype.get("Orderbook Ask Wall Ahead", "")
@@ -3699,7 +3699,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
 
     pt_tao = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(tao_cache))
     assert "Buyer/Seller ratio: 1.48" in pt_tao.get("Whale Taker Flow", "")
-    assert "aggressive_buying" in pt_tao.get("15m Cumulative Volume Delta (CVD)", "")
+    assert pt_tao.get("15m Cumulative Volume Delta (CVD)", "").startswith("$+")
 
     hb_dir_stale = tmp_path / "hb_stale_check"
     hb_dir_stale.mkdir(parents=True, exist_ok=True)
@@ -3861,7 +3861,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     )
     pt_tao_44 = ptc_mod.collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_36))
     assert "flow_horizons(5m=tr:1.07/cvd:$+9,600, 1h=tr:0.76/cvd:$-722,300)" in pt_tao_44.get("15m Cumulative Volume Delta (CVD)", "")
-    assert "spot_cvd_15m=$+28,400 (BALANCED_CROSS_VENUE_FLOW)" in pt_tao_44.get("15m Cumulative Volume Delta (CVD)", "")
+    assert "spot_cvd_15m=$+28,400" in pt_tao_44.get("15m Cumulative Volume Delta (CVD)", "")
 
     # Bugs 45, 46 & 47:
     # - build_cross_market_context preserves 3 significant digits for small slopes (<1e-4) instead of rounding to 6 decimal places
@@ -6847,8 +6847,8 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     )
     pt_usdc_sib = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_sib))
     pt_usd_sib = collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_sib))
-    assert "magnet=BALANCED_LIQ_MAGNET" in pt_usdc_sib["Liquidation Clusters (LONG vs SHORT)"]
-    assert "magnet=BALANCED_LIQ_MAGNET" in pt_usd_sib["Liquidation Clusters (LONG vs SHORT)"]
+    assert "LONG liq=$" in pt_usdc_sib["Liquidation Clusters (LONG vs SHORT)"]
+    assert "LONG liq=$" in pt_usd_sib["Liquidation Clusters (LONG vs SHORT)"]
 
 
 def test_6h_bottom_dead_zone_sibling_low_guard_cross_market_bounds_and_military_news_filter():

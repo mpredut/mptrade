@@ -930,7 +930,7 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "action=DEFENSIVE" in prompt_text
     assert "Breadth collapse" in prompt_text
     assert "brake=DOWNSCALE_QTY" in prompt_text
-    assert "[HIGH-SEV] Sudden escalation alert in Strait of Hormuz" in prompt_text
+    assert "Sudden escalation alert in Strait of Hormuz" in prompt_text
     assert "median_chg=-3.1%" in prompt_text
     assert "7d=-5.00% 7d_range=[74.5, 80.0]" in prompt_text
     assert "vol_1h=0.74%(adapt_reentry=1.48%)" in prompt_text
@@ -3617,7 +3617,7 @@ def test_bot_module_rule_tag_cvd_15m_and_depth_1pct_in_prompt(temp_env):
     assert "by=BOT(module=assetguardian, rule=SL_PANIC)" in prompt
     assert "by=BOT(module=tradeall, rule=kalman_primary_up)" in prompt
     assert "depth_1pct=(bid=$45.0K/ask=$52.0K, slip_2k=3.2bps)" in prompt
-    assert "cvd_15m=+10 BTC (+$680.0K, aggressive_buying)" in prompt
+    assert "cvd_15m=+10 BTC (+$680.0K)" in prompt
 
 
 def test_pretrade_telemetry_without_24h_series_and_gateway_max_usd_forwarding(tmp_path):
@@ -4263,7 +4263,7 @@ def test_iteration19_sibling_diverged_micro_px_and_lazy_prompt_vp_liq_formatting
         {"SOLUSDC": {"price": 155.0, "poc_px": 150.0, "val_px": 145.0, "vah_px": 153.0}}
     )
     joined_3a = "\n".join(lines_3a)
-    assert "vol_profile(POC=150.0[+3.33%], VAL=145.0[+6.90%], VAH=153.0[+1.31%], va_pos=125.0%, regime=ABOVE_VAH)" in joined_3a
+    assert "vol_profile(POC=150.0[+3.33%], VAL=145.0[+6.90%], VAH=153.0[+1.31%], va_pos=125.0%)" in joined_3a
 
     lines_3b = _format_microstructure_section(
         {"XBTUSD": {"ob_imbalance": 0.55, "oi_usd": 200_000_000.0, "whale_long_pct": 0.60, "funding_rate": 0.0001}},
@@ -4520,7 +4520,6 @@ def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
     assert "short_liq=$310.0[$2.00M, +3.33%]" in joined_3b
     assert "deep_long=$None" not in joined_3b
     assert "deep_short=$None" not in joined_3b
-    assert "magnet=BALANCED_LIQ_MAGNET" in joined_3b
 
 
 def test_iteration25_cache_symbol_variants_quote_priority_and_fiat_live_price(tmp_path):
@@ -5715,11 +5714,8 @@ def test_intraday_6h_bottom_structure_and_smt_divergence_formatting():
         "TAOUSDC": {"price": 231.8, **tao_m},
     })
     joined = "\n".join(lines)
-    assert "bottom_6h=LIQUIDITY_SWEEP_RECLAIM(prior_low=76739.78, 1h_low=76387.17, reclaim=+0.61%)" in joined
-    assert (
-        "bottom_6h=HIGHER_LOW_DOUBLE_BOTTOM(prior_low=220.0, 1h_low=226.1, hl_diff=+2.77%, smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE)"
-        in joined
-    )
+    assert "bottom_6h(prior_low=76739.78, 1h_low=76387.17, reclaim=+0.61%)" in joined
+    assert "bottom_6h(prior_low=220.0, 1h_low=226.1, hl_diff=+2.77%)" in joined
 
 
 def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_path):
@@ -5766,8 +5762,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
 
     telem = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(tmp_path))
     assert "6h Intraday Bottom Structure" in telem
-    assert "HIGHER_LOW_DOUBLE_BOTTOM" in telem["6h Intraday Bottom Structure"]
-    assert "smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE" in telem["6h Intraday Bottom Structure"]
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in telem["6h Intraday Bottom Structure"]
 
     captured_prompts = {}
 
@@ -5792,8 +5787,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         cache_ttl_sec=0.0,
     )
     hs_guard.check("TAOUSDC", "BUY", 2.0, 231.8, telemetry=telem, notional_eur=463.6)
-    assert "HIGHER_LOW_DOUBLE_BOTTOM" in captured_prompts["hs_buy"]
-    assert "smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE" in captured_prompts["hs_buy"]
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in captured_prompts["hs_buy"]
     assert "CONTRARIAN BOTTOM ACCUMULATION" in captured_prompts["hs_buy"]
 
     hs_sell_guard = HighStakeGuard(
@@ -5827,7 +5821,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         notional_eur=463.6,
     )
     assert "GENUINE ACCUMULATION & 6H BOTTOM STRUCTURE CONFIRMATION" in captured_prompts["post_stop"]
-    assert "HIGHER_LOW_DOUBLE_BOTTOM" in captured_prompts["post_stop"]
+    assert "prior_6h_low=$220.0, 1h_low=$226.1, hl_diff=+2.77%" in captured_prompts["post_stop"]
 
     # 3. SentimentAdvisor
     advisor = SentimentAdvisor(
@@ -5856,7 +5850,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
         now_ts=t0 / 1000.0,
     )
     assert "BTC Intraday Structure:" in captured_prompts["sentiment"]
-    assert "bottom_structure_6h=LIQUIDITY_SWEEP_RECLAIM" in captured_prompts["sentiment"]
+    assert "bottom_6h(prior_6h_low=$76739.78, 1h_low=$76387.17)" in captured_prompts["sentiment"]
     assert "LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION" in captured_prompts["sentiment"]
 
     # 4. GeopoliticalThreatAnalyzer
@@ -6075,7 +6069,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     joined_3b = "\n".join(lines_3b)
     assert "spread=0.0013bps (bid=77746.99/ask=77747.0), ob_mid=77746.995" in joined_3b
     assert "bid_wall=77746.99 ($120000.0, dist=-0.00%)" in joined_3b
-    assert "cvd_15m=+9.75 BTC (+$758.0K, aggressive_buying)" in joined_3b
+    assert "cvd_15m=+9.75 BTC (+$758.0K)" in joined_3b
 
     # 4. Section 3C pnl_vs_avg=+6.89% when positive vs dd=-17.89% when negative + dd_from_peak on pos_peak
     cyc_hl = parse_venue_cycle_state(
@@ -7398,7 +7392,7 @@ def test_top_of_hour_open_orders_cache_recovery_and_false_canceled_guard(tmp_pat
         breaking_news=[],
     )
     sec2 = "\n".join(_format_macro_and_news_section(snap_mb))
-    assert "Market Breadth: advance_ratio=0.3582, regime=BEARISH_BREADTH" in sec2
+    assert "Market Breadth: advance_ratio=0.3582," in sec2
     assert "age=2.4m" in sec2
 
     # 8. Reference microstructure with mid_price (e.g. ADAUSD) seeds prices_and_trends & liquidation clusters,
@@ -8292,8 +8286,7 @@ def test_audit_remediations_a_through_g_and_crypto_completeness(tmp_path, monkey
     assert "ETH/BTC=" in sec_1
     assert "BTCDOM=50.0%" in sec_1
     assert "TOTAL3_share=25.0%" in sec_1
-    assert "rotation=ETH_OUTPERFORMING" in sec_1
-    assert "live_flow_override=STALE_ADVISOR_BULLISH_REVERSAL" in sec_1
+    assert "live_btc_flow_delta=(live_btc_taker_ratio=1.7456, cvd_15m=+$26,570,000)" in sec_1
 
     # --- F. Open LIMIT Order Age Normalization ---
     now_oo = 1793652348.0
@@ -8737,7 +8730,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert micro["HYPEUSD"].get("cross_venue_arb_bps") == pytest.approx(29.3, abs=0.5)
     sec_3b = "\n".join(_format_microstructure_section(micro, prices))
     assert "flow_horizons(5m=tr:1.18/cvd:+$45.0K" in sec_3b
-    assert "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE" in sec_3b
+    assert "spot_cvd_15m=+" in sec_3b
     assert "arb_vs_HYPEUSDC=+29.3bps" in sec_3b
 
     # 3. Sub-Cycle Lot Accounting without intervening SELL (Discrepancy 7 & Layer II.4)
@@ -8801,7 +8794,7 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     ps["portfolio_risk_engine"] = risk_eng
     sec_3c_lines = "\n".join(_format_portfolio_section(ps, "crypto"))
     assert "Enterprise Global Portfolio Risk Engine:" in sec_3c_lines
-    assert "HIGH_CORR_CONCENTRATED_BETA" in sec_3c_lines
+    assert "portfolio_btc_beta=" in sec_3c_lines
     assert "subcycle_lifo_pnl=$+42.50" in sec_3c_lines
     assert "cvar_975=" not in sec_3c_lines
     assert "vol_target_tranche=" not in sec_3c_lines

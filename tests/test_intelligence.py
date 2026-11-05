@@ -2830,7 +2830,7 @@ def test_iter62_tca_risk_pretrade_and_macro_telemetry_normalization(monkeypatch,
     telem = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(tmp_path))
     assert telem.get("Orderbook Depth Imbalance") == "0.64 (64% bids vs 36% asks)"
     assert telem.get("Whale Positioning") == "60.0% Top Traders Long (L/S ratio: 1.50)"
-    assert "bullish_divergence" in telem.get("Whale Taker Flow", "")
+    assert telem.get("Whale Taker Flow") == "Buyer/Seller ratio: 1.35"
 
     # 4. collect_macro_benchmarks_snapshot sorts unsorted ms timestamps and compute_deribit_options_surface normalizes decimal mark_iv
     def _mock_yahoo_fetch(url, **kw):
@@ -5209,7 +5209,7 @@ def test_iter84_merged_module_alias_finder_signals_reload_and_pretrade_kalman(tm
         encoding="utf-8",
     )
     telem = ptc.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cache_dir))
-    assert "SHORT_SQUEEZE_MAGNET_UP" in telem.get("Liquidation Clusters (LONG vs SHORT)", "")
+    assert "SHORT liq=$" in telem.get("Liquidation Clusters (LONG vs SHORT)", "")
 
 
 def test_iter85_package_h_alias_reload_inspect_prod_fleet_and_pretrade_eq_slopes(tmp_path, monkeypatch, capsys):
@@ -6081,7 +6081,7 @@ def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes
     )
     joined_3a = "\n".join(lines_3a)
     assert "POC=400.0[+2.50%]" in joined_3a
-    assert "ABOVE_VAH" in joined_3a
+    assert "va_pos=133.3%" in joined_3a
 
 
 def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
@@ -8115,8 +8115,8 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
             },
         )
     )
-    assert "ask_absorbing" in sec_3b
-    assert "magnet=LONG_SWEEP_MAGNET_DOWN" in sec_3b
+    assert "(+$12.0K)" in sec_3b
+    assert "liq_clusters(long_liq=$" in sec_3b
 
     sec_3c = "\n".join(
         _format_portfolio_section(

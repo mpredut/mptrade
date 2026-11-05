@@ -123,10 +123,14 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         if breadth:
             mb_adv = clean_scale(obj_attr(breadth, "advance_ratio", 0.5), default=0.5, allow_percent=True)
             mb_med = obj_float(breadth, "median_change_pct", 0.0)
-            mb_reg = str(obj_attr(breadth, "regime") or "NEUTRAL")
-            prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%, regime: {mb_reg}")
+            prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%")
         if whale_telemetry:
-            prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
+            wt_clean = (
+                {k: v for k, v in whale_telemetry.items() if k not in ("divergence_regime", "div_regime")}
+                if isinstance(whale_telemetry, dict)
+                else whale_telemetry
+            )
+            prompt_context.append(f"- Whales & Derivatives: {wt_clean}")
         try:
             from cachepaths import resolve_cachedb_filepath
             from intelligence.macro_sentiment_ssot import (
@@ -195,14 +199,13 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     if recent_pts_b and r1h_lo_v <= 0.0:
                         r1h_lo_v = min(recent_pts_b)
                 lows_sfx = (
-                    f" (prior_6h_low=${p6h_lo_v:.2f}, 1h_low=${r1h_lo_v:.2f})"
+                    f", bottom_6h(prior_6h_low=${p6h_lo_v:.2f}, 1h_low=${r1h_lo_v:.2f})"
                     if p6h_lo_v > 0.0 and r1h_lo_v > 0.0
                     else ""
                 )
                 struct_lines.append(
                     f"- {ccy} Intraday Structure: price=${last_px:.2f} "
-                    f"({chg_24h_v:+.2f}% 24h, range_pos={pos_24h_v:.0f}%), "
-                    f"bottom_structure_6h={b_struct}{lows_sfx}"
+                    f"({chg_24h_v:+.2f}% 24h, range_pos={pos_24h_v:.0f}%){lows_sfx}"
                 )
             if isinstance(eff_mb, dict) and eff_mb:
                 eff_mb = enrich_macro_benchmarks_live_state(

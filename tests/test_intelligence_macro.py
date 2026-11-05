@@ -1666,16 +1666,14 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     summary_line = format_macro_benchmarks_summary_line(decouple_crypto)
     assert "VIX=21.40 (+6.50% 24h)" in summary_line
     assert "IBIT=$46.80 (+1.85% 24h)" in summary_line
-    assert "CB_Premium=+9.4bps (US_INSTITUTIONAL_BUYING)" in summary_line
-    assert "BTC_DVOL=51.2% (NORMAL_IV)" in summary_line
+    assert "CB_Premium=+9.4bps" in summary_line
+    assert "BTC_DVOL=51.2%" in summary_line
     assert "Options_Surface(RV=44.0%, VRP=+7.2%, PC_OI=0.48, Skew_25d=-1.25%)" in summary_line
-    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in summary_line
 
     eq_macro_line = format_equity_macro_regime_line(decouple_crypto)
-    assert eq_macro_line.startswith("RISK_OFF (")
+    assert "SPY=$576.00 (-0.75% 24h)" in eq_macro_line
     assert "IBIT=$46.80" in eq_macro_line
     assert "CB_Premium=+9.4bps" in eq_macro_line
-    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in eq_macro_line
 
     cdir = tmp_path / "cachedb"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -1704,7 +1702,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "CB_Premium=+9.4bps" in sec_txt
         assert "BTC_DVOL=51.2%" in sec_txt
         assert "Options_Surface(" in sec_txt
-        assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in sec_txt
 
     # SentimentAdvisor.review injects Cross-Asset Macro & Options Surface into the LLM prompt
     captured_sa_prompts = []
@@ -1731,7 +1728,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert sa_res is not None and sa_res.market_bias == "BULLISH"
     assert len(captured_sa_prompts) == 1
     assert "- Cross-Asset Macro & Options Surface:" in captured_sa_prompts[0]
-    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in captured_sa_prompts[0]
+    assert "CB_Premium=+9.4bps" in captured_sa_prompts[0]
 
     # 5. Dynamic Sentiment Interval & Stale SentimentAdvisor Live Institutional Divergence (BUY & SELL symmetry)
     from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
@@ -1895,13 +1892,13 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     (cdir / "cache_24_price_BTCUSDC.json").write_text(json.dumps(btc_24h_pts), encoding="utf-8")
     pt_closed_cr = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
     pt_closed_eq = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir))
-    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_cr.get("Equity & Macro Regime"))
-    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_eq.get("Equity & Macro Regime"))
+    assert "CB_Premium=-2.0bps" in str(pt_closed_cr.get("Equity & Macro Regime"))
+    assert "CB_Premium=-2.0bps" in str(pt_closed_eq.get("Equity & Macro Regime"))
     from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
 
     harvested_sensors, _ = harvest_macro_and_news_sensors(str(cdir), now_ts=1_793_865_000.0)
     assert harvested_sensors["macro_benchmarks"]["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
-    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(harvested_sensors["macro_benchmarks"]["summary_line"])
+    assert "CB_Premium=-2.0bps" in str(harvested_sensors["macro_benchmarks"]["summary_line"])
     eth_24h_pts = [
         [now_ms_b - 24 * 3600 * 1000, 2900.0],
         [now_ms_b - 12 * 3600 * 1000, 2860.0],
@@ -1910,7 +1907,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     ]
     (cdir / "cache_24_price_ETHUSDC.json").write_text(json.dumps(eth_24h_pts), encoding="utf-8")
     sa.review(force_refresh=True, now_ts=1_793_865_000.0)
-    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_sa_prompts[-1]
+    assert "CB_Premium=-2.0bps" in captured_sa_prompts[-1]
     assert "- BTC Intraday Structure:" in captured_sa_prompts[-1]
     assert "- ETH Intraday Structure:" in captured_sa_prompts[-1]
     assert "Futures_Lead" in captured_sa_prompts[-1]
@@ -1954,7 +1951,6 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert compute_equity_macro_regime(premarket_gap_up_mb) == "RISK_ON"
     summary_with_eth_and_lead = format_macro_benchmarks_summary_line(premarket_gap_up_mb)
     assert "Futures_Lead=" in summary_with_eth_and_lead
-    assert "FUTURES_PREMARKET_GAP_UP" in summary_with_eth_and_lead
     assert "ETH_Options(RV=52.5%, VRP=+11.5%, PC_OI=1.26, Skew_25d=+6.50%)" in summary_with_eth_and_lead
 
     cmc_premarket = build_cross_market_context(
@@ -1983,7 +1979,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         "btc_skew_25d_pct": -3.10,
     }
     raw_eq_line = format_equity_macro_regime_line(raw_unpopulated_gap)
-    assert raw_eq_line.startswith("RISK_ON (")
+    assert "ES=F=$5,835.00" in raw_eq_line
     assert "Futures_Lead=" in raw_eq_line
 
     div_skew_buy = evaluate_institutional_posture_divergence(
@@ -2052,7 +2048,7 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert geo_res.threat_level == "ELEVATED"
     assert captured_geo_prompts
     assert "Live Cross-Asset Market Reaction:" in captured_geo_prompts[-1]
-    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_geo_prompts[-1]
+    assert "CB_Premium=-2.0bps" in captured_geo_prompts[-1]
 
 
     live_rth_selloff_mb = {

@@ -316,17 +316,16 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
     lead_info = compute_futures_premarket_lead(data)
-    if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and (
-        lead_reg := str(lead_info.get("futures_lead_regime") or "").strip()
-    ) in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
-        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}% ({lead_reg})")
+    if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and str(
+        lead_info.get("futures_lead_regime") or ""
+    ).strip() in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
+        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}%")
     if not include_crypto:
         return " | ".join(parts)
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
     if cb_bps is not None:
         cb_bps = round(cb_bps, 1) + 0.0
-        cb_reg = str(data.get("coinbase_premium_regime") or items.get("coinbase_premium_regime") or "").strip()
-        parts.append(f"CB_Premium={cb_bps:+.1f}bps" + (f" ({cb_reg})" if cb_reg else ""))
+        parts.append(f"CB_Premium={cb_bps:+.1f}bps")
     btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
     eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
     if btc_dvol is not None or eth_dvol is not None:
@@ -335,8 +334,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             for lbl, val in (("BTC_DVOL", btc_dvol), ("ETH_DVOL", eth_dvol))
             if val is not None
         ).replace(" / ", "/")
-        opt_reg = str(data.get("options_vol_regime") or items.get("options_vol_regime") or "").strip()
-        parts.append(dvol_s + (f" ({opt_reg})" if opt_reg else ""))
+        parts.append(dvol_s)
     for ccy in get_deribit_options_currencies():
         pfx = ccy.lower()
         opt_parts: List[str] = []
@@ -351,25 +349,22 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if opt_parts:
             lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
             parts.append(f"{lbl}({', '.join(opt_parts)})")
-    cross_reg = str(data.get("cross_asset_regime") or items.get("cross_asset_regime") or "").strip().upper()
-    if cross_reg not in get_cross_asset_regimes():
-        cross_reg = compute_cross_asset_regime(data)
-    if cross_reg and cross_reg != "NEUTRAL":
-        parts.append(f"Cross_Asset={cross_reg}")
     return " | ".join(parts)
 
 
 def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -> str:
-    """Format the US Equity & Cross-Asset Macro Regime summary."""
+    """Format the US Equity & Cross-Asset Macro quantitative benchmarks line."""
     if not isinstance(data, dict) or not data:
         return "NEUTRAL"
+    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
+    if bench_s:
+        return bench_s
     regime = str(data.get("equity_regime") or "").strip().upper()
     if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
         regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
     ):
         regime = compute_equity_macro_regime(data)
-    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
-    return f"{regime} ({bench_s})" if bench_s else regime
+    return regime
 
 
 def apply_asset_scope_filter(
@@ -1102,11 +1097,6 @@ def format_bottom_structure_6h_parts(
         b_parts.append(f"hl_diff={safe_float(m24.get('higher_low_vs_prior_pct'), 0.0):+.2f}%")
     if m24.get("reclaim_above_prior_low_pct") is not None:
         b_parts.append(f"reclaim={safe_float(m24.get('reclaim_above_prior_low_pct'), 0.0):+.2f}%")
-    if check_smt and b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" and isinstance(btc_m24, dict) and btc_m24:
-        btc_b = btc_m24.get("bottom_structure_6h")
-        btc_pos24 = safe_float(btc_m24.get("pos_24h_pct"), 100.0)
-        if btc_b in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") or btc_pos24 <= 35.0:
-            b_parts.append("smt_vs_btc=BULLISH_HIGHER_LOW_DIVERGENCE")
     return str(b_struct), b_parts
 
 
