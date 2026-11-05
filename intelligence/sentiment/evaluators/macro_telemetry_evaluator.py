@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from cachepaths import canonical_base_asset, normalize_venue_name
+from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     normalize_epoch_sec,
@@ -200,13 +200,32 @@ def apply_asset_scope_filter(
 
         _set_or_pop("venue_quote_cash", {ck: cv for ck, cv in portfolio_summary["venue_quote_cash"].items() if _is_t212_cash_entry(ck, cv)})
     if isinstance(portfolio_summary.get("recent_orders"), dict):
+        allowed_eq_ro_syms = set(t212_sym_set)
+        for pos_it in (portfolio_summary.get("tradable_positions") or ()):
+            if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
+                if s_p := str(pos_it.get("symbol") or "").strip().upper():
+                    allowed_eq_ro_syms.add(s_p)
+        for it_ro in (portfolio_summary.get("recent_ai_intents") or ()):
+            if isinstance(it_ro, dict) and normalize_venue_name(it_ro.get("venue")) == "t212":
+                if s_i := str(it_ro.get("symbol") or "").strip().upper():
+                    allowed_eq_ro_syms.add(s_i)
+
         def _is_eq_ro_key(rk: str, rv: Any = None) -> bool:
             if isinstance(rv, dict) and rv.get("venue"):
-                return normalize_venue_name(rv.get("venue")) == "t212"
-            rk_up = str(rk).upper()
-            if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
-                return True
-            return False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
+                is_eq = normalize_venue_name(rv.get("venue")) == "t212"
+            else:
+                rk_up = str(rk).upper()
+                if rk_up.startswith("T212:") or rk_up.endswith(("_EQ", "_US_EQ")):
+                    is_eq = True
+                else:
+                    is_eq = False if rk_up.startswith(("BINANCE:", "KRAKEN:", "HYPERLIQUID:")) else (rk_up in t212_sym_set)
+            if is_eq and want_t212 and allowed_eq_ro_syms:
+                rk_clean = str(rk).split(":", 1)[-1].strip().upper()
+                return any(
+                    cand.upper() in allowed_eq_ro_syms
+                    for cand in (rk_clean, *cache_symbol_variants(rk_clean, include_base=True))
+                )
+            return is_eq
 
         _set_or_pop("recent_orders", {rk: rv for rk, rv in portfolio_summary["recent_orders"].items() if _is_eq_ro_key(rk, rv) == want_t212})
     for list_key in ("tradable_positions", "recent_ai_intents", "active_retry_queue", "open_orders"):

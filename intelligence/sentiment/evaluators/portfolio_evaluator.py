@@ -364,6 +364,7 @@ def extract_symbol_recent_fills(
     buys_fmt: list[Dict[str, Any]] = []
     cycle_buys_fmt: list[Dict[str, Any]] = []
     sells_fmt: list[Dict[str, Any]] = []
+    cycle_sells_fmt: list[Dict[str, Any]] = []
     open_lots: list[Dict[str, Any]] = []
     lifo_realized_pnl_usd = 0.0
     lot_seq = 0
@@ -405,6 +406,19 @@ def extract_symbol_recent_fills(
                             if (b_ts := int(b.get("ts_ms") or 0)) <= 0
                             or (latest_fill_ts_ms - b_ts) <= 7 * 86400 * 1000
                         ]
+                    if latest_fill_ts_ms > 0:
+                        ref_buy_ts = int(ts_raw) if ts_raw else latest_fill_ts_ms
+                        cycle_sells_fmt = [
+                            s
+                            for s in cycle_sells_fmt
+                            if (s_ts := int(s.get("ts_ms") or 0)) <= 0
+                            or (
+                                (ref_buy_ts - s_ts) <= 72 * 3600 * 1000
+                                and (latest_fill_ts_ms - s_ts) <= 7 * 86400 * 1000
+                            )
+                        ]
+                    else:
+                        cycle_sells_fmt.clear()
                     last_exit_oversold = False
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
@@ -423,6 +437,7 @@ def extract_symbol_recent_fills(
             cycle_buys_fmt.append(item_d)
         elif side_o == "SELL":
             sells_fmt.append(item_d)
+            cycle_sells_fmt.append(item_d)
             tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None and q_f > 0.0:
                 prev_cost_qty = cost_qty
@@ -524,7 +539,20 @@ def extract_symbol_recent_fills(
         "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
         "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,
         "recent_buys": (cycle_buys_fmt if (cost_qty > 1e-12 and cycle_buys_fmt) else buys_fmt)[-4:],
-        "recent_sells": sells_fmt[-4:],
+        "recent_sells": (
+            (
+                [
+                    s
+                    for s in cycle_sells_fmt
+                    if latest_fill_ts_ms <= 0
+                    or (s_ts := int(s.get("ts_ms") or 0)) <= 0
+                    or (latest_fill_ts_ms - s_ts) <= 7 * 86400 * 1000
+                ]
+                or cycle_sells_fmt
+            )
+            if (cost_qty > 1e-12 and cycle_sells_fmt)
+            else sells_fmt
+        )[-4:],
     }
     if cost_qty > 1e-12:
         out_fills["active_cycle_rem_qty"] = round(cost_qty, 6)

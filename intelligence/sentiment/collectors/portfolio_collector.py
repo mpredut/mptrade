@@ -904,6 +904,36 @@ def harvest_tradable_positions_and_orders(
     return tradable_positions, open_orders_list, venue_quote_cash, inst_by_sym
 
 
+def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, Any]]:
+    """Merge cached venue orders with terminal execution_audit orders, deduplicating by orderId or side/qty/timestamp."""
+    base_rows = [r for r in (primary_list if isinstance(primary_list, list) else ()) if isinstance(r, dict)]
+    extra_rows = [r for r in (audit_list if isinstance(audit_list, list) else ()) if isinstance(r, dict)]
+    if not base_rows:
+        return extra_rows
+    if not extra_rows:
+        return base_rows
+    seen_oids = {str(oid) for r in base_rows if (oid := extract_order_id(r, default=""))}
+    merged = list(base_rows)
+    for ar in extra_rows:
+        a_oid = str(extract_order_id(ar, default="") or "")
+        if a_oid and a_oid in seen_oids:
+            continue
+        a_side = extract_order_side(ar)
+        a_ts = normalize_timestamp_ms(ar.get("timestamp") or ar.get("time"), default=0) or 0
+        a_qty = safe_pos_float(ar.get("executedQty") or ar.get("qty"), default=0.0) or 0.0
+        if a_ts > 0 and a_qty > 0.0 and any(
+            extract_order_side(br) == a_side
+            and abs((normalize_timestamp_ms(br.get("timestamp") or br.get("time"), default=0) or 0) - a_ts) <= 60000
+            and abs((safe_pos_float(br.get("executedQty") or br.get("qty"), default=0.0) or 0.0) - a_qty) <= max(1e-5, a_qty * 0.01)
+            for br in base_rows
+        ):
+            continue
+        if a_oid:
+            seen_oids.add(a_oid)
+        merged.append(ar)
+    return merged
+
+
 def load_symbol_best_recent_fills(
     cachedb_dir: str,
     symbol: str,
@@ -940,10 +970,13 @@ def load_symbol_best_recent_fills(
         o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
         matched_cand = next((cand for cand in quote_variants if casefold_get(o_items, cand)), None)
         orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
-        if not orders_for_sym and cache_venue in ("hyperliquid", "t212"):
+        if cache_venue in ("hyperliquid", "t212"):
             audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
-            matched_cand = next((cand for cand in quote_variants if casefold_get(audit_items, cand)), None)
-            orders_for_sym = casefold_get(audit_items, matched_cand) if matched_cand else []
+            audit_cand = next((cand for cand in quote_variants if casefold_get(audit_items, cand)), None)
+            if audit_cand:
+                orders_for_sym = _merge_audit_orders(orders_for_sym, casefold_get(audit_items, audit_cand))
+                if not matched_cand:
+                    matched_cand = audit_cand
         v_ai_intents = (
             [it for it in ai_intents_list if isinstance(it, dict) and normalize_venue_name(it.get("venue")) == cache_venue]
             if ai_intents_list is not None
@@ -1085,12 +1118,47 @@ def harvest_recent_orders_and_enrich_positions(
         else:
             recent_orders.setdefault(sym_k, fills_d)
 
+    active_t212_syms: set[str] = set()
+    for s_k in (t212_cycles or {}):
+        for v_s in (s_k, *cache_symbol_variants(str(s_k), include_base=True)):
+            active_t212_syms.add(str(v_s).strip().upper())
+    for s_k, iv in (inst_by_sym or {}).items():
+        if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212":
+            raw_s = str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip().upper()
+            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
+                active_t212_syms.add(str(v_s).strip().upper())
+    for pos_it in (tradable_positions or ()):
+        if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
+            raw_s = str(pos_it.get("symbol") or "").strip().upper()
+            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
+                active_t212_syms.add(str(v_s).strip().upper())
+    allowed_t212_syms = set(active_t212_syms)
+    if allowed_t212_syms:
+        for it_t212 in (_venue_intents("t212") or ()):
+            raw_s = str(it_t212.get("symbol") or "").strip().upper()
+            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
+                allowed_t212_syms.add(str(v_s).strip().upper())
+
+    audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for order_cache_name, cache_venue in _ORDER_CACHE_FILES:
         orders_data = _rj(os.path.join(cache_dir, order_cache_name))
         if isinstance(orders_data, dict) and isinstance(orders_data.get("items"), dict):
             v_ai_intents = _venue_intents(cache_venue)
+            v_audit_map = (
+                audit_cache_by_venue.setdefault(cache_venue, _load_audit_terminal_orders(cache_dir, cache_venue))
+                if cache_dir and cache_venue in ("hyperliquid", "t212")
+                else {}
+            )
             for sym, o_list in orders_data["items"].items():
-                if fills := extract_symbol_recent_fills(o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=v_ai_intents, symbol=sym):
+                sym_u = str(sym or "").strip().upper()
+                if cache_venue == "t212" and allowed_t212_syms and sym_u not in allowed_t212_syms:
+                    continue
+                merged_o_list = (
+                    _merge_audit_orders(o_list, v_audit_map.get(sym_u) or v_audit_map.get(str(sym)) or [])
+                    if v_audit_map and isinstance(o_list, list)
+                    else o_list
+                )
+                if fills := extract_symbol_recent_fills(merged_o_list, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map, ai_intents=v_ai_intents, symbol=sym):
                     _record_venue_fills(cache_venue, sym, fills)
 
     seen_hl_syms: set[str] = set()
@@ -1111,9 +1179,13 @@ def harvest_recent_orders_and_enrich_positions(
     for fallback_venue in ("binance", "kraken", "hyperliquid", "t212"):
         fb_ai_intents = _venue_intents(fallback_venue)
         audit_by_sym = (
-            _load_audit_terminal_orders(cache_dir, fallback_venue)
-            if cache_dir and fallback_venue in ("hyperliquid", "t212")
-            else {}
+            audit_cache_by_venue.get(fallback_venue)
+            if fallback_venue in audit_cache_by_venue
+            else (
+                _load_audit_terminal_orders(cache_dir, fallback_venue)
+                if cache_dir and fallback_venue in ("hyperliquid", "t212")
+                else {}
+            )
         )
         intent_syms = {
             str(it.get("symbol") or "").strip().upper()
