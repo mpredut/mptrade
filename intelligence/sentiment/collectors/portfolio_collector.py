@@ -688,6 +688,9 @@ def harvest_tradable_positions_and_orders(
 
             px = prices_and_trends.get(sym, {}).get("price")
             px_f = safe_pos_float(px, default=0.0) or 0.0
+            pos_bkey_cur = f"pos:{v_norm}:{sym}"
+            prev_cached_pos = cached_bals.get(pos_bkey_cur) if isinstance(cached_bals.get(pos_bkey_cur), dict) else {}
+            px_from_cached_pos = False
             if px_f <= 0:
                 try:
                     get_px_fn = getattr(inst._provider, "get_current_price", None)
@@ -697,6 +700,9 @@ def harvest_tradable_positions_and_orders(
                     px, px_f = None, 0.0
             if px_f <= 0 and (px_f := resolve_symbol_price(sym, prices_and_trends, explicit_quote=quote)) > 0:
                 px = px_f
+            if px_f <= 0 and (prev_pos_px := safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0) > 0:
+                px = px_f = round(prev_pos_px, 4) if v_norm == "t212" else prev_pos_px
+                px_from_cached_pos = True
             sym_entry = prices_and_trends.setdefault(sym, {"price": px if px_f > 0 else None, "trend": 0, "growth_coefficient": 0.0})
             if px_f > 0 and (safe_pos_float(sym_entry.get("price"), default=0.0) or 0.0) <= 0:
                 sym_entry["price"] = px
@@ -751,7 +757,12 @@ def harvest_tradable_positions_and_orders(
             if params.get("mt.gain") or params.get("mt.lost"):
                 pos_entry["mt_gain_pct"], pos_entry["mt_lost_pct"] = params.get("mt.gain"), params.get("mt.lost")
             tradable_positions.append(pos_entry)
-            updated_bals[f"pos:{v_norm}:{sym}"] = {**pos_entry, "ts": round(now_ts_oo, 3)}
+            eff_pos_ts = (
+                safe_pos_float(prev_cached_pos.get("ts"), default=None) or round(now_ts_oo, 3)
+                if px_from_cached_pos
+                else round(now_ts_oo, 3)
+            )
+            updated_bals[pos_bkey_cur] = {**pos_entry, "ts": eff_pos_ts}
 
             if callable(open_fn := getattr(inst, "open_orders", None)):
                 oo_key = f"open_orders:{v_norm}:{sym}"

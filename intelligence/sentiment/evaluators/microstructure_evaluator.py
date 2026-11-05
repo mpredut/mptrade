@@ -110,7 +110,11 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             minfo["cvd_regime"] = ("ask_absorbing" if chg_15m <= 0.02 else "aggressive_buying") if has_chg_15m else ("ask_absorbing" if ob_imb <= 0.44 else "aggressive_buying")
         elif cvd_usd < 0.0:
             is_bid_absorbing = (
-                (chg_15m >= 0.05 or (chg_15m >= -0.05 and (ob_imb >= 0.54 or div_reg in ("short_covering", "bullish_absorption"))))
+                (
+                    chg_15m >= 0.05
+                    or (chg_15m >= -0.05 and (ob_imb >= 0.54 or div_reg in ("accumulation", "short_covering", "bullish_absorption")))
+                    or (chg_15m >= -0.15 and ob_imb >= 0.65 and div_reg in ("accumulation", "short_covering", "bullish_absorption"))
+                )
                 if has_chg_15m
                 else (ob_imb >= 0.58 or div_reg in ("short_covering", "bullish_absorption"))
             )

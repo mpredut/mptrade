@@ -5695,18 +5695,77 @@ def test_stale_major_swing_low_cleanup_and_guard_anomaly_scanner(tmp_path):
     assert pinfo_valid.get("major_swing_low_px") == 129.79
     assert pinfo_valid.get("rally_from_major_low_pct") == pytest.approx(((135.0 - 129.79) / 129.79) * 100.0, abs=0.01)
 
-    # 2. harvest_log_anomalies_from_dirs ignores /compact warning lines and does not false-match [GUARD] across brackets
+    # 2. harvest_log_anomalies_from_dirs ignores /compact warning lines, ignores routine Existing SELL order blocks,
+    #    and deduplicates repeated guard signatures by normalized signature
     log_dir = tmp_path / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "python_orchestrator.log"
     log_file.write_text(
         "2026-11-05 03:37:48,420 [WARNING] In-place /compact for topic 'auto_technical_repair' conversation d9d22d76 failed: "
         "Command '['/home/predut/.local/bin/agy-bot', '-p', '/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.']' timed out after 120.0 seconds\n"
+        "03:50:19 [BTCUSDC] Existing SELL order blocks AssetGuardian tier: ['10723115083']\n"
+        "2026-11-05 03:38:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC\n"
         "2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC\n",
         encoding="utf-8",
     )
     res = harvest_log_anomalies_from_dirs([str(log_dir)], 1)
     assert res.error_count == 0
-    assert res.warning_count == 1
+    assert res.warning_count == 2
     assert res.guard_interventions == ["2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC"]
+
+    # 3. enrich_microstructure_cvd treats negative 15m CVD with high bid dominance (>=0.65), accumulation regime,
+    #    and mild 15m drift (-0.09% >= -0.15%) as spot_absorbing rather than aggressive_market_dumps
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+
+    btc_micro = {"cvd_15m_usd": -2_225_828.0, "ob_imbalance": 0.71, "divergence_regime": "accumulation"}
+    enrich_microstructure_cvd(btc_micro, {"price": 80673.07, "chg_15m_pct": -0.09})
+    assert btc_micro["cvd_regime"] == "spot_absorbing"
+
+    # 4. harvest_tradable_positions_and_orders preserves cached position price and ts when get_current_price returns None
+    import json
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_tradable_positions_and_orders
+
+    vb_path = tmp_path / "venue_balances_state.json"
+    vb_path.write_text(
+        json.dumps(
+            {
+                "pos:t212:NVDA_US_EQ": {
+                    "venue": "t212",
+                    "symbol": "NVDA_US_EQ",
+                    "price": 199.22,
+                    "free_base": 0.41,
+                    "ts": 1793844937.278,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_prov = SimpleNamespace(
+        get_current_price=lambda s: None,
+        free_balance=lambda a: 0.41 if a == "NVDA_US_EQ" else 14.01,
+    )
+    fake_inst = SimpleNamespace(
+        symbol="NVDA_US_EQ",
+        provider_name="t212",
+        base="NVDA_US_EQ",
+        quote="USD",
+        _provider=fake_prov,
+        params={},
+        open_orders=lambda: [],
+    )
+    pt_eq = {}
+    pos_list, _, _, _ = harvest_tradable_positions_and_orders(
+        {"T212_NVDA": fake_inst},
+        pt_eq,
+        {},
+        {},
+        cache_dir=str(tmp_path),
+    )
+    assert pos_list[0]["price"] == 199.22
+    assert pt_eq["NVDA_US_EQ"]["price"] == 199.22
+    saved_vb = json.loads(vb_path.read_text(encoding="utf-8"))
+    assert saved_vb["pos:t212:NVDA_US_EQ"]["price"] == 199.22
+    assert saved_vb["pos:t212:NVDA_US_EQ"]["ts"] == 1793844937.278
+
 

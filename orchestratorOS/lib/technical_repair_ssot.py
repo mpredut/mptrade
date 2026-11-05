@@ -671,9 +671,10 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         re.IGNORECASE,
     )
     guard_pattern = re.compile(
-        r"(\[[^\[\]\r\n]*GUARD[^\[\]\r\n]*\]|AssetGuardian\s+tier|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)",
+        r"(\[[^\[\]\r\n]*GUARD[^\[\]\r\n]*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)",
         re.IGNORECASE,
     )
+    guard_sig_to_idx: Dict[str, int] = {}
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
@@ -806,7 +807,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                         elif guard_pattern.search(line):
                             warning_count += 1
                             cleaned = line.strip()
-                            if cleaned not in guard_interventions and len(guard_interventions) < 50:
+                            g_sig = normalize_error_signature(cleaned) or cleaned
+                            if g_sig in guard_sig_to_idx:
+                                guard_interventions[guard_sig_to_idx[g_sig]] = cleaned
+                            elif len(guard_interventions) < 50:
+                                guard_sig_to_idx[g_sig] = len(guard_interventions)
                                 guard_interventions.append(cleaned)
                         elif daemon_recovered_pattern.search(line):
                             for sig_k, st_prev in list(file_sig_stats.items()):
