@@ -56,7 +56,9 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     """Format a normalized venue cycle anchor entry for Section 3C of the AI prompt."""
     extra_parts: List[str] = []
     if cyc.get("pos_peak") is not None and not _same_anchor_px(cyc.get("pos_peak"), cyc.get("avg_cost_px")):
-        pk_sfx = f" (dd_from_peak={cyc.get('dd_from_peak_pct')}%)" if cyc.get("dd_from_peak_pct") is not None else ""
+        pk_dd = _parse_finite_float(cyc.get("dd_from_peak_pct"), None)
+        pk_dd_val = (pk_dd + 0.0) if pk_dd is not None else cyc.get("dd_from_peak_pct")
+        pk_sfx = f" (dd_from_peak={pk_dd_val}%)" if pk_dd_val is not None else ""
         extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
     if cyc.get("realized_pnl_usd") is not None:
         extra_parts.append(f"realized_pnl=${cyc.get('realized_pnl_usd')}")
@@ -892,7 +894,9 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 if anchor_f > 0.0:
                     if px_k == "trailing_peak" and anchor_f < px_f:
                         anchor_f = px_f
-                    pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2)
+                    pct_val = round(((px_f - anchor_f) / anchor_f) * 100.0, 2) + 0.0
+            elif isinstance(pct_val, float):
+                pct_val = pct_val + 0.0
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
     if (lifo_p := _parse_finite_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:

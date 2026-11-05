@@ -894,7 +894,7 @@ def enrich_positions_with_orders_and_cycles(
                 if pk_val < cand_px:
                     pk_val = cand_px
                     pos["trailing_peak"] = round(pk_val, 6)
-                pos["dd_from_peak_pct"] = round(((cand_px - pk_val) / pk_val) * 100.0, 2)
+                pos["dd_from_peak_pct"] = pct_delta(cand_px, pk_val)
         v_ro_map = venue_recent_orders.get(p_venue, {})
         ro = next((val for cand in p_quote_variants if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
         fb_cur = safe_float(pos.get("free_base"), -1.0)
@@ -981,12 +981,12 @@ def enrich_positions_with_orders_and_cycles(
                     cyc["avg_cost_px"] = round(eff_avg_cost, 6)
                     cyc["cost_usd"] = round(cyc_qty * eff_avg_cost, 2)
                     if pos_px_f > 0.0:
-                        cyc["pnl_vs_avg_pct"] = round(((pos_px_f - eff_avg_cost) / eff_avg_cost) * 100.0, 2)
+                        cyc["pnl_vs_avg_pct"] = pct_delta(pos_px_f, eff_avg_cost)
                         cyc["dd_pct"] = cyc["pnl_vs_avg_pct"]
                 if pos_px_f > 0.0 and (c_peak := safe_pos_float(cyc.get("pos_peak") or pos.get("trailing_peak"), default=None)) is not None:
                     eff_peak = max(c_peak, pos_px_f)
                     cyc["pos_peak"] = round(eff_peak, 6)
-                    cyc["dd_from_peak_pct"] = round(((pos_px_f - eff_peak) / eff_peak) * 100.0, 2)
+                    cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, eff_peak)
             if pos.get("free_base") is None and cyc_qty is not None:
                 pos["free_base"] = round(cyc_qty, 6)
                 fb_cur = cyc_qty

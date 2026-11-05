@@ -6073,6 +6073,73 @@ def test_recalculate_live_price_geometry_6h_bottom_invalidation_and_equal_low_bo
     assert pinfo_eq["higher_low_vs_prior_pct"] == 0.0
 
 
+def test_parenthetical_multi_item_taker_ratio_bullish_aligned_flow_and_no_negative_zero_dd():
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import enrich_sentiment_advisor_live_flow_divergence
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from orchestratorOS.supervisor.prompt_sections import _format_tradable_position_line, _format_venue_cycle_line
+
+    # 1. Multi-item parenthetical where 5m comes BEFORE overall/15m/1h
+    assert parse_cited_taker_ratio("taker ratios (5m 0.67, overall 0.60)") == 0.60
+    assert parse_cited_taker_ratio("aggressive short-term taker buying (5m ratio 2.5385, 15m ratio 1.4319)") == 1.4319
+    assert parse_cited_taker_ratio("aggressive short-term taker buying (5m ratio 2.5385, 1h ratio 1.1636)") == 1.1636
+
+    # 2. BULLISH advisor that already cited bullish taker buying (cited_tr >= 1.10) does not trigger false LIVE_FLOW_RECOVERY
+    sa_bull_aligned = {
+        "market_bias": "BULLISH",
+        "recommended_action": "HOLD",
+        "age_min": 16.0,
+        "summary": "BTC maintains strong bullish momentum backed by aggressive short-term taker buying (1h taker ratio 1.1636, 5m ratio 2.5385).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bull_aligned,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.48, "taker_ratio_1h": 1.32, "cvd_15m_usd": 8_000_000.0}},
+    )
+    assert "live_flow_divergence" not in sa_bull_aligned
+
+    # 3. Tiny sub-basis-point drawdown from peak (e.g. TAOUSD 237.35145 vs trail_peak 237.3584) formats as 0.0%, never -0.0%
+    pos_tao = [
+        {
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "quote": "USD",
+            "free_base": 0.073518,
+            "locked_base_qty": 3.63336,
+            "price": 235.0,
+            "trailing_peak": 237.3584,
+            "active_avg_buy_px": 235.741094,
+        }
+    ]
+    krk_cycles = {
+        "TAOUSD": {
+            "qty": 3.706878,
+            "cost_usd": 873.86,
+            "avg_cost_px": 235.741094,
+            "entry_price": 235.741094,
+            "pos_peak": 237.3584,
+            "dca_buys": 0,
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        pos_tao,
+        {"TAOUSD": {"price": 237.35145}},
+        {},
+        {},
+        {},
+        krk_cycles,
+        {},
+        {},
+        {},
+    )
+    pos_line = _format_tradable_position_line(pos_tao[0])
+    cyc_line = _format_venue_cycle_line("kraken", "TAOUSD", krk_cycles["TAOUSD"])
+    assert "dd_from_peak=-0.0%" not in pos_line
+    assert "dd_from_peak=0.0%" in pos_line
+    assert "dd_from_peak=-0.0%" not in cyc_line
+    assert "dd_from_peak=0.0%" in cyc_line
+
+
+
 
 
 

@@ -462,7 +462,7 @@ def _attach_trailing_peak_to_position(
         pos_entry.pop("dd_from_peak_pct", None)
         return
     eff_peak = max(peak_f, px_f) if px_f > 0.0 else peak_f
-    dd_pct = round(((px_f - eff_peak) / eff_peak) * 100.0, 2) if px_f > 0.0 else fallback_dd
+    dd_pct = (round(((px_f - eff_peak) / eff_peak) * 100.0, 2) + 0.0) if px_f > 0.0 else fallback_dd
     min_notional_f = max(1.0, safe_float(pos_entry.get("exchange_min_notional_usd") or pos_entry.get("min_notional_usd"), 1.0))
     has_held_base = fb_val is None or (fb_val > 1e-8 and (px_f <= 0.0 or fb_val * px_f >= min_notional_f))
     if has_held_base:
@@ -1125,11 +1125,11 @@ def harvest_recent_orders_and_enrich_positions(
                 if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
                     t_cyc["cost_usd"] = round(held_c * t_avg, 2)
                     if t_px > 0.0:
-                        t_cyc["pnl_vs_avg_pct"] = t_cyc["dd_pct"] = round(((t_px - t_avg) / t_avg) * 100.0, 2)
+                        t_cyc["pnl_vs_avg_pct"] = t_cyc["dd_pct"] = round(((t_px - t_avg) / t_avg) * 100.0, 2) + 0.0
                 if t_px > 0.0 and (t_pk := safe_pos_float(t_cyc.get("pos_peak"), default=None)) is not None:
                     eff_t_pk = max(t_pk, t_px)
                     t_cyc["pos_peak"] = round(eff_t_pk, 6)
-                    t_cyc["dd_from_peak_pct"] = round(((t_px - eff_t_pk) / eff_t_pk) * 100.0, 2)
+                    t_cyc["dd_from_peak_pct"] = round(((t_px - eff_t_pk) / eff_t_pk) * 100.0, 2) + 0.0
     cyc_sell_ts_map = reconcile_venue_cycles_with_recent_orders(
         kraken_cycles, hyperliquid_cycles, t212_cycles, venue_recent_orders, live_held_by_venue_sym, prices_and_trends
     )

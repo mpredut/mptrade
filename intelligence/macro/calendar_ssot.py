@@ -427,6 +427,26 @@ _CITED_TAKER_RATIO_RE = re.compile(
     r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:overall|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?|[),])(?![0-9%]))",
     re.IGNORECASE,
 )
+_TAKER_PAREN_GROUP_RE = re.compile(
+    r"taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))([^.;()\n]{0,45}?)\(([^()\n]{1,120})\)",
+    re.IGNORECASE,
+)
+_PAREN_RATIO_ITEM_RE = re.compile(
+    r"(?:(?:(overall|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s:=]*)([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
+    r"|([0-9]+\.[0-9]+)\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?\b"
+    r"|\b(overall|15m|1h|4h|5m|3m|1m)[\s:=]+([0-9]+\.[0-9]+)(?![0-9%A-Za-z]))",
+    re.IGNORECASE,
+)
+
+
+def _rank_taker_ratio_context(ctx: str) -> int:
+    if re.search(r"\b(?:overall|15m)\b", ctx):
+        return 3
+    if re.search(r"\b(?:1m|3m|5m)\b", ctx):
+        return 0
+    if re.search(r"\b(?:1h|4h)\b", ctx):
+        return 1
+    return 2
 
 
 def parse_cited_taker_ratio(text: Any) -> Optional[float]:
@@ -449,17 +469,32 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
             continue
         raw_prefix = text[max(0, m_tr.start() - 32) : m_tr.start()].lower()
         clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_tr.group(0).lower()}"
-        if re.search(r"\b(?:overall|15m)\b", clause_ctx):
-            rank = 3
-        elif re.search(r"\b(?:1m|3m|5m)\b", clause_ctx):
-            rank = 0
-        elif re.search(r"\b(?:1h|4h)\b", clause_ctx):
-            rank = 1
-        else:
-            rank = 2
+        rank = _rank_taker_ratio_context(clause_ctx)
         if rank > best_rank:
             best_rank = rank
             best_val = val
+    for m_pg in _TAKER_PAREN_GROUP_RE.finditer(text):
+        raw_prefix = text[max(0, m_pg.start() - 32) : m_pg.start()].lower()
+        outer_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_pg.group(0).split('(', 1)[0].lower()}"
+        for sub_item in re.split(r"[,;]", m_pg.group(2)):
+            sub_low = sub_item.strip().lower()
+            if not sub_low or re.search(r"\b(?:cvd|oi|vol|volume|funding|change|chg)\b", sub_low):
+                continue
+            m_sub = _PAREN_RATIO_ITEM_RE.search(sub_low)
+            if m_sub is None:
+                continue
+            val = safe_pos_float(m_sub.group(2) or m_sub.group(3) or m_sub.group(5), default=None)
+            if val is None:
+                continue
+            sub_hz = m_sub.group(1) or m_sub.group(4) or sub_low
+            rank = (
+                _rank_taker_ratio_context(sub_hz)
+                if re.search(r"\b(?:overall|15m|1h|4h|5m|3m|1m)\b", sub_hz)
+                else _rank_taker_ratio_context(outer_ctx)
+            )
+            if rank > best_rank:
+                best_rank = rank
+                best_val = val
     return best_val
 
 

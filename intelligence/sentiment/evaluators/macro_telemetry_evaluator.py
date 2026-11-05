@@ -529,6 +529,8 @@ def enrich_sentiment_advisor_live_flow_divergence(
         and cited_tr is not None
         and (eff_live_tr := (live_tr if live_tr is not None else live_tr_1h)) is not None
         and abs(eff_live_tr - cited_tr) >= 0.30
+        and not (eff_live_tr > cited_tr and sa_bias == "BULLISH" and cited_tr >= 1.10)
+        and not (eff_live_tr < cited_tr and sa_bias == "BEARISH" and cited_tr <= 0.90)
     ):
         shift_dir = "LIVE_FLOW_RECOVERY" if eff_live_tr > cited_tr else "LIVE_FLOW_FADE"
         sentiment_advisor["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
