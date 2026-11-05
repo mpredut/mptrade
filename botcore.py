@@ -1858,3 +1858,9 @@ if not any(
 
 
 register_module_aliases(__name__, "config")
+
+if (_loaded_utils := sys.modules.get("utils")) is not None:
+    _loaded_utils.calculate_difference_percent = diff_percent
+    _loaded_utils.are_close = are_close
+    _loaded_utils.format_price_log = format_price_log
+
