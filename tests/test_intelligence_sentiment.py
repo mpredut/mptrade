@@ -7219,5 +7219,110 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert not anom_iter21.persistent_errors
     assert not anom_iter21.guard_interventions
 
+    # 7. Multi-horizon parenthesized CVD parsing, horizon-specific taker ratio extraction, and 5m flow fade/recovery divergence
+    sa_multi_sum = (
+        "European morning accumulation is actively underway as BTC advances to $80,487.51 (81% range position) "
+        "backed by expanding 24h market breadth (68.8% advancing) and aggressive multi-timeframe taker buying "
+        "(1.5385 overall, 2.0885 5m, 1.1871 1h). Stabilizing open interest (+0.07% 1h to $7.71B) alongside "
+        "strong positive CVD inflows (+$17.56M 1h / +$34.59M 4h) confirms constructive institutional bid absorption."
+    )
+    assert parse_cited_taker_ratio(sa_multi_sum) == 1.5385
+    assert parse_cited_taker_ratio(sa_multi_sum, horizon="5m") == 2.0885
+    assert parse_cited_taker_ratio(sa_multi_sum, horizon="1h") == 1.1871
+    assert parse_cited_taker_ratio("5m/15m taker buying (2.09, 1.18)") == 1.18
+    assert parse_cited_taker_ratio("5m/15m taker buying (2.09, 1.18)", horizon="5m") == 2.09
+    assert parse_cited_cvd_usd(sa_multi_sum, horizon="1h") == 17_560_000.0
+    assert parse_cited_cvd_usd(sa_multi_sum, horizon="4h") == 34_590_000.0
+    sa_slash_cvd_sum = (
+        "Broader structural support remains intact with positive 1h open interest growth (+0.18% to $7.72B) "
+        "and sustained 1h/4h CVD inflows (+$11.72M / +$36.57M), favoring a disciplined HOLD posture."
+    )
+    assert parse_cited_cvd_usd(sa_slash_cvd_sum, horizon="1h") == 11_720_000.0
+    assert parse_cited_cvd_usd(sa_slash_cvd_sum, horizon="4h") == 36_570_000.0
+    assert parse_cited_cvd_usd(sa_slash_cvd_sum, horizon="5m") is None
 
+    ada_abs_m = {
+        "cvd_15m_usd": -111_400.0,
+        "spot_cvd_15m_usd": 25_800.0,
+        "ob_imbalance": 0.582,
+        "taker_buy_sell_ratio": 0.7353,
+        "cvd_1h_usd": 78_800.0,
+    }
+    enrich_microstructure_cvd(ada_abs_m, {"price": 0.197429, "chg_15m_pct": -0.12})
+    assert ada_abs_m["cvd_regime"] == "spot_absorbing"
 
+    arb_liq_5m = compute_liquidation_clusters(
+        {
+            "price": 0.16335,
+            "vol_1h_pct": 0.8516,
+            "kalman_vel": -0.03124,
+            "chg_15m_pct": 0.21,
+            "val_px": 0.162954,
+            "vah_px": 0.169546,
+            "low_24h": 0.1595,
+            "high_24h": 0.1723,
+        },
+        {
+            "oi_usd": 34_247_744.15,
+            "whale_long_pct": 0.6195,
+            "funding_rate": 0.00008435,
+            "ob_imbalance": 0.565,
+            "bid_wall_px": 0.1623,
+            "ask_wall_px": 0.1647,
+            "taker_buy_sell_ratio": 0.367,
+            "cvd_15m_usd": -364_600.0,
+            "cvd_regime": "spot_absorbing",
+            "spot_cvd_15m_usd": 12_300.0,
+            "taker_ratio_5m": 2.68,
+            "cvd_5m_usd": 18_400.0,
+            "taker_ratio_1h": 0.59,
+            "cvd_1h_usd": -401_200.0,
+        },
+    )
+    assert arb_liq_5m["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
+    sa_5m_fade = {
+        "market_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 62.7,
+        "summary": sa_multi_sum,
+        "key_risks": [],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_5m_fade,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 1.5231,
+                "cvd_15m_usd": 13_270_000.0,
+                "taker_ratio_5m": 0.8317,
+                "cvd_5m_usd": -1_640_000.0,
+                "taker_ratio_1h": 1.1045,
+                "cvd_1h_usd": 8_780_000.0,
+            }
+        },
+    )
+    assert "LIVE_5M_FLOW_FADE" in sa_5m_fade.get("live_flow_divergence", "")
+    assert "5m_ratio=2.09" in sa_5m_fade.get("live_flow_divergence", "")
+
+    sa_5m_rec = {
+        "market_bias": "BEARISH",
+        "recommended_action": "REDUCE",
+        "age_min": 35.0,
+        "summary": "Heavy distribution continues with taker selling (0.82 overall, 0.54 5m, 0.78 1h) and CVD (-$8.50M 1h).",
+        "key_risks": [],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_5m_rec,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.88,
+                "cvd_15m_usd": -1_200_000.0,
+                "taker_ratio_5m": 1.42,
+                "cvd_5m_usd": 1_850_000.0,
+                "taker_ratio_1h": 0.85,
+                "cvd_1h_usd": -4_100_000.0,
+            }
+        },
+    )
+    assert "LIVE_5M_FLOW_RECOVERY" in sa_5m_rec.get("live_flow_divergence", "")
+    assert "5m_ratio=0.54" in sa_5m_rec.get("live_flow_divergence", "")

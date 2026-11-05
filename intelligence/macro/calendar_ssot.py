@@ -455,8 +455,8 @@ def _rank_taker_ratio_context(ctx: str) -> int:
     return 2
 
 
-def parse_cited_taker_ratio(text: Any) -> Optional[float]:
-    """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons."""
+def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Optional[float]:
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string (or sequence of strings), preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons unless a specific `horizon` is requested."""
     if isinstance(text, (list, tuple)):
         parts: List[str] = []
         for item in text:
@@ -467,6 +467,23 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
         text = "\n".join(parts)
     if not isinstance(text, str) or not text:
         return None
+    hz_norm = str(horizon).strip().lower() if horizon else ""
+    target_hz_re = (
+        re.compile(
+            {
+                "5m": r"\b(?:5m|5-minute)\b",
+                "3m": r"\b(?:3m|3-minute)\b",
+                "1m": r"\b(?:1m|1-minute)\b",
+                "15m": r"\b(?:overall|aggregate|15m|15-minute)\b",
+                "overall": r"\b(?:overall|aggregate|15m|15-minute)\b",
+                "1h": r"\b(?:1h|1-hour)\b",
+                "4h": r"\b(?:4h|4-hour)\b",
+            }.get(hz_norm, rf"\b{re.escape(hz_norm)}\b"),
+            re.IGNORECASE,
+        )
+        if hz_norm
+        else None
+    )
     best_rank = -1
     best_val: Optional[float] = None
     for m_tr in _CITED_TAKER_RATIO_RE.finditer(text):
@@ -482,7 +499,17 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
         )
         local_ctx = f"{m_grp0.split('(', 1)[-1]} {raw_suffix}"
         clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_grp0} {raw_suffix}"
-        rank = _rank_taker_ratio_context(local_ctx if _HORIZON_TOKEN_RE.search(local_ctx) else clause_ctx)
+        if _HORIZON_TOKEN_RE.search(local_ctx):
+            eff_ctx = local_ctx
+        elif "(" in m_grp0 and len(clause_hz := _HORIZON_TOKEN_RE.findall(clause_ctx)) >= 2:
+            eff_ctx = clause_hz[0]
+        else:
+            eff_ctx = clause_ctx
+        if target_hz_re is not None:
+            if target_hz_re.search(eff_ctx):
+                return val
+            continue
+        rank = _rank_taker_ratio_context(eff_ctx)
         if rank > best_rank:
             best_rank = rank
             best_val = val
@@ -506,11 +533,16 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
                 continue
             sub_hz = m_sub.group(1) or m_sub.group(4) or m_sub.group(7) or sub_low
             if _HORIZON_TOKEN_RE.search(sub_hz):
-                rank = _rank_taker_ratio_context(sub_hz)
+                eff_sub_ctx = sub_hz
             elif len(outer_hz_list) >= 2 and idx < len(outer_hz_list):
-                rank = _rank_taker_ratio_context(outer_hz_list[idx])
+                eff_sub_ctx = outer_hz_list[idx]
             else:
-                rank = _rank_taker_ratio_context(outer_ctx)
+                eff_sub_ctx = outer_ctx
+            if target_hz_re is not None:
+                if target_hz_re.search(eff_sub_ctx):
+                    return val
+                continue
+            rank = _rank_taker_ratio_context(eff_sub_ctx)
             if rank > best_rank:
                 best_rank = rank
                 best_val = val
@@ -518,7 +550,7 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
 
 
 def parse_cited_cvd_usd(text: Any, horizon: str = "1h") -> Optional[float]:
-    """Extract a cited BTC CVD dollar figure (e.g. `-$2.48M`, `+$5.69M`) for the specified horizon (`1h`, `15m`, `5m`)."""
+    """Extract a cited BTC CVD dollar figure (e.g. `-$2.48M`, `+$5.69M`) for the specified horizon (`1h`, `15m`, `5m`, `4h`)."""
     if isinstance(text, (list, tuple)):
         parts: List[str] = []
         for item in text:
@@ -529,25 +561,67 @@ def parse_cited_cvd_usd(text: Any, horizon: str = "1h") -> Optional[float]:
         text = "\n".join(parts)
     if not isinstance(text, str) or not text:
         return None
-    hz_pat = {"1h": r"(?:1h|1-hour)", "15m": r"(?:15m|15-minute)", "5m": r"(?:5m|5-minute)"}.get(
-        str(horizon or "1h").lower(), re.escape(str(horizon or "1h"))
-    )
+    hz_norm = str(horizon or "1h").lower()
+    hz_pat = {
+        "1h": r"(?:1h|1-hour)",
+        "15m": r"(?:15m|15-minute)",
+        "5m": r"(?:5m|5-minute)",
+        "4h": r"(?:4h|4-hour)",
+    }.get(hz_norm, re.escape(hz_norm))
+    hz_tok_re = re.compile(rf"^{hz_pat}$", re.IGNORECASE)
+    for m_multi in re.finditer(
+        r"((?:\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b\s*(?:/|,|\band\b)\s*)+\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b)\s+cvd[^()\n]{0,35}\(([^()\n]{1,90})\)",
+        text,
+        re.IGNORECASE,
+    ):
+        hz_list = re.findall(r"\b(?:5m|15m|1h|4h|5-minute|15-minute|1-hour|4-hour)\b", m_multi.group(1), re.IGNORECASE)
+        val_list = re.findall(r"([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b", m_multi.group(2))
+        for idx, hz_item in enumerate(hz_list):
+            if hz_tok_re.match(hz_item) and idx < len(val_list):
+                s1, s2, num_s, unit_s = val_list[idx]
+                val = safe_pos_float(num_s, default=None)
+                if val is not None:
+                    sign = -1.0 if ("-" in (s1 or "") or "-" in (s2 or "")) else 1.0
+                    mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((unit_s or "m").lower(), 1.0)
+                    return sign * val * mult
     pattern = re.compile(
-        rf"(?:\b(?:{hz_pat}[\s_]+cvd|cvd[\s_]+{hz_pat})\b[^.;,\n()]{{0,35}}?\(?\s*([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b"
+        rf"(?:(?<![/])\b(?:{hz_pat}[\s_]+cvd|cvd[\s_]+{hz_pat})\b[^.;,\n()]{{0,35}}?\(?\s*([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b"
         rf"|([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s+{hz_pat}[\s_]+cvd\b)",
         re.IGNORECASE,
     )
     m = pattern.search(text)
-    if m is None:
-        return None
-    if m.group(3) is not None:
-        s1, s2, num_s, unit_s = m.group(1) or "", m.group(2) or "", m.group(3), m.group(4)
+    if m is not None:
+        if m.group(3) is not None:
+            s1, s2, num_s, unit_s = m.group(1) or "", m.group(2) or "", m.group(3), m.group(4)
+        else:
+            s1, s2, num_s, unit_s = m.group(5) or "", m.group(6) or "", m.group(7), m.group(8)
     else:
-        s1, s2, num_s, unit_s = m.group(5) or "", m.group(6) or "", m.group(7), m.group(8)
+        s1 = s2 = num_s = unit_s = None
+        sub_pat = re.compile(
+            rf"(?:([+-]?)\s*\$\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s*(?:(?:on|in|for|over)\s+)?\b{hz_pat}\b"
+            rf"|\b{hz_pat}\b[\s:=]+([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b)",
+            re.IGNORECASE,
+        )
+        for m_cvd in re.finditer(r"\bcvd\b([^;\n]{0,90})", text, re.IGNORECASE):
+            clause = re.split(
+                r"(?<!\d)\.(?!\d)|\b(?:oi|open\s+interest|vol|volume|funding|liq|liquidations?)\b",
+                m_cvd.group(1),
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            m_sub = sub_pat.search(clause)
+            if m_sub is not None:
+                if m_sub.group(3) is not None:
+                    s1, s2, num_s, unit_s = m_sub.group(1) or "", m_sub.group(2) or "", m_sub.group(3), m_sub.group(4)
+                else:
+                    s1, s2, num_s, unit_s = m_sub.group(5) or "", m_sub.group(6) or "", m_sub.group(7), m_sub.group(8)
+                break
+        if num_s is None:
+            return None
     val = safe_pos_float(num_s, default=None)
     if val is None:
         return None
-    sign = -1.0 if ("-" in s1 or "-" in s2) else 1.0
+    sign = -1.0 if ("-" in (s1 or "") or "-" in (s2 or "")) else 1.0
     mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((unit_s or "m").lower(), 1.0)
     return sign * val * mult
 

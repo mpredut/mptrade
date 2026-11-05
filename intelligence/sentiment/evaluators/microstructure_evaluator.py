@@ -107,9 +107,9 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
     if not minfo.get("cvd_regime") or pinfo is not None:
+        cvd_1h_cur = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0
         if cvd_usd > 0.0:
             tr_cur = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=1.0) or 1.0
-            cvd_1h_cur = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0
             is_ask_absorbing = (
                 (
                     chg_15m <= 0.02
@@ -133,7 +133,11 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
                     or (chg_15m >= -0.05 and (ob_imb >= 0.54 or div_reg in ("accumulation", "short_covering", "bullish_absorption")))
                     or (
                         chg_15m >= -0.15
-                        and (ob_imb >= 0.65 or (ob_imb >= 0.54 and div_reg in ("accumulation", "short_covering", "bullish_absorption")))
+                        and (
+                            ob_imb >= 0.65
+                            or (ob_imb >= 0.54 and div_reg in ("accumulation", "short_covering", "bullish_absorption"))
+                            or (ob_imb >= 0.57 and cvd_1h_cur > 0.0)
+                        )
                         and div_reg not in ("long_liquidation", "aggressive_shorting", "bearish_distribution")
                     )
                 )
@@ -389,6 +393,7 @@ def compute_liquidation_clusters(
                 and (
                     kalman_vel > 0.0
                     or (tr_1h_v is not None and tr_1h_v >= 1.10)
+                    or (tr_5m_v is not None and tr_5m_v >= 1.20 and cvd_5m_v > 0.0)
                     or div_reg in ("accumulation", "short_covering", "bullish_absorption")
                 )
             )

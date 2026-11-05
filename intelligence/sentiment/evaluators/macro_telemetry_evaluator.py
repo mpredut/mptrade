@@ -627,6 +627,29 @@ def enrich_sentiment_advisor_live_flow_divergence(
             sentiment_advisor["live_flow_divergence"] = (
                 f"LIVE_1H_CVD_FLIP_NEGATIVE ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
             )
+    if "live_flow_divergence" not in sentiment_advisor and sa_age >= 15.0 and live_tr_5m is not None:
+        cited_tr_5m = parse_cited_taker_ratio(
+            (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks")),
+            horizon="5m",
+        )
+        if (
+            cited_tr_5m is not None
+            and cited_tr_5m >= 1.35
+            and live_tr_5m <= 0.90
+            and (live_cvd_5m is None or live_cvd_5m < 0.0)
+        ):
+            sentiment_advisor["live_flow_divergence"] = (
+                f"LIVE_5M_FLOW_FADE ({flow_lbl} vs {sa_age:.1f}m-old advisor 5m_ratio={cited_tr_5m:.2f})"
+            )
+        elif (
+            cited_tr_5m is not None
+            and cited_tr_5m <= 0.74
+            and live_tr_5m >= 1.15
+            and (live_cvd_5m is None or live_cvd_5m > 0.0)
+        ):
+            sentiment_advisor["live_flow_divergence"] = (
+                f"LIVE_5M_FLOW_RECOVERY ({flow_lbl} vs {sa_age:.1f}m-old advisor 5m_ratio={cited_tr_5m:.2f})"
+            )
 
 
 def format_bottom_structure_6h_parts(
