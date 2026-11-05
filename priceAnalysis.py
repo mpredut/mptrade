@@ -749,6 +749,8 @@ def detect_long_term_trend(timestamps, prices, window_hours=24, step_hours=8,
         if s is None:
             break                                    # Do not confirm a trend across a gap.
         if np.sign(s) == current_sign:
+            if noise > 0 and (float(prices[cur_idx[1] - 1]) - float(prices[idx[0]])) * current_sign <= 0.0:
+                break
             blocks.append(idx); consecutive += 1; noise = 0
             confirm_lo = idx[0]; confirm_pos = len(blocks) - 1
         elif noise < noise_tolerance:

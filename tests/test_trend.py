@@ -585,6 +585,29 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res["direction"], "up")
 
+    def test_detect_long_term_trend_stops_at_major_reversal_peak(self):
+        # 200h series at 180s resolution:
+        # 0..32h: mild dip 82 -> 79 (lower than final price 84)
+        # 32..56h: major bull impulse 79 -> 96 (within noise_tolerance=2 windows)
+        # 56..200h: steady downtrend 96 -> 84
+        dt = 180.0
+        ts1 = np.arange(0.0, 32 * 3600.0, dt)
+        px1 = np.linspace(82.0, 79.0, len(ts1))
+        ts2 = np.arange(32 * 3600.0, 56 * 3600.0, dt)
+        px2 = np.linspace(79.0, 96.0, len(ts2))
+        ts3 = np.arange(56 * 3600.0, 200 * 3600.0, dt)
+        px3 = np.linspace(96.0, 84.0, len(ts3))
+        ts = np.concatenate([ts1, ts2, ts3]) + 1_700_000_000.0
+        px = np.concatenate([px1, px2, px3])
+        res = pa.detect_long_term_trend(
+            ts, px, window_hours=16, step_hours=8, min_points_per_window=20, noise_tolerance=2, detection_lag_hours=0.0
+        )
+        self.assertIsNotNone(res)
+        self.assertEqual(res["direction"], "down")
+        confirm_lo = res["blocks"][-1][0]
+        self.assertGreater(px[confirm_lo], px[-1])
+        self.assertLessEqual(res["duration_seconds"] / 3600.0, 152.0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
