@@ -1202,6 +1202,7 @@ def reconcile_sibling_flow_and_liq_regimes(
             ):
                 for shared_oi_k in (
                     "oi_usd", "native_l1_oi_usd", "oi_1h_chg_pct",
+                    "perp_spot_basis_bps", "funding_rate", "predicted_funding_rate", "funding_annualized_pct",
                     "long_liq_usd", "short_liq_usd", "long_liq_deep_usd", "short_liq_deep_usd",
                 ):
                     if prim_m.get(shared_oi_k) is not None:
