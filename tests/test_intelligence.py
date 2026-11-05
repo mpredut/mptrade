@@ -8552,6 +8552,94 @@ def test_iter22_near_balanced_cvd_spot_absorbing_single_stock_shares_and_calm_ge
     assert sensors["geopolitical_threat"]["headlines_analyzed"] == 2
 
 
+def test_iter106_equity_crypto_scope_isolation_in_trends_sibling_sync_fills_and_risk():
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+        sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+    )
+
+    # 1. enrich_cross_venue_trends & sync_sibling_symbol_telemetry do not cross-contaminate COIN_US_EQ and COINUSDC
+    pt = {
+        "COINUSDC": {"price": 1.25, "chg_15m_pct": 8.5, "slope_15m": 0.012, "vol_1h_pct": 4.2},
+        "COIN_US_EQ": {"price": 240.0},
+    }
+    micro = {
+        "COINUSDC": {
+            "ob_mid_price": 1.25,
+            "best_bid": 1.24,
+            "best_ask": 1.26,
+            "ob_imbalance": 0.72,
+            "whale_long_pct": 0.68,
+            "funding_rate": 0.0005,
+        }
+    }
+    enrich_cross_venue_trends(
+        pt,
+        trends_data={"items": {"COINUSDC": {"slope_15m": 0.012, "vol_1h_pct": 4.2}}},
+        kalman_data={"COINUSDC": {"kalman_vel": 0.055, "kalman_vel_std": 0.01, "kalman_trend": 1}},
+        long_items={"COINUSDC": [{"direction": "UP", "duration_seconds": 7200, "timestamp": 1700000000.0}]},
+        priceanalysis_data={},
+        t_trend_map={"COINUSDC": {"median_d": 3.5, "p90_d": 7.0}},
+        watcher_price_items={},
+    )
+    assert pt["COIN_US_EQ"].get("slope_15m") is None
+    assert pt["COIN_US_EQ"].get("kalman_vel") is None
+    assert pt["COIN_US_EQ"].get("long_trend_dir") is None
+    assert pt["COIN_US_EQ"].get("weibull_median_d") is None
+
+    sync_sibling_symbol_telemetry(pt, micro)
+    assert pt["COIN_US_EQ"].get("chg_15m_pct") is None
+    assert "COIN_US_EQ" not in micro
+
+    # 2. extract_symbol_recent_fills isolates COIN_US_EQ vs COINUSDC AI intents and bot fills
+    fills_eq = extract_symbol_recent_fills(
+        [{"symbol": "COIN_US_EQ", "orderId": "bot-eq-1", "side": "BUY", "price": 235.0, "executedQty": 2.0, "timestamp": 1_700_000_010_000, "status": "FILLED"}],
+        ai_intents=[
+            {
+                "intent_id": "ai-crypto-1",
+                "symbol": "COINUSDC",
+                "decision": "BUY",
+                "order_type": "MARKET",
+                "status": "EXECUTED",
+                "timestamp": 1_700_000_000.0,
+                "execution_payload": {"orderId": "ai-ord-1", "symbol": "COINUSDC", "side": "BUY", "price": 1.25, "executedQty": 2.0, "status": "FILLED"},
+            }
+        ],
+        symbol="COIN_US_EQ",
+    )
+    assert isinstance(fills_eq, dict)
+    assert fills_eq["last_action_actor"] == "BOT"
+    assert fills_eq["last_buy"]["price"] == pytest.approx(235.0)
+    assert len(fills_eq["recent_buys"]) == 1
+
+    # 3. enrich_open_limit_orders_tca & compute_enterprise_portfolio_risk_metrics scope t212 bare ticker and correlation matrix
+    oo = [{"venue": "t212", "symbol": "COIN", "side": "BUY", "price": 238.0}]
+    enrich_open_limit_orders_tca(oo, {"COINUSDC": {"price": 1.25}, "COIN_US_EQ": {"price": 240.0}}, {})
+    assert oo[0]["dist_from_spot_pct"] == pytest.approx(-0.83)
+
+    ps_mixed = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "COINUSDC", "base": "COIN", "quote": "USDC", "value_usd": 1000.0},
+            {"venue": "t212", "symbol": "COIN_US_EQ", "base": "COIN", "quote": "USD", "value_usd": 1000.0},
+        ],
+        "venue_quote_cash": {"binance:USDC": {"venue": "binance", "asset": "USDC", "free": 500.0}},
+    }
+    risk_mixed = compute_enterprise_portfolio_risk_metrics(
+        ps_mixed,
+        {
+            "COINUSDC": {"price": 1.25, "corr_btc_24h": 0.85, "vol_1h_pct": 1.0},
+            "COIN_US_EQ": {"price": 240.0, "corr_btc_24h": 0.30, "vol_1h_pct": 1.0},
+        },
+        {},
+    )
+    assert risk_mixed["corr_vs_btc_24h"]["COIN"] == pytest.approx(0.85)
+    assert risk_mixed["corr_vs_btc_24h"]["COIN_US_EQ"] == pytest.approx(0.30)
+
 
 
 

@@ -189,6 +189,16 @@ def extract_symbol_recent_fills(
     valid_oids: set[str] = {str(oid_x) for x in valid if (oid_x := extract_order_id(x, default=""))}
     max_valid_ts_s = max(((extract_timestamp_ms(x, default=0) or 0) / 1000.0 for x in valid), default=0.0)
     parsed_ai_intents: List[tuple[str, str, float, float, str]] = []
+
+    def _same_asset_scope_and_quote(s1: str, s2: str) -> bool:
+        u1, u2 = str(s1 or "").strip().upper(), str(s2 or "").strip().upper()
+        if not u1 or not u2 or u1.endswith(("_EQ", "_US_EQ")) != u2.endswith(("_EQ", "_US_EQ")):
+            return False
+        return u1 == u2 or (
+            canonical_base_asset(u1) == canonical_base_asset(u2)
+            and compatible_quote_suffixes(u1) == compatible_quote_suffixes(u2)
+        )
+
     for it in ai_intents or ():
         if not isinstance(it, dict) or str(it.get("status") or "").strip().upper() not in ("EXECUTED", "FILLED", "PARTIALLY_FILLED", "CLOSED"):
             continue
@@ -219,17 +229,7 @@ def extract_symbol_recent_fills(
         is_confirmed_fill = exec_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED") or (
             has_explicit_exec_q and exec_st not in _UNFILLED_ORDER_STATUSES
         )
-        sym_matches_target = bool(
-            fallback_sym
-            and i_sym
-            and (
-                i_sym == fallback_sym
-                or (
-                    canonical_base_asset(i_sym) == canonical_base_asset(fallback_sym)
-                    and compatible_quote_suffixes(i_sym) == compatible_quote_suffixes(fallback_sym)
-                )
-            )
-        )
+        sym_matches_target = _same_asset_scope_and_quote(i_sym, fallback_sym)
         if (
             sym_matches_target
             and is_confirmed_fill
@@ -277,7 +277,7 @@ def extract_symbol_recent_fills(
         for i_sym, i_side, i_ts_s, i_qty, i_otype in parsed_ai_intents:
             if i_side != o_side or o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0:
                 continue
-            if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
+            if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
                 continue
             if (i_qty > 0.0 and o_qty > 0.0 and abs(o_qty - i_qty) <= max(1e-5, i_qty * 0.01) and o_ts_s <= i_ts_s + 86400.0) or (i_otype == "MARKET" and o_ts_s <= i_ts_s + 120.0):
                 return True
@@ -336,7 +336,7 @@ def extract_symbol_recent_fills(
                 if o_ts_s <= 0.0 or o_ts_s < i_ts_s - 5.0 or o_ts_s > i_ts_s + 86400.0:
                     continue
                 o_sym = str(o.get("symbol") or o.get("pair") or fallback_sym).strip().upper()
-                if i_sym and o_sym and (canonical_base_asset(i_sym) != canonical_base_asset(o_sym) or compatible_quote_suffixes(i_sym) != compatible_quote_suffixes(o_sym)):
+                if i_sym and o_sym and not _same_asset_scope_and_quote(i_sym, o_sym):
                     continue
                 oid_k = str(extract_order_id(o, default="") or "")
                 side_ts_k = (extract_order_side(o), extract_timestamp_ms(o, default=None))

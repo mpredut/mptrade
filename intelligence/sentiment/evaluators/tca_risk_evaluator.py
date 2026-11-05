@@ -245,28 +245,37 @@ def enrich_open_limit_orders_tca(
             continue
         v_norm = normalize_venue_name(o.get("venue"))
         is_eq_o = sym.endswith(("_EQ", "_US_EQ")) or v_norm == "t212"
-        p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
+        scoped_sym = f"{sym}_US_EQ" if (is_eq_o and not sym.endswith(("_EQ", "_US_EQ"))) else sym
+        p_entry = (
+            casefold_get(prices_and_trends, sym)
+            if isinstance(prices_and_trends, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq_o
+            else None
+        )
         if not isinstance(p_entry, dict) and isinstance(prices_and_trends, dict):
-            for cand in cache_symbol_variants(sym, include_base=False):
+            for cand in cache_symbol_variants(scoped_sym, include_base=False):
                 if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
                     continue
                 cand_p = casefold_get(prices_and_trends, cand)
-                if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
+                if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
                     p_entry = cand_p
                     break
-        m_entry = casefold_get(microstructure, sym) if isinstance(microstructure, dict) else None
+        m_entry = (
+            casefold_get(microstructure, sym)
+            if isinstance(microstructure, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq_o
+            else None
+        )
         if not isinstance(m_entry, dict):
-            for cand in cache_symbol_variants(sym, include_base=False):
+            for cand in cache_symbol_variants(scoped_sym, include_base=False):
                 if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
                     continue
                 cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
-                if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
+                if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(scoped_sym):
                     m_entry = cand_m
                     break
         spot_px = (
             safe_pos_float((m_entry or {}).get("ob_mid_price"), default=None)
             or safe_pos_float((p_entry or {}).get("price"), default=None)
-            or resolve_symbol_price(sym, prices_and_trends)
+            or resolve_symbol_price(scoped_sym, prices_and_trends)
         )
         if spot_px and spot_px > 0.0:
             o["dist_from_spot_pct"] = pct_delta(lim_px, spot_px)
@@ -380,7 +389,7 @@ def compute_enterprise_portfolio_risk_metrics(
     venue_cash_usd: Dict[str, float] = {}
     venue_free_cash_usd: Dict[str, float] = {}
     venue_locked_quote_usd: Dict[str, float] = {}
-    pos_exposures: List[Tuple[str, float, float, float, float]] = []
+    pos_exposures: List[Tuple[str, bool, float, float, float, float]] = []
 
     grouped_pos: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
     for p in t_pos:
@@ -405,10 +414,14 @@ def compute_enterprise_portfolio_risk_metrics(
         if val_u >= 1.0:
             sym = str(p.get("symbol") or "").strip().upper()
             base = canonical_base_asset(p.get("base") or sym)
-            p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
+            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+            p_info = (
+                casefold_get(prices_and_trends, sym)
+                if isinstance(prices_and_trends, dict) and sym.endswith(("_EQ", "_US_EQ")) == is_eq
+                else None
+            )
             if not isinstance(p_info, dict):
                 p_info = {}
-            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
             def _resolve_p_metric(m_key: str) -> Any:
                 if p_info.get(m_key) is not None:
                     return p_info.get(m_key)
@@ -432,7 +445,7 @@ def compute_enterprise_portfolio_risk_metrics(
                 daily_vol_pct = min(25.0, max(0.8, (span_7d / (2.0 * math.sqrt(5.0))) if span_7d is not None else 2.2))
             else:
                 daily_vol_pct = min(25.0, max(0.8, 1.0 * math.sqrt(24.0)))
-            pos_exposures.append((base, val_u, beta_v, corr_v, daily_vol_pct))
+            pos_exposures.append((base, is_eq, val_u, beta_v, corr_v, daily_vol_pct))
 
     dedup_cash: Dict[tuple[str, str], tuple[float, float]] = {}
     for c_key, c in vq_cash.items():
@@ -488,11 +501,16 @@ def compute_enterprise_portfolio_risk_metrics(
     free_cash_pct = round((free_cash_usd / unified_nav) * 100.0, 1)
     locked_quote_pct = round((locked_quote_usd / unified_nav) * 100.0, 1)
     total_quote_reserve_pct = round((total_quote_reserve_usd / unified_nav) * 100.0, 1)
-    beta_adj_usd = sum(val_u * beta_v for _, val_u, beta_v, _, _ in pos_exposures)
+    beta_adj_usd = sum(val_u * beta_v for _, _, val_u, beta_v, _, _ in pos_exposures)
     portfolio_btc_beta = round(beta_adj_usd / unified_nav, 2)
 
-    corr_map: Dict[str, float] = {base: round(corr_v, 2) for base, _, _, corr_v, _ in pos_exposures if base != "BTC"}
-    non_btc_pairs = [(val_u, c) for b, val_u, _, c, _ in pos_exposures if b != "BTC"]
+    crypto_bases = {base for base, is_eq, _, _, _, _ in pos_exposures if not is_eq}
+    corr_map: Dict[str, float] = {
+        (f"{base}_US_EQ" if (is_eq and base in crypto_bases) else base): round(corr_v, 2)
+        for base, is_eq, _, _, corr_v, _ in pos_exposures
+        if base != "BTC"
+    }
+    non_btc_pairs = [(val_u, c) for b, _, val_u, _, c, _ in pos_exposures if b != "BTC"]
     non_btc_val_sum = sum(v for v, _ in non_btc_pairs)
     avg_corr_24h = (
         round(sum(v * c for v, c in non_btc_pairs) / non_btc_val_sum, 2)
@@ -501,11 +519,11 @@ def compute_enterprise_portfolio_risk_metrics(
     )
 
     var_cov_sum = 0.0
-    for i, (base_i, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
+    for i, (base_i, is_eq_i, val_i, _, corr_i, dvol_i) in enumerate(pos_exposures):
         sig_i = val_i * (dvol_i / 100.0)
-        for j, (base_j, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
+        for j, (base_j, is_eq_j, val_j, _, corr_j, dvol_j) in enumerate(pos_exposures):
             sig_j = val_j * (dvol_j / 100.0)
-            rho_ij = 1.0 if (i == j or (base_i and base_i == base_j)) else max(-0.5, min(0.98, corr_i * corr_j))
+            rho_ij = 1.0 if (i == j or (base_i and base_i == base_j and is_eq_i == is_eq_j)) else max(-0.5, min(0.98, corr_i * corr_j))
             var_cov_sum += sig_i * sig_j * rho_ij
     port_sigma_usd = math.sqrt(max(0.0, var_cov_sum))
     var_95_usd = round(1.645 * port_sigma_usd, 2)
