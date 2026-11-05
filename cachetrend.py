@@ -566,20 +566,41 @@ class CacheShortTrendManager(CacheManagerInterface):
                 with getattr(w_big, "_lock", threading.RLock()):
                     eff_v1h_sr = float(w_big.sample_rate_sec)
                     n_big = len(w_big.prices)
+                    v1h_prices = w_big.prices
                     if n_big >= 20:
                         with self._lock:
                             tbuf_v = self._get_trend_buffer(symbol)
                             ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
+                            all_tbuf_ts = list(tbuf_v.timestamps)
+                            all_tbuf_px = list(tbuf_v.prices)
                         if len(ts_tail) >= 20:
+                            max_intra_dt = max(1800.0, min(7200.0, float(getattr(w_big, "window_seconds", 9000.0))))
                             active_dts = [
                                 (ts_tail[i] - ts_tail[i - 1]) / 1000.0
                                 for i in range(1, len(ts_tail))
-                                if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= 1800.0
+                                if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= max_intra_dt
                             ]
                             if active_dts:
                                 eff_v1h_sr = max(eff_v1h_sr, sum(active_dts) / len(active_dts))
+                            nz_big = sum(
+                                1 for i in range(1, len(w_big.prices)) if abs(w_big.prices[i] - w_big.prices[i - 1]) > 1e-12
+                            )
+                            if nz_big < 10 and len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
+                                sub_1m: List[Tuple[float, float]] = []
+                                last_t_ms = -1e18
+                                for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
+                                    if (float(t_ms) - last_t_ms) >= 55000.0:
+                                        sub_1m.append((float(t_ms), float(px_v)))
+                                        last_t_ms = float(t_ms)
+                                if len(sub_1m) >= 20:
+                                    tail_1m = sub_1m[-60:]
+                                    eff_v1h_sr = max(
+                                        60.0,
+                                        (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
+                                    )
+                                    v1h_prices = [r[1] for r in tail_1m]
                     v1h = calculate_volatility_1h(
-                        w_big.prices, eff_v1h_sr
+                        v1h_prices, eff_v1h_sr
                     )
             except Exception:
                 pass

@@ -49,19 +49,19 @@ class DerivativesTelemetry:
     def from_dict(cls, data: Dict[str, Any], symbol: str = "") -> DerivativesTelemetry:
         if not isinstance(data, dict):
             data = {}
-        fr = _clean_dict_float(data, "funding_rate", 0.0)
+        fr = _clean_dict_float(data, "funding_rate", 0.0) + 0.0
         mark_px = _clean_dict_float(data, "mark_price", 0.0, "markPx", nonneg=True)
         idx_px = _clean_dict_float(data, "index_price", 0.0, "oraclePx", nonneg=True)
         basis_bps = _clean_dict_float(
             data,
             "perp_spot_basis_bps",
             round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0,
-        )
-        ann_pct = _clean_dict_float(data, "funding_annualized_pct", round(fr * 3.0 * 365.0 * 100.0, 2))
+        ) + 0.0
+        ann_pct = _clean_dict_float(data, "funding_annualized_pct", round(fr * 3.0 * 365.0 * 100.0, 2)) + 0.0
         return cls(
             symbol=_clean_snapshot_symbol(data, symbol),
             funding_rate=fr,
-            predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0, "pred_funding_rate"),
+            predicted_funding_rate=_clean_dict_float(data, "predicted_funding_rate", 0.0, "pred_funding_rate") + 0.0,
             open_interest=_clean_dict_float(data, "open_interest", 0.0, nonneg=True),
             open_interest_usd=_clean_dict_float(data, "open_interest_usd", 0.0, "oi_usd", nonneg=True),
             ts=_clean_snapshot_ts(data),
@@ -134,8 +134,8 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         oi_usd = round(oi_shares * mark_px, 2)
         call_share = (call_oi / total_opt_contracts) if total_opt_contracts > 0.0 else 0.5
         # Map options call-put skew into an 8h funding-equivalent carry metric
-        funding_equiv = round((call_share - 0.5) * 0.0004, 6)
-        basis_bps = round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0
+        funding_equiv = round((call_share - 0.5) * 0.0004, 6) + 0.0
+        basis_bps = (round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0) + 0.0
         telemetry = DerivativesTelemetry(
             symbol=symbol,
             funding_rate=funding_equiv,
@@ -146,7 +146,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             mark_price=round(mark_px, 4),
             index_price=round(idx_px, 4),
             perp_spot_basis_bps=basis_bps,
-            funding_annualized_pct=round(funding_equiv * 3.0 * 365.0 * 100.0, 2),
+            funding_annualized_pct=round(funding_equiv * 3.0 * 365.0 * 100.0, 2) + 0.0,
         )
         return self._commit_snapshot(symbol, now, telemetry)
 

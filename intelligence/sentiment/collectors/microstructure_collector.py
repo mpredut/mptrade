@@ -1449,11 +1449,13 @@ def enrich_24h_and_microstructure(
         )
         memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
         memo_ttl_s = 240.0
-        if is_eq_sym and memo_chart is not None:
+        eq_rth_open = False
+        if is_eq_sym:
             try:
                 from instrument_registry import is_symbol_market_open
 
-                if not is_symbol_market_open(sym, now_ts):
+                eq_rth_open = bool(is_symbol_market_open(sym, now_ts))
+                if not eq_rth_open and memo_chart is not None:
                     memo_ttl_s = 1800.0
             except Exception:
                 pass
@@ -1525,7 +1527,7 @@ def enrich_24h_and_microstructure(
                             ):
                                 pts_5d = pts_5d[:split_idx]
                                 break
-                    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= 20 * 60 * 1000
+                    rth_bar_fresh = (now_ms_i - pts_5d[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
                     chart_tick_fresh = (now_ms_i - raw_last_5d_ts) <= 20 * 60 * 1000
                     if chart_px > 0.0 and (
                         sym_px_cur <= 0.0
@@ -1564,11 +1566,12 @@ def enrich_24h_and_microstructure(
                             recent_bar_pxs.append(pts_24h_bars[-2][1])
                         bar_win_lo = min(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
                         bar_win_hi = max(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+                        upper_sub5m_ms = (now_ms_i + 5000) if eq_rth_open else min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
                         recent_sub5m = [
                             pt for pt in raw_matched_series_24h
                             if isinstance(pt, (list, tuple))
                             and len(pt) >= 2
-                            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
+                            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= upper_sub5m_ms
                             and not _prices_diverged(pt[1], pts_24h[-1][1])
                             and (pt[0] >= last_bar_ts or (bar_win_lo * 0.995 <= pt[1] <= bar_win_hi * 1.005))
                         ]

@@ -8070,6 +8070,34 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert rgnt_entry["adapt_reentry_pct"] < 8.0
     assert rgnt_entry["adapt_dca_pct"] < 4.0
 
+    rgnt_s24_2ticks = [
+        [int((now_s_rec - 86400 + i * 1800) * 1000), round(1.38 - (i % 3) * 0.01, 4), 400.0]
+        for i in range(25)
+    ] + [
+        [int((now_s_rec - 2700) * 1000), 1.23, 500.0],
+        [int((now_s_rec - 10) * 1000), 1.20],
+    ]
+    rgnt_entry_2 = {
+        "price": 1.20,
+        "vol_1h_pct": 6.6154,
+        "adapt_reentry_pct": 13.231,
+        "adapt_dca_pct": 6.615,
+        "_short_trend_ts": now_s_rec,
+    }
+    _apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry_2, compute_24h_price_metrics(rgnt_s24_2ticks), rgnt_s24_2ticks, None)
+    assert 0.1 < rgnt_entry_2["vol_1h_pct"] < 4.0
+
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetry
+
+    dt_neg_zero = DerivativesTelemetry.from_dict(
+        {"funding_rate": -0.0, "predicted_funding_rate": -0.0, "perp_spot_basis_bps": -0.0, "funding_annualized_pct": -0.0},
+        symbol="NVDA_US_EQ",
+    )
+    assert not str(dt_neg_zero.funding_rate).startswith("-")
+    assert not str(dt_neg_zero.predicted_funding_rate).startswith("-")
+    assert not str(dt_neg_zero.perp_spot_basis_bps).startswith("-")
+    assert not str(dt_neg_zero.funding_annualized_pct).startswith("-")
+
     ldir_agy_int = tmp_path / "logs_agy_int"
     ldir_agy_int.mkdir(exist_ok=True)
     t_agy_s = time.strftime("%H:%M:%S", time.localtime(now_s_rec - 60))

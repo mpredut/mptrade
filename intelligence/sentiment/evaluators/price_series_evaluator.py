@@ -1283,7 +1283,7 @@ def _apply_24h_series_enrichment(
                     cur_vol_1h is not None
                     and (
                         (span_24h is not None and span_24h > 0.0 and cur_vol_1h > max(span_24h * 0.85, 2.0))
-                        or (len(tail_pts_m) >= 5 and nz_tail < 10 and len(sub_all_m) >= 20)
+                        or (len(tail_pts_m) >= 1 and nz_tail < 10 and (len(sub_all_m) >= 20 or len(all_pts_m) >= 20))
                     )
                 )
                 no_pos_vol_1h = cur_vol_1h is None
