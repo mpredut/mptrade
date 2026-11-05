@@ -1374,6 +1374,9 @@ class CacheShortTrendManager(CacheManagerInterface):
                 with self._lock:
                     if self._mem and (self._mem_dirty or self._dirty_live_symbols):
                         self._write_file()
+            with self._lock:
+                if self.writer and self._mem and (self._mem_dirty or self._dirty_live_symbols):
+                    self._write_file()
 
         self._flush_thread = threading.Thread(
             target=run, name="ShortTrendFlush", daemon=True
@@ -1396,13 +1399,12 @@ class CacheShortTrendManager(CacheManagerInterface):
         for thread in (self._full_eval_thread, self._flush_thread):
             if thread is not None and thread is not threading.current_thread() and hasattr(thread, "join"):
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        stopped = base_stopped and all(
-            thread is None or not getattr(thread, "is_alive", lambda: False)()
-            for thread in (self._full_eval_thread, self._flush_thread)
-        )
-        if stopped:
+        if self._full_eval_thread is not None and not getattr(self._full_eval_thread, "is_alive", lambda: False)():
             self._full_eval_thread = None
+        if self._flush_thread is not None and not getattr(self._flush_thread, "is_alive", lambda: False)():
             self._flush_thread = None
+        stopped = base_stopped and self._full_eval_thread is None and self._flush_thread is None
+        if stopped:
             self._computing = False
         return stopped
 

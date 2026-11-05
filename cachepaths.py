@@ -524,11 +524,31 @@ CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
     "USDC",
     "USDT",
     "FDUSD",
+    "TUSD",
+    "BUSD",
     "USD",
     "EUR",
     "RON",
     "GBP",
 )
+
+_BARE_STABLECOIN_BASES: frozenset[str] = frozenset({
+    "USDC",
+    "USDT",
+    "FDUSD",
+    "TUSD",
+    "BUSD",
+    "USDP",
+    "DAI",
+    "USDE",
+    "USDS",
+    "USD1",
+    "PYUSD",
+    "RLUSD",
+    "BFUSD",
+    "AEUR",
+    "EURI",
+})
 
 
 _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
@@ -589,7 +609,7 @@ def normalize_cache_base_asset(symbol: object) -> str:
     s = _strip_kraken_asset_suffixes(raw_base.upper())
     if s.endswith("USEQ") and len(s) > 4:
         s = s[:-4]
-    else:
+    elif s not in _BARE_STABLECOIN_BASES:
         for quote in CACHE_QUOTE_SUFFIXES:
             if s.endswith(quote) and len(s) > len(quote):
                 s = s[: -len(quote)]

@@ -3620,10 +3620,13 @@ class CacheFactory:
         with cls._lock:
             if name == "ShortTrend":
                 inst = _short_trend_instance
-                _short_trend_instance = None
-                if inst is not None and hasattr(inst, "shutdown"):
-                    return bool(inst.shutdown(timeout=timeout))
-                return True
+                cls._sync_started.discard("ShortTrend")
+                if inst is None:
+                    return True
+                stopped = bool(inst.shutdown(timeout=timeout)) if hasattr(inst, "shutdown") else True
+                if stopped and inst is _short_trend_instance:
+                    _short_trend_instance = None
+                return stopped
             value = cls._instances.pop(name, None)
             if name == "CurrentPrice" and value is None:
                 value = _current_price_instance

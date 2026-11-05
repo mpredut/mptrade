@@ -199,7 +199,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                     )
                 else:
                     base_urls = (
-                        (*spot_urls, f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500")
+                        spot_urls
                         if multi_venue
                         else (
                             *spot_urls,

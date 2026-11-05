@@ -510,8 +510,11 @@ def collect_pretrade_telemetry(
                     cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
                 )
                 btc_m24 = compute_24h_price_metrics(btc_series_24h) if btc_series_24h else {}
+                btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
                 if btc_m24 and btc_series_24h:
                     btc_last_pt = _parse_ts_px_row(btc_series_24h[-1])
+                    if btc_last_pt is not None and btc_last_pt[1] > 0.0:
+                        btc_live_px = btc_last_pt[1]
                     btc_m_info = load_symbol_microstructure(cachedb_dir, "BTCUSDC", _rj)
                     btc_ob_mid = safe_pos_float((btc_m_info or {}).get("ob_mid_price"), default=None)
                     if (
@@ -520,6 +523,7 @@ def collect_pretrade_telemetry(
                         and btc_last_pt[1] > 0.0
                         and abs(btc_ob_mid - btc_last_pt[1]) / max(btc_ob_mid, btc_last_pt[1]) <= 0.01
                     ):
+                        btc_live_px = btc_ob_mid
                         recalculate_live_price_geometry(btc_m24, btc_ob_mid)
                         if btc_vals_7d and not _prices_diverged(btc_ob_mid, safe_float(btc_vals_7d[-1], 0.0)):
                             btc_vals_7d = list(btc_vals_7d) + [btc_ob_mid]
@@ -647,12 +651,19 @@ def collect_pretrade_telemetry(
                             ]
                             if len(w_b_vals) >= 2:
                                 eff_btc_vals_7d = w_b_vals
+                if (
+                    eff_btc_vals_7d
+                    and btc_live_px > 0.0
+                    and not _prices_diverged(btc_live_px, eff_btc_vals_7d[-1])
+                    and abs(btc_live_px - eff_btc_vals_7d[-1]) > 1e-9
+                ):
+                    eff_btc_vals_7d = list(eff_btc_vals_7d) + [btc_live_px]
                 btc_m7d = compute_7d_range_metrics(eff_btc_vals_7d, decimals=6) if len(eff_btc_vals_7d) >= 2 else {}
                 if btc_m7d and btc_m24.get("low_24h") is not None and btc_m24.get("high_24h") is not None:
                     btc_m7d["low_24h"], btc_m7d["high_24h"] = btc_m24["low_24h"], btc_m24["high_24h"]
                     recalculate_live_price_geometry(
                         btc_m7d,
-                        safe_pos_float(btc_vals_7d[-1], 0.0) if btc_vals_7d else (safe_pos_float(eff_btc_vals_7d[-1], 0.0) or 0.0),
+                        btc_live_px if btc_live_px > 0.0 else (safe_pos_float(eff_btc_vals_7d[-1], 0.0) or 0.0),
                     )
                 m7_chg = safe_float(m7d.get("chg_7d_pct"), default=None)
                 b7_chg = safe_float((btc_m7d or {}).get("chg_7d_pct"), default=None)

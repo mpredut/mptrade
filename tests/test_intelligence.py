@@ -6982,6 +6982,207 @@ def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tm
     assert f"POC=${pt_eq1['NVDA_US_EQ']['poc_px']}" in pre_eq["24h Volume Profile (POC / Value Area)"]
 
 
+def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation_and_short_trend_remove(tmp_path, monkeypatch):
+    """Verify:
+    1. enrich_sentiment_advisor_live_flow_divergence does not misclassify >=15m-old BULLISH/ACCUMULATE with cited_tr<=0.65 as is_bear_posture (emitting LIVE_FLOW_RECOVERY instead of contradictory LIVE_BUY_REVERSAL vs ACCUMULATE), nor BEARISH/DEFENSIVE with cited_tr>=1.35 as is_bull_posture (emitting LIVE_FLOW_FADE instead of contradictory LIVE_SELL_REVERSAL vs DEFENSIVE).
+    2. OrderbookDepthCollector.fetch does not fall back to fapi.binance.com perpetual futures when api.binance.com spot fails transiently on a multi-venue symbol like TAOUSDC.
+    3. CacheFactory.remove('ShortTrend') only clears _short_trend_instance when shutdown succeeds.
+    """
+    from types import SimpleNamespace
+    import cacheManager as cm
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+
+    # 1a. >=15m-old BULLISH/ACCUMULATE with key_risks citing overall 0.60 and strong live buying -> LIVE_FLOW_RECOVERY (not LIVE_BUY_REVERSAL vs ACCUMULATE)
+    sa_bull = {
+        "market_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 18.0,
+        "summary": "BTC orderbook depth is bid-dominated (1h taker ratio 1.03).",
+        "key_risks": ["Sub-1.0 short-term taker ratios (overall 0.60, 5m 0.67) show selling into bids."],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bull,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.32, "cvd_15m_usd": 6_200_000.0}},
+    )
+    assert sa_bull["live_flow_divergence"].startswith("LIVE_FLOW_RECOVERY")
+    assert "LIVE_BUY_REVERSAL" not in sa_bull["live_flow_divergence"]
+
+    # 1b. >=15m-old BEARISH/DEFENSIVE with key_risks citing overall 1.40 and strong live selling -> LIVE_FLOW_FADE (not LIVE_SELL_REVERSAL vs DEFENSIVE)
+    sa_bear = {
+        "market_bias": "BEARISH",
+        "recommended_action": "DEFENSIVE",
+        "age_min": 18.0,
+        "summary": "Macro pressure remains elevated.",
+        "key_risks": ["Short-term bounce taker ratio 1.40 may fade rapidly."],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bear,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 0.68, "cvd_15m_usd": -6_500_000.0}},
+    )
+    assert sa_bear["live_flow_divergence"].startswith("LIVE_FLOW_FADE")
+    assert "LIVE_SELL_REVERSAL" not in sa_bear["live_flow_divergence"]
+
+    # 2. OrderbookDepthCollector.fetch on multi-venue TAOUSDC does not query fapi.binance.com when api.binance.com fails
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=10.0, disk_ttl_sec=60.0)
+    ob_col.record_snapshot(
+        OrderbookSnapshot(
+            symbol="TAOUSDC",
+            mid_price=235.75,
+            bid_depth_usd=169765.0,
+            ask_depth_usd=101824.0,
+            imbalance_ratio=0.625,
+            largest_bid_wall_usd=30224.0,
+            largest_bid_wall_price=235.3,
+            largest_ask_wall_usd=18009.0,
+            largest_ask_wall_price=236.5,
+            ts=1000.0,
+            best_bid=235.7,
+            best_ask=235.8,
+            spread_bps=4.24,
+        ),
+        save_to_disk=True,
+    )
+    called_urls = []
+
+    def _fake_spot_down_fapi_up(url, *args, **kwargs):
+        called_urls.append(url)
+        if "api.binance.com" in url:
+            raise RuntimeError("spot timeout")
+        return {"bids": [["235.0", "10000.0"]], "asks": [["236.0", "10000.0"]]}
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_spot_down_fapi_up)
+    snap_tao = ob_col.fetch("TAOUSDC", allow_network=True, now=1100.0)
+    assert snap_tao is not None
+    assert snap_tao.bid_depth_usd == 169765.0
+    assert all("fapi.binance.com" not in u for u in called_urls)
+    assert "TAOUSDC" not in ob_col._preferred_url
+
+    # 3. CacheFactory.remove('ShortTrend') preserves _short_trend_instance if shutdown returns False, and clears when True
+    prev_st = cm._short_trend_instance
+    try:
+        state = {"ok": False}
+        fake_st = SimpleNamespace(shutdown=lambda timeout=5.0: state["ok"])
+        cm._short_trend_instance = fake_st
+        cm.CacheFactory._sync_started.add("ShortTrend")
+        assert cm.CacheFactory.remove("ShortTrend", timeout=0.01) is False
+        assert cm._short_trend_instance is fake_st
+        assert "ShortTrend" not in cm.CacheFactory._sync_started
+
+        state["ok"] = True
+        assert cm.CacheFactory.remove("ShortTrend", timeout=0.01) is True
+        assert cm._short_trend_instance is None
+    finally:
+        cm._short_trend_instance = prev_st
+
+    # 4. canonical_base_asset strips TUSD/BUSD suffixes while preserving bare stablecoin tickers
+    from cachepaths import canonical_base_asset, normalize_cache_base_asset
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    assert canonical_base_asset("SOLTUSD") == "SOL"
+    assert canonical_base_asset("SOLBUSD") == "SOL"
+    assert canonical_base_asset("MSTRBTUSD") == "MSTRB"
+    assert canonical_base_asset("PYUSDUSDT") == "PYUSD"
+    for bare_st in ("PYUSD", "RLUSD", "TUSD", "BUSD", "FDUSD", "USD1"):
+        assert normalize_cache_base_asset(bare_st) == bare_st
+        assert canonical_base_asset(bare_st) == bare_st
+
+    mb_col = MarketBreadthCollector()
+    mb_snap = mb_col.parse_tickers(
+        [
+            {"symbol": "SOLUSDT", "priceChangePercent": "12.0", "quoteVolume": "25000000"},
+            {"symbol": "SOLTUSD", "priceChangePercent": "11.8", "quoteVolume": "20000000"},
+            {"symbol": "ETHUSDT", "priceChangePercent": "4.0", "quoteVolume": "19000000"},
+            {"symbol": "BTCUSDT", "priceChangePercent": "2.0", "quoteVolume": "35000000"},
+            {"symbol": "ADAUSDT", "priceChangePercent": "-1.0", "quoteVolume": "13000000"},
+            {"symbol": "XRPUSDT", "priceChangePercent": "-2.0", "quoteVolume": "14000000"},
+        ]
+    )
+    assert mb_snap is not None
+    gainer_bases = [canonical_base_asset(sym) for sym, _ in mb_snap.top_gainers]
+    assert gainer_bases.count("SOL") == 1
+
+    # 5. collect_pretrade_telemetry appends live BTC price when eff_btc_vals_7d falls back to cache_watcher_all_price.json
+    pt_dir = tmp_path / "pt_btc7d"
+    pt_dir.mkdir(parents=True, exist_ok=True)
+    now_ms = int(1776000000 * 1000)
+    (pt_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"SOLUSDC": [now_ms, 110.0], "BTCUSDC": [now_ms, 88000.0]}}),
+        encoding="utf-8",
+    )
+    # 24h series for SOL (100 -> 110, +10%) and BTC (80000 -> 88000, +10%)
+    sol_24h = [[now_ms - (24 - i) * 3600 * 1000, 100.0 + (10.0 * i / 24.0)] for i in range(25)]
+    btc_24h = [[now_ms - (24 - i) * 3600 * 1000, 80000.0 + (8000.0 * i / 24.0)] for i in range(25)]
+    (pt_dir / "cache_24_price_SOLUSDC.json").write_text(json.dumps({"items": {"SOLUSDC": sol_24h}}), encoding="utf-8")
+    (pt_dir / "cache_24_price_BTCUSDC.json").write_text(json.dumps({"items": {"BTCUSDC": btc_24h}}), encoding="utf-8")
+    # 7d watcher series where BTC watcher last point is stale at 80000 (0% 7d change without live BTC append, +10% with 88000)
+    w_sol = [[now_ms - 6 * 86400 * 1000, 100.0], [now_ms - 3600 * 1000, 105.0]]
+    w_btc = [[now_ms - 6 * 86400 * 1000, 80000.0], [now_ms - 3600 * 1000, 80000.0]]
+    (pt_dir / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"SOLUSDC": w_sol, "BTCUSDC": w_btc}}),
+        encoding="utf-8",
+    )
+    pt_out = collect_pretrade_telemetry("SOLUSDC", cachedb_dir=str(pt_dir))
+    assert "7d=+0.00%)" in pt_out["Relative Strength vs BTC (24h Benchmark)"]
+
+    # 6. enrich_24h_and_microstructure rescales stale (>120s) reference USD orderbook via sibling p_ref price
+    ms_dir = tmp_path / "ms_ref_scale"
+    ms_dir.mkdir(parents=True, exist_ok=True)
+    import time as _t_mod
+
+    now_s = _t_mod.time()
+    (ms_dir / "orderbook_depth_HYPEUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSDC",
+                "mid_price": 42.0,
+                "best_bid": 41.99,
+                "best_ask": 42.01,
+                "bid_depth_usd": 80000.0,
+                "ask_depth_usd": 75000.0,
+                "imbalance_ratio": 0.516,
+                "largest_bid_wall_usd": 20000.0,
+                "largest_bid_wall_price": 41.80,
+                "largest_ask_wall_usd": 18000.0,
+                "largest_ask_wall_price": 42.20,
+                "spread_bps": 4.76,
+                "ts": now_s - 5.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ms_dir / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSD",
+                "mid_price": 40.0,
+                "best_bid": 39.98,
+                "best_ask": 40.02,
+                "bid_depth_usd": 50000.0,
+                "ask_depth_usd": 45000.0,
+                "imbalance_ratio": 0.526,
+                "largest_bid_wall_usd": 12000.0,
+                "largest_bid_wall_price": 39.80,
+                "largest_ask_wall_usd": 11000.0,
+                "largest_ask_wall_price": 40.20,
+                "spread_bps": 10.0,
+                "ts": now_s - 300.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    p_trends = {"HYPEUSDC": {"price": 42.0, "low_24h": 38.0, "high_24h": 43.0}}
+    micro_out = {}
+    enrich_24h_and_microstructure(str(ms_dir), str(tmp_path), p_trends, micro_out, {}, {}, now_s)
+    assert micro_out["HYPEUSD"]["ob_mid_price"] == pytest.approx(42.0)
+    assert p_trends["HYPEUSD"]["price"] == pytest.approx(42.0)
+
+
+
 
 
 

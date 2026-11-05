@@ -1314,6 +1314,16 @@ def enrich_24h_and_microstructure(
                                 ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
                                 default=None,
                             )
+                        if not sib_live_px or sib_live_px <= 0.0:
+                            ob_ref_d = _rj(os.path.join(cache_dir, f"orderbook_depth_{msym.upper()}.json"))
+                            if not isinstance(ob_ref_d, dict):
+                                ob_ref_d = _rj(os.path.join(cache_dir, "telemetry", f"orderbook_depth_{msym.upper()}.json"))
+                            ob_ref_ts = normalize_epoch_sec(
+                                safe_pos_float((ob_ref_d if isinstance(ob_ref_d, dict) else {}).get("ts"), default=0.0) or 0.0,
+                                default=0.0,
+                            )
+                            if ob_ref_ts > 0.0 and (now_ts - ob_ref_ts) > 120.0:
+                                sib_live_px = safe_pos_float(p_ref.get("price"), default=None)
                     if (
                         sib_live_px
                         and sib_live_px > 0.0

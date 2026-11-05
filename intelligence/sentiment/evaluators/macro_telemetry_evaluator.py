@@ -369,12 +369,22 @@ def enrich_sentiment_advisor_live_flow_divergence(
     is_bear_posture = (
         (sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") and not already_cited_buy_on_hold)
         or (sa_bias == "BEARISH" and not already_cited_buy_on_hold)
-        or (cited_tr is not None and cited_tr <= 0.65)
+        or (
+            cited_tr is not None
+            and cited_tr <= 0.65
+            and sa_act != "ACCUMULATE"
+            and sa_bias != "BULLISH"
+        )
     )
     is_bull_posture = (
         (sa_act == "ACCUMULATE" and not already_cited_sell_on_hold)
         or (sa_bias == "BULLISH" and not already_cited_sell_on_hold)
-        or (cited_tr is not None and cited_tr >= 1.35)
+        or (
+            cited_tr is not None
+            and cited_tr >= 1.35
+            and sa_act not in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
+            and sa_bias != "BEARISH"
+        )
     )
     is_neutral_posture = (
         (sa_act in ("", "HOLD") or sa_bias == "NEUTRAL")

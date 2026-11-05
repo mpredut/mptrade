@@ -5915,7 +5915,7 @@ def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
         "04:41:12 [GUARD] BUY TAOUSDC: the historical price reference was explicitly bypassed; the quantity/weight guard remains active\n",
         encoding="utf-8",
     )
-    res = harvest_log_anomalies_from_dirs([str(tmp_path)], 1)
+    res = harvest_log_anomalies_from_dirs([str(tmp_path)], 999999)
     assert res.guard_interventions == []
     assert res.critical_events == []
 
