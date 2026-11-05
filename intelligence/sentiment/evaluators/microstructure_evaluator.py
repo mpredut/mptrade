@@ -135,6 +135,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
                         chg_15m >= -0.15
                         and (
                             ob_imb >= 0.65
+                            or (ob_imb >= 0.60 and (safe_float(p_dict.get("chg_5m_pct"), default=0.0) or 0.0) >= 0.05)
                             or (ob_imb >= 0.54 and div_reg in ("accumulation", "short_covering", "bullish_absorption"))
                             or (ob_imb >= 0.57 and cvd_1h_cur > 0.0)
                         )
@@ -387,7 +388,7 @@ def compute_liquidation_clusters(
             )
             or (
                 (cvd_reg == "spot_absorbing" or div_reg in ("accumulation", "short_covering", "bullish_absorption"))
-                and chg_15m_v >= 0.05
+                and (chg_15m_v >= 0.05 or (chg_15m_v >= -0.10 and ob_imb_v >= 0.58))
                 and ob_imb_v >= 0.54
                 and spot_cvd_15m_v > 0.0
                 and (
@@ -449,7 +450,7 @@ def compute_liquidation_clusters(
             )
             or (
                 (cvd_reg == "ask_absorbing" or div_reg in ("distribution", "long_liquidation", "bearish_distribution"))
-                and chg_15m_v <= -0.05
+                and (chg_15m_v <= -0.05 or (chg_15m_v <= 0.10 and ob_imb_v <= 0.42))
                 and ob_imb_v <= 0.46
                 and spot_cvd_15m_v < 0.0
                 and (

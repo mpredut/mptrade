@@ -7326,3 +7326,50 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     )
     assert "LIVE_5M_FLOW_RECOVERY" in sa_5m_rec.get("live_flow_divergence", "")
     assert "5m_ratio=0.54" in sa_5m_rec.get("live_flow_divergence", "")
+
+    # Bug 70: TAOUSDC near-flat chg_15m (-0.06% / +0.02%) with strong ob_imbalance (0.631),
+    # positive chg_5m (+0.15%), spot_cvd_15m > 0, and kalman_vel > 0 should classify as
+    # spot_absorbing and neutralize LONG_SWEEP_MAGNET_DOWN to BALANCED_LIQ_MAGNET.
+    tao_minfo = {
+        "taker_buy_sell_ratio": 0.8572,
+        "cvd_15m_usd": -27_871.0,
+        "cvd_1h_usd": -489_200.0,
+        "ob_imbalance": 0.632,
+        "divergence_regime": "neutral",
+        "bid_depth_usd": 389_000.0,
+        "ask_depth_usd": 227_000.0,
+    }
+    tao_pinfo = {"price": 234.7, "chg_15m_pct": -0.06, "chg_5m_pct": 0.15}
+    enrich_microstructure_cvd(tao_minfo, tao_pinfo)
+    assert tao_minfo["cvd_regime"] == "spot_absorbing"
+
+    tao_liq = compute_liquidation_clusters(
+        {
+            "price": 234.77,
+            "chg_15m_pct": 0.02,
+            "chg_5m_pct": 0.19,
+            "kalman_vel": 0.07482,
+            "val_px": 234.09,
+            "vah_px": 244.71,
+            "low_24h": 230.89,
+            "high_24h": 247.34,
+        },
+        {
+            "oi_usd": 17_847_005.1,
+            "whale_long_pct": 0.7674,
+            "funding_rate": -0.00008365,
+            "ob_imbalance": 0.631,
+            "bid_wall_px": 234.34,
+            "ask_wall_px": 235.16,
+            "taker_buy_sell_ratio": 0.8572,
+            "cvd_15m_usd": -27_900.0,
+            "cvd_regime": "spot_absorbing",
+            "spot_cvd_15m_usd": 7_500.0,
+            "taker_ratio_5m": 0.98,
+            "cvd_5m_usd": -1_600.0,
+            "taker_ratio_1h": 0.65,
+            "cvd_1h_usd": -489_200.0,
+        },
+    )
+    assert tao_liq["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
