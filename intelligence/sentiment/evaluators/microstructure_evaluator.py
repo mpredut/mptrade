@@ -11,6 +11,7 @@ from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
     normalize_venue_name,
+    split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.internal.state.volatility import adaptive_thresholds
@@ -329,15 +330,19 @@ def _infer_symbol_venue_and_fees_bps(sym: str, m_dict: Dict[str, Any]) -> Tuple[
     """Infer canonical venue name, maker/taker fee bps, and half-spread bps from SSOT `_VENUE_DEFAULT_FEE_SPECS`."""
     sym_u = str(sym or "").strip().upper()
     explicit_v = normalize_venue_name((m_dict or {}).get("venue")) if isinstance(m_dict, dict) else ""
+    sym_parts = split_symbol_assets(sym_u) if sym_u and not sym_u.endswith(("_EQ", "_US_EQ")) else None
+    sym_quote = sym_parts[1] if sym_parts is not None else ""
     if explicit_v in _VENUE_DEFAULT_FEE_SPECS:
         venue = explicit_v
     elif ":" in sym_u and (pref_v := normalize_venue_name(sym_u.split(":", 1)[0])) in _VENUE_DEFAULT_FEE_SPECS:
         venue = pref_v
-    elif canonical_base_asset(sym_u) == "HYPE" and sym_u.endswith("USDC"):
+    elif sym_u.endswith(("_EQ", "_US_EQ")):
+        venue = "t212"
+    elif canonical_base_asset(sym_u) == "HYPE" and (sym_quote == "USDC" or sym_u.endswith("USDC")):
         venue = "hyperliquid"
-    elif sym_u.endswith(("USDC", "USDT")):
+    elif sym_quote in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD")):
         venue = "binance"
-    elif sym_u.endswith(("USD", "EUR")) or sym_u.startswith(("XX", "XZ")):
+    elif sym_quote in ("USD", "EUR") or sym_u.endswith(("USD", "EUR")) or sym_u.startswith(("XX", "XZ")):
         venue = "kraken"
     else:
         venue = "t212"

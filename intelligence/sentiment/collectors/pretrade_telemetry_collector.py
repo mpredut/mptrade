@@ -665,10 +665,7 @@ def collect_pretrade_telemetry(
             and (m7d.get("low_7d"), m7d.get("high_7d")) == (m24.get("low_24h"), m24.get("high_24h"))
         )
         if m7d and not is_sub24h_dup_7d:
-            if (
-                "Relative Strength vs BTC (24h Benchmark)" in telemetry
-                and telemetry["Relative Strength vs BTC (24h Benchmark)"].startswith("vs_btc(")
-            ):
+            if "Relative Strength vs BTC (24h Benchmark)" in telemetry:
                 eff_btc_vals_7d = list(btc_vals_7d)
                 btc_arch_span_7d = _LAST_7D_SPAN_MS_BY_SYM.get("BTCUSDC", 0.0)
                 if (
@@ -703,9 +700,15 @@ def collect_pretrade_telemetry(
                 m7_chg = safe_float(m7d.get("chg_7d_pct"), default=None)
                 b7_chg = safe_float((btc_m7d or {}).get("chg_7d_pct"), default=None)
                 if m7_chg is not None and b7_chg is not None:
-                    telemetry["Relative Strength vs BTC (24h Benchmark)"] = telemetry[
-                        "Relative Strength vs BTC (24h Benchmark)"
-                    ].replace(")", f", 7d={m7_chg - b7_chg:+.2f}%)", 1)
+                    cur_rel_btc = telemetry["Relative Strength vs BTC (24h Benchmark)"]
+                    if cur_rel_btc.startswith("vs_btc("):
+                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = cur_rel_btc.replace(
+                            ")", f", 7d={m7_chg - b7_chg:+.2f}%)", 1
+                        )
+                    else:
+                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = (
+                            f"vs_btc(7d={m7_chg - b7_chg:+.2f}%) | {cur_rel_btc}"
+                        )
             m7d_fmt = m7d
             p7_parts = [
                 f"7d={safe_float(m7d_fmt.get('chg_7d_pct'), 0.0):+.2f}%",

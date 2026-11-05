@@ -7245,11 +7245,111 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     assert "HYPEUSD" in refreshed_syms
 
 
+def test_iter96_known_t_b_bases_fdusd_venue_fees_retry_queue_venue_and_crypto_scope_microstructure(tmp_path):
+    from cachepaths import (
+        cache_symbol_variants,
+        compatible_quote_suffixes,
+        normalize_cache_base_asset,
+        split_symbol_assets,
+    )
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
+    from intelligence.sentiment.evaluators.microstructure_evaluator import _infer_symbol_venue_and_fees_bps
 
+    # 1. Known 4+ letter bases ending in T or B paired with USD are not truncated by TUSD/BUSD
+    assert normalize_cache_base_asset("SHIBUSD") == "SHIB"
+    assert split_symbol_assets("SHIBUSD") == ("SHIB", "USD")
+    assert normalize_cache_base_asset("SHIBBUSD") == "SHIB"
+    assert split_symbol_assets("SHIBBUSD") == ("SHIB", "BUSD")
+    assert normalize_cache_base_asset("PNUTUSD") == "PNUT"
+    assert split_symbol_assets("PNUTUSD") == ("PNUT", "USD")
+    assert normalize_cache_base_asset("BRETTUSD") == "BRETT"
+    assert split_symbol_assets("BRETTUSD") == ("BRETT", "USD")
+    assert normalize_cache_base_asset("BRETTTUSD") == "BRETT"
+    assert split_symbol_assets("BRETTTUSD") == ("BRETT", "TUSD")
+    assert normalize_cache_base_asset("ZENTUSD") == "ZENT"
+    assert split_symbol_assets("ZENTUSD") == ("ZENT", "USD")
+    assert normalize_cache_base_asset("MSFTUSD") == "MSFT"
+    assert split_symbol_assets("MSFTUSD") == ("MSFT", "USD")
+    assert compatible_quote_suffixes("SOLTUSD") == ("USDC", "USDT", "USD")
+    assert compatible_quote_suffixes("SOLBUSD") == ("USDC", "USDT", "USD")
+    assert "SOLUSDC" in cache_symbol_variants("SOLTUSD")
 
+    # 2. _infer_symbol_venue_and_fees_bps maps FDUSD/TUSD/BUSD to binance and _EQ/_US_EQ to t212
+    assert _infer_symbol_venue_and_fees_bps("BTCFDUSD", None)[0] == "binance"
+    assert _infer_symbol_venue_and_fees_bps("SOLTUSD", None)[0] == "binance"
+    assert _infer_symbol_venue_and_fees_bps("SOLBUSD", None)[0] == "binance"
+    assert _infer_symbol_venue_and_fees_bps("SHIBUSD", None)[0] == "kraken"
+    assert _infer_symbol_venue_and_fees_bps("NVDA_US_EQ", None)[0] == "t212"
 
+    # 3. harvest_bot_runtime_states normalizes retry_queue venue when provider_name is absent
+    import time as _t_mod
 
+    now_s = _t_mod.time()
+    rq_dir = tmp_path / "rq_test"
+    rq_dir.mkdir(parents=True, exist_ok=True)
+    (rq_dir / "order_retry_queue.jsonl").write_text(
+        json.dumps(
+            {
+                "symbol": "NVDA_US_EQ",
+                "venue": "trading212",
+                "side": "BUY",
+                "qty": 1.0,
+                "lifecycle": "submit_pending",
+                "expires_at_ts": now_s + 300.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    bot_states = harvest_bot_runtime_states(str(rq_dir), now_s)
+    assert len(bot_states["active_retry_queue"]) == 1
+    assert bot_states["active_retry_queue"][0]["venue"] == "t212"
 
+    # 4. apply_asset_scope_filter removes _US_EQ from microstructure when scope='crypto'
+    price_trends = {"BTCUSDC": {"price": 75000.0}, "NVDA_US_EQ": {"price": 199.06}}
+    micro = {"BTCUSDC": {"ob_mid_price": 75000.0}, "NVDA_US_EQ": {"ob_mid_price": 199.06}}
+    portfolio = {"positions_by_venue": {"t212": [{"symbol": "NVDA_US_EQ"}]}}
+    price_trends, micro = apply_asset_scope_filter(price_trends, micro, portfolio, "crypto", {}, {})
+    assert "NVDA_US_EQ" not in micro
+    assert "BTCUSDC" in micro
 
+    # 5. collect_pretrade_telemetry prepends vs_btc(7d=...) when 24h Relative Strength vs BTC only has cross_parts
+    pt_dir = tmp_path / "pt_rel7d"
+    pt_dir.mkdir(parents=True, exist_ok=True)
+    sol_24h = [
+        [int((now_s - m * 60 - k) * 1000), 150.0 + idx * 0.2]
+        for idx, m in enumerate((55, 50, 45, 40))
+        for k in (0, 1, 2)
+    ] + [[int(now_s * 1000), 152.0]]
+    btc_24h = [
+        [int((now_s - m * 60 - k) * 1000), 75000.0 + idx * 20.0]
+        for idx, m in enumerate((55, 50, 45, 40))
+        for k in (0, 1, 2)
+    ] + [[int(now_s * 1000), 75100.0]]
+    (pt_dir / "cache_24_price_SOLUSDC.json").write_text(json.dumps(sol_24h), encoding="utf-8")
+    (pt_dir / "cache_24_price_BTCUSDC.json").write_text(json.dumps(btc_24h), encoding="utf-8")
+    (pt_dir / "cache_watcher_all_price.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "SOLUSDC": [
+                        [int((now_s - 6.5 * 86400) * 1000), 140.0],
+                        [int((now_s - 25 * 3600) * 1000), 148.0],
+                    ],
+                    "BTCUSDC": [
+                        [int((now_s - 6.5 * 86400) * 1000), 70000.0],
+                        [int((now_s - 25 * 3600) * 1000), 74000.0],
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    res_pt = collect_pretrade_telemetry("SOLUSDC", cachedb_dir=str(pt_dir))
+    rel_line = res_pt.get("Relative Strength vs BTC (24h Benchmark)", "")
+    assert rel_line.startswith("vs_btc(7d=")
+    assert " | alt_btc_pos_24h=" in rel_line
 
 

@@ -190,6 +190,7 @@ def apply_asset_scope_filter(
             portfolio_summary.pop(crypto_key, None)
     else:
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
+        microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         portfolio_summary.pop("t212_cycles", None)
     if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
         def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:

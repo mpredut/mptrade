@@ -555,6 +555,33 @@ _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
     "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
 })
 
+_KNOWN_T_OR_B_BASES: frozenset[str] = frozenset({
+    "SHIB",
+    "ABNB",
+    "NFTB",
+    "LAMB",
+    "SCHB",
+    "PNUT",
+    "GOAT",
+    "BRETT",
+    "BLAST",
+    "DRIFT",
+    "POPCAT",
+    "PROMPT",
+    "IOST",
+    "SCRT",
+    "DENT",
+    "ZENT",
+    "FORT",
+    "VIDT",
+    "XPRT",
+    "MSFT",
+    "RDDT",
+    "RIOT",
+    "IBIT",
+    "MSTRT",
+})
+
 _CANONICAL_BASE_ALIASES: dict[str, str] = {
     "XBT": "BTC",
     "XXBT": "BTC",
@@ -599,6 +626,7 @@ def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
             or stem_usd in _CANONICAL_BASE_ALIASES
             or stem_usd in _LEGACY_KRAKEN_X_BASES
             or stem_usd in _BARE_STABLECOIN_BASES
+            or stem_usd in _KNOWN_T_OR_B_BASES
             or stem_usd.endswith((".T", "X.T", "XBT"))
             or stem_usd.startswith("XAU")
         ):
@@ -831,7 +859,7 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
 
 
-_USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD")
+_USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 
 
 def compatible_quote_suffixes(
@@ -889,7 +917,7 @@ def cache_symbol_variants(
         for suffix in quotes:
             for b in bases:
                 _add(f"{b}{suffix}")
-        include_usd_equities = any(q in ("USDC", "USDT", "USD", "FDUSD") for q in quotes)
+        include_usd_equities = any(q in _USD_FAMILY_QUOTES for q in quotes)
         for b in bases:
             if include_base:
                 _add(b)

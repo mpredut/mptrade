@@ -1213,8 +1213,9 @@ def harvest_bot_runtime_states(
             if lifecycle in ("submit_pending", "awaiting_cancel", "pending", "active") and (
                 checked_oq_expiry or lifecycle == "awaiting_cancel" or exp_ts == 0.0 or exp_ts > eff_now
             ):
+                raw_rq_v = rec.get("provider_name") if rec.get("provider_name") is not None else rec.get("venue")
                 active_retries.append({
-                    "venue": str(rec.get("provider_name") or "").lower(),
+                    "venue": normalize_venue_name(raw_rq_v) or str(raw_rq_v or "").strip().lower(),
                     **{k: rec.get(k) for k in ("symbol", "side", "qty", "requested_price", "kind", "attempts", "last_failure_reason")},
                 })
         if active_retries:
