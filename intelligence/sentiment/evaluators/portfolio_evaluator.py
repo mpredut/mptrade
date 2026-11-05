@@ -548,6 +548,14 @@ def _populate_cycle_fallback_recent_order(
         created_ro = True
     if isinstance(ro, dict):
         if (p_venue == "t212" or created_ro) and cyc_avg > 0:
+            if (
+                p_venue == "t212"
+                and not created_ro
+                and ro.get("tactical_avg_buy_px") is None
+                and (prev_act_avg := safe_pos_float(ro.get("active_avg_buy_px"), default=None)) is not None
+                and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
+            ):
+                ro["tactical_avg_buy_px"] = round(prev_act_avg, 6)
             ro["active_avg_buy_px"] = round(cyc_avg, 6)
         if (p_venue == "t212" or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
             lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
@@ -773,11 +781,14 @@ def enrich_positions_with_orders_and_cycles(
     gateway_max_usd: float = 2000.0,
 ) -> None:
     """Enrich `tradable_positions` and venue cycles in-place with cost-basis anchors, LIFO PnL, trailing peaks, and venue fee/limits."""
+    seen_venue_syms: set[tuple[str, str]] = set()
     for pos in tradable_positions:
         if not isinstance(pos, dict):
             continue
         p_sym = str(pos.get("symbol") or "").upper()
         p_venue = normalize_venue_name(pos.get("venue"))
+        if p_venue and p_sym:
+            seen_venue_syms.add((p_venue, p_sym))
         p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
         p_quote_variants = cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes)
         p_variants = (*p_quote_variants, *cache_symbol_variants(p_sym))
@@ -919,6 +930,8 @@ def enrich_positions_with_orders_and_cycles(
                 ro = _populate_cycle_fallback_recent_order(
                     p_venue, p_sym, cyc, cyc_has_open_qty, ro, recent_orders, v_ro_map, cyc_sell_ts_map
                 )
+                if isinstance(ro, dict) and (tac_avg_c := safe_pos_float(ro.get("tactical_avg_buy_px"), default=None)) is not None:
+                    set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", tac_avg_c, pos_px_f, overwrite=False)
                 if isinstance(ro, dict) and (sw_avg_c := safe_pos_float(ro.get("swing_subcycle_avg_px"), default=None)) is not None:
                     eff_act_avg = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
                     if eff_act_avg is None or abs(sw_avg_c - eff_act_avg) / max(eff_act_avg, 1e-9) >= 0.002:
@@ -978,6 +991,25 @@ def enrich_positions_with_orders_and_cycles(
         )
         if prev_inst_limits:
             pos.update(prev_inst_limits)
+    for c_venue, cyc_map in (("t212", t212_cycles), ("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles)):
+        if not isinstance(cyc_map, dict):
+            continue
+        v_ro_map = venue_recent_orders.get(c_venue, {}) if isinstance(venue_recent_orders, dict) else {}
+        for c_sym, cyc in cyc_map.items():
+            if not isinstance(cyc, dict):
+                continue
+            c_sym_u = str(c_sym or "").strip().upper()
+            if not c_sym_u or (c_venue, c_sym_u) in seen_venue_syms:
+                continue
+            cyc_qty = safe_nonneg_float(cyc.get("qty"), default=0.0) or 0.0
+            if cyc_qty <= 1e-8:
+                continue
+            c_quotes = compatible_quote_suffixes(c_sym_u)
+            c_quote_variants = cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes)
+            ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
+            _populate_cycle_fallback_recent_order(
+                c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
+            )
 
 
 __all__ = [

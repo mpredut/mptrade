@@ -6082,3 +6082,45 @@ def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes
     assert "POC=400.0[+2.50%]" in joined_3a
     assert "ABOVE_VAH" in joined_3a
 
+
+def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+    )
+
+    ro_spcx = {
+        "venue": "t212",
+        "last_action_side": "BUY",
+        "active_avg_buy_px": 140.448972,
+        "tactical_avg_buy_px": 140.96253,
+        "last_buy": {"price": 140.51, "qty": 0.71, "actor": "AI"},
+    }
+    ro_rgnt = {
+        "venue": "t212",
+        "last_action_side": "BUY",
+        "active_avg_buy_px": 1.43,
+        "last_buy": {"price": 1.43, "qty": 72.14, "actor": "AI"},
+    }
+    recent_orders = {"SPCX_US_EQ": ro_spcx, "RGNT_US_EQ": ro_rgnt}
+    venue_recent_orders = {"t212": {"SPCX_US_EQ": ro_spcx, "RGNT_US_EQ": ro_rgnt}}
+    t212_cycles = {
+        "SPCX_US_EQ": {"qty": 7.042965, "avg_cost_px": 144.9872, "entry_price": 146.8203},
+        "RGNT_US_EQ": {"qty": 122.51, "avg_cost_px": 1.4395, "entry_price": 1.50},
+    }
+    enrich_positions_with_orders_and_cycles(
+        [],
+        {"SPCX_US_EQ": {"price": 134.76}, "RGNT_US_EQ": {"price": 1.32}},
+        {},
+        venue_recent_orders,
+        recent_orders,
+        {},
+        {},
+        t212_cycles,
+        {},
+    )
+    assert recent_orders["SPCX_US_EQ"]["active_avg_buy_px"] == pytest.approx(144.9872)
+    assert recent_orders["SPCX_US_EQ"]["tactical_avg_buy_px"] == pytest.approx(140.96253)
+    assert recent_orders["RGNT_US_EQ"]["active_avg_buy_px"] == pytest.approx(1.4395)
+    assert recent_orders["RGNT_US_EQ"]["tactical_avg_buy_px"] == pytest.approx(1.43)
+
+
