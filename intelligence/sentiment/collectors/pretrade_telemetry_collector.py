@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time as _time
 from typing import Any, Callable, Dict, Optional
 
 from botcore import extract_current_price_item, load_local_module
@@ -57,6 +58,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_volume_profile_metrics,
     pct_delta,
     recalculate_live_price_geometry,
+    round_opt_px,
 )
 from instrument_registry import casefold_get
 from state_io import (
@@ -1032,6 +1034,12 @@ def collect_pretrade_telemetry(
                 else (f"{ls.get('price')}{ls_by}" if ls.get("price") is not None else "none")
             )
             sub_parts = []
+            now_ms_f = _time.time() * 1000.0
+            for side_lbl, side_d in (("Last BUY Age", lb), ("Last SELL Age", ls)):
+                if isinstance(side_d, dict) and (s_ts := safe_pos_float(side_d.get("ts_ms"), default=None)) is not None:
+                    diff_ms = now_ms_f - s_ts
+                    if 0.0 <= diff_ms <= 365.0 * 86400.0 * 1000.0:
+                        sub_parts.append(f"{side_lbl}={round(diff_ms / 3_600_000.0, 1)}h")
             lb_px = safe_pos_float(lb.get("price"), default=None)
             _same_px = lambda a, b: a is not None and b is not None and abs(a - b) <= max(1e-6, max(abs(a), abs(b)) * 1e-5)
             if (act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None:
@@ -1047,6 +1055,20 @@ def collect_pretrade_telemetry(
                 sub_parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
             if abs(lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), 0.0)) >= 0.01:
                 sub_parts.append(f"Sub-Cycle LIFO Realized PnL=${lifo_pnl:+.2f}")
+            r_buys = [
+                f"{b.get('qty')}@{round_opt_px(b.get('price'), 6)}"
+                for b in (fills.get("recent_buys") or ())
+                if isinstance(b, dict) and b.get("qty") is not None and b.get("price") is not None
+            ]
+            if len(r_buys) > 1:
+                sub_parts.append(f"Recent BUY Tranches=[{', '.join(r_buys)}]")
+            r_sells = [
+                f"{s.get('qty')}@{round_opt_px(s.get('price'), 6)}"
+                for s in (fills.get("recent_sells") or ())
+                if isinstance(s, dict) and s.get("qty") is not None and s.get("price") is not None
+            ]
+            if len(r_sells) > 1:
+                sub_parts.append(f"Recent SELL Tranches=[{', '.join(r_sells)}]")
             sub_sfx = f", {', '.join(sub_parts)}" if sub_parts else ""
             telemetry["Recent Venue Fills"] = (
                 f"Last Action={fills.get('last_action_side')}, "

@@ -769,8 +769,7 @@ _GENERIC_HEADLINE_OVERLAP_STEMS: frozenset[str] = frozenset({
 })
 
 _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
-    _PARTISAN_ELECTION_CONTEXT_WORDS
-    | _COMMERCIAL_METAPHOR_WAR_WORDS
+    _COMMERCIAL_METAPHOR_WAR_WORDS
     | frozenset({
         "blue", "cards", "celebrity", "cereal", "concert", "dylan", "farmers",
         "festival", "governor", "jailed", "mamdani", "match", "mayor", "movie",
@@ -797,12 +796,30 @@ _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
 )
 
 
+_PARTISAN_MARKET_CONTEXT_WHITELIST: frozenset[str] = (
+    _BROAD_MARKET_INDEX_CONTEXT_WORDS
+    | frozenset({
+        "bank", "banks", "bond", "bonds", "central", "cpi", "currency", "debt",
+        "dollar", "economy", "economic", "etf", "fed", "fomc", "gdp", "inflation",
+        "investor", "investors", "pce", "powell", "rate", "rates", "recession",
+        "sec", "shares", "tariff", "tariffs", "tax", "taxes", "treasuries",
+        "treasury", "yield", "yields",
+    })
+)
+
+
 def has_financial_or_geopolitical_context(title: Any) -> bool:
     """Return True if a headline contains explicit financial, market, macro, or geopolitical context tokens."""
     if not isinstance(title, str) or not title.strip():
         return False
     words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
-    return bool(words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS)
+    if not (words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS):
+        return False
+    if (words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (words & _PARTISAN_MARKET_CONTEXT_WHITELIST):
+        return False
+    if (words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (words & (_PARTISAN_MARKET_CONTEXT_WHITELIST | {"chip", "chips", "semiconductor", "semiconductors", "trade"})):
+        return False
+    return True
 
 
 def is_off_topic_general_news_title(title: Any) -> bool:
@@ -810,7 +827,7 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     if not isinstance(title, str) or not title.strip():
         return False
     words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
-    if not words or (words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS):
+    if not words or has_financial_or_geopolitical_context(title):
         return False
     return bool(words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS))
 

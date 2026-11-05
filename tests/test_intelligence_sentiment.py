@@ -6509,3 +6509,166 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
         assert _is_noise_dynamic_keyword(bad_bg) is True
 
 
+def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretrade_fill_ages(tmp_path):
+    import json
+    import time as _time
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_portfolio_and_venue_cycles
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    # 1. Bug 110: cache_asset_value.jsonl inner "i.timestamp" extracts total_value_usdc_age_min
+    cdir = tmp_path / "cachedb"
+    orders_dir = cdir / "orders"
+    orders_dir.mkdir(parents=True, exist_ok=True)
+    now_s = 1_793_855_000.0
+    (orders_dir / "cache_asset_value.jsonl").write_text(
+        json.dumps(
+            {
+                "s": "TOTAL",
+                "i": {
+                    "timestamp": int(now_s - 750),
+                    "datetime_local": "2026-11-05T06:53:44",
+                    "total_value_usdc": 11330.48,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    ps: dict = {}
+    harvest_portfolio_and_venue_cycles(
+        str(cdir),
+        str(tmp_path),
+        [],
+        ps,
+        {},
+        {},
+        {},
+        {},
+        now_ts=now_s,
+    )
+    assert ps["total_value_usdc"] == 11330.48
+    assert ps["total_value_usdc_age_min"] == 12.5
+
+    # 2. Bug 111: Partisan election commentary mentioning generic war/prices without market/Fed/index context is deprioritized
+    assert has_financial_or_geopolitical_context(
+        "Video | Trump's Broken Peace Promises, Iran War And Rising Prices Cost Republicans In US Midterms"
+    ) is False
+    assert is_off_topic_general_news_title(
+        "McDonald's tests new value menu as fast-food discount wars heat up"
+    ) is True
+    assert has_financial_or_geopolitical_context(
+        "Stock futures are little changed after big rally following Democrats' decisive midterm wins"
+    ) is True
+    assert is_off_topic_general_news_title(
+        "Stock futures are little changed after big rally following Democrats' decisive midterm wins"
+    ) is False
+
+    # 3. Bug 112: collect_pretrade_telemetry Recent Venue Fills includes Last BUY Age, Last SELL Age, and Recent BUY/SELL Tranches
+    now_ms = int(_time.time() * 1000)
+    (orders_dir / "cache_order.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "b1",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 77350.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 773.5,
+                            "updateTime": now_ms - int(48 * 3_600_000),
+                            "clientOrderId": "AIBTC1",
+                        },
+                        {
+                            "orderId": "b2",
+                            "side": "BUY",
+                            "status": "FILLED",
+                            "price": 77580.0,
+                            "executedQty": 0.01,
+                            "cummulativeQuoteQty": 775.8,
+                            "updateTime": now_ms - int(36 * 3_600_000),
+                            "clientOrderId": "AIBTC2",
+                        },
+                        {
+                            "orderId": "s1",
+                            "side": "SELL",
+                            "status": "FILLED",
+                            "price": 79950.0,
+                            "executedQty": 0.005,
+                            "cummulativeQuoteQty": 399.75,
+                            "updateTime": now_ms - int(14 * 3_600_000),
+                            "clientOrderId": "AIBTC3",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
+    rvf = pt.get("Recent Venue Fills", "")
+    assert "Last BUY=0.01 @ 77580.0 (by=BOT)" in rvf
+    assert "Last SELL=0.005 @ 79950.0 (by=BOT)" in rvf
+    assert "Last BUY Age=36.0h" in rvf
+    assert "Last SELL Age=14.0h" in rvf
+    assert "Recent BUY Tranches=[0.01@77350.0, 0.01@77580.0]" in rvf
+
+    # 4. Bug 113: normalize_error_signature strips [file.py:line] [STDERR] tags and harvest_log_anomalies_from_dirs
+    #    clears recovered transient -2015 IP/auth failover bursts once subsequent bot cycles succeed
+    from orchestratorOS.lib.technical_repair_ssot import (
+        harvest_log_anomalies_from_dirs,
+        normalize_error_signature,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+
+    raw_ws = "WS error: login failed: {'id': 'login', 'status': 401, 'error': {'code': -2015, 'msg': 'Invalid API-key, IP, or permissions for action.'}}"
+    wrapped_ws = f"06:46:47 [__init__.py:1163] [STDERR] {raw_ws}"
+    assert normalize_error_signature(raw_ws) == normalize_error_signature(wrapped_ws)
+
+    ldir_rec = tmp_path / "logs_rec"
+    ldir_rec.mkdir(parents=True, exist_ok=True)
+    clk_err = _time.strftime("%H:%M:%S", _time.localtime(_time.time() - 900))
+    clk_ok = _time.strftime("%H:%M:%S", _time.localtime(_time.time() - 60))
+    (ldir_rec / "assetguardian.log").write_text(
+        "\n".join([
+            f"{clk_err} get_free_balance: Error for TAO: APIError(code=-2015): Invalid API-key, IP, or permissions for action.",
+            f"{clk_err} get_free_balance: Error for TAO: APIError(code=-2015): Invalid API-key, IP, or permissions for action.",
+            f"{clk_ok} [TAOUSDC] Existing SELL order blocks AssetGuardian tier: ['721391298']",
+            *(f"{clk_ok} [DEBUG] sleep 30.0s before next cycle {i}" for i in range(12)),
+        ]),
+        encoding="utf-8",
+    )
+    (ldir_rec / "monitortrades_2026-11-05.log").write_text(
+        "\n".join([
+            f"{clk_err} [__init__.py:1163] [STDERR] {raw_ws}",
+            f"{clk_err} [__init__.py:1163] [STDERR] {raw_ws}",
+            f"{clk_ok} get_trade_orders:           Total found 21 orders in the last 4.0 days.",
+            *(f"{clk_ok} For BTCUSDC {i}" for i in range(12)),
+        ]),
+        encoding="utf-8",
+    )
+    anom_rec = harvest_log_anomalies_from_dirs([str(ldir_rec)], lookback_hours=1.0)
+    assert anom_rec.error_count == 0
+    assert anom_rec.persistent_errors == []
+
+    # 5. Non-tradable cycle pos_peak reconciliation selects quote variant with positive high_24h
+    hl_nontrad_cycles = {"HYPE": {"qty": 10.0, "cost_usd": 380.0, "avg_cost_px": 38.0, "pos_peak": 38.0}}
+    enrich_positions_with_orders_and_cycles(
+        [],
+        {"HYPE": {"price": 40.0}, "HYPEUSDC": {"price": 40.0, "high_24h": 44.5}},
+        {},
+        {"hyperliquid": {"HYPE": {"last_buy": {"price": 38.0, "qty": 10.0, "ts_ms": now_ms - 24 * 3_600_000}}}},
+        {},
+        {},
+        hl_nontrad_cycles,
+        {},
+        {},
+    )
+    assert hl_nontrad_cycles["HYPE"]["pos_peak"] == 44.5
+
+

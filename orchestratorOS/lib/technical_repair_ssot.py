@@ -626,6 +626,8 @@ def normalize_error_signature(line: str) -> str:
     s = _FULL_TS_RE.sub("", line)
     s = _GLOG_TS_RE.sub("", s)
     s = _CLOCK_TS_RE.sub("", s)
+    s = re.sub(r"\[[A-Za-z0-9_.-]+:\d+\]\s*", "", s)
+    s = re.sub(r"\[(?:STDERR|STDOUT)\]\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
     s = re.sub(r"\b\d{4,}\b", "NUM", s)
     return " ".join(s.strip().split())[:180]
@@ -679,6 +681,19 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     guard_sig_to_idx: Dict[str, int] = {}
     dated_log_fname_re = re.compile(r"^(.+?)_\d{4}-\d{2}-\d{2}(\.(?:log|txt))$", re.IGNORECASE)
     persistent_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    seen_count_by_key: Dict[Tuple[str, str], int] = {}
+    transient_ip_auth_err_pattern = re.compile(
+        r"Invalid API-key,\s*IP,\s*or permissions for action",
+        re.IGNORECASE,
+    )
+    bot_cycle_recovered_pattern = re.compile(
+        r"(Order \d+ .* is protected from monitororder repricing|"
+        r"get_trade_orders:\s+Total found \d+ orders|"
+        r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
+        r"Started\.\s+check_interval=|"
+        r"\[CacheOrderManager\]\[info\]\s+(?:New order fills:|Save cache to file))",
+        re.IGNORECASE,
+    )
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
@@ -714,6 +729,18 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     )
                     total_lines = len(lines)
                     tail_start_idx = max(0, total_lines - min(10, max(3, total_lines // 4)))
+                    last_ip_err_idx = max(
+                        (i for i, ln in enumerate(lines) if transient_ip_auth_err_pattern.search(ln)),
+                        default=-1,
+                    )
+                    ip_auth_burst_recovered = bool(
+                        last_ip_err_idx >= 0
+                        and (total_lines - 1 - last_ip_err_idx) >= 10
+                        and any(
+                            bot_cycle_recovered_pattern.search(lines[j]) or daemon_recovered_pattern.search(lines[j])
+                            for j in range(last_ip_err_idx + 1, total_lines)
+                        )
+                    )
                     file_sig_stats: Dict[str, Dict[str, Any]] = {}
                     last_exc_sig: str = ""
                     last_exc_idx: int = -100
@@ -766,6 +793,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     for j in range(idx + 1, lookahead_end)
                                 ):
                                     continue
+                            if ip_auth_burst_recovered and transient_ip_auth_err_pattern.search(cleaned):
+                                continue
                             if (
                                 (
                                     "Failed to recover daemon" in cleaned
@@ -847,16 +876,19 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     canon_fname = f"{m_dated.group(1)}{m_dated.group(2)}" if m_dated else fname
                     is_dated_fname = m_dated is not None
                     for sig_k, st in file_sig_stats.items():
-                        if st["count"] >= 2 or st["unresolved_at_tail"]:
-                            pkey = (canon_fname.lower(), sig_k)
+                        pkey = (canon_fname.lower(), sig_k)
+                        cur_cnt = int(st.get("count", 0))
+                        prev_seen_cnt = seen_count_by_key.get(pkey, 0)
+                        if prev_seen_cnt > 0:
+                            error_count = max(0, error_count - min(prev_seen_cnt, cur_cnt))
+                        seen_count_by_key[pkey] = max(prev_seen_cnt, cur_cnt)
+                        if cur_cnt >= 2 or st["unresolved_at_tail"]:
                             prev_st = persistent_by_key.get(pkey)
                             if prev_st is None:
                                 persistent_by_key[pkey] = st
                                 persistent_errors.append(st)
                             else:
-                                overlap_cnt = min(int(prev_st.get("count", 0)), int(st.get("count", 0)))
-                                error_count = max(0, error_count - overlap_cnt)
-                                if int(st.get("count", 0)) > int(prev_st.get("count", 0)):
+                                if cur_cnt > int(prev_st.get("count", 0)):
                                     prev_st["count"] = st["count"]
                                     prev_st["sample"] = st["sample"]
                                 if not is_dated_fname:

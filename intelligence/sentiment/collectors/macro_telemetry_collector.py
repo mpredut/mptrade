@@ -564,9 +564,17 @@ def harvest_portfolio_and_venue_cycles(
     _rj = read_json_fn or read_json_cached
     last_av = read_last_jsonl_dict(os.path.join(cache_dir, "cache_asset_value.jsonl"), tail_bytes=2048)
     if isinstance(last_av, dict) and isinstance(last_av.get("i"), dict):
-        portfolio_summary["total_value_usdc"] = last_av["i"].get("total_value_usdc")
-        av_ts_s = normalize_epoch_sec(extract_timestamp_s(last_av) or last_av.get("t"))
-        eff_now_s = normalize_epoch_sec(now_ts)
+        av_inner = last_av["i"]
+        portfolio_summary["total_value_usdc"] = av_inner.get("total_value_usdc")
+        av_ts_s = normalize_epoch_sec(
+            extract_timestamp_s(last_av)
+            or extract_timestamp_s(av_inner)
+            or last_av.get("t")
+            or av_inner.get("t")
+            or av_inner.get("datetime_local"),
+            allow_iso=True,
+        )
+        eff_now_s = resolve_now_ts(now_ts)
         if av_ts_s is not None and eff_now_s is not None:
             portfolio_summary["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
 

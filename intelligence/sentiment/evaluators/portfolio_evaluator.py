@@ -926,6 +926,8 @@ def enrich_positions_with_orders_and_cycles(
             pos["price"] = pos_px_f
             if (fb_val := safe_float(pos.get("free_base"), -1.0)) >= 0:
                 pos["value_usd"] = round(fb_val * cand_px, 2)
+            if (lb_val := safe_pos_float(pos.get("locked_base_qty"), default=0.0) or 0.0) > 0:
+                pos["locked_base_usd"] = round(lb_val * cand_px, 2)
             if (pk_val := safe_float(pos.get("trailing_peak"), 0.0)) > 0:
                 if pk_val < cand_px:
                     pk_val = cand_px
@@ -1238,7 +1240,7 @@ def enrich_positions_with_orders_and_cycles(
                                 if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
                                 and safe_pos_float(val.get("high_24h"), default=0.0)
                             ),
-                            None,
+                            casefold_get(prices_and_trends, c_sym_u),
                         )
                         hi_24h_c = safe_pos_float(pt_c.get("high_24h") if isinstance(pt_c, dict) else None, default=0.0) or 0.0
                         ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
