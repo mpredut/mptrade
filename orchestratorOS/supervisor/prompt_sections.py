@@ -361,14 +361,26 @@ def _format_sre_and_fleet_section(
 def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str]:
     """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
     lines = ["\n### 3. LIVE MARKET PRICES, MULTI-HORIZON TRENDS & 24H EVOLUTION (ALL COINS):"]
-    btc_candidates = [
-        (k, entry) for k, entry in prices_and_trends.items()
-        if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
-    ]
-    btc_entry = next(
-        (e for k, e in btc_candidates if "USD" in compatible_quote_suffixes(k)),
-        btc_candidates[0][1] if btc_candidates else None,
+    btc_candidates = sorted(
+        (
+            (k, entry)
+            for k, entry in prices_and_trends.items()
+            if isinstance(entry, dict) and canonical_base_asset(k) == "BTC"
+        ),
+        key=lambda kv: (
+            0 if kv[0].endswith("USDC") else (1 if "USD" in compatible_quote_suffixes(kv[0]) else 2),
+            -len(kv[1]),
+            kv[0],
+        ),
     )
+    btc_entry: Optional[Dict[str, Any]] = None
+    if btc_candidates:
+        usd_btc_cands = [(k, e) for k, e in btc_candidates if "USD" in compatible_quote_suffixes(k)] or btc_candidates
+        btc_entry = dict(usd_btc_cands[0][1])
+        for _, sib_b in usd_btc_cands[1:]:
+            for bk, bv in sib_b.items():
+                if btc_entry.get(bk) is None and bv is not None:
+                    btc_entry[bk] = bv
     grouped_3a: Dict[Tuple[str, Tuple[str, ...]], List[Tuple[str, Dict[str, Any]]]] = {}
     for s_k, s_v in sorted(prices_and_trends.items()):
         if isinstance(s_v, dict):
@@ -445,7 +457,11 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
 
         extras: List[str] = []
-        if "chg_15m_pct" in pinfo:
+        _m24_h_keys = (
+            "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
+            "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
+        )
+        if "chg_15m_pct" in pinfo or any(pinfo.get(k) is not None for k in _m24_h_keys):
             all_horizons = "".join(
                 f"{h_lbl}={_parse_finite_float(pinfo.get(h_k), 0.0):+.2f}% "
                 for h_lbl, h_k in (
@@ -684,14 +700,32 @@ def _format_microstructure_section(
             "ob_mid_price", "best_bid", "best_ask", "bid_wall_px", "ask_wall_px",
             "long_liq_px", "short_liq_px", "long_liq_deep_px", "short_liq_deep_px",
         }
+        has_own_ob_3b = (
+            minfo.get("bid_depth_usd") is not None
+            or minfo.get("ask_depth_usd") is not None
+            or minfo.get("ob_mid_price") is not None
+        )
+        _ob_local_keys_3b = {
+            "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
+            "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+            "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
+            "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+        }
         for other_s in sib_3b:
             other_m = microstructure.get(other_s)
             if not isinstance(other_m, dict):
                 continue
             same_q_3b = compatible_quote_suffixes(other_s) == sym_quotes_3b
             for mk, mv in other_m.items():
-                if minfo.get(mk) is None and mv is not None and (same_q_3b or mk not in _px_keys_3b):
-                    minfo[mk] = mv
+                if has_own_ob_3b and mk in _ob_local_keys_3b:
+                    continue
+                if mv is not None and (same_q_3b or mk not in _px_keys_3b):
+                    if minfo.get(mk) is None or (
+                        mk in ("bid_wall_usd", "ask_wall_usd")
+                        and (_parse_finite_float(minfo.get(mk), 0.0) or 0.0) <= 0.0
+                        and (_parse_finite_float(mv, 0.0) or 0.0) > 0.0
+                    ):
+                        minfo[mk] = mv
         sym_3b_lbl = f"{sym} ({', '.join(sorted(sib_3b))})" if sib_3b else sym
         cur_px = _resolve_symbol_price(sym, prices_and_trends)
         bw_px = minfo.get("bid_wall_px")

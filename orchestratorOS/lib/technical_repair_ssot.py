@@ -1457,12 +1457,20 @@ def harvest_fleet_and_system_telemetry(workspace_dir: str) -> Tuple[List[Dict[st
 def _is_decision_in_scope(dec: Dict[str, Any], scope: str) -> bool:
     if str(dec.get("decision") or "HOLD").upper() not in ("BUY", "SELL"):
         return True
-    sym_u = str(dec.get("symbol") or "").strip().upper()
+    sym_raw = str(dec.get("symbol") or "").strip()
+    sym_u = sym_raw.upper()
     if sym_u.endswith(("X.T", ".T", "X.T/USD", "X.TUSD")):
+        return False
+    raw_stem = (
+        sym_raw[:-4]
+        if sym_u.endswith("/USD")
+        else (sym_raw[:-3] if sym_u.endswith("USD") and not sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")) else sym_raw)
+    )
+    if len(raw_stem) > 2 and raw_stem.endswith("x") and raw_stem[:-1].isalnum() and raw_stem[:-1].isupper():
         return False
     v_norm, is_eq_sym = normalize_venue_name(dec.get("venue")), sym_u.endswith(("_EQ", "_US_EQ"))
     if scope == "equities":
-        return (not v_norm or v_norm == "t212") and not sym_u.endswith(("USDC", "USDT", "FDUSD", "BUSD", "EUR")) and (v_norm == "t212" or is_eq_sym)
+        return (not v_norm or v_norm == "t212") and not sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR")) and (v_norm == "t212" or is_eq_sym)
     if scope == "crypto":
         return v_norm != "t212" and not is_eq_sym
     return True

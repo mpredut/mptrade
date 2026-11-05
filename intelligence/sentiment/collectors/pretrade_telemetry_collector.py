@@ -499,6 +499,7 @@ def collect_pretrade_telemetry(
 
         btc_m24: Dict[str, Any] = {}
         btc_vals_7d: list = []
+        btc_live_px: float = 0.0
         if m24:
             has_any_m24_h = any(
                 safe_float(m24.get(k), default=None) is not None
@@ -665,7 +666,13 @@ def collect_pretrade_telemetry(
             and (m7d.get("low_7d"), m7d.get("high_7d")) == (m24.get("low_24h"), m24.get("high_24h"))
         )
         if m7d and not is_sub24h_dup_7d:
-            if "Relative Strength vs BTC (24h Benchmark)" in telemetry:
+            if canonical_base_asset(symbol) != "BTC" and not is_eq:
+                if not btc_vals_7d and not btc_m24:
+                    _, btc_vals_7d = load_symbol_price_series(
+                        cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=True
+                    )
+                    if btc_live_px <= 0.0:
+                        btc_live_px = extract_current_price_item(casefold_get(cur_p_items, "BTCUSDC")) or 0.0
                 eff_btc_vals_7d = list(btc_vals_7d)
                 btc_arch_span_7d = _LAST_7D_SPAN_MS_BY_SYM.get("BTCUSDC", 0.0)
                 if (
@@ -700,8 +707,10 @@ def collect_pretrade_telemetry(
                 m7_chg = safe_float(m7d.get("chg_7d_pct"), default=None)
                 b7_chg = safe_float((btc_m7d or {}).get("chg_7d_pct"), default=None)
                 if m7_chg is not None and b7_chg is not None:
-                    cur_rel_btc = telemetry["Relative Strength vs BTC (24h Benchmark)"]
-                    if cur_rel_btc.startswith("vs_btc("):
+                    cur_rel_btc = telemetry.get("Relative Strength vs BTC (24h Benchmark)")
+                    if not cur_rel_btc:
+                        telemetry["Relative Strength vs BTC (24h Benchmark)"] = f"vs_btc(7d={m7_chg - b7_chg:+.2f}%)"
+                    elif cur_rel_btc.startswith("vs_btc("):
                         telemetry["Relative Strength vs BTC (24h Benchmark)"] = cur_rel_btc.replace(
                             ")", f", 7d={m7_chg - b7_chg:+.2f}%)", 1
                         )
@@ -883,6 +892,8 @@ def collect_pretrade_telemetry(
                         continue
                     sib_ob_d = _rj(os.path.join(cachedb_dir, f"orderbook_depth_{cand_u}.json"))
                     if not isinstance(sib_ob_d, dict):
+                        sib_ob_d = _rj(os.path.join(cachedb_dir, "telemetry", f"orderbook_depth_{cand_u}.json"))
+                    if not isinstance(sib_ob_d, dict):
                         continue
                     sib_bd = safe_pos_float(sib_ob_d.get("bid_depth_usd"), default=0.0) or 0.0
                     if sib_bd > 0.0 and abs(sib_bd - cur_bd) > 1.0:
@@ -896,8 +907,18 @@ def collect_pretrade_telemetry(
                                         ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
                                         default=None,
                                     )
+                            if (not sib_live_px or sib_live_px <= 0.0) and cur_px_est > 0.0:
+                                import time as _pt_t_sib
+
+                                sib_ob_ts = normalize_epoch_sec(
+                                    safe_pos_float(sib_ob_d.get("ts"), default=0.0) or 0.0,
+                                    default=0.0,
+                                )
+                                if sib_ob_ts > 0.0 and (_pt_t_sib.time() - sib_ob_ts) > 120.0:
+                                    sib_live_px = cur_px_est
                             if (
                                 cand_u.endswith("USD")
+                                and not cand_u.endswith(("FDUSD", "TUSD", "BUSD"))
                                 and sib_live_px
                                 and sib_live_px > 0.0
                                 and sib_ob_mid is not None

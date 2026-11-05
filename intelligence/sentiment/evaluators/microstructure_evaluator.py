@@ -849,17 +849,23 @@ def sync_sibling_symbol_telemetry(
                         or microstructure[sym].get("ask_depth_usd") is not None
                     )
                     ob_local_keys = {
-                        "ob_imbalance", "spread_bps", "bid_depth_usd", "ask_depth_usd",
-                        "depth_1pct_bid_usd", "depth_1pct_ask_usd", "bid_wall_usd", "ask_wall_usd",
-                        "bid_wall_px", "ask_wall_px", "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
+                        "ob_mid_price", "best_bid", "best_ask", "ob_imbalance", "spread_bps",
+                        "bid_depth_usd", "ask_depth_usd", "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+                        "bid_wall_usd", "ask_wall_usd", "bid_wall_px", "ask_wall_px",
+                        "est_slip_2k_bps", "spot_cvd_15m_usd", "spot_perp_flow_regime",
                     }
                     synced_any_micro = False
                     for mk, mv in sib_micro.items():
                         if sym_has_own_ob and mk in ob_local_keys:
                             continue
-                        if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS) and microstructure[sym].get(mk) is None and mv is not None:
-                            microstructure[sym][mk] = mv
-                            synced_any_micro = True
+                        if not (micro_px_diverged and mk in _MICRO_PRICE_ANCHOR_KEYS) and mv is not None:
+                            if microstructure[sym].get(mk) is None or (
+                                mk in ("bid_wall_usd", "ask_wall_usd")
+                                and (safe_pos_float(microstructure[sym].get(mk), default=0.0) or 0.0) <= 0.0
+                                and (safe_pos_float(mv, default=0.0) or 0.0) > 0.0
+                            ):
+                                microstructure[sym][mk] = mv
+                                synced_any_micro = True
                     if synced_any_micro and sym_has_own_ob:
                         enrich_microstructure_cvd(microstructure[sym], pinfo)
         recalculate_live_price_geometry(pinfo, safe_pos_float(pinfo.get("price"), default=0.0) or 0.0)

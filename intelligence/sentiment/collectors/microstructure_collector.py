@@ -15,6 +15,7 @@ from cachepaths import (
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cache_dir_path,
+    split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
@@ -117,18 +118,20 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
     if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
         return ohlc_fn if callable(ohlc_fn) else None
     try:
-        if sym_u in ("ADAUSD", "TAOUSD", "HYPEUSD"):
-            from providers.kraken_provider import KrakenProvider
-
-            return KrakenProvider().ohlc_series
         if sym_u == "HYPEUSDC":
             from providers.hyperliquid_provider import HyperliquidProvider
 
             return HyperliquidProvider().ohlc_series
-        if sym_u.endswith(("USDC", "USDT")):
+        sym_parts = split_symbol_assets(sym_u) if sym_u and not sym_u.endswith(("_EQ", "_US_EQ")) else None
+        sym_q = sym_parts[1] if sym_parts is not None else ""
+        if sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
             from providers.market_api import api as _mkt_api
 
             return getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
+        if sym_q == "USD" or (sym_u.endswith("USD") and not sym_u.endswith(("_EQ", "_US_EQ", "FDUSD", "TUSD", "BUSD"))):
+            from providers.kraken_provider import KrakenProvider
+
+            return KrakenProvider().ohlc_series
     except Exception:
         pass
     return None
@@ -1330,6 +1333,7 @@ def enrich_24h_and_microstructure(
                     not _prices_diverged(sym_px_m, ob_mid_m)
                     and is_exact_ob_sym
                     and str(sym).strip().upper().endswith("USD")
+                    and not str(sym).strip().upper().endswith(("FDUSD", "TUSD", "BUSD"))
                     and (
                         bool(matched_series_24h)
                         or any(
@@ -1375,7 +1379,7 @@ def enrich_24h_and_microstructure(
             )
             if p_ref is not None and msym not in prices_and_trends:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
-                if msym.upper().endswith("USD") and ob_mid_sib is not None:
+                if msym.upper().endswith("USD") and not msym.upper().endswith(("FDUSD", "TUSD", "BUSD")) and ob_mid_sib is not None:
                     sib_live_px = extract_current_price_item(casefold_get(cur_p_items, msym))
                     if (not sib_live_px or sib_live_px <= 0.0) and cache_dir:
                         if isinstance(l24_s := _rj(os.path.join(cache_dir, "24trend", f"live_{msym.upper()}.json")), dict):
@@ -1417,7 +1421,7 @@ def enrich_24h_and_microstructure(
             elif p_ref is None:
                 ref_px = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
                 ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
-                if not ser_24h and msym.endswith("USD") and "PYTEST_CURRENT_TEST" not in os.environ:
+                if not ser_24h and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and "PYTEST_CURRENT_TEST" not in os.environ:
                     try:
                         from providers.kraken_provider import KrakenProvider
 

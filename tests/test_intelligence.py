@@ -7353,3 +7353,127 @@ def test_iter96_known_t_b_bases_fdusd_venue_fees_retry_queue_venue_and_crypto_sc
     assert " | alt_btc_pos_24h=" in rel_line
 
 
+def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretrade_sib_rescale(tmp_path):
+    import time as _t_mod
+
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
+    from orchestratorOS.lib.technical_repair_ssot import _is_decision_in_scope
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+    )
+
+    now_s = _t_mod.time()
+
+    # 1. _format_market_prices_section merges BTCUSDC into btc_entry even when partial BTCUSD precedes it,
+    #    and emits 24h horizons / 24h_range even when chg_15m_pct is absent
+    prices_3a = {
+        "BTCUSD": {"price": 75000.0},
+        "BTCUSDC": {"price": 75000.0, "chg_1h_pct": 1.0, "chg_24h_pct": 3.0, "chg_7d_pct": 8.0},
+        "SOLUSDC": {
+            "price": 150.0,
+            "chg_1h_pct": 2.5,
+            "chg_24h_pct": 5.0,
+            "chg_7d_pct": 12.0,
+            "low_24h": 142.0,
+            "high_24h": 152.0,
+        },
+    }
+    lines_3a = "\n".join(_format_market_prices_section(prices_3a))
+    assert "1h=+2.50% 24h=+5.00% 24h_range=[142.0, 152.0]" in lines_3a
+    assert "vs_btc(1h=+1.50%, 24h=+2.00%, 7d=+4.00%)" in lines_3a
+
+    # 2. _format_microstructure_section and sync_sibling_symbol_telemetry do not pollute own orderbook
+    #    and backfill bid_wall_usd > 0 over 0.0 when no own orderbook exists
+    pt_3b = {"SOLUSDC": {"price": 150.0}, "SOLUSD": {"price": 150.0}}
+    micro_3b = {
+        "SOLUSDC": {"funding_rate": 0.0001, "oi_usd": 5000000.0, "bid_wall_usd": 0.0, "ask_wall_usd": 0.0},
+        "SOLUSD": {
+            "ob_mid_price": 150.0,
+            "best_bid": 149.98,
+            "best_ask": 150.02,
+            "ob_imbalance": 0.55,
+            "bid_depth_usd": 60000.0,
+            "ask_depth_usd": 50000.0,
+            "bid_wall_px": 148.5,
+            "bid_wall_usd": 18000.0,
+            "ask_wall_px": 151.5,
+            "ask_wall_usd": 16000.0,
+        },
+    }
+    lines_3b = "\n".join(_format_microstructure_section(micro_3b, pt_3b))
+    assert "bid_wall=148.5 ($18000.0" in lines_3b
+    assert "ask_wall=151.5 ($16000.0" in lines_3b
+    sync_sibling_symbol_telemetry(pt_3b, micro_3b)
+    assert micro_3b["SOLUSDC"]["bid_wall_usd"] == pytest.approx(18000.0)
+    assert micro_3b["SOLUSDC"]["ask_wall_usd"] == pytest.approx(16000.0)
+
+    # 3. collect_pretrade_telemetry rescales stale sibling USD orderbook (>120s old, >1% off) using cur_px_est
+    #    and emits standalone vs_btc(7d=...) when 24h vs_btc/cross_parts are absent
+    pt_dir = tmp_path / "pt_iter97"
+    pt_dir.mkdir(parents=True, exist_ok=True)
+    (pt_dir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"HYPEUSDC": 42.0, "BTCUSDC": 75000.0}}),
+        encoding="utf-8",
+    )
+    (pt_dir / "orderbook_depth_HYPEUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSDC",
+                "mid_price": 42.0,
+                "best_bid": 41.99,
+                "best_ask": 42.01,
+                "bid_depth_usd": 90000.0,
+                "ask_depth_usd": 85000.0,
+                "imbalance_ratio": 0.514,
+                "spread_bps": 4.76,
+                "ts": now_s - 5.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pt_dir / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "HYPEUSD",
+                "mid_price": 40.0,
+                "best_bid": 39.98,
+                "best_ask": 40.02,
+                "bid_depth_usd": 45000.0,
+                "ask_depth_usd": 40000.0,
+                "imbalance_ratio": 0.529,
+                "spread_bps": 10.0,
+                "ts": now_s - 300.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pt_dir / "cache_watcher_all_price.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSDC": [
+                        [int((now_s - 6.5 * 86400) * 1000), 38.0],
+                        [int((now_s - 25 * 3600) * 1000), 41.0],
+                    ],
+                    "BTCUSDC": [
+                        [int((now_s - 6.5 * 86400) * 1000), 70000.0],
+                        [int((now_s - 25 * 3600) * 1000), 74000.0],
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem = collect_pretrade_telemetry("HYPEUSDC", cachedb_dir=str(pt_dir))
+    assert "Cross-Venue Relative Value (Arbitrage)" in telem
+    assert "arb_vs_HYPEUSD=+0.0bps" in telem["Cross-Venue Relative Value (Arbitrage)"]
+    assert telem.get("Relative Strength vs BTC (24h Benchmark)", "").startswith("vs_btc(7d=")
+
+    # 4. _is_decision_in_scope rejects lowercase-x xStock symbols and TUSD in equities scope
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "SPCXx", "venue": "kraken"}, "crypto") is False
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "SPCXx/USD", "venue": "kraken"}, "crypto") is False
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "SOLTUSD", "venue": "t212"}, "equities") is False
+    assert _is_decision_in_scope({"decision": "BUY", "symbol": "NVDA_US_EQ", "venue": "t212"}, "equities") is True
+
