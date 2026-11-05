@@ -78,6 +78,18 @@ def collect_pretrade_telemetry(
 ) -> Dict[str, Any]:
     """Collects multi-pillar pre-trade telemetry (0 ms local cache) to provide deep context to the LLM."""
     _rj = _resolve_read_json_cached()
+    if (
+        isinstance(regime_context, (str, os.PathLike))
+        and cachedb_dir == "cachedb"
+        and (
+            os.path.isdir(str(regime_context))
+            or "/" in str(regime_context)
+            or "\\" in str(regime_context)
+            or str(regime_context).endswith("cachedb")
+        )
+    ):
+        cachedb_dir = str(regime_context)
+        regime_context = None
     default_cdir = get_cachedb_dir()
     if cachedb_dir == "cachedb":
         cachedb_dir = default_cdir
@@ -155,7 +167,7 @@ def collect_pretrade_telemetry(
             if imb_f is not None:
                 bid_pct = max(0, min(100, int(round(imb_f * 100.0))))
                 ask_pct = 100 - bid_pct
-                telemetry["Orderbook Depth Imbalance"] = f"{imb_f:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
+                telemetry["Orderbook Depth Imbalance"] = f"{bid_pct / 100.0:.2f} ({bid_pct}% bids vs {ask_pct}% asks)"
             ob_sym_raw = obj_attr(ob_snap, "symbol")
             ob_same_q = (
                 compatible_quote_suffixes(ob_sym_raw) == sym_quotes
@@ -347,6 +359,11 @@ def collect_pretrade_telemetry(
                 elif m24:
                     eq_post_rth_override = True
                     if len(alt_series_24h) >= 2:
+                        rth_vp_anchors_eq = {
+                            k_vp: m24[k_vp]
+                            for k_vp in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source")
+                            if k_vp in m24
+                        }
                         last_alt_tail = (
                             list(alt_series_24h[-1][2:])
                             if isinstance(alt_series_24h[-1], (list, tuple)) and len(alt_series_24h[-1]) >= 3
@@ -354,6 +371,10 @@ def collect_pretrade_telemetry(
                         )
                         override_alt_series_24h = list(alt_series_24h[:-1]) + [[last_alt_pt[0], cur_px_est, *last_alt_tail]]
                         m24 = compute_24h_price_metrics(override_alt_series_24h) or m24
+                        if rth_vp_anchors_eq:
+                            for k_vp_clr in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source"):
+                                m24.pop(k_vp_clr, None)
+                            m24.update(rth_vp_anchors_eq)
                         if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005:
                             eq_px_diverged_05pct = True
                             alt_series_24h = override_alt_series_24h
@@ -610,7 +631,12 @@ def collect_pretrade_telemetry(
                 and telemetry["Relative Strength vs BTC (24h Benchmark)"].startswith("vs_btc(")
             ):
                 eff_btc_vals_7d = list(btc_vals_7d)
-                if isinstance(w_data, dict) and isinstance(w_items_b := w_data.get("items"), dict):
+                btc_arch_span_7d = _LAST_7D_SPAN_MS_BY_SYM.get("BTCUSDC", 0.0)
+                if (
+                    (len(eff_btc_vals_7d) < 2 or btc_arch_span_7d < 5 * 86400 * 1000)
+                    and isinstance(w_data, dict)
+                    and isinstance(w_items_b := w_data.get("items"), dict)
+                ):
                     w_btc = casefold_get(w_items_b, "BTCUSDC")
                     if isinstance(w_btc, (list, tuple)) and len(w_btc) >= 2:
                         wb0, wb1 = _parse_ts_px_row(w_btc[0]), _parse_ts_px_row(w_btc[-1])

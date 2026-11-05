@@ -5933,5 +5933,25 @@ def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
     enrich_microstructure_cvd(btc_neutral_abs, {"price": 80514.3, "chg_15m_pct": -0.07})
     assert btc_neutral_abs["cvd_regime"] == "spot_absorbing"
 
+    ada_accum_abs = {
+        "ob_imbalance": 0.59,
+        "bid_depth_usd": 1_165_159.0,
+        "ask_depth_usd": 724_691.0,
+        "cvd_15m_usd": -47_336.0,
+        "divergence_regime": "accumulation",
+    }
+    enrich_microstructure_cvd(ada_accum_abs, {"price": 0.19835, "chg_15m_pct": -0.07})
+    assert ada_accum_abs["cvd_regime"] == "spot_absorbing"
+
+    import json
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    (tmp_path / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({"symbol": "HYPEUSD", "mid_price": 84.0, "imbalance_ratio": 0.615, "ts": time.time()}),
+        encoding="utf-8",
+    )
+    pre_hype = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(tmp_path))
+    assert pre_hype["Orderbook Depth Imbalance"] == "0.62 (62% bids vs 38% asks)"
+
 
 
