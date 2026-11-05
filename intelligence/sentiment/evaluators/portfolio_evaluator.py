@@ -536,7 +536,7 @@ def extract_symbol_recent_fills(
         "active_avg_buy_px": active_avg_r,
         "swing_subcycle_avg_px": swing_subcycle_avg_px,
         "swing_subcycle_qty": swing_subcycle_qty if swing_subcycle_qty > 0 else None,
-        "open_lots": open_lots[-6:],
+        "open_lots": [open_lots[0], *open_lots[-5:]] if len(open_lots) > 6 else open_lots,
         "lifo_realized_pnl_usd": round(lifo_realized_pnl_usd, 2) if abs(lifo_realized_pnl_usd) >= 0.01 else 0.0,
         "last_buy": dict(buys_fmt[-1]) if buys_fmt else None,
         "last_sell": dict(sells_fmt[-1]) if sells_fmt else None,

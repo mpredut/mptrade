@@ -7905,5 +7905,29 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_1h_pct") is not None
     assert pt_rgnt_gap["RGNT_US_EQ"].get("slope_15m") is not None
 
+    # 10h. extract_symbol_recent_fills preserves open_lots[0] when > 6 open lots exist so
+    # enrich_positions_with_orders_and_cycles recovers the true cycle peak since the first open lot.
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    base_lot_ms = int((now_s_rec - 20 * 86400.0) * 1000)
+    many_orders = [
+        {"symbol": "SPCX_US_EQ", "side": "BUY", "price": 159.58, "qty": 0.53, "executedQty": 0.53, "timestamp": base_lot_ms, "status": "FILLED"}
+    ] + [
+        {
+            "symbol": "SPCX_US_EQ",
+            "side": "BUY",
+            "price": 140.0 + i * 0.2,
+            "qty": 0.5,
+            "executedQty": 0.5,
+            "timestamp": int((now_s_rec - (7 - i) * 3600.0) * 1000),
+            "status": "FILLED",
+        }
+        for i in range(7)
+    ]
+    fills_many = extract_symbol_recent_fills(many_orders, symbol="SPCX_US_EQ")
+    assert fills_many is not None
+    assert len(fills_many["open_lots"]) == 6
+    assert fills_many["open_lots"][0]["ts_ms"] == base_lot_ms
+
+
 
 
