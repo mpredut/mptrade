@@ -203,7 +203,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             tr_cur = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
             chg_5m_cur = safe_float(p_dict.get("chg_5m_pct"), default=0.0) or 0.0
             cvd_5m_cur = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
-            own_ob_imb = safe_nonneg_float(minfo.get("ob_imbalance"), default=ob_imb) or ob_imb
+            own_ob_imb = clean_scale(minfo.get("ob_imbalance"), default=ob_imb, allow_percent=True)
             is_own_venue_heavy_shorting = (
                 own_ob_imb < 0.50
                 and tr_cur is not None
@@ -239,7 +239,10 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
                     )
                 )
                 if has_chg_15m
-                else (ob_imb >= 0.58 or div_reg in ("accumulation", "short_covering", "bullish_absorption"))
+                else (
+                    (ob_imb >= 0.58 and not is_own_venue_heavy_shorting)
+                    or div_reg in ("accumulation", "short_covering", "bullish_absorption")
+                )
             )
             minfo["cvd_regime"] = "spot_absorbing" if is_bid_absorbing else "aggressive_market_dumps"
         else:
@@ -1258,6 +1261,12 @@ def reconcile_sibling_flow_and_liq_regimes(
                 prim_m.update(compute_liquidation_clusters(prim_p_dict, prim_m))
         prim_mag = prim_m.get("liq_magnet_bias")
         prim_cvd_reg = prim_m.get("cvd_regime")
+        if prim_cvd_reg == "spot_absorbing" and any(
+            m_s.get("cvd_regime") == "aggressive_market_dumps" for _, m_s in non_div
+        ):
+            prim_cvd_reg = prim_m["cvd_regime"] = "aggressive_market_dumps"
+            if prim_m.get("spot_perp_flow_regime") == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE":
+                prim_m["spot_perp_flow_regime"] = "BALANCED_CROSS_VENUE_FLOW"
         prim_cvd_15m = safe_float(prim_m.get("cvd_15m_usd"), None)
         prim_flow_reg = prim_m.get("spot_perp_flow_regime")
         sp_vals = [safe_float(m_s.get("spot_cvd_15m_usd"), None) for _, m_s in non_div]
@@ -1265,7 +1274,10 @@ def reconcile_sibling_flow_and_liq_regimes(
         has_neg_sp = any(v is not None and v < 0.0 for v in sp_vals)
         unified_flow_reg = (
             "BALANCED_CROSS_VENUE_FLOW"
-            if (has_pos_sp and has_neg_sp) or prim_flow_reg == "BALANCED_CROSS_VENUE_FLOW"
+            if (has_pos_sp and has_neg_sp)
+            or prim_flow_reg == "BALANCED_CROSS_VENUE_FLOW"
+            or prim_cvd_reg == "aggressive_market_dumps"
+            and prim_flow_reg == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
             else prim_flow_reg
         )
         prim_oi_val = safe_pos_float(prim_m.get("oi_usd"), default=None)

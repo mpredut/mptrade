@@ -8334,6 +8334,18 @@ def test_cross_venue_heavy_shorting_cvd_and_stale_partial_fill_dedup():
     assert m_tao_dump["TAOUSDC"]["cvd_regime"] == "aggressive_market_dumps"
     assert m_tao_dump["TAOUSD"]["cvd_regime"] == "aggressive_market_dumps"
 
+    # Also verify USDT + USD sibling pair (where USD has larger depth than USDT) does not override USDT's aggressive_market_dumps
+    m_tao_usdt_dump = {
+        "TAOUSDT": dict(m_tao_dump["TAOUSDC"], _cross_venue_spot_cvd=False, _synthetic_spot_cvd=True),
+        "TAOUSD": dict(m_tao_dump["TAOUSD"], _cross_venue_spot_cvd=False, _synthetic_spot_cvd=True),
+    }
+    reconcile_sibling_flow_and_liq_regimes(
+        m_tao_usdt_dump,
+        {"TAOUSDT": {"price": 216.9, "chg_15m_pct": -0.02, "chg_5m_pct": 0.08}, "TAOUSD": {"price": 217.15, "chg_15m_pct": -0.02, "chg_5m_pct": 0.08}},
+    )
+    assert m_tao_usdt_dump["TAOUSDT"]["cvd_regime"] == "aggressive_market_dumps"
+    assert m_tao_usdt_dump["TAOUSD"]["cvd_regime"] == "aggressive_market_dumps"
+
     st_pf = build_last_cycle_execution_status(
         [
             {
