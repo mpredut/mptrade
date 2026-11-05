@@ -55,8 +55,9 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "alaska", "alaskan", "alaskans", "bills", "cabin", "cabins", "cambodia",
-    "cruise", "cruises", "dreading", "forever", "heating", "passengers",
-    "residents", "tourist", "tourists", "vacation",
+    "centcom", "cruise", "cruises", "dreading", "forever", "french", "fries",
+    "heating", "passengers", "podcast", "podcasts", "residents", "retirees",
+    "retirement", "social", "tourist", "tourists", "vacation",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
@@ -853,11 +854,11 @@ _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
     _COMMERCIAL_METAPHOR_WAR_WORDS
     | _HUMAN_INTEREST_WAR_FILLER_WORDS
     | frozenset({
-        "blue", "cards", "celebrity", "cereal", "concert", "dylan", "farmers",
-        "festival", "governor", "jailed", "mamdani", "match", "mayor", "movie",
-        "music", "olive", "player", "players", "prison", "recipe", "recipes",
-        "red", "singer", "song", "storm", "subscriber", "subscribers", "weather",
-        "yacht",
+        "blue", "cards", "celebrity", "cereal", "concert", "dylan", "estate",
+        "exemption", "farmers", "festival", "gift", "governor", "irs", "jailed",
+        "mamdani", "match", "mayor", "movie", "music", "olive", "player",
+        "players", "prison", "recipe", "recipes", "red", "singer", "song",
+        "storm", "subscriber", "subscribers", "weather", "yacht",
     })
 )
 
@@ -920,6 +921,10 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     ):
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"nintendo", "switch", "playstation", "xbox", "console", "ticket", "tickets", "menu", "grocery"}):
+        return False
+    if matched_fin and matched_fin <= {"tax", "taxes"} and (words & {"estate", "gift", "exemption", "deduction", "refund", "irs", "filing", "retirees", "retirement"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
+        return False
+    if (words & _HUMAN_INTEREST_WAR_FILLER_WORDS) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
         return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})

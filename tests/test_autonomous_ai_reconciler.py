@@ -7056,7 +7056,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     mb_snap = MarketBreadthCollector.parse_tickers(
         [
             {"symbol": "牛来USDT", "quoteVolume": "15000000", "priceChangePercent": "45.0"},
-            {"symbol": "SKHYBUSDT", "quoteVolume": "6000000", "priceChangePercent": "25.0"},
+            {"symbol": "RAREUSDT", "quoteVolume": "6000000", "priceChangePercent": "25.0"},
             {"symbol": "BTCUSDT", "quoteVolume": "900000000", "priceChangePercent": "2.5"},
             {"symbol": "ETHUSDT", "quoteVolume": "450000000", "priceChangePercent": "3.1"},
             {"symbol": "SOLUSDT", "quoteVolume": "250000000", "priceChangePercent": "4.2"},
@@ -7066,11 +7066,11 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
         now_ts=1793627000.0,
     )
     assert mb_snap is not None
-    # '牛来USDT' is completely excluded; 'SKHYBUSDT' ($6M) counts in breadth (5 symbols total) but is excluded from top_gainers (< $10M)
+    # '牛来USDT' is completely excluded; 'RAREUSDT' ($6M) counts in breadth (5 symbols total) but is excluded from top_gainers (< $10M)
     assert mb_snap.total_count == 5
     gainer_syms = [g[0] for g in mb_snap.top_gainers]
     assert "牛来USDT" not in gainer_syms
-    assert "SKHYBUSDT" not in gainer_syms
+    assert "RAREUSDT" not in gainer_syms
     assert gainer_syms == ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
 
     # 3. Price synchronization across Section 3A (Price), Section 3B (ob_mid), and Section 3C (px) + locked_quote_usd in Section 3C
@@ -8854,13 +8854,14 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                     "threat_level": "ELEVATED",
                     "risk_score": 0.52,
                     "recommended_brake": "DOWNSCALE_50",
-                    "summary": "Geopolitical summary",
+                    "summary": "Geopolitical summary, so maintain a 50 % downscale on new exposure.",
                 },
                 macro_calendar={
                     "session_label": "US Afternoon",
                     "next_high_impact_event": "US Wall Street Cash Close at 23:00 EET in 1h",
-                    "macro_release_confirmed": False,
-                    "fomc_today": False,
+                    "macro_release_confirmed": True,
+                    "fomc_today": True,
+                    "next_event_is_high_impact": False,
                     "upcoming_windows": ["US Wall Street Cash Close at 23:00 EET in 1h"],
                 },
                 breaking_news=[],
@@ -8870,6 +8871,8 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "action=" not in s1_routine
     assert "brake=" not in s1_routine
     assert "level=" not in s1_routine
+    assert "downscale on new exposure" not in s1_routine
+    assert "summary=Geopolitical summary." in s1_routine
     assert "conf=0.85" in s1_routine
     assert "risk_score=0.52" in s1_routine
     assert 'next_routine_session_window="US Wall Street Cash Close at 23:00 EET in 1h"' in s1_routine
@@ -8939,10 +8942,12 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
             {
                 "assetguardian_state": {
                     "ARBUSDC": {"buy": {"pending": False, "last_price": 0.15}, "sell": {"pending": False}},
+                    "TAOUSDC": {"buy": {"completed_tiers": ["tier10"], "terminal_orders": {"1": {"status": "closed"}}}},
                 },
                 "recent_ai_intents": [
                     {"decision": "HOLD", "symbol": "BTCUSDC", "venue": "binance", "age_h": 0.1},
                     {"side": "BUY", "symbol": "TAOUSDC", "venue": "binance", "venue_status": "CANCELED_OR_EXPIRED", "age_h": 2.5},
+                    {"side": "BUY", "symbol": "BTCUSDC", "venue": "binance", "status": "FAILED", "age_h": 6.7},
                     {"side": "BUY", "symbol": "ARBUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "FILLED", "age_h": 0.2},
                 ],
             },

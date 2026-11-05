@@ -378,7 +378,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             "{\n"
             '  "threat_level": "NORMAL" | "ELEVATED" | "CRITICAL_SHOCK",\n'
             '  "risk_score": 0.0 to 1.0,\n'
-            '  "summary": "1-2 sentence executive assessment of market impact",\n'
+            '  "summary": "1-2 sentence purely factual assessment of geopolitical events and cross-asset market reaction (do NOT prescribe position sizing, downscales, brakes, or vetoes in the summary text)",\n'
             '  "recommended_brake": "NONE" | "DOWNSCALE_50" | "HARD_VETO_NEW_BUYS"\n'
             "}"
         )

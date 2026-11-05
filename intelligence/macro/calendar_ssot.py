@@ -367,7 +367,8 @@ def resolve_macro_economic_calendar(
     )
 
     active_window: Optional[str] = None
-    upcoming: List[Tuple[float, str, str, str]] = []
+    active_window_is_high_impact: bool = False
+    upcoming: List[Tuple[float, str, str, str, bool]] = []
     for day_offset in range(0, 4):
         cand_date = (dt_eet + timedelta(days=day_offset)).date()
         if cand_date.weekday() >= 5:
@@ -376,8 +377,10 @@ def resolve_macro_economic_calendar(
         for hh, mm, code, desc in windows:
             if code == "US_FOMC_FED_WINDOW":
                 is_confirmed_win = cand_is_fomc
-            else:
+            elif code in routine_labels:
                 is_confirmed_win = (day_offset == 0) and macro_release_confirmed
+            else:
+                is_confirmed_win = False
             eff_desc = desc if is_confirmed_win else routine_labels.get(code, desc)
             ev_dt = datetime(cand_date.year, cand_date.month, cand_date.day, hh, mm, tzinfo=dt_eet.tzinfo)
             delta_min = (ev_dt.timestamp() - ts) / 60.0
@@ -386,16 +389,18 @@ def resolve_macro_economic_calendar(
             if (max_ago_min < delta_min <= 0.0 if code == "US_WALL_STREET_CLOSE" else max_ago_min <= delta_min <= 0.0) and active_window is None:
                 win_tag = "ACTIVE VOLATILITY WINDOW" if (is_confirmed_win or code not in routine_labels) else "ACTIVE SESSION WINDOW"
                 active_window = f"{eff_desc} at {time_lbl} ({abs(int(round(delta_min)))}m ago — {win_tag})"
+                active_window_is_high_impact = is_confirmed_win
             elif delta_min > 0.0:
-                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}"))
+                upcoming.append((delta_min, code, eff_desc, f"{eff_desc} at {time_lbl} in {_fmt_countdown_min(delta_min)}", is_confirmed_win))
 
     upcoming.sort(key=lambda x: x[0])
     next_event = upcoming[0][3] if upcoming else "None scheduled"
     next_code = upcoming[0][1] if upcoming else "NONE"
     next_in_min = round(upcoming[0][0], 1) if upcoming else None
+    next_event_is_high_impact = bool(active_window_is_high_impact if active_window else (upcoming and upcoming[0][4]))
     top_upcoming = [x[3] for x in upcoming[:3]]
     if is_fomc_today:
-        for d_min, w_code, _, w_str in upcoming[3:]:
+        for d_min, w_code, _, w_str, _ in upcoming[3:]:
             if w_code == "US_FOMC_FED_WINDOW" and d_min <= 1440.0 and w_str not in top_upcoming:
                 top_upcoming.append(w_str)
                 break
@@ -411,6 +416,7 @@ def resolve_macro_economic_calendar(
         "next_fomc_date": next_fomc_date,
         "active_release_window": active_window,
         "next_high_impact_event": active_window or next_event,
+        "next_event_is_high_impact": next_event_is_high_impact,
         "next_scheduled_event": next_event,
         "next_event_code": next_code,
         "next_event_in_min": next_in_min,

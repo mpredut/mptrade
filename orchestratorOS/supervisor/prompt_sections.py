@@ -5,6 +5,7 @@ resolution from telemetry harvesting and order execution in
 `autonomous_ai_reconciler.py`.
 """
 
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -226,17 +227,34 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         if "(" in sa_flow_raw
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
+    sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
+    sa_summary = re.sub(
+        r"\s*(?:Pausing|Shifting|Maintaining|Staying|Switching)[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
+        "",
+        sa_summary_raw,
+    ).strip()
     sa_line = (
         f"conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa)}"
         + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
-        + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
+        + f" | summary={sa_summary} | key_risks={sa.get('key_risks', [])}"
         if sa else "None"
+    )
+    gt_summary_raw = str(gt.get("summary") or "").strip() if gt else ""
+    gt_summary = (
+        re.sub(
+            r",?\s*(?:so|therefore|thus)\s+(?:maintain|apply|use|keep|enforce)\s+[^.]*(?:downscale|brake|veto|halt|exposure)[^.]*\.?",
+            ".",
+            gt_summary_raw,
+            flags=re.IGNORECASE,
+        )
+        .replace("..", ".")
+        .strip()
     )
     gt_line = (
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
-        + f" | summary={gt.get('summary', '')}"
+        + f" | summary={gt_summary}"
         if gt else "None"
     )
     if is_equities_scope:
@@ -261,12 +279,12 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         or resolve_macro_economic_calendar(breaking_news=breaking_news)
     )
     if isinstance(mc, dict) and mc.get("next_high_impact_event"):
-        has_macro_flags = "macro_release_confirmed" in mc or "fomc_today" in mc
-        is_confirmed_macro = (
-            bool(mc.get("macro_release_confirmed") or mc.get("fomc_today"))
-            if has_macro_flags
-            else True
-        )
+        if "next_event_is_high_impact" in mc:
+            is_confirmed_macro = bool(mc.get("next_event_is_high_impact"))
+        elif "macro_release_confirmed" in mc or "fomc_today" in mc:
+            is_confirmed_macro = bool(mc.get("macro_release_confirmed") or mc.get("fomc_today"))
+        else:
+            is_confirmed_macro = True
         ev_lbl = "next_high_impact_event" if is_confirmed_macro else "next_routine_session_window"
         mc_parts = [
             f'session="{mc.get("session_label")}"',
@@ -1396,7 +1414,21 @@ def _format_portfolio_section(
                     filt_d = {
                         sk: sv
                         for sk, sv in ag_d.items()
-                        if not (isinstance(sv, dict) and sv.get("pending") is False and not sv.get("active"))
+                        if not (
+                            isinstance(sv, dict)
+                            and not sv.get("active")
+                            and (
+                                sv.get("pending") is False
+                                or (
+                                    not sv.get("pending")
+                                    and not sv.get("open_orders")
+                                    and any(
+                                        k in sv
+                                        for k in ("completed_tiers", "terminal_orders", "attempts_by_tier", "last_refusal")
+                                    )
+                                )
+                            )
+                        )
                     }
                     if filt_d:
                         active_ag[ag_sym] = filt_d
@@ -1419,7 +1451,7 @@ def _format_portfolio_section(
                     age_h = _parse_finite_float(it.get("age_h"), 0.0)
                     if (
                         v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED")
-                        or it_st in ("CANCELED", "CANCELLED", "EXPIRED")
+                        or it_st in ("CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REJECTED", "BLOCKED_BY_GUARD")
                     ) and age_h > 1.0:
                         continue
                     it_oids = {
