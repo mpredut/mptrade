@@ -6652,9 +6652,28 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
         ]),
         encoding="utf-8",
     )
+    (ldir_rec / "Binance-trailing.log").write_text(
+        "\n".join([
+            "get_account_assets_balances: Error reading balances: APIError(code=-2015): Invalid API-key, IP, or permissions for action.",
+            f"[{clk_err}]   ! [TRAIL] empty or invalid balance snapshot — skipping the tick",
+            f"[{clk_ok}] === TRAILING STOP started — ACTIVE (it really sells) ===",
+            *(f"[{clk_ok}]   [TRAIL] BTCUSDC: 80585.6600  varf 86986.5700  sells below 71763.9202 (-17.5%) {i}" for i in range(12)),
+        ]),
+        encoding="utf-8",
+    )
     anom_rec = harvest_log_anomalies_from_dirs([str(ldir_rec)], lookback_hours=1.0)
     assert anom_rec.error_count == 0
     assert anom_rec.persistent_errors == []
+    assert anom_rec.critical_events == []
+
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+
+    assert parse_cited_taker_ratio(
+        "A sharp 5-minute taker sell spike (5m ratio 0.3511, 5m CVD -$13.08M) keeps the aggregate taker ratio at 0.8326."
+    ) == 0.8326
+    assert parse_cited_taker_ratio(
+        ["Paired with short-window taker sell pressure (aggregate ratio 0.6369, 5m CVD -$2.76M)"]
+    ) == 0.6369
 
     # 5. Non-tradable cycle pos_peak reconciliation selects quote variant with positive high_24h
     hl_nontrad_cycles = {"HYPE": {"qty": 10.0, "cost_usd": 380.0, "avg_cost_px": 38.0, "pos_peak": 38.0}}

@@ -489,7 +489,7 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
             sub_hz = m_sub.group(1) or m_sub.group(4) or sub_low
             rank = (
                 _rank_taker_ratio_context(sub_hz)
-                if re.search(r"\b(?:overall|15m|1h|4h|5m|3m|1m)\b", sub_hz)
+                if re.search(r"\b(?:overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b", sub_hz)
                 else _rank_taker_ratio_context(outer_ctx)
             )
             if rank > best_rank:
