@@ -6123,4 +6123,37 @@ def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
     assert recent_orders["RGNT_US_EQ"]["active_avg_buy_px"] == pytest.approx(1.4395)
     assert recent_orders["RGNT_US_EQ"]["tactical_avg_buy_px"] == pytest.approx(1.43)
 
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        reconcile_venue_cycles_with_recent_orders,
+    )
+
+    ro_tao = {
+        "venue": "kraken",
+        "last_action_side": "BUY",
+        "active_avg_buy_px": 235.741094,
+        "lifo_realized_pnl_usd": -116.73,
+        "last_buy": {"price": 235.741094, "qty": 3.70189, "ts_ms": 1_793_328_000_000},
+        "last_sell": {"price": 226.016729, "qty": 7.40379, "ts_ms": 1_793_316_000_000},
+        "recent_buys": [{"price": 235.741094, "qty": 3.70189, "ts_ms": 1_793_328_000_000}],
+    }
+    kraken_cycles = {
+        "TAOUSD": {
+            "qty": 7.38813,
+            "cost_usd": 2105.51,
+            "avg_cost_px": 284.98,
+            "entry_price": 305.469,
+            "_entry_ts_ms": 1_791_188_569_000,
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        kraken_cycles,
+        {},
+        {},
+        {"kraken": {"TAOUSD": ro_tao}},
+        {("kraken", "TAOUSD"): 3.706878},
+        {"TAOUSD": {"price": 236.4}},
+    )
+    assert ro_tao["lifo_realized_pnl_usd"] == 0.0
+
+
 

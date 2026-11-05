@@ -748,6 +748,8 @@ def reconcile_venue_cycles_with_recent_orders(
                             "dca_buys": max(0, len(buys_after) - 1),
                         },
                     )
+                    if eff_rem_wallet <= 1e-6 or abs(new_qty - eff_rem_wallet) <= max(1e-4, eff_rem_wallet * 0.02):
+                        ro_c["lifo_realized_pnl_usd"] = 0.0
                 elif has_non_dust_wallet:
                     eff_avg_w = (
                         safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
