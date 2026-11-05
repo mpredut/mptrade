@@ -414,7 +414,7 @@ def test_geopolitical_elevated_absorbed_by_market(tmp_path):
         json.dumps(
             {
                 "market_bias": "BULLISH",
-                "recommended_posture": "ACCUMULATE",
+                "recommended_action": "ACCUMULATE",
                 "ts": now_s - 300.0,
             }
         ),

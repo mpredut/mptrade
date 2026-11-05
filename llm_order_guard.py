@@ -262,12 +262,21 @@ def check_geopolitical_order_guards(
                     )
                     sa_data, _ = read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
                     sa_ts = float((sa_data or {}).get("ts") or 0.0) if isinstance(sa_data, dict) else 0.0
+                    sa_action = (
+                        str(
+                            (sa_data or {}).get("recommended_action")
+                            or (sa_data or {}).get("recommended_posture")
+                            or ""
+                        ).upper()
+                        if isinstance(sa_data, dict)
+                        else ""
+                    )
                     if (
                         isinstance(sa_data, dict)
                         and sa_ts > 0.0
                         and 0.0 <= (now_ts - sa_ts) <= 7200.0
                         and str(sa_data.get("market_bias") or "").upper() == "BULLISH"
-                        and str(sa_data.get("recommended_posture") or "").upper() == "ACCUMULATE"
+                        and sa_action == "ACCUMULATE"
                     ):
                         market_absorbed = True
                     if not market_absorbed:
