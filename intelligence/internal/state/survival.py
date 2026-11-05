@@ -63,7 +63,35 @@ def _effective_t_cache_file() -> str:
 
 
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
-    """Return paginated Binance history with 1,000 candles per request (falling back to Kraken 1h OHLC for non-Binance assets)."""
+    """Return paginated Binance history with 1,000 candles per request (falling back to Kraken 1h OHLC or Yahoo Finance for equities)."""
+    sym_u = str(symbol or "").strip().upper()
+    if sym_u.endswith("_EQ"):
+        try:
+            import importlib
+
+            market_data = importlib.import_module("212trading.market_data")
+            yahoo_sym = market_data.t212_to_yahoo(sym_u)
+            iv_norm = str(interval or "1h").strip()
+            if iv_norm not in ("5m", "15m", "30m", "1h", "1d"):
+                iv_norm = "1h"
+            max_days = 59 if iv_norm in ("5m", "15m", "30m") else 720
+            days_i = min(max(1, safe_pos_int(days, default=30) or 30), max_days)
+            bars = market_data.fetch_yahoo_candles(
+                yahoo_sym, f"{days_i}d", iv_norm, drop_incomplete=False
+            ) or []
+            y_ts: list[float] = []
+            y_px: list[float] = []
+            for b in bars:
+                if not isinstance(b, dict):
+                    continue
+                tf = normalize_epoch_sec(b.get("timestamp"), default=None)
+                pf = safe_pos_float(b.get("close"), default=None)
+                if tf is not None and pf is not None:
+                    y_ts.append(tf)
+                    y_px.append(pf)
+            return np.asarray(y_ts, dtype=float), np.asarray(y_px, dtype=float)
+        except Exception:
+            return np.asarray([], dtype=float), np.asarray([], dtype=float)
     candles = fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False) or []
     ts_list: list[float] = []
     px_list: list[float] = []
@@ -368,10 +396,11 @@ def estimate_T(
                 return ent
 
     sym_u = symbol.upper().strip()
-    clean_sym_u = canonical_symbol_key(sym_u)
+    is_eq = sym_u.endswith("_EQ")
+    clean_sym_u = sym_u if is_eq else canonical_symbol_key(sym_u)
     base = _extract_base_symbol(sym_u)
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
-    if base and clean_sym_u != "USDCUSDT":
+    if not is_eq and base and clean_sym_u != "USDCUSDT":
         for suffix in ("USDC", "USDT"):
             cand = f"{base}{suffix}"
             if cand not in candidates:
@@ -486,6 +515,12 @@ def estimate_remaining_trend_hours(
     p90_f = safe_pos_float(p90_d, default=None)
     if (med_f is None or p90_f is None or p_cont is None) and isinstance(symbol, str) and symbol.strip():
         cached_ent = get_cached_t_entry(symbol)
+        if cached_ent is None and "PYTEST_CURRENT_TEST" not in os.environ:
+            try:
+                _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+                cached_ent = _est_fn(symbol)
+            except Exception:
+                cached_ent = None
         if isinstance(cached_ent, dict):
             if med_f is None:
                 med_f = safe_pos_float(cached_ent.get("median_d"), default=None)

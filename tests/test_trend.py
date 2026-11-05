@@ -585,6 +585,39 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res["direction"], "up")
 
+    def test_equity_fetch_klines_and_rth_gap_bridging(self):
+        import importlib
+        from intelligence.internal.state import survival as surv
+
+        md = importlib.import_module("212trading.market_data")
+        # Simulate 5 trading days of RTH 1h bars (7 bars/day with 17.5h overnight gaps and a 65h weekend gap)
+        raw_bars = []
+        t0 = 1_700_000_000.0
+        px = 100.0
+        for day in range(8):
+            day_start = t0 + day * 86400.0 + (86400.0 * 2 if day >= 4 else 0.0)
+            for h in range(7):
+                px += 0.5
+                raw_bars.append({"timestamp": int(day_start + h * 3600.0), "close": px})
+
+        with (
+            patch.object(md, "fetch_yahoo_candles", return_value=raw_bars) as mock_yahoo,
+            patch.object(surv, "fetch_ohlc_candles") as mock_binance,
+        ):
+            ts_k, px_k = surv.fetch_klines("NVDA_US_EQ", 33, "1h")
+            self.assertEqual(len(ts_k), len(raw_bars))
+            mock_yahoo.assert_called_once()
+            mock_binance.assert_not_called()
+
+            pa._OHLC_BACKFILL_MEMO.clear()
+            pts = pa._backfill_ohlc_series("NVDA_US_EQ", lookback_days=10.0)
+            self.assertGreater(len(pts), 1000)
+            ts_arr = np.array([p[0] for p in pts])
+            px_arr = np.array([p[1] for p in pts])
+            res = pa.detect_long_term_trend(ts_arr, px_arr, window_hours=16, step_hours=8, min_points_per_window=20)
+            self.assertIsNotNone(res)
+            self.assertEqual(res["direction"], "up")
+
     def test_detect_long_term_trend_stops_at_major_reversal_peak(self):
         # 200h series at 180s resolution:
         # 0..32h: mild dip 82 -> 79 (lower than final price 84)

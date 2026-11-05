@@ -204,7 +204,12 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
         if 0.0 <= (now_s - cached[0]) < ttl_s:
             return cached[1]
     days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
-    cands = cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
+    is_eq = sym_u.endswith("_EQ")
+    cands = (
+        [sym_u]
+        if is_eq
+        else cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
+    )
     raw_pts: List[Tuple[float, float]] = []
     for cand in cands:
         for iv in ("15m", "1h"):
@@ -218,12 +223,13 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
                 continue
         if raw_pts:
             break
+    max_gap_s = 345600.0 if is_eq else 7200.0
     pts: List[Tuple[float, float]] = []
     for idx, (t_cur, p_cur) in enumerate(raw_pts):
         if idx > 0:
             t_prev, p_prev = raw_pts[idx - 1]
             dt = t_cur - t_prev
-            if 180.0 < dt <= 7200.0:
+            if 180.0 < dt <= max_gap_s:
                 n_steps = int(round(dt / 180.0))
                 for step_k in range(1, n_steps):
                     frac = step_k / n_steps
@@ -284,6 +290,23 @@ def _load_sorted_price_series(
                     or abs(older_ohlc[-1][1] - anchor_px) / max(older_ohlc[-1][1], anchor_px) <= 0.10
                 ):
                     norm_data = older_ohlc + norm_data
+    if (
+        str(symbol or "").strip().upper().endswith("_EQ")
+        and len(norm_data) >= 2
+        and priceLstFor is _ORIG_PRICE_LST_FOR
+        and price_cache_manager is not None
+    ):
+        bridged: List[Tuple[float, float]] = [norm_data[0]]
+        for t_cur, p_cur in norm_data[1:]:
+            t_prev, p_prev = bridged[-1]
+            dt = t_cur - t_prev
+            if 180.0 < dt <= 345600.0:
+                n_steps = int(round(dt / 180.0))
+                for step_k in range(1, n_steps):
+                    frac = step_k / n_steps
+                    bridged.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
+            bridged.append((t_cur, p_cur))
+        norm_data = bridged
     if len(norm_data) < 2:
         return None
     if lookback_days is not None:
