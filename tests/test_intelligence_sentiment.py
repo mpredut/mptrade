@@ -7194,4 +7194,30 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert not has_financial_or_geopolitical_context("Nintendo Switch 2 sales plunge 41% as price hikes and memory crunch bite")
     assert has_financial_or_geopolitical_context("Oil prices slide as Asian stocks rise")
 
+    # 6. Clickbait survival-strategy opinion column exclusion and recovered account_cache_not_fresh startup log filter
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    assert is_excluded_reference_news_item(
+        "Most investors are blind to the possibility of a market crash. Here is the five-part strategy to survive one."
+    )
+    rtrade_log_dir = tmp_path / "logs_iter21"
+    rtrade_log_dir.mkdir(parents=True, exist_ok=True)
+    (rtrade_log_dir / "rtrade.log").write_text(
+        "\n".join(
+            [
+                "09:21:27 [BINANCE][GUARD] account cache is not fresh: account_cache_initializing",
+                "09:21:27 [TAOUSDC] BUY BLOCKED (pre-submit): account_cache_not_fresh",
+                "09:22:01 apply_weight_limit -> BUY TAOUSDC, Available qty 27.82, Final qty: 2.12",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    anom_iter21 = harvest_log_anomalies_from_dirs([str(rtrade_log_dir)], lookback_hours=24.0)
+    assert anom_iter21.error_count == 0
+    assert not anom_iter21.persistent_errors
+    assert not anom_iter21.guard_interventions
+
+
 

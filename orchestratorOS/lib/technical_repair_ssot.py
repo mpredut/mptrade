@@ -797,6 +797,14 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             if ip_auth_burst_recovered and transient_ip_auth_err_pattern.search(cleaned):
                                 continue
                             if (
+                                "account_cache_not_fresh" in cleaned
+                                or "account_cache_initializing" in cleaned
+                            ) and any(
+                                "apply_weight_limit" in lines[j] or bot_cycle_recovered_pattern.search(lines[j])
+                                for j in range(idx + 1, total_lines)
+                            ):
+                                continue
+                            if (
                                 (
                                     "Failed to recover daemon" in cleaned
                                     or "Error: not signed in:" in cleaned
@@ -843,6 +851,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if idx >= tail_start_idx:
                                     st["unresolved_at_tail"] = True
                         elif guard_pattern.search(line):
+                            if "account_cache_initializing" in line and any(
+                                "apply_weight_limit" in lines[j] or bot_cycle_recovered_pattern.search(lines[j])
+                                for j in range(idx + 1, total_lines)
+                            ):
+                                continue
                             warning_count += 1
                             cleaned = line.strip()
                             g_sig = normalize_error_signature(cleaned) or cleaned

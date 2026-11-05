@@ -663,7 +663,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     title_l = title_s.lower()
     url_l = str(url or "").strip().lower()
     if title_l and re.search(
-        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|^cramer:\s|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading)\b",
+        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|^cramer:\s|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive)\b",
         title_l,
     ):
         return True
