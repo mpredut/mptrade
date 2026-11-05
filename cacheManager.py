@@ -3890,20 +3890,32 @@ _ws_bridge_lock = _bapi_ws_bridge._ws_bridge_lock
 _ws_event_stats = _bapi_ws_bridge._ws_event_stats
 
 
+def _ws_cache_getter(name, symbols=None, *, start_sync=False):
+    """Look up caches from WebSocket callbacks without spawning rogue polling loops in consumers."""
+    try:
+        if symbols is not None:
+            return get_cache_manager(name, symbols=symbols, start_sync=start_sync)
+        return get_cache_manager(name, start_sync=start_sync)
+    except TypeError:
+        if symbols is not None:
+            return get_cache_manager(name, symbols)
+        return get_cache_manager(name)
+
+
 def _upsert_order_from_execution_report(event):
-    return _bapi_ws_bridge.upsert_order_from_execution_report(event, cache_getter=get_cache_manager)
+    return _bapi_ws_bridge.upsert_order_from_execution_report(event, cache_getter=_ws_cache_getter)
 
 
 def _append_trade_from_execution_report(event):
-    return _bapi_ws_bridge.append_trade_from_execution_report(event, cache_getter=get_cache_manager)
+    return _bapi_ws_bridge.append_trade_from_execution_report(event, cache_getter=_ws_cache_getter)
 
 
 def _refresh_asset_value_from_ws_event():
-    _bapi_ws_bridge.refresh_asset_value_from_ws_event(cache_getter=get_cache_manager)
+    _bapi_ws_bridge.refresh_asset_value_from_ws_event(cache_getter=_ws_cache_getter)
 
 
 def _persist_ws_updated_caches(event_type):
-    _bapi_ws_bridge.persist_ws_updated_caches(event_type, cache_getter=get_cache_manager)
+    _bapi_ws_bridge.persist_ws_updated_caches(event_type, cache_getter=_ws_cache_getter)
 
 
 _refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
@@ -3912,7 +3924,7 @@ _refresh_symbol_in_cache = _bapi_ws_bridge.refresh_symbol_in_cache
 def _handle_binance_ws_event(event):
     _bapi_ws_bridge.handle_binance_ws_event(
         event,
-        cache_getter=get_cache_manager,
+        cache_getter=_ws_cache_getter,
         log_enabled=WS_EVENT_LOG_ENABLED,
         upsert_order_fn=_upsert_order_from_execution_report,
         append_trade_fn=_append_trade_from_execution_report,

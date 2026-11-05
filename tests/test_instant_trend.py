@@ -1189,6 +1189,23 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(unittest.TestCase):
         self.assertFalse(bapi_ws_bridge._bridge_is_usable(type("_DeadBridge", (), {"is_running": False})()))
         self.assertTrue(bapi_ws_bridge._bridge_is_usable(type("_LiveBridge", (), {"is_running": True})()))
 
+        seen_sync_flags = []
+        with unittest.mock.patch.object(
+            cm,
+            "get_cache_manager",
+            side_effect=lambda name, *args, **kwargs: (
+                seen_sync_flags.append((name, kwargs.get("start_sync"))),
+                _ExplodingCache(),
+            )[1],
+        ):
+            cm._upsert_order_from_execution_report(trade_event)
+            cm._append_trade_from_execution_report(trade_event)
+            bapi_ws_bridge._default_cache_getter("Order")
+        self.assertEqual(
+            seen_sync_flags,
+            [("Order", False), ("Trade", False), ("Order", False)],
+        )
+
         # _save_jsonl_append keeps _persisted_counts updated after fsync when _write_meta returns False so retry updates .meta without duplicating rows
         c24_file = os.path.join(self.tmp, "cache_24_rollback.jsonl")
         c24_mgr = cm.Cache24PriceManager(60, ["BTCUSDT"], c24_file, read_only=True)
