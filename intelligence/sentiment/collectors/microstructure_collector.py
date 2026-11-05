@@ -110,16 +110,34 @@ def _filter_ohlc_closes_since(
     return [px_v for _, px_v in sorted(timed_out, key=lambda x: x[0])]
 
 
-def _wrap_cached_ohlc_fn(prov_key: str, raw_fn: Any, ttl_sec: float = 60.0) -> Any:
+def _wrap_cached_ohlc_fn(
+    prov_key: str,
+    raw_fn_or_factory: Any,
+    ttl_sec: float = 60.0,
+    *,
+    is_factory: bool = False,
+) -> Any:
+    resolved_fn: Any = None if is_factory else raw_fn_or_factory
+
+    def _get_raw_fn() -> Any:
+        nonlocal resolved_fn
+        if resolved_fn is None and is_factory and callable(raw_fn_or_factory):
+            resolved_fn = raw_fn_or_factory()
+        return resolved_fn
+
     def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
         if "PYTEST_CURRENT_TEST" in os.environ:
-            return raw_fn(s_arg, interval_min)
+            fn = _get_raw_fn()
+            return fn(s_arg, interval_min) if callable(fn) else None
         ck = (prov_key, str(s_arg or "").strip().upper(), int(interval_min))
         now_s = _time.time()
         hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
         if hit is not None and 0.0 <= (now_s - hit[0]) < ttl_sec:
             return hit[1]
-        res = raw_fn(s_arg, interval_min)
+        fn = _get_raw_fn()
+        if not callable(fn):
+            return None
+        res = fn(s_arg, interval_min)
         if res is not None and getattr(res, "closes", None):
             if len(_FALLBACK_OHLC_SERIES_CACHE) > 128:
                 _FALLBACK_OHLC_SERIES_CACHE.clear()
@@ -147,23 +165,31 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         if sym_u == "HYPEUSDC":
             prov_key = "hyperliquid"
             if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                from providers.hyperliquid_provider import HyperliquidProvider
-
-                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, HyperliquidProvider().ohlc_series)
+                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
+                    prov_key,
+                    lambda: __import__("providers.hyperliquid_provider", fromlist=["HyperliquidProvider"]).HyperliquidProvider().ohlc_series,
+                    is_factory=True,
+                )
         elif sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
             prov_key = "binance"
             if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                from providers.market_api import api as _mkt_api
-
-                raw_b_fn = getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
-                if callable(raw_b_fn):
-                    _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, raw_b_fn)
+                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
+                    prov_key,
+                    lambda: getattr(
+                        __import__("providers.market_api", fromlist=["api"]).api.provider_by_name("binance"),
+                        "ohlc_series",
+                        None,
+                    ),
+                    is_factory=True,
+                )
         elif sym_q == "USD" or (sym_u.endswith("USD") and not sym_u.endswith(("_EQ", "_US_EQ", "FDUSD", "TUSD", "BUSD"))):
             prov_key = "kraken"
             if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
-                from providers.kraken_provider import KrakenProvider
-
-                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, KrakenProvider().ohlc_series)
+                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
+                    prov_key,
+                    lambda: __import__("providers.kraken_provider", fromlist=["KrakenProvider"]).KrakenProvider().ohlc_series,
+                    is_factory=True,
+                )
         if prov_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(prov_key)):
             return cached_fn
     except Exception:
@@ -1530,15 +1556,13 @@ def enrich_24h_and_microstructure(
                 ser_24h, vals_7d = load_symbol_price_series(cache_dir, msym, current_price_items=cur_p_items)
                 if not ser_24h and msym.endswith("USD") and not msym.endswith(("FDUSD", "TUSD", "BUSD")) and "PYTEST_CURRENT_TEST" not in os.environ:
                     try:
-                        from providers.kraken_provider import KrakenProvider
-
-                        krk_p = KrakenProvider()
-                        ser_24h = _extract_ohlc_series_points(krk_p.ohlc_series(msym, 5), min_ts=now_ts - 86400.0)
-                        if ref_px is not None and ser_24h and abs(ref_px - float(ser_24h[-1][1])) > 1e-9 and not _prices_diverged(ref_px, float(ser_24h[-1][1])):
-                            ser_24h.append([int(now_ts * 1000), ref_px])
-                        if len(vals_7d) < 2:
-                            s60, cutoff_7d = krk_p.ohlc_series(msym, 60), now_ts - 7 * 86400.0
-                            vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
+                        krk_ohlc_fn = _resolve_fallback_ohlc_fn(msym, inst_by_sym)
+                        if callable(krk_ohlc_fn):
+                            ser_24h = _load_stitched_24h_ohlc_points(krk_ohlc_fn, msym, now_ts - 86400.0)
+                            if ref_px is not None and ser_24h and abs(ref_px - float(ser_24h[-1][1])) > 1e-9 and not _prices_diverged(ref_px, float(ser_24h[-1][1])):
+                                ser_24h.append([int(now_ts * 1000), ref_px])
+                            if len(vals_7d) < 2:
+                                vals_7d = _load_stitched_7d_ohlc_closes(krk_ohlc_fn, msym, now_ts, None, ref_px or 0.0)
                     except Exception:
                         pass
                 if ref_px is None and ser_24h:

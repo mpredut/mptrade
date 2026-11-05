@@ -768,11 +768,17 @@ _GENERIC_HEADLINE_OVERLAP_STEMS: frozenset[str] = frozenset({
     "world", "year",
 })
 
-_OFF_TOPIC_TABLOID_WORDS: frozenset[str] = frozenset({
-    "cards", "celebrity", "cereal", "concert", "dylan", "farmers", "festival",
-    "match", "movie", "music", "olive", "player", "players", "recipe",
-    "recipes", "red", "singer", "song", "storm", "weather", "yacht",
-})
+_OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
+    _PARTISAN_ELECTION_CONTEXT_WORDS
+    | _COMMERCIAL_METAPHOR_WAR_WORDS
+    | frozenset({
+        "blue", "cards", "celebrity", "cereal", "concert", "dylan", "farmers",
+        "festival", "governor", "jailed", "mamdani", "match", "mayor", "movie",
+        "music", "olive", "player", "players", "prison", "recipe", "recipes",
+        "red", "singer", "song", "storm", "subscriber", "subscribers", "weather",
+        "yacht",
+    })
+)
 
 _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
     _BROAD_MARKET_INDEX_CONTEXT_WORDS
@@ -789,6 +795,14 @@ _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
         "treasuries", "unemployment", "yield", "yields",
     })
 )
+
+
+def has_financial_or_geopolitical_context(title: Any) -> bool:
+    """Return True if a headline contains explicit financial, market, macro, or geopolitical context tokens."""
+    if not isinstance(title, str) or not title.strip():
+        return False
+    words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
+    return bool(words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS)
 
 
 def is_off_topic_general_news_title(title: Any) -> bool:

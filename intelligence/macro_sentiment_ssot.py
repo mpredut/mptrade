@@ -902,6 +902,7 @@ from intelligence.macro.lexicon_ssot import (
     get_excluded_reference_sources,
     get_specialized_rss_urls,
     has_acute_shock_keywords,
+    has_financial_or_geopolitical_context,
     has_high_severity_keywords,
     headline_content_stems,
     headlines_are_semantic_duplicates,

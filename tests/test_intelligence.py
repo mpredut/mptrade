@@ -7517,6 +7517,105 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
     assert r1 is r2 and len(calls) == 1
 
 
+def test_iter21_ohlc_24h_disk_cache_news_macro_relevance_and_dated_log_dedup(tmp_path, monkeypatch):
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        harvest_macro_and_news_sensors,
+    )
+    from intelligence.sentiment.evaluators import price_series_evaluator as pse
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Discrepancy BR: _load_stitched_24h_ohlc_points persists and serves a 240s on-disk 24h OHLC cache outside pytest
+    cdir_ohlc = tmp_path / "ohlc_cache_dir"
+    cdir_ohlc.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pse, "cache_path", lambda name: cdir_ohlc / name)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    now_s = time.time()
+    base_ts = int(now_s - 20 * 3600)
+    ohlc_calls = []
+
+    class _MockOHLC24:
+        timestamps = [base_ts + i * 1800 for i in range(41)]
+        closes = [100.0 + i * 0.25 for i in range(41)]
+        volumes = [15.0 + i for i in range(41)]
+
+    def _mock_ohlc_fn(sym, iv):
+        ohlc_calls.append((sym, iv))
+        return _MockOHLC24()
+
+    pts1 = pse._load_stitched_24h_ohlc_points(_mock_ohlc_fn, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    assert len(pts1) == 41 and len(ohlc_calls) == 1
+    assert (cdir_ohlc / "cache_ohlc_24h_TAOUSD.json").exists()
+    # Second call (even with a non-callable ohlc_fn or in a fresh process) hits the disk cache without calling ohlc_fn
+    pse._OHLC_24H_DISK_MEMO.clear()
+    pts2 = pse._load_stitched_24h_ohlc_points(None, "TAOUSD", now_s - 86400.0, require_positive_volume=True)
+    assert len(pts2) == 41 and len(ohlc_calls) == 1
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "1")
+
+    # 2. Discrepancy BS: Breaking News Feed ranks financial/macro/geopolitical context above non-macro/tabloid filler
+    assert is_off_topic_general_news_title("Mamdani: ‘it’s morning again in America’ after blue wave") is True
+    assert is_off_topic_general_news_title("The New York Times Adds 420,000 Digital Subscribers") is True
+    assert has_financial_or_geopolitical_context("Asian Stocks to Rise as Oil Slides After US Vote: Markets Wrap") is True
+    assert has_financial_or_geopolitical_context("White House panel delays hearing on Fed's Lisa Cook to Dec. 14") is True
+
+    news_cdir = tmp_path / "news_cdir"
+    news_cdir.mkdir(parents=True, exist_ok=True)
+    (news_cdir / "news_feed_collect.json").write_text(
+        json.dumps([
+            {
+                "title": "Mamdani: ‘it’s morning again in America’ after blue wave",
+                "source": "theguardian.com",
+                "first_seen_ts": now_s - 10,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+            {
+                "title": "The New York Times Adds 420,000 Digital Subscribers",
+                "source": "nytimes.com",
+                "first_seen_ts": now_s - 20,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+            {
+                "title": "White House panel delays hearing on Fed's Lisa Cook to Dec. 14",
+                "source": "cnbc.com",
+                "first_seen_ts": now_s - 120,
+                "is_high_severity": False,
+                "matched_keywords": [],
+            },
+        ]),
+        encoding="utf-8",
+    )
+    _, b_news = harvest_macro_and_news_sensors(str(news_cdir), now_s)
+    assert b_news[0]["title"].startswith("White House panel delays hearing on Fed's Lisa Cook")
+
+    # 3. Discrepancy BT: harvest_log_anomalies_from_dirs deduplicates <stem>.log vs <stem>_YYYY-MM-DD.log and sample errors
+    dir_logs = tmp_path / "logs"
+    dir_logger = tmp_path / "logger"
+    dir_logs.mkdir(parents=True, exist_ok=True)
+    dir_logger.mkdir(parents=True, exist_ok=True)
+    ts1 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s - 300))
+    ts2 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s - 295))
+    ts_ok = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s - 60))
+    log_body = "\n".join([
+        f"{ts1} ERROR [monitororder.py:420] Error getting open SELL orders: APIError(code=-2015)",
+        f"{ts2} ERROR [monitororder.py:420] Error getting open SELL orders: APIError(code=-2015)",
+        *(f"{ts_ok} INFO heartbeat ok {i}" for i in range(12)),
+    ])
+    (dir_logs / "monitororder.log").write_text(log_body, encoding="utf-8")
+    (dir_logger / "monitororder_2026-11-05.log").write_text(log_body, encoding="utf-8")
+    summary_bt = harvest_log_anomalies_from_dirs([str(dir_logs), str(dir_logger)], lookback_hours=1.0)
+    assert len(summary_bt.persistent_errors) == 1
+    assert summary_bt.persistent_errors[0]["file"] == "monitororder.log"
+    assert summary_bt.persistent_errors[0]["count"] == 2
+    assert summary_bt.error_count == 2
+    assert len(summary_bt.critical_events) == 1
+
+
+
 def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
     import time as _time
     from intelligence.sentiment.evaluators.tca_risk_evaluator import (

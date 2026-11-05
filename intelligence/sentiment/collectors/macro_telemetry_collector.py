@@ -25,6 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_dvol_url,
     get_deribit_hist_vol_url,
     get_deribit_options_book_url,
+    has_financial_or_geopolitical_context,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
     is_off_topic_general_news_title,
@@ -461,7 +462,9 @@ def harvest_macro_and_news_sensors(
         valid_news.sort(
             key=lambda x: (
                 1 if x.get("is_high_severity") else 0,
-                0 if is_off_topic_general_news_title(x.get("title")) else 1,
+                0
+                if is_off_topic_general_news_title(x.get("title"))
+                else (2 if has_financial_or_geopolitical_context(x.get("title")) else 1),
                 safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0,
             ),
             reverse=True,

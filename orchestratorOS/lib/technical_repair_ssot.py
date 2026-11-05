@@ -675,7 +675,10 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"(\[[^\[\]\r\n]*GUARD[^\[\]\r\n]*\]|vetoed|downscaled|HARD_VETO|DOWNSCALE_QTY)",
         re.IGNORECASE,
     )
+    crit_sig_to_idx: Dict[str, int] = {}
     guard_sig_to_idx: Dict[str, int] = {}
+    dated_log_fname_re = re.compile(r"^(.+?)_\d{4}-\d{2}-\d{2}(\.(?:log|txt))$", re.IGNORECASE)
+    persistent_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
@@ -794,7 +797,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             last_exc_sig = sig
                             last_exc_idx = idx
                             error_count += 1
-                            if cleaned not in critical_events and len(critical_events) < 50:
+                            c_sig = sig or cleaned
+                            if c_sig in crit_sig_to_idx:
+                                critical_events[crit_sig_to_idx[c_sig]] = cleaned
+                            elif len(critical_events) < 50:
+                                crit_sig_to_idx[c_sig] = len(critical_events)
                                 critical_events.append(cleaned)
                             if sig:
                                 st = file_sig_stats.setdefault(
@@ -821,11 +828,42 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if startup_fatal_exc_pattern.match(sample_prev):
                                     error_count = max(0, error_count - int(st_prev.get("count", 0)))
                                     file_sig_stats.pop(sig_k, None)
-                                    if sample_prev in critical_events:
+                                    c_sig_prev = sig_k or sample_prev
+                                    if c_sig_prev in crit_sig_to_idx:
+                                        del_idx = crit_sig_to_idx[c_sig_prev]
+                                        if 0 <= del_idx < len(critical_events):
+                                            critical_events.pop(del_idx)
+                                        crit_sig_to_idx = {
+                                            (normalize_error_signature(ev) or ev): i
+                                            for i, ev in enumerate(critical_events)
+                                        }
+                                    elif sample_prev in critical_events:
                                         critical_events.remove(sample_prev)
-                    for st in file_sig_stats.values():
+                                        crit_sig_to_idx = {
+                                            (normalize_error_signature(ev) or ev): i
+                                            for i, ev in enumerate(critical_events)
+                                        }
+                    m_dated = dated_log_fname_re.match(fname)
+                    canon_fname = f"{m_dated.group(1)}{m_dated.group(2)}" if m_dated else fname
+                    is_dated_fname = m_dated is not None
+                    for sig_k, st in file_sig_stats.items():
                         if st["count"] >= 2 or st["unresolved_at_tail"]:
-                            persistent_errors.append(st)
+                            pkey = (canon_fname.lower(), sig_k)
+                            prev_st = persistent_by_key.get(pkey)
+                            if prev_st is None:
+                                persistent_by_key[pkey] = st
+                                persistent_errors.append(st)
+                            else:
+                                overlap_cnt = min(int(prev_st.get("count", 0)), int(st.get("count", 0)))
+                                error_count = max(0, error_count - overlap_cnt)
+                                if int(st.get("count", 0)) > int(prev_st.get("count", 0)):
+                                    prev_st["count"] = st["count"]
+                                    prev_st["sample"] = st["sample"]
+                                if not is_dated_fname:
+                                    prev_st["file"] = fname
+                                prev_st["unresolved_at_tail"] = bool(
+                                    prev_st.get("unresolved_at_tail") or st.get("unresolved_at_tail")
+                                )
                 except Exception:
                     pass
         except Exception:

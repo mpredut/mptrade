@@ -62,6 +62,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "cache_365price_",
             "cache_sparse_price_",
             "cache_price_",
+            "cache_ohlc_",
         ),
         "suffixes": (".npz",),
     },
