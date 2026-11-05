@@ -855,8 +855,14 @@ def collect_pretrade_telemetry(
                         t_entry["kalman_trend"] = k_sym.get("kalman_trend")
                     if t_entry.get("vol_1h_pct") is None and (k_vol := safe_pos_float(k_sym.get("vol_1h_pct"), default=None)) is not None:
                         t_entry["vol_1h_pct"] = k_vol
+            st_ts_t = safe_pos_float(t_entry.pop("_short_trend_ts", None), default=None)
+            stale_short_ts = bool(
+                st_ts_t is not None
+                and last_alt_pt is not None
+                and (float(last_alt_pt[0]) / 1000.0 - st_ts_t) > 600.0
+            )
             s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
-            if eq_px_diverged_05pct and alt_series_24h:
+            if (eq_px_diverged_05pct or stale_short_ts) and alt_series_24h:
                 for k_ov in (
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",
@@ -866,10 +872,11 @@ def collect_pretrade_telemetry(
                 ):
                     t_entry.pop(k_ov, None)
                 t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
-                if isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
+                if eq_px_diverged_05pct and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
                     t_entry.update(k_recomp)
             elif alt_series_24h and (
-                all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
+                t_entry.get("slope_3_7m") is None
+                or all(t_entry.get(k) is None for k in ("slope_3_7m", "slope_15m", "slope_2_5h"))
                 or (s15_val is not None and s25_val is not None and s15_val != 0.0 and s15_val == s25_val)
             ):
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():

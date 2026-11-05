@@ -7986,6 +7986,23 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert nvda_entry_st.get("slope_15m") is not None and nvda_entry_st["slope_15m"] > 0.0
     assert abs(nvda_entry_st.get("gradient_recent", 0.0) - 0.115) > 1e-6
 
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    pt_stale_dir = tmp_path / "pt_stale_slopes"
+    pt_stale_dir.mkdir(parents=True, exist_ok=True)
+    (pt_stale_dir / "cache_short_trend.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": stale_tinfo}}),
+        encoding="utf-8",
+    )
+    (pt_stale_dir / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps(fresh_s24),
+        encoding="utf-8",
+    )
+    pt_nvda_stale = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(pt_stale_dir))
+    assert "15m=-0.10833" not in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
+    assert "15m=+" in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
+
+
 
 
 
