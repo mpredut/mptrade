@@ -265,7 +265,18 @@ def _is_excluded_non_crisis_attack_keyword(
         if (
             combined_words
             & {"diplomatic", "diplomacy", "peace", "resolution", "truce", "halt", "halts", "halted", "halting", "deescalation", "deescalate", "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending"}
-        ) and not (combined_words & kinetic_only):
+        ) and not (
+            combined_words
+            & (
+                kinetic_only
+                | {
+                    "collapse", "collapses", "collapsed", "fail", "fails", "failed",
+                    "reject", "rejects", "rejected", "violate", "violates", "violated",
+                    "resume", "resumes", "resumed", "abandon", "abandons", "abandoned",
+                    "shatter", "shatters", "shattered",
+                }
+            )
+        ):
             return True
     if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):
         if (combined_words & _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS) and not (combined_words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):

@@ -7831,6 +7831,13 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         )
         == ()
     )
+    assert (
+        filter_valid_severity_keywords(
+            ["war", "iran war"],
+            title="Peace talks to end Iran war collapse as negotiations fail",
+        )
+        == ("war", "iran war")
+    )
     itv_deesc_res, rsn_deesc_res = compute_dynamic_geopolitical_interval(
         base_interval_sec=16200.0,
         last_eval_ts=now_s_rec - 2400.0,
