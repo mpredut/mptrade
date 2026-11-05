@@ -4920,6 +4920,37 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert "sec_POC=86.6434" not in sec3a_b85
     assert "LVN=86.0215" not in sec3a_b85
 
+    # Bug 86: T212 position price seeded from cache uses pos_ts (not wall-clock now_ms) when appended to 24h series
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+
+    cdir_b86 = tmp_path / "cachedb_b86"
+    (cdir_b86 / "prices").mkdir(parents=True, exist_ok=True)
+    base_eq_ms = 1_775_851_200_000  # 20:00 UTC close
+    pts_eq_b86 = [[base_eq_ms - (15 - i) * 60_000, 188.0 + i * 0.04] for i in range(16)]
+    (cdir_b86 / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": pts_eq_b86}}),
+        encoding="utf-8",
+    )
+    (cdir_b86 / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:NVDA_US_EQ": {
+                    "symbol": "NVDA_US_EQ",
+                    "free": 6.45,
+                    "price": 188.63,
+                    "ts": (base_eq_ms / 1000.0) + 25.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_b86_a: dict = {}
+    pt_b86_b: dict = {}
+    enrich_24h_and_microstructure(str(cdir_b86), str(cdir_b86), pt_b86_a, {}, {}, {}, now_ts=(base_eq_ms / 1000.0) + 60.0)
+    enrich_24h_and_microstructure(str(cdir_b86), str(cdir_b86), pt_b86_b, {}, {}, {}, now_ts=(base_eq_ms / 1000.0) + 900.0)
+    assert pt_b86_a["NVDA_US_EQ"]["slope_15m"] == pt_b86_b["NVDA_US_EQ"]["slope_15m"]
+
+
 
 
 def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filtering(tmp_path):

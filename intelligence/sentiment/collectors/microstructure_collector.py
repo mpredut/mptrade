@@ -829,7 +829,16 @@ def enrich_24h_and_microstructure(
                     and (now_ms_24 - last_24_pt[0]) <= 20 * 60 * 1000
                     and abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
                 ):
-                    matched_series_24h = list(matched_series_24h) + [[now_ms_24, sym_px_cur]]
+                    eq_pt_ts_ms = (
+                        int(eff_t212_ts * 1000)
+                        if is_eq_sym
+                        and sym in t212_seeded_from_cache
+                        and eff_t212_ts > 0.0
+                        and last_24_pt is not None
+                        and int(eff_t212_ts * 1000) > last_24_pt[0]
+                        else now_ms_24
+                    )
+                    matched_series_24h = list(matched_series_24h) + [[eq_pt_ts_ms, sym_px_cur]]
         if sym_px_cur > 0 and arch_vals_7d:
             if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
                 arch_vals_7d = []

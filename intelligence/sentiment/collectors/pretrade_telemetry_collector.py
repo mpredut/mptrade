@@ -321,7 +321,12 @@ def collect_pretrade_telemetry(
             if live_cur_px > 0.0 and not _prices_diverged(live_cur_px, last_alt_pt[1]) and abs(round(live_cur_px, 4) - round(last_alt_pt[1], 4)) > 1e-4:
                 cur_px_est = round(live_cur_px, 4)
                 if rth_fresh_eq:
-                    alt_series_24h = list(alt_series_24h) + [[now_ms_eq, cur_px_est]]
+                    eq_pt_ts_ms = (
+                        int(vb_pos_ts * 1000)
+                        if vb_pos_ts > 0.0 and int(vb_pos_ts * 1000) > last_alt_pt[0]
+                        else now_ms_eq
+                    )
+                    alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
                     eq_post_rth_override = True
