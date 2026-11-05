@@ -639,7 +639,6 @@ def harvest_macro_and_news_sensors(
                     pass
         elif (
             all_valid_digest_aged_90m
-            and gt_digest_had_purged_noise
             and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
         ):
             gt_cur["threat_level"] = "NORMAL"
