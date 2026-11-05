@@ -6888,6 +6888,101 @@ def test_iter93_7d_archive_over_watcher_post_rth_kalman_preservation_ref_ob_scal
     assert GeminiClient._snapshot_dirty_tracked_files(str(repo_dir)) == set()
 
 
+def test_iter18_pretrade_btc_7d_archive_precedence_and_post_rth_vp_invariance(tmp_path):
+    """Iter 18:
+    1. collect_pretrade_telemetry preserves >=5d BTC 7d archive series (btc_vals_7d) over a shorter 6.5d
+       cache_watcher_all_price.json entry when computing vs_btc(..., 7d=...), and accepts positional cachedb_dir.
+    2. _load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 5.0d..6.75d (e.g. 6.25d).
+    3. Post-RTH equity overrides preserve RTH Session Volume Profile anchors (poc_px, val_px, vah_px)
+       instead of shifting closing-bar volume to the overnight price.
+    """
+    from types import SimpleNamespace
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        _load_stitched_7d_ohlc_closes,
+        enrich_24h_and_microstructure,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    cdir = tmp_path / "cachedb"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True, exist_ok=True)
+    now_s = 1_793_800_000.0
+    now_ms = int(now_s * 1000)
+
+    # 1. BTC 7.0d archive: 79000 -> 80580 (+2.00%), while 6.5d watcher starts at 80180 (+0.50%)
+    btc_7d_arch = [
+        [now_ms - 7 * 86400 * 1000, 79000.0],
+        [now_ms - 6 * 86400 * 1000, 80180.0],
+        [now_ms - 60 * 1000, 80580.0],
+    ]
+    btc_w_65d = [
+        [now_ms - int(6.5 * 86400 * 1000), 80180.0],
+        [now_ms - 60 * 1000, 80580.0],
+    ]
+    alt_7d_arch = [
+        [now_ms - 7 * 86400 * 1000, 100.0],
+        [now_ms - 60 * 1000, 105.0],
+    ]
+    btc_24h = [[now_ms - i * 3600 * 1000, 80000.0 + i * 10.0] for i in range(24, -1, -1)]
+    btc_24h[-1][1] = 80580.0
+    alt_24h = [[now_ms - i * 3600 * 1000, 100.0 + i * 0.1] for i in range(24, -1, -1)]
+    alt_24h[-1][1] = 105.0
+
+    (pdir / "cache_365_price_BTCUSDC.json").write_text(json.dumps({"items": {"BTCUSDC": btc_7d_arch}}), encoding="utf-8")
+    (pdir / "cache_24_price_BTCUSDC.json").write_text(json.dumps({"items": {"BTCUSDC": btc_24h}}), encoding="utf-8")
+    (pdir / "cache_365_price_TAOUSDC.json").write_text(json.dumps({"items": {"TAOUSDC": alt_7d_arch}}), encoding="utf-8")
+    (pdir / "cache_24_price_TAOUSDC.json").write_text(json.dumps({"items": {"TAOUSDC": alt_24h}}), encoding="utf-8")
+    (cdir / "cache_watcher_all_price.json").write_text(json.dumps({"items": {"BTCUSDC": btc_w_65d}}), encoding="utf-8")
+    (cdir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"BTCUSDC": {"price": 80580.0, "ts": now_s}, "TAOUSDC": {"price": 105.0, "ts": now_s}}}),
+        encoding="utf-8",
+    )
+
+    pre_tao = collect_pretrade_telemetry("TAOUSDC", str(cdir))
+    # TAO 7d = +5.00%, BTC 7d (from 7.0d archive) = +2.00% -> vs_btc 7d = +3.00% (not +4.50% from 6.5d watcher)
+    assert "7d=+3.00%" in pre_tao["Relative Strength vs BTC (24h Benchmark)"]
+
+    # 2. _load_stitched_7d_ohlc_closes stitches 240m bars when 60m bars span 6.25d (<6.75d)
+    def _mock_ohlc(sym: str, interval: int):
+        if interval == 60:
+            ts_60 = [now_s - i * 3600.0 for i in range(150, -1, -1)]  # 6.25d span, starts at 90.0
+            cl_60 = [90.0 + (150 - i) * 0.01 for i in range(150, -1, -1)]
+            return SimpleNamespace(timestamps=ts_60, closes=cl_60)
+        ts_240 = [now_s - 7 * 86400.0, now_s - 6.5 * 86400.0]
+        cl_240 = [78.0, 82.0]
+        return SimpleNamespace(timestamps=ts_240, closes=cl_240)
+
+    stitched = _load_stitched_7d_ohlc_closes(_mock_ohlc, "HYPEUSDC", now_s)
+    assert stitched[0] == pytest.approx(78.0)
+
+    # 3. Post-RTH equity override (>0.5% divergence) preserves RTH POC/VAL/VAH anchors
+    rth_close_ms = now_ms - 4 * 3600 * 1000
+    eq_bars = []
+    for i in range(78):
+        t_b = rth_close_ms - (77 - i) * 300 * 1000
+        px_b = 202.50 if i < 77 else 200.50
+        vol_b = 100_000.0 if i < 77 else 50_000_000.0  # huge closing auction volume at 200.50
+        eq_bars.append([t_b, px_b, vol_b])
+    (pdir / "cache_24_price_NVDA_US_EQ.json").write_text(json.dumps({"items": {"NVDA_US_EQ": eq_bars}}), encoding="utf-8")
+    (pdir / "cache_365_price_NVDA_US_EQ.json").write_text(json.dumps({"items": {"NVDA_US_EQ": eq_bars}}), encoding="utf-8")
+    (cdir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:NVDA_US_EQ": {"price": 198.90, "ts": now_s - 10.0}}),
+        encoding="utf-8",
+    )
+
+    pt_eq1 = {"NVDA_US_EQ": {"price": 198.90}}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_eq1, {}, {}, {}, now_ts=now_s)
+    pt_eq2 = {"NVDA_US_EQ": {"price": 199.40}}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_eq2, {}, {}, {}, now_ts=now_s)
+    assert pt_eq1["NVDA_US_EQ"]["poc_px"] == pytest.approx(pt_eq2["NVDA_US_EQ"]["poc_px"])
+    assert pt_eq1["NVDA_US_EQ"]["val_px"] == pytest.approx(pt_eq2["NVDA_US_EQ"]["val_px"])
+    assert pt_eq1["NVDA_US_EQ"]["vah_px"] == pytest.approx(pt_eq2["NVDA_US_EQ"]["vah_px"])
+
+    pre_eq = collect_pretrade_telemetry("NVDA_US_EQ", str(cdir))
+    assert f"POC=${pt_eq1['NVDA_US_EQ']['poc_px']}" in pre_eq["24h Volume Profile (POC / Value Area)"]
+
+
+
 
 
 

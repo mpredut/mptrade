@@ -150,7 +150,7 @@ def _load_stitched_7d_ohlc_closes(
         if (ts_s := normalize_epoch_sec(raw_ts, default=None)) is not None
     )
     vals_7d = _filter_ohlc_closes_since(s60, cutoff_7d)
-    if s60_ts and (s60_ts[-1] - s60_ts[0]) < 5 * 86400.0:
+    if s60_ts and (s60_ts[-1] - s60_ts[0]) < 6.75 * 86400.0:
         try:
             s240 = ohlc_fn(sym, 240)
             first_s60 = s60_ts[0] - 1800.0
@@ -909,6 +909,11 @@ def enrich_24h_and_microstructure(
             if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
                 post_rth_px_override = round(sym_px_cur, 4)
                 if len(matched_series_24h) >= 2:
+                    rth_vp_anchors = {
+                        k_vp: m24[k_vp]
+                        for k_vp in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source")
+                        if k_vp in m24
+                    }
                     last_bar_tail = (
                         list(matched_series_24h[-1][2:])
                         if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
@@ -916,6 +921,10 @@ def enrich_24h_and_microstructure(
                     )
                     override_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], post_rth_px_override, *last_bar_tail]]
                     m24 = compute_24h_price_metrics(override_series_24h) or m24
+                    if rth_vp_anchors:
+                        for k_vp_clr in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source"):
+                            m24.pop(k_vp_clr, None)
+                        m24.update(rth_vp_anchors)
                     if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005:
                         post_rth_series_replaced = True
                         matched_series_24h = override_series_24h
@@ -1165,6 +1174,12 @@ def enrich_24h_and_microstructure(
                         last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
                         pts_24h_for_m24 = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
                     if m24 := (compute_24h_price_metrics(pts_24h_for_m24) or {}):
+                        if not rth_bar_fresh and px_diff_from_chart and (rth_vp_chart := compute_volume_profile_metrics(pts_24h_to_save)):
+                            for k_vp_clr in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source"):
+                                m24.pop(k_vp_clr, None)
+                            for k_vp in ("poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "val_px", "vah_px", "profile_shape", "vp_source"):
+                                if k_vp in rth_vp_chart:
+                                    m24[k_vp] = rth_vp_chart[k_vp]
                         matched_series_24h = pts_24h
                         post_rth_px_override = None
                         if not rth_bar_fresh or px_diverged_05pct:
