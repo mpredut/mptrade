@@ -611,7 +611,14 @@ def load_symbol_price_series(
                 for idx_a, item_a in enumerate(parsed_arch):
                     if has_arch_vol and 0 < idx_a < len(parsed_arch) - 1 and item_a[2] is None:
                         prev_a = clean_arch[-1] if clean_arch else parsed_arch[idx_a - 1]
-                        next_a = parsed_arch[idx_a + 1]
+                        next_idx_a = idx_a + 1
+                        while (
+                            next_idx_a < len(parsed_arch) - 1
+                            and parsed_arch[next_idx_a][2] is None
+                            and abs(parsed_arch[next_idx_a][1] - item_a[1]) <= 1e-9
+                        ):
+                            next_idx_a += 1
+                        next_a = parsed_arch[next_idx_a]
                         if prev_a[2] is not None or next_a[2] is not None:
                             ref_mid = 0.5 * (prev_a[1] + next_a[1])
                             if (
@@ -736,19 +743,29 @@ def load_symbol_price_series(
                     dedup_24h.append(pt)
                 else:
                     dedup_24h[-1] = [pt[0], pt[1], dedup_24h[-1][2]] if (len(pt) < 3 and len(dedup_24h[-1]) >= 3) else pt
-            if len(dedup_24h) >= 3 and any(len(p) >= 3 for p in dedup_24h):
+            _has_pos_vol_24h = lambda row_d: len(row_d) >= 3 and (safe_pos_float(row_d[2], default=0.0) or 0.0) > 0.0
+            if len(dedup_24h) >= 3 and any(_has_pos_vol_24h(p) for p in dedup_24h):
                 filtered_24h = [dedup_24h[0]]
                 for idx_d in range(1, len(dedup_24h) - 1):
-                    cur_d, next_d = dedup_24h[idx_d], dedup_24h[idx_d + 1]
+                    cur_d = dedup_24h[idx_d]
                     prev_d = filtered_24h[-1]
-                    if len(cur_d) < 3 and (len(prev_d) >= 3 or len(next_d) >= 3):
-                        ref_mid = 0.5 * (prev_d[1] + next_d[1])
-                        if (
-                            ref_mid > 0.0
-                            and abs(prev_d[1] - next_d[1]) / ref_mid <= 0.025
-                            and abs(cur_d[1] - ref_mid) / ref_mid > 0.025
+                    if not _has_pos_vol_24h(cur_d):
+                        next_idx_d = idx_d + 1
+                        while (
+                            next_idx_d < len(dedup_24h) - 1
+                            and not _has_pos_vol_24h(dedup_24h[next_idx_d])
+                            and abs(dedup_24h[next_idx_d][1] - cur_d[1]) <= 1e-9
                         ):
-                            continue
+                            next_idx_d += 1
+                        next_d = dedup_24h[next_idx_d]
+                        if _has_pos_vol_24h(prev_d) or _has_pos_vol_24h(next_d):
+                            ref_mid = 0.5 * (prev_d[1] + next_d[1])
+                            if (
+                                ref_mid > 0.0
+                                and abs(prev_d[1] - next_d[1]) / ref_mid <= 0.025
+                                and abs(cur_d[1] - ref_mid) / ref_mid > 0.025
+                            ):
+                                continue
                     filtered_24h.append(cur_d)
                 filtered_24h.append(dedup_24h[-1])
                 dedup_24h = _strip_off_rth_flat_poller_tail(filtered_24h)

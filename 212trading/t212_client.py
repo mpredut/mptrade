@@ -127,12 +127,19 @@ class T212Client:
             return
         lock_path = f"{self._shared_cache_path}.lock"
         tls.depth = 1
+        lock_cm = FileLock(lock_path)
+        entered = False
         try:
-            with FileLock(lock_path):
-                yield
+            lock_cm.__enter__()
+            entered = True
         except Exception:
+            entered = False
+        try:
             yield
         finally:
+            if entered:
+                with contextlib.suppress(Exception):
+                    lock_cm.__exit__(None, None, None)
             tls.depth = 0
 
     def _instr_shared_cache_path(self) -> str:
@@ -264,13 +271,14 @@ class T212Client:
         self._fetch_fail.pop("_hist_cache", None)
         if self._shared_cache_enabled():
             try:
-                payload = read_json_dict(self._shared_cache_path, default=None)
-                if isinstance(payload, dict) and "_instr_cache" in payload:
-                    instr_path = self._instr_shared_cache_path()
-                    if instr_path and not os.path.exists(instr_path):
-                        atomic_write_json(instr_path, {"_instr_cache": payload["_instr_cache"]})
-                if os.path.exists(self._shared_cache_path):
-                    os.remove(self._shared_cache_path)
+                with self._shared_cache_file_lock():
+                    payload = read_json_dict(self._shared_cache_path, default=None)
+                    if isinstance(payload, dict) and "_instr_cache" in payload:
+                        instr_path = self._instr_shared_cache_path()
+                        if instr_path and not os.path.exists(instr_path):
+                            atomic_write_json(instr_path, {"_instr_cache": payload["_instr_cache"]})
+                    if os.path.exists(self._shared_cache_path):
+                        os.remove(self._shared_cache_path)
             except Exception:
                 pass
 

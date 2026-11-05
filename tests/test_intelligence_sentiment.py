@@ -8049,6 +8049,14 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     ]
     extracted_rgnt = _extract_sorted_ts_px(rgnt_s24)
     assert all(abs(px - 1.27) > 1e-6 for _, px in extracted_rgnt)
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+
+    rgnt_cdir = tmp_path / "rgnt_cdir"
+    rgnt_cdir.mkdir(parents=True, exist_ok=True)
+    (rgnt_cdir / "cache_24_price_RGNT_US_EQ.json").write_text(json.dumps(rgnt_s24), encoding="utf-8")
+    loaded_rgnt_24h, loaded_rgnt_7d = load_symbol_price_series(str(rgnt_cdir), "RGNT_US_EQ")
+    assert all(abs(pt[1] - 1.27) > 1e-6 for pt in loaded_rgnt_24h)
+    assert all(abs(px - 1.27) > 1e-6 for px in loaded_rgnt_7d)
 
     rgnt_entry = {
         "price": 1.28,
