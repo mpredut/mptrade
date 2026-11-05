@@ -113,7 +113,7 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
                 (
                     chg_15m >= 0.05
                     or (chg_15m >= -0.05 and (ob_imb >= 0.54 or div_reg in ("accumulation", "short_covering", "bullish_absorption")))
-                    or (chg_15m >= -0.15 and ob_imb >= 0.65 and div_reg in ("accumulation", "short_covering", "bullish_absorption"))
+                    or (chg_15m >= -0.15 and ob_imb >= 0.65 and div_reg not in ("long_liquidation", "aggressive_shorting", "bearish_distribution"))
                 )
                 if has_chg_15m
                 else (ob_imb >= 0.58 or div_reg in ("short_covering", "bullish_absorption"))

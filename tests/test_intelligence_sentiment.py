@@ -5919,5 +5919,19 @@ def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
     assert res.guard_interventions == []
     assert res.critical_events == []
 
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+
+    btc_neutral_abs = {
+        "ob_imbalance": 0.718,
+        "bid_depth_usd": 8_952_909.0,
+        "ask_depth_usd": 3_513_606.0,
+        "taker_buy_vol_usd": 20_543_994.72,
+        "taker_sell_vol_usd": 21_210_688.22,
+        "cvd_15m_usd": -666_694.0,
+        "divergence_regime": "neutral",
+    }
+    enrich_microstructure_cvd(btc_neutral_abs, {"price": 80514.3, "chg_15m_pct": -0.07})
+    assert btc_neutral_abs["cvd_regime"] == "spot_absorbing"
+
 
 
