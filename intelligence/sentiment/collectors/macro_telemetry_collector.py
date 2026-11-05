@@ -631,6 +631,22 @@ def harvest_macro_and_news_sensors(
         gt_cur["live_deescalation_note"] = (
             f"NO_FRESH_HIGH_SEV_HEADLINES_90M (shield age={gt_cur.get('age_min')}m; 0/{len(breaking_news)} live headlines high-sev)"
         )
+    elif (
+        isinstance(gt_cur, dict)
+        and "no fresh high-severity macro headlines in the last 90 minutes"
+        in str(gt_cur.get("summary") or "").lower()
+        and (
+            fresh_hs_news := [
+                n
+                for n in breaking_news
+                if n.get("is_high_severity") and (safe_float(n.get("age_min"), 999.0) or 999.0) < 90.0
+            ]
+        )
+    ):
+        gt_cur["summary"] = (
+            f"Geopolitical threat level {str(gt_cur.get('threat_level') or 'NORMAL').upper()}: "
+            f"monitoring {len(fresh_hs_news)} fresh high-severity macro headline(s) (<90m old); no acute systemic shock brake triggered."
+        )
     macro_sensors["macro_calendar"] = resolve_macro_economic_calendar(
         now_ts=now_ts, breaking_news=valid_news or breaking_news
     )

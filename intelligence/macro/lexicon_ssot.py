@@ -264,7 +264,7 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
         if (
             combined_words
-            & {"diplomatic", "diplomacy", "peace", "resolution", "truce", "halt", "halts", "halted", "halting", "deescalation", "deescalate", "avoid", "avoids", "ease", "eases", "easing"}
+            & {"diplomatic", "diplomacy", "peace", "resolution", "truce", "halt", "halts", "halted", "halting", "deescalation", "deescalate", "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending"}
         ) and not (combined_words & kinetic_only):
             return True
     if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):

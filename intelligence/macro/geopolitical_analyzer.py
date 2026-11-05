@@ -275,11 +275,19 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 or self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
             )
         )
+        resume_from_90m_deesc = bool(
+            high_sev
+            and not all_high_sev_aged_90m
+            and self._cached_assessment is not None
+            and "no fresh high-severity macro headlines in the last 90 minutes"
+            in str(self._cached_assessment.summary or "").lower()
+        )
         if (
             not force_refresh
             and not acute_shock_alert
             and not deescalate_aged_90m
             and not zero_high_sev_reset
+            and not resume_from_90m_deesc
             and self._cached_assessment
             and not is_stale
         ):
@@ -328,6 +336,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         if (
             not force_refresh
             and not acute_shock_alert
+            and not resume_from_90m_deesc
             and self._cached_assessment
             and (
                 not is_stale

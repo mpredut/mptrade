@@ -883,6 +883,15 @@ def compute_dynamic_geopolitical_interval(
     if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:
         return 0.0, "acute_shock_keyword_alert"
 
+    if (
+        high_sev_count > 0
+        and not all_high_sev_aged_90m
+        and cached_assessment is not None
+        and "no fresh high-severity macro headlines in the last 90 minutes"
+        in str(obj_attr(cached_assessment, "summary", "") or "").lower()
+    ):
+        return 0.0, "fresh_high_sev_after_90m_deescalation"
+
     if changed_b and new_high_sev_count > 0:
         if threat_level == "CRITICAL_SHOCK":
             return min(base, min_geo_itv * 2.0), "critical_shock_active_monitoring_30m"

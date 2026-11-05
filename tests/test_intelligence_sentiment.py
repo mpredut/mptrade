@@ -7818,3 +7818,44 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert eq_m_stub["spread_bps"] < 100.0
     assert eq_m_stub["bid_wall_px"] < 1.32 < eq_m_stub["ask_wall_px"]
 
+    # 9. filter_valid_severity_keywords excludes war-ending de-escalation headlines ("even if the Iran war ends soon")
+    #    and compute_dynamic_geopolitical_interval / harvest_macro_and_news_sensors reconcile 90m de-escalation summary
+    #    when fresh (<90m) high-severity headlines arrive
+    from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
+
+    assert (
+        filter_valid_severity_keywords(
+            ["war", "iran war"],
+            title="Interest rates could go significantly higher if oil prices keep climbing — even if the Iran war ends soon",
+        )
+        == ()
+    )
+    itv_deesc_res, rsn_deesc_res = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=now_s_rec - 2400.0,
+        now_ts=now_s_rec,
+        cached_assessment=SimpleNamespace(
+            threat_level="NORMAL",
+            is_fallback=False,
+            summary="Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes.",
+        ),
+        news_snapshot={
+            "high_severity_count": 1,
+            "has_critical_shock_keywords": False,
+            "headlines": [
+                {
+                    "title": "Sudden naval blockade escalates shipping tensions",
+                    "source": "Reuters",
+                    "is_high_severity": True,
+                    "first_seen_ts": now_s_rec - 300.0,
+                }
+            ],
+        },
+        headlines_changed=True,
+        last_headlines_digest="Old headline from 3 hours ago",
+    )
+    assert itv_deesc_res == 0.0
+    assert rsn_deesc_res == "fresh_high_sev_after_90m_deescalation"
+
+
