@@ -816,8 +816,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "[ws] error: ping/pong timed out" in cleaned
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
+                                    or "agy CLI with model" in cleaned
                                 )
-                                and any(daemon_recovered_pattern.search(lines[j]) for j in range(idx + 1, total_lines))
+                                and any(
+                                    daemon_recovered_pattern.search(lines[j])
+                                    or bot_cycle_recovered_pattern.search(lines[j])
+                                    for j in range(idx + 1, total_lines)
+                                )
                             ):
                                 continue
                             sig = normalize_error_signature(cleaned)
