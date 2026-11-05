@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import time as _time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from botcore import extract_current_price_item, load_local_module
 from cachepaths import (

@@ -11,8 +11,9 @@ from cachepaths import (
     compatible_quote_suffixes,
     normalize_venue_name,
 )
-from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
+from state_io import read_json_dict_recovering, read_tail_jsonl_records, resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
+    lookup_symbol_cache_items,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -984,11 +985,31 @@ def _resolve_cycle_high_since(
         for cand in dict.fromkeys(cands):
             for pfx in ("cache_365_price_", "cache_sparse_price_"):
                 arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{pfx}{cand}.jsonl")))
-                if not os.path.exists(arch_path):
-                    continue
+                if os.path.exists(arch_path):
+                    try:
+                        for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
+                            item = rec.get("i") if isinstance(rec, dict) else (rec if isinstance(rec, (list, tuple)) else None)
+                            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                                t_f = safe_pos_float(item[0], default=0.0) or 0.0
+                                p_f = safe_pos_float(item[1], default=0.0) or 0.0
+                                t_ms = int(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                                if t_ms >= oldest_ts_ms and p_f > best_high:
+                                    best_high = p_f
+                    except Exception:
+                        pass
+            arch_json_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{cand}.json")))
+            if os.path.exists(arch_json_path):
                 try:
-                    for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
-                        item = rec.get("i") if isinstance(rec, dict) else (rec if isinstance(rec, (list, tuple)) else None)
+                    raw_j = read_json_dict_recovering(arch_json_path, default={})
+                    rows_j = lookup_symbol_cache_items(
+                        raw_j,
+                        cand_keys=cands,
+                        allow_base_fallback=False,
+                        single_item_quote_fallback=True,
+                        require_list=True,
+                        unwrap_items=True,
+                    ) or []
+                    for item in rows_j:
                         if isinstance(item, (list, tuple)) and len(item) >= 2:
                             t_f = safe_pos_float(item[0], default=0.0) or 0.0
                             p_f = safe_pos_float(item[1], default=0.0) or 0.0
