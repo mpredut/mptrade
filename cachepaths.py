@@ -18,7 +18,7 @@ EXACT_LEGACY_FILENAMES = {
 }
 PREFIX_LEGACY_FILENAMES = (
     ("cache_sparse_price_", ("cache_price_sparse_", "cache_price_")),
-    ("cache_24_price_", ("cache_24price_",)),
+    ("cache_24_price_", ("cache_24price_", "price_24h_")),
     ("cache_365_price_", ("cache_365price_", "cache_24price_long_")),
 )
 
@@ -58,6 +58,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "cache_watcher_all_price.",
             "cache_24_price_",
             "cache_24price_",
+            "price_24h_",
             "cache_365_price_",
             "cache_365price_",
             "cache_sparse_price_",

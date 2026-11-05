@@ -129,19 +129,20 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
         try:
             from cachepaths import resolve_cachedb_filepath
-            from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks
-            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_equity_macro_regime_line
+            from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, safe_float, safe_pos_float
+            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+                compute_cross_asset_regime,
+                format_equity_macro_regime_line,
+            )
 
             cache_dir = self._effective_cache_dir()
             eff_mb = (
-                macro_benchmarks
+                dict(macro_benchmarks)
                 if isinstance(macro_benchmarks, dict) and macro_benchmarks
                 else load_cached_macro_benchmarks(cache_dir)
             )
-            if isinstance(eff_mb, dict) and eff_mb:
-                eq_macro_line = format_equity_macro_regime_line(eff_mb)
-                if eq_macro_line and eq_macro_line != "NEUTRAL":
-                    prompt_context.append(f"- Cross-Asset Macro & Options Surface: {eq_macro_line}")
+            btc_chg_24h_live: Optional[float] = None
+            btc_struct_line: Optional[str] = None
             if any(
                 os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
                 for fn in (
@@ -156,7 +157,6 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     load_symbol_price_series,
                 )
                 from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
-                from intelligence.macro_sentiment_ssot import safe_float, safe_pos_float
 
                 btc_pts, _ = load_symbol_price_series(cache_dir, "BTCUSDC", include_7d=False)
                 btc_m = compute_24h_price_metrics(btc_pts) if btc_pts else {}
@@ -169,6 +169,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                         else (safe_pos_float(btc_m.get("high_24h"), default=0.0) or 0.0)
                     )
                     chg_24h_v = safe_float(btc_m.get("chg_24h_pct"), default=0.0) or 0.0
+                    btc_chg_24h_live = chg_24h_v
                     pos_24h_v = safe_float(btc_m.get("pos_24h_pct"), default=50.0)
                     if pos_24h_v is None:
                         pos_24h_v = 50.0
@@ -189,11 +190,20 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                         if p6h_lo_v > 0.0 and r1h_lo_v > 0.0
                         else ""
                     )
-                    prompt_context.append(
+                    btc_struct_line = (
                         f"- BTC Intraday Structure: price=${last_px:.2f} "
                         f"({chg_24h_v:+.2f}% 24h, range_pos={pos_24h_v:.0f}%), "
                         f"bottom_structure_6h={b_struct}{lows_sfx}"
                     )
+            if isinstance(eff_mb, dict) and eff_mb:
+                if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
+                    eff_mb = dict(eff_mb)
+                    eff_mb["cross_asset_regime"] = compute_cross_asset_regime(eff_mb, btc_chg_24h_pct=btc_chg_24h_live)
+                eq_macro_line = format_equity_macro_regime_line(eff_mb)
+                if eq_macro_line and eq_macro_line != "NEUTRAL":
+                    prompt_context.append(f"- Cross-Asset Macro & Options Surface: {eq_macro_line}")
+            if btc_struct_line:
+                prompt_context.append(btc_struct_line)
         except Exception:
             pass
 

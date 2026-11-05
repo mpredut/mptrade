@@ -1846,6 +1846,57 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         assert "CRYPTO_BULLISH_DECOUPLING" in sp
         assert "EQUITY_BULLISH_DECOUPLING" in sp
 
+    # 7. VIX spike guard in compute_cross_asset_regime & live 24h BTC delta enrichment when IBIT is closed
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 580.0, "chg_24h_pct": 0.40},
+                    "VIX": {"price": 24.5, "chg_24h_pct": 9.5},
+                    "IBIT": {"price": 46.8, "chg_24h_pct": 1.85},
+                }
+            }
+        )
+        == "NEUTRAL"
+    )
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 576.0, "chg_24h_pct": -0.75},
+                    "IBIT": {"price": 46.8, "chg_24h_pct": 1.85},
+                }
+            },
+            btc_chg_24h_pct=0.10,
+        )
+        == "CRYPTO_BULLISH_DECOUPLING"
+    )
+
+    closed_ibit_mb = {
+        "items": {
+            "SPY": {"price": 586.0, "chg_24h_pct": 0.80},
+            "QQQ": {"price": 508.0, "chg_24h_pct": 1.10},
+            "IBIT": {"price": 45.0, "chg_24h_pct": 0.0},
+        },
+        "coinbase_premium_bps": -2.0,
+    }
+    (cdir / "macro_benchmarks_collect.json").write_text(json.dumps(closed_ibit_mb), encoding="utf-8")
+    now_ms_b = 1_793_860_000_000
+    btc_24h_pts = [
+        [now_ms_b - 24 * 3600 * 1000, 70000.0],
+        [now_ms_b - 12 * 3600 * 1000, 69200.0],
+        [now_ms_b - 2 * 3600 * 1000, 68600.0],
+        [now_ms_b, 68000.0],
+    ]
+    (cdir / "cache_24_price_BTCUSDC.json").write_text(json.dumps(btc_24h_pts), encoding="utf-8")
+    pt_closed_cr = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
+    pt_closed_eq = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir))
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_cr.get("Equity & Macro Regime"))
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_eq.get("Equity & Macro Regime"))
+    sa.review(force_refresh=True, now_ts=1_793_865_000.0)
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_sa_prompts[-1]
+
+
 
 
 

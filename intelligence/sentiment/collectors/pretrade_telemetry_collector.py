@@ -11,6 +11,7 @@ from cachepaths import (
     canonical_base_asset,
     compatible_quote_suffixes,
     get_cachedb_dir,
+    resolve_cachedb_filepath,
 )
 from intelligence.internal.guards.guard_decision import fetch_guard_snapshot
 from intelligence.macro_sentiment_ssot import (
@@ -34,6 +35,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
 )
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    compute_cross_asset_regime,
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
 )
@@ -1157,6 +1159,26 @@ def collect_pretrade_telemetry(
     # 5. Macro Regime, Sentiment Bias, Fear/Greed Index & Geopolitical Threat Shield (Pillars 3 & 4)
     try:
         if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
+            btc_chg_24h_live: Optional[float] = None
+            if not is_eq_sym and canonical_base_asset(symbol) == "BTC":
+                btc_chg_24h_live = safe_float(m24.get("chg_24h_pct"), default=None)
+            elif btc_m24:
+                btc_chg_24h_live = safe_float(btc_m24.get("chg_24h_pct"), default=None)
+            elif any(
+                os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, fn))))
+                for fn in (
+                    "price_24h_BTCUSDC.json",
+                    "price_24h_BTCUSDT.json",
+                    "cache_24_price_BTCUSDC.json",
+                    "cache_24_price_BTCUSDT.json",
+                )
+            ):
+                btc_s_eq, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
+                btc_m_eq = compute_24h_price_metrics(btc_s_eq) if btc_s_eq else {}
+                btc_chg_24h_live = safe_float(btc_m_eq.get("chg_24h_pct"), default=None)
+            if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
+                mb_data = dict(mb_data)
+                mb_data["cross_asset_regime"] = compute_cross_asset_regime(mb_data, btc_chg_24h_pct=btc_chg_24h_live)
             eq_reg_line = format_equity_macro_regime_line(mb_data)
             if eq_reg_line:
                 telemetry["Equity & Macro Regime"] = eq_reg_line

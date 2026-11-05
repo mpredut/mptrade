@@ -114,15 +114,36 @@ def compute_cross_asset_regime(
     ibit_entry = items.get("IBIT")
     ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
     btc_24h = safe_float(btc_chg_24h_pct, default=None)
-    crypto_px_chg = btc_24h if (btc_24h is not None and (ibit_24h is None or abs(btc_24h) > 1e-6)) else ibit_24h
+    if btc_24h is not None and abs(btc_24h) > 1e-6:
+        if ibit_24h is None or abs(ibit_24h) <= 1e-6:
+            crypto_px_chg = btc_24h
+        elif ibit_24h > 0.0 and btc_24h >= -0.15:
+            crypto_px_chg = max(ibit_24h, btc_24h)
+        elif ibit_24h < 0.0 and btc_24h <= 0.15:
+            crypto_px_chg = min(ibit_24h, btc_24h)
+        else:
+            crypto_px_chg = btc_24h
+    else:
+        crypto_px_chg = ibit_24h
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
 
     if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
         explicit = str(data.get("cross_asset_regime") or "").strip().upper()
         return explicit if explicit in allowed else "NEUTRAL"
 
-    eq_bull = eq_regime == "RISK_ON" or (bool(eq_24h) and avg_eq_24h >= 0.25)
-    eq_bear = eq_regime == "RISK_OFF" or (bool(eq_24h) and avg_eq_24h <= -0.25)
+    vix_entry = items.get("VIX")
+    vix_chg = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+    vix_px = safe_pos_float(vix_entry.get("price"), default=None) if isinstance(vix_entry, dict) else None
+    vix_fear_spike = (vix_chg is not None and vix_chg >= 8.0) or (
+        vix_px is not None and vix_px >= 28.0 and (vix_chg is None or vix_chg >= 3.0)
+    )
+
+    eq_bull = eq_regime == "RISK_ON" or (
+        eq_regime != "RISK_OFF" and not vix_fear_spike and bool(eq_24h) and avg_eq_24h >= 0.25
+    )
+    eq_bear = eq_regime == "RISK_OFF" or (
+        eq_regime != "RISK_ON" and bool(eq_24h) and avg_eq_24h <= -0.25
+    )
     crypto_bull = (
         (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
         or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
