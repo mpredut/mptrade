@@ -909,6 +909,9 @@ def collect_pretrade_telemetry(
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
+            if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
+                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+                    t_entry.pop(k_stale_90, None)
             if (
                 is_eq_sym
                 and last_alt_pt is not None
@@ -941,6 +944,9 @@ def collect_pretrade_telemetry(
                 p_est.update(m7d)
             if m24:
                 _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
+                if is_eq_sym and not eq_px_diverged_05pct and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
+                    for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+                        p_est.pop(k_stale_90, None)
                 if (
                     is_eq_sym
                     and last_alt_pt is not None

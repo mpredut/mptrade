@@ -697,7 +697,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 extras.append(f"g_coeff({', '.join(g_parts)})")
         if pinfo.get("vol_1h_pct") is not None:
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
-        if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None:
+        if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
         if pinfo.get("long_trend_dir"):
             lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
@@ -933,9 +933,12 @@ def _format_microstructure_section(
 
         basis_sfx = ""
         basis_parts: List[str] = []
-        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+        eq_no_oi_3b = sym_is_eq_3b and (_parse_finite_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
+        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None and not (eq_no_oi_3b and abs(b_bps) < 1e-9):
             basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
-        if (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None:
+        if (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None and not (
+            sym_is_eq_3b and abs(f_ann) < 1e-9 and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12
+        ):
             basis_parts.append(f"funding_ann={f_ann:+.1f}%")
         if (arb_bps := _parse_finite_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")

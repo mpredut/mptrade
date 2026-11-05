@@ -8546,6 +8546,57 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     excl_bases = get_breadth_excluded_bases()
     assert "RGNTB" in excl_bases and "NVDAB" in excl_bases and "SNDKB" in excl_bases
 
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+    from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
+
+    assert is_excluded_reference_news_item(
+        "Prediction: These Will Be Nvidia's and Palantir's Stock Prices by 2027 (Hint: Only 1 Is a Buy)"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Three consumer stocks to buy after the midterm elections"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Historically Bullish Signal Emerges for Nvidia Stock"
+    ) is True
+
+    pt_zero_k = {"RGNT_US_EQ": {"price": 1.17, "kalman_vel": -0.2842, "kalman_vel_std": 0.59, "kalman_trend": 0}}
+    enrich_cross_venue_trends(
+        pt_zero_k,
+        {},
+        {"RGNT_US_EQ": {"kalman_vel": -0.0, "kalman_vel_std": 0.21944, "kalman_trend": 0}},
+        {},
+        {},
+        {},
+        {},
+    )
+    assert pt_zero_k["RGNT_US_EQ"]["kalman_vel"] == -0.2842
+
+    sec_3b_eq = "\n".join(
+        _format_microstructure_section(
+            {
+                "RGNT_US_EQ": {
+                    "ob_imbalance": 0.36,
+                    "bid_depth_usd": 1563.0,
+                    "ask_depth_usd": 2776.0,
+                    "bid_wall_px": 1.168,
+                    "bid_wall_usd": 1563.0,
+                    "ask_wall_px": 1.18,
+                    "ask_wall_usd": 2723.0,
+                    "funding_rate": 0.0,
+                    "pred_funding_rate": 0.0,
+                    "oi_usd": 0.0,
+                    "oi_1h_chg_pct": 0.0,
+                    "perp_spot_basis_bps": 0.0,
+                    "funding_annualized_pct": 0.0,
+                }
+            },
+            {"RGNT_US_EQ": {"price": 1.17}},
+        )
+    )
+    assert "perp_basis=+0.0bps" not in sec_3b_eq
+    assert "funding_ann=+0.0%" not in sec_3b_eq
+
 
 
 

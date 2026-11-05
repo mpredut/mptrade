@@ -950,7 +950,9 @@ def enrich_cross_venue_trends(
         if isinstance(kalman_data, dict) and isinstance(k_sym := _first_variant_dict(kalman_data, cand_keys), dict):
             k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
             k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
-            is_unseeded_cold_kalman = k_vel is not None and abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)
+            is_unseeded_cold_kalman = k_vel is not None and (
+                abs(k_vel) < 1e-9 or (abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99))
+            )
             cur_e_vel = safe_float(entry.get("kalman_vel"), default=None)
             cur_e_std = safe_float(entry.get("kalman_vel_std"), default=None)
             cur_is_unseeded = cur_e_vel is None or (abs(cur_e_vel) < 1e-12 and (cur_e_std is None or cur_e_std >= 5.99))

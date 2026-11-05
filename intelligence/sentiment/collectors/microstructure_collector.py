@@ -1800,6 +1800,9 @@ def enrich_24h_and_microstructure(
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                     m24.pop(k_stale_15m, None)
             _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
+            if is_eq_sym and not post_rth_series_replaced and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
+                for k_stale_90 in ("slope_90s", "growth_90s", "trend_90s"):
+                    prices_and_trends[sym].pop(k_stale_90, None)
             if (
                 is_eq_sym
                 and not post_rth_series_replaced
