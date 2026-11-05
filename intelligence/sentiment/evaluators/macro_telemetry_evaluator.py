@@ -894,7 +894,18 @@ def enrich_sentiment_advisor_live_flow_divergence(
                     and (live_cvd is None or live_cvd < 2_500_000.0)
                     and (live_tr is None or live_tr < 1.25)
                 )
-                else "LIVE_BUY_REVERSAL"
+                else (
+                    "LIVE_15M_BOUNCE_VS_1H_SELL"
+                    if (
+                        live_tr_1h is not None
+                        and live_tr_1h < 0.95
+                        and live_cvd_1h is not None
+                        and live_cvd_1h <= -15_000_000.0
+                        and (live_tr is None or live_tr < 1.25)
+                        and (live_tr_5m is None or live_tr_5m < 1.75)
+                    )
+                    else "LIVE_BUY_REVERSAL"
+                )
             )
         sentiment_advisor["live_flow_divergence"] = f"{buy_div_tag} ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     elif (
@@ -960,7 +971,18 @@ def enrich_sentiment_advisor_live_flow_divergence(
                     and (live_cvd is None or live_cvd > -2_500_000.0)
                     and (live_tr is None or live_tr > 0.75)
                 )
-                else "LIVE_SELL_REVERSAL"
+                else (
+                    "LIVE_15M_PULLBACK_VS_1H_BUY"
+                    if (
+                        live_tr_1h is not None
+                        and live_tr_1h > 1.05
+                        and live_cvd_1h is not None
+                        and live_cvd_1h >= 15_000_000.0
+                        and (live_tr is None or live_tr > 0.75)
+                        and (live_tr_5m is None or live_tr_5m > 0.55)
+                    )
+                    else "LIVE_SELL_REVERSAL"
+                )
             )
         sentiment_advisor["live_flow_divergence"] = f"{sell_div_tag} ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     elif (

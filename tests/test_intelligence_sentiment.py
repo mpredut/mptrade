@@ -8439,6 +8439,110 @@ def test_cross_venue_heavy_shorting_cvd_and_stale_partial_fill_dedup():
     assert "563119781" not in sec3c_pf.split("Recent Autonomous Intents:")[-1]
 
 
+def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_spcx_cvd(tmp_path):
+    """Verify 20:42 EET prompt audit fixes:
+    1) MarketBreadthCollector excludes USD stablecoins (UUSDT, XUSDUSDT, RWUSDUSDT) and -B tokenized stocks (SNXXBUSDT, KORUBUSDT, SNDKBUSDT).
+    2) enrich_sentiment_advisor_live_flow_divergence emits LIVE_15M_PULLBACK_VS_1H_BUY on BULLISH/ACCUMULATE when 15m tr > 0.75 and 1h flow is strongly positive.
+    3) filter_valid_severity_keywords & is_off_topic_general_news_title filter human-interest war filler ('Alaskans heating bills', 'cruise ship Cambodia cabin').
+    4) enrich_microstructure_cvd classifies ask-heavy (ob_imbalance <= 0.46) heavy dumping (taker_ratio <= 0.50, spot_cvd < 0) as aggressive_market_dumps / SYNCHRONIZED_SPOT_PERP_SELLING even when chg_15m >= 0.05.
+    """
+    from intelligence.macro.lexicon_ssot import (
+        filter_valid_severity_keywords,
+        is_off_topic_general_news_title,
+        match_high_severity_keywords,
+    )
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_microstructure_cvd,
+    )
+
+    # 1. MarketBreadthCollector excludes UUSDT, XUSDUSDT, RWUSDUSDT, SNXXBUSDT, KORUBUSDT, SNDKBUSDT
+    #    and prioritizes actual positive gainers ($5M..$10M) over negative $10M+ tickers in top_gainers
+    raw_tickers = [
+        {"symbol": "INJUSDT", "lastPrice": "12.50", "priceChangePercent": "3.564", "quoteVolume": "25000000"},
+        {"symbol": "TONUSDT", "lastPrice": "4.80", "priceChangePercent": "0.953", "quoteVolume": "8000000"},
+        {"symbol": "XTZUSDT", "lastPrice": "0.75", "priceChangePercent": "0.909", "quoteVolume": "6500000"},
+        {"symbol": "TRXUSDT", "lastPrice": "0.18", "priceChangePercent": "-0.625", "quoteVolume": "50000000"},
+        {"symbol": "UUSDT", "lastPrice": "1.0003", "priceChangePercent": "0.070", "quoteVolume": "61000000"},
+        {"symbol": "XUSDUSDT", "lastPrice": "1.0013", "priceChangePercent": "0.050", "quoteVolume": "15800000"},
+        {"symbol": "RWUSDUSDT", "lastPrice": "0.9992", "priceChangePercent": "-0.030", "quoteVolume": "20500000"},
+        {"symbol": "SNXXBUSDT", "lastPrice": "45.00", "priceChangePercent": "-38.704", "quoteVolume": "14000000"},
+        {"symbol": "KORUBUSDT", "lastPrice": "12.00", "priceChangePercent": "-33.614", "quoteVolume": "13000000"},
+        {"symbol": "SNDKBUSDT", "lastPrice": "31.00", "priceChangePercent": "-19.702", "quoteVolume": "11000000"},
+        {"symbol": "HUMAUSDT", "lastPrice": "0.032", "priceChangePercent": "-18.754", "quoteVolume": "15000000"},
+        {"symbol": "RVNUSDC", "lastPrice": "0.015", "priceChangePercent": "-14.252", "quoteVolume": "12000000"},
+        {"symbol": "UNIUSDT", "lastPrice": "6.80", "priceChangePercent": "-10.674", "quoteVolume": "45000000"},
+        {"symbol": "BTCUSDC", "lastPrice": "75878.0", "priceChangePercent": "-5.48", "quoteVolume": "500000000"},
+        {"symbol": "ETHUSDC", "lastPrice": "2247.34", "priceChangePercent": "-7.21", "quoteVolume": "300000000"},
+    ]
+    snap = MarketBreadthCollector.parse_tickers(raw_tickers, now_ts=1_793_904_141.0)
+    assert snap is not None
+    gainer_syms = [s for s, _ in snap.top_gainers]
+    loser_syms = [s for s, _ in snap.top_losers]
+    assert gainer_syms == ["INJUSDT", "TONUSDT", "XTZUSDT"]
+    assert "UUSDT" not in gainer_syms and "XUSDUSDT" not in gainer_syms
+    assert loser_syms == ["HUMAUSDT", "RVNUSDC", "UNIUSDT"]
+    assert "SNXXBUSDT" not in loser_syms and "KORUBUSDT" not in loser_syms and "SNDKBUSDT" not in loser_syms
+
+    # 2. Macro Sentiment Advisor: 15m pullback against strong +$28.71M 1h CVD on BULLISH/ACCUMULATE
+    sa_bull = {
+        "market_bias": "BULLISH",
+        "risk_level": "MODERATE",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 13.0,
+        "summary": "BTC has reclaimed $76,049 as derivatives confirm an accumulation regime.",
+        "key_risks": [],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bull,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.8839,
+                "cvd_15m_usd": -9_790_000.0,
+                "taker_ratio_5m": 0.90,
+                "cvd_5m_usd": -1_890_000.0,
+                "taker_ratio_1h": 1.08,
+                "cvd_1h_usd": 28_710_000.0,
+            }
+        },
+    )
+    assert sa_bull["live_flow_divergence"].startswith("LIVE_15M_PULLBACK_VS_1H_BUY (")
+
+    # 3. Human-interest war filler excluded from [HIGH-SEV] and flagged as off-topic general news
+    alaska_title = "As winter sets in, the Iran war has some Alaskans dreading their heating bills"
+    cruise_title = (
+        "A cruise ship sold as a forever home left 203 residents in Cambodia "
+        "as Iran war fuel costs hit up to $8,000 a cabin"
+    )
+    assert filter_valid_severity_keywords(["war", "iran war"], title=alaska_title) == ()
+    assert filter_valid_severity_keywords(["war", "iran war"], title=cruise_title) == ()
+    assert match_high_severity_keywords(alaska_title) == ()
+    assert match_high_severity_keywords(cruise_title) == ()
+    assert is_off_topic_general_news_title(alaska_title) is True
+    assert is_off_topic_general_news_title(cruise_title) is True
+
+    # 4. SPCX_US_EQ ask-heavy book (ob_imbalance=0.44) + heavy selling (tr=0.3658, cvd_15m=-$150.9M, spot_cvd=-$7.43M)
+    spcx_micro = {
+        "ob_imbalance": 0.44,
+        "bid_depth_usd": 17_485_000.0,
+        "ask_depth_usd": 22_050_000.0,
+        "taker_buy_sell_ratio": 0.3658,
+        "taker_buy_vol_usd": 87_000_000.0,
+        "taker_sell_vol_usd": 237_943_690.0,
+        "cvd_15m_usd": -150_943_690.0,
+        "cvd_5m_usd": -45_000_000.0,
+        "cvd_1h_usd": -210_000_000.0,
+    }
+    enrich_microstructure_cvd(spcx_micro, {"price": 75878.0, "chg_15m_pct": 0.27})
+    assert spcx_micro["cvd_regime"] == "aggressive_market_dumps"
+    assert spcx_micro["spot_cvd_15m_usd"] < 0
+    assert spcx_micro["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
+
+
+
 
 
 

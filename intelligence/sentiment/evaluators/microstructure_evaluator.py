@@ -210,9 +210,15 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
                 and tr_cur <= 0.50
                 and div_reg in ("aggressive_shorting", "long_liquidation", "bearish_distribution")
             )
+            is_ask_heavy_heavy_dumping = (
+                own_ob_imb <= 0.46
+                and tr_cur is not None
+                and tr_cur <= 0.50
+                and div_reg not in ("accumulation", "short_covering", "bullish_absorption")
+            )
             is_bid_absorbing = (
                 (
-                    chg_15m >= 0.05
+                    (chg_15m >= 0.05 and not is_ask_heavy_heavy_dumping)
                     or (
                         chg_15m >= -0.05
                         and (

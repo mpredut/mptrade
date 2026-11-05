@@ -114,6 +114,13 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
                 base_candidate in excluded_bases
                 or base_sym in excluded_bases
                 or (len(base_sym) > 4 and base_sym.endswith(("UP", "DOWN", "BULL", "BEAR")))
+                or (
+                    base_candidate.endswith("USD")
+                    and last_px is not None
+                    and 0.98 <= last_px <= 1.02
+                    and change_pct is not None
+                    and abs(change_pct) <= 0.50
+                )
             ):
                 continue
             if base_sym == "BTC":
@@ -204,6 +211,19 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
             else:
                 rotation_regime = "BALANCED_ROTATION"
 
+        gainer_candidates = (
+            [(s, c) for s, c in mover_pool[::-1] if c > 0]
+            + [(s, c) for s, c in filtered[::-1] if c > 0]
+            + mover_pool[::-1]
+            + filtered[::-1]
+        )
+        loser_candidates = (
+            [(s, c) for s, c in mover_pool if c < 0]
+            + [(s, c) for s, c in filtered if c < 0]
+            + mover_pool
+            + filtered
+        )
+
         return MarketBreadthSnapshot(
             advance_ratio=round(advance_ratio, 4),
             advancing_count=advancing,
@@ -213,8 +233,8 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
             mean_change_pct=round(mean_change, 3),
             dispersion_std=round(dispersion_std, 3),
             regime=regime,
-            top_gainers=_dedup_top_movers(mover_pool[::-1] + filtered[::-1], 3),
-            top_losers=_dedup_top_movers(mover_pool + filtered, 3),
+            top_gainers=_dedup_top_movers(gainer_candidates, 3),
+            top_losers=_dedup_top_movers(loser_candidates, 3),
             ts=now,
             btc_price=btc_px,
             btc_chg_24h_pct=btc_chg,

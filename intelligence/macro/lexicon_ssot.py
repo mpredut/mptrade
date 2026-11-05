@@ -53,6 +53,12 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
     "primary", "republican", "republicans", "vance", "voter", "voters",
 })
 
+_HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
+    "alaska", "alaskan", "alaskans", "bills", "cabin", "cabins", "cambodia",
+    "cruise", "cruises", "dreading", "forever", "heating", "passengers",
+    "residents", "tourist", "tourists", "vacation",
+})
+
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
     "bidding", "browser", "burger", "burgers", "console", "coupon", "coupons",
     "culture", "discount", "discounts", "food", "mcdonald", "mcdonalds", "menu",
@@ -260,7 +266,9 @@ def _is_excluded_non_crisis_attack_keyword(
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
         return True
     if kw_words and kw_words <= {"war", "wars", "conflict", "escalation", "iran", "israel", "ukraine", "russia", "gaza", "middle", "east"}:
-        if (combined_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (combined_words & kinetic_only):
+        if (combined_words & (_PARTISAN_ELECTION_CONTEXT_WORDS | _HUMAN_INTEREST_WAR_FILLER_WORDS)) and not (
+            combined_words & (kinetic_only | _BROAD_MARKET_INDEX_CONTEXT_WORDS)
+        ):
             return True
         if (
             combined_words
@@ -843,6 +851,7 @@ _GENERIC_HEADLINE_OVERLAP_STEMS: frozenset[str] = frozenset({
 
 _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
     _COMMERCIAL_METAPHOR_WAR_WORDS
+    | _HUMAN_INTEREST_WAR_FILLER_WORDS
     | frozenset({
         "blue", "cards", "celebrity", "cereal", "concert", "dylan", "farmers",
         "festival", "governor", "jailed", "mamdani", "match", "mayor", "movie",
