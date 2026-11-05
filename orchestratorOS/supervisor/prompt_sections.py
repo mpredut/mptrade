@@ -1524,8 +1524,15 @@ def _format_portfolio_section(
                     if not isinstance(ag_d, dict):
                         active_ag[ag_sym] = ag_d
                         continue
+                    _ag_hist_keys = {
+                        "terminal_orders",
+                        "completed_tiers",
+                        "attempts_by_tier",
+                        "spent_quote_by_tier",
+                        "last_refusal",
+                    }
                     filt_d = {
-                        sk: sv
+                        sk: ({k: v for k, v in sv.items() if k not in _ag_hist_keys} if isinstance(sv, dict) else sv)
                         for sk, sv in ag_d.items()
                         if not (
                             isinstance(sv, dict)
@@ -1535,10 +1542,7 @@ def _format_portfolio_section(
                                 or (
                                     not sv.get("pending")
                                     and not sv.get("open_orders")
-                                    and any(
-                                        k in sv
-                                        for k in ("completed_tiers", "terminal_orders", "attempts_by_tier", "last_refusal")
-                                    )
+                                    and any(k in sv for k in _ag_hist_keys)
                                 )
                             )
                         )
