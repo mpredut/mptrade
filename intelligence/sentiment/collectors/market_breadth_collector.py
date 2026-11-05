@@ -82,6 +82,15 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
         quote_suffixes = get_breadth_quote_suffixes()
         excluded_bases = set(get_breadth_excluded_bases())
+        all_upper_symbols: set[str] = (
+            {
+                t["symbol"].strip().upper()
+                for t in tickers
+                if isinstance(t, dict) and isinstance(t.get("symbol"), str)
+            }
+            if len(tickers) >= 100
+            else set()
+        )
         rows: List[Tuple[str, float, float]] = []
         btc_px: Optional[float] = None
         btc_chg: Optional[float] = None
@@ -110,9 +119,19 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
             matching_quote = next((q for q in quote_suffixes if symbol.endswith(q)), "")
             base_candidate = symbol[:-len(matching_quote)] if matching_quote else symbol
             base_sym = canonical_base_asset(base_candidate) or canonical_base_asset(symbol) or base_candidate
+            is_unpaired_tokenized_stock_b = (
+                bool(all_upper_symbols)
+                and len(base_candidate) >= 3
+                and base_candidate.endswith("B")
+                and not any(
+                    f"{base_candidate}{q}" in all_upper_symbols
+                    for q in ("USDC", "BTC", "ETH", "BNB", "FDUSD", "TRY", "EUR")
+                )
+            )
             if (
                 base_candidate in excluded_bases
                 or base_sym in excluded_bases
+                or is_unpaired_tokenized_stock_b
                 or (len(base_sym) > 4 and base_sym.endswith(("UP", "DOWN", "BULL", "BEAR")))
                 or (
                     base_candidate.endswith("USD")
