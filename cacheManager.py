@@ -1988,6 +1988,8 @@ class CacheManagerInterface(ABC):
                         sync_complete = False
                         if self._should_poll():
                             sync_complete = self.query_remote_and_update_cache()
+                        else:
+                            self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
                         self._persist_periodic_state(sync_complete)
                         # Periodically reconcile memory and disk.
                         if (time.time() - last_resync) > self.RESYNC_INTERVAL_SEC:
