@@ -226,12 +226,10 @@ def compute_volume_profile_metrics(
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None
         for px_f, vol_w in raw_pairs:
-            if vol_w <= 0.0:
-                vol_w = (
-                    0.0
-                    if has_real_vol
-                    else (1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0)
-                )
+            if not has_real_vol:
+                vol_w = 1.0 + min(5.0, (abs(px_f - prev_px) / prev_px) * 1000.0) if prev_px else 1.0
+            elif vol_w <= 0.0:
+                vol_w = 0.0
             prev_px = px_f
             samples.append((px_f, vol_w))
 
