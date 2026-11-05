@@ -4950,6 +4950,88 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     enrich_24h_and_microstructure(str(cdir_b86), str(cdir_b86), pt_b86_b, {}, {}, {}, now_ts=(base_eq_ms / 1000.0) + 900.0)
     assert pt_b86_a["NVDA_US_EQ"]["slope_15m"] == pt_b86_b["NVDA_US_EQ"]["slope_15m"]
 
+    # Bug 87: harvest_log_anomalies_from_dirs suppresses recovered rsync errors in sync_wsl_cache.log
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    ldir_b87 = tmp_path / "logs_b87"
+    ldir_b87.mkdir(exist_ok=True)
+    t_err_87 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))
+    t_ok_87 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 600))
+    (ldir_b87 / "sync_wsl_cache.log").write_text(
+        f"[{t_err_87}] [rsync_cachedb] Syncing prod:/home/predut/mptrade/cachedb/ -> /home/mariusp/mptrade/cachedb/\n"
+        f"rsync error: unexplained error (code 255) at io.c(232) [Receiver=3.2.7]\n"
+        f"[{t_err_87}] [rsync_cachedb] ERROR: rsync (prod:/home/predut/mptrade/cachedb/ -> /home/mariusp/mptrade/cachedb/) failed with code 255\n"
+        f"[{t_ok_87}] [rsync_cachedb] Syncing prod:/home/predut/mptrade/cachedb/ -> /home/mariusp/mptrade/cachedb/\n"
+        f"sent 2,922 bytes  received 16,668,782 bytes  952,668.80 bytes/sec\n"
+        f"total size is 2,340,399,369  speedup is 140.38\n",
+        encoding="utf-8",
+    )
+    anom_b87 = harvest_log_anomalies_from_dirs([str(ldir_b87)], lookback_hours=4.0)
+    assert anom_b87.error_count == 0
+    assert anom_b87.persistent_errors == []
+
+    # Bug 88: reconcile_venue_cycles_with_recent_orders updates last_exit_kind='REDUCE' and dca_buys=2 on HYPEUSD
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+
+    kr_cyc_b88 = {
+        "HYPEUSD": {
+            "qty": 6.492657,
+            "cost_usd": 556.83,
+            "avg_cost_px": 85.762381,
+            "entry_price": 91.209992,
+            "last_buy_price": 84.0,
+            "last_sell_price": 93.299997,
+            "last_exit_kind": "TP",
+            "dca_buys": 1,
+            "_entry_ts_ms": 1_793_124_116_610,
+            "_last_sell_ts_ms": 1_793_368_889_035,
+        }
+    }
+    v_ro_b88 = {
+        "kraken": {
+            "HYPEUSD": {
+                "last_sell": {"price": 87.120002, "qty": 2.295157, "ts_ms": 1_793_721_326_834, "actor": "AI"},
+                "recent_buys": [
+                    {"price": 91.209992, "qty": 2.294924, "ts_ms": 1_793_666_393_168, "actor": "BOT"},
+                    {"price": 84.0, "qty": 5.952381, "ts_ms": 1_793_761_201_845, "actor": "BOT"},
+                    {"price": 82.5, "qty": 1.81818, "ts_ms": 1_793_781_037_619, "actor": "AI"},
+                ],
+                "active_avg_buy_px": 85.158364,
+                "active_cycle_rem_qty": 8.308042,
+                "lifo_realized_pnl_usd": -9.39,
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        kr_cyc_b88,
+        {},
+        {},
+        v_ro_b88,
+        {("kraken", "HYPEUSD"): 8.310839},
+        {"HYPEUSD": {"price": 83.75}},
+    )
+    assert kr_cyc_b88["HYPEUSD"]["last_sell_price"] == 87.120002
+    assert kr_cyc_b88["HYPEUSD"]["last_exit_kind"] == "REDUCE"
+    assert kr_cyc_b88["HYPEUSD"]["dca_buys"] == 2
+
+    # Bug 89: extract_symbol_recent_fills preserves lifo_realized_pnl_usd across core-inventory partial sells followed by intraday scale-in BUY
+    t0_b89 = 1_793_722_000_000
+    fills_b89 = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 7.98, "qty": 25.062657, "ts_ms": t0_b89},
+            {"side": "BUY", "price": 7.46, "qty": 53.654952, "ts_ms": t0_b89 + 3_600_000},
+            {"side": "SELL", "price": 7.57, "qty": 72.990686, "ts_ms": t0_b89 + 7_200_000},
+            {"side": "SELL", "price": 7.57, "qty": 72.990686, "ts_ms": t0_b89 + 7_205_000},
+            {"side": "BUY", "price": 7.48, "qty": 47.619048, "ts_ms": t0_b89 + 8_600_000},
+        ]
+    )
+    assert fills_b89 is not None
+    assert fills_b89["lifo_realized_pnl_usd"] == -4.37
+
+
 
 
 

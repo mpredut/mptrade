@@ -363,6 +363,8 @@ def extract_symbol_recent_fills(
     open_lots: list[Dict[str, Any]] = []
     lifo_realized_pnl_usd = 0.0
     lot_seq = 0
+    last_sell_ts_ms = 0
+    last_exit_oversold = False
     for o in chron:
         side_o = extract_order_side(o)
         p_f, q_f, ts_raw = round_opt_px(extract_order_price(o, default=None), 6), extract_executed_qty(o, default=None), extract_timestamp_ms(o, default=None)
@@ -381,7 +383,17 @@ def extract_symbol_recent_fills(
             if q_f is not None and p_f is not None and q_f > 0.0 and p_f > 0.0:
                 if cost_qty <= 1e-12:
                     open_lots.clear()
-                    lifo_realized_pnl_usd = 0.0
+                    keep_oversold_swing_pnl = (
+                        last_exit_oversold
+                        and (
+                            last_sell_ts_ms <= 0
+                            or not ts_raw
+                            or (int(ts_raw) - last_sell_ts_ms) <= 72 * 3600 * 1000
+                        )
+                    )
+                    if not keep_oversold_swing_pnl:
+                        lifo_realized_pnl_usd = 0.0
+                    last_exit_oversold = False
                 new_cost_qty = cost_qty + q_f
                 active_avg = ((cost_qty * active_avg) + (q_f * p_f)) / new_cost_qty if new_cost_qty > 0 else 0.0
                 cost_qty = new_cost_qty
@@ -400,7 +412,11 @@ def extract_symbol_recent_fills(
             sells_fmt.append(item_d)
             tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None and q_f > 0.0:
+                prev_cost_qty = cost_qty
                 is_full_exit = q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12
+                last_exit_oversold = bool(is_full_exit and prev_cost_qty > 1e-12 and q_f > prev_cost_qty * 1.05)
+                if ts_raw:
+                    last_sell_ts_ms = max(last_sell_ts_ms, int(ts_raw))
                 cost_qty, active_avg = (0.0, 0.0) if is_full_exit else (cost_qty - q_f, active_avg)
                 in_active_swing_window = (
                     latest_fill_ts_ms <= 0
@@ -680,7 +696,9 @@ def reconcile_venue_cycles_with_recent_orders(
                 if ls_px > 0:
                     cyc["last_sell_price"] = round(ls_px, avg_dec)
                     _sync_exit_kind(cyc, ls_px, cyc_qty_cur)
-                if len(buys_after) >= 2 and not cyc.get("dca_buys"):
+                if buys_after and buys_before:
+                    cyc["dca_buys"] = max(int(safe_nonneg_float(cyc.get("dca_buys"), default=0) or 0), len(buys_after))
+                elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
                     cyc["dca_buys"] = len(buys_after) - 1
                 continue
             if not entry_ts_ms or cyc.get("resting_orders"):
@@ -748,6 +766,19 @@ def reconcile_venue_cycles_with_recent_orders(
                 if not has_non_dust_wallet and not buys_after:
                     cyc.pop("pos_peak", None)
                     cyc.pop("dd_from_peak_pct", None)
+            elif (
+                buys_after
+                and cyc_qty_cur > 1e-8
+                and ls_ts_ms > 0.0
+                and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+            ):
+                if ls_px > 0:
+                    cyc["last_sell_price"] = round(ls_px, avg_dec)
+                    _sync_exit_kind(cyc, ls_px, max(cyc_qty_cur, live_held or 0.0, rem_q_ro))
+                if buys_before:
+                    cyc["dca_buys"] = max(int(safe_nonneg_float(cyc.get("dca_buys"), default=0) or 0), len(buys_after))
+                elif len(buys_after) >= 2 and not cyc.get("dca_buys"):
+                    cyc["dca_buys"] = len(buys_after) - 1
     return cyc_sell_ts_map
 
 
