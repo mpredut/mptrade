@@ -6406,6 +6406,7 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
     prices_and_trends = {
         "TAOUSD": {"price": 234.9376, "high_24h": 240.1108, "low_24h": 220.502},
         "HYPEUSDC": {"price": 83.5255, "high_24h": 88.7365, "low_24h": 83.400},
+        "NVDA_US_EQ": {"price": 198.41, "high_24h": 210.7, "low_24h": 198.41},
     }
     venue_ro = {
         "kraken": {
@@ -6428,9 +6429,22 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
                 ],
             }
         },
+        "t212": {
+            "NVDA_US_EQ": {
+                "last_action_side": "BUY",
+                "active_avg_buy_px": 205.8293,
+                "last_buy": {"price": 205.65, "qty": 0.38, "ts_ms": recent_sell_ts},
+                "last_sell": {"price": 207.9, "qty": 0.93, "ts_ms": old_buy_ts},
+                "open_lots": [
+                    {"qty": 0.03, "entry_px": 207.93, "ts_ms": old_buy_ts},
+                    {"qty": 0.38, "entry_px": 205.65, "ts_ms": recent_sell_ts},
+                ],
+            }
+        },
     }
     krk_cycles = {"TAOUSD": {"qty": 3.7024, "avg_cost_px": 235.741094, "pos_peak": None}}
     hl_cycles = {"HYPEUSDC": {"qty": 15.5746, "avg_cost_px": 85.658865, "pos_peak": None}}
+    t212_cycles = {"NVDA_US_EQ": {"qty": 0.41, "avg_cost_px": 205.8293, "entry_price": 207.9271, "pos_peak": None}}
     enrich_positions_with_orders_and_cycles(
         positions,
         prices_and_trends,
@@ -6439,7 +6453,7 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
         {},
         krk_cycles,
         hl_cycles,
-        {},
+        t212_cycles,
         {},
     )
     assert positions[0]["trailing_peak"] == 240.1108
@@ -6448,6 +6462,8 @@ def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp
     assert positions[1]["trailing_peak"] == 88.7365
     assert hl_cycles["HYPEUSDC"]["pos_peak"] == 88.7365
     assert positions[1]["dd_from_peak_pct"] < 0.0
+    assert t212_cycles["NVDA_US_EQ"]["pos_peak"] == 210.7
+    assert t212_cycles["NVDA_US_EQ"]["dd_from_peak_pct"] == -5.83
 
     # 2. Syndicated partisan rewrites sharing >= 3 specific entity stems and >= 0.40 overlap are deduplicated
     assert headlines_are_semantic_duplicates(

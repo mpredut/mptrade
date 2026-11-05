@@ -1148,6 +1148,42 @@ def enrich_positions_with_orders_and_cycles(
             _populate_cycle_fallback_recent_order(
                 c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )
+            c_px = resolve_symbol_price(c_sym_u, prices_and_trends)
+            if c_px > 0.0:
+                c_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
+                c_pk = safe_pos_float(cyc.get("pos_peak"), default=None)
+                c_pk_missing_or_unwarmed = c_pk is None or (
+                    c_avg is not None and abs(c_pk - c_avg) <= max(1e-6, max(c_pk, c_avg) * 1e-5)
+                )
+                if c_pk_missing_or_unwarmed:
+                    c_lot_ts = [
+                        t for x in ((ro.get("open_lots") or ro.get("recent_buys") or []) if isinstance(ro, dict) else ())
+                        if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
+                    ]
+                    if not c_lot_ts and isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict):
+                        if (lb_t := int(safe_pos_float(ro["last_buy"].get("ts_ms"), default=0) or 0)) > 0:
+                            c_lot_ts.append(lb_t)
+                    oldest_c_ts = min(c_lot_ts) if c_lot_ts else 0
+                    c_age_ms = (int(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
+                    if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
+                        pt_c = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(prices_and_trends, cand)), dict)), None)
+                        hi_24h_c = safe_pos_float(pt_c.get("high_24h") if isinstance(pt_c, dict) else None, default=0.0) or 0.0
+                        ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
+                        ls_c_ts = int(safe_pos_float(ls_c_d.get("ts_ms"), default=0) or 0)
+                        ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
+                        if hi_24h_c > 0.0 and not _prices_diverged(c_px, hi_24h_c):
+                            c_pk = max(
+                                hi_24h_c,
+                                ls_c_px,
+                                c_px,
+                                c_pk or 0.0,
+                                c_avg or 0.0,
+                                safe_pos_float(cyc.get("entry_price"), default=0.0) or 0.0,
+                            )
+                if c_pk is not None and c_pk > 0.0:
+                    eff_c_pk = max(c_pk, c_px)
+                    cyc["pos_peak"] = round(eff_c_pk, 6)
+                    cyc["dd_from_peak_pct"] = pct_delta(c_px, eff_c_pk)
 
 
 __all__ = [
