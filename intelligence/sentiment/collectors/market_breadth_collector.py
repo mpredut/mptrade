@@ -6,6 +6,7 @@ import logging
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
+from cachepaths import canonical_base_asset
 from intelligence.macro_sentiment_ssot import (
     CachedHttpJsonCollector,
     fetch_public_json,
@@ -130,6 +131,20 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         filtered = [(s, c) for s, c, _ in rows]
         top_pool = [(s, c) for s, c, qv in rows if qv >= top_mover_min_vol]
         mover_pool = top_pool if len(top_pool) >= 3 else filtered
+
+        def _dedup_top_movers(pairs: List[Tuple[str, float]], limit: int = 3) -> Tuple[Tuple[str, float], ...]:
+            out: List[Tuple[str, float]] = []
+            seen_bases: set[str] = set()
+            for sym_m, chg_m in pairs:
+                base_m = canonical_base_asset(sym_m) or sym_m
+                if base_m in seen_bases:
+                    continue
+                seen_bases.add(base_m)
+                out.append((sym_m, chg_m))
+                if len(out) >= limit:
+                    break
+            return tuple(out)
+
         changes = [c for _, c, _ in rows]
         advancing = sum(1 for c in changes if c > 0)
         declining = sum(1 for c in changes if c < 0)
@@ -187,8 +202,8 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
             mean_change_pct=round(mean_change, 3),
             dispersion_std=round(dispersion_std, 3),
             regime=regime,
-            top_gainers=tuple(mover_pool[-3:][::-1]),
-            top_losers=tuple(mover_pool[:3]),
+            top_gainers=_dedup_top_movers(mover_pool[::-1] + filtered[::-1], 3),
+            top_losers=_dedup_top_movers(mover_pool + filtered, 3),
             ts=now,
             btc_price=btc_px,
             btc_chg_24h_pct=btc_chg,

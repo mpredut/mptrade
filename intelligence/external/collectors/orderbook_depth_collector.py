@@ -174,26 +174,39 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
                 hl_coin = _extract_base_asset(canon_sym)
                 hl_book_url = f"https://api.hyperliquid.xyz/info?type=l2Book&coin={hl_coin}" if hl_coin else ""
                 venue = _resolve_configured_venue(canon_sym)
+                multi_venue = _is_multi_venue_base(canon_sym)
                 if venue == "kraken":
                     base_urls = (
-                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                        *spot_urls,
-                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                        *((hl_book_url,) if hl_book_url else ()),
+                        (f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",)
+                        if multi_venue
+                        else (
+                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                            *spot_urls,
+                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                            *((hl_book_url,) if hl_book_url else ()),
+                        )
                     )
                 elif venue == "hyperliquid" and hl_book_url:
                     base_urls = (
-                        hl_book_url,
-                        *spot_urls,
-                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                        (hl_book_url,)
+                        if multi_venue
+                        else (
+                            hl_book_url,
+                            *spot_urls,
+                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                        )
                     )
                 else:
                     base_urls = (
-                        *spot_urls,
-                        f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
-                        f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
-                        *((hl_book_url,) if hl_book_url else ()),
+                        (*spot_urls, f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500")
+                        if multi_venue
+                        else (
+                            *spot_urls,
+                            f"https://api.kraken.com/0/public/Depth?pair={kraken_pair}&count=200",
+                            f"https://fapi.binance.com/fapi/v1/depth?symbol={lookup_sym}&limit=500",
+                            *((hl_book_url,) if hl_book_url else ()),
+                        )
                     )
             pref_url = self._preferred_url.get(symbol)
             urls = (

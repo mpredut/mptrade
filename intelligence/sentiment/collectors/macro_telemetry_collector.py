@@ -311,10 +311,21 @@ def harvest_macro_and_news_sensors(
             if attr == "market_breadth":
                 for mover_key in ("top_gainers", "top_losers"):
                     if isinstance(raw_movers := enriched.get(mover_key), list):
-                        enriched[mover_key] = [
-                            m for m in raw_movers
-                            if isinstance(m, (list, tuple)) and len(m) >= 2 and isinstance(m[0], str) and m[0].strip().isascii() and m[0].strip().isalnum()
-                        ]
+                        dedup_movers = []
+                        seen_mb_bases: set[str] = set()
+                        for m in raw_movers:
+                            if (
+                                isinstance(m, (list, tuple))
+                                and len(m) >= 2
+                                and isinstance(m[0], str)
+                                and m[0].strip().isascii()
+                                and m[0].strip().isalnum()
+                            ):
+                                mb_base = canonical_base_asset(m[0].strip()) or m[0].strip().upper()
+                                if mb_base not in seen_mb_bases:
+                                    seen_mb_bases.add(mb_base)
+                                    dedup_movers.append(m)
+                        enriched[mover_key] = dedup_movers
             if attr == "macro_benchmarks":
                 if isinstance(mb_items := enriched.get("items"), dict):
                     enriched_items: Dict[str, Any] = {}

@@ -534,7 +534,7 @@ def build_cross_market_context(
     _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}
 
     def _round_slope_sig(val: float) -> float:
-        return float(f"{val:.2e}") if 0.0 < abs(val) < 1e-4 else round(val, 6)
+        return (float(f"{val:.2e}") if 0.0 < abs(val) < 1e-4 else round(val, 6)) + 0.0
 
     crypto_bellwethers: Dict[str, Any] = {}
     for b_canon, (sym, pinfo) in sorted(by_base.items()):

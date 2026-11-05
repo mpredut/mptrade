@@ -5769,3 +5769,99 @@ def test_stale_major_swing_low_cleanup_and_guard_anomaly_scanner(tmp_path):
     assert saved_vb["pos:t212:NVDA_US_EQ"]["ts"] == 1793844937.278
 
 
+def test_bugs_96_to_98_breadth_base_dedup_multi_venue_orderbook_isolation_and_slope_zero_sign(tmp_path, monkeypatch):
+    """Verify:
+    - Bug 96: MarketBreadthCollector.parse_tickers and harvest_macro_and_news_sensors deduplicate top_gainers and top_losers by canonical base asset (e.g. ZECUSDC + ZECUSDT do not occupy 2 of 3 top-gainer slots)
+    - Bug 97: OrderbookDepthCollector.fetch isolates multi-venue symbols (TAOUSDC on Binance vs TAOUSD on Kraken; HYPEUSDC on Hyperliquid vs HYPEUSD on Kraken) so transient primary-venue timeouts fall back to _fallback_stale instead of polluting orderbook_depth_<SYM>.json or _preferred_url with a sibling venue's book
+    - Bug 98: build_cross_market_context normalizes -0.0 slope values to +0.0
+    """
+    import json
+    import math
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    # 1. Bug 96: MarketBreadthCollector.parse_tickers deduplicates ZECUSDC and ZECUSDT in top_gainers
+    tickers = [
+        {"symbol": "INJUSDT", "lastPrice": "25.0", "priceChangePercent": "12.994", "quoteVolume": "25000000"},
+        {"symbol": "ZECUSDC", "lastPrice": "45.0", "priceChangePercent": "9.939", "quoteVolume": "15000000"},
+        {"symbol": "ZECUSDT", "lastPrice": "44.9", "priceChangePercent": "9.833", "quoteVolume": "35000000"},
+        {"symbol": "SOLUSDT", "lastPrice": "180.0", "priceChangePercent": "7.500", "quoteVolume": "80000000"},
+        {"symbol": "BTCUSDC", "lastPrice": "80600.0", "priceChangePercent": "5.100", "quoteVolume": "500000000"},
+        {"symbol": "HUMAUSDT", "lastPrice": "0.05", "priceChangePercent": "-18.098", "quoteVolume": "20000000"},
+        {"symbol": "HUMAUSDC", "lastPrice": "0.05", "priceChangePercent": "-17.950", "quoteVolume": "15000000"},
+        {"symbol": "TRUMPUSDT", "lastPrice": "8.5", "priceChangePercent": "-17.784", "quoteVolume": "40000000"},
+        {"symbol": "BMTUSDT", "lastPrice": "0.12", "priceChangePercent": "-9.710", "quoteVolume": "18000000"},
+    ]
+    mb_snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=5_000_000.0, now_ts=1793845000.0)
+    assert mb_snap is not None
+    assert [g[0] for g in mb_snap.top_gainers] == ["INJUSDT", "ZECUSDC", "SOLUSDT"]
+    assert [l[0] for l in mb_snap.top_losers] == ["HUMAUSDT", "TRUMPUSDT", "BMTUSDT"]
+
+    # Also verify harvest_macro_and_news_sensors deduplicates cached market_breadth_collect.json top_gainers/top_losers
+    macro_dir = tmp_path / "macro"
+    macro_dir.mkdir(parents=True, exist_ok=True)
+    (macro_dir / "market_breadth_collect.json").write_text(
+        json.dumps(
+            {
+                "advance_ratio": 0.7634,
+                "regime": "BULLISH_BREADTH",
+                "top_gainers": [["INJUSDT", 12.994], ["ZECUSDC", 9.939], ["ZECUSDT", 9.833], ["SOLUSDT", 7.5]],
+                "top_losers": [["HUMAUSDT", -18.098], ["HUMAUSDC", -17.95], ["TRUMPUSDT", -17.784]],
+                "ts": 1793845000.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    macro_sensors, _ = harvest_macro_and_news_sensors(str(tmp_path), 1793845060.0)
+    mb_cached = macro_sensors["market_breadth"]
+    assert [m[0] for m in mb_cached["top_gainers"]] == ["INJUSDT", "ZECUSDC", "SOLUSDT"]
+    assert [m[0] for m in mb_cached["top_losers"]] == ["HUMAUSDT", "TRUMPUSDT"]
+
+    # 2. Bug 97: OrderbookDepthCollector.fetch does not cross-pollute TAOUSDC with Kraken TAOUSD on transient Binance failure
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=10.0, disk_ttl_sec=60.0)
+    ob_col.record_snapshot(
+        OrderbookSnapshot(
+            symbol="TAOUSDC",
+            mid_price=235.75,
+            bid_depth_usd=169765.0,
+            ask_depth_usd=101824.0,
+            imbalance_ratio=0.625,
+            largest_bid_wall_usd=30224.0,
+            largest_bid_wall_price=235.3,
+            largest_ask_wall_usd=18009.0,
+            largest_ask_wall_price=236.5,
+            ts=1000.0,
+            best_bid=235.7,
+            best_ask=235.8,
+            spread_bps=4.24,
+        ),
+        save_to_disk=True,
+    )
+    called_urls = []
+
+    def _fake_fetch_binance_down(url, *args, **kwargs):
+        called_urls.append(url)
+        if "binance.com" in url:
+            raise RuntimeError("transient binance timeout")
+        return {"result": {"TAOUSD": {"bids": [["235.8", "3000.0"]], "asks": [["235.9", "1500.0"]]}}}
+
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", _fake_fetch_binance_down)
+    snap_tao = ob_col.fetch("TAOUSDC", allow_network=True, now=1100.0)
+    assert snap_tao is not None
+    assert snap_tao.bid_depth_usd == 169765.0
+    assert all("kraken.com" not in u and "hyperliquid.xyz" not in u for u in called_urls)
+    assert "TAOUSDC" not in ob_col._preferred_url
+
+    # 3. Bug 98: build_cross_market_context normalizes -0.0 slope values to +0.0
+    cm_ctx = build_cross_market_context(
+        {"ARBUSDC": {"price": 0.16335, "slope_90s": -0.0, "kalman_vel": -0.0}},
+        {},
+    )
+    arb_cb = cm_ctx["crypto_bellwethers"]["ARB"]
+    assert arb_cb["slope_90s"] == 0.0
+    assert math.copysign(1.0, arb_cb["slope_90s"]) == 1.0
+    assert math.copysign(1.0, arb_cb["kalman_vel"]) == 1.0
+
+
