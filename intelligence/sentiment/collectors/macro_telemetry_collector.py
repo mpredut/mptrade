@@ -436,31 +436,14 @@ def harvest_macro_and_news_sensors(
                         else:
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
-                lead_recomputed = compute_futures_premarket_lead(enriched)
-                prev_lead_sig = (enriched.get("futures_lead_pct"), enriched.get("futures_lead_regime"))
-                for lk in ("futures_lead_pct", "futures_lead_regime", "nq_qqq_lead_pct", "es_spy_lead_pct"):
-                    enriched.pop(lk, None)
-                enriched.update(lead_recomputed)
-                lead_changed = prev_lead_sig != (enriched.get("futures_lead_pct"), enriched.get("futures_lead_regime"))
-                if (
-                    stripped_stale_intraday
-                    or lead_changed
-                    or str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL")
-                ):
-                    enriched["equity_regime"] = compute_equity_macro_regime(enriched)
-                btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
-                if (
-                    stripped_stale_intraday
-                    or lead_changed
-                    or str(enriched.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes()
-                    or btc_chg_24h_live is not None
-                ):
-                    enriched["cross_asset_regime"] = compute_cross_asset_regime(
-                        enriched,
-                        btc_chg_24h_pct=btc_chg_24h_live,
-                    )
-                if summary_s := format_macro_benchmarks_summary_line(enriched):
-                    enriched["summary_line"] = summary_s
+                from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
+
+                enriched = enrich_macro_benchmarks_live_state(
+                    enriched,
+                    cache_dir=cache_dir,
+                    force_recompute=stripped_stale_intraday,
+                    update_summary_line=True,
+                ) or enriched
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
         from intelligence.macro_sentiment_ssot import resolve_derived_telemetry_intervals

@@ -8239,6 +8239,8 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
         "ob_mid_price": 1.21,
         "best_bid": 1.205,
         "best_ask": 1.215,
+        "bid_wall_px": 1.21,
+        "ask_wall_px": 1.21,
         "spread_bps": 82.6,
         "bid_depth_usd": 1197.0,
         "ask_depth_usd": 1401.0,
@@ -8250,6 +8252,8 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     enrich_microstructure_cvd(rgnt_minfo, {"price": 1.21})
     assert rgnt_minfo["depth_1pct_ask_usd"] >= 934.0
     assert rgnt_minfo["est_slip_2k_bps"] < 200.0
+    assert rgnt_minfo["bid_wall_px"] == 1.208
+    assert rgnt_minfo["ask_wall_px"] == 1.212
 
     camper_title = "I’m 65 and worth more than $5.6 million. Can I buy a $200,000 camper even though the price feels ‘crazy high’?"
     assert is_excluded_reference_news_item(camper_title) is True

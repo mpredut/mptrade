@@ -810,9 +810,15 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
-    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
-    data, _ = read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
+def enrich_macro_benchmarks_live_state(
+    data: Optional[Dict[str, Any]],
+    *,
+    cache_dir: Optional[str] = None,
+    btc_chg_24h_pct: Optional[float] = None,
+    force_recompute: bool = False,
+    update_summary_line: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Enrich a macro benchmarks dict with live futures lead, equity regime, and cross-asset regime."""
     if not isinstance(data, dict) or not data:
         return None
     out = dict(data)
@@ -822,6 +828,7 @@ def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
             compute_cross_asset_regime,
             compute_equity_macro_regime,
             compute_futures_premarket_lead,
+            format_macro_benchmarks_summary_line,
         )
 
         lead_recomputed = compute_futures_premarket_lead(out)
@@ -830,18 +837,33 @@ def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
             out.pop(lk, None)
         out.update(lead_recomputed)
         lead_changed = prev_lead_sig != (out.get("futures_lead_pct"), out.get("futures_lead_regime"))
-        if lead_changed or str(out.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
-            out["equity_regime"] = compute_equity_macro_regime(out)
-        btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
         if (
-            lead_changed
-            or str(out.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes()
-            or (btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6)
+            force_recompute
+            or lead_changed
+            or str(out.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL")
         ):
-            out["cross_asset_regime"] = compute_cross_asset_regime(out, btc_chg_24h_pct=btc_chg_24h_live)
+            out["equity_regime"] = compute_equity_macro_regime(out)
+        btc_chg = btc_chg_24h_pct
+        if btc_chg is None and cache_dir:
+            btc_chg = resolve_cached_btc_24h_change_pct(cache_dir)
+        if (
+            force_recompute
+            or lead_changed
+            or str(out.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes()
+            or (btc_chg is not None and (update_summary_line or abs(btc_chg) > 1e-6))
+        ):
+            out["cross_asset_regime"] = compute_cross_asset_regime(out, btc_chg_24h_pct=btc_chg)
+        if update_summary_line and (summary_s := format_macro_benchmarks_summary_line(out)):
+            out["summary_line"] = summary_s
     except Exception:
         pass
     return out
+
+
+def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
+    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
+    data, _ = read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
+    return enrich_macro_benchmarks_live_state(data, cache_dir=cache_dir)
 
 
 def lookup_symbol_cache_items(

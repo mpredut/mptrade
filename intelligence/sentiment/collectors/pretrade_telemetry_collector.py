@@ -1196,6 +1196,8 @@ def collect_pretrade_telemetry(
     # 5. Macro Regime, Sentiment Bias, Fear/Greed Index & Geopolitical Threat Shield (Pillars 3 & 4)
     try:
         if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
+            from intelligence.macro_sentiment_ssot import enrich_macro_benchmarks_live_state
+
             btc_chg_24h_live: Optional[float] = None
             if not is_eq_sym and canonical_base_asset(symbol) == "BTC":
                 btc_chg_24h_live = safe_float(m24.get("chg_24h_pct"), default=None)
@@ -1203,9 +1205,7 @@ def collect_pretrade_telemetry(
                 btc_chg_24h_live = safe_float(btc_m24.get("chg_24h_pct"), default=None)
             else:
                 btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cachedb_dir, current_price_items=cur_p_items)
-            if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
-                mb_data = dict(mb_data)
-                mb_data["cross_asset_regime"] = compute_cross_asset_regime(mb_data, btc_chg_24h_pct=btc_chg_24h_live)
+            mb_data = enrich_macro_benchmarks_live_state(mb_data, btc_chg_24h_pct=btc_chg_24h_live) or mb_data
             eq_reg_line = format_equity_macro_regime_line(mb_data)
             if eq_reg_line:
                 telemetry["Equity & Macro Regime"] = eq_reg_line

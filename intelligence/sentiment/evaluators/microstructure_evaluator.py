@@ -108,9 +108,9 @@ def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bo
                 m_info[d1_k] = min_d1
                 m_info.pop("est_slip_2k_bps", None)
                 changed = True
-    tick_eq = max(0.01, round(spot_px * 0.0015, 2))
+    tick_eq = max(0.001 if spot_px < 5.0 else 0.01, round(spot_px * 0.0015, 3 if spot_px < 5.0 else 2))
     if (bw_eq := safe_pos_float(m_info.get("bid_wall_px"), default=None)) is not None and bw_eq >= spot_px:
-        m_info["bid_wall_px"] = max(0.01, round(spot_px - tick_eq, px_dec))
+        m_info["bid_wall_px"] = max(0.001 if spot_px < 5.0 else 0.01, round(spot_px - tick_eq, px_dec))
         changed = True
     if (aw_eq := safe_pos_float(m_info.get("ask_wall_px"), default=None)) is not None and aw_eq <= spot_px:
         m_info["ask_wall_px"] = round(spot_px + tick_eq, px_dec)

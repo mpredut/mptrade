@@ -130,13 +130,13 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         try:
             from cachepaths import resolve_cachedb_filepath
             from intelligence.macro_sentiment_ssot import (
+                enrich_macro_benchmarks_live_state,
                 get_deribit_options_currencies,
                 load_cached_macro_benchmarks,
                 safe_float,
                 safe_pos_float,
             )
             from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
-                compute_cross_asset_regime,
                 format_equity_macro_regime_line,
             )
 
@@ -205,9 +205,11 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     f"bottom_structure_6h={b_struct}{lows_sfx}"
                 )
             if isinstance(eff_mb, dict) and eff_mb:
-                if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
-                    eff_mb = dict(eff_mb)
-                    eff_mb["cross_asset_regime"] = compute_cross_asset_regime(eff_mb, btc_chg_24h_pct=btc_chg_24h_live)
+                eff_mb = enrich_macro_benchmarks_live_state(
+                    eff_mb,
+                    cache_dir=cache_dir,
+                    btc_chg_24h_pct=btc_chg_24h_live,
+                ) or eff_mb
                 eq_macro_line = format_equity_macro_regime_line(eff_mb)
                 if eq_macro_line and eq_macro_line != "NEUTRAL":
                     prompt_context.append(f"- Cross-Asset Macro & Options Surface: {eq_macro_line}")
