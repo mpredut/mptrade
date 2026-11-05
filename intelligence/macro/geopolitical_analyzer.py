@@ -19,6 +19,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_now_ts,
     safe_int,
     safe_nonneg_ts,
+    split_headlines_digest,
 )
 from intelligence.macro.lexicon_ssot import (
     ACUTE_SHOCK_PHRASES,
@@ -149,7 +150,27 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         return _parse_bool_flag(val, False)
 
     @staticmethod
-    def _headline_age_suffix(h: Any, now: float) -> str:
+    def _headline_effective_ts(h: Any, now: float) -> float:
+        ts_val = safe_nonneg_ts(
+            obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+            0.0,
+        )
+        if ts_val <= 0.0:
+            pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
+            ts_val = pub_ts if pub_ts is not None else 0.0
+        if ts_val <= 0.0:
+            raw_age = obj_attr(h, "age_min", None)
+            if raw_age is not None and not isinstance(raw_age, bool):
+                try:
+                    age_f = float(raw_age)
+                    if 0.0 <= age_f <= 2880.0:
+                        ts_val = now - age_f * 60.0
+                except (TypeError, ValueError):
+                    pass
+        return ts_val
+
+    @classmethod
+    def _headline_age_suffix(cls, h: Any, now: float) -> str:
         raw_age = obj_attr(h, "age_min", None)
         if raw_age is not None and not isinstance(raw_age, bool):
             try:
@@ -158,13 +179,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                     return f", age={int(round(age_f))}m"
             except (TypeError, ValueError):
                 pass
-        ts_val = safe_nonneg_ts(
-            obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-            0.0,
-        )
-        if ts_val <= 0.0:
-            pub_ts = NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now)
-            ts_val = pub_ts if pub_ts is not None else 0.0
+        ts_val = cls._headline_effective_ts(h, now)
         if 0.0 < ts_val <= now + 300.0:
             age_m = max(0, int(round(max(0.0, now - ts_val) / 60.0)))
             if age_m <= 2880:
@@ -217,19 +232,28 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
             and has_new_acute_phrase
         )
+        prev_digest_lower = self._last_headlines_digest.lower() if self._last_headlines_digest else ""
+        prev_digest_set = (
+            {p.lower() for p in split_headlines_digest(self._last_headlines_digest)}
+            if self._last_headlines_digest
+            else set()
+        )
+        has_unseen_high_sev = bool(
+            high_sev
+            and self._last_headlines_digest
+            and headline_digest.lower() != prev_digest_lower
+            and any(
+                (t_h := str(obj_attr(h, "title", None) or "").strip())
+                and t_h.lower() not in prev_digest_set
+                for h in high_sev[:12]
+            )
+        )
         all_high_sev_aged_90m = bool(
             high_sev
             and not acute_shock_alert
+            and not has_unseen_high_sev
             and all(
-                0.0
-                < (
-                    safe_nonneg_ts(
-                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-                        0.0,
-                    )
-                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now) or 0.0)
-                )
-                <= now - 5400.0
+                0.0 < self._headline_effective_ts(h, now) <= now - 5400.0
                 for h in high_sev
             )
         )
@@ -286,7 +310,10 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             not force_refresh
             and not acute_shock_alert
             and self._cached_assessment
-            and (not is_stale or (not self._cached_assessment.is_fallback and headline_digest == self._last_headlines_digest))
+            and (
+                not is_stale
+                or (not self._cached_assessment.is_fallback and bool(self._last_headlines_digest) and not has_unseen_high_sev)
+            )
         ):
             return self._cached_assessment
 

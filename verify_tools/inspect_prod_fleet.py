@@ -59,11 +59,11 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
 
 
 def inspect_fleet(json_output: bool = False):
-    raw_balances = ssh_cat(cache_path("venue_balances_state.json"))
+    raw_balances = ssh_cat(cache_path("state/venue_balances_state.json")) or ssh_cat(cache_path("venue_balances_state.json"))
     balances = raw_balances if isinstance(raw_balances, dict) else {}
     raw_topic = ssh_cat(cache_path("system/llm_topic_threads.json")) or ssh_cat(cache_path("llm_topic_threads.json"))
     topic_data = raw_topic if isinstance(raw_topic, dict) else {}
-    raw_orders = ssh_cat(cache_path("cache_order.json"))
+    raw_orders = ssh_cat(cache_path("orders/cache_order.json")) or ssh_cat(cache_path("cache_order.json"))
     orders_data = raw_orders if isinstance(raw_orders, dict) else {}
 
     # 1. Balances & Positions

@@ -708,7 +708,7 @@ def collect_pretrade_telemetry(
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
-            if is_eq_sym and last_alt_pt is not None and not rth_fresh_eq and not eq_post_rth_override:
+            if is_eq_sym and last_alt_pt is not None and not rth_fresh_eq and not eq_px_diverged_05pct:
                 for k_stale_s in (
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",

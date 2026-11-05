@@ -20,6 +20,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     _compute_horizon_range_dict,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
+    recalculate_live_price_geometry,
     round_opt_px as _round_opt_px,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
@@ -377,6 +378,14 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         sib_lbl = ""
         if len(sym_group) > 1:
             sib_parts: List[str] = []
+            backfilled_geom = False
+            geom_anchor_keys = {
+                "poc_px", "val_px", "vah_px",
+                "low_24h", "high_24h", "low_7d", "high_7d",
+                "swing_low_px", "swing_high_px", "major_swing_low_px",
+                "prior_6h_low_px", "recent_1h_low_px", "bottom_structure_6h",
+                "low_15m", "high_15m", "recent_tape_15m",
+            }
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = _parse_finite_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
@@ -396,6 +405,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                             continue
                         if pinfo.get(sk) is None and sv is not None:
                             pinfo[sk] = sv
+                            if sk in geom_anchor_keys:
+                                backfilled_geom = True
                         elif (
                             sk in ("slope_90s", "growth_90s", "trend_90s", "gradient_recent", "gradient_recent_fast")
                             and abs(_parse_finite_float(pinfo.get(sk), 0.0)) < 5e-8
@@ -414,6 +425,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                     sib_parts.append(f"{sib_sym}={_fmt_px(s_px)}{diff_s}")
                 else:
                     sib_parts.append(sib_sym)
+            if backfilled_geom and px_f > 0:
+                recalculate_live_price_geometry(pinfo, px_f)
             if sib_parts:
                 sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
 

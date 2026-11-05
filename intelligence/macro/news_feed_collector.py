@@ -98,7 +98,18 @@ class NewsFeedCollector:
 
     def _cache_dir(self) -> str:
         cdir = os.path.dirname(os.path.abspath(self._effective_history_file()))
-        if os.path.basename(cdir) in ("macro", "sentiment", "telemetry", "external", "system"):
+        if os.path.basename(cdir) in (
+            "macro",
+            "sentiment",
+            "telemetry",
+            "external",
+            "system",
+            "trends",
+            "prices",
+            "orders",
+            "state",
+            "heartbeat",
+        ):
             return os.path.dirname(cdir)
         return cdir
 
@@ -409,7 +420,12 @@ class NewsFeedCollector:
                         self._aggregated_pool.pop(old_norm, None)
                         eff_ts = merged_ts
                     else:
-                        self._aggregated_pool[old_norm] = (merged_ts, old_h)
+                        self._aggregated_pool[old_norm] = (
+                            merged_ts,
+                            replace(old_h, first_seen_ts=float(merged_ts))
+                            if isinstance(old_h, NewsHeadline) and merged_ts > 0.0
+                            else old_h,
+                        )
                         self._seen_first_ts[old_norm] = min(
                             self._seen_first_ts.get(old_norm, merged_ts), merged_ts
                         )
@@ -429,7 +445,12 @@ class NewsFeedCollector:
                 self._seen_first_ts[sem_key] = min(self._seen_first_ts.get(sem_key, merged_ts), merged_ts)
                 self._seen_first_ts[norm] = min(self._seen_first_ts.get(norm, merged_ts), merged_ts)
             else:
-                self._aggregated_pool[norm] = (eff_ts, h_obj)
+                self._aggregated_pool[norm] = (
+                    eff_ts,
+                    replace(h_obj, first_seen_ts=float(eff_ts))
+                    if isinstance(h_obj, NewsHeadline) and eff_ts > 0.0
+                    else h_obj,
+                )
 
     def _aggregate(self, latest_snapshot: NewsFeedSnapshot, now: float) -> NewsFeedSnapshot:
         """Merge latest batch into rolling pool, discover emerging crisis terms, and return aggregated snapshot."""
@@ -449,10 +470,19 @@ class NewsFeedCollector:
                 if not (h_obj and norm):
                     continue
                 pub_ts = self._parse_recent_pub_date_ts(h_obj.pub_date, now)
+                h_fs_ts = normalize_epoch_sec(safe_pos_float(getattr(h_obj, "first_seen_ts", None), -1.0), default=-1.0)
+                if h_fs_ts <= 0.0 or h_fs_ts > now + 600.0:
+                    h_fs_ts = None
                 prev_seen = self._seen_first_ts.get(norm)
-                eff_ts = prev_seen if prev_seen is not None else (pub_ts if pub_ts is not None else now)
+                eff_ts = (
+                    prev_seen
+                    if prev_seen is not None
+                    else (pub_ts if pub_ts is not None else (h_fs_ts if h_fs_ts is not None else now))
+                )
                 if pub_ts is not None and pub_ts < eff_ts:
                     eff_ts = pub_ts
+                if h_fs_ts is not None and h_fs_ts < eff_ts:
+                    eff_ts = h_fs_ts
                 if norm in self._aggregated_pool:
                     old_ts, old_h = self._aggregated_pool[norm]
                     merged_ts, merged_h = self._merge_same_norm_headlines(h_obj, eff_ts, old_h, old_ts)
@@ -507,7 +537,12 @@ class NewsFeedCollector:
                     continue
                 if canon_url:
                     url_to_key[canon_url] = k
-                cleaned_pool[k] = (eff_ts, h_item)
+                cleaned_pool[k] = (
+                    eff_ts,
+                    replace(h_item, first_seen_ts=float(eff_ts))
+                    if isinstance(h_item, NewsHeadline) and eff_ts > 0.0
+                    else h_item,
+                )
         self._aggregated_pool = cleaned_pool
 
         pool_items = [v[1] for v in self._aggregated_pool.values()]
@@ -529,6 +564,7 @@ class NewsFeedCollector:
                             url=getattr(h_item, "url", ""),
                             matched_keywords=merged_kws,
                             is_high_severity=True,
+                            first_seen_ts=float(seen_ts) if seen_ts > 0.0 else None,
                         ),
                     )
 

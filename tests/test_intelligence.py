@@ -5954,3 +5954,131 @@ def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, mon
     assert (s24_spcx[-1][0] - s24_spcx[0][0]) >= 24 * 3600 * 1000
     assert v7_spcx[0] == pytest.approx(143.40)
 
+
+def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes_and_sibling_geometry(
+    tmp_path, monkeypatch
+):
+    import json
+    from intelligence.macro.geopolitical_analyzer import (
+        GeopoliticalThreatAnalyzer,
+        GeopoliticalThreatAssessment,
+    )
+    from intelligence.macro.news_feed_collector import (
+        NewsFeedCollector,
+        NewsFeedSnapshot,
+        NewsHeadline,
+    )
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section
+
+    # 1. NewsFeedCollector._aggregate preserves headline.first_seen_ts when pub_date is empty
+    hist_f = tmp_path / "trends" / "news_feed_collect.json"
+    hist_f.parent.mkdir(parents=True, exist_ok=True)
+    nfc = NewsFeedCollector(history_file=str(hist_f))
+    assert nfc._cache_dir() == str(tmp_path)
+    now_t = 1_700_010_000.0
+    h_aged = NewsHeadline(
+        title="Emergency tariff shock announced by G7",
+        source="Wire",
+        pub_date="",
+        url="https://example.com/g7-tariff",
+        matched_keywords=("tariff",),
+        is_high_severity=True,
+        first_seen_ts=now_t - 7200.0,
+    )
+    snap_agg = nfc._aggregate(
+        NewsFeedSnapshot(
+            headlines=(h_aged,),
+            total_fetched=1,
+            high_severity_count=1,
+            has_critical_shock_keywords=False,
+            ts=now_t,
+        ),
+        now=now_t,
+    )
+    assert len(snap_agg.headlines) == 1
+    assert snap_agg.headlines[0].first_seen_ts == pytest.approx(now_t - 7200.0)
+
+    # 2. GeopoliticalThreatAnalyzer.assess de-escalates >90m old headlines to NORMAL even when an
+    #    older headline expired from the 6h window (strict subset of _last_headlines_digest)
+    state_f = tmp_path / "geopolitical_eval.json"
+    analyzer = GeopoliticalThreatAnalyzer(state_file=str(state_f))
+    analyzer._cached_assessment = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.65,
+        summary="Prior elevated state",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=2,
+        ts=now_t - 2400.0,
+    )
+    analyzer._last_eval_ts = now_t - 2400.0
+    analyzer._last_headlines_digest = (
+        "Emergency tariff shock announced by G7|Older sanctions headline that aged out of 6h pool"
+    )
+    deesc = analyzer.assess(snap_agg, now_ts=now_t)
+    assert deesc.threat_level == "NORMAL"
+    assert deesc.recommended_brake == "NONE"
+
+    # 3. collect_pretrade_telemetry prunes stale 3.7m slope on post-RTH equities even when
+    #    venue_balances_state.json has a <=0.5% price difference (eq_post_rth_override=True, eq_px_diverged_05pct=False)
+    eq_dir = tmp_path / "cachedb_eq89"
+    eq_dir.mkdir(parents=True, exist_ok=True)
+    old_base_ms = 1_700_000_000_000
+    nvda_bars = [[old_base_ms - (30 - i) * 300_000, round(190.0 + i * 0.15, 4), 1000.0] for i in range(31)]
+    (eq_dir / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": nvda_bars}}),
+        encoding="utf-8",
+    )
+    (eq_dir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "NVDA_US_EQ": {
+                        "slope_3_7m": 0.0025,
+                        "slope_15m": 0.0020,
+                        "slope_2_5h": 0.0010,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Last bar is 194.50; set T212 position price to 194.30 (~0.10% diff <= 0.5%)
+    (eq_dir / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:NVDA_US_EQ": {
+                    "symbol": "NVDA_US_EQ",
+                    "free": 1.0,
+                    "price": 194.30,
+                    "ts": (old_base_ms / 1000.0) + 600.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem_small_diff = ptc.collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(eq_dir))
+    assert "3.7m=" not in telem_small_diff.get("Dynamic Multi-Window Slopes", "")
+
+    # 4. _format_market_prices_section recalculates VP/range geometry for primary symbol price
+    #    when poc_px/val_px/vah_px are backfilled from a sibling symbol
+    lines_3a = _format_market_prices_section(
+        {
+            "TAOUSDC": {"price": 410.0, "chg_15m_pct": 0.5, "chg_24h_pct": 2.0},
+            "TAOUSD": {
+                "price": 400.0,
+                "poc_px": 400.0,
+                "val_px": 390.0,
+                "vah_px": 405.0,
+                "poc_dist_pct": 0.0,
+                "vah_dist_pct": -1.23,
+                "val_dist_pct": 2.56,
+                "va_pos_pct": 66.7,
+                "va_regime": "INSIDE_VA_UPPER",
+            },
+        }
+    )
+    joined_3a = "\n".join(lines_3a)
+    assert "POC=400.0[+2.50%]" in joined_3a
+    assert "ABOVE_VAH" in joined_3a
+

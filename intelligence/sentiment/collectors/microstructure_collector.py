@@ -308,7 +308,13 @@ def load_symbol_price_series(
                 ):
                     if sp_rows := _read_arch_file(sp_path, max_b=512 * 1024):
                         sp0, sp1 = _parse_ts_px_row(sp_rows[0]), _parse_ts_px_row(sp_rows[-1])
-                        if sp0 and sp1 and (sp1[0] - sp0[0]) > arch_span_ms:
+                        if (
+                            sp0
+                            and sp1
+                            and (sp1[0] - sp0[0]) > arch_span_ms
+                            and (a0 is None or sp1[0] >= a0[0] - 86400.0 * 1000.0)
+                            and (a1 is None or not _prices_diverged(sp1[1], a1[1]))
+                        ):
                             sparse_7d_pts = sp_rows
                             break
             if arch_span_ms >= 5.0 * 86400.0 * 1000.0 or sparse_7d_pts:
@@ -437,11 +443,16 @@ def load_symbol_price_series(
                 if len(pts_7d_ts) >= 2:
                     arch_7d_span_ms = max(0.0, pts_7d_ts[-1] - pts_7d_ts[0])
                 if sparse_7d_pts and (sp_last := _parse_ts_px_row(sparse_7d_pts[-1])) is not None:
-                    sp_cutoff_7d = sp_last[0] - 7.0 * 86400.0 * 1000.0
-                    sp_pts = [pt for row in sparse_7d_pts if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
+                    merged_sp = (
+                        _prepend_older_non_diverged_points(archive_pts, sparse_7d_pts)
+                        if last_pt[0] >= sp_last[0]
+                        else _prepend_older_non_diverged_points(sparse_7d_pts, archive_pts)
+                    )
+                    sp_cutoff_7d = max(last_pt[0], sp_last[0]) - 7.0 * 86400.0 * 1000.0
+                    sp_pts = [pt for row in merged_sp if (pt := _parse_ts_px_row(row)) is not None and pt[0] >= sp_cutoff_7d]
                     if len(sp_pts) >= 2:
                         pts_7d_vals = [pt[1] for pt in sp_pts]
-                        arch_7d_end_ts = sp_last[0]
+                        arch_7d_end_ts = sp_pts[-1][0]
                         arch_7d_span_ms = max(0.0, sp_pts[-1][0] - sp_pts[0][0])
                 if len(pts_7d_vals) >= 2:
                     vals_7d = pts_7d_vals
@@ -872,6 +883,7 @@ def enrich_24h_and_microstructure(
         s24_p1 = _parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         span_24h_ms = max(0.0, s24_p1[0] - s24_p0[0]) if (s24_p0 and s24_p1) else 0.0
         post_rth_px_override: Optional[float] = None
+        post_rth_series_replaced = False
         m24: Dict[str, Any] = compute_24h_price_metrics(matched_series_24h) or {} if matched_series_24h else {}
         if is_eq_sym and m24 and s24_p1 is not None and (
             (int(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
@@ -880,6 +892,7 @@ def enrich_24h_and_microstructure(
             if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
                 post_rth_px_override = round(sym_px_cur, 4)
                 if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005 and len(matched_series_24h) >= 2:
+                    post_rth_series_replaced = True
                     last_bar_tail = (
                         list(matched_series_24h[-1][2:])
                         if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
@@ -1094,7 +1107,9 @@ def enrich_24h_and_microstructure(
                     )
                     if px_diff_from_chart and rth_bar_fresh and not px_diverged_05pct:
                         pts_24h = list(pts_24h) + [[int(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
+                        post_rth_series_replaced = False
                     elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
+                        post_rth_series_replaced = True
                         last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
                         pts_24h = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
                         for k_ov in (
@@ -1117,6 +1132,8 @@ def enrich_24h_and_microstructure(
                             "gradient_recent",
                         ):
                             prices_and_trends[sym].pop(k_ov, None)
+                    else:
+                        post_rth_series_replaced = False
                     if m24 := (compute_24h_price_metrics(pts_24h) or {}):
                         matched_series_24h = pts_24h
                         post_rth_px_override = None
@@ -1152,7 +1169,7 @@ def enrich_24h_and_microstructure(
             _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
             if (
                 is_eq_sym
-                and post_rth_px_override is None
+                and not post_rth_series_replaced
                 and matched_series_24h
                 and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
                 and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
