@@ -1010,7 +1010,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
             with (
                 _patch.object(_rtrade, "_RTRADE_HEARTBEAT_PATH", path),
                 _patch.object(_rtrade, "_RTRADE_HEARTBEAT_INTERVAL_SEC", 30.0),
-                _patch.object(_rtrade.time, "monotonic", side_effect=(100.0, 110.0, 131.0)),
+                _patch.object(_rtrade, "_rtrade_monotonic_time", side_effect=(100.0, 110.0, 131.0)),
             ):
                 _rtrade._rtrade_heartbeat_last = float("-inf")
                 _rtrade._touch_rtrade_heartbeat()
@@ -1072,7 +1072,7 @@ class RTradeHeartbeatTest(unittest.TestCase):
         timeout = _rtrade._RTRADE_STARTUP_RECOVERY_TIMEOUT_SEC
         monotonic_times = [start_time, start_time + 1.0, start_time + timeout + 5.0]
         with (
-            _patch.object(_rtrade.time, "monotonic", side_effect=monotonic_times),
+            _patch.object(_rtrade, "_rtrade_monotonic_time", side_effect=monotonic_times),
             _patch.object(_rtrade.time, "sleep", return_value=None),
             _patch.object(_rtrade.sys, "exit") as mock_exit,
             _patch.object(_rtrade, "_LivePairVenue", return_value=mock_venue),

@@ -3567,7 +3567,7 @@ class CacheFactory:
         """Stop every factory-owned synchronization loop and clear the registry."""
         global _current_price_instance, _short_trend_instance
         with cls._lock:
-            current_price = cls._instances.get("CurrentPrice")
+            current_price = cls._instances.get("CurrentPrice") or _current_price_instance
             trade_mgr = cls._instances.get("Trade")
             short_trend = _short_trend_instance
             managers = []
@@ -3577,6 +3577,9 @@ class CacheFactory:
                     if id(manager) not in seen_ids:
                         seen_ids.add(id(manager))
                         managers.append(manager)
+            if current_price is not None and id(current_price) not in seen_ids:
+                seen_ids.add(id(current_price))
+                managers.append(current_price)
             if short_trend is not None and id(short_trend) not in seen_ids:
                 seen_ids.add(id(short_trend))
                 managers.append(short_trend)
@@ -3622,6 +3625,8 @@ class CacheFactory:
                     return bool(inst.shutdown(timeout=timeout))
                 return True
             value = cls._instances.pop(name, None)
+            if name == "CurrentPrice" and value is None:
+                value = _current_price_instance
             cls._sync_started.discard(name)
             if value is None:
                 return True

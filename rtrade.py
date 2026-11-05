@@ -65,11 +65,15 @@ _rtrade_heartbeat_lock = threading.Lock()
 _rtrade_heartbeat_last = float("-inf")
 
 
+def _rtrade_monotonic_time() -> float:
+    return time.monotonic()
+
+
 def _touch_rtrade_heartbeat(*, force=False, now=None):
     """Publish actual coordinator progress independently from buffered stdout."""
     global _rtrade_heartbeat_last
     now_val = safe_float(now, default=None)
-    now_m = time.monotonic() if now_val is None else now_val
+    now_m = _rtrade_monotonic_time() if now_val is None else now_val
     with _rtrade_heartbeat_lock:
         _rtrade_heartbeat_last = touch_heartbeat_file(
             resolve_cachedb_filepath(_RTRADE_HEARTBEAT_PATH),
@@ -1422,14 +1426,14 @@ class TradingBot:
 
         last_start_at = last_recovery_retry = last_recovery_diag_log = last_active_summary_log = last_whale_log = float("-inf")
         recovery_blocked_since = (
-            time.monotonic() if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False))) else None
+            _rtrade_monotonic_time() if (recovery_blocked or bool(getattr(venue, "recovery_blocked", False))) else None
         )
         next_direction = 0
         side_backoff_until = {"BUY": 0.0, "SELL": 0.0}
 
         while True:
             try:
-                now = time.monotonic()
+                now = _rtrade_monotonic_time()
                 is_recovery_blocked = recovery_blocked or bool(getattr(venue, "recovery_blocked", False))
 
                 if is_recovery_blocked:
