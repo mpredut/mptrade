@@ -37,6 +37,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_nonneg_ts,
     safe_pos_float,
+    split_headlines_digest,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
@@ -468,6 +469,28 @@ def harvest_macro_and_news_sensors(
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
             })
     gt_cur = macro_sensors.get("geopolitical_threat")
+    if (
+        isinstance(gt_cur, dict)
+        and (gt_digest := str(gt_cur.get("headlines_digest") or "").strip())
+        and valid_news
+        and not any(n.get("is_high_severity") for n in valid_news)
+    ):
+        gt_digest_titles = split_headlines_digest(gt_digest)
+        if gt_digest_titles and not any(
+            filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
+            for t in gt_digest_titles
+        ):
+            gt_cur["threat_level"] = "NORMAL"
+            gt_cur["risk_score"] = 0.1
+            gt_cur["recommended_brake"] = "NONE"
+            gt_cur["summary"] = "Calm geopolitical and energy climate. No systemic shock detected."
+            gt_cur["headlines_digest"] = ""
+            if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+                try:
+                    _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+                    _save_fn(os.path.join(cache_dir, "geopolitical_eval.json"), {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
+                except Exception:
+                    pass
     if (
         isinstance(gt_cur, dict)
         and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")

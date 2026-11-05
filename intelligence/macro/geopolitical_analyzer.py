@@ -263,7 +263,24 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and not self._cached_assessment.is_fallback
             and self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
         )
-        if not force_refresh and not acute_shock_alert and not deescalate_aged_90m and self._cached_assessment and not is_stale:
+        zero_high_sev_reset = bool(
+            isinstance(raw_headlines, (list, tuple))
+            and len(raw_headlines) > 0
+            and not high_sev
+            and self._cached_assessment is not None
+            and (
+                bool(self._last_headlines_digest)
+                or self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
+            )
+        )
+        if (
+            not force_refresh
+            and not acute_shock_alert
+            and not deescalate_aged_90m
+            and not zero_high_sev_reset
+            and self._cached_assessment
+            and not is_stale
+        ):
             if headline_digest and not self._last_headlines_digest and not self._cached_assessment.is_fallback:
                 self._last_headlines_digest = headline_digest
             return self._cached_assessment

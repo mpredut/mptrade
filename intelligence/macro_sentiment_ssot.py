@@ -139,6 +139,14 @@ def extract_high_severity_headlines_and_digest(
             url_s = str(obj_attr(h, "url", None) or obj_attr(h, "link", None) or "").strip()
             if is_excluded_reference_news_item(title_s, src_s, url_s):
                 continue
+            raw_kws = obj_attr(h, "matched_keywords", None)
+            if (
+                isinstance(raw_kws, (list, tuple))
+                and raw_kws
+                and title_s
+                and not filter_valid_severity_keywords(raw_kws, title=title_s)
+            ):
+                continue
             if title_s and any(
                 title_s.lower() == kt.lower() or headlines_are_semantic_duplicates(title_s, kt)
                 for kt in kept_titles

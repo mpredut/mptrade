@@ -6271,3 +6271,92 @@ def test_lexicon_noise_pruning_publisher_suffix_stale_swing_lots_and_manifest_he
     assert "['auto_cryptotrade_executor.heartbeat']" in hb_line
     assert "disk heartbeats for stopped processes: ['xStock-watch.heartbeat']" in hb_line
 
+
+def test_geopolitical_zero_high_sev_digest_reset_and_false_positive_shield_cleanup(tmp_path):
+    import json
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro_sentiment_ssot import extract_high_severity_headlines_and_digest
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+
+    # 1. extract_high_severity_headlines_and_digest drops headlines whose matched_keywords are all excluded metaphors
+    snap_talent_war = {
+        "headlines": [
+            {
+                "title": "Inside the chip talent war: Trade secrets and rising Chinese rivals",
+                "source": "CNBC",
+                "matched_keywords": ["war"],
+                "is_high_severity": True,
+            }
+        ]
+    }
+    high_sev, digest = extract_high_severity_headlines_and_digest(snap_talent_war)
+    assert high_sev == []
+    assert digest == ""
+
+    # 2. GeopoliticalThreatAnalyzer.assess immediately resets cached headline-based assessment to calm NORMAL
+    #    when news_snapshot has headlines and high_sev is empty, even before cache_ttl_sec expires
+    geo_file = tmp_path / "geopolitical_eval.json"
+    geo_file.write_text(
+        json.dumps(
+            {
+                "threat_level": "NORMAL",
+                "risk_score": 0.12,
+                "summary": "The story highlights competitive pressures in the semiconductor talent market.",
+                "recommended_brake": "NONE",
+                "headlines_analyzed": 1,
+                "ts": 1_793_850_717.0,
+                "is_fallback": False,
+                "headlines_digest": "Inside the chip talent war: Trade secrets and rising Chinese rivals",
+            }
+        ),
+        encoding="utf-8",
+    )
+    analyzer = GeopoliticalThreatAnalyzer(state_file=str(geo_file), cache_ttl_sec=16200.0)
+    res_calm = analyzer.assess(snap_talent_war, now_ts=1_793_851_000.0)
+    assert res_calm.threat_level == "NORMAL"
+    assert res_calm.risk_score == 0.1
+    assert res_calm.summary == "Calm geopolitical and energy climate. No systemic shock detected."
+    assert analyzer._last_headlines_digest == ""
+
+    # 3. harvest_macro_and_news_sensors resets geopolitical_threat when its headlines_digest only contains excluded metaphors
+    c_dir = tmp_path / "cachedb_geo"
+    c_dir.mkdir(parents=True, exist_ok=True)
+    (c_dir / "geopolitical_eval.json").write_text(
+        json.dumps(
+            {
+                "threat_level": "NORMAL",
+                "risk_score": 0.12,
+                "summary": "The story highlights competitive pressures in the semiconductor talent market.",
+                "recommended_brake": "NONE",
+                "headlines_analyzed": 1,
+                "ts": 1_793_850_717.0,
+                "is_fallback": False,
+                "headlines_digest": "Inside the chip talent war: Trade secrets and rising Chinese rivals",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (c_dir / "news_feed_collect.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "title": "Inside the chip talent war: Trade secrets and rising Chinese rivals",
+                        "source": "CNBC",
+                        "matched_keywords": ["war"],
+                        "is_high_severity": True,
+                        "first_seen_ts": 1_793_850_700.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors, b_news = harvest_macro_and_news_sensors(str(c_dir), 1_793_851_300.0)
+    assert len(b_news) == 1
+    assert b_news[0]["is_high_severity"] is False
+    assert sensors["geopolitical_threat"]["summary"] == "Calm geopolitical and energy climate. No systemic shock detected."
+    assert sensors["geopolitical_threat"]["risk_score"] == 0.1
+    assert sensors["geopolitical_threat"]["headlines_digest"] == ""
+
+
