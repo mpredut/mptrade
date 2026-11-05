@@ -349,7 +349,15 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return None
         best_bid = safe_pos_float(ctx.get("best_bid"), default=0.0) or 0.0
         best_ask = safe_pos_float(ctx.get("best_ask"), default=0.0) or 0.0
-        if best_bid <= 0.0 or best_ask <= 0.0 or best_bid > best_ask:
+        quote_mid = (best_bid + best_ask) / 2.0 if (best_bid > 0.0 and best_ask >= best_bid) else 0.0
+        stub_quote = (
+            best_bid <= 0.0
+            or best_ask <= 0.0
+            or best_bid > best_ask
+            or (best_ask - best_bid) / mid > 0.02
+            or abs(quote_mid - mid) / mid > 0.01
+        )
+        if stub_quote:
             recent_ranges = [
                 (b[2] - b[3]) / b[4]
                 for b in bars[-78:]
@@ -363,8 +371,8 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             best_ask = round(mid + half_sp, 4)
         mid = round((best_bid + best_ask) / 2.0, 4)
 
-        bid_sz_usd = (safe_pos_float(ctx.get("bid_size_sh"), default=0.0) or 0.0) * best_bid
-        ask_sz_usd = (safe_pos_float(ctx.get("ask_size_sh"), default=0.0) or 0.0) * best_ask
+        bid_sz_usd = 0.0 if stub_quote else (safe_pos_float(ctx.get("bid_size_sh"), default=0.0) or 0.0) * best_bid
+        ask_sz_usd = 0.0 if stub_quote else (safe_pos_float(ctx.get("ask_size_sh"), default=0.0) or 0.0) * best_ask
         band_pct = self.depth_band_pct / 100.0
         lo_band, hi_band = mid * (1.0 - band_pct), mid * (1.0 + band_pct)
         lo_1pct, hi_1pct = mid * 0.99, mid * 1.01
@@ -372,17 +380,23 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         bid_buckets: Dict[float, float] = {}
         ask_buckets: Dict[float, float] = {}
         tick_step = max(0.01, round(mid * 0.0015, 2))
+        b_cap = min(mid * 0.9985, mid - tick_step)
+        a_floor = max(mid * 1.0015, mid + tick_step)
         for _t, _o, h_px, l_px, c_px, vol in bars[-156:]:
             if vol <= 0.0 or c_px <= 0.0:
                 continue
             clv = (c_px - l_px) / (h_px - l_px) if h_px > l_px else 0.5
             # Allocate buying interest to support node below mid and selling supply to resistance node above mid
-            b_px = round(min(l_px, mid * 0.9985) / tick_step) * tick_step
-            a_px = round(max(h_px, mid * 1.0015) / tick_step) * tick_step
+            b_px = round(min(l_px, b_cap) / tick_step) * tick_step
+            a_px = round(max(h_px, a_floor) / tick_step) * tick_step
             if b_px < lo_band:
-                b_px = round((mid * (1.0 - band_pct * 0.6)) / tick_step) * tick_step
+                b_px = round(min(b_cap, mid * (1.0 - band_pct * 0.6)) / tick_step) * tick_step
             if a_px > hi_band:
-                a_px = round((mid * (1.0 + band_pct * 0.6)) / tick_step) * tick_step
+                a_px = round(max(a_floor, mid * (1.0 + band_pct * 0.6)) / tick_step) * tick_step
+            if b_px >= mid:
+                b_px = max(0.01, round(mid - tick_step, 4))
+            if a_px <= mid:
+                a_px = round(mid + tick_step, 4)
             # Scale 5m bar dollar volume to passive book depth (~2% of bar turnover per level)
             b_val = vol * c_px * max(0.15, clv) * 0.02
             a_val = vol * c_px * max(0.15, 1.0 - clv) * 0.02

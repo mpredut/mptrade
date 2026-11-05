@@ -7778,6 +7778,32 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     s24_rgnt_2el, _ = load_symbol_price_series(str(cdir_rgnt_2el), "RGNT_US_EQ")
     assert s24_rgnt_2el[-1][0] == rth_close_ms
 
+    # 8. OrderbookDepthCollector._fetch_equity_orderbook rejects wide off-RTH stub L1 quotes
+    #    (e.g. 1.18/1.53 around 1.32) and keeps bid_wall_px < mid_price < ask_wall_px
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+
+    ob_col_eq = OrderbookDepthCollector(cache_dir=str(cdir_rgnt))
+    ob_col_eq._fetch_equity_market_context = lambda sym, now, **kw: {
+        "ticker": "RGNT",
+        "last_price": 1.32,
+        "best_bid": 1.18,
+        "best_ask": 1.53,
+        "bid_size_sh": 500.0,
+        "ask_size_sh": 500.0,
+        "daily_vol_sh": 15000.0,
+        "bars": [
+            (now - (10 - i) * 300.0, 1.32, 1.33, 1.31, 1.32, 800.0)
+            for i in range(10)
+        ],
+    }
+    snap_eq_ob = ob_col_eq._fetch_equity_orderbook("RGNT_US_EQ", now_s_rec)
+    assert snap_eq_ob is not None
+    assert abs(snap_eq_ob.mid_price - 1.32) < 1e-4
+    assert snap_eq_ob.spread_bps < 100.0
+    assert snap_eq_ob.largest_bid_wall_price < snap_eq_ob.mid_price
+    assert snap_eq_ob.largest_ask_wall_price > snap_eq_ob.mid_price
+
+
 
 
 

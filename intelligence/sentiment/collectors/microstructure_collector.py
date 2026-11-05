@@ -926,6 +926,10 @@ def ensure_fresh_symbol_microstructure(
         if not os.path.exists(fpath):
             return True
         if is_eq and not rth_open:
+            if prefix == "orderbook_depth_":
+                ob_disk = read_json_cached(fpath)
+                if isinstance(ob_disk, dict) and (safe_pos_float(ob_disk.get("spread_bps"), default=0.0) or 0.0) > 200.0:
+                    return True
             return False
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
 
@@ -1645,6 +1649,35 @@ def enrich_24h_and_microstructure(
                     for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
                         if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
                             m_info[k_sc] = round(v_sc * scale_r, px_dec)
+            elif (
+                is_eq_sym
+                and sym_px_m > 0.0
+                and ob_mid_m is not None
+                and not _prices_diverged(sym_px_m, ob_mid_m)
+            ):
+                px_dec = _auto_px_decimals(sym_px_m)
+                if abs(sym_px_m - ob_mid_m) > 1e-6:
+                    scale_r = sym_px_m / ob_mid_m
+                    m_info["ob_mid_price"] = round(sym_px_m, px_dec)
+                    for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+                        if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
+                            m_info[k_sc] = round(v_sc * scale_r, px_dec)
+                if (safe_pos_float(m_info.get("spread_bps"), default=0.0) or 0.0) > 200.0:
+                    half_sp_eq = max(0.005, round(sym_px_m * 0.001, 4))
+                    m_info["best_bid"] = round(max(0.01, sym_px_m - half_sp_eq), max(px_dec, 3))
+                    m_info["best_ask"] = round(sym_px_m + half_sp_eq, max(px_dec, 3))
+                    m_info["ob_mid_price"] = round(sym_px_m, px_dec)
+                    m_info["spread_bps"] = round_spread_bps(
+                        None,
+                        best_bid=m_info["best_bid"],
+                        best_ask=m_info["best_ask"],
+                        mid_price=sym_px_m,
+                    )
+                tick_eq = max(0.01, round(sym_px_m * 0.0015, 2))
+                if (bw_eq := safe_pos_float(m_info.get("bid_wall_px"), default=None)) is not None and bw_eq >= sym_px_m:
+                    m_info["bid_wall_px"] = max(0.01, round(sym_px_m - tick_eq, px_dec))
+                if (aw_eq := safe_pos_float(m_info.get("ask_wall_px"), default=None)) is not None and aw_eq <= sym_px_m:
+                    m_info["ask_wall_px"] = round(sym_px_m + tick_eq, px_dec)
             elif not is_usd_sym and (sym_px_m <= 0.0 or _prices_diverged(sym_px_m, ob_mid_m)):
                 for k_strip in _MICRO_PRICE_ANCHOR_KEYS:
                     m_info.pop(k_strip, None)

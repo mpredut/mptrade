@@ -291,6 +291,13 @@ class _DiskBackedSymbolCollector:
                 if exact_only and snap_sym != sym_clean:
                     continue
                 if is_cache_fresh(snapshot.ts, now, max_age):
+                    if (
+                        not ignore_ttl_b
+                        and sym_clean.endswith(("_EQ", "_US_EQ"))
+                        and self._DISK_FILE_PREFIX == "orderbook_depth"
+                        and (safe_pos_float(getattr(snapshot, "spread_bps", None), default=0.0) or 0.0) > 200.0
+                    ):
+                        continue
                     if snap_sym:
                         self._cache[snap_sym] = (snapshot.ts, snapshot)
                     if not exact_only or snap_sym == sym_clean:
@@ -388,7 +395,12 @@ class _DiskBackedSymbolCollector:
                     if not is_symbol_market_open(sym_clean, now_f):
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
-                        if stale_disk is not None and 0.0 <= (now_f - stale_ts) < 96.0 * 3600.0:
+                        stale_sp = safe_pos_float(getattr(stale_disk, "spread_bps", None), default=0.0) or 0.0
+                        if (
+                            stale_disk is not None
+                            and 0.0 <= (now_f - stale_ts) < 96.0 * 3600.0
+                            and (self._DISK_FILE_PREFIX != "orderbook_depth" or stale_sp <= 200.0)
+                        ):
                             self._cache[sym_clean] = (now_f, stale_disk)
                             return sym_clean, now_f, cached_ex, stale_disk, False
                 except Exception:
