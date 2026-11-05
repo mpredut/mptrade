@@ -6690,4 +6690,183 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     )
     assert hl_nontrad_cycles["HYPE"]["pos_peak"] == 44.5
 
+    # 6. Bug 58: collect_pretrade_telemetry sibling p_est uses sibling's own cache_kalman_trend / cache_short_trend
+    #    entry so TAOUSD and TAOUSDC produce identical liquidation magnet bias
+    cdir_sib = tmp_path / "cachedb_sib_kal"
+    cdir_sib.mkdir(parents=True, exist_ok=True)
+    tao_pts_sib = [
+        [now_ms - (288 - i) * 300_000, 226.60 if i == 50 else (239.80 if i == 150 else 233.50)]
+        for i in range(288)
+    ] + [[now_ms - 900_000, 233.50], [now_ms, 233.90]]
+    (cdir_sib / "cache_24_price_TAOUSDC.json").write_text(json.dumps({"items": {"TAOUSDC": tao_pts_sib}}), encoding="utf-8")
+    (cdir_sib / "cache_24_price_TAOUSD.json").write_text(json.dumps({"items": {"TAOUSD": tao_pts_sib}}), encoding="utf-8")
+    (cdir_sib / "cache_kalman_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "TAOUSDC": {"kalman_vel": 0.02312, "kalman_vel_std": 0.04, "kalman_trend": 1, "vol_1h_pct": 0.7118},
+                    "TAOUSD": {"kalman_vel": -0.03367, "kalman_vel_std": 0.04, "kalman_trend": -1, "vol_1h_pct": 0.7118},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_sib / "orderbook_depth_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "mid_price": 233.90,
+                "best_bid": 233.80,
+                "best_ask": 234.00,
+                "spread_bps": 8.55,
+                "bid_depth_usd": 139282.0,
+                "ask_depth_usd": 101516.0,
+                "imbalance_ratio": 0.578,
+                "largest_bid_wall_price": 233.50,
+                "largest_bid_wall_usd": 20987.0,
+                "largest_ask_wall_price": 234.30,
+                "largest_ask_wall_usd": 14320.0,
+                "ts": now_s,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_sib / "orderbook_depth_TAOUSD.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSD",
+                "mid_price": 233.96,
+                "best_bid": 233.88,
+                "best_ask": 234.04,
+                "spread_bps": 6.85,
+                "bid_depth_usd": 727520.0,
+                "ask_depth_usd": 284972.0,
+                "imbalance_ratio": 0.719,
+                "largest_bid_wall_price": 230.47,
+                "largest_bid_wall_usd": 64969.0,
+                "largest_ask_wall_price": 235.38,
+                "largest_ask_wall_usd": 26378.0,
+                "ts": now_s,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir_sib / "derivatives_telemetry_TAOUSDC.json").write_text(
+        json.dumps({"symbol": "TAOUSDC", "funding_rate": 0.00005, "open_interest_usd": 52918312.0, "ts": now_s}),
+        encoding="utf-8",
+    )
+    (cdir_sib / "whale_snapshot_TAOUSDC.json").write_text(
+        json.dumps(
+            {
+                "symbol": "TAOUSDC",
+                "top_traders_long_pct": 0.7649,
+                "top_traders_long_ratio": 3.25,
+                "taker_buy_sell_ratio": 1.0694,
+                "taker_buy_vol_usd": 214039.43,
+                "taker_sell_vol_usd": 200152.11,
+                "open_interest_usd": 52918312.0,
+                "open_interest_1h_change_pct": -0.93,
+                "divergence_regime": "long_unwinding",
+                "ts": now_s,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_usdc_sib = collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_sib))
+    pt_usd_sib = collect_pretrade_telemetry("TAOUSD", cachedb_dir=str(cdir_sib))
+    assert "magnet=BALANCED_LIQ_MAGNET" in pt_usdc_sib["Liquidation Clusters (LONG vs SHORT)"]
+    assert "magnet=BALANCED_LIQ_MAGNET" in pt_usd_sib["Liquidation Clusters (LONG vs SHORT)"]
+
+
+def test_6h_bottom_dead_zone_sibling_low_guard_cross_market_bounds_and_military_news_filter():
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    from intelligence.sentiment.evaluators.microstructure_evaluator import sync_sibling_symbol_telemetry
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_24h_price_metrics,
+        recalculate_live_price_geometry,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    # 1. Bug 114: compute_24h_price_metrics detects HIGHER_LOW_DOUBLE_BOTTOM when recent_low is slightly above prior_low (+0.02%)
+    # and cur_px has bounced +0.11%..+0.13% above recent_low (e.g. TAOUSDC prior_low=233.3, recent_low=233.35, cur_px=233.65).
+    now_ms = 1_793_854_000_000
+    series_tao = [
+        [now_ms - 5 * 3_600_000, 238.0],
+        [now_ms - 4 * 3_600_000, 236.0],
+        [now_ms - 3 * 3_600_000, 233.3],
+        [now_ms - 2 * 3_600_000, 235.0],
+        [now_ms - 45 * 60_000, 234.0],
+        [now_ms - 15 * 60_000, 233.35],
+        [now_ms, 233.65],
+    ]
+    m_tao = compute_24h_price_metrics(series_tao)
+    assert m_tao.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
+    assert m_tao.get("prior_6h_low_px") == 233.3
+    assert m_tao.get("recent_1h_low_px") == 233.35
+    assert m_tao.get("higher_low_vs_prior_pct") == 0.02
+
+    # And when cur_px is sitting directly on the higher low (233.35 vs 233.30), it classifies as FRESH_6H_LOW_TEST
+    series_tao_test = [*series_tao[:-1], [now_ms, 233.35]]
+    m_tao_test = compute_24h_price_metrics(series_tao_test)
+    assert m_tao_test.get("bottom_structure_6h") == "FRESH_6H_LOW_TEST"
+    recalculate_live_price_geometry(m_tao_test, 233.65)
+    assert m_tao_test.get("bottom_structure_6h") == "HIGHER_LOW_DOUBLE_BOTTOM"
+
+    # 2. Bug 114b: sync_sibling_symbol_telemetry does not copy sibling's bottom_structure_6h when sibling's recent_1h_low_px > low_15m
+    pt_map = {
+        "TAOUSDC": {"price": 233.65, "chg_6h_pct": -0.49, "low_15m": 233.35, "high_15m": 234.2, "low_24h": 224.8, "high_24h": 239.8},
+        "TAOUSD": {
+            "price": 233.697,
+            "chg_6h_pct": -0.40,
+            "low_24h": 224.87,
+            "high_24h": 240.11,
+            "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+            "prior_6h_low_px": 233.4,
+            "recent_1h_low_px": 233.47,
+            "higher_low_vs_prior_pct": 0.03,
+        },
+    }
+    sync_sibling_symbol_telemetry(pt_map, {})
+    assert "bottom_structure_6h" not in pt_map["TAOUSDC"]
+
+    # 3. Bug 114c: build_cross_market_context exposes low_24h, high_24h, bottom_structure_6h, prior_6h_low_px, recent_1h_low_px
+    cmc = build_cross_market_context(
+        {
+            "TAOUSDC": {
+                "price": 233.65,
+                "pos_24h_pct": 59.0,
+                "low_24h": 224.8,
+                "high_24h": 239.8,
+                "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+                "prior_6h_low_px": 233.3,
+                "recent_1h_low_px": 233.35,
+            },
+            "NVDA_US_EQ": {
+                "price": 198.01,
+                "pos_24h_pct": 0.0,
+                "low_24h": 198.01,
+                "high_24h": 210.7,
+                "bottom_structure_6h": "FRESH_6H_LOW_TEST",
+                "prior_6h_low_px": 200.28,
+                "recent_1h_low_px": 198.01,
+            },
+        },
+        {},
+        {},
+    )
+    assert cmc["crypto_bellwethers"]["TAO"]["low_24h"] == 224.8
+    assert cmc["crypto_bellwethers"]["TAO"]["bottom_structure_6h"] == "HIGHER_LOW_DOUBLE_BOTTOM"
+    assert cmc["equity_bellwethers"]["NVDA_US_EQ"]["low_24h"] == 198.01
+    assert cmc["equity_bellwethers"]["NVDA_US_EQ"]["bottom_structure_6h"] == "FRESH_6H_LOW_TEST"
+
+    # 4. Bug 116: has_financial_or_geopolitical_context filters non-theater local military headlines and partisan prediction-market stories
+    assert not has_financial_or_geopolitical_context("El Salvador’s Bukele touts military intervention in Haiti")
+    assert not has_financial_or_geopolitical_context(
+        "Prediction markets cement their status after forecasting Democratic sweep of Congress"
+    )
+    assert has_financial_or_geopolitical_context("Pentagon deploys additional military assets to Middle East")
+    assert has_financial_or_geopolitical_context("Futures Mixed After Postelection Rally; Three Giants Are Buys")
+
+
+
 
