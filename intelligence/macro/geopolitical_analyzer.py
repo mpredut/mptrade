@@ -205,9 +205,11 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         is_stale = age_sec < 0.0 or age_sec >= effective_ttl
 
         raw_headlines = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
-        high_sev, headline_digest = extract_high_severity_headlines_and_digest(news_snapshot)
+        state_cache_dir = self._effective_cache_dir()
+        high_sev, headline_digest = extract_high_severity_headlines_and_digest(
+            news_snapshot, cache_dir=state_cache_dir, now_ts=now
+        )
         if high_sev:
-            state_cache_dir = self._effective_cache_dir()
             active_acute_phrases = get_active_acute_shock_phrases(cache_dir=state_cache_dir, now_ts=now)
         else:
             active_acute_phrases = ()

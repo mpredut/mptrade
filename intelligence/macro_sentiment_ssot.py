@@ -125,6 +125,9 @@ normalize_order_side = normalize_side
 def extract_high_severity_headlines_and_digest(
     news_snapshot: Any,
     max_digest_items: int = 12,
+    *,
+    cache_dir: Optional[str] = None,
+    now_ts: Optional[float] = None,
 ) -> Tuple[List[Any], str]:
     """Extract high-severity headlines list and canonical digest string from a NewsFeedSnapshot."""
     raw_hl = obj_attr(news_snapshot, "headlines", None) if news_snapshot is not None else None
@@ -140,13 +143,25 @@ def extract_high_severity_headlines_and_digest(
             if is_excluded_reference_news_item(title_s, src_s, url_s):
                 continue
             raw_kws = obj_attr(h, "matched_keywords", None)
-            if (
-                isinstance(raw_kws, (list, tuple))
-                and raw_kws
-                and title_s
-                and not filter_valid_severity_keywords(raw_kws, title=title_s)
-            ):
-                continue
+            if isinstance(raw_kws, (list, tuple)) and raw_kws and title_s:
+                clean_kws = [
+                    re.sub(r"\s+", " ", k.strip()).lower()
+                    for k in raw_kws
+                    if isinstance(k, str) and k.strip()
+                ]
+                if clean_kws and not filter_valid_severity_keywords(
+                    raw_kws, title=title_s, cache_dir=cache_dir, now_ts=now_ts
+                ):
+                    title_words = set(re.findall(r"[a-zA-Z]{3,}", title_s.lower()))
+                    crisis_stems = _get_crisis_stems_set()
+                    seed_set = _get_seed_terms_set()
+                    sw = _get_stopwords_set()
+                    if all(
+                        _is_excluded_non_crisis_attack_keyword(kc, title_words, crisis_stems)
+                        or (kc not in seed_set and _is_noise_dynamic_keyword(kc, sw))
+                        for kc in clean_kws
+                    ):
+                        continue
             if title_s and any(
                 title_s.lower() == kt.lower() or headlines_are_semantic_duplicates(title_s, kt)
                 for kt in kept_titles

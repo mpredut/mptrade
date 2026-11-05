@@ -78,6 +78,9 @@ from state_io import (
 
 read_json_cached = _default_read_json_cached
 _LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
+_FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
+_FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, str, int], Tuple[float, Any]] = {}
+_PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
@@ -106,6 +109,25 @@ def _filter_ohlc_closes_since(
     return [px_v for _, px_v in sorted(timed_out, key=lambda x: x[0])]
 
 
+def _wrap_cached_ohlc_fn(prov_key: str, raw_fn: Any, ttl_sec: float = 60.0) -> Any:
+    def _cached_ohlc(s_arg: str, interval_min: int) -> Any:
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return raw_fn(s_arg, interval_min)
+        ck = (prov_key, str(s_arg or "").strip().upper(), int(interval_min))
+        now_s = _time.time()
+        hit = _FALLBACK_OHLC_SERIES_CACHE.get(ck)
+        if hit is not None and 0.0 <= (now_s - hit[0]) < ttl_sec:
+            return hit[1]
+        res = raw_fn(s_arg, interval_min)
+        if res is not None and getattr(res, "closes", None):
+            if len(_FALLBACK_OHLC_SERIES_CACHE) > 128:
+                _FALLBACK_OHLC_SERIES_CACHE.clear()
+            _FALLBACK_OHLC_SERIES_CACHE[ck] = (now_s, res)
+        return res
+
+    return _cached_ohlc
+
+
 def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
     sym_u = str(sym or "").strip().upper()
     inst_map = inst_by_sym or {}
@@ -118,20 +140,31 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
     if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
         return ohlc_fn if callable(ohlc_fn) else None
     try:
-        if sym_u == "HYPEUSDC":
-            from providers.hyperliquid_provider import HyperliquidProvider
-
-            return HyperliquidProvider().ohlc_series
+        prov_key = ""
         sym_parts = split_symbol_assets(sym_u) if sym_u and not sym_u.endswith(("_EQ", "_US_EQ")) else None
         sym_q = sym_parts[1] if sym_parts is not None else ""
-        if sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
-            from providers.market_api import api as _mkt_api
+        if sym_u == "HYPEUSDC":
+            prov_key = "hyperliquid"
+            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+                from providers.hyperliquid_provider import HyperliquidProvider
 
-            return getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
-        if sym_q == "USD" or (sym_u.endswith("USD") and not sym_u.endswith(("_EQ", "_US_EQ", "FDUSD", "TUSD", "BUSD"))):
-            from providers.kraken_provider import KrakenProvider
+                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, HyperliquidProvider().ohlc_series)
+        elif sym_q in ("USDC", "USDT", "FDUSD", "TUSD", "BUSD") or sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD")):
+            prov_key = "binance"
+            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+                from providers.market_api import api as _mkt_api
 
-            return KrakenProvider().ohlc_series
+                raw_b_fn = getattr(_mkt_api.provider_by_name("binance"), "ohlc_series", None)
+                if callable(raw_b_fn):
+                    _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, raw_b_fn)
+        elif sym_q == "USD" or (sym_u.endswith("USD") and not sym_u.endswith(("_EQ", "_US_EQ", "FDUSD", "TUSD", "BUSD"))):
+            prov_key = "kraken"
+            if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
+                from providers.kraken_provider import KrakenProvider
+
+                _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(prov_key, KrakenProvider().ohlc_series)
+        if prov_key and callable(cached_fn := _FALLBACK_PROVIDER_OHLC_FNS.get(prov_key)):
+            return cached_fn
     except Exception:
         pass
     return None
@@ -243,6 +276,47 @@ def load_symbol_price_series(
     # 1. Try primary 24h dense cache (cache_24_price_<SYM>.json and legacy variants)
     _rj_cand = _resolve_read_json_cached()
     _rj = read_json_recovering if _rj_cand is _default_read_json_cached else _rj_cand
+    sym_u = str(symbol).strip().upper()
+    _memo_key: Optional[Tuple[Any, ...]] = None
+    _memo_file_sig: Tuple[Any, ...] = ()
+    _memo_cur_sig: Tuple[Any, ...] = ()
+    if _rj_cand is _default_read_json_cached:
+        try:
+            _memo_key = (os.path.abspath(str(cachedb_dir)), sym_u, bool(include_7d), tuple(eff_quotes))
+            _stat_list = []
+            for _sp in _cand_paths(
+                *(f"cache_24_price_{c}.json" for c in cands),
+                *(f"cache_sparse_price_{c}.jsonl" for c in cands),
+                *(f"cache_365_price_{c}.jsonl" for c in cands),
+                *(f"cache_365_price_{c}.json" for c in cands),
+                "cache_watcher_all_price.json",
+            ):
+                for _cand_sp in (_sp, _sp + ".previous") if "cache_24_price_" in _sp else (_sp,):
+                    try:
+                        _st = os.stat(_cand_sp)
+                        _stat_list.append((_cand_sp, _st.st_mtime_ns, _st.st_size))
+                    except OSError:
+                        pass
+            _memo_file_sig = tuple(_stat_list)
+            if isinstance(current_price_items, dict) and current_price_items:
+                _cur_list = []
+                for _c in cands:
+                    _ci = casefold_get(current_price_items, _c)
+                    if isinstance(_ci, list) and _ci:
+                        _cur_list.append((_c, len(_ci), repr(_ci[-1])))
+                    elif _ci is not None:
+                        _cur_list.append((_c, extract_current_price_item(_ci)))
+                _memo_cur_sig = tuple(_cur_list)
+            _cached_entry = _PRICE_SERIES_MEMO.get(_memo_key)
+            if (
+                _cached_entry is not None
+                and _cached_entry[0] == _memo_file_sig
+                and _cached_entry[1] == _memo_cur_sig
+            ):
+                _LAST_7D_SPAN_MS_BY_SYM[sym_u] = _cached_entry[4]
+                return [list(pt) for pt in _cached_entry[2]], list(_cached_entry[3])
+        except Exception:
+            _memo_key = None
     p0: Optional[Tuple[float, float]] = None
     p1: Optional[Tuple[float, float]] = None
     span_24h_ms = 0.0
@@ -565,6 +639,17 @@ def load_symbol_price_series(
         if not appended_newer and (latest_px := safe_pos_float(series_24h[-1][1], default=None)) is not None:
             if vals_7d[-1] != latest_px and not _prices_diverged(latest_px, vals_7d[-1]):
                 vals_7d.append(latest_px)
+
+    if _memo_key is not None:
+        if len(_PRICE_SERIES_MEMO) > 128:
+            _PRICE_SERIES_MEMO.clear()
+        _PRICE_SERIES_MEMO[_memo_key] = (
+            _memo_file_sig,
+            _memo_cur_sig,
+            [list(pt) for pt in series_24h],
+            list(vals_7d),
+            arch_7d_span_ms,
+        )
 
     return series_24h, vals_7d
 

@@ -7477,3 +7477,42 @@ def test_iter97_prompt_sections_btc_merge_24h_horizons_micro_wall_sync_and_pretr
     assert _is_decision_in_scope({"decision": "BUY", "symbol": "SOLTUSD", "venue": "t212"}, "equities") is False
     assert _is_decision_in_scope({"decision": "BUY", "symbol": "NVDA_US_EQ", "venue": "t212"}, "equities") is True
 
+
+def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, monkeypatch):
+    from intelligence.sentiment.collectors import microstructure_collector as mc
+
+    cdir = tmp_path / "memo_cdir"
+    cdir.mkdir(parents=True, exist_ok=True)
+    p24 = cdir / "cache_24_price_BTCUSDC.json"
+    p24.write_text(json.dumps([[1710000000000, 75000.0], [1710003600000, 75500.0]]), encoding="utf-8")
+
+    s24_a, v7d_a = mc.load_symbol_price_series(str(cdir), "BTCUSDC")
+    assert len(s24_a) == 2 and s24_a[-1][1] == 75500.0
+    # Mutating returned list does not corrupt the memoized copy
+    s24_a.append([1710007200000, 99999.0])
+    s24_b, _ = mc.load_symbol_price_series(str(cdir), "BTCUSDC")
+    assert len(s24_b) == 2 and s24_b[-1][1] == 75500.0
+
+    # Updating file on disk automatically invalidates the stat-signature memo
+    p24.write_text(
+        json.dumps([[1710000000000, 75000.0], [1710003600000, 75500.0], [1710007200000, 76200.0]]),
+        encoding="utf-8",
+    )
+    s24_c, _ = mc.load_symbol_price_series(str(cdir), "BTCUSDC")
+    assert len(s24_c) == 3 and s24_c[-1][1] == 76200.0
+
+    # _resolve_fallback_ohlc_fn caches provider OHLC callable across calls and _wrap_cached_ohlc_fn caches OHLC responses
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    fn1 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
+    fn2 = mc._resolve_fallback_ohlc_fn("HYPEUSDC")
+    assert callable(fn1) and fn1 is fn2
+    calls = []
+
+    class _DummyOHLC:
+        closes = [100.0, 101.0]
+
+    wrapped = mc._wrap_cached_ohlc_fn("dummy_prov", lambda s, iv: (calls.append((s, iv)) or _DummyOHLC()), ttl_sec=60.0)
+    r1 = wrapped("TAOUSD", 5)
+    r2 = wrapped("TAOUSD", 5)
+    assert r1 is r2 and len(calls) == 1
+

@@ -283,6 +283,7 @@ def filter_valid_severity_keywords(
 ) -> Tuple[str, ...]:
     """Filter a headline's matched keywords, stripping generic stopword/publisher noise while keeping seed terms."""
     seed_set = _get_seed_terms_set()
+    dyn_acute_set = set(load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts).get("acute_shock_phrases", ()))
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
     title_low = title.lower() if isinstance(title, str) and title.strip() else ""
@@ -297,9 +298,13 @@ def filter_valid_severity_keywords(
                 continue
             if _is_excluded_non_crisis_attack_keyword(k_clean, title_words, crisis_stems):
                 continue
-            if k_clean in seed_set or (
-                not _is_noise_dynamic_keyword(k_clean, sw)
-                and _dynamic_keyword_has_crisis_stem(k_clean, crisis_stems)
+            if (
+                k_clean in seed_set
+                or k_clean in dyn_acute_set
+                or (
+                    not _is_noise_dynamic_keyword(k_clean, sw)
+                    and _dynamic_keyword_has_crisis_stem(k_clean, crisis_stems)
+                )
             ):
                 if k.strip() not in out:
                     out.append(k.strip())
