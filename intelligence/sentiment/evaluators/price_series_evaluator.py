@@ -975,16 +975,17 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo.pop("reclaim_above_prior_low_pct", None)
             if ((p_cur / r1h_new) - 1.0) * 100.0 <= 2.5:
                 pinfo["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
-        elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM":
-            if r1h_new < p6h_lo and p_cur > p6h_lo:
-                pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
-                pinfo.pop("higher_low_vs_prior_pct", None)
-                pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
             else:
-                pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
-        elif b_struct in ("LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST") and r1h_new < p6h_lo and p_cur > p6h_lo:
+                for k_b in ("bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px"):
+                    pinfo.pop(k_b, None)
+        elif r1h_new < p6h_lo and p_cur > p6h_lo and b_struct in ("HIGHER_LOW_DOUBLE_BOTTOM", "LIQUIDITY_SWEEP_RECLAIM", "FRESH_6H_LOW_TEST"):
             pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
+            pinfo.pop("higher_low_vs_prior_pct", None)
             pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
+        elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" or (b_struct == "FRESH_6H_LOW_TEST" and r1h_new >= p6h_lo and p_cur > r1h_new * 1.002):
+            pinfo["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
+            pinfo.pop("reclaim_above_prior_low_pct", None)
+            pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)
     if isinstance(tape_15m := pinfo.get("recent_tape_15m"), list) and tape_15m:
         eff_dec_15m = _auto_px_decimals(p_cur)
         p_cur_15m = round(p_cur, eff_dec_15m)

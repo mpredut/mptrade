@@ -366,7 +366,14 @@ def harvest_macro_and_news_sensors(
         stale_age_min = resolve_derived_telemetry_intervals()["sensor_stale_age_min"]
         mb_cur = macro_sensors.get("market_breadth")
         mb_age = safe_float(mb_cur.get("age_min") if isinstance(mb_cur, dict) else None, 999.0)
-        mb_missing_rot = isinstance(mb_cur, dict) and (mb_cur.get("eth_btc_ratio") is None or mb_cur.get("btc_vol_share_pct") is None)
+        mb_missing_rot = isinstance(mb_cur, dict) and (
+            mb_cur.get("eth_btc_ratio") is None
+            or mb_cur.get("btc_vol_share_pct") is None
+            or (
+                safe_float(mb_cur.get("total_symbols") or mb_cur.get("total_count"), 0.0) >= 5.0
+                and (len(mb_cur.get("top_gainers") or ()) < 3 or len(mb_cur.get("top_losers") or ()) < 3)
+            )
+        )
         if mb_cur is None or mb_age is None or mb_age > stale_age_min or mb_missing_rot:
             try:
                 from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector

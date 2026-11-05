@@ -6046,5 +6046,33 @@ def test_bugs_99_to_102_breadth_exclusions_btc_vol_share_neg_zero_benchmarks_and
     assert slopes_5m["trend_15m"] == 0
 
 
+def test_recalculate_live_price_geometry_6h_bottom_invalidation_and_equal_low_bounce():
+    from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
+
+    # 1. When LIQUIDITY_SWEEP_RECLAIM drops back below prior_6h_low_px (>2.5% above recent_1h_low_px),
+    # bottom_structure_6h is cleared rather than left as an un-reclaimed LIQUIDITY_SWEEP_RECLAIM.
+    pinfo_broken = {
+        "prior_6h_low_px": 100.0,
+        "recent_1h_low_px": 95.0,
+        "bottom_structure_6h": "LIQUIDITY_SWEEP_RECLAIM",
+        "reclaim_above_prior_low_pct": 0.5,
+    }
+    recalculate_live_price_geometry(pinfo_broken, 98.0)
+    assert "bottom_structure_6h" not in pinfo_broken
+    assert "reclaim_above_prior_low_pct" not in pinfo_broken
+
+    # 2. When FRESH_6H_LOW_TEST with equal lows (recent_1h_low_px == prior_6h_low_px) bounces >0.2% above prior_6h_low_px,
+    # it upgrades to HIGHER_LOW_DOUBLE_BOTTOM with higher_low_vs_prior_pct == 0.0.
+    pinfo_eq = {
+        "prior_6h_low_px": 100.0,
+        "recent_1h_low_px": 100.0,
+        "bottom_structure_6h": "FRESH_6H_LOW_TEST",
+    }
+    recalculate_live_price_geometry(pinfo_eq, 100.5)
+    assert pinfo_eq["bottom_structure_6h"] == "HIGHER_LOW_DOUBLE_BOTTOM"
+    assert pinfo_eq["higher_low_vs_prior_pct"] == 0.0
+
+
+
 
 
