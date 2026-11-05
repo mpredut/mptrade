@@ -141,6 +141,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "fleet_health_status.json",
             "dev_regression_status.json",
             "llm_topic_threads.json",
+            "llm_quota_status.json",
             "notify_queue.json",
         ),
         "prefixes": (
@@ -148,6 +149,7 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
             "fleet_health_status.",
             "dev_regression_status.",
             "llm_topic_threads.",
+            "llm_quota_status.",
             "notify_queue.",
         ),
         "suffixes": ("_eval.json",),

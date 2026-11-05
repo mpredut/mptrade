@@ -1269,6 +1269,36 @@ def test_gemini_client_low_quota_error_ntfy_alert_and_cooldown(tmp_path, monkeyp
     cands = ["claude-sonnet-5-5-medium", "gpt-oss-120b-medium"]
     assert GeminiClient.filter_models_with_confirmed_credits(cands, all_zero_snap) == cands
 
+    # 8. Interrupted CLI process (SIGTERM / "error: interrupted") is never mistaken for quota exhaustion
+    # even when stdout contains buffered prompt/context text mentioning "rate limit"
+    import subprocess
+    from cachepaths import resolve_cache_subdomain
+
+    assert resolve_cache_subdomain("llm_quota_status.json") == "system"
+    interrupted_proc = subprocess.CompletedProcess(
+        ["agy"],
+        returncode=1,
+        stdout="Context: T212 rate limit spacing is 10s",
+        stderr="error: interrupted\n",
+    )
+    assert GeminiClient._is_cli_interrupted(interrupted_proc) is True
+    assert GeminiClient._is_quota_or_credit_error(interrupted_proc) is False
+    sigterm_proc = subprocess.CompletedProcess(
+        ["agy"],
+        returncode=-15,
+        stdout="RESOURCE_EXHAUSTED in prompt example",
+        stderr="",
+    )
+    assert GeminiClient._is_cli_interrupted(sigterm_proc) is True
+    assert GeminiClient._is_quota_or_credit_error(sigterm_proc) is False
+    non_quota_err_proc = subprocess.CompletedProcess(
+        ["agy"],
+        returncode=1,
+        stdout="Prompt text mentioning rate limit and quota exceeded",
+        stderr="error: connection reset by peer",
+    )
+    assert GeminiClient._is_quota_or_credit_error(non_quota_err_proc) is False
+
 
 def test_unified_ai_agent_base_classes_and_query_topic_json():
     """Verify PreTradeLLMGuardBase, CachedTopicAssessmentAgent, and query_topic_json normalization."""

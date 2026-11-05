@@ -274,11 +274,35 @@ class GeminiClient(GeminiQuotaRouterMixin):
         return (text_out or None), cid_out
 
     @staticmethod
-    def _is_quota_or_credit_error(proc: Optional[subprocess.CompletedProcess]) -> bool:
-        """Return True when the CLI failed due to exhausted AI credits, quota, rate limits, or unrecognized model."""
+    def _is_cli_interrupted(proc: Optional[subprocess.CompletedProcess]) -> bool:
+        """Return True when the CLI subprocess was interrupted by a signal (e.g. SIGTERM/SIGINT)."""
         if proc is None:
             return False
-        combined = f"{proc.stderr or ''}\n{proc.stdout or ''}".lower()
+        rc = getattr(proc, "returncode", 0) or 0
+        if rc < 0 or rc in (130, 143):
+            return True
+        err_text = (proc.stderr or "").strip().lower()
+        return any(
+            tok in err_text
+            for tok in (
+                "error: interrupted",
+                "context canceled",
+                "signal: terminated",
+                "signal: interrupt",
+                "terminated by signal",
+            )
+        )
+
+    @classmethod
+    def _is_quota_or_credit_error(cls, proc: Optional[subprocess.CompletedProcess]) -> bool:
+        """Return True when the CLI failed due to exhausted AI credits, quota, rate limits, or unrecognized model."""
+        if proc is None or cls._is_cli_interrupted(proc):
+            return False
+        err_raw = (proc.stderr or "").strip()
+        out_raw = (proc.stdout or "").strip()
+        # Inspect stderr when present; only fall back to stdout when stderr is empty
+        # so buffered prompt/response text on stdout (e.g. "rate limit") is never mistaken for a CLI error.
+        combined = (err_raw if err_raw else out_raw).lower()
         return any(
             tok in combined
             for tok in (
@@ -510,6 +534,13 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         self._rollback_cli_attempt(
                             bot_cli_base, session.conversation_id, conv_snapshot, pre_attempt_cids, is_mocked
                         )
+                        if self._is_cli_interrupted(proc):
+                            logger.info(
+                                "agy CLI with model '%s' was interrupted (code %s); aborting LLM query without fallback.",
+                                model_candidate,
+                                proc.returncode if proc is not None else "unknown",
+                            )
+                            return None
 
                     if (
                         output is None
@@ -611,6 +642,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                                     self._record_model_quota_exhausted(compact_model)
                                                 if not is_mocked and compact_snap is not None:
                                                     restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
+                                                if self._is_cli_interrupted(c_proc):
+                                                    break
                                             except Exception as exc:
                                                 if not is_mocked and compact_snap is not None:
                                                     restore_conversation_state(bot_cli_base, turn_cid, compact_snap)
