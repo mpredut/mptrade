@@ -825,10 +825,17 @@ def enrich_sentiment_advisor_live_flow_divergence(
         and isinstance(macro_benchmarks, dict)
         and macro_benchmarks
     ):
+        mb_items = macro_benchmarks.get("items") if isinstance(macro_benchmarks.get("items"), dict) else macro_benchmarks
         cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
-        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps"), default=None)
-        ibit_d = macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {}
+        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps", mb_items.get("coinbase_premium_bps")), default=None)
+        ibit_d = (
+            mb_items.get("IBIT")
+            if isinstance(mb_items.get("IBIT"), dict)
+            else (macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {})
+        )
         ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
+        sa_txt_u = f"{sentiment_advisor.get('summary') or ''} {sentiment_advisor.get('key_risks') or ''}".upper()
+        already_cited_cross = bool(cross_reg and cross_reg != "NEUTRAL" and cross_reg in sa_txt_u)
         inst_parts = [
             x
             for x in (
@@ -841,7 +848,8 @@ def enrich_sentiment_advisor_live_flow_divergence(
         ]
         inst_lbl = ", ".join(inst_parts)
         if (
-            is_bear_posture
+            not already_cited_cross
+            and is_bear_posture
             and cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
             and ((cb_bps is not None and cb_bps >= 5.0) or (ibit_1h is not None and ibit_1h >= 0.75))
             and (live_tr is None or live_tr >= 0.95)
@@ -850,7 +858,8 @@ def enrich_sentiment_advisor_live_flow_divergence(
                 f"LIVE_INSTITUTIONAL_BUY_DECOUPLING ({inst_lbl} vs {sa_age:.1f}m-old {sa_act or sa_bias})"
             )
         elif (
-            is_bull_posture
+            not already_cited_cross
+            and is_bull_posture
             and cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
             and ((cb_bps is not None and cb_bps <= -5.0) or (ibit_1h is not None and ibit_1h <= -0.75))
             and (live_tr is None or live_tr <= 1.05)

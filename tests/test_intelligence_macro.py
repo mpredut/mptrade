@@ -1808,10 +1808,24 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     enrich_sentiment_advisor_live_flow_divergence(
         sa_stale_bull,
         {"BTCUSDC": {"taker_buy_sell_ratio": 0.98}},
-        macro_benchmarks=decouple_equity,
+        macro_benchmarks={"items": {"IBIT": {"price": 43.5, "chg_1h_pct": -0.95, "chg_24h_pct": -1.40}}, "cross_asset_regime": "EQUITY_BULLISH_DECOUPLING"},
     )
     assert "LIVE_INSTITUTIONAL_SELL_DECOUPLING" in str(sa_stale_bull.get("live_flow_divergence"))
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(sa_stale_bull.get("live_flow_divergence"))
+    assert "IBIT_1h=-0.95%" in str(sa_stale_bull.get("live_flow_divergence"))
+
+    sa_already_cited = {
+        "age_min": 22.0,
+        "recommended_action": "DEFENSIVE",
+        "market_bias": "BEARISH",
+        "summary": "Remaining defensive despite CRYPTO_BULLISH_DECOUPLING.",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_already_cited,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.02}},
+        macro_benchmarks=decouple_crypto,
+    )
+    assert "live_flow_divergence" not in sa_already_cited
 
     # 6. Pre-Trade Guards (HighStakeGuard BUY/SELL & PostStopReentryGuard) & Executor Prompt Policy Symmetry
     hsg = HighStakeGuard(gemini_client=GeminiClient(custom_runner=_sa_runner))
