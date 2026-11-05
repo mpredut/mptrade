@@ -254,12 +254,28 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         )
         if isinstance(btc_m, dict):
             d_parts: List[str] = []
-            if (tr_v := _parse_finite_float(btc_m.get("taker_buy_sell_ratio"), None)) is not None:
+            tr_v = _parse_finite_float(btc_m.get("taker_buy_sell_ratio"), None)
+            cvd_v = _parse_finite_float(btc_m.get("cvd_15m_usd"), None)
+            tr5_v = _parse_finite_float(btc_m.get("taker_ratio_5m"), None)
+            cvd5_v = _parse_finite_float(btc_m.get("cvd_5m_usd"), None)
+            tr1h_v = _parse_finite_float(btc_m.get("taker_ratio_1h"), None)
+            cvd1h_v = _parse_finite_float(btc_m.get("cvd_1h_usd"), None)
+            if tr_v is not None:
                 d_parts.append(f"taker_ratio={tr_v:.2f}")
-            if (cvd_v := _parse_finite_float(btc_m.get("cvd_15m_usd"), None)) is not None:
+            elif tr1h_v is not None:
+                d_parts.append(f"1h_taker={tr1h_v:.2f}")
+            if cvd_v is not None:
                 d_parts.append(f"cvd_15m={cvd_v / 1e6:+.2f}M")
-            if (tr5_v := _parse_finite_float(btc_m.get("taker_ratio_5m"), None)) is not None:
+            elif cvd1h_v is not None:
+                d_parts.append(f"cvd_1h={cvd1h_v / 1e6:+.2f}M")
+            if tr5_v is not None:
                 d_parts.append(f"5m_tr={tr5_v:.2f}")
+            if cvd5_v is not None:
+                d_parts.append(f"cvd_5m={cvd5_v / 1e6:+.2f}M")
+            if tr_v is not None and tr1h_v is not None:
+                d_parts.append(f"1h_tr={tr1h_v:.2f}")
+            if cvd_v is not None and cvd1h_v is not None:
+                d_parts.append(f"cvd_1h={cvd1h_v / 1e6:+.2f}M")
             if isinstance(mb_bench, dict) and (cb_v := _parse_finite_float(mb_bench.get("coinbase_premium_bps"), None)) is not None:
                 d_parts.append(f"CB_Prem={cb_v:+.1f}bps")
             if d_parts:

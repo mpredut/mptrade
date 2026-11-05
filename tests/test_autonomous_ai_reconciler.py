@@ -9120,6 +9120,37 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert k_14s["kalman_vel"] < 0.0 and k_16s["kalman_vel"] < 0.0
     assert abs(k_14s["kalman_vel"] - k_16s["kalman_vel"]) < 0.005
 
+    # 10. live_btc_flow_delta synthesized for sa_age >= 5.0 includes full 5m/15m/1h taker & CVD metrics
+    s1_synth_delta = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "confidence": 0.68,
+                    "age_min": 13.8,
+                    "summary": "BTC 5m flow flipped positive.",
+                },
+                geopolitical_threat=None,
+                macro_benchmarks={"coinbase_premium_bps": -3.9},
+                microstructure={
+                    "BTCUSDC": {
+                        "taker_buy_sell_ratio": 1.02,
+                        "cvd_15m_usd": 1_740_000.0,
+                        "taker_ratio_5m": 0.72,
+                        "cvd_5m_usd": -7_540_000.0,
+                        "taker_ratio_1h": 0.94,
+                        "cvd_1h_usd": -33_970_000.0,
+                    }
+                },
+                breaking_news=[],
+            )
+        )
+    )
+    assert (
+        "live_btc_flow_delta=(taker_ratio=1.02, cvd_15m=+1.74M, 5m_tr=0.72, cvd_5m=-7.54M, 1h_tr=0.94, cvd_1h=-33.97M, CB_Prem=-3.9bps vs 13.8m-old summary)"
+        in s1_synth_delta
+    )
+
+
 
 
 
