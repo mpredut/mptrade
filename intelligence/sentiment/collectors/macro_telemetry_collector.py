@@ -542,10 +542,27 @@ def harvest_macro_and_news_sensors(
                     exist_entry["matched_keywords"] = list(
                         dict.fromkeys([*(exist_entry.get("matched_keywords") or []), *(cand_entry.get("matched_keywords") or [])])
                     )
-                    exist_entry["is_high_severity"] = bool(exist_entry.get("is_high_severity") or cand_entry.get("is_high_severity"))
-                    exist_entry["_aged_high_sev_context"] = bool(
-                        exist_entry.get("_aged_high_sev_context") or cand_entry.get("_aged_high_sev_context")
+                    had_sev = bool(
+                        exist_entry.get("is_high_severity")
+                        or cand_entry.get("is_high_severity")
+                        or exist_entry.get("_aged_high_sev_context")
+                        or cand_entry.get("_aged_high_sev_context")
                     )
+                    merged_ts = safe_pos_float(exist_entry.get("first_seen_ts"), default=0.0) or 0.0
+                    merged_stale = merged_ts > 0.0 and now_ts > merged_ts and (now_ts - merged_ts) > 5400.0
+                    exist_entry["is_high_severity"] = False if merged_stale else bool(
+                        exist_entry.get("is_high_severity") or cand_entry.get("is_high_severity")
+                    )
+                    exist_entry["_aged_high_sev_context"] = bool(
+                        (merged_stale and had_sev)
+                        or exist_entry.get("_aged_high_sev_context")
+                        or cand_entry.get("_aged_high_sev_context")
+                    )
+                    if merged_stale and had_sev:
+                        for t_dup in (c_title, e_title):
+                            if t_dup:
+                                stale_valid_sev_titles.add(_strip_headline_publisher_suffix(t_dup).strip().lower())
+                                stale_valid_sev_titles.add(t_dup.strip().lower())
                     merged_dup = True
                     break
             if not merged_dup:
