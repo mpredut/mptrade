@@ -8847,7 +8847,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                     "risk_level": "HIGH",
                     "recommended_action": "DEFENSIVE",
                     "confidence": 0.85,
-                    "summary": "Factual flow summary",
+                    "summary": "Factual flow summary, so maintaining HOLD posture.",
                     "key_risks": ["Risk A"],
                 },
                 geopolitical_threat={
@@ -8872,6 +8872,8 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "brake=" not in s1_routine
     assert "level=" not in s1_routine
     assert "downscale on new exposure" not in s1_routine
+    assert "maintaining HOLD posture" not in s1_routine
+    assert "summary=Factual flow summary." in s1_routine
     assert "summary=Geopolitical summary." in s1_routine
     assert "conf=0.85" in s1_routine
     assert "risk_score=0.52" in s1_routine

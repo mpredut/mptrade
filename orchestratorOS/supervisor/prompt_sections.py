@@ -228,11 +228,18 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
     sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
-    sa_summary = re.sub(
-        r"\s*(?:Pausing|Shifting|Maintaining|Staying|Switching)[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
-        "",
-        sa_summary_raw,
-    ).strip()
+    sa_summary = (
+        re.sub(
+            r"(?:,\s*(?:so\s+|therefore\s+|thus\s+)?|\s*)\b(?:pausing|shifting|maintaining|staying|switching|recommending)\b[^.]*\b(?:HOLD|ACCUMULATE|DEFENSIVE|TRIM_PROFITS)\b[^.]*\.?",
+            lambda m: "." if m.group(0).lstrip().startswith(",") else "",
+            sa_summary_raw,
+            flags=re.IGNORECASE,
+        )
+        .replace("..", ".")
+        .strip()
+    )
+    if not sa_summary or sa_summary == ".":
+        sa_summary = sa_summary_raw
     sa_line = (
         f"conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa)}"
@@ -251,6 +258,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         .replace("..", ".")
         .strip()
     )
+    if not gt_summary or gt_summary == ".":
+        gt_summary = gt_summary_raw
     gt_line = (
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
