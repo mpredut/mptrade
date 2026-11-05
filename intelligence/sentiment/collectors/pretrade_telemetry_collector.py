@@ -67,7 +67,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
     round_opt_px,
 )
-from instrument_registry import casefold_get, is_equity_symbol
+from instrument_registry import casefold_get, is_equity_symbol, is_symbol_market_open
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     resolve_cachedb_filepath,
@@ -361,7 +361,10 @@ def collect_pretrade_telemetry(
                         key=lambda pt: pt[0],
                     )
                 if pts_5d_eq:
-                    anchor_eq_ms = min(int(_pt_time.time() * 1000), int(pts_5d_eq[-1][0]))
+                    raw_alt_series_24h = list(alt_series_24h)
+                    now_ms_c = int(_pt_time.time() * 1000)
+                    eq_rth_open_c = bool(is_symbol_market_open(symbol, now_ms_c / 1000.0))
+                    anchor_eq_ms = min(now_ms_c, int(pts_5d_eq[-1][0]))
                     cutoff_eq_ms = anchor_eq_ms - 86400 * 1000
                     pts_24_eq = [pt for pt in pts_5d_eq if pt[0] >= cutoff_eq_ms]
                     if pts_24_eq and (pts_24_eq[-1][0] - pts_24_eq[0][0]) < 18 * 3600 * 1000:
@@ -370,6 +373,31 @@ def collect_pretrade_telemetry(
                             pts_24_eq = [older_eq[-1], *pts_24_eq]
                     if len(pts_24_eq) < 10:
                         pts_24_eq = list(pts_5d_eq[-78:])
+                    rth_bar_fresh_c = (now_ms_c - pts_5d_eq[-1][0]) <= (4 * 3600 * 1000 if eq_rth_open_c else 20 * 60 * 1000)
+                    if rth_bar_fresh_c and raw_alt_series_24h and pts_24_eq:
+                        last_bar_ts_c = pts_24_eq[-1][0]
+                        recent_bar_pxs_c = [
+                            b[1] for b in pts_24_eq
+                            if isinstance(b, (list, tuple)) and len(b) >= 2 and b[0] >= last_bar_ts_c - 15 * 60 * 1000
+                        ]
+                        if len(pts_24_eq) >= 2 and isinstance(pts_24_eq[-2], (list, tuple)) and len(pts_24_eq[-2]) >= 2:
+                            recent_bar_pxs_c.append(pts_24_eq[-2][1])
+                        bar_win_lo_c = min(recent_bar_pxs_c) if recent_bar_pxs_c else pts_24_eq[-1][1]
+                        bar_win_hi_c = max(recent_bar_pxs_c) if recent_bar_pxs_c else pts_24_eq[-1][1]
+                        upper_sub5m_c = (now_ms_c + 5000) if eq_rth_open_c else min(now_ms_c + 5000, last_bar_ts_c + 300 * 1000)
+                        recent_sub5m_c = [
+                            pt for pt in raw_alt_series_24h
+                            if isinstance(pt, (list, tuple))
+                            and len(pt) >= 2
+                            and last_bar_ts_c - 15 * 60 * 1000 <= pt[0] <= upper_sub5m_c
+                            and not _prices_diverged(pt[1], pts_24_eq[-1][1])
+                            and (pt[0] >= last_bar_ts_c or (bar_win_lo_c * 0.995 <= pt[1] <= bar_win_hi_c * 1.005))
+                        ]
+                        if recent_sub5m_c:
+                            by_ts_c = {pt[0]: pt for pt in pts_24_eq}
+                            for r_pt in recent_sub5m_c:
+                                by_ts_c.setdefault(r_pt[0], r_pt)
+                            pts_24_eq = [by_ts_c[k] for k in sorted(by_ts_c)]
                     alt_series_24h = list(pts_24_eq)
                     arch_vals_7d = [pt[1] for pt in pts_5d_eq]
                     m24 = compute_24h_price_metrics(alt_series_24h) or {}
@@ -382,8 +410,9 @@ def collect_pretrade_telemetry(
             import time as _pt_time
 
             now_ms_eq = int(_pt_time.time() * 1000)
+            eq_rth_open = bool(is_symbol_market_open(symbol, now_ms_eq / 1000.0))
             rth_fresh_eq = (
-                (now_ms_eq - last_alt_pt[0]) <= 20 * 60 * 1000
+                (now_ms_eq - last_alt_pt[0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
                 and (live_cur_px <= 0.0 or abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) <= 0.005)
             )
             if (
