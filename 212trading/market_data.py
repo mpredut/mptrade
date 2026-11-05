@@ -184,21 +184,57 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
             raw_v = vols[i] if i < len(vols) else None
             v_clean = safe_nonneg_float(raw_v, default=None)
             bars.append((int(t_f) if t_f.is_integer() else t_f, c_f, v_clean))
+        reg_period = (
+            ((meta.get("currentTradingPeriod") or {}).get("regular") or {})
+            if isinstance(meta.get("currentTradingPeriod"), dict)
+            else {}
+        )
+        reg_start = safe_pos_float(reg_period.get("start"), default=None) if isinstance(reg_period, dict) else None
+        reg_end = safe_pos_float(reg_period.get("end"), default=None) if isinstance(reg_period, dict) else None
+        ref_meta_px = (
+            safe_pos_float(meta.get("regularMarketPrice"), default=None)
+            or safe_pos_float(meta.get("chartPreviousClose"), default=None)
+        )
+        if reg_start is not None and bars:
+            reg_bars = [b for b in bars if reg_start <= b[0] <= (reg_end or float("inf"))]
+            cleaned_pre_post = []
+            for b in bars:
+                is_outside_reg = b[0] < reg_start or (reg_end is not None and b[0] > reg_end)
+                if is_outside_reg and (b[2] is None or b[2] <= 0.0):
+                    ref_px = (
+                        (reg_bars[0][1] if b[0] < reg_start else reg_bars[-1][1])
+                        if reg_bars
+                        else ref_meta_px
+                    )
+                    if ref_px is not None and ref_px > 0.0 and abs(b[1] - ref_px) / ref_px > 0.01:
+                        continue
+                cleaned_pre_post.append(b)
+            if cleaned_pre_post:
+                bars = cleaned_pre_post
         if len(bars) >= 3 and any((b[2] or 0.0) > 0.0 for b in bars):
             filtered_bars = [bars[0]]
             for idx in range(1, len(bars) - 1):
-                cur_b, next_b = bars[idx], bars[idx + 1]
+                cur_b = bars[idx]
                 prev_b = filtered_bars[-1]
                 cur_v = cur_b[2]
-                if (cur_v is None or cur_v <= 0.0) and ((prev_b[2] or 0.0) > 0.0 or (next_b[2] or 0.0) > 0.0):
-                    p_prev, p_cur, p_next = prev_b[1], cur_b[1], next_b[1]
-                    ref_mid = 0.5 * (p_prev + p_next)
-                    if (
-                        ref_mid > 0.0
-                        and abs(p_prev - p_next) / ref_mid <= 0.025
-                        and abs(p_cur - ref_mid) / ref_mid > 0.025
+                if cur_v is None or cur_v <= 0.0:
+                    next_idx = idx + 1
+                    while (
+                        next_idx < len(bars) - 1
+                        and (bars[next_idx][2] is None or bars[next_idx][2] <= 0.0)
+                        and abs(bars[next_idx][1] - cur_b[1]) <= 1e-9
                     ):
-                        continue
+                        next_idx += 1
+                    next_b = bars[next_idx]
+                    if (prev_b[2] or 0.0) > 0.0 or (next_b[2] or 0.0) > 0.0:
+                        p_prev, p_cur, p_next = prev_b[1], cur_b[1], next_b[1]
+                        ref_mid = 0.5 * (p_prev + p_next)
+                        if (
+                            ref_mid > 0.0
+                            and abs(p_prev - p_next) / ref_mid <= 0.025
+                            and abs(p_cur - ref_mid) / ref_mid > 0.025
+                        ):
+                            continue
                 filtered_bars.append(cur_b)
             filtered_bars.append(bars[-1])
             bars = filtered_bars

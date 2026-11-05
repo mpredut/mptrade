@@ -1539,12 +1539,21 @@ def enrich_24h_and_microstructure(
                     pts_24h = list(pts_24h_bars)
                     if rth_bar_fresh and raw_matched_series_24h and pts_24h:
                         last_bar_ts = pts_24h[-1][0]
+                        recent_bar_pxs = [
+                            b[1] for b in pts_24h_bars
+                            if isinstance(b, (list, tuple)) and len(b) >= 2 and b[0] >= last_bar_ts - 15 * 60 * 1000
+                        ]
+                        if len(pts_24h_bars) >= 2 and isinstance(pts_24h_bars[-2], (list, tuple)) and len(pts_24h_bars[-2]) >= 2:
+                            recent_bar_pxs.append(pts_24h_bars[-2][1])
+                        bar_win_lo = min(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
+                        bar_win_hi = max(recent_bar_pxs) if recent_bar_pxs else pts_24h[-1][1]
                         recent_sub5m = [
                             pt for pt in raw_matched_series_24h
                             if isinstance(pt, (list, tuple))
                             and len(pt) >= 2
                             and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
                             and not _prices_diverged(pt[1], pts_24h[-1][1])
+                            and (pt[0] >= last_bar_ts or (bar_win_lo * 0.995 <= pt[1] <= bar_win_hi * 1.005))
                         ]
                         if recent_sub5m:
                             by_ts = {pt[0]: pt for pt in pts_24h}

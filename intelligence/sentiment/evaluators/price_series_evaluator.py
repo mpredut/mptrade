@@ -88,7 +88,14 @@ def _extract_sorted_ts_px(series: list) -> List[Tuple[float, float]]:
         for idx in range(1, len(pts_vol) - 1):
             t_cur, p_cur, v_cur = pts_vol[idx]
             if v_cur is None or v_cur <= 0.0:
-                p_prev, p_next = pts[-1][1], pts_vol[idx + 1][1]
+                next_idx = idx + 1
+                while (
+                    next_idx < len(pts_vol) - 1
+                    and (pts_vol[next_idx][2] is None or pts_vol[next_idx][2] <= 0.0)
+                    and abs(pts_vol[next_idx][1] - p_cur) <= 1e-9
+                ):
+                    next_idx += 1
+                p_prev, p_next = pts[-1][1], pts_vol[next_idx][1]
                 if (
                     min(p_prev, p_next, p_cur) > 0.0
                     and abs(p_cur - p_prev) / p_prev > 0.025
@@ -1254,22 +1261,39 @@ def _apply_24h_series_enrichment(
         if len(series_24h) >= 20:
             all_pts_m = _extract_sorted_ts_px(series_24h)
             tail_pts_m: List[Tuple[float, float]] = []
+            sub_all_m: List[Tuple[float, float]] = []
             has_dense_1h_bars = False
+            vol_1h_inflated = False
             if len(all_pts_m) >= 10:
                 cutoff_1h_ms = float(all_pts_m[-1][0]) - 3600.0 * 1000.0
                 last_t_ms = -1e18
                 for t_ms, px_v in all_pts_m:
-                    if t_ms >= cutoff_1h_ms and (t_ms - last_t_ms) >= 55000.0:
-                        tail_pts_m.append((t_ms, px_v))
+                    if (t_ms - last_t_ms) >= 55000.0:
+                        sub_all_m.append((t_ms, px_v))
+                        if t_ms >= cutoff_1h_ms:
+                            tail_pts_m.append((t_ms, px_v))
                         last_t_ms = t_ms
-                has_dense_1h_bars = len(tail_pts_m) >= 20
-                no_pos_vol_1h = safe_pos_float(entry.get("vol_1h_pct"), default=None) is None
-                if len(tail_pts_m) < 20 and (no_pos_vol_1h or stale_short_cache):
-                    tail_pts_m = all_pts_m[-60:]
+                nz_tail = sum(
+                    1 for i in range(1, len(tail_pts_m)) if abs(tail_pts_m[i][1] - tail_pts_m[i - 1][1]) > 1e-12
+                )
+                has_dense_1h_bars = len(tail_pts_m) >= 20 and nz_tail >= 10
+                cur_vol_1h = safe_pos_float(entry.get("vol_1h_pct"), default=None)
+                span_24h = safe_pos_float(entry.get("span_24h_pct"), default=None)
+                vol_1h_inflated = bool(
+                    cur_vol_1h is not None
+                    and (
+                        (span_24h is not None and span_24h > 0.0 and cur_vol_1h > max(span_24h * 0.85, 2.0))
+                        or (len(tail_pts_m) >= 5 and nz_tail < 10 and len(sub_all_m) >= 20)
+                    )
+                )
+                no_pos_vol_1h = cur_vol_1h is None
+                if not has_dense_1h_bars and (no_pos_vol_1h or stale_short_cache or vol_1h_inflated):
+                    tail_pts_m = sub_all_m[-60:] if len(sub_all_m) >= 20 else all_pts_m[-60:]
             if len(tail_pts_m) >= 20 and (
                 has_dense_1h_bars
                 or safe_pos_float(entry.get("vol_1h_pct"), default=None) is None
                 or stale_short_cache
+                or vol_1h_inflated
             ):
                 dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
                 if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
@@ -1279,11 +1303,13 @@ def _apply_24h_series_enrichment(
                         has_dense_1h_bars
                         or safe_pos_float(entry.get("adapt_reentry_pct"), default=None) is None
                         or stale_short_cache
+                        or vol_1h_inflated
                     ):
                         entry["adapt_reentry_pct"] = re_th_m
                     if dca_th_m is not None and (
                         has_dense_1h_bars
                         or safe_pos_float(entry.get("adapt_dca_pct"), default=None) is None
                         or stale_short_cache
+                        or vol_1h_inflated
                     ):
                         entry["adapt_dca_pct"] = dca_th_m

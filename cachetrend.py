@@ -564,8 +564,22 @@ class CacheShortTrendManager(CacheManagerInterface):
                     calculate_volatility_1h,
                 )
                 with getattr(w_big, "_lock", threading.RLock()):
+                    eff_v1h_sr = float(w_big.sample_rate_sec)
+                    n_big = len(w_big.prices)
+                    if n_big >= 20:
+                        with self._lock:
+                            tbuf_v = self._get_trend_buffer(symbol)
+                            ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
+                        if len(ts_tail) >= 20:
+                            active_dts = [
+                                (ts_tail[i] - ts_tail[i - 1]) / 1000.0
+                                for i in range(1, len(ts_tail))
+                                if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= 1800.0
+                            ]
+                            if active_dts:
+                                eff_v1h_sr = max(eff_v1h_sr, sum(active_dts) / len(active_dts))
                     v1h = calculate_volatility_1h(
-                        w_big.prices, w_big.sample_rate_sec
+                        w_big.prices, eff_v1h_sr
                     )
             except Exception:
                 pass

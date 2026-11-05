@@ -1156,9 +1156,18 @@ def _dispatch_order_event_notification(
     side_s = str(side or "").strip().upper() or "ORDER"
     ord_type_s = str(order_type or "MARKET").strip().upper()
     venue_s = str(venue or source or "venue").strip()
+    qty_s = f"{qty_f:.8f}".rstrip("0").rstrip(".") or "0"
+    if px_f >= 1.0 and round(px_f, 2) == round(px_f, 6):
+        px_s = f"{px_f:,.2f}"
+    else:
+        px_s = f"{px_f:,.8f}".rstrip("0")
+        if px_s.endswith("."):
+            px_s = f"{px_s}00"
+        elif len(px_s.rsplit(".", 1)[-1]) == 1:
+            px_s = f"{px_s}0"
     eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}"
     eff_body = body or (
-        f"Venue: {venue_s} · Qty: {qty_f:g} @ ${px_f:,.2f} ({ord_type_s} · ${notional_f:,.0f})\n"
+        f"Venue: {venue_s} · Qty: {qty_s} @ ${px_s} ({ord_type_s} · ${notional_f:,.0f})\n"
         f"Order ID: {order_id}"
     )
     if callable(notify_fn):

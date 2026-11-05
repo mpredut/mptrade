@@ -1635,6 +1635,23 @@ def generate_unique_intent_id(
     return intent_id
 
 
+def _fmt_intent_qty(val: Any) -> str:
+    fval = safe_pos_float(val, default=0.0) or 0.0
+    return f"{fval:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def _fmt_intent_px(val: Any, *, comma: bool = False) -> str:
+    fval = safe_pos_float(val, default=0.0) or 0.0
+    if fval >= 1.0 and round(fval, 2) == round(fval, 6):
+        return f"{fval:,.2f}" if comma else f"{fval:.2f}"
+    raw = (f"{fval:,.8f}" if comma else f"{fval:.8f}").rstrip("0")
+    if raw.endswith("."):
+        return f"{raw}00"
+    if len(raw.rsplit(".", 1)[-1]) == 1:
+        return f"{raw}0"
+    return raw
+
+
 def record_shadow_intent_observation(
     inst: Any,
     intent: dict[str, Any],
@@ -1655,14 +1672,17 @@ def record_shadow_intent_observation(
 ) -> dict[str, Any]:
     """Record a shadow-mode intent observation and dispatch notification."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
+    qty_s = _fmt_intent_qty(target_qty)
+    px_log_s = _fmt_intent_px(price, comma=False)
+    px_body_s = _fmt_intent_px(price, comma=True)
     if log:
         log.info(
-            "[LLM TRADER · SHADOW] Would execute %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s. Thesis: %s",
-            ord_lbl, inst.symbol, target_qty, price, effective_usd, inst.provider_name, thesis,
+            "[LLM TRADER · SHADOW] Would execute %s %s (qty=%s, price=$%s, notional=$%.2f) on %s. Thesis: %s",
+            ord_lbl, inst.symbol, qty_s, px_log_s, effective_usd, inst.provider_name, thesis,
         )
     title = f"🟢 [{trade_tag.strip('[]')} · SHADOW] {ord_lbl} {inst.symbol} ${effective_usd:.0f}"
     body = (
-        f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} ({'LIMIT' if is_limit else 'MARKET'})\n"
+        f"Venue: {inst.provider_name} · Qty: {qty_s} @ ${px_body_s} ({'LIMIT' if is_limit else 'MARKET'})\n"
         f"Confidence: {confidence:.2f} · Notional: ${effective_usd:.2f}\n"
         f"Operational Preflight: {'PASSED' if guard_allowed else guard_reason}\n"
         f"Thesis: {thesis}"
@@ -1706,6 +1726,7 @@ def execute_enforce_intent_order(
 ) -> dict[str, Any]:
     """Execute an enforce-mode trade intent via Instrument.place with 1 retry on stale account cache."""
     ord_lbl = f"{decision} LIMIT" if is_limit else decision
+    px_body_s = _fmt_intent_px(price, comma=True)
     if not guard_allowed:
         if log:
             log.warning(
@@ -1714,7 +1735,7 @@ def execute_enforce_intent_order(
             )
         title = f"🛡 {trade_tag} BLOCKED {ord_lbl} {inst.symbol}"
         body = (
-            f"Venue: {inst.provider_name} · Price: ${price:,.2f} · Notional: ${effective_usd:.0f}\n"
+            f"Venue: {inst.provider_name} · Price: ${px_body_s} · Notional: ${effective_usd:.0f}\n"
             f"Reason: {guard_reason}\n"
             f"Thesis: {thesis}"
         )
@@ -1734,8 +1755,8 @@ def execute_enforce_intent_order(
 
     if log:
         log.warning(
-            "[LLM TRADER · ENFORCE] Executing %s %s (qty=%g, price=$%.2f, notional=$%.2f) on %s...",
-            ord_lbl, inst.symbol, target_qty, price, effective_usd, inst.provider_name,
+            "[LLM TRADER · ENFORCE] Executing %s %s (qty=%s, price=$%s, notional=$%.2f) on %s...",
+            ord_lbl, inst.symbol, _fmt_intent_qty(target_qty), _fmt_intent_px(price, comma=False), effective_usd, inst.provider_name,
         )
 
     try:
@@ -1826,7 +1847,7 @@ def execute_enforce_intent_order(
             title = f"{icon} {trade_tag} {act_verb} {decision} {inst.symbol} ${effective_usd:.0f}"
             order_id_str = extract_order_id(order_res, default="N/A")
             body = (
-                f"Venue: {inst.provider_name} · Qty: {target_qty:g} @ ${price:,.2f} "
+                f"Venue: {inst.provider_name} · Qty: {_fmt_intent_qty(target_qty)} @ ${_fmt_intent_px(price, comma=True)} "
                 f"({'LIMIT' if is_limit else 'MARKET'} · ${effective_usd:,.0f})\n"
                 f"Order ID: {order_id_str}\n"
                 f"Thesis: {thesis}"
