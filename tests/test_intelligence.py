@@ -7097,9 +7097,12 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     assert canonical_base_asset("CRBUSD") == "CRB"
     assert canonical_base_asset("SUBUSD") == "SUB"
     assert canonical_base_asset("USDTUSD") == "USDT"
+    assert canonical_base_asset("XAUTUSD") == "XAUT"
     from cachepaths import split_symbol_assets
     assert split_symbol_assets("XBTUSD") == ("XBT", "USD")
     assert split_symbol_assets("ARBUSD") == ("ARB", "USD")
+    assert split_symbol_assets("XAUTUSD") == ("XAUT", "USD")
+    assert split_symbol_assets("SPCXx.TUSD") == ("SPCX", "USD")
     assert split_symbol_assets("SOLTUSD") == ("SOL", "TUSD")
     assert split_symbol_assets("SOLBUSD") == ("SOL", "BUSD")
     assert split_symbol_assets("DOTTUSD") == ("DOT", "TUSD")

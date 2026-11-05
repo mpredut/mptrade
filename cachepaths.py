@@ -575,9 +575,15 @@ _CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
 }
 
 
+_KNOWN_USD_BASES_ENDING_IN_T_OR_B: frozenset[str] = frozenset({
+    "XBT", "XXBT", "XXBTZ", "XAUT", "USDT", "ARB", "DOT", "BAT",
+    "HOT", "NOT", "ACT", "FET", "APT", "CRB", "SUB", "GRT", "LPT",
+})
+
+
 def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
     """Return True if a symbol ending in TUSD or BUSD is actually a USD quote pair
-    whose base ends in 'T' (e.g. XBTUSD, DOTUSD, BATUSD, HOTUSD, NOTUSD, ACTUSD, USDTUSD, XXBTUSD)
+    whose base ends in 'T' (e.g. XBTUSD, XAUTUSD, SPCXx.TUSD, DOTUSD, BATUSD, HOTUSD, NOTUSD, ACTUSD, USDTUSD, XXBTUSD)
     or 'B' (e.g. ARBUSD, CRBUSD, SUBUSD)."""
     if quote not in ("TUSD", "BUSD"):
         return False
@@ -589,10 +595,12 @@ def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
     if token.endswith("USD"):
         stem_usd = token[:-3]
         if (
-            stem_usd in _CANONICAL_BASE_ALIASES
+            stem_usd in _KNOWN_USD_BASES_ENDING_IN_T_OR_B
+            or stem_usd in _CANONICAL_BASE_ALIASES
             or stem_usd in _LEGACY_KRAKEN_X_BASES
             or stem_usd in _BARE_STABLECOIN_BASES
-            or stem_usd.endswith("XBT")
+            or stem_usd.endswith((".T", "X.T", "XBT"))
+            or stem_usd.startswith("XAU")
         ):
             return True
     return False
