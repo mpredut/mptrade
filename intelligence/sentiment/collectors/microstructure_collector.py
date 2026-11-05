@@ -82,6 +82,7 @@ _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, str, int], Tuple[float, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
 _ARCH_FILE_MEMO: Dict[Tuple[str, int, int, int, Tuple[str, ...]], list] = {}
+_EQ_YAHOO_CHART_MEMO: Dict[str, Tuple[float, Any]] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
@@ -1293,13 +1294,25 @@ def enrich_24h_and_microstructure(
             )
         ):
             try:
-                eq_cache_stale = not p24_eq_path or not os.path.exists(p24_eq_path) or (now_ts - os.path.getmtime(p24_eq_path)) >= 240.0
+                memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym)
+                eq_cache_stale = (
+                    memo_chart is None
+                    or (now_ts - memo_chart[0]) >= 240.0
+                    or not p24_eq_path
+                    or not os.path.exists(p24_eq_path)
+                )
             except Exception:
                 eq_cache_stale = True
         if (not m24 and (is_t212_inst or (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ))) or eq_cache_stale:
             try:
-                _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
-                chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
+                memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if "PYTEST_CURRENT_TEST" not in os.environ else None
+                if memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < 240.0:
+                    chart_res = memo_chart[1]
+                else:
+                    _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
+                    chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
+                    if "PYTEST_CURRENT_TEST" not in os.environ:
+                        _EQ_YAHOO_CHART_MEMO[sym] = (now_ts, chart_res)
                 pts_5d: List[List[Any]] = []
                 if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
                     pts_5d = sorted(
@@ -1452,11 +1465,13 @@ def enrich_24h_and_microstructure(
                         try:
                             from state_io import save_json_state
 
-                            if pts_24h_to_save or pts_24h_bars:
+                            if (pts_24h_to_save or pts_24h_bars) and len(raw_matched_series_24h) < 10:
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
                                 save_json_state(p24_target, {"items": {sym: pts_24h_to_save or pts_24h_bars}})
-                            p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
-                            save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
+                            p365_jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.jsonl")))
+                            if not os.path.exists(p365_jsonl_path):
+                                p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
+                                save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
                         except Exception:
                             pass
             except Exception:

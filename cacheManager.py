@@ -34,7 +34,7 @@ from cachepaths import (
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
-from instrument_registry import casefold_get, tracked_price_instruments
+from instrument_registry import casefold_get, is_equity_symbol, tracked_price_instruments
 import cacheintegrity as _cache_integrity
 from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_ws_bridge as _bapi_ws_bridge
@@ -66,6 +66,7 @@ from providers.base import (
 # component env files. ``botcore.load_dotenv`` never overwrites variables already set
 # in the real environment; it only fills missing values.
 from botcore import (
+    is_us_rth_open,
     load_dotenv as _load_dotenv,
     required_float_env,
     required_int_env,
@@ -2433,6 +2434,14 @@ class _PriceSeriesCacheMixin:
         # Preserve the observation timestamp supplied by get_price. Using only a cached
         # value with ``time.time`` would record a stale price as freshly observed during
         # a network outage, corrupting the history.
+        if (
+            is_equity_symbol(symbol)
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and not is_us_rth_open()
+        ):
+            with self.lock:
+                if self.cache.get(symbol):
+                    return []
         try:
             entry = get_current_price_manager().get_price(symbol)
         except Exception as e:
@@ -2536,6 +2545,8 @@ class Cache24PriceManager(_PriceSeriesCacheMixin, CacheManagerInterface):
             if not entries or not isinstance(entries, list):
                 return
             idx = bisect.bisect_left(entries, cutoff_ms, key=self._entry_timestamp_ms)
+            if is_equity_symbol(symbol):
+                idx = min(idx, max(0, len(entries) - 288))
             if idx > 0:
                 self.cache[symbol] = entries[idx:]
 
@@ -3025,6 +3036,7 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         self._ws_stream_event_ts_per_symbol: dict = {}
         self._price_subscribers = []       # The base initializer preserves existing values.
         self._update_timestamps: dict = defaultdict(deque)  # Also required before super().
+        self._rth_empty_backoff_ts: dict = {}
         self._first_sleep       = True     # Let WebSocket connect before HTTP fallback.
         # The injectable market-data facade defaults to the global singleton. Set it before
         # the base initializer because load_state may immediately call get_remote_items.
@@ -3175,14 +3187,31 @@ class CacheCurrentPriceManager(CacheManagerInterface):
         for symbol in list(self.symbols):
             if self._ws_is_healthy(symbol):
                 continue
+            is_rth_sym = (
+                normalize_venue_name(self.provider_name_for(symbol) or "") == "t212"
+                or is_equity_symbol(symbol)
+            )
+            if is_rth_sym and "PYTEST_CURRENT_TEST" not in os.environ:
+                now_s = time.time()
+                if (now_s - self._rth_empty_backoff_ts.get(symbol, 0.0)) < 60.0:
+                    continue
+                if not is_us_rth_open(now_s):
+                    with self.lock:
+                        existing_entries = self.cache.get(symbol)
+                    if existing_entries and self._extract_price_and_ts(existing_entries)[0] is not None:
+                        continue
             startTime = self.fetchtime_per_symbol.get(symbol, self.fallback_time_default)
             new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
             if new_items is None:
                 raise RuntimeError(
                     f"{self.cls_name} returned no synchronization result for {symbol}")
             if not new_items:
+                if is_rth_sym:
+                    self._rth_empty_backoff_ts[symbol] = time.time()
                 print(f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {u.timestampToTime(startTime)} ")
             else:
+                if is_rth_sym:
+                    self._rth_empty_backoff_ts.pop(symbol, None)
                 self._persist_items(symbol, new_items)
         _bapi_ws_health.clear_ws_rest_resync_for_manager(self.cls_name)
         return True
