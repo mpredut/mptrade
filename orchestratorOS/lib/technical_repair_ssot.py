@@ -497,12 +497,32 @@ def gather_system_and_vpn_telemetry(
     sys_vpn["vpn_outage_active"] = os.path.exists("/var/lib/pia_selfheal/outage_since")
     sys_vpn["internet_healthy"] = bool(sys_vpn.get("default_route_present", True) and not sys_vpn.get("vpn_outage_active", False))
 
-    rw_state = _resolve_repair_json_reader()(os.path.join(workspace_dir, ".resource_watchdog_state.json"))
+    rw_path = os.path.join(workspace_dir, ".resource_watchdog_state.json")
+    rw_state = _resolve_repair_json_reader()(rw_path)
     if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
+        rw_last_run = normalize_epoch_sec(rw_state.get("last_run"), default=None)
+        if rw_last_run is None and os.path.exists(rw_path):
+            try:
+                rw_last_run = os.path.getmtime(rw_path)
+            except OSError:
+                rw_last_run = None
+        rw_fresh = rw_last_run is None or (time.time() - rw_last_run) <= 3600.0
+        min_consec = max(2, int(safe_float(os.environ.get("RESOURCE_CONSECUTIVE_CHECKS"), default=3.0) or 3.0))
+        procs_map = rw_state.get("processes") if isinstance(rw_state.get("processes"), dict) else {}
         offenders = [
-            {"key": k, "reasons": v.get("last_reasons"), "consecutive_high": v.get("high")}
+            {
+                "key": k,
+                **({"command": cmd_s} if isinstance(p_info := procs_map.get(k), dict) and (cmd_s := str(p_info.get("command") or "").strip()) else {}),
+                "reasons": v.get("last_reasons"),
+                "consecutive_high": v.get("high"),
+            }
             for k, v in rw_state["tracked"].items()
-            if isinstance(v, dict) and (safe_float(v.get("high"), default=0.0) or 0.0) > 0
+            if rw_fresh
+            and isinstance(v, dict)
+            and (
+                (safe_float(v.get("high"), default=0.0) or 0.0) >= min_consec
+                or _parse_bool_flag(v.get("alerted"), False)
+            )
         ]
         if offenders:
             sys_vpn["resource_watchdog_offenders"] = offenders

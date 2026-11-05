@@ -5340,5 +5340,120 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     assert anom_31.error_count == 0
 
 
+def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_5m_flow_reversal(tmp_path):
+    import json
+    import time
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import gather_system_and_vpn_telemetry
 
+    # 1. Bug 90: extract_symbol_recent_fills scopes recent_buys to the active cycle after a full exit,
+    #    and prunes >7d-old closed-cycle buys even when oversold swing PnL is checked
+    tao_fills = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 272.94, "qty": 1.19073, "ts_ms": 1791889520952},
+            {"side": "BUY", "price": 264.7238, "qty": 0.58748, "ts_ms": 1792030636688},
+            {"side": "BUY", "price": 256.0432, "qty": 1.26932, "ts_ms": 1792072494450},
+            {"side": "SELL", "price": 226.016729, "qty": 7.40379, "ts_ms": 1793319677319},
+            {"side": "BUY", "price": 235.741094, "qty": 3.70189, "ts_ms": 1793331231572},
+        ],
+        symbol="TAOUSD",
+    )
+    assert tao_fills is not None
+    assert [b["price"] for b in tao_fills["recent_buys"]] == [235.741094]
 
+    hype_fills = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 75.55, "qty": 1.38285373, "ts_ms": 1792831547936},
+            {"side": "SELL", "price": 93.3, "qty": 17.88, "ts_ms": 1793287711318},
+            {"side": "BUY", "price": 91.209992, "qty": 4.9358342, "ts_ms": 1793365875456},
+            {"side": "SELL", "price": 87.120002, "qty": 4.398355, "ts_ms": 1793721326834},
+            {"side": "BUY", "price": 84.0, "qty": 5.95238095, "ts_ms": 1793751791558},
+            {"side": "BUY", "price": 82.5, "qty": 1.81818181, "ts_ms": 1793756214195},
+        ],
+        symbol="HYPEUSD",
+    )
+    assert hype_fills is not None
+    assert [b["price"] for b in hype_fills["recent_buys"]] == [91.209992, 84.0, 82.5]
+
+    ro_tao_c = {
+        "last_sell": {"price": 226.016729, "qty": 7.40379, "ts_ms": 1793319677319},
+        "recent_buys": [
+            {"price": 256.0432, "qty": 1.26932, "ts_ms": 1792072494450},
+            {"price": 235.741094, "qty": 3.70189, "ts_ms": 1793331231572},
+        ],
+        "lifo_realized_pnl_usd": -116.73,
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        {"TAOUSD": {"qty": 7.38813, "cost_usd": 2105.51, "avg_cost_px": 284.98, "entry_price": 305.469, "_entry_ts_ms": 1791188569000}},
+        {},
+        {},
+        {"kraken": {"TAOUSD": ro_tao_c}},
+        {("kraken", "TAOUSD"): 3.706878},
+        {"TAOUSD": {"price": 236.4}},
+    )
+    assert [b["price"] for b in ro_tao_c["recent_buys"]] == [235.741094]
+
+    # 2. Bug 91: gather_system_and_vpn_telemetry filters out stale (>1h) or 1-poll transient resource_watchdog_offenders
+    now_s = time.time()
+    ws_stale = tmp_path / "ws_stale"
+    ws_stale.mkdir(parents=True, exist_ok=True)
+    (ws_stale / ".resource_watchdog_state.json").write_text(
+        json.dumps({
+            "last_run": now_s - 86400.0,
+            "processes": {"101:1": {"pid": 101, "command": "python macro_analyzer.py"}},
+            "tracked": {"101:1": {"high": 5, "alerted": True, "last_reasons": ["CPU 51.4%"]}},
+        }),
+        encoding="utf-8",
+    )
+    telem_stale = gather_system_and_vpn_telemetry(str(ws_stale), base_resources={})
+    assert "resource_watchdog_offenders" not in telem_stale
+
+    ws_fresh = tmp_path / "ws_fresh"
+    ws_fresh.mkdir(parents=True, exist_ok=True)
+    (ws_fresh / ".resource_watchdog_state.json").write_text(
+        json.dumps({
+            "last_run": now_s - 60.0,
+            "processes": {
+                "101:1": {"pid": 101, "command": "python macro_analyzer.py"},
+                "202:2": {"pid": 202, "command": "python rtrade.py"},
+            },
+            "tracked": {
+                "101:1": {"high": 1, "alerted": False, "last_reasons": ["CPU 51.4%"]},
+                "202:2": {"high": 3, "alerted": True, "last_reasons": ["CPU 95.0%"]},
+            },
+        }),
+        encoding="utf-8",
+    )
+    telem_fresh = gather_system_and_vpn_telemetry(str(ws_fresh), base_resources={})
+    assert telem_fresh.get("resource_watchdog_offenders") == [
+        {"key": "202:2", "command": "python rtrade.py", "reasons": ["CPU 95.0%"], "consecutive_high": 3}
+    ]
+
+    # 3. Bug 92: enrich_sentiment_advisor_live_flow_divergence detects LIVE_5M_SELL_REVERSAL / LIVE_5M_BUY_REVERSAL
+    sa_bull_5m = {
+        "market_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 16.0,
+        "summary": "BTC pushes higher propelled by taker buying (taker buy/sell ratio 1.23, 5m ratio 2.34, 5m CVD +$16.21M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bull_5m,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 1.058,
+                "cvd_15m_usd": 3_030_000.0,
+                "taker_ratio_5m": 0.51,
+                "cvd_5m_usd": -8_390_000.0,
+                "taker_ratio_1h": 1.00,
+                "cvd_1h_usd": -791_200.0,
+            }
+        },
+    )
+    assert sa_bull_5m.get("live_flow_divergence", "").startswith("LIVE_5M_SELL_REVERSAL (")
+    assert "5m_tr=0.51, cvd_5m=-8.39M" in sa_bull_5m["live_flow_divergence"]

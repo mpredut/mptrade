@@ -349,9 +349,11 @@ def enrich_sentiment_advisor_live_flow_divergence(
     )
     tr_s = f"taker_ratio={live_tr:.2f}" if live_tr is not None else (f"1h_taker={live_tr_1h:.2f}" if live_tr_1h is not None else "")
     cvd_s = f"cvd_15m={live_cvd / 1e6:+.2f}M" if live_cvd is not None else (f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if live_cvd_1h is not None else "")
+    tr_5m_s = f"5m_tr={live_tr_5m:.2f}" if live_tr_5m is not None else ""
+    cvd_5m_s = f"cvd_5m={live_cvd_5m / 1e6:+.2f}M" if live_cvd_5m is not None else ""
     tr_1h_s = f"1h_tr={live_tr_1h:.2f}" if (live_tr is not None and live_tr_1h is not None) else ""
     cvd_1h_s = f"cvd_1h={live_cvd_1h / 1e6:+.2f}M" if (live_cvd is not None and live_cvd_1h is not None) else ""
-    flow_lbl = ", ".join(x for x in (tr_s, cvd_s, tr_1h_s, cvd_1h_s) if x)
+    flow_lbl = ", ".join(x for x in (tr_s, cvd_s, tr_5m_s, cvd_5m_s, tr_1h_s, cvd_1h_s) if x)
     is_bear_posture = (
         sa_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE")
         or sa_bias == "BEARISH"
@@ -377,6 +379,13 @@ def enrich_sentiment_advisor_live_flow_divergence(
                 and live_cvd >= 2_500_000.0
                 and (live_tr is None or live_tr >= 1.08)
                 and ((live_cvd_5m is not None and live_cvd_5m >= 5_000_000.0) or (live_tr_5m is not None and live_tr_5m >= 1.80))
+            )
+            or (
+                sa_age >= 15.0
+                and live_tr_5m is not None
+                and live_tr_5m >= 1.75
+                and live_cvd_5m is not None
+                and live_cvd_5m >= 5_000_000.0
             )
             or (
                 sa_age >= 15.0
@@ -413,7 +422,18 @@ def enrich_sentiment_advisor_live_flow_divergence(
             )
         else:
             ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr <= 0.65 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-            buy_div_tag = "LIVE_BUY_REVERSAL"
+            buy_div_tag = (
+                "LIVE_5M_BUY_REVERSAL"
+                if (
+                    live_tr_5m is not None
+                    and live_tr_5m >= 1.75
+                    and live_cvd_5m is not None
+                    and live_cvd_5m >= 5_000_000.0
+                    and (live_cvd is None or live_cvd < 2_500_000.0)
+                    and (live_tr is None or live_tr < 1.25)
+                )
+                else "LIVE_BUY_REVERSAL"
+            )
         sentiment_advisor["live_flow_divergence"] = f"{buy_div_tag} ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     elif (
         is_bull_posture
@@ -425,6 +445,13 @@ def enrich_sentiment_advisor_live_flow_divergence(
                 and live_cvd <= -2_500_000.0
                 and (live_tr is None or live_tr <= 0.92)
                 and ((live_cvd_5m is not None and live_cvd_5m <= -5_000_000.0) or (live_tr_5m is not None and live_tr_5m <= 0.55))
+            )
+            or (
+                sa_age >= 15.0
+                and live_tr_5m is not None
+                and live_tr_5m <= 0.55
+                and live_cvd_5m is not None
+                and live_cvd_5m <= -5_000_000.0
             )
             or (
                 sa_age >= 15.0
@@ -460,7 +487,18 @@ def enrich_sentiment_advisor_live_flow_divergence(
             )
         else:
             ref_lbl = f"advisor ratio={cited_tr:.2f}" if (cited_tr is not None and cited_tr >= 1.35 and sa_act in ("", "HOLD")) else (sa_act or sa_bias)
-            sell_div_tag = "LIVE_SELL_REVERSAL"
+            sell_div_tag = (
+                "LIVE_5M_SELL_REVERSAL"
+                if (
+                    live_tr_5m is not None
+                    and live_tr_5m <= 0.55
+                    and live_cvd_5m is not None
+                    and live_cvd_5m <= -5_000_000.0
+                    and (live_cvd is None or live_cvd > -2_500_000.0)
+                    and (live_tr is None or live_tr > 0.75)
+                )
+                else "LIVE_SELL_REVERSAL"
+            )
         sentiment_advisor["live_flow_divergence"] = f"{sell_div_tag} ({flow_lbl} vs {sa_age:.1f}m-old {ref_lbl})"
     elif (
         sa_age >= 15.0
