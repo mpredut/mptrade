@@ -382,6 +382,29 @@ def load_symbol_price_series(
                 and max(p[1] for p in tail_pts) == min(p[1] for p in tail_pts)
             ):
                 return rows[: last_ohlc_idx + 1]
+        last_pt = _parse_ts_px_row(rows[-1])
+        if last_pt is not None and isinstance(rows[-1], (list, tuple)) and len(rows[-1]) < 3:
+            flat_start = len(rows) - 1
+            while flat_start > 0:
+                prev_r = rows[flat_start - 1]
+                prev_pt = _parse_ts_px_row(prev_r)
+                if (
+                    prev_pt is not None
+                    and isinstance(prev_r, (list, tuple))
+                    and len(prev_r) < 3
+                    and abs(prev_pt[1] - last_pt[1]) <= 1e-6
+                ):
+                    flat_start -= 1
+                else:
+                    break
+            anchor_idx = flat_start
+            if anchor_idx > 0:
+                before_pt = _parse_ts_px_row(rows[anchor_idx - 1])
+                if before_pt is not None and abs(before_pt[1] - last_pt[1]) <= 1e-6:
+                    anchor_idx -= 1
+            anchor_pt = _parse_ts_px_row(rows[anchor_idx]) if 1 <= anchor_idx < len(rows) - 1 else None
+            if anchor_pt is not None and (last_pt[0] - anchor_pt[0]) > 20 * 60 * 1000:
+                return rows[: anchor_idx + 1]
         return rows
 
     for cand in cands:
@@ -1328,7 +1351,16 @@ def enrich_24h_and_microstructure(
             else ""
         )
         memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
-        memo_chart_fresh = bool(memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < 240.0)
+        memo_ttl_s = 240.0
+        if is_eq_sym and memo_chart is not None:
+            try:
+                from instrument_registry import is_symbol_market_open
+
+                if not is_symbol_market_open(sym, now_ts):
+                    memo_ttl_s = 1800.0
+            except Exception:
+                pass
+        memo_chart_fresh = bool(memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < memo_ttl_s)
         eq_cache_stale = bool(
             is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ

@@ -7758,6 +7758,17 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert entry_rgnt["kalman_vel"] != 0.0
     assert entry_rgnt["slope_2_5h"] != 0.0
 
+    # Also strips flat off-RTH tail when series consists purely of 2-element [ts, px] points
+    cdir_rgnt_2el = tmp_path / "cachedb_rgnt_2el"
+    (cdir_rgnt_2el / "prices").mkdir(parents=True, exist_ok=True)
+    rth_2el_pts = [[pt[0], pt[1]] for pt in rth_bars_21]
+    (cdir_rgnt_2el / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rth_2el_pts + flat_off_rth_ticks}}),
+        encoding="utf-8",
+    )
+    s24_rgnt_2el, _ = load_symbol_price_series(str(cdir_rgnt_2el), "RGNT_US_EQ")
+    assert s24_rgnt_2el[-1][0] == rth_close_ms
+
 
 
 
