@@ -989,13 +989,32 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
     if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) > 1:
+        held_pos_q = (_parse_finite_float(pos.get("free_base"), 0.0) or 0.0) + (
+            _parse_finite_float(pos.get("locked_base_qty"), 0.0) or 0.0
+        )
+        eff_lots = open_lots[-4:]
+        tot_lot_q = sum(_parse_finite_float(lt.get("qty"), 0.0) or 0.0 for lt in eff_lots if isinstance(lt, dict))
+        if held_pos_q > 0.0 and tot_lot_q > held_pos_q * 1.02:
+            clipped_rev: List[Dict[str, Any]] = []
+            rem_q = held_pos_q
+            for lt in reversed(eff_lots):
+                if not isinstance(lt, dict) or rem_q <= 1e-8:
+                    continue
+                lq = _parse_finite_float(lt.get("qty"), 0.0) or 0.0
+                if lq <= 0.0:
+                    continue
+                take_q = round(min(lq, rem_q), 6)
+                if take_q > 1e-8:
+                    clipped_rev.append({**lt, "qty": take_q})
+                    rem_q -= take_q
+            eff_lots = list(reversed(clipped_rev))
         lot_parts: List[str] = []
-        for lt in open_lots[-4:]:
+        for lt in eff_lots:
             if not isinstance(lt, dict):
                 continue
             l_q = _parse_finite_float(lt.get("qty"), None)
             l_px = _round_opt_px(lt.get("entry_px"), 6)
-            if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0:
+            if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0 and l_q * l_px >= 1.0:
                 l_pnl_s = f"({_parse_finite_float(((px_f - l_px) / l_px) * 100.0, 0.0):+.2f}%)" if px_f > 0.0 else ""
                 lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
         if len(lot_parts) > 1:

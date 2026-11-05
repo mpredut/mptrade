@@ -8898,6 +8898,25 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     )
     assert "open_lifo_lots=[8@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line
 
+    pos_line_clipped = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "free_base": 5.38,
+            "value_usd": 1166.92,
+            "free_quote": 2114.1,
+            "price": 216.9,
+            "open_lots": [
+                {"lot_id": "L0", "qty": 0.001, "entry_px": 250.0},
+                {"lot_id": "L1", "qty": 8.0, "entry_px": 234.0},
+                {"lot_id": "L2", "qty": 2.38, "entry_px": 215.1},
+            ],
+        }
+    )
+    assert "open_lifo_lots=[3@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line_clipped
+
     cyc_line = _format_venue_cycle_line(
         "kraken",
         "HYPEUSD",

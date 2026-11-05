@@ -769,6 +769,11 @@ def reconcile_venue_cycles_with_recent_orders(
             ):
                 ro_c["lifo_realized_pnl_usd"] = 0.0
                 ro_c["recent_buys"] = buys_after[-4:]
+                if isinstance(ro_c.get("open_lots"), list):
+                    ro_c["open_lots"] = [
+                        lt for lt in ro_c["open_lots"]
+                        if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                    ]
             buys_after_qty = sum(float(b["qty"]) for b in buys_after)
             has_pre_sell_rem = (
                 buys_after_qty > 0.0
@@ -889,6 +894,11 @@ def reconcile_venue_cycles_with_recent_orders(
                     if eff_rem_wallet <= 1e-6 or abs(new_qty - eff_rem_wallet) <= max(1e-4, eff_rem_wallet * 0.02):
                         ro_c["lifo_realized_pnl_usd"] = 0.0
                         ro_c["recent_buys"] = buys_after[-4:]
+                        if isinstance(ro_c.get("open_lots"), list):
+                            ro_c["open_lots"] = [
+                                lt for lt in ro_c["open_lots"]
+                                if isinstance(lt, dict) and (safe_pos_float(lt.get("ts_ms"), default=0.0) or 0.0) > ls_ts_ms
+                            ]
                 elif has_non_dust_wallet:
                     eff_avg_w = (
                         safe_pos_float(ro_c.get("active_avg_buy_px"), default=None)
@@ -1097,6 +1107,11 @@ def enrich_positions_with_orders_and_cycles(
                     or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
                 )
             ]
+            if not is_flat_after_exit and "open_lots" in pos:
+                if fresh_lots:
+                    pos["open_lots"] = fresh_lots
+                else:
+                    pos.pop("open_lots", None)
             low_buy_px = (
                 min((safe_float(lot.get("entry_px"), 0.0) for lot in fresh_lots), default=0.0)
                 if fresh_lots
