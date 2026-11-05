@@ -310,7 +310,7 @@ def harvest_macro_and_news_sensors(
         if data is not None:
             enriched = _with_age_min(data, s_path, is_fear_greed=(attr == "fear_greed"))
             if attr == "market_breadth":
-                excl_mb_bases = set(get_breadth_excluded_bases())
+                excl_mb_bases = set(get_breadth_excluded_bases()) | {"USDCUSDT"}
                 for mover_key in ("top_gainers", "top_losers"):
                     if isinstance(raw_movers := enriched.get(mover_key), list):
                         dedup_movers = []
