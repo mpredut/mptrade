@@ -964,7 +964,8 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     )
     assert "HARD_VETO_NEW_BUYS" not in prompt
     assert "level=CRITICAL_SHOCK" not in prompt
-    assert "level=HIGH_VOLATILITY_SHOCK, risk_score=0.96, brake=SELECTIVE_DIP_SCALE_IN_ONLY" in prompt
+    assert "brake=" not in prompt
+    assert "risk_score=0.96 | summary=Headline shock" in prompt
     assert "CONTRARIAN DIP ACCUMULATION (SCALE-IN)" in prompt
     assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
     assert '"order_type": "MARKET" | "LIMIT"' in prompt

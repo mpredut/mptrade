@@ -76,10 +76,24 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         if dd_f is not None and dd_f > 0.0
         else f"dd={f'{dd_val}%' if dd_val is not None else 'N/A'}"
     )
+    lb_px_f = _parse_finite_float(cyc.get("last_buy_price"), None)
+    avg_c_f = _parse_finite_float(cyc.get("avg_cost_px"), None)
+    lb_pnl_sfx = ""
+    if (
+        lb_px_f is not None
+        and lb_px_f > 0.0
+        and avg_c_f is not None
+        and avg_c_f > 0.0
+        and dd_f is not None
+        and not _same_anchor_px(lb_px_f, avg_c_f)
+    ):
+        est_spot = avg_c_f * (1.0 + dd_f / 100.0)
+        lb_pnl = ((est_spot - lb_px_f) / lb_px_f) * 100.0
+        lb_pnl_sfx = f" (pnl_vs_last_buy={lb_pnl:+.2f}%)"
     return (
         f"    - [{venue}] {sym}: qty={cyc.get('qty')}, cost=${cyc.get('cost_usd')}, "
         f"avg_cost={cyc.get('avg_cost_px')}, entry_px={cyc.get('entry_price')}, "
-        f"last_buy={cyc.get('last_buy_price')}, last_sell={cyc.get('last_sell_price')}"
+        f"last_buy={cyc.get('last_buy_price')}{lb_pnl_sfx}, last_sell={cyc.get('last_sell_price')}"
         f"{exit_kind_sfx}, dca_buys={cyc.get('dca_buys')}, {dd_field}{extra_sfx}"
     )
 
@@ -213,20 +227,14 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
     sa_line = (
-        f"bias={sa.get('market_bias', 'N/A')}, risk={sa.get('risk_level', 'N/A')}, "
-        f"action={sa.get('recommended_action', 'N/A')}, conf={sa.get('confidence', 'N/A')}"
+        f"conf={sa.get('confidence', 'N/A')}"
         f"{_age_sfx(sa)}"
         + (f" | live_btc_flow_delta={sa_flow_delta}" if sa_flow_delta else "")
         + f" | summary={sa.get('summary', '')} | key_risks={sa.get('key_risks', [])}"
         if sa else "None"
     )
-    raw_gt_level = str(gt.get("threat_level", "N/A"))
-    raw_gt_brake = str(gt.get("recommended_brake", "N/A"))
-    ai_gt_level = _AI_THREAT_LEVEL_MAP.get(raw_gt_level.strip().upper(), raw_gt_level)
-    ai_gt_brake = _AI_BRAKE_MAP.get(raw_gt_brake.strip().upper(), raw_gt_brake)
     gt_line = (
-        f"level={ai_gt_level}, risk_score={gt.get('risk_score', 'N/A')}, "
-        f"brake={ai_gt_brake}{_age_sfx(gt)}"
+        f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
         + f" | summary={gt.get('summary', '')}"
         if gt else "None"
@@ -253,9 +261,16 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         or resolve_macro_economic_calendar(breaking_news=breaking_news)
     )
     if isinstance(mc, dict) and mc.get("next_high_impact_event"):
+        has_macro_flags = "macro_release_confirmed" in mc or "fomc_today" in mc
+        is_confirmed_macro = (
+            bool(mc.get("macro_release_confirmed") or mc.get("fomc_today"))
+            if has_macro_flags
+            else True
+        )
+        ev_lbl = "next_high_impact_event" if is_confirmed_macro else "next_routine_session_window"
         mc_parts = [
             f'session="{mc.get("session_label")}"',
-            f'next_high_impact_event="{mc.get("next_high_impact_event")}"',
+            f'{ev_lbl}="{mc.get("next_high_impact_event")}"',
         ]
         if mc.get("active_release_window") and mc.get("next_scheduled_event"):
             mc_parts.append(f'next_scheduled="{mc.get("next_scheduled_event")}"')
@@ -264,7 +279,8 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         if mc.get("next_fomc_date"):
             mc_parts.append(f'next_fomc_date="{mc.get("next_fomc_date")}"')
         if mc.get("upcoming_windows"):
-            mc_parts.append(f'upcoming={mc.get("upcoming_windows")}')
+            up_lbl = "upcoming" if is_confirmed_macro else "routine_session_transitions"
+            mc_parts.append(f'{up_lbl}={mc.get("upcoming_windows")}')
         if mc.get("detected_macro_headlines"):
             mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
         if mc.get("live_macro_prints"):
@@ -528,8 +544,8 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             vs_btc_parts: List[str] = []
             if btc_entry:
                 for h_lbl, h_k in (
-                    ("5m", "chg_5m_pct"), ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("3h", "chg_3h_pct"),
-                    ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
+                    ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"),
+                    ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
                 ):
                     if h_lbl == "7d" and is_sub24h_dup_7d:
                         continue
@@ -615,12 +631,12 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
                 for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
                 if (gv := _parse_finite_float(pinfo.get(g_k), None)) is not None
             ]
-            g_sfx = f" g_coeff({', '.join(g_parts)})" if g_parts else ""
             s_parts = [
                 f"{s_lbl}={_fmt_slope_val(sv, 5)}"
                 for s_lbl, s_k in (("90s", "slope_90s"), ("3.7m", "slope_3_7m"), ("15m", "slope_15m"), ("2.5h", "slope_2_5h"))
                 if (sv := _parse_finite_float(pinfo.get(s_k), None)) is not None
             ]
+            g_sfx = f" g_coeff({', '.join(g_parts)})" if (g_parts and g_parts != s_parts) else ""
             s_core = (
                 f"{s90_pfx}3.7m={_fmt_slope_val(pinfo.get('slope_3_7m'), 5)}, "
                 f"15m={_fmt_slope_val(pinfo.get('slope_15m'), 5)}, "
@@ -972,6 +988,18 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 pct_val = pct_val + 0.0
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
+    if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) > 1:
+        lot_parts: List[str] = []
+        for lt in open_lots[-4:]:
+            if not isinstance(lt, dict):
+                continue
+            l_q = _parse_finite_float(lt.get("qty"), None)
+            l_px = _round_opt_px(lt.get("entry_px"), 6)
+            if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0:
+                l_pnl_s = f"({_parse_finite_float(((px_f - l_px) / l_px) * 100.0, 0.0):+.2f}%)" if px_f > 0.0 else ""
+                lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
+        if len(lot_parts) > 1:
+            t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
     if (lifo_p := _parse_finite_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
     if pos.get("mt_gain_pct") or pos.get("mt_lost_pct"):
@@ -1340,7 +1368,23 @@ def _format_portfolio_section(
     ):
         if ps.get(st_key):
             st_val = ps[st_key]
-            if st_key == "recent_ai_intents" and isinstance(st_val, list):
+            if st_key == "assetguardian_state" and isinstance(st_val, dict):
+                active_ag: Dict[str, Any] = {}
+                for ag_sym, ag_d in st_val.items():
+                    if not isinstance(ag_d, dict):
+                        active_ag[ag_sym] = ag_d
+                        continue
+                    filt_d = {
+                        sk: sv
+                        for sk, sv in ag_d.items()
+                        if not (isinstance(sv, dict) and sv.get("pending") is False and not sv.get("active"))
+                    }
+                    if filt_d:
+                        active_ag[ag_sym] = filt_d
+                if not active_ag:
+                    continue
+                st_val = active_ag
+            elif st_key == "recent_ai_intents" and isinstance(st_val, list):
                 fmt_intents = []
                 last_norm_intent = None
                 for it in st_val:
@@ -1348,7 +1392,17 @@ def _format_portfolio_section(
                         fmt_intents.append(it)
                         last_norm_intent = it
                         continue
+                    it_side = str(it.get("side") or it.get("decision") or "").strip().upper()
+                    if it_side == "HOLD":
+                        continue
                     v_st = str(it.get("venue_status") or "").upper()
+                    it_st = str(it.get("status") or "").upper()
+                    age_h = _parse_finite_float(it.get("age_h"), 0.0)
+                    if (
+                        v_st in ("CANCELED_OR_EXPIRED", "CANCELED", "CANCELLED", "EXPIRED")
+                        or it_st in ("CANCELED", "CANCELLED", "EXPIRED")
+                    ) and age_h > 1.0:
+                        continue
                     it_oids = {
                         str(oid)
                         for oid in (it.get("order_id"), it.get("orderId"), it.get("client_order_id"), it.get("clientOrderId"))
@@ -1367,11 +1421,13 @@ def _format_portfolio_section(
                     if (
                         v_st in ("OPEN", "NEW", "RESTING", "PARTIALLY_FILLED")
                         and bool(it_oids & shown_open_oids)
-                        and _parse_finite_float(it.get("age_h"), 0.0) > 0.5
+                        and age_h > 0.5
                     ):
                         continue
                     fmt_intents.append(it_copy)
-                st_val = fmt_intents if fmt_intents else ([last_norm_intent] if last_norm_intent is not None else st_val[-1:])
+                st_val = fmt_intents if fmt_intents else ([last_norm_intent] if last_norm_intent is not None else [])
+                if not st_val:
+                    continue
             lines.append(f"  * {st_label}: {st_val}")
     return lines
 

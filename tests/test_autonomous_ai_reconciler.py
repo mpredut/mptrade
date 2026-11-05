@@ -927,9 +927,9 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
 
     assert len(captured_prompts) == 1
     prompt_text = captured_prompts[0]
-    assert "action=DEFENSIVE" in prompt_text
+    assert "conf=0.88" in prompt_text
     assert "Breadth collapse" in prompt_text
-    assert "brake=DOWNSCALE_QTY" in prompt_text
+    assert "risk_score=0.62" in prompt_text
     assert "Sudden escalation alert in Strait of Hormuz" in prompt_text
     assert "median_chg=-3.1%" in prompt_text
     assert "7d=-5.00% 7d_range=[74.5, 80.0]" in prompt_text
@@ -1706,7 +1706,7 @@ def test_vs_btc_relative_telemetry_and_capital_rotation_prompt(temp_env):
     prompt = captured_prompts[0]
 
     # Verify full multi-horizon vs_btc and alt_btc_24h range geometry + beta/corr on TAOUSDC
-    assert "vs_btc(15m=-0.30%, 1h=-1.00%, 3h=-0.50%, 6h=+1.00%, 12h=+2.00%, 24h=+3.00%, 7d=+12.00%)" in prompt
+    assert "vs_btc(15m=-0.30%, 1h=-1.00%, 6h=+1.00%, 24h=+3.00%, 7d=+12.00%)" in prompt
     assert "alt_btc_24h(pos=74.5%, dd_high=-1.20%, bounce_low=+3.40%, beta=1.42, corr=0.65)" in prompt
     assert "dd_high=-3.70%, bounce_low=+8.33%, span=12.5%" in prompt
     # Verify BTC and XBT do not have vs_btc
@@ -6028,7 +6028,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     )
     joined_3a = "\n".join(lines_3a)
     assert "slopes(90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07, grad_fast=+4.20e-06/eps=3.50e-05)" in joined_3a
-    assert "g_coeff(90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07)" in joined_3a
+    assert "g_coeff(" not in joined_3a
 
     # 2. cvd_15m regime correlation with chg_15m_pct and CVD sign
     m_pos_rally = {"cvd_15m_usd": 758_000.0, "ob_imbalance": 0.62}
@@ -8825,5 +8825,136 @@ def test_institutional_quant_desk_layers_tca_risk_engine_basis_and_kraken_pairs(
     assert "dealer_gamma_regime" not in opt_surf
     mb_line = format_macro_benchmarks_summary_line({"items": {"SPY": {"price": 754.2, "chg_24h_pct": 0.28}}, "btc_dvol": 39.9, **opt_surf})
     assert "Options_Surface(RV=32.1%, VRP=+7.8%, PC_OI=0.24, Skew_25d=+3.00%)" in mb_line
+
+
+def test_prompt_deanchoring_and_cognitive_noise_optimizations():
+    """Verify the 5 AI prompt de-anchoring and cognitive noise optimizations."""
+    from types import SimpleNamespace
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_market_prices_section,
+        _format_portfolio_section,
+        _format_tradable_position_line,
+        _format_venue_cycle_line,
+    )
+
+    # 1 & 4. Section 1 omits directive labels (bias/risk/action/level/brake) and distinguishes routine session windows
+    s1_routine = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "market_bias": "BEARISH",
+                    "risk_level": "HIGH",
+                    "recommended_action": "DEFENSIVE",
+                    "confidence": 0.85,
+                    "summary": "Factual flow summary",
+                    "key_risks": ["Risk A"],
+                },
+                geopolitical_threat={
+                    "threat_level": "ELEVATED",
+                    "risk_score": 0.52,
+                    "recommended_brake": "DOWNSCALE_50",
+                    "summary": "Geopolitical summary",
+                },
+                macro_calendar={
+                    "session_label": "US Afternoon",
+                    "next_high_impact_event": "US Wall Street Cash Close at 23:00 EET in 1h",
+                    "macro_release_confirmed": False,
+                    "fomc_today": False,
+                    "upcoming_windows": ["US Wall Street Cash Close at 23:00 EET in 1h"],
+                },
+                breaking_news=[],
+            )
+        )
+    )
+    assert "action=" not in s1_routine
+    assert "brake=" not in s1_routine
+    assert "level=" not in s1_routine
+    assert "conf=0.85" in s1_routine
+    assert "risk_score=0.52" in s1_routine
+    assert 'next_routine_session_window="US Wall Street Cash Close at 23:00 EET in 1h"' in s1_routine
+    assert "routine_session_transitions=" in s1_routine
+
+    # 2. Position & cycle lines expose open_lifo_lots and pnl_vs_last_buy
+    pos_line = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "free_base": 10.38,
+            "value_usd": 2251.42,
+            "free_quote": 2114.1,
+            "price": 216.9,
+            "active_avg_buy_px": 222.44,
+            "pnl_vs_avg_pct": -2.49,
+            "last_buy_px": 215.1,
+            "pnl_vs_last_buy_pct": 0.84,
+            "open_lots": [
+                {"lot_id": "L1", "qty": 8.0, "entry_px": 234.0},
+                {"lot_id": "L2", "qty": 2.38, "entry_px": 215.1},
+            ],
+        }
+    )
+    assert "open_lifo_lots=[8@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line
+
+    cyc_line = _format_venue_cycle_line(
+        "kraken",
+        "HYPEUSD",
+        {
+            "qty": 18.99,
+            "cost_usd": 1535.72,
+            "avg_cost_px": 80.87,
+            "entry_price": 82.0,
+            "last_buy_price": 76.50,
+            "last_sell_price": 83.0,
+            "dca_buys": 1,
+            "dd_pct": -3.33,
+        },
+    )
+    assert "last_buy=76.5 (pnl_vs_last_buy=+2.19%)" in cyc_line
+
+    # 3. Section 3C filters HOLD / stale canceled intents and inactive pending=False assetguardian entries
+    s3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "assetguardian_state": {
+                    "ARBUSDC": {"buy": {"pending": False, "last_price": 0.15}, "sell": {"pending": False}},
+                },
+                "recent_ai_intents": [
+                    {"decision": "HOLD", "symbol": "BTCUSDC", "venue": "binance", "age_h": 0.1},
+                    {"side": "BUY", "symbol": "TAOUSDC", "venue": "binance", "venue_status": "CANCELED_OR_EXPIRED", "age_h": 2.5},
+                    {"side": "BUY", "symbol": "ARBUSDC", "venue": "binance", "status": "EXECUTED", "venue_status": "FILLED", "age_h": 0.2},
+                ],
+            },
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "Active AssetGuardian State" not in s3c
+    assert "HOLD" not in s3c
+    assert "CANCELED_OR_EXPIRED" not in s3c
+    assert "ARBUSDC" in s3c
+
+    # 5. Section 3A omits duplicate g_coeff when identical to slopes
+    s3a = "\n".join(
+        _format_market_prices_section(
+            {
+                "TAOUSDC": {
+                    "price": 216.9,
+                    "slope_90s": 0.00308,
+                    "slope_3_7m": 0.0012,
+                    "slope_15m": 0.0007,
+                    "slope_2_5h": -0.0005,
+                    "growth_90s": 0.00308,
+                    "growth_3_7m": 0.0012,
+                    "growth_15m": 0.0007,
+                    "growth_2_5h": -0.0005,
+                }
+            }
+        )
+    )
+    assert "slopes(90s=+0.00308, 3.7m=+0.00120, 15m=+0.00070, 2.5h=-0.00050)" in s3a
+    assert "g_coeff(" not in s3a
+
 
 
