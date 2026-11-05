@@ -110,23 +110,23 @@ def main() -> int:
     bar_rng = [pct(b[2], b[3]) for b in intra]           # (high-low)/low per five-minute bar
     dips = pullbacks(closes)
 
-    print(f"========== VOLATILITATE {sym} ==========")
+    print(f"========== VOLATILITY {sym} ==========")
     print(f"  current price {last:.2f} {meta.get('currency','')}  | exchange {meta.get('exchangeName','?')}")
-    print(f"  AZI: open {o0:.2f} -> last {last:.2f}  ({pct(last,o0):+.1f}%)  | range zi {pct(hi,lo):.1f}% (lo {lo:.2f} / hi {hi:.2f})")
-    print(f"  spike max (lo->hi azi): {pct(hi,lo):+.1f}%")
-    print(f"\n  --- bare 5min ({len(intra)} bare) ---")
-    print(f"  miscare medie/bar : {statistics.fmean(abs_rets):.2f}%   (mediana {statistics.median(abs_rets):.2f}%)")
+    print(f"  TODAY: open {o0:.2f} -> last {last:.2f}  ({pct(last,o0):+.1f}%)  | day range {pct(hi,lo):.1f}% (lo {lo:.2f} / hi {hi:.2f})")
+    print(f"  max spike (lo->hi today): {pct(hi,lo):+.1f}%")
+    print(f"\n  --- 5min bars ({len(intra)} bars) ---")
+    print(f"  mean move/bar     : {statistics.fmean(abs_rets):.2f}%   (median {statistics.median(abs_rets):.2f}%)")
     print(f"  bar 5m p90        : {sorted(abs_rets)[min(len(abs_rets) - 1, int(len(abs_rets)*0.9))]:.2f}%   max {max(abs_rets):.2f}%")
-    print(f"  range mediu/bar   : {statistics.fmean(bar_rng):.2f}%  (ATR-5m aprox)")
+    print(f"  mean range/bar    : {statistics.fmean(bar_rng):.2f}%  (approx ATR-5m)")
     if dips:
         ds = sorted(dips)
-        print(f"\n  --- retrageri (dip-uri) azi: {len(dips)} ---")
-        print(f"  dip median {statistics.median(dips):.2f}%  | p75 {ds[min(len(ds) - 1, int(len(ds)*0.75))]:.2f}%  | max {max(dips):.2f}%")
+        print(f"\n  --- pullbacks (dips) today: {len(dips)} ---")
+        print(f"  median dip {statistics.median(dips):.2f}%  | p75 {ds[min(len(ds) - 1, int(len(ds)*0.75))]:.2f}%  | max {max(dips):.2f}%")
     if daily:
         dr = [pct(b[2], b[3]) for b in daily[-10:]]
         dchg = [abs(pct(b[4], b[1])) for b in daily[-10:]]
-        print(f"\n  --- zilnic (ultimele {len(dr)} zile) ---")
-        print(f"  range mediu/zi {statistics.fmean(dr):.1f}%  | miscare medie close-open {statistics.fmean(dchg):.1f}%  | max zi {max(dr):.1f}%")
+        print(f"\n  --- daily (last {len(dr)} days) ---")
+        print(f"  mean range/day {statistics.fmean(dr):.1f}%  | mean close-open move {statistics.fmean(dchg):.1f}%  | max day {max(dr):.1f}%")
 
     # --- PARAMETER SUGGESTION using transparent heuristics ---
     fee = 0.30  # FX 0.15%x2
@@ -136,7 +136,7 @@ def main() -> int:
     drop = round(max(med_dip, atr5 * 1.5), 1)                     # DCA at a typical dip
     daily_rng = statistics.fmean([pct(b[2], b[3]) for b in daily[-10:]]) if daily else 10
     stop = round(min(max(daily_rng * 1.3, tp * 2.5), 25), 0)      # above a typical daily swing, capped at 25%
-    print("\n  ===> SUGESTIE (euristic, pt budget $3000):")
+    print("\n  ===> SUGGESTION (heuristic, for $3000 budget):")
     print(f"       TP            = {tp}%   (a fee of {fee}% plus 2xATR5 {2*atr5:.1f}%, or 1.3x the median dip)")
     print(f"       DCA_DROP_PCT  = {drop}%")
     print(f"       STOP_LOSS_PCT = {stop:.0f}%")

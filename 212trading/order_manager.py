@@ -71,7 +71,7 @@ def resolve_quantity(order_price: float,
         if price is None or rate is None:
             return None
         qty = budget / (price * rate)
-        log(f"  [ORDER] {order_budget_ron} RON / ({order_price} USD × {rate:.2f}) = {qty:.4f} actiuni")
+        log(f"  [ORDER] {order_budget_ron} RON / ({order_price} USD × {rate:.2f}) = {qty:.4f} shares")
         if qty < 1:
             log(f"  ! [ORDER] budget < the price of one share (~{price*rate:.0f} RON) "
                 f"-> a FRACTIONAL order ({qty:.4f}). T212 may refuse fractional orders on a new instrument.")
@@ -159,7 +159,7 @@ def poll_order_until_terminal(client: T212Client, order_id, ticker: str,
         log(f"  [ORDER] status {order_id} unavailable — checking again on the next cycle")
         return None
     st = str(info.get("status") or "").upper()
-    log(f"  [ORDER] status {order_id}: {st or 'NECUNOSCUT'}")
+    log(f"  [ORDER] status {order_id}: {st or 'UNKNOWN'}")
     if st not in T212_ORDER_TERMINAL:
         return info
     fq = info.get("filledQuantity") or info.get("quantity") or info.get("orderedQuantity", 0)
@@ -336,7 +336,7 @@ def _reconcile_record(client: T212Client, record: dict, marker_path: str,
             "lookup_misses": 0, "last_observed_at": now,
         })
         _persist_marker(record, marker_path)
-        log(f"  [ORDER] raspuns pierdut recuperat: id={record['order_id']}")
+        log(f"  [ORDER] lost response recovered: id={record['order_id']}")
         return "waiting"
     if len(matches) > 1:
         log("  ! [ORDER] several T212 orders match the intent — keeping it pending")
@@ -520,7 +520,7 @@ def place_order_with_retry(
     except Exception as exc:  # response may have been lost after venue acceptance
         record["submit_error"] = f"{exc.__class__.__name__}: {exc}"
         _persist_marker(record, marker_path)
-        log(f"  ! [ORDER] raspuns submit ambiguu ({exc}) — intentia ramane pending")
+        log(f"  ! [ORDER] ambiguous submit response ({exc}) — intent stays pending")
         return False
 
     oid = extract_order_id(data) if isinstance(data, dict) else None
@@ -535,7 +535,7 @@ def place_order_with_retry(
         if venue_status == "REJECTED":
             _append_venue_order_id(record, oid)
         _persist_marker(record, marker_path)
-        log(f"  [ORDER] raspuns submit: id={oid}  status={venue_status or 'NECUNOSCUT'}")
+        log(f"  [ORDER] submit response: id={oid}  status={venue_status or 'UNKNOWN'}")
         if lifecycle in {"canceled", "expired"}:
             return False
         if lifecycle == "submit_pending":
@@ -548,5 +548,5 @@ def place_order_with_retry(
 
     record["submit_error"] = f"T212 HTTP {status}: {json.dumps(data, default=str)[:400]}"
     _persist_marker(record, marker_path)
-    log(f"  ! [ORDER] {record['submit_error']} — retry non-blocant la ciclul urmator")
+    log(f"  ! [ORDER] {record['submit_error']} — non-blocking retry on the next cycle")
     return False

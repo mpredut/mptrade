@@ -914,6 +914,35 @@ class T212CancellationLifecycleTest(unittest.TestCase):
         with patch("importlib.import_module", return_value=fake_md):
             self.assertAlmostEqual(provider.free_balance("USD"), 100.0)
 
+        # Verify observe_only pos_peak tracking, external DCA counting, and partial sell last_sell_ts
+        obs_client = MagicMock()
+        obs_client.get_portfolio.return_value = [{"ticker": "TEST_US_EQ", "quantity": 1.5, "averagePrice": 100.0}]
+        obs_client.list_active_orders.return_value = []
+        obs_client.latest_filled_order_for_ticker = lambda tkr, side=None, refresh=False: (
+            {"price": 98.0, "qty": 0.5, "executedQty": 0.5, "side": "BUY"} if side == "BUY"
+            else {"price": 104.0, "qty": 0.5, "executedQty": 0.5, "side": "SELL"}
+        )
+        obs_engine = strategy.Strategy(
+            obs_client, "TEST_US_EQ", _params(), dry_run=False,
+            initial_state=strategy._new_state(), fx_to_usd=1.0, clock=lambda: 5000.0,
+        )
+        obs_engine.observe_only = True
+        obs_engine._save = lambda: None
+        obs_engine.s.update({"qty": 1.0, "cost_usd": 100.0, "spent_cash": 100.0, "entry_price": 100.0})
+        with patch.object(strategy, "notify"):
+            obs_engine._reconcile_real(99.0)
+        self.assertEqual(obs_engine.s["dca_buys"], 1)
+        self.assertAlmostEqual(obs_engine.s["last_buy_price"], 98.0)
+
+        obs_client.get_portfolio.return_value = [{"ticker": "TEST_US_EQ", "quantity": 1.0, "averagePrice": 100.0}]
+        with patch.object(strategy, "notify"):
+            obs_engine._reconcile_real(105.0)
+        self.assertAlmostEqual(obs_engine.s["last_sell_price"], 104.0)
+        self.assertEqual(obs_engine.s["last_sell_ts"], 5000.0)
+
+        obs_engine.step(112.0)
+        self.assertAlmostEqual(obs_engine.s["pos_peak"], 112.0)
+
 
 if __name__ == "__main__":
     unittest.main()

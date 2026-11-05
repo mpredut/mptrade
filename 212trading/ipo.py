@@ -97,7 +97,7 @@ def start_trading(client, t212_ticker, label, strat_enabled, strat_dry,
                   order_price, order_qty, order_budget_ron, order_validity,
                   order_dry, desktop) -> int:
     if strat_enabled:
-        log(f"  Pornesc STRATEGIA pe {t212_ticker} ({'PAPER' if strat_dry else '⚠ REAL'})")
+        log(f"  Starting STRATEGY on {t212_ticker} ({'PAPER' if strat_dry else '⚠ REAL'})")
         Strategy(client, t212_ticker, StratParams.from_env(),
                  dry_run=strat_dry, desktop=desktop).run()
         return 0
@@ -132,13 +132,13 @@ def main() -> int:
             avail = sorted(os.path.basename(p)[7:-4]
                            for p in glob.glob(os.path.join(glob.escape(cfg_dir), "config.*.env")))
             log(f"! unknown profile '{profile}' (is missing {cfg})")
-            log(f"  profile disponibile: {', '.join(avail) or '(niciunul)'}")
+            log(f"  available profiles: {', '.join(avail) or '(none)'}")
             return 2
         profile_file = cfg
     load_t212_environment(env_file, profile_file=profile_file)
 
-    ap = argparse.ArgumentParser(description="Watcher + auto-trade generic pe T212.")
-    ap.add_argument("--profile", "-p",     required=True, metavar="NUME",
+    ap = argparse.ArgumentParser(description="Generic T212 watcher and auto-trader.")
+    ap.add_argument("--profile", "-p",     required=True, metavar="NAME",
                     help="REQUIRED: the config profile -> it loads config.<NAME>.env (e.g. spcx, nvda)")
     ap.add_argument("--env-file",          default=env_file)
     ap.add_argument("--symbol",            metavar="T212_TICKER",
@@ -213,16 +213,16 @@ def main() -> int:
         return 1
     log("=== Watcher T212 ===")
     log(f"    instrument   : {label}  ({t212_ticker}, price through {yahoo_symbol})")
-    log(f"    mediu T212   : {t212_env.upper()}")
+    log(f"    T212 env     : {t212_env.upper()}")
     log(f"    mode         : {'STRATEGY (DCA+TP)' if strat_enabled else 'a single order'}")
     log(f"    execution    : {'PAPER (no money)' if (strat_dry if strat_enabled else order_dry) else '⚠ REAL — REAL MONEY'}")
-    log(f"    lansare      : checking until {label} is launched (already listed: immediately; IPO: at the open)")
+    log(f"    launch       : checking until {label} is launched (already listed: immediately; IPO: at the open)")
     log(f"    ntfy/email   : {optional_env('NTFY_TOPIC_TRADES', '-')} / {optional_env('ALERT_TO_EMAIL', '-')}")
 
     # --- PRE-FLIGHT: verify the instrument at STARTUP so configuration errors are caught
     #     immediately, not after waiting days for launch. Stop now on a wrong ISIN.
     #     If an unlaunched IPO ticker is not in metadata yet, warn and continue.
-    log("    pre-flight: verific instrumentul pe T212...")
+    log("    pre-flight: verifying instrument on T212...")
     if not verify_instrument(client, t212_ticker, expected_isin):
         return 1
 
@@ -268,7 +268,7 @@ def _cmd_find_ticker(client: T212Client, query: str) -> int:
         log("! invalid search query")
         return 1
     query = str(query).strip()
-    log(f"[FIND] Caut '{query}' in instrumentele T212...")
+    log(f"[FIND] Searching for '{query}' in T212 instruments...")
     instruments = client.list_instruments()
     if not isinstance(instruments, list):
         log("! cannot list the instruments (auth/network)")
@@ -291,13 +291,13 @@ def _cmd_find_ticker(client: T212Client, query: str) -> int:
 def _cmd_test_notify(what: str, label: str, desktop: bool) -> int:
     ts = now_str()
     if what in ("market", "all"):
-        notify(title=f"[TEST] {label} a inceput tranzactionarea!",
+        notify(title=f"[TEST] {label} started trading!",
                body=f"{label} IS TRADING.\nLast price: 99.99 USD\n{ts}",
                source="market", price=99.99, desktop=desktop)
     if what in ("trade", "all"):
         notify(title=f"[TEST] Order {label} placed on T212!",
                body=f"LIMIT qty=0.5 @ 99 USD\n{ts}", source="trade", desktop=desktop)
-    log("[TEST] Gata.")
+    log("[TEST] Done.")
     return 0
 
 

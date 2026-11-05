@@ -599,35 +599,15 @@ class T212Client:
                                 self._fetch_fail.pop("_hist_cache", None)
                             matches = s_matches
                 if not matches:
-                    status, body = http_get(
-                        f"{self.base}/equity/history/orders?limit=50",
-                        headers=self._headers_for_endpoint("_hist_cache"),
-                    )
-                    if status == 429:
-                        self.notify_rate_limit(max(5.0, self._pf_ttl))
-                    if status != 200 or not body:
-                        self._log_read_fail("order history", status)
+                    items = self._fetch_order_history_locked()
+                    if items is None:
                         with self._lock:
-                            self._fetch_fail["_hist_cache"] = time.monotonic()
                             hc = getattr(self, "_hist_cache", None)
                             if hc and (time.monotonic() - hc[0]) < 60.0:
                                 matches = self._extract_history_matches(hc[1], target_oid)
                         if not matches:
                             return None
                     else:
-                        try:
-                            payload = json.loads(body)
-                        except ValueError:
-                            self._log_read_fail("order history (invalid JSON)", status)
-                            with self._lock:
-                                self._fetch_fail["_hist_cache"] = time.monotonic()
-                            return None
-                        items = payload.get("items", []) if isinstance(payload, dict) else payload
-                        if isinstance(items, list):
-                            with self._lock:
-                                self._hist_cache = (time.monotonic(), items)
-                                self._fetch_fail.pop("_hist_cache", None)
-                            self._write_shared_cache("_hist_cache", items)
                         matches = self._extract_history_matches(items, target_oid)
         if not matches:
             return False
@@ -637,6 +617,93 @@ class T212Client:
         result = self._aggregate_history_fills(matches)
         result.pop("_timestamp_ms", None)
         return result
+
+    def _fetch_order_history_locked(self) -> list | None:
+        """Fetch latest 50 order history entries under ``_fetch_lock`` and persist caches."""
+        status, body = http_get(
+            f"{self.base}/equity/history/orders?limit=50",
+            headers=self._headers_for_endpoint("_hist_cache"),
+        )
+        if status == 429:
+            self.notify_rate_limit(max(5.0, self._pf_ttl))
+        if status != 200 or not body:
+            self._log_read_fail("order history", status)
+            with self._lock:
+                self._fetch_fail["_hist_cache"] = time.monotonic()
+            return None
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            self._log_read_fail("order history (invalid JSON)", status)
+            with self._lock:
+                self._fetch_fail["_hist_cache"] = time.monotonic()
+            return None
+        items = payload.get("items", []) if isinstance(payload, dict) else payload
+        if isinstance(items, list):
+            with self._lock:
+                self._hist_cache = (time.monotonic(), items)
+                self._fetch_fail.pop("_hist_cache", None)
+            self._write_shared_cache("_hist_cache", items)
+            return items
+        return []
+
+    def refresh_order_history(self, *, max_age_sec: float | None = None) -> list | None:
+        """Return recent order history items, refreshing from T212 and syncing trade cache when stale."""
+        ttl = max(1.0, safe_nonneg_float(max_age_sec, default=self._pf_ttl))
+        with self._lock:
+            hc = getattr(self, "_hist_cache", None)
+            if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
+                return hc[1]
+        with self._fetch_lock:
+            with self._lock:
+                hc = getattr(self, "_hist_cache", None)
+                if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
+                    return hc[1]
+            s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
+            if s_hit and isinstance(s_val, list):
+                with self._lock:
+                    self._hist_cache = (time.monotonic() - s_age, s_val)
+                    self._fetch_fail.pop("_hist_cache", None)
+                self._sync_trade_cache(s_val)
+                return s_val
+            return self._fetch_order_history_locked()
+
+    def latest_filled_order_for_ticker(
+        self,
+        ticker: str,
+        side: str | None = None,
+        *,
+        refresh: bool = False,
+        max_age_sec: float | None = None,
+    ) -> dict | None:
+        """Return the most recent normalized FILLED order for ``ticker`` (and optional ``side``)."""
+        tkr = str(ticker or "").strip().upper()
+        if not tkr:
+            return None
+        items = self.refresh_order_history(max_age_sec=max_age_sec) if refresh else None
+        if not isinstance(items, list):
+            with self._lock:
+                hc = getattr(self, "_hist_cache", None)
+                items = hc[1] if (hc and isinstance(hc[1], list)) else None
+        if not isinstance(items, list):
+            s_hit, s_val, _ = self._read_shared_cache("_hist_cache", 86400.0)
+            items = s_val if (s_hit and isinstance(s_val, list)) else []
+        by_sym = self.normalize_history_items(items)
+        sym_orders = by_sym.get(tkr)
+        if not sym_orders:
+            base_prefix = tkr.split("_", 1)[0]
+            for k, v in by_sym.items():
+                if k.split("_", 1)[0] == base_prefix:
+                    sym_orders = v
+                    break
+        if not sym_orders:
+            return None
+        target_side = normalize_side(side) if (isinstance(side, str) and side.strip()) else None
+        candidates = [
+            o for o in sym_orders
+            if isinstance(o, dict) and (target_side is None or o.get("side") == target_side)
+        ]
+        return candidates[-1] if candidates else None
 
     def get_order_status(self, order_id) -> dict | bool | None:
         target_oid = self._clean_order_id(order_id)

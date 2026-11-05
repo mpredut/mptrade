@@ -618,6 +618,12 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(row["price"], 156.47)
             self.assertAlmostEqual(row["qty"], 4.01)
 
+            latest_buy = c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="BUY", refresh=False)
+            self.assertIsNotNone(latest_buy)
+            self.assertEqual(latest_buy["orderId"], "777")
+            self.assertAlmostEqual(latest_buy["price"], 156.47)
+            self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

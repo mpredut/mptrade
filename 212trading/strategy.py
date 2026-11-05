@@ -506,7 +506,7 @@ class Strategy(BaseSpotMixin):
             self.s["sl_rebuy"] = {"low": exit_price, "sell_price": exit_price}
             log(f"  🟢 [STRAT] pullback re-buy ARMED after the stop-loss "
                 f"(expecting +{self.p.sl_rebuy_bounce_pct}% from the low)")
-        log(f"  [STRAT] === ciclu inchis, reincep (ciclu {nxt}) ===")
+        log(f"  [STRAT] === cycle closed, restarting (cycle {nxt}) ===")
 
     # -- Fill Application ------------------------------------------------------
     def _apply_fill(self, order: dict, qty: float, price: float) -> None:
@@ -519,7 +519,7 @@ class Strategy(BaseSpotMixin):
             notify(
                 title=f"{tag}{self.yahoo_sym} BUY {qty}@{price:.2f}",
                 body=(f"{order.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | "
-                      f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                      f"dep{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
                 source="T212", price=price, desktop=self.desktop,
             )
             self._cancel_open("SELL")
@@ -532,11 +532,11 @@ class Strategy(BaseSpotMixin):
             self.s["fees_usd"] += fee
             self._release_sell_cost_basis(qty, avg)
             log(f"  [STRAT] {tag}SELL FILLED {qty} @ {price:.2f} USD  "
-                f"brut={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
+                f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
             notify(
                 title=f"{tag}{self.yahoo_sym} SELL {qty}@{price:.2f} N{net:+.2f}$",
-                body=(f"a{avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
-                      f"Ntot{self.s['realized_net_usd']:+.2f}$ | ciclu{self.s['cycle']} inchis"),
+                body=(f"a{avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | "
+                      f"Ntot{self.s['realized_net_usd']:+.2f}$ | cycle{self.s['cycle']} closed"),
                 source="T212", price=price, desktop=self.desktop,
             )
             all_tp_sold = self._all_tp_ladder_levels_sold()
@@ -558,15 +558,15 @@ class Strategy(BaseSpotMixin):
         lim_f = _clean_pos_float(limit)
         amt_f = _clean_pos_float(amount)
         if lim_f is None or amt_f is None or round(lim_f, 2) <= 0:
-            log("  ! [STRAT] invalid BUY amount/limit — sar")
+            log("  ! [STRAT] invalid BUY amount/limit — skipping")
             return False
         limit, amount = lim_f, amt_f
         qty = self._qty_for_amount(amount, limit)
         if qty <= 0:
-            log("  ! [STRAT] qty 0 — sar")
+            log("  ! [STRAT] qty 0 — skipping")
             return False
         if self.dry_run:
-            log(f"  [STRAT] [PAPER] plasez BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
+            log(f"  [STRAT] [PAPER] placing BUY {kind} {qty} @ {limit:.2f} USD (~{amount:.0f} {self.ccy})")
             self.s["orders"].append({
                 "id": self._next_paper_order_id(), "side": "BUY", "qty": qty,
                 "limit": round(limit, 2), "amount": amount, "kind": kind, "ts": self._now(),
@@ -607,7 +607,7 @@ class Strategy(BaseSpotMixin):
         tag = f"+{level:g}%" if level is not None else ""
         if self.dry_run:
             order_type = "MKT" if market else f"@ {limit:.2f}"
-            log(f"  [STRAT] [PAPER] plasez SELL {kind}{tag} {qty:.2f} {order_type} USD")
+            log(f"  [STRAT] [PAPER] placing SELL {kind}{tag} {qty:.2f} {order_type} USD")
             self.s["orders"].append({
                 "id": self._next_paper_order_id(), "side": "SELL", "qty": qty,
                 "limit": round(limit, 2), "kind": kind, "level": level, "market": market, "ts": self._now(),
@@ -856,7 +856,7 @@ class Strategy(BaseSpotMixin):
             if cq is None or cc is None or cf is None or aq is None or ac is None or af is None:
                 continue
             if cq + 1e-9 < aq or cc + 1e-9 < ac:
-                log(f"  ! [STRAT] fill T212 {order.get('id')} a regresat cumulativ — ignor")
+                log(f"  ! [STRAT] T212 fill {order.get('id')} regressed cumulatively — ignoring")
                 continue
             delta_qty = max(0.0, cq - aq)
             delta_cost = max(0.0, cc - ac)
@@ -870,6 +870,18 @@ class Strategy(BaseSpotMixin):
             if rows:
                 log(f"  ! [STRAT] T212 {side} fills ({total_qty:.4f}) != portfolio delta "
                     f"({position_delta:.4f}) - using portfolio fallback")
+            hist_fn = getattr(self.client, "latest_filled_order_for_ticker", None)
+            if callable(hist_fn) and not hasattr(hist_fn, "_mock_name"):
+                latest = hist_fn(self.ticker, side=side, refresh=True)
+                if isinstance(latest, dict):
+                    fill_qty = _clean_pos_float(latest.get("executedQty") or latest.get("qty"))
+                    fill_px = _clean_pos_float(latest.get("price"))
+                    if (
+                        fill_qty is not None
+                        and fill_px is not None
+                        and abs(fill_qty - abs(position_delta)) <= max(0.011, abs(position_delta) * 0.05)
+                    ):
+                        return fill_px
             return None
 
         for order, cq, cc, cf in rows:
@@ -899,7 +911,7 @@ class Strategy(BaseSpotMixin):
         status_cache: dict[str, object] = {}
 
         if real_qty > prev_qty + 1e-6 and self._now() < _clean_nonneg_float(self.s.get("locked_zero_until"), 0.0):
-            log("  [STRAT] adoptie ignorata — portfolio stale (not-owned recent, lock activ)")
+            log("  [STRAT] adoption ignored — stale portfolio (recent not-owned, lock active)")
             return False
         if real_qty > prev_qty + 1e-6:
             fq = real_qty - prev_qty
@@ -929,19 +941,21 @@ class Strategy(BaseSpotMixin):
             if source_order is not None and source_order.get("kind") == "DCA" and not source_order.get("dca_counted"):
                 source_order["dca_counted"] = True
                 self.s["dca_buys"] += 1
+            elif source_order is None and prev_qty > 1e-9:
+                self.s["dca_buys"] += 1
             self.s["last_buy_price"] = fp
             if self.s["entry_price"] is None:
                 self.s["entry_price"] = fp
             self._sync_real_position_cost(real_qty, eff_real_avg)
             kind_label = (
-                "ADOPTAT" if is_adoption
+                "ADOPTED" if is_adoption
                 else str((source_order or {}).get("kind") or ("DCA" if prev_qty > 1e-9 else "ENTRY"))
             )
             log(f"  [STRAT] BUY EXECUTED {fq:.4f} @ {fp:.2f} USD ({kind_label})  qty={real_qty:.4f} avg={eff_real_avg:.2f}")
             notify(
-                title=f"{self.yahoo_sym} {'ADOPTAT' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
+                title=f"{self.yahoo_sym} {'ADOPTED' if is_adoption else 'BUY'} {fq:.4f}@a{eff_real_avg:.2f}",
                 body=(f"{kind_label} | q{real_qty:.4f} a{eff_real_avg:.2f} p~{fp:.2f} | "
-                      f"desf{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
+                      f"dep{self.s['spent_cash']:.0f}{self.ccy} DCA{self.s['dca_buys']}/{self.p.max_dca_buys}"),
                 source="T212", price=fp, desktop=self.desktop,
             )
             if source_order is pending_for_fill:
@@ -958,12 +972,13 @@ class Strategy(BaseSpotMixin):
             self.s["fees_usd"] += fee
             self._sync_real_position_cost(real_qty, real_avg)
             self.s["last_sell_price"] = sell_price
+            self.s["last_sell_ts"] = self._now()
             approx = "" if exact_price is not None else "~"
             log(f"  [STRAT] SELL EXECUTED {sold:.4f} @ {approx}{sell_price:.2f} USD  "
-                f"brut={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
+                f"gross={gross:+.2f}  fee={fee:.2f}  net={net:+.2f} USD")
             notify(
                 title=f"{self.yahoo_sym} SELL {sold:.4f}@{approx}{sell_price:.2f} N{net:+.2f}$",
-                body=f"a{prev_avg:.2f} · br{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | Ntot{self.s['realized_net_usd']:+.2f}$",
+                body=f"a{prev_avg:.2f} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f}$ | Ntot{self.s['realized_net_usd']:+.2f}$",
                 source="T212", price=sell_price, desktop=self.desktop,
             )
             if pending_for_fill and pending_for_fill.get("side") == "SELL":
@@ -1090,10 +1105,10 @@ class Strategy(BaseSpotMixin):
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
             if not self.s.get("tr_alerted"):
                 self.s["tr_alerted"] = True
-                log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% de la peak {peak:.2f} >= {self.p.trail_pct}% — VAND TOT")
+                log(f"  📉 [STRAT] TRAILING: -{drop_pct:.2f}% from peak {peak:.2f} >= {self.p.trail_pct}% — SELLING ALL")
                 notify(
                     title=f"📉 TRAILING {self.yahoo_sym} -{drop_pct:.1f}%",
-                    body=f"de la peak{peak:.2f} ≥{self.p.trail_pct}% — vand tot",
+                    body=f"from peak {peak:.2f} ≥{self.p.trail_pct}% — selling all",
                     source="T212", price=price, desktop=self.desktop,
                 )
         return True
@@ -1207,7 +1222,7 @@ class Strategy(BaseSpotMixin):
         log(f"  🟢 [STRAT] RE-BUY after the SL: a +{self.p.sl_rebuy_bounce_pct}% pullback from the low {rb['low']:.2f} — re-entering ENTRY")
         notify(
             title=f"🟢 {self.yahoo_sym} RE-BUY after the stop-loss",
-            body=(f"recul +{self.p.sl_rebuy_bounce_pct}% de la min {rb['low']:.2f} — "
+            body=(f"pullback +{self.p.sl_rebuy_bounce_pct}% from low {rb['low']:.2f} — "
                   f"re-entering with {self.p.entry_amount:.0f}{self.ccy}"),
             source="T212", price=price, desktop=self.desktop,
         )
@@ -1223,6 +1238,13 @@ class Strategy(BaseSpotMixin):
         self.s["qty"] = held
         self._check_loss_alert(price)
         if self.observe_only:
+            if held > 1e-9:
+                avg = self._avg_cost()
+                peak = _clean_pos_float(self.s.get("pos_peak")) or 0.0
+                if peak <= 0:
+                    self.s["pos_peak"] = max(avg or price, price)
+                elif price > peak:
+                    self.s["pos_peak"] = price
             if not self.dry_run and self.s.get("orders"):
                 self._cancel_all_orders()
             return None
@@ -1398,8 +1420,8 @@ class Strategy(BaseSpotMixin):
             if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:
                 self._dca_gate_until = self._now() + 300
                 log(
-                    f"  [STRAT] DCA BLOCKED de trend: slope {slope_f:+.3f}%/bar "
-                    f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-verific in 5 min"
+                    f"  [STRAT] DCA BLOCKED by trend: slope {slope_f:+.3f}%/bar "
+                    f"< -{self.p.dca_trend_gate_pct}% (downtrend) — re-checking in 5 min"
                 )
                 return
         log(f"  [STRAT] dip: {price:.2f} <= {self.s['last_buy_price']:.2f}×(1-{self.p.dca_drop_pct}%) — DCA")
@@ -1432,18 +1454,18 @@ class Strategy(BaseSpotMixin):
     # -- Main Loop -------------------------------------------------------------
     def run(self, stop: threading.Event | None = None) -> None:
         mode = "avg_tp" if self.p.enable_takeprofit else "dca_only"
-        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — BANI ADEVARATI")
-        log("  === STRATEGIE PORNITA ===")
+        exec_banner = "[OBSERVE ONLY — AI MANAGED]" if self.observe_only else ("[PAPER]" if self.dry_run else "⚠ REAL — REAL MONEY")
+        log("  === STRATEGY STARTED ===")
         log(f"      instrument : {self.ticker}  (price through {self.yahoo_sym})")
-        log(f"      mod        : {mode}   {exec_banner}")
-        log(f"      intrare    : {self.p.entry_amount:.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
+        log(f"      mode       : {mode}   {exec_banner}")
+        log(f"      entry      : {self.p.entry_amount:.0f} {self.ccy} @ market-{self.p.entry_discount_pct}%")
         log(f"      DCA        : {self.p.dca_amount:.0f} {self.ccy} at every -{self.p.dca_drop_pct}% (max {self.p.max_dca_buys})")
         if self.p.enable_takeprofit:
             log(f"      take-profit: +{self.p.takeprofit_pct}% above the average price")
         else:
-            log("      take-profit: dezactivat (dca_only)")
-        log(f"      PLAFON     : {self.p.max_budget:.0f} {self.ccy} / ciclu")
-        log(f"      check      : la {self.p.check_minutes:.0f} min   |  1 {self.ccy} = {self.fx_to_usd:.4f} USD")
+            log("      take-profit: disabled (dca_only)")
+        log(f"      BUDGET CAP : {self.p.max_budget:.0f} {self.ccy} / cycle")
+        log(f"      check      : every {self.p.check_minutes:g} min   |  1 {self.ccy} = {self.fx_to_usd:.4f} USD")
         log(f"      ! break-even threshold ~{self.p.fx_fee_pct*2:.2f}% (FX) plus spread; TP={self.p.takeprofit_pct}%")
 
         def _log_status(price: float) -> None:
@@ -1468,5 +1490,5 @@ class Strategy(BaseSpotMixin):
             price_fn=lambda: get_price_usd(self.yahoo_sym),
             status_log_fn=_log_status,
             stop=stop,
-            reload_external=False,
+            reload_external=True,
         )
