@@ -279,13 +279,23 @@ class BotManager:
         await self.stop_bot(name)
         self.restart_backoff[name] = 0
 
+    def _ordered_process_names_reversed(self) -> list[str]:
+        manifest_names = [
+            b["name"]
+            for b in getattr(self, "bots", ())
+            if isinstance(b, dict) and b.get("name") in self.processes
+        ]
+        seen = set(manifest_names)
+        extra_names = [n for n in self.processes.keys() if n not in seen]
+        return list(reversed(manifest_names + extra_names))
+
     async def shutdown(self):
         if getattr(self, "_shutting_down", False):
             return
         self._shutting_down = True
         logging.info("Shutting down all bots gracefully...")
         self.running = False
-        for name in reversed(list(self.processes.keys())):
+        for name in self._ordered_process_names_reversed():
             await self.stop_bot(name)
             self.processes.pop(name, None)
 
@@ -383,7 +393,7 @@ class BotManager:
 
             self._reloading = True
             try:
-                for name in reversed(list(self.processes.keys())):
+                for name in self._ordered_process_names_reversed():
                     await self.restart_bot(name)
             finally:
                 self._reloading = False
@@ -423,13 +433,13 @@ class BotManager:
                     logging.info(f"Heartbeat healthcheck status: {', '.join(hb_statuses)}")
 
             for bot in self.bots:
+                if getattr(self, "_reloading", False):
+                    continue
                 name = bot["name"]
                 if name in self.starting:
                     continue
                 proc = self.processes.get(name)
                 if proc is None or proc.returncode is not None:
-                    if getattr(self, "_reloading", False):
-                        continue
                     next_allowed = self.restart_backoff.get(name, 0)
                     if next_allowed > now + 65.0:
                         next_allowed = now

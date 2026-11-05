@@ -958,7 +958,7 @@ def get_weight_for_cash_permission_at_quant_time(symbol, order_type, T_quanta=No
     if isinstance(est, dict):
         print(
             f"[{symbol}] T AUTO (empirical hybrid): {T_quanta} days  "
-            f"(n={est['n']} episodes, w_empirical={est['w']}, "
+            f"(n={est.get('n')} episodes, w_empirical={est.get('w')}, "
             f"median={est.get('median_d')}d, P90={est.get('p90_d')}d)"
         )
     print(f"Trend read from the cache manager for symbol {symbol}: {trend}")

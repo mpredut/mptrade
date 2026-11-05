@@ -6384,5 +6384,142 @@ def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_pa
     assert "slope_15m" in pt_gapped["NVDA_US_EQ"]
 
 
+def test_iter91_multi_fill_stale_7d_pnl_post_sell_new_cycle_lifo_reset_t212_retry_and_manifest_shutdown_order(tmp_path):
+    import json
+    from unittest.mock import MagicMock
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        extract_symbol_recent_fills,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+    from orchestratorTrade.orchestrator import BotManager
+
+    # 1. Multi-fill core SELL after >7d lot exhaustion followed by new BUY resets lifo_realized_pnl_usd == 0.0
+    base_ts = 1_790_000_000_000
+    nine_days_ms = 9 * 86400 * 1000
+    items_stale = {
+        "STALEUSDC": [
+            {
+                "side": "BUY",
+                "price": 100.0,
+                "qty": 5.0,
+                "executedQty": 5.0,
+                "timestamp": base_ts,
+                "status": "FILLED",
+            },
+            {
+                "side": "SELL",
+                "price": 110.0,
+                "qty": 5.0,
+                "executedQty": 5.0,
+                "timestamp": base_ts + nine_days_ms,
+                "status": "FILLED",
+            },
+            {
+                "side": "SELL",
+                "price": 112.0,
+                "qty": 5.0,
+                "executedQty": 5.0,
+                "timestamp": base_ts + nine_days_ms + 1000,
+                "status": "FILLED",
+            },
+            {
+                "side": "BUY",
+                "price": 108.0,
+                "qty": 5.0,
+                "executedQty": 5.0,
+                "timestamp": base_ts + nine_days_ms + 60_000,
+                "status": "FILLED",
+            },
+        ]
+    }
+    res_stale = extract_symbol_recent_fills(items_stale["STALEUSDC"])
+    assert res_stale is not None
+    assert res_stale["lifo_realized_pnl_usd"] == pytest.approx(0.0)
+
+    # 2. reconcile_venue_cycles_with_recent_orders resets lifo_realized_pnl_usd when post_sell_new_cycle is True
+    kr_new_cyc = {
+        "SUIUSD": {
+            "qty": 20.0,
+            "cost_usd": 19.2,
+            "avg_cost_px": 0.96,
+            "entry_price": 0.96,
+            "last_buy_price": 0.96,
+            "last_sell_price": 0.98,
+            "last_exit_kind": "TP",
+            "dca_buys": 0,
+            "_entry_ts_ms": 1_793_800_000_000,
+            "_last_sell_ts_ms": 1_793_750_000_000,
+        }
+    }
+    v_ro_new = {
+        "kraken": {
+            "SUIUSD": {
+                "last_sell": {"price": 0.98, "qty": 25.0, "ts_ms": 1_793_750_000_000, "actor": "BOT"},
+                "recent_buys": [
+                    {"price": 0.90, "qty": 25.0, "ts_ms": 1_793_700_000_000, "actor": "BOT"},
+                    {"price": 0.96, "qty": 20.0, "ts_ms": 1_793_800_001_000, "actor": "BOT"},
+                ],
+                "active_avg_buy_px": 0.96,
+                "active_cycle_rem_qty": 20.0,
+                "lifo_realized_pnl_usd": 2.0,
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        kr_new_cyc,
+        {},
+        {},
+        v_ro_new,
+        {("kraken", "SUIUSD"): 20.0},
+        {"SUIUSD": {"price": 0.97}},
+    )
+    assert v_ro_new["kraken"]["SUIUSD"]["lifo_realized_pnl_usd"] == pytest.approx(0.0)
+
+    # 3. harvest_log_anomalies_from_dirs only suppresses insufficient-free-for-stocks-buy when same ticker succeeds nearby
+    log_dir = tmp_path / "logs_iter91"
+    log_dir.mkdir(parents=True)
+    (log_dir / "t212_exec.log").write_text(
+        "\n".join(
+            [
+                "2026-11-05 03:00:01 ERROR Place order failed for NVDA_US_EQ: {\"code\": \"insufficient-free-for-stocks-buy\"}",
+                "2026-11-05 03:00:02 INFO Successfully placed BUY for AAPL_US_EQ",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    anomalies_diff_sym = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=999999)
+    assert anomalies_diff_sym.error_count == 1
+    assert any("insufficient-free-for-stocks-buy" in ev for ev in anomalies_diff_sym.critical_events)
+
+    (log_dir / "t212_exec.log").write_text(
+        "\n".join(
+            [
+                "2026-11-05 03:00:01 ERROR Place order failed for NVDA_US_EQ: {\"code\": \"insufficient-free-for-stocks-buy\"}",
+                "2026-11-05 03:00:02 INFO Successfully placed BUY for NVDA_US_EQ",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    anomalies_same_sym = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=999999)
+    assert anomalies_same_sym.error_count == 0
+    assert not any("insufficient-free-for-stocks-buy" in ev for ev in anomalies_same_sym.critical_events)
+
+    # 4. BotManager._ordered_process_names_reversed honors procs.conf manifest order even after dict re-insertion
+    mgr = BotManager.__new__(BotManager)
+    mgr.bots = [
+        {"name": "gateway", "cmd": "gw.py"},
+        {"name": "monitor", "cmd": "mon.py"},
+        {"name": "worker", "cmd": "wrk.py"},
+    ]
+    # Simulate gateway restarted later (moved to end of dict insertion order)
+    mgr.processes = {
+        "monitor": MagicMock(),
+        "worker": MagicMock(),
+        "gateway": MagicMock(),
+    }
+    assert mgr._ordered_process_names_reversed() == ["worker", "monitor", "gateway"]
+
+
 
 

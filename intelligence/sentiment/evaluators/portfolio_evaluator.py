@@ -423,7 +423,11 @@ def extract_symbol_recent_fills(
             tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None and q_f > 0.0:
                 prev_cost_qty = cost_qty
-                prev_top_lot_ts = int(open_lots[-1].get("ts_ms") or 0) if open_lots else 0
+                prev_top_lot_ts = (
+                    int(open_lots[-1].get("ts_ms") or 0)
+                    if open_lots
+                    else (int(buys_fmt[-1].get("ts_ms") or 0) if buys_fmt else 0)
+                )
                 is_full_exit = q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12
                 last_exit_oversold = bool(
                     is_full_exit
@@ -687,6 +691,12 @@ def reconcile_venue_cycles_with_recent_orders(
             )
             rem_q_ro = safe_pos_float(ro_c.get("active_cycle_rem_qty"), default=0.0) or 0.0
             live_held = live_held_by_venue_sym.get((c_venue, str(c_sym).upper()))
+            if post_sell_new_cycle and (
+                live_held is None
+                or live_held <= 1e-6
+                or abs(sum(float(b["qty"]) for b in buys_after) - live_held) <= max(1e-4, live_held * 0.02)
+            ):
+                ro_c["lifo_realized_pnl_usd"] = 0.0
             already_deducted_partial = bool(
                 not reconciled_external_buy
                 and (not buys_after or ls_qty < cyc_qty_cur * 0.95)

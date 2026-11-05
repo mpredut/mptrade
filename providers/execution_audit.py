@@ -1744,7 +1744,9 @@ def execute_enforce_intent_order(
             except Exception:
                 pass
 
-        for attempt in range(2):
+        retried_stale_cache = False
+        retried_insufficient_free = False
+        for _attempt in range(3):
             outcome_ctx.clear()
             place_kwargs: dict[str, Any] = {
                 "side": decision,
@@ -1762,15 +1764,26 @@ def execute_enforce_intent_order(
             if is_limit:
                 place_kwargs["smart"] = False
             order_res = inst.place(**place_kwargs)
-            if order_res or attempt > 0:
+            if order_res:
                 break
             refused_state = outcome_ctx.get("state") == "refused" or outcome_ctx.get("category") == "refused_pre_submit"
             reason_str = str(outcome_ctx.get("reason") or "")
-            if refused_state and reason_str in ("account_cache_not_fresh", "account_cache_snapshot_changed"):
+            if (
+                not retried_stale_cache
+                and refused_state
+                and reason_str in ("account_cache_not_fresh", "account_cache_snapshot_changed")
+            ):
+                retried_stale_cache = True
                 _cleanup_refused_retry_records()
                 time.sleep(0.25)
                 continue
-            if refused_state and decision == "BUY" and not is_limit and "insufficient-free-for-stocks-buy" in reason_str.lower():
+            if (
+                not retried_insufficient_free
+                and refused_state
+                and decision == "BUY"
+                and "insufficient-free-for-stocks-buy" in reason_str.lower()
+            ):
+                retried_insufficient_free = True
                 from .quantity import _floor_2dec, round_provider_qty
 
                 scaled_qty = _floor_2dec(
