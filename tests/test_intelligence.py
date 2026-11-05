@@ -8015,6 +8015,28 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
                     ]
                 }
             }
+        if "IBIT" in url:
+            assert "includePrePost=true" in url
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "fulldayPrice": 45.58,
+                                "fulldayChangePercent": 3.47,
+                                "regularMarketPrice": 45.33,
+                                "regularMarketTime": int(now_s - 32400),
+                            },
+                            "timestamp": [
+                                int(now_s - 36000),   # 10h ago (45.20)
+                                int(now_s - 33300),   # 9h15m ago (45.30)
+                                int(now_s - 32400),   # 9h ago regular close (45.33)
+                            ],
+                            "indicators": {"quote": [{"close": [45.20, 45.30, 45.33]}]},
+                        }
+                    ]
+                }
+            }
         return {}
 
     mb = collect_macro_benchmarks_snapshot(str(cdir), now_ts=now_s, persist=False, fetch_fn=_fetch_yahoo)
@@ -8024,6 +8046,11 @@ def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_sco
     assert mb["items"]["SPY"]["chg_24h_pct"] == pytest.approx(((505.0 - 497.51) / 497.51) * 100.0, abs=0.02)
     # QQQ fallback without previousClose uses 24h bar 430.0 (+2.33%), not 48h bar 400.0 (+10.0%)
     assert mb["items"]["QQQ"]["chg_24h_pct"] == pytest.approx(((440.0 - 430.0) / 430.0) * 100.0, abs=0.02)
+    # IBIT with 9h-old RTH bars omits bogus cross-session 15m/1h deltas against overnight fulldayPrice
+    assert mb["items"]["IBIT"]["price"] == 45.58
+    assert mb["items"]["IBIT"]["chg_24h_pct"] == 3.47
+    assert "chg_15m_pct" not in mb["items"]["IBIT"]
+    assert "chg_1h_pct" not in mb["items"]["IBIT"]
 
     # 2. harvest_recent_orders_and_enrich_positions reads cached flat balance for kraken cycle when tradable_positions is empty
     (cdir / "venue_balances_state.json").write_text(

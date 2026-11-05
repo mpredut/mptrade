@@ -134,7 +134,7 @@ def collect_macro_benchmarks_snapshot(
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{_urlparse.quote(yahoo_sym)}?range=2d&interval=5m"
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{_urlparse.quote(yahoo_sym)}?range=2d&interval=5m&includePrePost=true"
             raw = _fetch(url, timeout=timeout_sec, headers={"User-Agent": "Mozilla/5.0"})
             res_list = (raw.get("chart") or {}).get("result") if isinstance(raw, dict) else None
             if not isinstance(res_list, list) or not res_list or not isinstance(res_list[0], dict):
@@ -157,7 +157,7 @@ def collect_macro_benchmarks_snapshot(
             mkt_state = str(meta.get("marketState") or "").strip().upper()
             reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
             ext_px = None
-            if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT"):
+            if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
                 ext_px = safe_pos_float(meta.get("postMarketPrice") or meta.get("preMarketPrice"), default=None)
                 if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
                     ext_px = pts[-1][1]
@@ -187,11 +187,12 @@ def collect_macro_benchmarks_snapshot(
             }
             if len(pts) >= 2:
                 last_bar_ts = pts[-1][0]
-                for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
-                    target_ts = last_bar_ts - target_sec
-                    ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
-                    if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
-                        item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2) + 0.0
+                if eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0:
+                    for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
+                        target_ts = last_bar_ts - target_sec
+                        ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
+                        if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
+                            item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2) + 0.0
             if mkt_state:
                 item_entry["market_state"] = mkt_state
             if pts_24h:
