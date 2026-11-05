@@ -53,6 +53,19 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
     "primary", "republican", "republicans", "voter", "voters",
 })
 
+_COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
+    "bidding", "browser", "burger", "burgers", "console", "coupon", "coupons",
+    "culture", "discount", "discounts", "food", "mcdonald", "mcdonalds", "menu",
+    "menus", "streaming", "talent", "turf",
+})
+
+_SPORTS_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "basketball", "championship", "coach", "cricket", "fifa", "football",
+    "goalkeeper", "golf", "hockey", "laliga", "liv", "mlb", "nba", "nfl",
+    "pga", "playoff", "playoffs", "premier", "rugby", "soccer", "stadium",
+    "striker", "tenerife", "tennis", "tournament", "uefa",
+})
+
 _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS: frozenset[str] = frozenset({
     "airstrike", "airstrikes", "attack", "attacks", "blockade", "bomb", "bombing",
     "casualties", "ceasefire", "crude", "drone", "drones", "embargo", "escalation",
@@ -113,6 +126,7 @@ _STEM_EXACT_PREFIX_WHITELIST: Dict[str, frozenset[str]] = {
     }),
     "hack": frozenset({"hack", "hacks", "hacked", "hacker", "hackers", "hacking"}),
     "halt": frozenset({"halt", "halts", "halted", "halting"}),
+    "strike": frozenset({"strike", "strikes", "striking"}),
 }
 
 
@@ -163,20 +177,30 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
-    "ahead", "allegedly", "already", "answered", "apps", "arrested", "article",
-    "articles", "baseball", "bat", "boy", "brake", "briefing", "bus", "calls",
-    "car", "carried", "carries", "chip", "commentary", "conduct", "conducted",
-    "conducts", "continue", "continues", "criticize", "criticized", "criticizes",
-    "debunked", "defensive", "digested", "downscale", "eight", "elevated", "eve",
-    "exceptionally", "explained", "exposes", "false", "features", "five", "four",
-    "history", "horrific", "introduces", "involvement", "island", "jet", "join",
-    "keyword", "landing", "limited", "links", "localized", "media", "moderate",
+    "acknowledge", "acknowledges", "adds", "admit", "admits", "affecting",
+    "ahead", "allegedly", "already", "answered", "apparently", "apps", "arrested",
+    "article", "articles", "baseball", "bat", "blame", "blamed", "blames",
+    "blaming", "boy", "brake", "briefing", "bus", "calls", "car", "carried",
+    "carries", "caused", "chip", "commentary", "concede", "concedes", "conduct",
+    "conducted", "conducts", "continue", "continues", "criticize", "criticized",
+    "criticizes", "debunked", "defensive", "digested", "discourse", "discount",
+    "discounts", "downscale", "eight", "elevated", "essay", "essays", "eve",
+    "exceptionally", "exists", "expert", "experts", "explained", "exposes",
+    "faces", "facing", "false", "features", "five", "four", "functioning",
+    "golf", "headlines", "highlights", "history", "horrific", "hurt",
+    "institute", "introduces", "involvement", "island", "jet", "join", "keyword",
+    "landing", "latest", "limited", "links", "liv", "localized", "loser",
+    "losers", "losses", "media", "midterm", "midterms", "moderate", "narrative",
     "nine", "non", "normal", "noting", "official", "officials", "one", "orderly",
-    "plane", "potential", "prices", "processed", "progress", "qeshm", "questions",
-    "readiness", "record", "reported", "reportedly", "researchers", "retaining",
-    "say", "seven", "six", "somalia", "suspected", "targets", "ten", "three",
-    "timeline", "trace", "traced", "train", "trains", "truck", "two", "uganda",
-    "unpriced", "veto", "volunteer", "withdrawing", "worse", "wrap",
+    "peacefully", "plane", "played", "political", "position", "post", "potential",
+    "prices", "processed", "progress", "pursues", "qeshm", "questions", "rather",
+    "readiness", "record", "reported", "reportedly", "represent", "researchers",
+    "reshapes", "retaining", "rhetoric", "role", "routine", "say", "seven",
+    "showdown", "six", "sizing", "somalia", "story", "striker", "study",
+    "suspected", "targets", "ten", "tenerife", "three", "timeline", "trace",
+    "traced", "train", "trains", "truck", "two", "uganda", "uncertainty",
+    "unpriced", "veto", "victim", "victims", "volunteer", "withdrawing", "worse",
+    "wrap",
 })
 
 
@@ -218,11 +242,18 @@ def _is_excluded_non_crisis_attack_keyword(
     text_words: Set[str],
     crisis_stems: Set[str],
 ) -> bool:
-    """Return True if a keyword appears solely in a non-crisis local crime, partisan election, or single-stock earnings context."""
+    """Return True if a keyword appears solely in a non-crisis local crime, partisan election, commercial metaphor, sports, or single-stock earnings context."""
     kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
     combined_words = text_words | kw_words
+    kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {"crude", "oil", "ceasefire", "escalation"}
+    if (combined_words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (text_words & (kinetic_only - kw_words)):
+        if kw_words and (kw_words & {"war", "wars"}):
+            return True
+    if (combined_words & _SPORTS_CONTEXT_WORDS) and not (text_words & (kinetic_only - kw_words)):
+        return True
+    if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
+        return True
     if kw_words and kw_words <= {"war", "wars", "conflict", "escalation", "iran", "israel", "ukraine", "russia", "gaza", "middle", "east"}:
-        kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {"crude", "oil", "ceasefire", "escalation"}
         if (combined_words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (combined_words & kinetic_only):
             return True
         if (
@@ -254,13 +285,16 @@ def filter_valid_severity_keywords(
     seed_set = _get_seed_terms_set()
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
-    title_words = set(re.findall(r"[a-zA-Z]{3,}", title.lower())) if isinstance(title, str) and title.strip() else set()
+    title_low = title.lower() if isinstance(title, str) and title.strip() else ""
+    title_words = set(re.findall(r"[a-zA-Z]{3,}", title_low)) if title_low else set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
         for k in raw_keywords:
             if not isinstance(k, str) or not k.strip():
                 continue
             k_clean = re.sub(r"\s+", " ", k.strip()).lower()
+            if title_low and not re.search(r"\b" + re.escape(k_clean) + r"\b", title_low):
+                continue
             if _is_excluded_non_crisis_attack_keyword(k_clean, title_words, crisis_stems):
                 continue
             if k_clean in seed_set or (
@@ -279,9 +313,23 @@ def filter_valid_severity_keywords(
 def _strip_headline_publisher_suffix(title: str) -> str:
     """Strip trailing ' - Publisher Name' suffix from RSS headline titles before dynamic n-gram discovery."""
     cleaned = (title or "").strip()
-    parts = re.split(r"\s+[-–—|]\s+", cleaned)
-    if len(parts) >= 2 and len(parts[-1].split()) <= 5 and len(parts[0]) >= 12:
-        return " - ".join(parts[:-1]).strip()
+    while True:
+        m = re.search(r"\s+[-|]\s+([^-|–—]+)$", cleaned)
+        if not m:
+            break
+        prefix = cleaned[: m.start()].strip()
+        suffix_raw = m.group(1).strip()
+        suffix_words = suffix_raw.split()
+        if len(prefix) < 12 or not suffix_words:
+            break
+        suffix_low = suffix_raw.lower()
+        is_tagline = len(suffix_words) <= 8 and any(
+            t in suffix_low for t in ("breaking news", "latest news", "live updates", ".com", ".org", ".net", ".co.")
+        )
+        if len(suffix_words) <= 5 or is_tagline:
+            cleaned = prefix
+        else:
+            break
     return cleaned
 
 
@@ -506,6 +554,10 @@ def discover_dynamic_terms_from_headlines(
             eff_stems.discard("strike")
         if word_set & _NON_CRISIS_ATTACK_CONTEXT_WORDS:
             eff_stems.discard("attack")
+        if _is_excluded_non_crisis_attack_keyword("war", word_set, crisis_stems):
+            eff_stems.difference_update({"war", "escalat"})
+        if _is_excluded_non_crisis_attack_keyword("liquidation", word_set, crisis_stems):
+            eff_stems.difference_update({"war", "strike", "attack", "liquidat", "collaps", "crash"})
         src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
         article_key = canon_url or norm_title
         for tokens in _extract_contiguous_token_runs(norm_title, stopwords):

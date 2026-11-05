@@ -6139,7 +6139,135 @@ def test_parenthetical_multi_item_taker_ratio_bullish_aligned_flow_and_no_negati
     assert "dd_from_peak=0.0%" in cyc_line
 
 
+def test_lexicon_noise_pruning_publisher_suffix_stale_swing_lots_and_manifest_heartbeats(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from intelligence.macro.lexicon_ssot import (
+        _strip_headline_publisher_suffix,
+        discover_dynamic_terms_from_headlines,
+        filter_valid_severity_keywords,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary, harvest_heartbeats_and_state_files
+    from orchestratorOS.supervisor.prompt_sections import _format_sre_and_fleet_section
 
+    # 1. Bug 103: Partisan election war post-mortems, fast-food discount wars, and sports striker/golf liquidation
+    #    do not trigger severity keywords or discover dynamic crisis bigrams
+    assert (
+        filter_valid_severity_keywords(
+            ["war", "iran war"],
+            title="Trump blames Iran war for midterms losses as GOP concedes role",
+        )
+        == ()
+    )
+    assert (
+        filter_valid_severity_keywords(
+            ["war", "discount wars"],
+            title="McDonald's tests new value menu as fast-food discount wars heat up",
+        )
+        == ()
+    )
+    assert (
+        filter_valid_severity_keywords(
+            ["liquidation", "strike"],
+            title="LIV Golf faces liquidation as Tenerife striker signs new deal",
+        )
+        == ()
+    )
+    discovered = discover_dynamic_terms_from_headlines(
+        [
+            {"title": "Trump blames Iran war for midterms losses - CNN", "source": "CNN", "url": "https://a.com/1"},
+            {"title": "Trump blames Iran war for midterms losses - BBC", "source": "BBC", "url": "https://b.com/2"},
+            {"title": "McDonald's tests new menu as fast-food discount wars heat up - CNBC", "source": "CNBC", "url": "https://c.com/3"},
+            {"title": "Burger chains battle as fast-food discount wars heat up - Reuters", "source": "Reuters", "url": "https://d.com/4"},
+            {"title": "LIV Golf faces liquidation after tournament - ESPN", "source": "ESPN", "url": "https://e.com/5"},
+            {"title": "LIV Golf faces liquidation in sports shakeup - Sky", "source": "Sky", "url": "https://f.com/6"},
+        ],
+        persist=False,
+    )
+    assert discovered == ()
 
+    # 2. Bug 104: _strip_headline_publisher_suffix preserves internal em-dashes and strips multi-segment publisher taglines
+    assert (
+        _strip_headline_publisher_suffix(
+            "Stock Market Today: Dow Jumps 1,500 Points On Sweep — Live Updates - WSJ"
+        )
+        == "Stock Market Today: Dow Jumps 1,500 Points On Sweep — Live Updates"
+    )
+    assert (
+        _strip_headline_publisher_suffix(
+            "Stock Market Today: Dow Jumps 1,500 Points On Sweep — Live Updates"
+        )
+        == "Stock Market Today: Dow Jumps 1,500 Points On Sweep — Live Updates"
+    )
+    assert (
+        _strip_headline_publisher_suffix(
+            "JetBlue raises baggage fees for a second time as jet fuel prices stay elevated - ABC News - Breaking News, Latest News and Videos"
+        )
+        == "JetBlue raises baggage fees for a second time as jet fuel prices stay elevated"
+    )
 
+    # 3. Bug 105: extract_symbol_recent_fills does not promote >72h legacy lots or single-lot LIFO remainders as tactical_avg_buy_px after sells
+    now_ms = 1_793_805_000_000
+    day_ms = 86_400_000
+    fills_stale_core = extract_symbol_recent_fills(
+        [
+            {"orderId": "1", "side": "BUY", "price": 258.5, "executedQty": 5.0, "status": "FILLED", "time": now_ms - 12 * day_ms},
+            {"orderId": "2", "side": "BUY", "price": 236.4, "executedQty": 4.5, "status": "FILLED", "time": now_ms - 5 * day_ms},
+            {"orderId": "3", "side": "BUY", "price": 224.5, "executedQty": 4.0, "status": "FILLED", "time": now_ms - 1 * day_ms},
+            {"orderId": "4", "side": "SELL", "price": 234.8, "executedQty": 4.0, "status": "FILLED", "time": now_ms - 3_600_000},
+        ],
+        symbol="TAOUSDC",
+    )
+    assert fills_stale_core is not None
+    assert fills_stale_core["swing_subcycle_avg_px"] is None
+    assert "tactical_avg_buy_px" not in fills_stale_core
+
+    fills_single_rem = extract_symbol_recent_fills(
+        [
+            {"orderId": "1", "side": "BUY", "price": 0.1595, "executedQty": 1000.0, "status": "FILLED", "time": now_ms - 2 * day_ms},
+            {"orderId": "2", "side": "BUY", "price": 0.1540, "executedQty": 4000.0, "status": "FILLED", "time": now_ms - 1 * day_ms},
+            {"orderId": "3", "side": "SELL", "price": 0.1640, "executedQty": 4774.3, "status": "FILLED", "time": now_ms - 1_800_000},
+        ],
+        symbol="ARBUSDC",
+    )
+    assert fills_single_rem is not None
+    assert fills_single_rem["swing_subcycle_avg_px"] is None
+    assert "tactical_avg_buy_px" not in fills_single_rem
+
+    # 4. Bug 106: harvest_heartbeats_and_state_files honors procs.conf hb_stale_s, and _format_sre_and_fleet_section separates stopped process heartbeats
+    ws_dir = tmp_path / "ws_hb"
+    c_dir = ws_dir / "cachedb"
+    (c_dir / "system" / "heartbeat").mkdir(parents=True, exist_ok=True)
+    (ws_dir / "procs.conf").write_text(
+        "cacheManager.py|$ROOT|python cacheManager.py|cacheManager|cachedb/cacheManager.heartbeat|180|fleet\n"
+        "xStock-watch.py|$ROOT|python xStock-watch.py|xStock-watch|cachedb/xStock-watch.heartbeat|1800|bot\n",
+        encoding="utf-8",
+    )
+    now_s = 1_800_000_000.0
+    (c_dir / "system" / "heartbeat" / "cacheManager.heartbeat").write_text(
+        json.dumps({"status": "alive", "ts": now_s - 400.0}),
+        encoding="utf-8",
+    )
+    (c_dir / "system" / "heartbeat" / "xStock-watch.heartbeat").write_text(
+        json.dumps({"status": "alive", "ts": now_s - 400.0}),
+        encoding="utf-8",
+    )
+    hbs_manifest, _ = harvest_heartbeats_and_state_files(str(c_dir), str(ws_dir), now_s)
+    assert "cacheManager.heartbeat" not in hbs_manifest
+    assert "xStock-watch.heartbeat" in hbs_manifest
+
+    sre_lines = _format_sre_and_fleet_section(
+        SimpleNamespace(
+            active_heartbeats={"xStock-watch.heartbeat": {"age_seconds": 400.0}, "auto_cryptotrade_executor.heartbeat": {"age_seconds": 60.0}},
+            state_files={},
+            fleet_processes=[{"name": "xStock-watch", "is_running": False, "heartbeat_fresh": True}],
+            system_and_vpn={},
+        ),
+        LogEventSummary(),
+        1.0,
+    )
+    hb_line = next(l for l in sre_lines if l.startswith("- Active Heartbeats:"))
+    assert "['auto_cryptotrade_executor.heartbeat']" in hb_line
+    assert "disk heartbeats for stopped processes: ['xStock-watch.heartbeat']" in hb_line
 

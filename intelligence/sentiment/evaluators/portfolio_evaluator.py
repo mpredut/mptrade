@@ -472,18 +472,27 @@ def extract_symbol_recent_fills(
         newest_lot = cand_swing_lots[-1]
         newest_px = float(newest_lot.get("entry_px") or 0.0)
         newest_ts = int(newest_lot.get("ts_ms") or 0)
+        sold_after_newest = last_sell_ts_ms > 0 and newest_ts > 0 and last_sell_ts_ms > newest_ts
+        top_lot_stale_after_sell = (
+            sold_after_newest
+            and latest_fill_ts_ms > 0
+            and (latest_fill_ts_ms - newest_ts) > 72 * 3600 * 1000
+        )
         active_swing_lots = []
-        for lt in reversed(cand_swing_lots):
-            lt_px = float(lt.get("entry_px") or 0.0)
-            lt_ts = int(lt.get("ts_ms") or 0)
-            time_ok = (newest_ts <= 0 or lt_ts <= 0) or ((newest_ts - lt_ts) <= 72 * 3600 * 1000)
-            px_ok = newest_px <= 0.0 or (abs(lt_px - newest_px) / newest_px <= 0.075)
-            if time_ok and px_ok:
-                active_swing_lots.append(lt)
-            else:
-                break
-        if not active_swing_lots:
-            active_swing_lots = [newest_lot]
+        if not top_lot_stale_after_sell:
+            for lt in reversed(cand_swing_lots):
+                lt_px = float(lt.get("entry_px") or 0.0)
+                lt_ts = int(lt.get("ts_ms") or 0)
+                time_ok = (newest_ts <= 0 or lt_ts <= 0) or ((newest_ts - lt_ts) <= 72 * 3600 * 1000)
+                px_ok = newest_px <= 0.0 or (abs(lt_px - newest_px) / newest_px <= 0.075)
+                if time_ok and px_ok:
+                    active_swing_lots.append(lt)
+                else:
+                    break
+            if not active_swing_lots:
+                active_swing_lots = [newest_lot]
+            if sold_after_newest and len(active_swing_lots) >= len(open_lots):
+                active_swing_lots = []
         sw_cost = sum(float(x.get("qty") or 0.0) * float(x.get("entry_px") or 0.0) for x in active_swing_lots)
         sw_qty = sum(float(x.get("qty") or 0.0) for x in active_swing_lots)
         if sw_qty > 1e-12 and sw_cost > 0.0:

@@ -1121,6 +1121,15 @@ def harvest_heartbeats_and_state_files(
     """Harvest active heartbeat JSON/mtime files and watchdog state file ages."""
     _rj = _resolve_repair_json_reader(read_json_fn)
     _is_default_rj = _rj is _default_read_json_recovering
+    manifest_stale_by_hb: Dict[str, float] = {}
+    if _is_default_rj and workspace_dir and os.path.exists(os.path.join(workspace_dir, "procs.conf")):
+        for proc in parse_procs_manifest(workspace_dir):
+            if (hb_s := safe_pos_float(proc.get("hb_stale_s"), default=None)) is not None:
+                for hp in proc.get("hb_paths") or ():
+                    if isinstance(hp, str) and hp.endswith(".heartbeat"):
+                        manifest_stale_by_hb[os.path.basename(hp)] = hb_s
+                if p_name := str(proc.get("name") or "").strip():
+                    manifest_stale_by_hb.setdefault(f"{p_name}.heartbeat", hb_s)
     active_heartbeats: Dict[str, Any] = {}
     for hb_name in _CORE_HEARTBEAT_NAMES:
         hb_raw_path = os.path.join(cache_dir, hb_name)
@@ -1134,7 +1143,7 @@ def harvest_heartbeats_and_state_files(
             str(resolve_cachedb_filepath(hb_raw_path)),
             data,
             now_ts,
-            300.0 if is_rtrade else 1800.0,
+            manifest_stale_by_hb.get(hb_name, 300.0 if is_rtrade else 1800.0),
             allow_mtime_fallback=is_rtrade,
         )
         if resolved_entry is not None:
@@ -1151,7 +1160,7 @@ def harvest_heartbeats_and_state_files(
                     if not os.path.isfile(hb_full):
                         continue
                     resolved_entry = _resolve_heartbeat_entry(
-                        hb_full, _rj(hb_full), now_ts, 1800.0,
+                        hb_full, _rj(hb_full), now_ts, manifest_stale_by_hb.get(entry, 1800.0),
                         allow_mtime_fallback=True, prefer_mtime_when_stale=True,
                     )
                     if resolved_entry is not None:

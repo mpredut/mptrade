@@ -273,9 +273,21 @@ def _format_sre_and_fleet_section(
     lookback_hours: float,
 ) -> List[str]:
     """Format SRE functional telemetry, log anomalies, fleet heartbeats, and OS/VPN resources."""
+    hb_keys = list(sensors.active_heartbeats.keys())
+    stopped_hb_note = ""
+    if hb_keys and getattr(sensors, "fleet_processes", None):
+        stopped_names = {
+            f"{p.get('name')}.heartbeat"
+            for p in sensors.fleet_processes
+            if isinstance(p, dict) and not p.get("is_running") and p.get("name")
+        }
+        stopped_hbs = [k for k in hb_keys if k in stopped_names]
+        if stopped_hbs:
+            hb_keys = [k for k in hb_keys if k not in stopped_names]
+            stopped_hb_note = f" (disk heartbeats for stopped processes: {stopped_hbs})"
     lines = [
         "### 1. FUNCTIONAL SYSTEM TELEMETRY, HEARTBEATS & WATCHDOG STATES:",
-        f"- Active Heartbeats: {list(sensors.active_heartbeats.keys())}",
+        f"- Active Heartbeats: {hb_keys}{stopped_hb_note}",
         f"- Watchdog & Runtime State Files: {sensors.state_files}",
         f"\n### 2. LOG ANOMALIES & GUARD VETOES / PERSISTENT UNRESOLVED ERRORS (PAST {lookback_hours:g}H):",
         f"- Scanned Logs: {logs.total_scanned_files}",

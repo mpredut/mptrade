@@ -459,8 +459,10 @@ def harvest_macro_and_news_sensors(
         valid_news.sort(key=lambda x: (1 if x.get("is_high_severity") else 0, safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0), reverse=True)
         for item in valid_news[:6]:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
+            raw_title = str(item.get("title") or "")
+            clean_title = _strip_headline_publisher_suffix(raw_title) if raw_title else item.get("title")
             breaking_news.append({
-                "title": item.get("title"), "source": item.get("source"),
+                "title": clean_title or item.get("title"), "source": item.get("source"),
                 "is_high_severity": bool(item.get("is_high_severity")),
                 "keywords": item.get("matched_keywords") or [],
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
