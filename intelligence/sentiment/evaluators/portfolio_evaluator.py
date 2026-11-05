@@ -414,7 +414,13 @@ def extract_symbol_recent_fills(
             if q_f is not None and q_f > 0.0:
                 prev_cost_qty = cost_qty
                 is_full_exit = q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12
-                last_exit_oversold = bool(is_full_exit and prev_cost_qty > 1e-12 and q_f > prev_cost_qty * 1.05)
+                last_exit_oversold = bool(
+                    is_full_exit
+                    and (
+                        (prev_cost_qty > 1e-12 and q_f > prev_cost_qty * 1.05)
+                        or (prev_cost_qty <= 1e-12 and (last_exit_oversold or bool(buys_fmt)))
+                    )
+                )
                 if ts_raw:
                     last_sell_ts_ms = max(last_sell_ts_ms, int(ts_raw))
                 cost_qty, active_avg = (0.0, 0.0) if is_full_exit else (cost_qty - q_f, active_avg)
@@ -563,7 +569,7 @@ def _populate_cycle_fallback_recent_order(
         recent_orders[p_sym] = v_ro_map[p_sym] = ro
         created_ro = True
     if isinstance(ro, dict):
-        if (p_venue == "t212" or created_ro) and cyc_avg > 0:
+        if (p_venue == "t212" or created_ro) and cyc_avg > 0 and cyc_has_open_qty:
             if (
                 p_venue == "t212"
                 and not created_ro
@@ -638,12 +644,23 @@ def reconcile_venue_cycles_with_recent_orders(
                 and (safe_pos_float(b.get("qty"), default=0.0) or 0.0) > 0.0
                 and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
             ]
-            buys_before = [
-                b for b in r_buys_c
-                if isinstance(b, dict)
-                and 0.0 < (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) <= ls_ts_ms
-                and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
-            ]
+            post_sell_new_cycle = bool(
+                entry_ts_ms
+                and ls_ts_ms > 0.0
+                and float(entry_ts_ms) > ls_ts_ms + 5000.0
+                and buys_after
+                and cyc_qty_cur <= sum(float(b["qty"]) for b in buys_after) * 1.05
+            )
+            buys_before = (
+                []
+                if post_sell_new_cycle
+                else [
+                    b for b in r_buys_c
+                    if isinstance(b, dict)
+                    and 0.0 < (safe_pos_float(b.get("ts_ms"), default=0.0) or 0.0) <= ls_ts_ms
+                    and (safe_pos_float(b.get("price"), default=0.0) or 0.0) > 0.0
+                ]
+            )
             reconciled_external_buy = bool(
                 entry_ts_ms
                 and not cyc.get("resting_orders")
@@ -666,7 +683,7 @@ def reconcile_venue_cycles_with_recent_orders(
             )
 
             def _sync_exit_kind(c_dict: Dict[str, Any], sell_p: float, rem_q: float) -> None:
-                if sell_p <= 0.0:
+                if sell_p <= 0.0 or (post_sell_new_cycle and str(c_dict.get("last_exit_kind") or "").strip()):
                     return
                 pre_sell_ref = (
                     (safe_pos_float(buys_before[-1].get("price"), default=None) if buys_before else None)
@@ -681,7 +698,12 @@ def reconcile_venue_cycles_with_recent_orders(
                 )
                 if ref_avg is not None and ref_avg > 0.0:
                     cur_kind = str(c_dict.get("last_exit_kind") or "").strip().upper()
-                    is_newer_partial_sell = rem_q > 1e-6 and ls_ts_ms > 0.0 and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                    is_newer_partial_sell = (
+                        not post_sell_new_cycle
+                        and rem_q > 1e-6
+                        and ls_ts_ms > 0.0
+                        and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                    )
                     replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
                     lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
                     is_loss_or_scratch_sell = sell_p < ref_avg * 0.995 or (
@@ -820,10 +842,11 @@ def enrich_positions_with_orders_and_cycles(
             continue
         p_sym = str(pos.get("symbol") or "").upper()
         p_venue = normalize_venue_name(pos.get("venue"))
-        if p_venue and p_sym:
-            seen_venue_syms.add((p_venue, p_sym))
         p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
         p_quote_variants = cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes)
+        if p_venue and p_sym:
+            for cand_vs in (p_sym, *p_quote_variants):
+                seen_venue_syms.add((p_venue, str(cand_vs).upper()))
         p_variants = (*p_quote_variants, *cache_symbol_variants(p_sym))
         pos_px_f = safe_float(pos.get("price"), 0.0)
         cand_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))
@@ -1027,7 +1050,7 @@ def enrich_positions_with_orders_and_cycles(
     for c_venue, cyc_map in (("t212", t212_cycles), ("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles)):
         if not isinstance(cyc_map, dict):
             continue
-        v_ro_map = venue_recent_orders.get(c_venue, {}) if isinstance(venue_recent_orders, dict) else {}
+        v_ro_map = venue_recent_orders.setdefault(c_venue, {}) if isinstance(venue_recent_orders, dict) else {}
         for c_sym, cyc in cyc_map.items():
             if not isinstance(cyc, dict):
                 continue
@@ -1040,6 +1063,16 @@ def enrich_positions_with_orders_and_cycles(
             c_quotes = compatible_quote_suffixes(c_sym_u)
             c_quote_variants = cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes)
             ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
+            if ro is None and isinstance(recent_orders, dict):
+                ro = next(
+                    (
+                        val
+                        for cand in (c_sym_u, *c_quote_variants)
+                        if isinstance((val := casefold_get(recent_orders, cand)), dict)
+                        and normalize_venue_name(val.get("venue") or c_venue) == c_venue
+                    ),
+                    None,
+                )
             _populate_cycle_fallback_recent_order(
                 c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )

@@ -439,12 +439,13 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
         val = safe_pos_float(next((g for g in m_tr.groups() if g is not None), None), default=None)
         if val is None:
             continue
-        prefix = text[max(0, m_tr.start() - 24) : m_tr.start()].lower()
-        if re.search(r"\b(?:overall|15m)\s*$", prefix):
+        raw_prefix = text[max(0, m_tr.start() - 32) : m_tr.start()].lower()
+        clause_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_tr.group(0).lower()}"
+        if re.search(r"\b(?:overall|15m)\b", clause_ctx):
             rank = 3
-        elif re.search(r"\b(?:1m|3m|5m)\s*$", prefix):
+        elif re.search(r"\b(?:1m|3m|5m)\b", clause_ctx):
             rank = 0
-        elif re.search(r"\b(?:1h|4h)\s*$", prefix):
+        elif re.search(r"\b(?:1h|4h)\b", clause_ctx):
             rank = 1
         else:
             rank = 2
@@ -638,28 +639,9 @@ def compute_dynamic_geopolitical_interval(
     has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
     high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
-    all_high_sev_aged_90m = False
-    if high_sev_count > 0 and news_snapshot is not None:
-        high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
-        if high_sev_all:
-            from intelligence.macro.news_feed_collector import NewsFeedCollector
-
-            all_high_sev_aged_90m = all(
-                0.0
-                < (
-                    _ssot.safe_nonneg_ts(
-                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-                        0.0,
-                    )
-                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), ts) or 0.0)
-                )
-                <= ts - 5400.0
-                for h in high_sev_all
-            )
-
-    has_new_acute = not bool(last_headlines_digest) and not all_high_sev_aged_90m
-    new_high_sev_count = 0 if all_high_sev_aged_90m else high_sev_count
-    if changed_b and last_headlines_digest and news_snapshot is not None and not all_high_sev_aged_90m:
+    has_new_acute = not bool(last_headlines_digest)
+    new_high_sev_count = high_sev_count
+    if changed_b and last_headlines_digest and news_snapshot is not None:
         high_sev, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
         prev_titles = _ssot.split_headlines_digest(last_headlines_digest)
@@ -681,6 +663,24 @@ def compute_dynamic_geopolitical_interval(
                 active_acute_phrases,
                 prev_titles=prev_titles,
             )
+
+    all_high_sev_aged_90m = False
+    if (
+        high_sev_count > 0
+        and news_snapshot is not None
+        and not (changed_b and last_headlines_digest and new_high_sev_count > 0)
+    ):
+        high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
+        if high_sev_all:
+            from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+
+            all_high_sev_aged_90m = all(
+                0.0 < GeopoliticalThreatAnalyzer._headline_effective_ts(h, ts) <= ts - 5400.0
+                for h in high_sev_all
+            )
+    if all_high_sev_aged_90m:
+        has_new_acute = False
+        new_high_sev_count = 0
 
     if has_shock and threat_level in ("NORMAL", "ELEVATED") and has_new_acute:
         return 0.0, "acute_shock_keyword_alert"

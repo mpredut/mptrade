@@ -975,7 +975,7 @@ def load_symbol_best_recent_fills(
                         "last_action_side": "BUY" if cyc_qty > 1e-8 else ("SELL" if cyc_ls is not None else "BUY"),
                         "last_action_actor": "BOT",
                         "last_action_actor_tag": "BOT",
-                        "active_avg_buy_px": round(cyc_avg, 6) if cyc_avg else None,
+                        "active_avg_buy_px": round(cyc_avg, 6) if (cyc_avg and cyc_qty > 1e-8) else None,
                         "last_buy": (
                             {"price": cyc_lb, "qty": matched_cyc.get("qty") if not matched_cyc.get("dca_buys") and cyc_qty > 1e-8 else None, "actor": "BOT", "actor_tag": "BOT"}
                             if cyc_lb is not None
@@ -990,6 +990,12 @@ def load_symbol_best_recent_fills(
                     }
                 elif isinstance(fills, dict):
                     if matched_cyc_venue == "t212" and cyc_avg is not None and cyc_avg > 0 and cyc_qty > 1e-8:
+                        if (
+                            fills.get("tactical_avg_buy_px") is None
+                            and (prev_act_avg := safe_pos_float(fills.get("active_avg_buy_px"), default=None)) is not None
+                            and abs(prev_act_avg - cyc_avg) / max(cyc_avg, 1e-9) >= 0.002
+                        ):
+                            fills["tactical_avg_buy_px"] = round(prev_act_avg, 6)
                         fills["active_avg_buy_px"] = round(cyc_avg, 6)
                     if fills.get("last_buy") is None and cyc_lb is not None:
                         fills["last_buy"] = {

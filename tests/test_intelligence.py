@@ -6157,3 +6157,163 @@ def test_iter14_non_tradable_t212_cycle_recent_order_avg_sync():
 
 
 
+def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_clause_and_non_tradable_ro_sync(
+    tmp_path,
+):
+    import json
+    from intelligence.macro.calendar_ssot import (
+        compute_dynamic_geopolitical_interval,
+        parse_cited_taker_ratio,
+    )
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAssessment
+    from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+        extract_symbol_recent_fills,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+
+    # 1. reconcile_venue_cycles_with_recent_orders does not inflate dca_buys or flip TP->REDUCE
+    #    when buys_before and last_sell occurred BEFORE the current cycle's _entry_ts_ms
+    kr_new_cyc = {
+        "SOLUSD": {
+            "qty": 5.0,
+            "cost_usd": 525.0,
+            "avg_cost_px": 105.0,
+            "entry_price": 105.0,
+            "last_buy_price": 105.0,
+            "last_sell_price": 110.0,
+            "last_exit_kind": "TP",
+            "dca_buys": 0,
+            "_entry_ts_ms": 1_793_800_000_000,
+            "_last_sell_ts_ms": 1_793_700_000_000,
+        }
+    }
+    v_ro_new = {
+        "kraken": {
+            "SOLUSD": {
+                "last_sell": {"price": 102.0, "qty": 4.0, "ts_ms": 1_793_750_000_000, "actor": "BOT"},
+                "recent_buys": [
+                    {"price": 108.0, "qty": 4.0, "ts_ms": 1_793_700_000_000, "actor": "BOT"},
+                    {"price": 105.0, "qty": 5.0, "ts_ms": 1_793_800_000_000, "actor": "BOT"},
+                ],
+                "active_avg_buy_px": 105.0,
+                "active_cycle_rem_qty": 5.0,
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        kr_new_cyc,
+        {},
+        {},
+        v_ro_new,
+        {("kraken", "SOLUSD"): 5.0},
+        {"SOLUSD": {"price": 106.0}},
+    )
+    assert kr_new_cyc["SOLUSD"]["dca_buys"] == 0
+    assert kr_new_cyc["SOLUSD"]["last_exit_kind"] == "TP"
+
+    # 2. extract_symbol_recent_fills preserves lifo_realized_pnl_usd when SELL #1 exhausts tracked cost_qty
+    #    to 0.0 and SELL #2 sells additional core inventory while prev_cost_qty == 0.0
+    t0 = 1_793_800_000_000
+    fills_multi_sell = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 10.0, "qty": 50.0, "ts_ms": t0},
+            {"side": "SELL", "price": 9.5, "qty": 50.0, "ts_ms": t0 + 1_000_000},
+            {"side": "SELL", "price": 9.5, "qty": 30.0, "ts_ms": t0 + 1_005_000},
+            {"side": "BUY", "price": 9.2, "qty": 20.0, "ts_ms": t0 + 2_000_000},
+        ]
+    )
+    assert fills_multi_sell is not None
+    assert fills_multi_sell["lifo_realized_pnl_usd"] == pytest.approx(-25.0)
+
+    # 3. parse_cited_taker_ratio ranks 15m/overall above 1h/4h above 5m even when adjectives
+    #    appear between the horizon token and 'taker'
+    txt_adj = (
+        "Despite 5m aggressive taker buy resurgence (ratio 1.64, CVD +$9.25M), "
+        "1h aggregate taker flow remains net negative (ratio 0.60, 1h CVD -$25.46M)."
+    )
+    assert parse_cited_taker_ratio(txt_adj) == pytest.approx(0.60)
+
+    # 4. compute_dynamic_geopolitical_interval honors dict-based age_min>=90m and does not suppress
+    #    genuinely unseen high-severity headlines
+    now_s = 1_793_800_000.0
+    cached_elev = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.5,
+        summary="Prior elevated state",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=1,
+        ts=now_s - 3600.0,
+    )
+    itv_age_min, reason_age_min = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=now_s - 3600.0,
+        now_ts=now_s,
+        cached_assessment=cached_elev,
+        news_snapshot={
+            "high_severity_count": 1,
+            "has_critical_shock_keywords": False,
+            "headlines": [
+                {"title": "Emergency tariff shock announced by G7", "is_high_severity": True, "age_min": 120.0}
+            ],
+        },
+        headlines_changed=False,
+        last_headlines_digest="Emergency tariff shock announced by G7",
+    )
+    assert reason_age_min == "threat_deescalation_zero_high_sev_recheck"
+
+    # 5. enrich_positions_with_orders_and_cycles deduplicates quote variants in seen_venue_syms
+    #    and load_symbol_best_recent_fills preserves tactical_avg_buy_px on T212 cycle sync
+    pos_hl = [{"venue": "hyperliquid", "symbol": "HYPEUSD", "quote": "USDC", "free_base": 10.0, "price": 25.0}]
+    ro_hl = {"HYPEUSD": {"venue": "hyperliquid", "last_action_side": "BUY", "active_avg_buy_px": 24.0}}
+    v_ro_hl = {"hyperliquid": {"HYPEUSD": ro_hl["HYPEUSD"]}}
+    hl_cycs = {"HYPEUSDC": {"qty": 10.0, "avg_cost_px": 24.0, "entry_price": 24.0}}
+    enrich_positions_with_orders_and_cycles(
+        pos_hl,
+        {"HYPEUSD": {"price": 25.0}},
+        {},
+        v_ro_hl,
+        ro_hl,
+        {},
+        hl_cycs,
+        {},
+        {},
+    )
+    assert "HYPEUSDC" not in ro_hl
+
+    ws_t212 = tmp_path / "ws_t212"
+    cdir_t212 = ws_t212 / "cachedb"
+    t212_dir = ws_t212 / "212trading"
+    cdir_t212.mkdir(parents=True, exist_ok=True)
+    t212_dir.mkdir(parents=True, exist_ok=True)
+    (t212_dir / ".state_RGNT_US_EQ.json").write_text(
+        json.dumps({"qty": 122.51, "avg_cost_px": 1.4395, "entry_price": 1.50}),
+        encoding="utf-8",
+    )
+    (cdir_t212 / "cache_trade_t212.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "RGNT_US_EQ": [
+                        {
+                            "side": "BUY",
+                            "price": 1.43,
+                            "qty": 72.14,
+                            "executedQty": 72.14,
+                            "timestamp": 1_793_800_000_000,
+                            "status": "FILLED",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    best_rgnt = load_symbol_best_recent_fills(str(cdir_t212), "RGNT_US_EQ", ["RGNT_US_EQ", "RGNT"])
+    assert best_rgnt is not None
+    assert best_rgnt["active_avg_buy_px"] == pytest.approx(1.4395)
+    assert best_rgnt["tactical_avg_buy_px"] == pytest.approx(1.43)
+
+
+
