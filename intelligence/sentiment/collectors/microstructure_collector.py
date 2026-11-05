@@ -105,10 +105,16 @@ def _filter_ohlc_closes_since(
 
 
 def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = None) -> Optional[Any]:
-    ohlc_fn = getattr(getattr((inst_by_sym or {}).get(sym), "_provider", None), "ohlc_series", None)
+    sym_u = str(sym or "").strip().upper()
+    inst_map = inst_by_sym or {}
+    inst_obj = (
+        (inst_map.get(f"binance:{sym_u}") if sym_u != "HYPEUSDC" else None)
+        or inst_map.get(sym)
+        or inst_map.get(sym_u)
+    )
+    ohlc_fn = getattr(getattr(inst_obj, "_provider", None), "ohlc_series", None)
     if callable(ohlc_fn) or "PYTEST_CURRENT_TEST" in os.environ:
         return ohlc_fn if callable(ohlc_fn) else None
-    sym_u = str(sym or "").strip().upper()
     try:
         if sym_u in ("ADAUSD", "TAOUSD", "HYPEUSD"):
             from providers.kraken_provider import KrakenProvider
@@ -1088,9 +1094,9 @@ def enrich_24h_and_microstructure(
                         try:
                             from state_io import save_json_state
 
-                            if pts_24h_bars:
+                            if pts_24h or pts_24h_bars:
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
-                                save_json_state(p24_target, {"items": {sym: pts_24h_bars}})
+                                save_json_state(p24_target, {"items": {sym: pts_24h or pts_24h_bars}})
                             p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
                             save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
                         except Exception:

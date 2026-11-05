@@ -4867,6 +4867,59 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     update_microstructure_cycle_deltas(str(cdir_b80), micro_b80, now_ts=1_793_830_900.0)
     assert micro_b80["HYPEUSDC"]["cycle_delta"]["oi_delta_pct"] == 0.0
 
+    # Bug 84: _format_portfolio_section omits last_cycle_execution_status when all entries are >30m OPEN_RESTING already in open_limit_orders
+    from orchestratorOS.supervisor.prompt_sections import _format_market_prices_section, _format_portfolio_section
+
+    sec3c_b84 = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_id": "101", "price": 78620.0, "qty": 0.01, "filled_qty": 0.0, "status": "NEW"},
+                    {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "order_id": "721398249", "price": 228.5, "qty": 3.5, "filled_qty": 0.0, "status": "NEW"},
+                ],
+                "last_cycle_execution_status": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "status": "OPEN_RESTING", "order_id": "101", "age_min": 512.9},
+                    {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "status": "OPEN_RESTING", "order_id": "721398249", "age_min": 512.8},
+                ],
+            },
+            asset_scope="crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "last_cycle_execution_status:" not in sec3c_b84
+
+    # Bug 85: _format_market_prices_section does not leak sibling sec_poc_px/lvn_px onto a symbol with its own UNIMODAL Volume Profile
+    sec3a_b85 = "\n".join(
+        _format_market_prices_section(
+            {
+                "HYPEUSDC": {
+                    "price": 83.7985,
+                    "poc_px": 84.6045,
+                    "val_px": 82.6535,
+                    "vah_px": 85.9865,
+                    "va_pos_pct": 34.4,
+                    "va_regime": "INSIDE_VA_LOWER",
+                    "profile_shape": "UNIMODAL",
+                    "vp_source": "TPO",
+                },
+                "HYPEUSD": {
+                    "price": 83.785,
+                    "poc_px": 84.6844,
+                    "sec_poc_px": 86.6434,
+                    "lvn_px": 86.0215,
+                    "val_px": 82.6498,
+                    "vah_px": 86.1583,
+                    "va_pos_pct": 32.4,
+                    "va_regime": "INSIDE_VA_LOWER",
+                    "profile_shape": "BIMODAL",
+                    "vp_source": "TPO",
+                },
+            }
+        )
+    )
+    assert "sec_POC=86.6434" not in sec3a_b85
+    assert "LVN=86.0215" not in sec3a_b85
+
 
 
 def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filtering(tmp_path):
