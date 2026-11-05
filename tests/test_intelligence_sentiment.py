@@ -5457,3 +5457,46 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     )
     assert sa_bull_5m.get("live_flow_divergence", "").startswith("LIVE_5M_SELL_REVERSAL (")
     assert "5m_tr=0.51, cvd_5m=-8.39M" in sa_bull_5m["live_flow_divergence"]
+
+    # 4. Bug 32a & 32b: Do not emit false LIVE_SELL_REVERSAL or 300s seller-reversal loop when BULLISH/HOLD
+    #    summary already cited low taker buy/sell ratio (e.g. 0.56) and live taker_ratio is 0.67
+    from types import SimpleNamespace
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
+
+    sa_bull_hold_already_low_tr = {
+        "market_bias": "BULLISH",
+        "recommended_action": "HOLD",
+        "age_min": 10.2,
+        "summary": "Broad 24h market breadth sustains structure. However, persistent taker sell dominance (taker buy/sell ratio 0.56, 4h CVD -$51.3M) indicates passive absorption.",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_bull_hold_already_low_tr,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.6667,
+                "cvd_15m_usd": -12_173_136.0,
+                "taker_ratio_5m": 0.4735,
+                "cvd_5m_usd": -9_056_261.0,
+                "taker_ratio_1h": 0.8172,
+                "cvd_1h_usd": -32_628_049.0,
+            }
+        },
+    )
+    assert "live_flow_divergence" not in sa_bull_hold_already_low_tr
+
+    cached_bull_hold = SimpleNamespace(
+        market_bias="BULLISH",
+        recommended_action="HOLD",
+        risk_level="MODERATE",
+        summary=sa_bull_hold_already_low_tr["summary"],
+    )
+    itv_sec, itv_reason = compute_dynamic_sentiment_interval(
+        base_interval_sec=3600.0,
+        last_eval_ts=1793841146.5,
+        now_ts=1793841270.0,
+        cached_assessment=cached_bull_hold,
+        btc_taker_ratio=0.56,
+        prev_btc_taker_ratio=0.56,
+    )
+    assert "btc_seller_reversal" not in itv_reason
+    assert itv_sec > 300.0

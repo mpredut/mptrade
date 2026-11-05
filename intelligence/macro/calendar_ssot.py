@@ -528,9 +528,17 @@ def compute_dynamic_sentiment_interval(
             return min(min_interval, 300.0), f"btc_whale_flow_regime_flip_{prev_tr:.2f}_to_{cur_tr:.2f}"
         cached_act = str(obj_attr(cached_assessment, "recommended_action", "") or "").upper()
         cached_bias = str(obj_attr(cached_assessment, "market_bias", "") or obj_attr(cached_assessment, "directional_bias", "") or "").upper()
-        if (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias) and cur_tr >= 1.35:
+        if (
+            (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias)
+            and cur_tr >= 1.35
+            and (prev_tr is None or prev_tr < 1.25 or (cur_tr - prev_tr) >= 0.20)
+        ):
             return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
-        if (cached_act == "ACCUMULATE" or "BULL" in cached_bias) and cur_tr <= 0.65:
+        if (
+            (cached_act == "ACCUMULATE" or "BULL" in cached_bias)
+            and cur_tr <= 0.65
+            and (prev_tr is None or prev_tr > 0.75 or (prev_tr - cur_tr) >= 0.20)
+        ):
             return min(min_interval, 300.0), f"btc_seller_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
         if (cached_act == "HOLD" or cached_bias == "NEUTRAL") and (prev_tr is None or 0.75 <= prev_tr <= 1.25):
             if cur_tr <= 0.60:
