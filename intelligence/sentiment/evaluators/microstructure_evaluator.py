@@ -99,7 +99,15 @@ def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bo
             best_ask=m_info["best_ask"],
             mid_price=spot_px,
         )
+        m_info.pop("est_slip_2k_bps", None)
         changed = True
+    for d1_k, d_k in (("depth_1pct_bid_usd", "bid_depth_usd"), ("depth_1pct_ask_usd", "ask_depth_usd")):
+        if (d_f := safe_pos_float(m_info.get(d_k), default=None)) is not None:
+            min_d1 = round(d_f * (1.0 / 1.5), 0)
+            if (safe_pos_float(m_info.get(d1_k), default=0.0) or 0.0) < min_d1:
+                m_info[d1_k] = min_d1
+                m_info.pop("est_slip_2k_bps", None)
+                changed = True
     tick_eq = max(0.01, round(spot_px * 0.0015, 2))
     if (bw_eq := safe_pos_float(m_info.get("bid_wall_px"), default=None)) is not None and bw_eq >= spot_px:
         m_info["bid_wall_px"] = max(0.01, round(spot_px - tick_eq, px_dec))

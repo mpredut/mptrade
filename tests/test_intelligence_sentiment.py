@@ -8208,6 +8208,82 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert sum(1 for r in saved_eq_rows if len(r) >= 3 and r[2] > 0) == len(fresh_ohlc24)
     assert saved_eq_rows[-1] == [last_bar_ms + 15000, 186.10]
 
+    # Sub-$5 equity depth_1pct_ask_usd floor, unquoted first-person/local-crime headline filtering, and >=$20M 1h CVD flip at 5-15m advisor age
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_excluded_reference_news_item,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import enrich_sentiment_advisor_live_flow_divergence
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        align_equity_orderbook_to_spot,
+        enrich_microstructure_cvd,
+    )
+
+    ob_col_eq = OrderbookDepthCollector(cache_dir=str(cdir_eq_ohlc))
+    ob_col_eq._fetch_equity_market_context = lambda sym, now, **kw: {
+        "ticker": "RGNT",
+        "last_price": 1.21,
+        "best_bid": 1.205,
+        "best_ask": 1.215,
+        "bid_size_sh": 0.0,
+        "ask_size_sh": 5.6,
+        "bars": [(now - 300.0 * k, 1.21, 1.23, 1.19, 1.21, 8000.0) for k in range(20)],
+    }
+    rgnt_ob = ob_col_eq._fetch_equity_orderbook("RGNT_US_EQ", now_s_rec)
+    assert rgnt_ob is not None
+    assert rgnt_ob.depth_1pct_ask_usd >= round(rgnt_ob.ask_depth_usd * (1.0 / 1.5), 2)
+
+    rgnt_minfo = {
+        "ob_mid_price": 1.21,
+        "best_bid": 1.205,
+        "best_ask": 1.215,
+        "spread_bps": 82.6,
+        "bid_depth_usd": 1197.0,
+        "ask_depth_usd": 1401.0,
+        "depth_1pct_bid_usd": 798.0,
+        "depth_1pct_ask_usd": 7.0,
+        "est_slip_2k_bps": 250.0,
+    }
+    assert align_equity_orderbook_to_spot(rgnt_minfo, 1.21) is True
+    enrich_microstructure_cvd(rgnt_minfo, {"price": 1.21})
+    assert rgnt_minfo["depth_1pct_ask_usd"] >= 934.0
+    assert rgnt_minfo["est_slip_2k_bps"] < 200.0
+
+    camper_title = "I’m 65 and worth more than $5.6 million. Can I buy a $200,000 camper even though the price feels ‘crazy high’?"
+    assert is_excluded_reference_news_item(camper_title) is True
+    assert has_financial_or_geopolitical_context(camper_title) is False
+    stabbing_title = "Jordanian officer killed in stabbing attack in Amman"
+    assert has_financial_or_geopolitical_context(stabbing_title) is False
+    assert is_off_topic_general_news_title(stabbing_title) is True
+
+    sa_fast_1h_flip = {
+        "market_bias": "CAUTION",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 8.9,
+        "summary": "BTC is defending a 6h HIGHER_LOW_DOUBLE_BOTTOM with renewed 5m buyer aggression.",
+        "key_risks": [
+            "Derivative shift to 'short_building' with negative 1h/4h CVD (-$13.2M / -$91.2M) and crowded top-trader longs."
+        ],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_fast_1h_flip,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 1.3831,
+                "cvd_15m_usd": 39_340_000.0,
+                "taker_ratio_5m": 2.21,
+                "cvd_5m_usd": 33_760_000.0,
+                "taker_ratio_1h": 1.06,
+                "cvd_1h_usd": 37_350_000.0,
+            }
+        },
+    )
+    assert "LIVE_1H_CVD_FLIP_POSITIVE" in sa_fast_1h_flip.get("live_flow_divergence", "")
+    assert "advisor 1h_cvd=-13.20M" in sa_fast_1h_flip.get("live_flow_divergence", "")
+
+
 
 
 

@@ -734,7 +734,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     url_l = str(url or "").strip().lower()
     src_l = str(source or "").strip().lower()
     if title_l and re.search(
-        r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|^cramer:\s|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive)\b",
+        r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive)\b",
         title_l,
     ):
         return True
@@ -892,7 +892,7 @@ _MAJOR_GEOPOLITICAL_THEATER_WORDS: frozenset[str] = frozenset({
 
 def has_financial_or_geopolitical_context(title: Any) -> bool:
     """Return True if a headline contains explicit financial, market, macro, or geopolitical context tokens."""
-    if not isinstance(title, str) or not title.strip():
+    if not isinstance(title, str) or not title.strip() or is_excluded_reference_news_item(title):
         return False
     clean_low = _strip_headline_publisher_suffix(title).lower()
     words = set(re.findall(r"[a-z]{3,}", clean_low))
@@ -903,6 +903,8 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     if not matched_fin and not has_multi_theater_geo:
         return False
     if matched_fin and matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+        return False
+    if matched_fin and matched_fin <= {"attack", "attacks"} and (words & _NON_CRISIS_ATTACK_CONTEXT_WORDS) and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
     if matched_fin and matched_fin <= {"shares"} and not (
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector", "nvda", "nvidia", "spcx", "spacex"}

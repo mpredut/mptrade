@@ -977,13 +977,14 @@ def enrich_sentiment_advisor_live_flow_divergence(
     ):
         shift_dir = "LIVE_FLOW_RECOVERY" if eff_live_tr > cited_tr else "LIVE_FLOW_FADE"
         sentiment_advisor["live_flow_divergence"] = f"{shift_dir} ({flow_lbl} vs {sa_age:.1f}m-old advisor ratio={cited_tr:.2f})"
-    elif sa_age >= 15.0 and live_cvd_1h is not None:
+    elif live_cvd_1h is not None and (sa_age >= 15.0 or abs(live_cvd_1h) >= 15_000_000.0):
         cited_cvd_1h = parse_cited_cvd_usd(
             (sentiment_advisor.get("summary"), sentiment_advisor.get("key_risks")),
             horizon="1h",
         )
         if (
             cited_cvd_1h is not None
+            and (sa_age >= 15.0 or abs(live_cvd_1h - cited_cvd_1h) >= 20_000_000.0)
             and cited_cvd_1h <= -500_000.0
             and live_cvd_1h >= 5_000_000.0
             and (live_cvd is None or live_cvd > 0.0)
@@ -997,6 +998,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
             )
         elif (
             cited_cvd_1h is not None
+            and (sa_age >= 15.0 or abs(live_cvd_1h - cited_cvd_1h) >= 20_000_000.0)
             and cited_cvd_1h >= 500_000.0
             and live_cvd_1h <= -5_000_000.0
             and (live_cvd is None or live_cvd < 0.0)

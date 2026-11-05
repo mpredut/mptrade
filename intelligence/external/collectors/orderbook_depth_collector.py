@@ -379,7 +379,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
         bid_buckets: Dict[float, float] = {}
         ask_buckets: Dict[float, float] = {}
-        tick_step = max(0.01, round(mid * 0.0015, 2))
+        tick_step = max(0.001 if mid < 5.0 else 0.01, round(mid * 0.0015, 3 if mid < 5.0 else 2))
         b_cap = min(mid * 0.9985, mid - tick_step)
         a_floor = max(mid * 1.0015, mid + tick_step)
         for _t, _o, h_px, l_px, c_px, vol in bars[-156:]:
@@ -414,8 +414,14 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
         bid_depth_usd = sum(bid_buckets.values())
         ask_depth_usd = sum(ask_buckets.values())
-        d1_bid = sum(v for p, v in bid_buckets.items() if p >= lo_1pct) or round(bid_depth_usd * (1.0 / 1.5), 2)
-        d1_ask = sum(v for p, v in ask_buckets.items() if p <= hi_1pct) or round(ask_depth_usd * (1.0 / 1.5), 2)
+        d1_bid = max(
+            sum(v for p, v in bid_buckets.items() if p >= lo_1pct),
+            round(bid_depth_usd * (1.0 / 1.5), 2),
+        )
+        d1_ask = max(
+            sum(v for p, v in ask_buckets.items() if p <= hi_1pct),
+            round(ask_depth_usd * (1.0 / 1.5), 2),
+        )
         max_bid_px, max_bid_usd = max(bid_buckets.items(), key=lambda kv: kv[1])
         max_ask_px, max_ask_usd = max(ask_buckets.items(), key=lambda kv: kv[1])
         total_depth = bid_depth_usd + ask_depth_usd
