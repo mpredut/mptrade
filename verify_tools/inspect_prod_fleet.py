@@ -145,6 +145,55 @@ def inspect_fleet(json_output: bool = False):
                                 "status": o.get("status"),
                             })
 
+    # 4. Market Telemetry, Sentiment & Health (Optional Enrichment)
+    raw_sentiment = ssh_cat(cache_path("macro/sentiment_eval.json"))
+    sentiment_data = raw_sentiment if isinstance(raw_sentiment, dict) else {}
+    raw_breadth = ssh_cat(cache_path("macro/market_breadth_collect.json"))
+    breadth_data = raw_breadth if isinstance(raw_breadth, dict) else {}
+    raw_health = ssh_cat(cache_path("system/fleet_health_status.json"))
+    health_data = raw_health if isinstance(raw_health, dict) else {}
+    raw_prices = ssh_cat(cache_path("prices/cache_current_price.json")) or ssh_cat(cache_path("cache_current_price.json"))
+    prices_data = raw_prices.get("items", {}) if isinstance(raw_prices, dict) and isinstance(raw_prices.get("items"), dict) else {}
+
+    market_telemetry = {}
+    for sym in ("BTCUSDC", "TAOUSDC", "HYPEUSDC"):
+        ob = ssh_cat(cache_path(f"telemetry/orderbook_depth_{sym}.json"))
+        whale = ssh_cat(cache_path(f"telemetry/whale_snapshot_{sym}.json"))
+        px_entry = prices_data.get(sym)
+        px_val = None
+        if isinstance(px_entry, list) and px_entry and isinstance(px_entry[-1], (list, tuple)) and len(px_entry[-1]) >= 2:
+            px_val = safe_float(px_entry[-1][1], None)
+        elif isinstance(px_entry, (int, float)):
+            px_val = float(px_entry)
+
+        entry_dict = {}
+        if px_val is not None:
+            entry_dict["price"] = px_val
+        if isinstance(ob, dict):
+            entry_dict["orderbook"] = {
+                "mid_price": ob.get("mid_price"),
+                "bid_depth_usd": ob.get("bid_depth_usd"),
+                "ask_depth_usd": ob.get("ask_depth_usd"),
+                "imbalance_ratio": ob.get("imbalance_ratio"),
+                "largest_bid_wall_usd": ob.get("largest_bid_wall_usd"),
+                "largest_bid_wall_price": ob.get("largest_bid_wall_price"),
+                "largest_ask_wall_usd": ob.get("largest_ask_wall_usd"),
+                "largest_ask_wall_price": ob.get("largest_ask_wall_price"),
+            }
+        if isinstance(whale, dict):
+            entry_dict["derivatives"] = {
+                "top_traders_long_pct": whale.get("top_traders_long_pct"),
+                "top_traders_long_ratio": whale.get("top_traders_long_ratio"),
+                "open_interest_usd": whale.get("open_interest_usd"),
+                "taker_ratio_5m": whale.get("taker_ratio_5m"),
+                "taker_ratio_1h": whale.get("taker_ratio_1h"),
+                "cvd_5m_usd": whale.get("cvd_5m_usd"),
+                "cvd_1h_usd": whale.get("cvd_1h_usd"),
+                "cvd_4h_usd": whale.get("cvd_4h_usd"),
+            }
+        if entry_dict:
+            market_telemetry[sym] = entry_dict
+
     result = {
         "unified_nav_usd": round(total_unified_val, 2),
         "total_free_cash_usd": round(total_free_cash, 2),
@@ -164,6 +213,22 @@ def inspect_fleet(json_output: bool = False):
             "latest_summary": latest_summary
         }
     }
+    if market_telemetry:
+        result["market_telemetry"] = market_telemetry
+    if sentiment_data:
+        result["sentiment"] = {
+            "market_bias": sentiment_data.get("market_bias"),
+            "confidence": sentiment_data.get("confidence"),
+            "recommended_action": sentiment_data.get("recommended_action"),
+            "summary": sentiment_data.get("summary"),
+        }
+    if health_data:
+        result["fleet_health"] = {
+            "fleet_healthy": health_data.get("fleet_healthy"),
+            "running_processes": health_data.get("running_processes"),
+            "total_processes": health_data.get("total_processes"),
+            "stale_processes": health_data.get("stale_processes"),
+        }
 
     if json_output:
         sys.stdout.write(json.dumps(result, indent=2) + "\n")
@@ -199,6 +264,38 @@ def inspect_fleet(json_output: bool = False):
         print(f"\n=== ACTIVE RESTING ORDERS IN CACHE ({len(active_orders)}) ===")
         for o in active_orders:
             print(f"  [{o['venue']}] {o['side']} {o['symbol']} @ ${o['price']:,.2f} (qty={o['orig_qty']})")
+
+    if market_telemetry:
+        print("\n=== MARKET TELEMETRY & ORDERBOOK DEPTH ===")
+        for sym, d in market_telemetry.items():
+            px_str = f"${d['price']:,.2f}" if "price" in d else "N/A"
+            ob = d.get("orderbook", {})
+            deriv = d.get("derivatives", {})
+            bids_str = f"${ob.get('bid_depth_usd', 0)/1e3:,.1f}K" if ob.get("bid_depth_usd") else "N/A"
+            asks_str = f"${ob.get('ask_depth_usd', 0)/1e3:,.1f}K" if ob.get("ask_depth_usd") else "N/A"
+            imb_str = f"{ob.get('imbalance_ratio', 0):.3f}" if ob.get("imbalance_ratio") is not None else "N/A"
+            wall_str = (
+                f"${ob.get('largest_bid_wall_usd', 0)/1e3:,.1f}K @ ${ob.get('largest_bid_wall_price', 0):,.2f}"
+                if ob.get("largest_bid_wall_usd")
+                else "N/A"
+            )
+            cvd5 = f"${deriv.get('cvd_5m_usd', 0)/1e3:+,.1f}K" if deriv.get("cvd_5m_usd") is not None else "N/A"
+            cvd1h = f"${deriv.get('cvd_1h_usd', 0)/1e6:+,.2f}M" if deriv.get("cvd_1h_usd") is not None else "N/A"
+            cvd4h = f"${deriv.get('cvd_4h_usd', 0)/1e6:+,.2f}M" if deriv.get("cvd_4h_usd") is not None else "N/A"
+            tr5 = f"{deriv.get('taker_ratio_5m', 0):.2f}" if deriv.get("taker_ratio_5m") is not None else "N/A"
+            long_pct = f"{deriv.get('top_traders_long_pct', 0)*100:.1f}%" if deriv.get("top_traders_long_pct") else "N/A"
+            print(f"  {sym}: Px={px_str} | Imb={imb_str} (Bids={bids_str} Asks={asks_str}) | Wall={wall_str} | CVD 5m={cvd5} (tr={tr5}) 1h={cvd1h} 4h={cvd4h} | Long={long_pct}")
+
+    if sentiment_data or health_data:
+        print("\n=== MACRO SENTIMENT & FLEET HEALTH ===")
+        if sentiment_data:
+            print(f"  Sentiment: {sentiment_data.get('market_bias')} | Conf={sentiment_data.get('confidence')} | Action={sentiment_data.get('recommended_action')}")
+        if breadth_data and isinstance(breadth_data.get("snapshot"), dict):
+            snap = breadth_data["snapshot"]
+            print(f"  Breadth: {snap.get('advancing_pct', 0)*100:.1f}% advancing | Regime={breadth_data.get('regime')}")
+        if health_data:
+            print(f"  Fleet Health: {health_data.get('running_processes')}/{health_data.get('total_processes')} processes running | Healthy={health_data.get('fleet_healthy')}")
+
 
 
 if __name__ == "__main__":

@@ -426,21 +426,28 @@ def collect_pretrade_telemetry(
             if m24 and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                     m24.pop(k_stale_15m, None)
-        if m24 and m24.get("vp_source") == "TPO" and not str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ:
+        def _upgrade_tpo_vp_from_ohlc(
+            sym_v: str,
+            m24_d: Dict[str, Any],
+            px_v: float,
+            last_pt_v: Optional[Tuple[float, float]],
+        ) -> None:
+            sym_u_pt = str(sym_v or "").strip().upper()
+            if not m24_d or m24_d.get("vp_source") != "TPO" or sym_u_pt.endswith(("_EQ", "_US_EQ")) or "PYTEST_CURRENT_TEST" in os.environ:
+                return
             try:
                 import time as _pt_time
 
                 now_s_pt = _pt_time.time()
-                if last_alt_pt is None or abs(now_s_pt * 1000.0 - last_alt_pt[0]) <= 30 * 60 * 1000.0:
-                    sym_u_pt = str(symbol).strip().upper()
+                if last_pt_v is None or abs(now_s_pt * 1000.0 - last_pt_v[0]) <= 30 * 60 * 1000.0:
                     ohlc_fn_pt = _resolve_fallback_ohlc_fn(sym_u_pt)
                     if callable(ohlc_fn_pt):
                         pts_vp_pt = _load_stitched_24h_ohlc_points(ohlc_fn_pt, sym_u_pt, now_s_pt - 86400.0, require_positive_volume=True)
                         if len(pts_vp_pt) >= 8 and (pts_vp_pt[-1][0] - pts_vp_pt[0][0]) >= 18 * 3600 * 1000:
                             vp_last_pt = safe_pos_float(pts_vp_pt[-1][1], default=0.0) or 0.0
-                            if cur_px_est <= 0.0 or (vp_last_pt > 0.0 and abs(cur_px_est - vp_last_pt) / max(cur_px_est, vp_last_pt) <= 0.015):
-                                l24_pt = safe_pos_float(m24.get("low_24h"), default=None)
-                                h24_pt = safe_pos_float(m24.get("high_24h"), default=None)
+                            if px_v <= 0.0 or (vp_last_pt > 0.0 and abs(px_v - vp_last_pt) / max(px_v, vp_last_pt) <= 0.015):
+                                l24_pt = safe_pos_float(m24_d.get("low_24h"), default=None)
+                                h24_pt = safe_pos_float(m24_d.get("high_24h"), default=None)
                                 vp_pxs_pt = [float(p[1]) for p in pts_vp_pt if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
                                 if (
                                     l24_pt is None
@@ -449,12 +456,14 @@ def collect_pretrade_telemetry(
                                 ):
                                     if l24_pt is not None and h24_pt is not None:
                                         pts_vp_pt = [[p[0], min(h24_pt, max(l24_pt, float(p[1]))), *p[2:]] for p in pts_vp_pt]
-                                    if cur_px_est > 0:
-                                        pts_vp_pt.append([int(now_s_pt * 1000), cur_px_est, 0.0])
+                                    if px_v > 0:
+                                        pts_vp_pt.append([int(now_s_pt * 1000), px_v, 0.0])
                                     if (vp_real_pt := compute_volume_profile_metrics(pts_vp_pt)) and vp_real_pt.get("vp_source") == "REAL_VOL":
-                                        m24.update(vp_real_pt)
+                                        m24_d.update(vp_real_pt)
             except Exception:
                 pass
+
+        _upgrade_tpo_vp_from_ohlc(symbol, m24, cur_px_est, last_alt_pt)
 
         cur_m_info = load_symbol_microstructure(cachedb_dir, symbol, _rj, ob=ob_snap, deriv=f_snap, whale=w_snap)
         if cur_m_info:
@@ -935,11 +944,17 @@ def collect_pretrade_telemetry(
                                         sib_m[k_sc] = round(v_sc * s_scale, s_dec)
                             sib_px = safe_pos_float(sib_m.get("ob_mid_price"), default=None) or sib_live_px or cur_px_est
                             sib_p_est = {**p_est, "price": sib_px} if sib_px and sib_px > 0 else dict(p_est)
+                            if isinstance(l24_sib_d := _rj(os.path.join(cachedb_dir, "24trend", f"live_{cand_u}.json")), dict) and (
+                                l24_sib_d.get("windows") or any(wk in l24_sib_d for wk in ("90", "222", "900", "9000"))
+                            ):
+                                apply_live_24trend_windows(sib_p_est, l24_sib_d)
                             sib_s24, _ = load_symbol_price_series(cachedb_dir, cand_u, current_price_items=cur_p_items)
                             if sib_s24 and (sib_m24 := compute_24h_price_metrics(sib_s24)):
+                                _upgrade_tpo_vp_from_ohlc(cand_u, sib_m24, sib_px or 0.0, _parse_ts_px_row(sib_s24[-1]))
+                                _apply_24h_series_enrichment(cand_u, sib_p_est, sib_m24, sib_s24, None)
                                 if sib_px and sib_px > 0:
-                                    recalculate_live_price_geometry(sib_m24, sib_px)
-                                sib_p_est.update(sib_m24)
+                                    sib_p_est["price"] = sib_px
+                                    recalculate_live_price_geometry(sib_p_est, sib_px)
                             enrich_microstructure_cvd(sib_m, sib_p_est)
                             sib_m.update(compute_liquidation_clusters(sib_p_est, sib_m))
                             micro_pair = {symbol: cur_m_info, cand_u: sib_m}

@@ -691,12 +691,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"get_trade_orders:\s+Total found \d+ orders|"
         r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
         r"Started\.\s+check_interval=|"
-        r"\[CacheOrderManager\]\[info\]\s+(?:New order fills:|Save cache to file))",
+        r"\[CacheOrderManager\]\[info\]\s+(?:New order fills:|Save cache to file)|"
+        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up))",
         re.IGNORECASE,
     )
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
-        r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
+        r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|===\s*TRAILING STOP started|\[STRAT\]\s+state loaded|"
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
         r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is)",
         re.IGNORECASE,
