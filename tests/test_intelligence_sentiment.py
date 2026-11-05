@@ -7234,6 +7234,17 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert ada_m_iter20["cvd_regime"] == "aggressive_buying"
     assert ada_m_iter20["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
 
+    tao_m_flat15 = {
+        "cvd_15m_usd": 30_380.0,
+        "spot_cvd_15m_usd": 18_051.0,
+        "ob_imbalance": 0.614,
+        "taker_buy_sell_ratio": 1.2287,
+        "cvd_1h_usd": 17_900.0,
+    }
+    enrich_microstructure_cvd(tao_m_flat15, {"price": 235.4, "chg_15m_pct": 0.0})
+    assert tao_m_flat15["cvd_regime"] == "aggressive_buying"
+    assert tao_m_flat15["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+
     assert not has_financial_or_geopolitical_context("Nintendo Switch 2 sales plunge 41% as price hikes and memory crunch bite")
     assert has_financial_or_geopolitical_context("Oil prices slide as Asian stocks rise")
 
