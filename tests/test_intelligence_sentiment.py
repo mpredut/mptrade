@@ -6871,14 +6871,21 @@ def test_6h_bottom_dead_zone_sibling_low_guard_cross_market_bounds_and_military_
     )
 
 
-def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow():
+def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(tmp_path):
+    import json
     from intelligence.macro.calendar_ssot import parse_cited_cvd_usd
+    from intelligence.sentiment.collectors.macro_telemetry_collector import (
+        harvest_macro_and_news_sensors,
+    )
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
         enrich_sentiment_advisor_live_flow_divergence,
     )
     from intelligence.sentiment.evaluators.microstructure_evaluator import (
         compute_liquidation_clusters,
     )
+
+    macro_dir = tmp_path / "macro"
+    macro_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Bug 117: parse_cited_cvd_usd & enrich_sentiment_advisor_live_flow_divergence detect 1h CVD sign flips
     adv_summary = (
@@ -7029,4 +7036,98 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow()
     )
     assert hype_liq_iter19["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
 
+    # 5. Spot-absorbing accumulation rally (ARBUSDC) and strong 15m taker + spot buying (HYPEUSDC)
+    #    neutralize LONG_SWEEP_MAGNET_DOWN, and harvest_macro_and_news_sensors strips stale US cash-session
+    #    1h/15m deltas outside RTH when last_bar_ts is stale or legacy-absent.
+    arb_liq_iter20 = compute_liquidation_clusters(
+        {
+            "price": 0.162888,
+            "vol_1h_pct": 0.62,
+            "kalman_vel": 0.03051,
+            "kalman_vel_std": 0.04,
+            "chg_15m_pct": 0.31,
+            "slope_15m": 5.2e-7,
+            "val_px": 0.1597,
+            "vah_px": 0.1684,
+            "low_24h": 0.1585,
+            "high_24h": 0.1695,
+        },
+        {
+            "oi_usd": 47_600_000.0,
+            "whale_long_pct": 0.7524,
+            "funding_rate": -0.000018,
+            "ob_imbalance": 0.627,
+            "div_regime": "accumulation",
+            "taker_buy_sell_ratio": 0.4869,
+            "cvd_15m_usd": -306_600.0,
+            "cvd_regime": "spot_absorbing",
+            "spot_cvd_15m_usd": 23_000.0,
+        },
+    )
+    assert arb_liq_iter20["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
+    hype_liq_iter20 = compute_liquidation_clusters(
+        {
+            "price": 83.37,
+            "vol_1h_pct": 0.49,
+            "kalman_vel": 0.02391,
+            "kalman_vel_std": 0.04,
+            "chg_15m_pct": 0.01,
+            "val_px": 84.03,
+            "vah_px": 86.99,
+            "low_24h": 82.73,
+            "high_24h": 88.74,
+        },
+        {
+            "oi_usd": 401_580_000.0,
+            "whale_long_pct": 0.7033,
+            "funding_rate": 0.0000125,
+            "ob_imbalance": 0.517,
+            "taker_buy_sell_ratio": 1.2103,
+            "cvd_15m_usd": 201_400.0,
+            "cvd_regime": "ask_absorbing",
+            "spot_cvd_15m_usd": 114_400.0,
+            "taker_ratio_5m": 0.81,
+            "cvd_5m_usd": -19_100.0,
+            "taker_ratio_1h": 0.93,
+            "cvd_1h_usd": -377_400.0,
+        },
+    )
+    assert hype_liq_iter20["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
+
+    (macro_dir / "macro_benchmarks_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": 1_793_859_927.0,  # 2026-11-05 01:25 EST (outside US cash session)
+                "items": {
+                    "SPY": {
+                        "symbol": "SPY",
+                        "unit": "usd",
+                        "price": 765.31,
+                        "chg_24h_pct": 1.45,
+                        "chg_1h_pct": -0.27,
+                        "chg_15m_pct": -0.27,
+                    },
+                    "ES=F": {
+                        "symbol": "ES=F",
+                        "unit": "usd",
+                        "price": 7705.25,
+                        "chg_24h_pct": -0.20,
+                        "chg_1h_pct": 0.05,
+                        "chg_15m_pct": 0.06,
+                    },
+                },
+                "summary_line": "SPY=$765.31 (+1.45% 24h, -0.27% 1h, -0.27% 15m) | ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m)",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors_iter20, _ = harvest_macro_and_news_sensors(str(tmp_path), now_ts=1_793_861_400.0)
+    bm_iter20 = sensors_iter20["macro_benchmarks"]
+    assert bm_iter20 is not None
+    assert "chg_1h_pct" not in bm_iter20["items"]["SPY"]
+    assert "chg_15m_pct" not in bm_iter20["items"]["SPY"]
+    assert bm_iter20["items"]["ES=F"]["chg_1h_pct"] == 0.05
+    assert "SPY=$765.31 (+1.45% 24h)" in bm_iter20["summary_line"]
+    assert "ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m)" in bm_iter20["summary_line"]
 

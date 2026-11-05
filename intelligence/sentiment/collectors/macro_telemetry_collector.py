@@ -187,11 +187,14 @@ def collect_macro_benchmarks_snapshot(
             }
             if len(pts) >= 2:
                 last_bar_ts = pts[-1][0]
+                item_entry["last_bar_ts"] = int(last_bar_ts)
                 if eff_now <= 0.0 or (eff_now - last_bar_ts) <= 2700.0:
+                    prior_pts = pts[:-1]
                     for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
                         target_ts = last_bar_ts - target_sec
-                        ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
-                        if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
+                        max_tol = target_sec * 0.6 if target_sec < 1800.0 else target_sec * 0.5
+                        ref_pt = min(prior_pts, key=lambda p: abs(p[0] - target_ts))
+                        if abs(ref_pt[0] - target_ts) <= max_tol and ref_pt[1] > 0:
                             item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2) + 0.0
             if mkt_state:
                 item_entry["market_state"] = mkt_state
@@ -351,6 +354,7 @@ def harvest_macro_and_news_sensors(
                                     dedup_movers.append(m)
                         enriched[mover_key] = dedup_movers
             if attr == "macro_benchmarks":
+                stripped_stale_intraday = False
                 if isinstance(mb_items := enriched.get("items"), dict):
                     enriched_items: Dict[str, Any] = {}
                     for mb_k, mb_v in mb_items.items():
@@ -364,6 +368,27 @@ def harvest_macro_and_news_sensors(
                                     mb_copy["low_24h"] = mb_px
                                 if mb_hi is not None and mb_px > mb_hi:
                                     mb_copy["high_24h"] = mb_px
+                            if mb_k in ("SPY", "QQQ", "IBIT", "US10Y"):
+                                bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
+                                is_stale_us_bar = False
+                                if bar_ts_v is not None and now_ts > 0.0 and (now_ts - bar_ts_v) > 2700.0:
+                                    is_stale_us_bar = True
+                                elif bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
+                                    try:
+                                        from datetime import datetime
+                                        from zoneinfo import ZoneInfo
+
+                                        dt_ny = datetime.fromtimestamp(now_ts, tz=ZoneInfo("America/New_York"))
+                                        mins_ny = dt_ny.hour * 60 + dt_ny.minute
+                                        if dt_ny.weekday() >= 5 or not (570 <= mins_ny <= 1005):
+                                            is_stale_us_bar = True
+                                    except Exception:
+                                        pass
+                                if is_stale_us_bar:
+                                    for stale_k in ("chg_1h_pct", "chg_15m_pct"):
+                                        if stale_k in mb_copy:
+                                            mb_copy.pop(stale_k, None)
+                                            stripped_stale_intraday = True
                             for chg_k in ("chg_24h_pct", "chg_1h_pct", "chg_15m_pct"):
                                 if (chg_v := safe_float(mb_copy.get(chg_k), default=None)) is not None:
                                     mb_copy[chg_k] = round(chg_v, 2) + 0.0
@@ -372,9 +397,13 @@ def harvest_macro_and_news_sensors(
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
                 cur_sum = str(enriched.get("summary_line") or "")
-                if (not cur_sum or "-0.00%" in cur_sum or "-0.0bps" in cur_sum or "-0.0%" in cur_sum) and (
-                    summary_s := format_macro_benchmarks_summary_line(enriched)
-                ):
+                if (
+                    stripped_stale_intraday
+                    or not cur_sum
+                    or "-0.00%" in cur_sum
+                    or "-0.0bps" in cur_sum
+                    or "-0.0%" in cur_sum
+                ) and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                     enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:

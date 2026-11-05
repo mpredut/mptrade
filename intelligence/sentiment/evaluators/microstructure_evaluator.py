@@ -307,6 +307,7 @@ def compute_liquidation_clusters(
     )
     cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
     sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
+    div_reg = str(minfo.get("div_regime") or minfo.get("divergence_regime") or "").strip().lower()
     slope_15m_v = safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0
     slope_3_7m_v = safe_float(p_dict.get("slope_3_7m"), default=0.0) or 0.0
     cvd_15m_v = safe_float(minfo.get("cvd_15m_usd"), default=0.0) or 0.0
@@ -355,6 +356,21 @@ def compute_liquidation_clusters(
                 and cvd_5m_v > 0.0
                 and (tr_1h_v is None or tr_1h_v >= 1.0)
             )
+            or (
+                cvd_15m_v > 0.0
+                and spot_cvd_15m_v > 0.0
+                and taker_r >= 1.15
+                and ob_imb_v >= 0.51
+                and chg_15m_v >= -0.05
+                and kalman_vel >= 0.0
+            )
+            or (
+                (cvd_reg == "spot_absorbing" or div_reg in ("accumulation", "short_covering", "bullish_absorption"))
+                and chg_15m_v >= 0.15
+                and ob_imb_v >= 0.58
+                and spot_cvd_15m_v > 0.0
+                and kalman_vel > 0.0
+            )
         )
     ) or (
         liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
@@ -396,6 +412,21 @@ def compute_liquidation_clusters(
                 and tr_5m_v <= 0.65
                 and cvd_5m_v < 0.0
                 and (tr_1h_v is None or tr_1h_v <= 1.0)
+            )
+            or (
+                cvd_15m_v < 0.0
+                and spot_cvd_15m_v < 0.0
+                and taker_r <= 0.87
+                and ob_imb_v <= 0.49
+                and chg_15m_v <= 0.05
+                and kalman_vel <= 0.0
+            )
+            or (
+                (cvd_reg == "ask_absorbing" or div_reg in ("distribution", "long_liquidation", "bearish_distribution"))
+                and chg_15m_v <= -0.15
+                and ob_imb_v <= 0.42
+                and spot_cvd_15m_v < 0.0
+                and kalman_vel < 0.0
             )
         )
     ):
