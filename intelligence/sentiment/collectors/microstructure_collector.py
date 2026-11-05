@@ -255,10 +255,19 @@ def load_symbol_price_series(
     quotes: Optional[tuple[str, ...]] = None,
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
+    sym_u = str(symbol).strip().upper()
+    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
     eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
     cands = [
-        c for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
-        if isinstance(c, str) and "/" not in c
+        c
+        for c in cache_symbol_variants(symbol, include_original=True, include_base="USD" in eff_quotes, quotes=eff_quotes)
+        if isinstance(c, str)
+        and "/" not in c
+        and (
+            not c.upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+            if is_eq_sym
+            else not c.upper().endswith(("_EQ", "_US_EQ"))
+        )
     ]
     series_24h: list = []
     vals_7d: list = []
@@ -713,7 +722,13 @@ def load_symbol_microstructure(
 ) -> Optional[Dict[str, Any]]:
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     read_json_fn = _resolve_read_json_cached(read_json_fn)
-    sym_cands = cache_symbol_variants(sym, include_base=True)
+    sym_u = str(sym or "").strip().upper()
+    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
+    sym_cands = [
+        c
+        for c in cache_symbol_variants(sym, include_base=True)
+        if c.upper().endswith(("_EQ", "_US_EQ")) == is_eq_sym
+    ]
 
     def _first_telemetry_dict(prefix: str, *, prefer_freshest: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         best_d: Optional[Dict[str, Any]] = None
@@ -878,13 +893,23 @@ def discover_reference_microstructure_symbols(
     if not cache_dir or not os.path.isdir(cache_dir):
         return []
     _rj = _resolve_read_json_cached(read_json_fn)
-    covered_micro_bases = {canonical_base_asset(k) for k in microstructure}
+    covered_micro_bases = {
+        canonical_base_asset(k)
+        for k in microstructure
+        if not str(k).strip().upper().endswith(("_EQ", "_US_EQ"))
+    }
     ref_micro_syms: List[str] = []
     for pfx in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"):
         for search_dir in (cache_dir, os.path.join(cache_dir, "telemetry")):
             for mpath in sorted(_glob.glob(os.path.join(search_dir, f"{pfx}*.json"))):
                 msym = os.path.basename(mpath)[len(pfx) : -len(".json")].upper()
-                if msym and msym.isalnum() and msym not in microstructure and msym not in ref_micro_syms:
+                if (
+                    msym
+                    and msym.isalnum()
+                    and not msym.endswith(("_EQ", "_US_EQ"))
+                    and msym not in microstructure
+                    and msym not in ref_micro_syms
+                ):
                     mbase = canonical_base_asset(msym)
                     if mbase not in covered_micro_bases:
                         ref_micro_syms.append(msym)
@@ -894,7 +919,9 @@ def discover_reference_microstructure_symbols(
                         existing_bds = [
                             safe_nonneg_float(mv.get("bid_depth_usd"), default=None)
                             for mk, mv in microstructure.items()
-                            if canonical_base_asset(mk) == mbase and isinstance(mv, dict)
+                            if not str(mk).strip().upper().endswith(("_EQ", "_US_EQ"))
+                            and canonical_base_asset(mk) == mbase
+                            and isinstance(mv, dict)
                         ]
                         if cand_bd is not None and cand_bd > 0 and all(ebd is None or abs(cand_bd - ebd) > 1.0 for ebd in existing_bds):
                             ref_micro_syms.append(msym)
@@ -1033,7 +1060,7 @@ def enrich_24h_and_microstructure(
         )
         hl_m_seed = load_symbol_microstructure(cache_dir, hl_sym, _rj) if hl_sym not in prices_and_trends else None
         if hl_sym not in prices_and_trends and (
-            any(canonical_base_asset(k) == hl_base for k in prices_and_trends)
+            any(not str(k).strip().upper().endswith(("_EQ", "_US_EQ")) and canonical_base_asset(k) == hl_base for k in prices_and_trends)
             or hl_m_seed
         ):
             cached_hl_pos = cached_bals.get(f"pos:hyperliquid:{hl_sym}")
@@ -1470,7 +1497,7 @@ def enrich_24h_and_microstructure(
             src_cand_u = str(m_info.get("_source_cand") or sym).strip().upper()
             is_exact_ob_sym = src_cand_u == str(sym).strip().upper()
             cross_venue_collision = (not is_exact_ob_sym) and (src_cand_u in inst_by_sym) and (sym in inst_by_sym)
-            if is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
+            if not is_eq_sym and is_usd_sym and isinstance(prices_and_trends.get(sym), dict) and ob_mid_m is not None and not cross_venue_collision:
                 if sym_px_m <= 0.0 or (abs(sym_px_m - ob_mid_m) / max(sym_px_m, ob_mid_m) <= 0.01):
                     prices_and_trends[sym]["price"] = ob_mid_m
                     sym_px_m = ob_mid_m
@@ -1486,6 +1513,7 @@ def enrich_24h_and_microstructure(
                         bool(matched_series_24h)
                         or any(
                             pk != sym
+                            and str(pk).strip().upper().endswith(("_EQ", "_US_EQ")) == is_eq_sym
                             and canonical_base_asset(pk) == canonical_base_asset(sym)
                             and (p_sib := safe_pos_float((pv if isinstance(pv, dict) else {}).get("price"), default=None)) is not None
                             and abs(sym_px_m - p_sib) / max(sym_px_m, p_sib) <= 0.01
@@ -1521,9 +1549,14 @@ def enrich_24h_and_microstructure(
             )
         if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
             msym_quotes = compatible_quote_suffixes(msym)
+            msym_is_eq = msym.upper().endswith(("_EQ", "_US_EQ"))
             p_ref = _first_variant_dict(
                 prices_and_trends,
-                cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes),
+                [
+                    c
+                    for c in cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes)
+                    if c.upper().endswith(("_EQ", "_US_EQ")) == msym_is_eq
+                ],
             )
             if p_ref is not None and msym not in prices_and_trends:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)

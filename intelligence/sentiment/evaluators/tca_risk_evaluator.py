@@ -11,6 +11,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     normalize_venue_name,
     resolve_kraken_lookup_symbol,
+    split_symbol_assets,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
@@ -42,8 +43,20 @@ def resolve_symbol_price(
     """Resolve a positive live price for ``symbol`` across quote-compatible symbol variants and optional fallback map."""
     if not symbol:
         return 0.0
+    sym_u = str(symbol).strip().upper()
+    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
     sym_quotes = compatible_quote_suffixes(symbol, explicit_quote)
-    sym_variants = cache_symbol_variants(symbol, include_base="USD" in sym_quotes, quotes=sym_quotes)
+    raw_variants = cache_symbol_variants(symbol, include_base="USD" in sym_quotes, quotes=sym_quotes)
+    if is_eq_sym:
+        sym_variants = [
+            c
+            for c in raw_variants
+            if not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+        ]
+    elif split_symbol_assets(sym_u) is not None or explicit_quote is not None:
+        sym_variants = [c for c in raw_variants if not str(c).strip().upper().endswith(("_EQ", "_US_EQ"))]
+    else:
+        sym_variants = raw_variants
     for cand in sym_variants:
         entry = casefold_get(prices_and_trends, cand)
         if (cand_px := safe_pos_float(entry.get("price") if isinstance(entry, dict) else None, default=0.0) or 0.0) > 0:
@@ -230,9 +243,13 @@ def enrich_open_limit_orders_tca(
         )
         if not sym or lim_px is None or lim_px <= 0.0:
             continue
+        v_norm = normalize_venue_name(o.get("venue"))
+        is_eq_o = sym.endswith(("_EQ", "_US_EQ")) or v_norm == "t212"
         p_entry = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
         if not isinstance(p_entry, dict) and isinstance(prices_and_trends, dict):
             for cand in cache_symbol_variants(sym, include_base=False):
+                if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    continue
                 cand_p = casefold_get(prices_and_trends, cand)
                 if isinstance(cand_p, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
                     p_entry = cand_p
@@ -240,6 +257,8 @@ def enrich_open_limit_orders_tca(
         m_entry = casefold_get(microstructure, sym) if isinstance(microstructure, dict) else None
         if not isinstance(m_entry, dict):
             for cand in cache_symbol_variants(sym, include_base=False):
+                if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    continue
                 cand_m = casefold_get(microstructure, cand) if isinstance(microstructure, dict) else None
                 if isinstance(cand_m, dict) and compatible_quote_suffixes(cand) == compatible_quote_suffixes(sym):
                     m_entry = cand_m
@@ -260,8 +279,6 @@ def enrich_open_limit_orders_tca(
             "bid_wall_ahead_usd",
         ):
             o.pop(_stale_tca_k, None)
-        v_norm = normalize_venue_name(o.get("venue"))
-        is_eq_o = sym.endswith(("_EQ", "_US_EQ")) or v_norm == "t212"
         dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
         raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
         if raw_vol_1h is None and isinstance(prices_and_trends, dict):
@@ -525,7 +542,11 @@ def build_cross_market_context(
 
     by_base: Dict[str, Tuple[str, Dict[str, Any]]] = {}
     for sym, pinfo in sorted(prices_and_trends.items()):
-        if isinstance(pinfo, dict) and (b_canon := canonical_base_asset(sym)):
+        if (
+            isinstance(pinfo, dict)
+            and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ"))
+            and (b_canon := canonical_base_asset(sym))
+        ):
             prev = by_base.get(b_canon)
             if prev is None or _bellwether_rank(sym, pinfo) > _bellwether_rank(prev[0], prev[1]):
                 by_base[b_canon] = (sym, pinfo)
@@ -599,7 +620,12 @@ def build_cross_market_context(
         pinfo_raw = casefold_get(prices_and_trends, eq_sym)
         pinfo = pinfo_raw if isinstance(pinfo_raw, dict) else {}
         t_cyc = next(
-            (val for cand in cache_symbol_variants(eq_sym, include_original=True, include_base=True) if isinstance((val := casefold_get(all_t212_cycles, cand)), dict)),
+            (
+                val
+                for cand in cache_symbol_variants(eq_sym, include_original=True, include_base=True)
+                if not str(cand).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+                and isinstance((val := casefold_get(all_t212_cycles, cand)), dict)
+            ),
             {},
         )
         eq_px_f = safe_pos_float(pinfo.get("price"), default=None)

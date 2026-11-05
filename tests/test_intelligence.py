@@ -8206,6 +8206,95 @@ def test_iter102_pretrade_telemetry_quote_price_scope_and_micro_arb_isolation(tm
     assert "cycle_delta" not in eq_micro["COIN_US_EQ"]
 
 
+def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_isolation(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        discover_reference_microstructure_symbols,
+        enrich_24h_and_microstructure,
+        load_symbol_microstructure,
+        load_symbol_price_series,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
+        enrich_open_limit_orders_tca,
+        resolve_symbol_price,
+    )
+
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    now_ms = 1_710_000_000_000
+
+    # 1. load_symbol_price_series isolates COIN_US_EQ and COINUSD
+    (cdir / "cache_24_price_COIN_US_EQ.json").write_text(
+        json.dumps({"items": {"COIN_US_EQ": [[now_ms - 3600_000, 240.0], [now_ms, 250.0]]}}),
+        encoding="utf-8",
+    )
+    s24_crypto, v7d_crypto = load_symbol_price_series(
+        str(cdir), "COINUSD", current_price_items={"COIN_US_EQ": 252.0}
+    )
+    assert s24_crypto == []
+    assert v7d_crypto == []
+
+    (cdir / "cache_24_price_COINUSD.json").write_text(
+        json.dumps({"items": {"COINUSD": [[now_ms - 3600_000, 1.20], [now_ms, 1.30]]}}),
+        encoding="utf-8",
+    )
+    cdir_only_crypto = tmp_path / "cachedb_only_crypto"
+    cdir_only_crypto.mkdir(parents=True, exist_ok=True)
+    (cdir_only_crypto / "cache_24_price_COINUSD.json").write_text(
+        json.dumps({"items": {"COINUSD": [[now_ms - 3600_000, 1.20], [now_ms, 1.30]]}}),
+        encoding="utf-8",
+    )
+    s24_eq, v7d_eq = load_symbol_price_series(
+        str(cdir_only_crypto), "COIN_US_EQ", current_price_items={"COINUSD": 1.35}
+    )
+    assert s24_eq == []
+    assert v7d_eq == []
+
+    # 2. load_symbol_microstructure, discover_reference_microstructure_symbols, and enrich_24h_and_microstructure
+    (cdir / "orderbook_depth_COINUSD.json").write_text(
+        json.dumps({"mid_price": 1.30, "best_bid": 1.299, "best_ask": 1.301, "imbalance_ratio": 0.62, "bid_depth_usd": 25000.0, "ask_depth_usd": 15000.0}),
+        encoding="utf-8",
+    )
+    assert load_symbol_microstructure(str(cdir), "COIN_US_EQ") is None
+    assert "COINUSD" in discover_reference_microstructure_symbols(str(cdir), {"COIN_US_EQ": {"bid_depth_usd": 25000.0}})
+
+    pt_mix = {"COIN_US_EQ": {"price": 250.0, "trend": 0, "growth_coefficient": 0.0}}
+    micro_mix = {}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_mix, micro_mix, {}, {}, now_ms / 1000.0)
+    assert "COIN_US_EQ" not in micro_mix
+    assert "COINUSD" in micro_mix
+    assert pt_mix["COIN_US_EQ"]["price"] == pytest.approx(250.0)
+    assert pt_mix["COINUSD"]["price"] == pytest.approx(1.30)
+
+    # 3. resolve_symbol_price, enrich_open_limit_orders_tca, and build_cross_market_context
+    assert resolve_symbol_price("COINUSD", {"COIN_US_EQ": {"price": 250.0}}) == 0.0
+    assert resolve_symbol_price("COIN_US_EQ", {"COINUSD": {"price": 1.30}}) == 0.0
+    assert resolve_symbol_price("SPCX", {"SPCX_US_EQ": {"price": 170.0}}) == pytest.approx(170.0)
+
+    open_eq = [{"venue": "t212", "symbol": "COIN_US_EQ", "side": "SELL", "price": 255.0}]
+    enrich_open_limit_orders_tca(
+        open_eq,
+        {"COINUSDC": {"price": 1.30, "vol_1h_pct": 4.0}},
+        {"COINUSDC": {"ob_mid_price": 1.30, "ask_wall_px": 1.31, "ask_wall_usd": 50000.0}},
+    )
+    assert "dist_from_spot_pct" not in open_eq[0]
+    assert "wall_queue_pos" not in open_eq[0]
+
+    cmc = build_cross_market_context(
+        {
+            "COINUSD": {"price": 1.30, "chg_24h_pct": 8.33},
+            "COIN_US_EQ": {"price": 250.0, "chg_24h_pct": 4.17, "low_24h": 240.0, "high_24h": 252.0},
+        },
+        micro_mix,
+        {},
+    )
+    assert "COIN" in cmc.get("crypto_bellwethers", {})
+    assert cmc["crypto_bellwethers"]["COIN"]["symbol"] == "COINUSD"
+    assert cmc["crypto_bellwethers"]["COIN"]["price"] == pytest.approx(1.30)
+    assert "COIN_US_EQ" in cmc.get("equity_bellwethers", {})
+
+
 
 
 

@@ -110,7 +110,7 @@ def collect_pretrade_telemetry(
             return False
         if not is_eq_sym:
             return not c_u.endswith(("_EQ", "_US_EQ"))
-        return not c_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
+        return not c_u.endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
 
     sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]
     quote_variants = [c for c in cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes) if _scope_ok_variant(c)]
