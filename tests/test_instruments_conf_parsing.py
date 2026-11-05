@@ -223,13 +223,30 @@ def test_current_execution_policy_is_preserved():
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
     all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
-    assert all_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
-    assert nb_syms == ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
-    assert nb_providers == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "TAOUSD": "kraken", "ADAUSD": "kraken"}
+    assert all_syms == [
+        "BTCUSDC", "TAOUSDC", "ARBUSDC",
+        "HYPEUSDC", "HYPEUSD",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
+        "TAOUSD", "ADAUSD",
+    ]
+    assert nb_syms == [
+        "HYPEUSDC", "HYPEUSD",
+        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ",
+        "TAOUSD", "ADAUSD",
+    ]
+    assert nb_providers == {
+        "HYPEUSDC": "hyperliquid",
+        "HYPEUSD": "kraken",
+        "SPCX_US_EQ": "t212",
+        "NVDA_US_EQ": "t212",
+        "RGNT_US_EQ": "t212",
+        "TAOUSD": "kraken",
+        "ADAUSD": "kraken",
+    }
     arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
-    assert arch_syms == ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
-    assert arch_nb == ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"]
-    assert arch_prov == {"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "TAOUSD": "kraken", "ADAUSD": "kraken"}
+    assert arch_syms == all_syms
+    assert arch_nb == nb_syms
+    assert arch_prov == nb_providers
     krk_trails = {
         item.base: (item.symbol, item.number("trailing.pct"), item.rebuy_mode())
         for item in registry.select_instruments("kraken", "trailing").values()

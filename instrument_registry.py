@@ -446,7 +446,7 @@ def load_tradable_instruments(
         for k, inst in raw_map.items():
             if getattr(inst, "enabled", True) is False:
                 continue
-            if scope == "crypto" and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212":
+            if normalize_venue_name(getattr(inst, "provider_name", "")) == "t212":
                 continue
             active_map[k] = inst
 
@@ -474,16 +474,24 @@ def load_tradable_instruments(
                         inst._provider._live_enabled = True
 
     if scope in ("all", "equities") and (include_closed_rth or rth_check(now_ts)):
-        if scope == "equities":
-            for k, inst in raw_map.items():
-                if (
-                    getattr(inst, "enabled", True) is not False
-                    and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212"
-                ):
-                    active_map[k] = inst
         load_env_file_defaults(os.path.join(ws_dir, "212trading", "runtime.env"))
+        discovered_t212 = discover_t212_equities(ws_dir)
+        discovered_tickers = {t[1].upper() for t in discovered_t212}
+        has_ws_conf = os.path.exists(ws_inst_conf)
+        is_custom_raw_map = not has_ws_conf and bool(raw_map) and set(raw_map.keys()) != set(_REGISTRY_CACHE.get(next(iter(_REGISTRY_CACHE), ()), {}).keys() or load_registry().keys())
+        for k, inst in raw_map.items():
+            if (
+                getattr(inst, "enabled", True) is not False
+                and normalize_venue_name(getattr(inst, "provider_name", "")) == "t212"
+            ):
+                inst_sym_u = str(getattr(inst, "symbol", "")).upper()
+                if inst_sym_u in discovered_tickers or is_custom_raw_map or (has_ws_conf and not discovered_tickers):
+                    if hasattr(inst, "_provider"):
+                        inst._provider._live_enabled = True
+                        inst._provider._order_validity = "DAY"
+                    active_map[k] = inst
         existing_t212_syms = _existing_syms("t212")
-        for inst_name, ticker, base, quote in discover_t212_equities(ws_dir):
+        for inst_name, ticker, base, quote in discovered_t212:
             if ticker not in existing_t212_syms and _bind_inst(
                 inst_name, "t212", ticker, base, quote, live=True, validity="DAY", market_hours="rth"
             ):
