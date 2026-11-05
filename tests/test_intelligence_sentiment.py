@@ -7928,6 +7928,65 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert len(fills_many["open_lots"]) == 6
     assert fills_many["open_lots"][0]["ts_ms"] == base_lot_ms
 
+    # 10i. summarize_recent_ai_intents and build_last_cycle_execution_status surface failure/guard `reason` on FAILED/BLOCKED_BY_GUARD intents.
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional, summarize_recent_ai_intents
+
+    failed_intents = [
+        {
+            "timestamp": now_s_rec - 120.0,
+            "symbol": "ARBUSDC",
+            "venue": "binance",
+            "decision": "SELL",
+            "order_type": "MARKET",
+            "status": "FAILED",
+            "reference_price": 0.1622,
+            "suggested_notional_usd": 772.0,
+            "history": [
+                {
+                    "ts": now_s_rec - 118.0,
+                    "action": "ORDER_GATEWAY_FAILED",
+                    "reason": "OrderGuard blocked binance MARKET SELL ARBUSDC: account_cache_not_fresh",
+                }
+            ],
+        }
+    ]
+    failed_sum = summarize_recent_ai_intents(failed_intents, "crypto", now_s_rec, extract_intent_notional)
+    assert len(failed_sum) == 1
+    assert failed_sum[0].get("reason") == "OrderGuard blocked binance MARKET SELL ARBUSDC: account_cache_not_fresh"
+    failed_last_st = build_last_cycle_execution_status(failed_intents, "crypto", now_s_rec, extract_intent_notional)
+    failed_rec = failed_last_st[0] if isinstance(failed_last_st, list) else failed_last_st
+    assert isinstance(failed_rec, dict)
+    assert failed_rec.get("reason") == "OrderGuard blocked binance MARKET SELL ARBUSDC: account_cache_not_fresh"
+
+    # 10j. apply_short_trend_item & _apply_24h_series_enrichment replace stale (>10m behind 24h series) or 1-sample short trends with fresh series slopes.
+    from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment, apply_short_trend_item
+
+    nvda_entry_st: dict = {}
+    stale_tinfo = {
+        "ts": now_s_rec - 10800.0,
+        "current_price": 198.59,
+        "final_trend": -1,
+        "growth_coefficient": 0.0,
+        "slope_full": 0.0,
+        "gradient_recent": 0.0,
+        "gradient_recent_fast": 0.0,
+        "dynamic": {
+            "90": {"n_samples": 1, "slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0},
+            "222": {"n_samples": 1, "slope_full": 0.0, "growth_coefficient": 0.0, "gradient_recent": 0.0},
+            "900": {"n_samples": 4, "slope_full": -0.10833, "growth_coefficient": -0.05098, "gradient_recent": 0.115},
+            "9000": {"n_samples": 29, "slope_full": 0.00074, "growth_coefficient": -0.01533, "gradient_recent": -0.025},
+        },
+    }
+    apply_short_trend_item(nvda_entry_st, stale_tinfo, fallback_price=196.70)
+    assert nvda_entry_st.get("slope_3_7m") is None
+    fresh_s24 = [[int((now_s_rec - (40 - i) * 300.0) * 1000), round(195.0 + i * 0.05, 4)] for i in range(41)]
+    _apply_24h_series_enrichment("NVDA_US_EQ", nvda_entry_st, compute_24h_price_metrics(fresh_s24), fresh_s24, None)
+    assert nvda_entry_st.get("slope_3_7m") is not None and nvda_entry_st["slope_3_7m"] > 0.0
+    assert nvda_entry_st.get("growth_3_7m") is None
+    assert nvda_entry_st.get("slope_15m") is not None and nvda_entry_st["slope_15m"] > 0.0
+    assert abs(nvda_entry_st.get("gradient_recent", 0.0) - 0.115) > 1e-6
+
+
 
 
 

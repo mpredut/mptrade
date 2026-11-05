@@ -1136,6 +1136,18 @@ def _resolve_intent_execution_details(
             _lh_s = _ts_ms_to_s(_lh_parsed)
             if _lh_s > fill_ts_val:
                 fill_ts_val = _lh_s
+    fail_reason: Optional[str] = None
+    if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "SHADOW_SIMULATED"):
+        raw_fail_reason = (
+            last_hist.get("reason")
+            or last_hist.get("guard_reason")
+            or last_hist.get("error")
+            or i.get("guard_reason")
+            or i.get("error")
+            or (exec_pay.get("reason") or exec_pay.get("error") if isinstance(exec_pay, dict) else None)
+        )
+        if raw_fail_reason:
+            fail_reason = " ".join(str(raw_fail_reason).split())[:200] or None
     return {
         "venue": venue,
         "symbol": symbol,
@@ -1152,6 +1164,7 @@ def _resolve_intent_execution_details(
         "filled_qty": round(eff_qty, 8) if eff_qty is not None and eff_qty > 0 else None,
         "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
         "slippage_bps": slippage_bps,
+        "reason": fail_reason,
         "ts": ts_raw,
         "ts_val": ts_val,
         "fill_ts_val": fill_ts_val,
@@ -1209,6 +1222,8 @@ def summarize_recent_ai_intents(
             intent_summary["filled_qty"] = det["filled_qty"]
         if det["slippage_bps"] is not None:
             intent_summary["slippage_bps"] = det["slippage_bps"]
+        if det.get("reason"):
+            intent_summary["reason"] = det["reason"]
         eff_ts_val = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
         if eff_ts_val > 0 and now_ts >= eff_ts_val:
             intent_summary["age_h"] = round((now_ts - eff_ts_val) / 3600.0, 2)
@@ -1345,6 +1360,8 @@ def build_last_cycle_execution_status(
             rec["limit_px"] = det["limit_px"]
         if det["order_id"] is not None:
             rec["order_id"] = det["order_id"]
+        if det.get("reason"):
+            rec["reason"] = det["reason"]
         eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
         if eff_ts > 0 and now_ts >= eff_ts:
             rec["age_min"] = round((now_ts - eff_ts) / 60.0, 1)

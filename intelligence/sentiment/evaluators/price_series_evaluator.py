@@ -676,6 +676,8 @@ def apply_short_trend_item(
     cur_px = safe_pos_float(fallback_price, default=None) or safe_pos_float(tinfo.get("current_price"), default=None)
     if allow_price_update and safe_float(entry.get("price"), 0.0) <= 0 and cur_px is not None:
         entry["price"] = cur_px
+    if (st_ts := safe_pos_float(tinfo.get("ts"), default=None)) is not None:
+        entry["_short_trend_ts"] = st_ts
     trend = tinfo.get("final_trend", entry.get("trend", 0))
     entry["trend"] = trend
     entry["growth_coefficient"] = tinfo.get("growth_coefficient", entry.get("growth_coefficient", 0.0))
@@ -705,6 +707,16 @@ def apply_short_trend_item(
     for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
         w_dict = wins[wk]
         is_90 = wk == "90"
+        is_unseeded_1smp = (
+            not require_any_slope
+            and (safe_pos_float(w_dict.get("n_samples"), default=2.0) or 2.0) < 2.0
+            and abs(safe_float(w_dict.get("slope_full"), 0.0)) < 1e-12
+            and abs(safe_float(w_dict.get("growth_coefficient"), 0.0)) < 1e-12
+        )
+        if is_unseeded_1smp:
+            if wk == "222" and abs(safe_float(entry.get("gradient_recent_fast"), 0.0)) < 1e-12:
+                entry["gradient_recent_fast"] = None
+            continue
         if w_dict.get("slope_full") is not None or (require_any_slope and not is_90):
             s_val = w_dict.get("slope_full", 0.0) if (require_any_slope and not is_90) else w_dict.get("slope_full")
             if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
@@ -731,6 +743,12 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
         return
     win_src = lt_win.get("windows") if isinstance(lt_win.get("windows"), dict) else lt_win
     wins = {wk: (win_src.get(wk) if isinstance(win_src.get(wk), dict) else {}) for wk, *_ in _WINDOW_TREND_SPECS}
+    lt_ts = max(
+        (safe_pos_float(w.get("ts"), default=0.0) or 0.0 for w in wins.values() if isinstance(w, dict)),
+        default=0.0,
+    )
+    if lt_ts > 0.0:
+        entry["_short_trend_ts"] = lt_ts
     w90, w222, w900 = wins["90"], wins["222"] or wins["90"], wins["900"]
     wins["222"] = w222
     live_px = (
@@ -753,6 +771,12 @@ def apply_live_24trend_windows(entry: Dict[str, Any], lt_win: Dict[str, Any], fa
     for wk, s_key, t_key, g_key in _WINDOW_TREND_SPECS:
         w_dict = wins[wk]
         if not w_dict:
+            continue
+        if (
+            (safe_pos_float(w_dict.get("n_samples"), default=2.0) or 2.0) < 2.0
+            and abs(safe_float(w_dict.get("slope_full"), 0.0)) < 1e-12
+            and abs(safe_float(w_dict.get("growth_coefficient"), 0.0)) < 1e-12
+        ):
             continue
         s_val = w_dict.get("slope_full", entry.get(s_key, 0.0)) if wk != "90" else w_dict.get("slope_full")
         if s_val is not None and abs(safe_float(s_val, 0.0)) < 5e-8:
@@ -1174,10 +1198,35 @@ def _apply_24h_series_enrichment(
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv
+    st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
+        pts_s24_sorted = _extract_sorted_ts_px(series_24h)
+        stale_short_ts = bool(
+            st_ts_e is not None
+            and pts_s24_sorted
+            and (float(pts_s24_sorted[-1][0]) / 1000.0 - st_ts_e) > 600.0
+        )
+        if stale_short_ts:
+            for k_st_clr in (
+                "slope_90s",
+                "growth_90s",
+                "trend_90s",
+                "slope_3_7m",
+                "growth_3_7m",
+                "trend_3_7m",
+                "slope_15m",
+                "growth_15m",
+                "trend_15m",
+                "slope_2_5h",
+                "growth_2_5h",
+                "trend_2_5h",
+                "gradient_recent_fast",
+                "gradient_recent",
+            ):
+                entry.pop(k_st_clr, None)
         s_2_5h = safe_float(entry.get("slope_2_5h"), default=None)
         s_15m = safe_float(entry.get("slope_15m"), default=None)
-        stale_short_cache = (
+        stale_short_cache = stale_short_ts or (
             s_2_5h is not None
             and s_15m is not None
             and abs(s_2_5h - s_15m) < 1e-12
@@ -1197,6 +1246,11 @@ def _apply_24h_series_enrichment(
                     entry[sk] = sv
             if stale_short_cache and "growth_2_5h" not in s_fb:
                 entry.pop("growth_2_5h", None)
+            if entry.get("gradient_recent") is None or abs(safe_float(entry.get("gradient_recent"), 0.0)) < 1e-12:
+                for fb_gr_k in ("slope_3_7m", "slope_15m"):
+                    if s_fb.get(fb_gr_k) is not None and abs(safe_float(s_fb.get(fb_gr_k), 0.0)) > 0.0:
+                        entry["gradient_recent"] = s_fb[fb_gr_k]
+                        break
         if len(series_24h) >= 20:
             all_pts_m = _extract_sorted_ts_px(series_24h)
             tail_pts_m: List[Tuple[float, float]] = []
