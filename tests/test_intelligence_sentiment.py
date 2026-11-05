@@ -5181,4 +5181,14 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     }
     assert _resolve_fallback_ohlc_fn("TAOUSDC", inst_map) is bin_fn
 
+    # Bug 29: parse_cited_taker_ratio handles parenthetical '(ratio 0.60, 1h CVD -$25.46M)' and ranks 1h above 5m
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+
+    live_summary = (
+        "and a sharp 5m taker buy resurgence (ratio 1.64, CVD +$9.25M). "
+        "Despite short-term bid absorption, aggregate 1h taker flow remains net negative (ratio 0.60, 1h CVD -$25.46M)"
+    )
+    assert parse_cited_taker_ratio(live_summary) == 0.60
+
+
 

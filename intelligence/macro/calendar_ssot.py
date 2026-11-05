@@ -424,13 +424,13 @@ def resolve_macro_economic_calendar(
 _CITED_TAKER_RATIO_RE = re.compile(
     r"(?:([0-9]+\.[0-9]+)\s*(?:taker[\s_]+(?:buy[/_]sell[\s_]+)?|buy[/_]sell[\s_]+)ratio"
     r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratio(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*([0-9]+\.[0-9]+)(?![0-9%])"
-    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity))?|(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity))(?:[^.;()\n]{0,45}?)[\s(]+([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratio|\))(?![0-9%]))",
+    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratio|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratio(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratio|[),])(?![0-9%]))",
     re.IGNORECASE,
 )
 
 
 def parse_cited_taker_ratio(text: Any) -> Optional[float]:
-    """Extract a cited BTC taker buy/sell ratio from an advisor summary string, preferring overall/15m over 5m/1h sub-horizons."""
+    """Extract a cited BTC taker buy/sell ratio from an advisor summary string, preferring overall/15m over 1h/4h over 1m/3m/5m sub-horizons."""
     if not isinstance(text, str) or not text:
         return None
     best_rank = -1
@@ -441,11 +441,13 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
             continue
         prefix = text[max(0, m_tr.start() - 24) : m_tr.start()].lower()
         if re.search(r"\b(?:overall|15m)\s*$", prefix):
-            rank = 2
-        elif re.search(r"\b(?:1m|3m|5m|1h|4h)\s*$", prefix):
+            rank = 3
+        elif re.search(r"\b(?:1m|3m|5m)\s*$", prefix):
             rank = 0
-        else:
+        elif re.search(r"\b(?:1h|4h)\s*$", prefix):
             rank = 1
+        else:
+            rank = 2
         if rank > best_rank:
             best_rank = rank
             best_val = val
