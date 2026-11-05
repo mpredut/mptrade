@@ -1148,6 +1148,11 @@ def _resolve_intent_execution_details(
         )
         if raw_fail_reason:
             fail_reason = " ".join(str(raw_fail_reason).split())[:200] or None
+    filled_notional_usd = (
+        round(eff_qty * fill_px, 2)
+        if exec_status == "PARTIALLY_FILLED" and eff_qty is not None and eff_qty > 0 and fill_px is not None and fill_px > 0
+        else None
+    )
     return {
         "venue": venue,
         "symbol": symbol,
@@ -1162,6 +1167,7 @@ def _resolve_intent_execution_details(
         "limit_px": round(limit_px, 6) if limit_px is not None else None,
         "ref_px": round(ref_px, 6) if ref_px is not None else None,
         "filled_qty": round(eff_qty, 8) if eff_qty is not None and eff_qty > 0 else None,
+        "filled_notional_usd": filled_notional_usd,
         "notional_usd": round(eff_notional, 2) if eff_notional is not None else i.get("suggested_notional_usd"),
         "slippage_bps": slippage_bps,
         "reason": fail_reason,
@@ -1220,6 +1226,8 @@ def summarize_recent_ai_intents(
             intent_summary["fill_px"] = det["fill_px"]
         if det["filled_qty"] is not None:
             intent_summary["filled_qty"] = det["filled_qty"]
+        if det.get("filled_notional_usd") is not None:
+            intent_summary["filled_notional_usd"] = det["filled_notional_usd"]
         if det["slippage_bps"] is not None:
             intent_summary["slippage_bps"] = det["slippage_bps"]
         if det.get("reason"):
@@ -1356,6 +1364,8 @@ def build_last_cycle_execution_status(
             "notional_usd": det["notional_usd"],
             "slippage_bps": det["slippage_bps"],
         }
+        if det.get("filled_notional_usd") is not None:
+            rec["filled_notional_usd"] = det["filled_notional_usd"]
         if det.get("limit_px") is not None:
             rec["limit_px"] = det["limit_px"]
         if det["order_id"] is not None:

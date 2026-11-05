@@ -8288,6 +8288,146 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert "advisor 1h_cvd=-13.20M" in sa_fast_1h_flip.get("live_flow_divergence", "")
 
 
+def test_cross_venue_heavy_shorting_cvd_and_stale_partial_fill_dedup():
+    """Verify:
+    - Cross-venue sibling orderbook depth does not misclassify a symbol's 15m CVD as spot_absorbing when the symbol's own venue book is ask-heavy (<0.50), taker_ratio <= 0.50, and div_regime is aggressive_shorting
+    - _format_portfolio_section suppresses >30m PARTIALLY_FILLED duplicates from last_cycle_execution_status and recent_ai_intents when already present in open_limit_orders
+    - build_last_cycle_execution_status surfaces filled_notional_usd alongside order notional_usd for PARTIALLY_FILLED orders
+    """
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        reconcile_sibling_flow_and_liq_regimes,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+    from providers.execution_audit import build_last_cycle_execution_status, extract_intent_notional
+
+    m_tao_dump = {
+        "TAOUSDC": {
+            "ob_mid_price": 216.9,
+            "ob_imbalance": 0.477,
+            "bid_depth_usd": 128000.0,
+            "ask_depth_usd": 140000.0,
+            "taker_buy_sell_ratio": 0.3529,
+            "taker_buy_vol_usd": 467962.45,
+            "taker_sell_vol_usd": 1325897.20,
+            "cvd_15m_usd": -857934.75,
+            "divergence_regime": "aggressive_shorting",
+            "_synthetic_spot_cvd": True,
+        },
+        "TAOUSD": {
+            "ob_mid_price": 217.15,
+            "ob_imbalance": 0.620,
+            "bid_depth_usd": 645000.0,
+            "ask_depth_usd": 395000.0,
+            "taker_buy_sell_ratio": 0.3529,
+            "taker_buy_vol_usd": 467962.45,
+            "taker_sell_vol_usd": 1325897.20,
+            "cvd_15m_usd": -857934.75,
+            "divergence_regime": "aggressive_shorting",
+            "_synthetic_spot_cvd": True,
+        },
+    }
+    pt_tao_dump = {
+        "TAOUSDC": {"price": 216.9, "chg_15m_pct": -0.02, "chg_5m_pct": 0.08},
+        "TAOUSD": {"price": 217.15, "chg_15m_pct": -0.02, "chg_5m_pct": 0.08},
+    }
+    reconcile_sibling_flow_and_liq_regimes(m_tao_dump, pt_tao_dump)
+    assert m_tao_dump["TAOUSDC"]["cvd_regime"] == "aggressive_market_dumps"
+    assert m_tao_dump["TAOUSD"]["cvd_regime"] == "aggressive_market_dumps"
+
+    st_pf = build_last_cycle_execution_status(
+        [
+            {
+                "timestamp": 1_793_800_000.0,
+                "decision": "SELL",
+                "symbol": "ARBUSDC",
+                "venue": "binance",
+                "order_type": "LIMIT",
+                "limit_price": 0.1572,
+                "reference_price": 0.1516,
+                "clamped_notional_usd": 1400.0,
+                "status": "EXECUTED",
+                "execution_payload": {"orderId": "563119781", "status": "NEW"},
+            }
+        ],
+        "crypto",
+        1_793_800_600.0,
+        extract_intent_notional,
+        open_orders=[
+            {
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "side": "SELL",
+                "order_id": "563119781",
+                "price": 0.1572,
+                "orig_qty": 8905.8,
+                "filled_qty": 773.9,
+                "qty": 8131.9,
+                "status": "PARTIALLY_FILLED",
+            }
+        ],
+    )
+    assert isinstance(st_pf, dict)
+    assert st_pf["status"] == "PARTIALLY_FILLED"
+    assert st_pf["filled_notional_usd"] == 121.66
+    assert st_pf["notional_usd"] == 1400.0
+
+    sec3c_pf = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [
+                    {
+                        "venue": "binance",
+                        "symbol": "ARBUSDC",
+                        "side": "SELL",
+                        "order_id": "563119781",
+                        "price": 0.1572,
+                        "orig_qty": 8905.8,
+                        "filled_qty": 773.9,
+                        "remaining_qty": 8131.9,
+                        "status": "PARTIALLY_FILLED",
+                    }
+                ],
+                "last_cycle_execution_status": {
+                    "venue": "binance",
+                    "symbol": "ARBUSDC",
+                    "side": "SELL",
+                    "order_type": "LIMIT",
+                    "status": "PARTIALLY_FILLED",
+                    "order_id": "563119781",
+                    "age_min": 105.9,
+                },
+                "recent_ai_intents": [
+                    {
+                        "decision": "SELL",
+                        "symbol": "ARBUSDC",
+                        "venue": "binance",
+                        "order_type": "LIMIT",
+                        "status": "EXECUTED",
+                        "venue_status": "PARTIALLY_FILLED",
+                        "order_id": "563119781",
+                        "age_h": 1.77,
+                    },
+                    {
+                        "decision": "BUY",
+                        "symbol": "BTCUSDC",
+                        "venue": "binance",
+                        "order_type": "LIMIT",
+                        "status": "EXECUTED",
+                        "venue_status": "FILLED",
+                        "order_id": "999",
+                        "age_h": 0.2,
+                    },
+                ],
+            },
+            asset_scope="crypto",
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "last_cycle_execution_status:" not in sec3c_pf
+    assert "563119781" not in sec3c_pf.split("Recent Autonomous Intents:")[-1]
+
+
+
 
 
 

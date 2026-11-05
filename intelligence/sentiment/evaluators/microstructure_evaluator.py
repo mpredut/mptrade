@@ -203,13 +203,20 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             tr_cur = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=None)
             chg_5m_cur = safe_float(p_dict.get("chg_5m_pct"), default=0.0) or 0.0
             cvd_5m_cur = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
+            own_ob_imb = safe_nonneg_float(minfo.get("ob_imbalance"), default=ob_imb) or ob_imb
+            is_own_venue_heavy_shorting = (
+                own_ob_imb < 0.50
+                and tr_cur is not None
+                and tr_cur <= 0.50
+                and div_reg in ("aggressive_shorting", "long_liquidation", "bearish_distribution")
+            )
             is_bid_absorbing = (
                 (
                     chg_15m >= 0.05
                     or (
                         chg_15m >= -0.05
                         and (
-                            ob_imb >= 0.54
+                            (ob_imb >= 0.54 and not is_own_venue_heavy_shorting)
                             or div_reg in ("accumulation", "short_covering", "bullish_absorption")
                             or (
                                 chg_15m >= -0.02

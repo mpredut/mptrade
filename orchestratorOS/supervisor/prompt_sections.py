@@ -1282,7 +1282,7 @@ def _format_portfolio_section(
         def _is_stale_dup_resting(item: Any) -> bool:
             return (
                 isinstance(item, dict)
-                and item.get("status") == "OPEN_RESTING"
+                and item.get("status") in ("OPEN_RESTING", "PARTIALLY_FILLED")
                 and _parse_finite_float(item.get("age_min"), 0.0) > 30.0
                 and any(
                     str(oid) in shown_open_oids
@@ -1332,9 +1332,15 @@ def _format_portfolio_section(
                     it_copy = dict(it)
                     if it_copy.get("status") == "EXECUTED" and v_st in ("OPEN", "NEW", "RESTING"):
                         it_copy["status"] = "RESTING_IN_BOOK"
+                    elif (
+                        it_copy.get("status") == "EXECUTED"
+                        and v_st == "PARTIALLY_FILLED"
+                        and bool(it_oids & shown_open_oids)
+                    ):
+                        it_copy["status"] = "PARTIALLY_FILLED_IN_BOOK"
                     last_norm_intent = it_copy
                     if (
-                        v_st in ("OPEN", "NEW", "RESTING")
+                        v_st in ("OPEN", "NEW", "RESTING", "PARTIALLY_FILLED")
                         and bool(it_oids & shown_open_oids)
                         and _parse_finite_float(it.get("age_h"), 0.0) > 0.5
                     ):
