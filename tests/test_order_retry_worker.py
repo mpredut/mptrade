@@ -1227,12 +1227,21 @@ class ProcessOnceTest(unittest.TestCase):
                     raise RuntimeError("venue unavailable")
 
             mkt = BrokenStatusMkt()
-            first = worker.process_once(mkt, now=1400.0)
-            second = worker.process_once(mkt, now=1500.0)
+            audit_events = []
+            orig_audit = worker._audit_event
+            worker._audit_event = lambda rec, ev, **kw: (audit_events.append((ev, kw)), orig_audit(rec, ev, **kw))[1]
+            try:
+                first = worker.process_once(mkt, now=1400.0)
+                second = worker.process_once(mkt, now=1500.0)
+                third = worker.process_once(mkt, now=1800.0)
+            finally:
+                worker._audit_event = orig_audit
 
             self.assertEqual(first["observed"], 1)
             self.assertEqual(second["observed"], 0)
-            self.assertEqual(len(mkt.status_calls), 1)
+            self.assertEqual(third["observed"], 1)
+            self.assertEqual(len(mkt.status_calls), 2)
+            self.assertEqual([ev for ev, _ in audit_events if ev == "status_error"], ["status_error"])
             self.assertIn("venue unavailable", oq.load_all()[0]["status_error"])
 
     def test_failure_reenqueue_and_corruption_handling(self):

@@ -298,13 +298,16 @@ def _process_awaiting_cancel_claim(mkt, r: dict, symbol, provider_name, now: flo
     try:
         status = mkt.order_status(symbol, replaced_order_id, provider_name=provider_name)
     except Exception as exc:
+        err_str = str(exc)
+        prev_err = str(r.get("status_error") or "")
         print(f"[order_retry] replaced-order status unavailable {symbol}/{replaced_order_id}: {exc}")
-        oq.complete_claim(r, "status_error", now, failure_reason=str(exc))
-        _audit_event(
-            r, "replacement_cancel_status_error",
-            replaced_order_id=replaced_order_id,
-            error_type=exc.__class__.__name__, error=str(exc),
-        )
+        oq.complete_claim(r, "status_error", now, failure_reason=err_str)
+        if prev_err != err_str:
+            _audit_event(
+                r, "replacement_cancel_status_error",
+                replaced_order_id=replaced_order_id,
+                error_type=exc.__class__.__name__, error=err_str,
+            )
         return
     venue_status = str(status.venue_status or "").upper()
     if venue_status in {"CANCELED", "CANCELLED"}:
@@ -343,9 +346,12 @@ def _process_accepted_claim(mkt, r: dict, symbol, provider_name, now: float) -> 
     try:
         status = mkt.order_status(symbol, str(r.get("order_id")), provider_name=provider_name)
     except Exception as exc:
+        err_str = str(exc)
+        prev_err = str(r.get("status_error") or "")
         print(f"[order_retry] status unavailable {symbol}/{r.get('order_id')}: {exc}")
-        oq.complete_claim(r, "status_error", now, failure_reason=str(exc))
-        _audit_event(r, "status_error", error_type=exc.__class__.__name__, error=str(exc))
+        oq.complete_claim(r, "status_error", now, failure_reason=err_str)
+        if prev_err != err_str:
+            _audit_event(r, "status_error", error_type=exc.__class__.__name__, error=err_str)
         return 0, 0, 0
     transition = oq.advance_claimed_status(r, status, now)
     if transition.action == "observed":

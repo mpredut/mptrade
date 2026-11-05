@@ -143,7 +143,15 @@ def _force_timeout(api_obj, seconds: float = 30.0) -> None:
         def _req(*a, **kw):
             if kw.get("timeout") is None:
                 kw["timeout"] = seconds
-            return orig(*a, **kw)
+            url = str(a[1] if len(a) > 1 else kw.get("url") or "")
+            is_info_query = url.rstrip("/").endswith("/info")
+            for attempt in range(3 if is_info_query else 1):
+                resp = orig(*a, **kw)
+                status_code = getattr(resp, "status_code", None)
+                if not is_info_query or status_code not in (429, 500, 502, 503, 504) or attempt >= 2:
+                    return resp
+                time.sleep(0.25 * (attempt + 1))
+            return resp
 
         sess.request = _req
 

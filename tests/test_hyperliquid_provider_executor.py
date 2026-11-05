@@ -541,6 +541,24 @@ class HLExecutorContractTest(unittest.TestCase):
             # 0.1 HYPE fee * $50 mid = $5.0 USDC fee
             self.assertAlmostEqual(st.fee, 5.0)
 
+        with self.subTest(msg="retries transient 500 ServerError on order_status"):
+            flaky_read = FakeRead(status="open")
+            calls = {"q": 0}
+            orig_q = flaky_read.info.query_order_by_oid
+
+            def _flaky_query(addr, oid):
+                calls["q"] += 1
+                if calls["q"] == 1:
+                    raise RuntimeError(500, "null")
+                return orig_q(addr, oid)
+
+            flaky_read.info.query_order_by_oid = _flaky_query
+            self.p._client = flaky_read
+            with patch("providers.hyperliquid_provider.time.sleep", return_value=None):
+                st = self.p.order_status("HYPE", "999")
+            self.assertEqual(st.status, "open")
+            self.assertEqual(calls["q"], 2)
+
     def test_hl_client_cancel_inspects_statuses_error(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
@@ -698,6 +716,32 @@ class HyperliquidTimeoutTest(unittest.TestCase):
         self.module._force_timeout(api, seconds=10)
         retries = api.session.get_adapter("https://api.hyperliquid.xyz").max_retries
         self.assertEqual((retries.connect, retries.read, retries.status), (3, 0, 0))
+
+    def test_info_requests_retry_transient_500_without_retrying_exchange(self):
+        from types import SimpleNamespace
+
+        class _FlakySession:
+            def __init__(self, statuses):
+                self.statuses = list(statuses)
+                self.calls = 0
+
+            def request(self, *_args, **_kwargs):
+                self.calls += 1
+                code = self.statuses.pop(0) if self.statuses else 200
+                return SimpleNamespace(status_code=code)
+
+        info_api = SimpleNamespace(timeout=10, session=_FlakySession([500, 200]))
+        exch_api = SimpleNamespace(timeout=30, session=_FlakySession([500, 200]))
+        with patch.object(self.module.time, "sleep", return_value=None):
+            self.module._force_timeout(info_api, seconds=10)
+            self.module._force_timeout(exch_api, seconds=30)
+            info_resp = info_api.session.request("POST", "https://api.hyperliquid.xyz/info")
+            exch_resp = exch_api.session.request("POST", "https://api.hyperliquid.xyz/exchange")
+
+        self.assertEqual(info_resp.status_code, 200)
+        self.assertEqual(info_api.session.calls, 2)
+        self.assertEqual(exch_resp.status_code, 500)
+        self.assertEqual(exch_api.session.calls, 1)
 
 
 class HyperliquidLongtermShadowTest(unittest.TestCase):

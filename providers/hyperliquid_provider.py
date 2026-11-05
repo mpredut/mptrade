@@ -131,6 +131,32 @@ def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
     )
 
 
+def _is_transient_hl_server_error(exc: BaseException) -> bool:
+    """Return True when exc represents a transient HTTP 5xx/429 error from Hyperliquid Info."""
+    args = getattr(exc, "args", ())
+    if args and isinstance(args[0], int) and not isinstance(args[0], bool):
+        if args[0] in (429, 500, 502, 503, 504):
+            return True
+    msg = str(exc)
+    return any(f"({code}," in msg or f"status_code={code}" in msg for code in (429, 500, 502, 503, 504))
+
+
+def _call_hl_info_read(fn, *args, attempts: int = 3, backoff_s: float = 0.2):
+    """Invoke a read-only Hyperliquid Info callable with bounded retry on transient 5xx/429."""
+    last_exc = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if not _is_transient_hl_server_error(exc) or attempt + 1 >= attempts:
+                raise
+            time.sleep(backoff_s * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
 class HyperliquidProvider(MarketDataProvider):
     """Provide HYPE spot access through the lazily loaded Hyperliquid SDK."""
 
@@ -326,7 +352,7 @@ class HyperliquidProvider(MarketDataProvider):
             addr = os.environ.get("HL_ACCOUNT_ADDRESS")
             if not addr:
                 return None
-            user_state = c.info.spot_user_state(addr)
+            user_state = _call_hl_info_read(c.info.spot_user_state, addr)
             if not isinstance(user_state, dict):
                 return None
             balances = user_state.get("balances")
@@ -361,7 +387,7 @@ class HyperliquidProvider(MarketDataProvider):
         addr = os.environ.get("HL_ACCOUNT_ADDRESS")
         if not addr:
             raise ProviderError(f"get_orders({symbol}): HL_ACCOUNT_ADDRESS missing")
-        fills = c.info.user_fills(addr)
+        fills = _call_hl_info_read(c.info.user_fills, addr)
         if fills is None:
             raise ProviderError(f"get_orders({symbol}): user_fills returned None")
         if not isinstance(fills, list):
@@ -385,9 +411,9 @@ class HyperliquidProvider(MarketDataProvider):
         try:
             out = []
             if "open_orders_strict" in type(c).__dict__ and "open_orders" not in getattr(c, "__dict__", {}):
-                orders = c.open_orders_strict(pair)
+                orders = _call_hl_info_read(c.open_orders_strict, pair)
             else:
-                orders = c.open_orders(pair)
+                orders = _call_hl_info_read(c.open_orders, pair)
             if orders is None or not isinstance(orders, list):
                 raise ProviderError(
                     f"open_orders({symbol}): open_orders returned unexpected type {type(orders).__name__ if orders is not None else 'None'}"
@@ -752,7 +778,7 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     "The Hyperliquid SDK lacks authoritative CLOID lookup")
             from hyperliquid.utils.types import Cloid
-            raw = query(addr, Cloid.from_str(cloid)) or {}
+            raw = _call_hl_info_read(query, addr, Cloid.from_str(cloid)) or {}
             if not isinstance(raw, dict):
                 raise ProviderError(
                     f"order_by_client_id({symbol}): invalid response {raw!r}")
@@ -803,7 +829,7 @@ class HyperliquidProvider(MarketDataProvider):
                 raise ProviderError(
                     "The Hyperliquid SDK is too old: query_order_by_oid is missing"
                 )
-            raw_status = query(addr, oid) or {}
+            raw_status = _call_hl_info_read(query, addr, oid) or {}
             if not isinstance(raw_status, dict) or raw_status.get("status") != "order":
                 raise ProviderError(
                     f"order_status({order_id}): indeterminate status ({raw_status})"
@@ -828,7 +854,7 @@ class HyperliquidProvider(MarketDataProvider):
 
             # user_fills is the cumulative source for quantity, cost, and fee. Read
             # it while an order is open so partial fills are not lost.
-            user_fills_data = c.info.user_fills(addr)
+            user_fills_data = _call_hl_info_read(c.info.user_fills, addr)
             if user_fills_data is None:
                 raise ProviderError(f"order_status({order_id}): user_fills returned None")
             if not isinstance(user_fills_data, list):
