@@ -360,6 +360,8 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "biggest stock winners",
     "good bets in",
     "best bets for",
+    "millionaire-maker",
+    "wants to be the nvidia of",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(

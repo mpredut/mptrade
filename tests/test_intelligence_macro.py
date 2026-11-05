@@ -2149,6 +2149,7 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     from intelligence.macro.lexicon_ssot import (
         _bigram_stem_signature,
         build_dynamic_rss_url,
+        is_excluded_reference_news_item,
         load_dynamic_lexicon,
         update_dynamic_lexicon,
     )
@@ -2281,6 +2282,11 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     assert "UTC, age=10m)" in captured_prompts[0]
     assert "UTC, age=180m)" in captured_prompts[0]
     assert "Earlier: Iran says tankers struck in Hormuz three hours ago" in captured_prompts[0]
+    assert is_excluded_reference_news_item("Is Nvidia Still a Millionaire-Maker Stock?") is True
+    assert is_excluded_reference_news_item(
+        "IonQ Wants to Be the Nvidia of Quantum. Its Latest Numbers Back Up the Swagger."
+    ) is True
+
 
 
 
