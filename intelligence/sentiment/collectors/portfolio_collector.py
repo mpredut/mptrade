@@ -682,7 +682,9 @@ def harvest_tradable_positions_and_orders(
             v_norm = normalize_venue_name(venue)
             res_b, res_q = resolve_assets(sym, getattr(inst, "base", None), getattr(inst, "quote", None))
             base, quote = res_b or sym, res_q or "USD"
-            inst_by_sym[sym] = inst_by_sym[f"{v_norm}:{sym}"] = inst
+            if sym not in inst_by_sym or v_norm in ("binance", "kraken", "t212"):
+                inst_by_sym[sym] = inst
+            inst_by_sym[f"{v_norm}:{sym}"] = inst
 
             px = prices_and_trends.get(sym, {}).get("price")
             px_f = safe_pos_float(px, default=0.0) or 0.0

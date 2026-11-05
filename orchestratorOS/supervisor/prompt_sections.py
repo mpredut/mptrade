@@ -380,7 +380,20 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
             for sib_sym, sib_info in sym_group[1:]:
                 s_px = _parse_finite_float(sib_info.get("price"), 0.0)
                 if px_f <= 0 or s_px <= 0 or abs(px_f - s_px) / max(px_f, s_px) <= 0.10:
+                    has_own_vp = pinfo.get("poc_px") is not None
+                    has_own_bottom = pinfo.get("bottom_structure_6h") is not None
                     for sk, sv in sib_info.items():
+                        if has_own_vp and sk in (
+                            "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape",
+                            "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct",
+                            "val_dist_pct", "va_pos_pct", "va_regime", "vp_source",
+                        ):
+                            continue
+                        if has_own_bottom and sk in (
+                            "prior_6h_low_px", "recent_1h_low_px",
+                            "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
+                        ):
+                            continue
                         if pinfo.get(sk) is None and sv is not None:
                             pinfo[sk] = sv
                         elif (
@@ -1171,25 +1184,30 @@ def _format_portfolio_section(
     }
     if ps.get("last_cycle_execution_status"):
         raw_lces = ps["last_cycle_execution_status"]
+
+        def _is_stale_dup_resting(item: Any) -> bool:
+            return (
+                isinstance(item, dict)
+                and item.get("status") == "OPEN_RESTING"
+                and _parse_finite_float(item.get("age_min"), 0.0) > 30.0
+                and str(item.get("order_id") or "") in shown_open_oids
+            )
+
         if isinstance(raw_lces, list):
-            cleaned_list = [{k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item for item in raw_lces]
-            non_dup_lces = [
-                item for item in cleaned_list
-                if not (
-                    isinstance(item, dict)
-                    and item.get("status") == "OPEN_RESTING"
-                    and _parse_finite_float(item.get("age_min"), 0.0) > 30.0
-                    and str(item.get("order_id") or "") in shown_open_oids
-                )
+            cleaned_list = [
+                {k: v for k, v in item.items() if v is not None} if isinstance(item, dict) else item
+                for item in raw_lces
             ]
-            clean_lces: Any = non_dup_lces if non_dup_lces else cleaned_list[-1:]
+            clean_lces: Any = [item for item in cleaned_list if not _is_stale_dup_resting(item)]
         elif isinstance(raw_lces, dict):
-            clean_lces = {k: v for k, v in raw_lces.items() if v is not None}
+            cleaned_dict = {k: v for k, v in raw_lces.items() if v is not None}
+            clean_lces = None if _is_stale_dup_resting(cleaned_dict) else cleaned_dict
         else:
             clean_lces = raw_lces
-        lines.append(
-            f"  * Last Cycle Execution Status — last_cycle_execution_status: {clean_lces}"
-        )
+        if clean_lces:
+            lines.append(
+                f"  * Last Cycle Execution Status — last_cycle_execution_status: {clean_lces}"
+            )
     for st_key, st_label in (
         ("active_retry_queue", "Active Queued Retry Orders (order_retry_queue.jsonl)"),
         ("monitortrades_active_state", "Active MonitorTrades Ride/Stop State (mt_state.json)"),

@@ -652,6 +652,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
     daemon_recovered_pattern = re.compile(
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|\[STRAT\]\s+state loaded|"
+        r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
         r"\[verify\].*is LISTED and tradable)",
         re.IGNORECASE,
     )
@@ -726,7 +727,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 ):
                                     continue
                             if (
-                                ("Failed to recover daemon" in cleaned or "Error: not signed in:" in cleaned)
+                                (
+                                    "Failed to recover daemon" in cleaned
+                                    or "Error: not signed in:" in cleaned
+                                    or "ui_sync_idle_sec" in cleaned
+                                    or "[manage_agy] ERROR:" in cleaned
+                                    or "[ws] error: ping/pong timed out" in cleaned
+                                )
                                 and any(daemon_recovered_pattern.search(lines[j]) for j in range(idx + 1, total_lines))
                             ):
                                 continue

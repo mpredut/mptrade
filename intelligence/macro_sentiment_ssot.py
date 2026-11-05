@@ -671,7 +671,7 @@ def load_cached_whale_telemetry(
     """Load cached whale positioning snapshot from ``cache_dir`` without network I/O."""
     reader = _resolve_ssot_json_reader()
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
-    for sym in (list(symbols) if symbols else ["BTCUSDC"]):
+    for sym in (parse_symbol_list(symbols) or ["BTCUSDC"]):
         for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
             safe_sym = clean_symbol_key(cand_sym)
             if safe_sym:

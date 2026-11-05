@@ -1,7 +1,7 @@
 """Free RSS news collector monitoring breaking geopolitical, war, and energy crises."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import email.utils
 import logging
@@ -50,6 +50,7 @@ class NewsHeadline:
     url: str
     matched_keywords: Tuple[str, ...]
     is_high_severity: bool
+    first_seen_ts: Optional[float] = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,10 @@ class NewsFeedCollector:
         self._load_history()
 
     def _cache_dir(self) -> str:
-        return os.path.dirname(os.path.abspath(self._effective_history_file()))
+        cdir = os.path.dirname(os.path.abspath(self._effective_history_file()))
+        if os.path.basename(cdir) in ("macro", "sentiment", "telemetry", "external", "system"):
+            return os.path.dirname(cdir)
+        return cdir
 
     def get_active_feed_urls(self) -> Tuple[str, ...]:
         """Resolve specialized editorial RSS feeds + dynamic crisis search URL."""
@@ -152,6 +156,7 @@ class NewsFeedCollector:
                 url=getattr(primary, "url", "") or getattr(secondary, "url", ""),
                 matched_keywords=merged_kws,
                 is_high_severity=merged_sev,
+                first_seen_ts=merged_ts if merged_ts > 0.0 else None,
             ),
         )
 
@@ -193,6 +198,7 @@ class NewsFeedCollector:
                 if had_only_noise_kws
                 else self._as_bool_flag(item.get("is_high_severity", default_sev or len(matched_kws) > 0))
             )
+            raw_fs_ts = normalize_epoch_sec(safe_pos_float(item.get("first_seen_ts"), -1.0), default=-1.0)
             return NewsHeadline(
                 title=raw_title.strip(),
                 source=raw_src.strip() if isinstance(raw_src, str) else "",
@@ -200,6 +206,7 @@ class NewsFeedCollector:
                 url=raw_url.strip() if isinstance(raw_url, str) else "",
                 matched_keywords=matched_kws,
                 is_high_severity=is_sev,
+                first_seen_ts=raw_fs_ts if raw_fs_ts > 0.0 else None,
             )
         if isinstance(getattr(item, "title", None), str):
             if is_excluded_reference_news_item(getattr(item, "title", ""), getattr(item, "source", ""), getattr(item, "url", "")):
@@ -329,7 +336,11 @@ class NewsFeedCollector:
         cache_dir: Optional[str],
     ) -> NewsFeedSnapshot:
         all_headlines = [
-            v[1]
+            (
+                replace(v[1], first_seen_ts=float(v[0]))
+                if isinstance(v[1], NewsHeadline) and float(v[0]) > 0.0
+                else v[1]
+            )
             for v in sorted(
                 pool_values,
                 key=lambda x: (1 if self._as_bool_flag(getattr(x[1], "is_high_severity", False)) else 0, x[0]),

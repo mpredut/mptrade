@@ -217,7 +217,31 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
             and has_new_acute_phrase
         )
-        if not force_refresh and not acute_shock_alert and self._cached_assessment and not is_stale:
+        deescalate_aged_90m = bool(
+            high_sev
+            and not acute_shock_alert
+            and self._cached_assessment is not None
+            and not self._cached_assessment.is_fallback
+            and self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
+            and age_sec >= 1800.0
+            and (
+                not self._last_headlines_digest
+                or headline_digest.lower() == self._last_headlines_digest.lower()
+            )
+            and all(
+                0.0
+                < (
+                    safe_nonneg_ts(
+                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+                        0.0,
+                    )
+                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), now) or 0.0)
+                )
+                <= now - 5400.0
+                for h in high_sev
+            )
+        )
+        if not force_refresh and not acute_shock_alert and not deescalate_aged_90m and self._cached_assessment and not is_stale:
             if headline_digest and not self._last_headlines_digest and not self._cached_assessment.is_fallback:
                 self._last_headlines_digest = headline_digest
             return self._cached_assessment
@@ -244,6 +268,20 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 ),
                 now,
                 "",
+            )
+
+        if deescalate_aged_90m:
+            return self._commit_assessment(
+                GeopoliticalThreatAssessment(
+                    threat_level="NORMAL",
+                    risk_score=0.1,
+                    summary="Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes.",
+                    recommended_brake="NONE",
+                    headlines_analyzed=len(raw_headlines),
+                    ts=now,
+                ),
+                now,
+                headline_digest,
             )
 
         if (

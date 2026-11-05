@@ -681,7 +681,26 @@ def compute_dynamic_geopolitical_interval(
             return min(max_geo_itv, base * 1.3333), "global_overnight_calm_6h"
         return min(max_geo_itv, base * 1.15), "global_daytime_calm"
 
-    if high_sev_count == 0 and threat_level in ("ELEVATED", "CRITICAL_SHOCK") and news_snapshot is not None:
+    all_high_sev_aged_90m = False
+    if high_sev_count > 0 and news_snapshot is not None and (not changed_b or new_high_sev_count == 0):
+        high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
+        if high_sev_all:
+            from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+            all_high_sev_aged_90m = all(
+                0.0
+                < (
+                    _ssot.safe_nonneg_ts(
+                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+                        0.0,
+                    )
+                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), ts) or 0.0)
+                )
+                <= ts - 5400.0
+                for h in high_sev_all
+            )
+
+    if (high_sev_count == 0 or all_high_sev_aged_90m) and threat_level in ("ELEVATED", "CRITICAL_SHOCK") and news_snapshot is not None:
         return min(base, min_geo_itv * 2.0), "threat_deescalation_zero_high_sev_recheck"
 
     return base, f"standard_geopolitical_ttl_{threat_level.lower()}"

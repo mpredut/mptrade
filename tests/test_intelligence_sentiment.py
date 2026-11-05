@@ -4959,7 +4959,138 @@ def test_active_7d_vals_ohlc_override_pretrade_sibling_90s_and_stdin_log_filteri
         encoding="utf-8",
     )
     anom = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=2.0)
-    assert anom.error_count == 1
+    assert anom.error_count == 0
     assert anom.persistent_errors == []
     assert not any("<stdin>" in ev for ev in anom.critical_events)
+
+
+def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc_vp(tmp_path):
+    """Verify Bugs 21-26:
+    - Bug 21: 5m bar series with live sub-5m points at +4.7m after last 5m bar retains chg_5m_pct and -5m in tape_15m
+    - Bug 22: NewsFeedCollector preserves first_seen_ts on NewsHeadline & GeopoliticalThreatAnalyzer de-escalates ELEVATED after 90m with no fresh high-sev headlines
+    - Bug 23: SentimentAdvisor computes fallback prior_6h_low and 1h_low from BTC 24h series when bottom_structure_6h is NONE
+    - Bug 24: load_cached_whale_telemetry accepts string symbol 'BTCUSDC' without iterating char-by-char
+    - Bug 25: harvest_log_anomalies_from_dirs suppresses recovered [kraken_cache][ws] error: ping/pong timed out when followed by subscribed ownTrades
+    - Bug 26: _resolve_fallback_ohlc_fn prefers binance:<SYM> over hyperliquid:<SYM> for multi-venue USDC pairs like TAOUSDC
+    """
+    import time
+    from types import SimpleNamespace
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+    from intelligence.sentiment.collectors.microstructure_collector import _resolve_fallback_ohlc_fn
+    from intelligence.macro.news_feed_collector import NewsFeedCollector
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    from intelligence.macro.calendar_ssot import compute_dynamic_geopolitical_interval
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from intelligence.macro_sentiment_ssot import load_cached_whale_telemetry
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # Bug 21: 5m bars + -3m/-1m/now at +4.68m after last 5m bar
+    base_ms = 1_793_800_000_000
+    pts_5m = [[base_ms - (12 - i) * 300_000, 200.0 + i * 0.1] for i in range(13)]
+    now_ms = base_ms + 281_000  # +4.683m after last 5m bar at base_ms
+    pts_merged = pts_5m + [[now_ms - 180_000, 201.27], [now_ms - 60_000, 201.28], [now_ms, 201.29]]
+    m24 = compute_24h_price_metrics(pts_merged)
+    assert "chg_5m_pct" in m24
+    assert any(p.startswith("-5m:") for p in m24.get("recent_tape_15m", []))
+    assert any(p.startswith("-3m:") for p in m24.get("recent_tape_15m", []))
+
+    # Bug 22: NewsFeedCollector preserves first_seen_ts & GeopoliticalThreatAnalyzer de-escalates after 90m
+    cdir = tmp_path / "cachedb"
+    (cdir / "macro").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    hist_path = cdir / "macro" / "news_feed_collect.json"
+    hist_path.write_text(
+        json.dumps([
+            {
+                "title": "Ukraine raises death toll from Russian missile strike",
+                "source": "BBC World",
+                "pub_date": "",
+                "url": "https://bbc.co.uk/news/1",
+                "matched_keywords": ["missile", "strike"],
+                "is_high_severity": True,
+                "first_seen_ts": now_s - 7200.0,  # 120m old (>90m)
+            }
+        ]),
+        encoding="utf-8",
+    )
+    nf = NewsFeedCollector(history_file=str(hist_path))
+    assert nf._cache_dir() == str(cdir)
+    snap = nf.get_pool_snapshot(now_ts=now_s)
+    assert len(snap.headlines) == 1
+    assert snap.headlines[0].first_seen_ts == now_s - 7200.0
+
+    geo_state = cdir / "macro" / "geopolitical_eval.json"
+    geo = GeopoliticalThreatAnalyzer(state_file=str(geo_state), cache_ttl_sec=16200.0)
+    geo._cached_assessment = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.3,
+        summary="Prior elevated tension.",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=1,
+        ts=now_s - 6000.0,
+    )
+    geo._last_eval_ts = now_s - 6000.0
+    geo._last_headlines_digest = "Ukraine raises death toll from Russian missile strike"
+    itv_geo, reason_geo = compute_dynamic_geopolitical_interval(
+        base_interval_sec=16200.0,
+        last_eval_ts=now_s - 6000.0,
+        now_ts=now_s,
+        cached_assessment=geo._cached_assessment,
+        news_snapshot=snap,
+        headlines_changed=False,
+        last_headlines_digest=geo._last_headlines_digest,
+    )
+    assert itv_geo == 1800.0
+    assert reason_geo == "threat_deescalation_zero_high_sev_recheck"
+    deesc = geo.assess(snap, now_ts=now_s)
+    assert deesc.threat_level == "NORMAL"
+    assert deesc.recommended_brake == "NONE"
+
+    # Bug 23 & 24: load_cached_whale_telemetry string symbol & SentimentAdvisor prior_6h_low/1h_low fallback
+    (cdir / "telemetry" / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({"symbol": "BTCUSDC", "taker_buy_sell_ratio": 1.12, "open_interest_change_pct": 0.45, "divergence_regime": "accumulation"}),
+        encoding="utf-8",
+    )
+    w_snap = load_cached_whale_telemetry(str(cdir), "BTCUSDC")
+    assert isinstance(w_snap, dict) and w_snap.get("taker_buy_sell_ratio") == 1.12
+
+    btc_24h_pts = [[int((now_s - (24 - i) * 3600) * 1000), 78000.0 + i * 100.0] for i in range(25)]
+    (cdir / "prices" / "cache_24_price_BTCUSDC.json").write_text(
+        json.dumps({"items": {"BTCUSDC": btc_24h_pts}}),
+        encoding="utf-8",
+    )
+    captured_prompts: list[str] = []
+    dummy_gemini = SimpleNamespace(query_json=lambda prompt, **kw: (captured_prompts.append(prompt) or None))
+    sa = SentimentAdvisor(gemini_client=dummy_gemini, cache_file=str(cdir / "macro" / "sentiment_eval.json"))
+    sa.review(fear_greed=None, breadth=None, whale_telemetry=w_snap, force_refresh=True)
+    assert captured_prompts
+    assert "prior_6h_low=$0.00" not in captured_prompts[0]
+    assert "Whales & Derivatives:" in captured_prompts[0]
+
+    # Bug 25: Kraken-cache ws ping/pong timeout followed by subscribed ownTrades is suppressed
+    ldir = tmp_path / "logs_b25"
+    ldir.mkdir(exist_ok=True)
+    t_err = time.strftime("%H:%M:%S", time.localtime(now_s - 1800))
+    t_rec = time.strftime("%H:%M:%S", time.localtime(now_s - 1795))
+    (ldir / "Kraken-cache.log").write_text(
+        f"[{t_err}] [kraken_cache][ws] error: ping/pong timed out\n" * 3
+        + f"[{t_rec}] [kraken_cache][ws] subscribed ownTrades\n",
+        encoding="utf-8",
+    )
+    anom_25 = harvest_log_anomalies_from_dirs([str(ldir)], lookback_hours=2.0)
+    assert anom_25.error_count == 0
+    assert anom_25.persistent_errors == []
+
+    # Bug 26: _resolve_fallback_ohlc_fn prefers binance:TAOUSDC over hyperliquid:TAOUSDC
+    bin_fn = lambda s, i: "binance_ohlc"  # noqa: E731
+    hl_fn = lambda s, i: "hl_ohlc"  # noqa: E731
+    inst_map = {
+        "TAOUSDC": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=hl_fn)),
+        "binance:TAOUSDC": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=bin_fn)),
+        "hyperliquid:TAOUSDC": SimpleNamespace(_provider=SimpleNamespace(ohlc_series=hl_fn)),
+    }
+    assert _resolve_fallback_ohlc_fn("TAOUSDC", inst_map) is bin_fn
+
 

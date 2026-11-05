@@ -162,11 +162,25 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                         pos_24h_v = 50.0
                     p6h_lo_v = safe_pos_float(btc_m.get("prior_6h_low_px"), default=0.0) or 0.0
                     r1h_lo_v = safe_pos_float(btc_m.get("recent_1h_low_px"), default=0.0) or 0.0
+                    if (p6h_lo_v <= 0.0 or r1h_lo_v <= 0.0) and len(parsed_btc_pts) >= 4:
+                        now_ms_b = parsed_btc_pts[-1][0]
+                        cutoff_1h_b = now_ms_b - 60.0 * 60000.0
+                        cutoff_6h_b = now_ms_b - 360.0 * 60000.0
+                        prior_pts_b = [p_v for tms, p_v in parsed_btc_pts if cutoff_6h_b <= tms < cutoff_1h_b]
+                        recent_pts_b = [p_v for tms, p_v in parsed_btc_pts if tms >= cutoff_1h_b]
+                        if prior_pts_b and p6h_lo_v <= 0.0:
+                            p6h_lo_v = min(prior_pts_b)
+                        if recent_pts_b and r1h_lo_v <= 0.0:
+                            r1h_lo_v = min(recent_pts_b)
+                    lows_sfx = (
+                        f" (prior_6h_low=${p6h_lo_v:.2f}, 1h_low=${r1h_lo_v:.2f})"
+                        if p6h_lo_v > 0.0 and r1h_lo_v > 0.0
+                        else ""
+                    )
                     prompt_context.append(
                         f"- BTC Intraday Structure: price=${last_px:.2f} "
                         f"({chg_24h_v:+.2f}% 24h, range_pos={pos_24h_v:.0f}%), "
-                        f"bottom_structure_6h={b_struct} "
-                        f"(prior_6h_low=${p6h_lo_v:.2f}, 1h_low=${r1h_lo_v:.2f})"
+                        f"bottom_structure_6h={b_struct}{lows_sfx}"
                     )
         except Exception:
             pass
