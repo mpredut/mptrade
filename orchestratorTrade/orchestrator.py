@@ -287,7 +287,19 @@ class BotManager:
         ]
         seen = set(manifest_names)
         extra_names = [n for n in self.processes.keys() if n not in seen]
-        return list(reversed(manifest_names + extra_names))
+        ordered = list(reversed(manifest_names + extra_names))
+        core_writers = [n for n in ("Kraken-cache", "cacheManager") if n in ordered]
+        if core_writers:
+            ordered = [n for n in ordered if n not in core_writers] + core_writers
+        return ordered
+
+    def _ordered_bots_for_start(self) -> list[Dict[str, Any]]:
+        bots_list = list(getattr(self, "bots", ()) or ())
+        priority = {"cacheManager": 0, "Kraken-cache": 1}
+        return sorted(
+            bots_list,
+            key=lambda b: priority.get(b.get("name") if isinstance(b, dict) else "", 2),
+        )
 
     async def shutdown(self):
         if getattr(self, "_shutting_down", False):
@@ -395,6 +407,16 @@ class BotManager:
             try:
                 for name in self._ordered_process_names_reversed():
                     await self.restart_bot(name)
+                # Start core cache writers immediately before releasing _reloading so
+                # trading bots never wake up before account/price cache writers are live.
+                for bot in self._ordered_bots_for_start():
+                    bname = bot.get("name")
+                    if bname in ("cacheManager", "Kraken-cache") and bname not in self.starting:
+                        proc = self.processes.get(bname)
+                        if proc is None or proc.returncode is not None:
+                            self.starting.add(bname)
+                            asyncio.create_task(self.start_bot(bot))
+                await asyncio.sleep(0.5)
             finally:
                 self._reloading = False
 
@@ -432,7 +454,7 @@ class BotManager:
                 if hb_statuses:
                     logging.info(f"Heartbeat healthcheck status: {', '.join(hb_statuses)}")
 
-            for bot in self.bots:
+            for bot in self._ordered_bots_for_start():
                 if getattr(self, "_reloading", False):
                     continue
                 name = bot["name"]

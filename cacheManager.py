@@ -3956,8 +3956,28 @@ if __name__ == "__main__":
     # deliver events. Their first periodic loop is then started exactly once with
     # persistence enabled, so readiness never depends on a thread-scheduling race.
     for _account_cache_name in ("Order", "Trade"):
-        get_cache_manager(_account_cache_name, start_sync=False)
+        _acc_mgr = get_cache_manager(_account_cache_name, start_sync=False)
         CacheFactory._sync_started.add(_account_cache_name)
+        _ver = str(
+            getattr(_acc_mgr, "_persisted_data_version", "")
+            or getattr(_acc_mgr, "_loaded_data_version", "")
+            or ""
+        )
+        _cursors = (
+            getattr(_acc_mgr, "_rest_sync_cursor_per_symbol", None)
+            or getattr(_acc_mgr, "fetchtime_per_symbol", None)
+            or {}
+        )
+        _sync_ms = (
+            min(
+                (int(v) for v in _cursors.values() if isinstance(v, (int, float)) and v > 0),
+                default=0,
+            )
+            if isinstance(_cursors, dict)
+            else 0
+        )
+        if _ver and _sync_ms > 0 and (int(time.time() * 1000) - _sync_ms) <= int(account_cache_health.MAX_AGE_SEC * 1000):
+            account_cache_health.record_successful_sync(_account_cache_name, _ver, now_ms=_sync_ms)
     _initialize_once()   # The dedicated cache process enables WebSocket and persistence.
     threads = []
     _nb_poller = None

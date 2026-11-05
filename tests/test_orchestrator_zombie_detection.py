@@ -331,13 +331,30 @@ class OrchestratorZombieDetectionTest(unittest.IsolatedAsyncioTestCase):
         async def _fake_stop(name, sig=None):
             stop_order.append(name)
 
+        self.manager.bots = [
+            {"name": "HL-bot"},
+            {"name": "Kraken-cache"},
+            {"name": "Binance-trailing"},
+            {"name": "cacheManager"},
+            {"name": "tradeall"},
+            {"name": "rtrade"},
+        ]
+        self.manager.processes["HL-bot"] = MagicMock()
+        self.manager.processes["Kraken-cache"] = MagicMock()
+        self.manager.processes["Binance-trailing"] = MagicMock()
         self.manager.processes["cacheManager"] = MagicMock()
         self.manager.processes["tradeall"] = MagicMock()
         self.manager.processes["rtrade"] = MagicMock()
         self.manager.stop_bot = _fake_stop
 
+        start_names = [b["name"] for b in self.manager._ordered_bots_for_start()]
+        self.assertEqual(start_names[:2], ["cacheManager", "Kraken-cache"])
+
         await self.manager.shutdown()
-        self.assertEqual(stop_order, ["rtrade", "tradeall", "cacheManager"])
+        self.assertEqual(
+            stop_order,
+            ["rtrade", "tradeall", "Binance-trailing", "HL-bot", "Kraken-cache", "cacheManager"],
+        )
         self.assertEqual(self.manager.processes, {})
 
 

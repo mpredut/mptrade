@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -1744,9 +1745,9 @@ def execute_enforce_intent_order(
             except Exception:
                 pass
 
-        retried_stale_cache = False
+        stale_cache_retries = 0
         retried_insufficient_free = False
-        for _attempt in range(3):
+        for _attempt in range(5):
             outcome_ctx.clear()
             place_kwargs: dict[str, Any] = {
                 "side": decision,
@@ -1769,13 +1770,13 @@ def execute_enforce_intent_order(
             refused_state = outcome_ctx.get("state") == "refused" or outcome_ctx.get("category") == "refused_pre_submit"
             reason_str = str(outcome_ctx.get("reason") or "")
             if (
-                not retried_stale_cache
+                stale_cache_retries < 3
                 and refused_state
                 and reason_str in ("account_cache_not_fresh", "account_cache_snapshot_changed")
             ):
-                retried_stale_cache = True
+                stale_cache_retries += 1
                 _cleanup_refused_retry_records()
-                time.sleep(0.25)
+                time.sleep(0.25 if ("PYTEST_CURRENT_TEST" in os.environ or "unittest" in sys.modules) else 1.5)
                 continue
             if (
                 not retried_insufficient_free
