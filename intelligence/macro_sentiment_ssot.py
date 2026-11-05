@@ -470,6 +470,13 @@ def get_cboe_delayed_options_url(option_path: str) -> str:
     return tmpl.format(option_path=str(option_path or "").strip().lstrip("/"))
 
 
+def get_cboe_index_tickers() -> Tuple[str, ...]:
+    tickers = _split_csv(_cfg_str("feeds", "cboe_index_tickers"), upper=True)
+    if not tickers:
+        raise ValueError("Missing required [feeds] cboe_index_tickers in macro_intelligence.conf")
+    return tickers
+
+
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
     raw = _cfg_str("feeds", "macro_benchmark_specs")
     if not raw:

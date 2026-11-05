@@ -15,7 +15,15 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from botcore import _parse_bool_flag, normalize_epoch_sec, resolve_patched_attr, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    fetch_json_post,
+    normalize_epoch_sec,
+    resolve_patched_attr,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import (
     cache_symbol_variants,
     canonical_symbol_key,
@@ -30,9 +38,11 @@ from instrument_registry import is_equity_symbol, is_symbol_market_open
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     get_cboe_delayed_options_url,
+    get_cboe_index_tickers,
     get_nasdaq_equity_quote_url,
     get_yahoo_equity_chart_5d_url,
     is_cache_fresh,
+    resolve_derived_telemetry_intervals,
     resolve_now_ts as _effective_now_ts,
 )
 from providers.base import resolve_ssot_price_from_cache
@@ -400,9 +410,11 @@ class _DiskBackedSymbolCollector:
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
                         stale_sp = safe_pos_float(getattr(stale_disk, "spread_bps", None), default=0.0) or 0.0
+                        share_exec_sec = resolve_derived_telemetry_intervals().get("share_executor_interval_sec", 1800.0)
+                        closed_rth_max_age_sec = 192.0 * share_exec_sec  # 192 * 30m = 96h (covers 3-day holiday weekend + overnight)
                         if (
                             stale_disk is not None
-                            and 0.0 <= (now_f - stale_ts) < 96.0 * 3600.0
+                            and 0.0 <= (now_f - stale_ts) < closed_rth_max_age_sec
                             and (self._DISK_FILE_PREFIX != "orderbook_depth" or stale_sp <= 200.0)
                         ):
                             self._cache[sym_clean] = (now_f, stale_disk)
@@ -451,19 +463,12 @@ class _DiskBackedSymbolCollector:
         timeout: float = 4.0,
         user_agent: str = "mptrade-intelligence/1.0",
     ) -> Any:
-        import json as _json
-        import urllib.request as _urlreq
-
-        body = _json.dumps(payload).encode("utf-8")
-        req = _urlreq.Request(
+        return fetch_json_post(
             "https://api.hyperliquid.xyz/info",
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": user_agent},
-            method="POST",
+            payload,
+            timeout=timeout,
+            headers={"User-Agent": user_agent},
         )
-        with _urlreq.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-            return _json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
 
     @classmethod
     def _fetch_json_dict(
@@ -558,7 +563,6 @@ class _DiskBackedSymbolCollector:
 
     _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
     _EQUITY_NO_OPTIONS_TS: Dict[str, float] = {}
-    _CBOE_INDEX_TICKERS: Tuple[str, ...] = ("SPX", "VIX", "NDX", "RUT", "DJX", "XSP")
 
     def _fetch_equity_market_context(
         self,
@@ -573,9 +577,13 @@ class _DiskBackedSymbolCollector:
         ticker = _extract_base_asset(symbol)
         if not ticker:
             return None
+        derived_intervals = resolve_derived_telemetry_intervals()
+        pos_memo_ttl = derived_intervals.get("derivatives_interval_sec", 30.0)
+        neg_memo_ttl = derived_intervals.get("whale_interval_sec", 60.0)
+        no_options_ttl = derived_intervals.get("share_executor_interval_sec", 1800.0)
         cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)
         if cached_ctx is not None:
-            memo_ttl = 60.0 if cached_ctx[1] is None else 30.0
+            memo_ttl = neg_memo_ttl if cached_ctx[1] is None else pos_memo_ttl
             if 0.0 <= (now - cached_ctx[0]) < memo_ttl:
                 return cached_ctx[1]
 
@@ -676,11 +684,11 @@ class _DiskBackedSymbolCollector:
         call_vol = 0.0
         put_vol = 0.0
         no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
-        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < 1800.0):
+        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
             opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
             cboe_paths = (
                 (f"_{ticker}.json", f"{ticker}.json")
-                if ticker in self._CBOE_INDEX_TICKERS
+                if ticker in get_cboe_index_tickers()
                 else (f"{ticker}.json",)
             )
             found_opts = False

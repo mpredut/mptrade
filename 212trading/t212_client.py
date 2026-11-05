@@ -31,7 +31,7 @@ except ImportError:
     ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-from cachepaths import cache_path
+from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
 from providers.base import (
     MarketDataProvider,
     _clean_single_order_id,
@@ -115,7 +115,7 @@ class T212Client:
         return f"{base_path}.instruments"
 
     @staticmethod
-    def _cleanup_stale_tmp_files(target_path: str, max_age_sec: float = 120.0) -> None:
+    def _cleanup_stale_tmp_files(target_path: str, max_age_sec: float = STALE_STAGING_MAX_AGE_SEC) -> None:
         if not target_path:
             return
         try:

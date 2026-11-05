@@ -20,7 +20,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import safe_float, safe_pos_float
+from botcore import fetch_public_json, safe_float, safe_pos_float
 
 
 def fetch_ohlc(sym: str, rng: str, interval: str):
@@ -28,10 +28,8 @@ def fetch_ohlc(sym: str, rng: str, interval: str):
     q_rng = urllib.parse.quote(str(rng or "").strip(), safe="")
     q_int = urllib.parse.quote(str(interval or "").strip(), safe="")
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{q_sym}?range={q_rng}&interval={q_int}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=25) as r:
-            data = json.loads(r.read())
+        data = fetch_public_json(url, timeout=25.0, user_agent="Mozilla/5.0")
     except (urllib.error.URLError, OSError, ValueError):
         return [], {}
     chart = data.get("chart") if isinstance(data, dict) else None

@@ -29,7 +29,7 @@ from botcore import (
     exact_pos_int,
     fetch_public_json,  # noqa: F401 (re-export: SSOT compat)
 )
-from cachepaths import resolve_cachedb_filepath
+from cachepaths import STALE_STAGING_MAX_AGE_SEC, resolve_cachedb_filepath
 
 T = TypeVar("T")
 
@@ -99,7 +99,7 @@ def atomic_snapshot_file(source: str, destination: str) -> None:
                 if entry != os.path.basename(staging_directory) and entry.startswith(prefix):
                     cand_path = os.path.join(directory, entry)
                     try:
-                        if os.path.isdir(cand_path) and (now_s - os.path.getmtime(cand_path)) > 60.0:
+                        if os.path.isdir(cand_path) and (now_s - os.path.getmtime(cand_path)) > STALE_STAGING_MAX_AGE_SEC:
                             shutil.rmtree(cand_path, ignore_errors=True)
                     except OSError:
                         pass
@@ -195,7 +195,7 @@ def _atomic_stream_writer(
                 if entry != tmp_base and entry.startswith(prefix) and entry.endswith(".tmp"):
                     cand_path = os.path.join(directory, entry)
                     try:
-                        if (now_s - os.path.getmtime(cand_path)) > 60.0:
+                        if (now_s - os.path.getmtime(cand_path)) > STALE_STAGING_MAX_AGE_SEC:
                             os.unlink(cand_path)
                     except OSError:
                         pass

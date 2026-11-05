@@ -303,7 +303,14 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
     return tuple(created)
 
 
-def _clean_stale_staging_in_dir(target_dir: str, *, min_file_age_sec: float = 30.0) -> None:
+STALE_STAGING_MAX_AGE_SEC: float = 300.0
+
+
+def _clean_stale_staging_in_dir(
+    target_dir: str,
+    *,
+    min_file_age_sec: float = STALE_STAGING_MAX_AGE_SEC,
+) -> None:
     """Remove transient ``.<name>.previous.<rand>`` directories and stale ``.tmp`` files in ``target_dir``."""
     if not os.path.isdir(target_dir):
         return
