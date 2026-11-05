@@ -627,7 +627,7 @@ def _format_market_prices_section(prices_and_trends: Dict[str, Any]) -> List[str
         if (kv := _parse_finite_float(pinfo.get("kalman_vel"), None)) is not None:
             extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
         if pinfo.get("long_trend_dir"):
-            lt_str = f"long_trend={pinfo.get('long_trend_dir')}({pinfo.get('long_trend_hours')}h"
+            lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
             if pinfo.get("long_trend_est_rem_hours") is not None:
                 lt_str += f", est_rem={pinfo.get('long_trend_est_rem_hours')}h"
             if pinfo.get("weibull_median_d") is not None:

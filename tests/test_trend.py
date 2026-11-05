@@ -566,6 +566,25 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         with patch("priceAnalysis.get_weight_for_cash_permission_at_quant_time", return_value=None):
             self.assertEqual(order_guard.resolve_trade_weight("UNKNOWNCOIN", "BUY", "binance"), 0.03)
 
+    def test_backfill_ohlc_series_resamples_to_3min_for_16h_windows(self):
+        pa._OHLC_BACKFILL_MEMO.clear()
+        fake_ts = np.arange(1000.0, 1000.0 + 120 * 3600.0, 3600.0)
+        fake_px = 1.0 + np.arange(len(fake_ts), dtype=float) * 0.01
+
+        def _fake_fetch_klines(sym, days, interval="1h"):
+            if interval == "15m":
+                return np.array([]), np.array([])
+            return fake_ts, fake_px
+
+        with patch("priceAnalysis.fetch_klines", side_effect=_fake_fetch_klines):
+            pts = pa._backfill_ohlc_series("ADAUSD", lookback_days=5.0)
+        self.assertGreater(len(pts), 120 * 15)
+        ts_arr = np.array([p[0] for p in pts])
+        px_arr = np.array([p[1] for p in pts])
+        res = pa.detect_long_term_trend(ts_arr, px_arr, window_hours=16, step_hours=8, min_points_per_window=20)
+        self.assertIsNotNone(res)
+        self.assertEqual(res["direction"], "up")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -193,7 +193,7 @@ _OHLC_BACKFILL_TTL_SEC = 1800.0
 
 
 def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tuple[float, float]]:
-    """Fetch and memoize 1h OHLC points for symbols whose local sparse price cache spans < 7 days."""
+    """Fetch and memoize 3-minute-resampled OHLC points for symbols whose local sparse price cache spans < 7 days."""
     sym_u = str(symbol or "").strip().upper()
     if not sym_u:
         return []
@@ -205,16 +205,30 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
             return cached[1]
     days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
     cands = cache_symbol_variants(sym_u, include_original=True, include_base=False, quotes=("USDC", "USDT", "USD"))
-    pts: List[Tuple[float, float]] = []
+    raw_pts: List[Tuple[float, float]] = []
     for cand in cands:
-        try:
-            ts_arr, px_arr = fetch_klines(cand, days=days_int, interval="1h")
-            if len(ts_arr) >= 48 and len(ts_arr) == len(px_arr):
-                pts = [(float(t), float(p)) for t, p in zip(ts_arr, px_arr) if t > 0 and p > 0]
-                if pts:
-                    break
-        except Exception:
-            continue
+        for iv in ("15m", "1h"):
+            try:
+                ts_arr, px_arr = fetch_klines(cand, days=days_int, interval=iv)
+                if len(ts_arr) >= 48 and len(ts_arr) == len(px_arr):
+                    raw_pts = [(float(t), float(p)) for t, p in zip(ts_arr, px_arr) if t > 0 and p > 0]
+                    if raw_pts:
+                        break
+            except Exception:
+                continue
+        if raw_pts:
+            break
+    pts: List[Tuple[float, float]] = []
+    for idx, (t_cur, p_cur) in enumerate(raw_pts):
+        if idx > 0:
+            t_prev, p_prev = raw_pts[idx - 1]
+            dt = t_cur - t_prev
+            if 180.0 < dt <= 7200.0:
+                n_steps = int(round(dt / 180.0))
+                for step_k in range(1, n_steps):
+                    frac = step_k / n_steps
+                    pts.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
+        pts.append((t_cur, p_cur))
     lru_dict_put(_OHLC_BACKFILL_MEMO, sym_u, (now_s, pts), 64)
     return pts
 
