@@ -780,9 +780,15 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             ):
                                 continue
                             if (
-                                line.startswith("    ")
+                                (
+                                    line.startswith("    ")
+                                    or bool(re.search(r"\[(?:STDERR|STDOUT)\]\s{4,}", line, re.IGNORECASE))
+                                )
                                 and idx > 0
-                                and lines[idx - 1].lstrip().startswith('File "')
+                                and (
+                                    lines[idx - 1].lstrip().startswith('File "')
+                                    or normalize_error_signature(lines[idx - 1]).startswith('File "')
+                                )
                             ):
                                 continue
                             if norm_cleaned == "Traceback (most recent call last):" and any(
