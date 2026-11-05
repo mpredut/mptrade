@@ -73,7 +73,10 @@ def _cached_registry_specs() -> Tuple[Any, ...]:
 
 
 def _resolve_configured_venue(symbol: str) -> str:
-    """Return the SSOT configured provider ('hyperliquid', 'kraken', or 'binance') for symbol."""
+    """Return the SSOT configured provider ('t212', 'hyperliquid', 'kraken', or 'binance') for symbol."""
+    raw_sym = str(symbol or "").strip().upper()
+    if raw_sym.endswith(("_EQ", "_US_EQ")):
+        return "t212"
     canon_sym = canonical_symbol_key(symbol)
     if not canon_sym:
         return "binance"
@@ -83,7 +86,7 @@ def _resolve_configured_venue(symbol: str) -> str:
             for inst in specs:
                 if enabled_only and not getattr(inst, "enabled", True):
                     continue
-                if str(getattr(inst, "symbol", "")).upper() == canon_sym and getattr(inst, "provider", None):
+                if str(getattr(inst, "symbol", "")).upper() in (canon_sym, raw_sym) and getattr(inst, "provider", None):
                     return str(inst.provider).strip().lower()
     except Exception:
         pass
@@ -310,7 +313,8 @@ class _DiskBackedSymbolCollector:
     def _is_exact_venue_symbol(self, sym_clean: str) -> bool:
         venue = _resolve_configured_venue(sym_clean)
         return bool(
-            venue == "hyperliquid"
+            venue in ("hyperliquid", "t212")
+            or sym_clean.endswith(("_EQ", "_US_EQ"))
             or (
                 self._QUOTE_ISOLATED
                 and (venue != "binance" or _is_multi_venue_base(sym_clean))
@@ -371,6 +375,24 @@ class _DiskBackedSymbolCollector:
             disk_ex = self._load_from_disk(sym_clean, now_f, exact_only=True)
             if disk_ex is not None:
                 return sym_clean, now_f, cached_ex, disk_ex, False
+            if (
+                sym_clean.endswith(("_EQ", "_US_EQ"))
+                and (
+                    os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
+                    or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
+                )
+            ):
+                try:
+                    from instrument_registry import is_symbol_market_open
+
+                    if not is_symbol_market_open(sym_clean, now_f):
+                        stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
+                        stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
+                        if stale_disk is not None and 0.0 <= (now_f - stale_ts) < 12.0 * 3600.0:
+                            self._cache[sym_clean] = (now_f, stale_disk)
+                            return sym_clean, now_f, cached_ex, stale_disk, False
+                except Exception:
+                    pass
             if allow_net_bool:
                 return sym_clean, now_f, cached_ex, None, True
         cached, fresh = self._lookup_cached(sym_clean, now_f, exact_only=False)
@@ -517,6 +539,168 @@ class _DiskBackedSymbolCollector:
             ):
                 return ctxs[idx]
         return None
+
+    _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+    def _fetch_equity_market_context(
+        self,
+        symbol: str,
+        now: float,
+        *,
+        timeout: float = 4.0,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch and memoize zero-cost equity quote, intraday 5m OHLCV, and Cboe options OI for ``symbol``."""
+        import re as _re
+
+        ticker = _extract_base_asset(symbol)
+        if not ticker:
+            return None
+        cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)
+        if cached_ctx is not None and 0.0 <= (now - cached_ctx[0]) < 30.0:
+            return cached_ctx[1]
+
+        def _parse_num(val: Any) -> Optional[float]:
+            if val is None or isinstance(val, bool):
+                return None
+            if isinstance(val, (int, float)):
+                return safe_pos_float(val, default=None)
+            s = str(val).strip().replace("$", "").replace(",", "")
+            if not s or s.upper() in ("N/A", "NA", "NONE", "-"):
+                return None
+            if "x" in s.lower():
+                parts = [p.strip() for p in s.lower().split("x") if p.strip()]
+                if len(parts) == 2:
+                    a, b = safe_pos_float(parts[0], default=None), safe_pos_float(parts[1], default=None)
+                    if a is not None and b is not None:
+                        return a * b
+            return safe_pos_float(s, default=None)
+
+        last_px = self._resolve_ssot_price(symbol, max_age_sec=86400.0, now=now) or 0.0
+        best_bid = 0.0
+        best_ask = 0.0
+        bid_size_sh = 0.0
+        ask_size_sh = 0.0
+        daily_vol_sh = 0.0
+
+        # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
+        try:
+            nq = self._fetch_json_dict(
+                f"https://api.nasdaq.com/api/quote/{ticker}/info?assetclass=stocks",
+                "nasdaq_quote",
+                ticker,
+                timeout=timeout,
+                user_agent="Mozilla/5.0",
+            )
+            pdata = ((nq.get("data") or {}).get("primaryData") if isinstance(nq, dict) else None) or {}
+            if isinstance(pdata, dict):
+                if (lp := _parse_num(pdata.get("lastSalePrice"))) is not None:
+                    last_px = lp
+                if (bp := _parse_num(pdata.get("bidPrice"))) is not None:
+                    best_bid = bp
+                if (ap := _parse_num(pdata.get("askPrice"))) is not None:
+                    best_ask = ap
+                if (bs := _parse_num(pdata.get("bidSize"))) is not None:
+                    bid_size_sh = bs
+                if (as_ := _parse_num(pdata.get("askSize"))) is not None:
+                    ask_size_sh = as_
+                if (dv := _parse_num(pdata.get("volume"))) is not None:
+                    daily_vol_sh = dv
+        except Exception:
+            pass
+
+        # 2. Yahoo 5d/5m Intraday OHLCV (volume profile & CLV buy/sell flow)
+        bars: List[Tuple[float, float, float, float, float, float]] = []
+        try:
+            yh = self._fetch_json_dict(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=5d&interval=5m&includePrePost=true",
+                "yahoo_chart_5m",
+                ticker,
+                timeout=timeout,
+                user_agent="Mozilla/5.0",
+            )
+            res0 = (((yh.get("chart") or {}).get("result") or [None])[0] if isinstance(yh, dict) else None) or {}
+            meta = res0.get("meta") if isinstance(res0, dict) else {}
+            if last_px <= 0.0 and isinstance(meta, dict):
+                last_px = safe_pos_float(meta.get("regularMarketPrice"), default=0.0) or 0.0
+            ts_seq = res0.get("timestamp") or []
+            q0 = (((res0.get("indicators") or {}).get("quote") or [None])[0] if isinstance(res0, dict) else None) or {}
+            opens = q0.get("open") or []
+            highs = q0.get("high") or []
+            lows = q0.get("low") or []
+            closes = q0.get("close") or []
+            vols = q0.get("volume") or []
+            for idx, raw_t in enumerate(ts_seq):
+                tf = normalize_epoch_sec(raw_t, default=None)
+                cf = safe_pos_float(closes[idx] if idx < len(closes) else None, default=None)
+                if tf is None or cf is None:
+                    continue
+                of = safe_pos_float(opens[idx] if idx < len(opens) else None, default=cf) or cf
+                hf = safe_pos_float(highs[idx] if idx < len(highs) else None, default=cf) or cf
+                lf = safe_pos_float(lows[idx] if idx < len(lows) else None, default=cf) or cf
+                vf = safe_nonneg_float(vols[idx] if idx < len(vols) else None, default=0.0) or 0.0
+                bars.append((tf, of, max(hf, cf, of), min(lf, cf, of), cf, vf))
+            if bars and last_px <= 0.0:
+                last_px = bars[-1][4]
+        except Exception:
+            pass
+
+        if last_px <= 0.0 and not bars:
+            return None
+
+        # 3. Cboe Delayed Options JSON (Open Interest & Put/Call positioning)
+        call_oi = 0.0
+        put_oi = 0.0
+        call_vol = 0.0
+        put_vol = 0.0
+        opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
+        for cboe_path in (f"{ticker}.json", f"_{ticker}.json"):
+            try:
+                cb = self._fetch_json_dict(
+                    f"https://cdn.cboe.com/api/global/delayed_quotes/options/{cboe_path}",
+                    "cboe_options",
+                    ticker,
+                    timeout=timeout,
+                    user_agent="Mozilla/5.0",
+                )
+                opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
+                if isinstance(opts, list) and opts:
+                    for opt in opts:
+                        if not isinstance(opt, dict):
+                            continue
+                        opt_sym = str(opt.get("option") or "")
+                        m = opt_rx.search(opt_sym)
+                        if not m:
+                            continue
+                        oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0
+                        vol_v = safe_nonneg_float(opt.get("volume"), default=0.0) or 0.0
+                        if m.group(1) == "C":
+                            call_oi += oi_v
+                            call_vol += vol_v
+                        else:
+                            put_oi += oi_v
+                            put_vol += vol_v
+                    break
+            except Exception:
+                continue
+
+        ctx_out: Dict[str, Any] = {
+            "ticker": ticker,
+            "last_price": last_px,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "bid_size_sh": bid_size_sh,
+            "ask_size_sh": ask_size_sh,
+            "daily_vol_sh": daily_vol_sh,
+            "bars": bars,
+            "call_oi": call_oi,
+            "put_oi": put_oi,
+            "call_vol": call_vol,
+            "put_vol": put_vol,
+        }
+        if len(self._EQUITY_CTX_MEMO) > 32:
+            self._EQUITY_CTX_MEMO.clear()
+        self._EQUITY_CTX_MEMO[ticker] = (now, ctx_out)
+        return ctx_out
 
 
 _fetch_hyperliquid_asset_ctx = _DiskBackedSymbolCollector._fetch_hyperliquid_asset_ctx

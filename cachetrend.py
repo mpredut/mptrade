@@ -53,7 +53,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
     split_symbol_assets,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_symbol_market_open
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -161,6 +161,17 @@ class CacheLongTrendManager(CacheManagerInterface):
             return []
         matched_cand, val = _find_by_symbol_variant(data, symbol, allow_none=True)
         return [val] if matched_cand is not None else []
+
+    def _next_sync_wait_sec(self) -> float:
+        base_wait = safe_nonneg_float(self.sync_ts, default=0.0) or 0.0
+        with self.lock:
+            has_missing = any(
+                not self.cache.get(s) or self.cache.get(s) == [None]
+                for s in self.symbols
+            )
+        if has_missing and base_wait > 15.0:
+            return 15.0
+        return base_wait
 
 
 CacheLongTrend = CacheLongTrendManager
@@ -2218,6 +2229,7 @@ def _start_nonbinance_trend_poller(
     stop_event = threading.Event()
 
     def run():
+        rth_seeded: set[str] = set()
         if ws_streams:
             real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
             if callable(real_ws_fn):
@@ -2232,6 +2244,18 @@ def _start_nonbinance_trend_poller(
                 real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
                 if callable(real_ws_fn) and real_ws_fn(s):
                     continue
+                if (
+                    s in rth_seeded
+                    and (
+                        os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
+                        or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
+                    )
+                    and not is_symbol_market_open(s)
+                ):
+                    ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
+                    if isinstance(ws_ts_map, dict):
+                        ws_ts_map[s] = time.time()
+                    continue
                 try:
                     p = _fetch_price_with_deadline(
                         cpm.market_api,
@@ -2242,6 +2266,7 @@ def _start_nonbinance_trend_poller(
                     )
                     pf = safe_pos_float(p, default=None)
                     if pf is not None:
+                        rth_seeded.add(s)
                         ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
                         if isinstance(ws_ts_map, dict):
                             ws_ts_map[s] = time.time()

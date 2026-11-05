@@ -854,7 +854,11 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     eff_dir = resolve_cache_dir_path(cache_dir)
     if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
         return None
-    safe_sym = clean_symbol_key(symbol)
+    raw_u = symbol.strip().upper()
+    if raw_u.endswith(("_EQ", "_US_EQ")) and raw_u.replace("_", "").isalnum():
+        safe_sym = raw_u
+    else:
+        safe_sym = clean_symbol_key(symbol)
     if not safe_sym:
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))

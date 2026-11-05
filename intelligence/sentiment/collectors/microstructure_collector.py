@@ -1468,6 +1468,9 @@ def enrich_24h_and_microstructure(
                             if (pts_24h_to_save or pts_24h_bars) and len(raw_matched_series_24h) < 10:
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
                                 save_json_state(p24_target, {"items": {sym: pts_24h_to_save or pts_24h_bars}})
+                            if pts_24h_to_save or pts_24h_bars:
+                                ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
+                                save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
                             p365_jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.jsonl")))
                             if not os.path.exists(p365_jsonl_path):
                                 p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))

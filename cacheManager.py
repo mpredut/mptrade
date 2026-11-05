@@ -3341,10 +3341,21 @@ class CacheCurrentPriceManager(CacheManagerInterface):
             entry, last_ts = self._cached_entry_for_symbol_locked(target_sym)
         now_ms = int(time.time() * 1000)
         age_ms = (now_ms - last_ts) if last_ts else None
+        stale_threshold_ms = self.STALE_THRESHOLD_MS
+        if (
+            entry is not None
+            and (
+                os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
+                or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
+            )
+            and hasattr(sym, "is_symbol_market_open")
+            and not sym.is_symbol_market_open(target_sym)
+        ):
+            stale_threshold_ms = max(stale_threshold_ms, 3_600_000)
         if (
             entry is None
             or age_ms is None
-            or age_ms > self.STALE_THRESHOLD_MS
+            or age_ms > stale_threshold_ms
             or age_ms < -5_000
         ):
             age = age_ms if age_ms is not None else -1

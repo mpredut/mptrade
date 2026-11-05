@@ -142,6 +142,14 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         if not should_fetch or symbol is None:
             return ready
 
+        if _resolve_configured_venue(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+            try:
+                if (eq_ob := self._fetch_equity_orderbook(symbol, now)) is not None:
+                    return eq_ob
+            except Exception as eq_exc:
+                logger.warning("Could not fetch equity orderbook depth for %s: %s", symbol, eq_exc)
+            return self._fallback_stale(symbol, cached)
+
         lookup_sym = _resolve_binance_lookup_symbol(symbol)
         canon_sym = canonical_symbol_key(symbol)
         try:
@@ -329,6 +337,95 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         except Exception as e:
             logger.warning("Could not fetch orderbook depth for %s: %s", symbol, e)
             return self._fallback_stale(symbol, cached)
+
+    def _fetch_equity_orderbook(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
+        """Build an equity OrderbookSnapshot from Nasdaq L1 quote and Yahoo 5m volume-by-price liquidity."""
+        ctx = self._fetch_equity_market_context(symbol, now)
+        if not isinstance(ctx, dict):
+            return None
+        bars = ctx.get("bars") or []
+        mid = safe_pos_float(ctx.get("last_price"), default=None) or (bars[-1][4] if bars else None)
+        if mid is None or mid <= 0.0:
+            return None
+        best_bid = safe_pos_float(ctx.get("best_bid"), default=0.0) or 0.0
+        best_ask = safe_pos_float(ctx.get("best_ask"), default=0.0) or 0.0
+        if best_bid <= 0.0 or best_ask <= 0.0 or best_bid > best_ask:
+            recent_ranges = [
+                (b[2] - b[3]) / b[4]
+                for b in bars[-78:]
+                if b[4] > 0.0 and b[2] > b[3]
+            ]
+            recent_ranges.sort()
+            med_rng = recent_ranges[len(recent_ranges) // 2] if recent_ranges else 0.001
+            half_sp_pct = min(max(med_rng * 0.10, 0.0001), 0.0025)
+            half_sp = max(0.005, round(mid * half_sp_pct, 4))
+            best_bid = round(max(0.01, mid - half_sp), 4)
+            best_ask = round(mid + half_sp, 4)
+        mid = round((best_bid + best_ask) / 2.0, 4)
+
+        bid_sz_usd = (safe_pos_float(ctx.get("bid_size_sh"), default=0.0) or 0.0) * best_bid
+        ask_sz_usd = (safe_pos_float(ctx.get("ask_size_sh"), default=0.0) or 0.0) * best_ask
+        band_pct = self.depth_band_pct / 100.0
+        lo_band, hi_band = mid * (1.0 - band_pct), mid * (1.0 + band_pct)
+        lo_1pct, hi_1pct = mid * 0.99, mid * 1.01
+
+        bid_buckets: Dict[float, float] = {}
+        ask_buckets: Dict[float, float] = {}
+        tick_step = max(0.01, round(mid * 0.0015, 2))
+        for _t, _o, h_px, l_px, c_px, vol in bars[-156:]:
+            if vol <= 0.0 or c_px <= 0.0:
+                continue
+            clv = (c_px - l_px) / (h_px - l_px) if h_px > l_px else 0.5
+            # Allocate buying interest to support node below mid and selling supply to resistance node above mid
+            b_px = round(min(l_px, mid * 0.9985) / tick_step) * tick_step
+            a_px = round(max(h_px, mid * 1.0015) / tick_step) * tick_step
+            if b_px < lo_band:
+                b_px = round((mid * (1.0 - band_pct * 0.6)) / tick_step) * tick_step
+            if a_px > hi_band:
+                a_px = round((mid * (1.0 + band_pct * 0.6)) / tick_step) * tick_step
+            # Scale 5m bar dollar volume to passive book depth (~2% of bar turnover per level)
+            b_val = vol * c_px * max(0.15, clv) * 0.02
+            a_val = vol * c_px * max(0.15, 1.0 - clv) * 0.02
+            bid_buckets[round(b_px, 4)] = bid_buckets.get(round(b_px, 4), 0.0) + b_val
+            ask_buckets[round(a_px, 4)] = ask_buckets.get(round(a_px, 4), 0.0) + a_val
+
+        if bid_sz_usd > 0.0:
+            bid_buckets[best_bid] = bid_buckets.get(best_bid, 0.0) + bid_sz_usd
+        if ask_sz_usd > 0.0:
+            ask_buckets[best_ask] = ask_buckets.get(best_ask, 0.0) + ask_sz_usd
+        if not bid_buckets:
+            bid_buckets[round(mid * 0.995, 4)] = max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.005)
+        if not ask_buckets:
+            ask_buckets[round(mid * 1.005, 4)] = max(1000.0, (safe_pos_float(ctx.get("daily_vol_sh"), default=1000.0) or 1000.0) * mid * 0.005)
+
+        bid_depth_usd = sum(bid_buckets.values())
+        ask_depth_usd = sum(ask_buckets.values())
+        d1_bid = sum(v for p, v in bid_buckets.items() if p >= lo_1pct) or round(bid_depth_usd * (1.0 / 1.5), 2)
+        d1_ask = sum(v for p, v in ask_buckets.items() if p <= hi_1pct) or round(ask_depth_usd * (1.0 / 1.5), 2)
+        max_bid_px, max_bid_usd = max(bid_buckets.items(), key=lambda kv: kv[1])
+        max_ask_px, max_ask_usd = max(ask_buckets.items(), key=lambda kv: kv[1])
+        total_depth = bid_depth_usd + ask_depth_usd
+        imbalance = bid_depth_usd / total_depth if total_depth > 0.0 else 0.5
+        spread_bps = round_spread_bps(best_bid=best_bid, best_ask=best_ask, mid_price=mid) or 0.0
+
+        snapshot = OrderbookSnapshot(
+            symbol=symbol,
+            mid_price=mid,
+            bid_depth_usd=round(bid_depth_usd, 2),
+            ask_depth_usd=round(ask_depth_usd, 2),
+            imbalance_ratio=round(imbalance, 3),
+            largest_bid_wall_usd=round(max_bid_usd, 2),
+            largest_bid_wall_price=round(max_bid_px, 4),
+            largest_ask_wall_usd=round(max_ask_usd, 2),
+            largest_ask_wall_price=round(max_ask_px, 4),
+            ts=now,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            spread_bps=spread_bps,
+            depth_1pct_bid_usd=round(d1_bid, 2),
+            depth_1pct_ask_usd=round(d1_ask, 2),
+        )
+        return self._commit_snapshot(symbol, now, snapshot)
 
     def record_snapshot(self, snapshot: OrderbookSnapshot, save_to_disk: bool = False) -> None:
         """Inject snapshot directly (useful for tests and synthetic feeds)."""

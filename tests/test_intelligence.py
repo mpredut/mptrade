@@ -8641,6 +8641,114 @@ def test_iter106_equity_crypto_scope_isolation_in_trends_sibling_sync_fills_and_
     assert risk_mixed["corr_vs_btc_24h"]["COIN_US_EQ"] == pytest.approx(0.30)
 
 
+def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from instrument_registry import is_symbol_market_open
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector, _resolve_configured_venue
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
+    from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
+
+    assert _resolve_configured_venue("NVDA_US_EQ") == "t212"
+    assert _resolve_configured_venue("SPCX_US_EQ") == "t212"
+    assert _resolve_configured_venue("RGNT_US_EQ") == "t212"
+
+    # RTH check: Wednesday 15:00 UTC (10:00 ET) is open; Sunday 15:00 UTC is closed for equities, open for crypto
+    wed_rth = datetime(2026, 11, 4, 15, 0, tzinfo=timezone.utc).timestamp()
+    sun_closed = datetime(2026, 11, 1, 15, 0, tzinfo=timezone.utc).timestamp()
+    assert is_symbol_market_open("NVDA_US_EQ", wed_rth) is True
+    assert is_symbol_market_open("NVDA_US_EQ", sun_closed) is False
+    assert is_symbol_market_open("BTCUSDC", sun_closed) is True
+
+    _DiskBackedSymbolCollector._EQUITY_CTX_MEMO.clear()
+    called_urls = []
+
+    def _fake_fetch_json(cls_or_self, url, label, lookup_sym, **kwargs):
+        called_urls.append(url)
+        assert "binance.com" not in url
+        if "api.nasdaq.com" in url:
+            return {
+                "data": {
+                    "primaryData": {
+                        "lastSalePrice": "$198.50",
+                        "bidPrice": "$198.48",
+                        "askPrice": "$198.52",
+                        "bidSize": "250 x 100",
+                        "askSize": "200 x 100",
+                        "volume": "45,000,000",
+                    }
+                }
+            }
+        if "query1.finance.yahoo.com" in url:
+            ts_list = [int(wed_rth - (20 - i) * 300) for i in range(20)]
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 198.50},
+                            "timestamp": ts_list,
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [197.0 + i * 0.08 for i in range(20)],
+                                        "high": [197.2 + i * 0.08 for i in range(20)],
+                                        "low": [196.9 + i * 0.08 for i in range(20)],
+                                        "close": [197.15 + i * 0.08 for i in range(20)],
+                                        "volume": [100_000 for _ in range(20)],
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        if "cdn.cboe.com" in url:
+            return {
+                "data": {
+                    "options": [
+                        {"option": "NVDA261120C00200000", "open_interest": 12000, "volume": 3500},
+                        {"option": "NVDA261120P00195000", "open_interest": 8000, "volume": 2100},
+                    ]
+                }
+            }
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(_DiskBackedSymbolCollector, "_fetch_json_dict", classmethod(_fake_fetch_json))
+
+    ob_col = OrderbookDepthCollector(cache_dir=str(tmp_path), cache_ttl_sec=5.0, disk_ttl_sec=60.0)
+    dt_col = DerivativesTelemetryCollector(cache_dir=str(tmp_path), cache_ttl_sec=60.0, disk_ttl_sec=120.0)
+    wh_col = WhalePositioningCollector(cache_dir=str(tmp_path), cache_ttl_sec=60.0, disk_ttl_sec=180.0)
+
+    ob_snap = ob_col.fetch("NVDA_US_EQ", allow_network=True, now=wed_rth)
+    dt_snap = dt_col.fetch("NVDA_US_EQ", allow_network=True, now=wed_rth)
+    wh_snap = wh_col.fetch("NVDA_US_EQ", allow_network=True, now=wed_rth)
+
+    assert ob_snap is not None and ob_snap.symbol == "NVDA_US_EQ"
+    assert ob_snap.best_bid == pytest.approx(198.48)
+    assert ob_snap.best_ask == pytest.approx(198.52)
+    assert ob_snap.bid_depth_usd > 0.0 and ob_snap.ask_depth_usd > 0.0
+
+    assert dt_snap is not None and dt_snap.symbol == "NVDA_US_EQ"
+    assert dt_snap.open_interest == pytest.approx((12000 + 8000) * 100.0)
+    assert dt_snap.open_interest_usd > 0.0
+
+    assert wh_snap is not None and wh_snap.symbol == "NVDA_US_EQ"
+    assert wh_snap.top_traders_long_pct == pytest.approx(0.6)
+    assert wh_snap.top_traders_long_ratio == pytest.approx(1.5)
+    assert wh_snap.taker_buy_sell_ratio > 1.0
+
+    # Outside RTH with MPTRADE_FORCE_RTH_GATE=1, collectors reuse the disk snapshot without network calls
+    sat_closed = wed_rth + 3 * 86400.0
+    ob_col.record_snapshot(ob_snap.__class__(**{**ob_snap.to_dict(), "ts": sat_closed - 7200.0}), save_to_disk=True)
+    ob_col._cache.clear()
+    called_urls.clear()
+    monkeypatch.setenv("MPTRADE_FORCE_RTH_GATE", "1")
+    ob_reused = ob_col.fetch("NVDA_US_EQ", allow_network=True, now=sat_closed)
+    assert ob_reused is not None
+    assert called_urls == []
+
+
+
 
 
 

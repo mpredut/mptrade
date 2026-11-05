@@ -10,6 +10,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
+from botcore import safe_nonneg_float, safe_pos_float
 from cachepaths import canonical_symbol_key
 from intelligence.external.collectors.base_collector import (
     _DiskBackedSymbolCollector,
@@ -116,6 +117,39 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         )
         return self._commit_snapshot(symbol, now, telemetry)
 
+    def _fetch_equity_derivatives(self, symbol: str, now: float) -> Optional[DerivativesTelemetry]:
+        """Build a DerivativesTelemetry snapshot for an equity symbol using Cboe options Open Interest & skew."""
+        ctx = self._fetch_equity_market_context(symbol, now)
+        if not isinstance(ctx, dict):
+            return None
+        bars = ctx.get("bars") or []
+        mark_px = safe_pos_float(ctx.get("last_price"), default=0.0) or (bars[-1][4] if bars else 0.0)
+        if mark_px <= 0.0:
+            return None
+        idx_px = bars[-1][4] if bars else mark_px
+        call_oi = safe_nonneg_float(ctx.get("call_oi"), default=0.0) or 0.0
+        put_oi = safe_nonneg_float(ctx.get("put_oi"), default=0.0) or 0.0
+        total_opt_contracts = call_oi + put_oi
+        oi_shares = total_opt_contracts * 100.0
+        oi_usd = round(oi_shares * mark_px, 2)
+        call_share = (call_oi / total_opt_contracts) if total_opt_contracts > 0.0 else 0.5
+        # Map options call-put skew into an 8h funding-equivalent carry metric
+        funding_equiv = round((call_share - 0.5) * 0.0004, 6)
+        basis_bps = round(((mark_px - idx_px) / idx_px) * 10000.0, 2) if idx_px > 0.0 and mark_px > 0.0 else 0.0
+        telemetry = DerivativesTelemetry(
+            symbol=symbol,
+            funding_rate=funding_equiv,
+            predicted_funding_rate=funding_equiv,
+            open_interest=round(oi_shares, 2),
+            open_interest_usd=oi_usd,
+            ts=now,
+            mark_price=round(mark_px, 4),
+            index_price=round(idx_px, 4),
+            perp_spot_basis_bps=basis_bps,
+            funding_annualized_pct=round(funding_equiv * 3.0 * 365.0 * 100.0, 2),
+        )
+        return self._commit_snapshot(symbol, now, telemetry)
+
     def fetch(
         self,
         symbol: str,
@@ -126,6 +160,14 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         symbol, now, cached, ready, should_fetch = self._prepare_fetch(symbol, allow_network, now)
         if not should_fetch or symbol is None:
             return ready
+
+        if _resolve_configured_venue(symbol) == "t212" or symbol.endswith(("_EQ", "_US_EQ")):
+            try:
+                if (eq_tel := self._fetch_equity_derivatives(symbol, now)) is not None:
+                    return eq_tel
+            except Exception as eq_exc:
+                logger.warning("Could not fetch equity derivatives telemetry for %s: %s", symbol, eq_exc)
+            return self._fallback_stale(symbol, cached)
 
         is_hl_primary = _resolve_configured_venue(symbol) == "hyperliquid"
         if is_hl_primary:
