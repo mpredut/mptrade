@@ -114,10 +114,12 @@ def parse_venue_cycle_state(
     }
     pos_peak = round_opt_px(st_data.get("pos_peak") or st_data.get("trail_peak"), avg_decimals)
     if pos_peak is not None and qty > 1e-12:
-        cyc_entry["pos_peak"] = pos_peak
         if px_f > 0 and pos_peak > 0:
             eff_peak = max(pos_peak, px_f)
+            cyc_entry["pos_peak"] = round_opt_px(eff_peak, avg_decimals)
             cyc_entry["dd_from_peak_pct"] = pct_delta(px_f, eff_peak)
+        else:
+            cyc_entry["pos_peak"] = pos_peak
     raw_realized = next(
         (st_data[rk] for rk in ("realized_net", "realized_net_usd", "realized_pnl", "realized_pnl_usd", "realized_gross") if st_data.get(rk) is not None),
         None,
@@ -975,7 +977,14 @@ def enrich_positions_with_orders_and_cycles(
                     act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
                 )
                 if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
-                    pt_entry = prices_and_trends.get(p_sym)
+                    pt_entry = next(
+                        (
+                            val for cand in (p_sym, *p_quote_variants)
+                            if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
+                            and safe_pos_float(val.get("high_24h"), default=0.0)
+                        ),
+                        prices_and_trends.get(p_sym),
+                    )
                     hi_24h = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
                     ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
                     ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0

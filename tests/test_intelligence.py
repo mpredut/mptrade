@@ -7516,3 +7516,127 @@ def test_iter20_price_series_memo_and_fallback_ohlc_provider_cache(tmp_path, mon
     r2 = wrapped("TAOUSD", 5)
     assert r1 is r2 and len(calls) == 1
 
+
+def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
+    import time as _time
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        compute_enterprise_portfolio_risk_metrics,
+        enrich_open_limit_orders_tca,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+        parse_venue_cycle_state,
+    )
+
+    # 1. enrich_open_limit_orders_tca: order placed at recommended_front_run_px is FRONT_OF_ASK_WALL / FRONT_OF_BID_WALL,
+    #    while order placed at wall price is AT_ASK_WALL / AT_BID_WALL with wall_ahead_px / wall_ahead_usd populated.
+    pt = {
+        "BTCUSDC": {"price": 75000.0, "vol_1h_pct": 1.0},
+        "COIN_US_EQ": {"price": 250.0, "vol_1h_pct": 0.4},
+    }
+    ms = {
+        "BTCUSDC": {
+            "ob_mid_price": 75000.0,
+            "spread_bps": 2.0,
+            "best_bid": 74992.5,
+            "best_ask": 75007.5,
+            "ask_wall_px": 75500.0,
+            "ask_wall_usd": 50000.0,
+            "bid_wall_px": 74500.0,
+            "bid_wall_usd": 40000.0,
+        }
+    }
+    orders = [
+        {"symbol": "BTCUSDC", "venue": "binance", "side": "SELL", "price": 75495.0},  # at recommended_front_run_px (front of 75500 wall)
+        {"symbol": "BTCUSDC", "venue": "binance", "side": "SELL", "price": 75500.0},  # right at ask wall
+        {"symbol": "BTCUSDC", "venue": "binance", "side": "BUY", "price": 74505.0},   # at recommended_front_run_px (front of 74500 wall)
+        {"symbol": "BTCUSDC", "venue": "binance", "side": "BUY", "price": 74500.0},   # right at bid wall
+    ]
+    enrich_open_limit_orders_tca(orders, pt, ms)
+    assert orders[0]["wall_queue_pos"] == "FRONT_OF_ASK_WALL"
+    assert "recommended_front_run_px" not in orders[0]
+    assert orders[1]["wall_queue_pos"] == "AT_ASK_WALL"
+    assert orders[1]["ask_wall_ahead_px"] == 75500.0
+    assert orders[1]["ask_wall_ahead_usd"] == 50000.0
+    assert orders[1]["recommended_front_run_px"] == 75495.0
+    assert orders[1]["fill_prob_1h_pct"] < orders[0]["fill_prob_1h_pct"]
+
+    assert orders[2]["wall_queue_pos"] == "FRONT_OF_BID_WALL"
+    assert "recommended_front_run_px" not in orders[2]
+    assert orders[3]["wall_queue_pos"] == "AT_BID_WALL"
+    assert orders[3]["bid_wall_ahead_px"] == 74500.0
+    assert orders[3]["bid_wall_ahead_usd"] == 40000.0
+    assert orders[3]["recommended_front_run_px"] == 74505.0
+    assert orders[3]["fill_prob_1h_pct"] < orders[2]["fill_prob_1h_pct"]
+
+    # 2. compute_enterprise_portfolio_risk_metrics: _resolve_p_metric does not cross-contaminate crypto vs equity variants
+    pf_crypto = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "COINUSDC", "value_usd": 1000.0}
+        ],
+        "venue_quote_cash": {},
+        "recent_orders": {},
+    }
+    pt_mixed = {
+        "COIN_US_EQ": {"price": 250.0, "beta_btc_24h": 0.25, "corr_btc_24h": 0.15, "vol_1h_pct": 0.4},
+    }
+    risk_c = compute_enterprise_portfolio_risk_metrics(pf_crypto, pt_mixed, {})
+    # Crypto position should fall back to crypto defaults (beta 1.15, corr 0.78) instead of COIN_US_EQ (beta 0.25, corr 0.15)
+    assert risk_c["portfolio_btc_beta"] == pytest.approx(1.15, abs=0.01)
+
+    # 3. parse_venue_cycle_state updates pos_peak when live price exceeds stored pos_peak
+    cyc_st = parse_venue_cycle_state(
+        {"qty": 10.0, "cost_usd": 350.0, "avg_cost_px": 35.0, "pos_peak": 40.0},
+        "HYPE",
+        {"HYPEUSDC": {"price": 42.5}},
+        avg_decimals=4,
+    )
+    assert cyc_st["pos_peak"] == 42.5
+    assert cyc_st["dd_from_peak_pct"] == 0.0
+
+    # 4. enrich_positions_with_orders_and_cycles reconciles unwarmed trailing_peak using high_24h from quote variant (HYPE -> HYPEUSDC)
+    now_ms = int(_time.time() * 1000)
+    entry_24h_ago_ms = now_ms - 24 * 3600 * 1000
+    t_pos = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "quote": "USDC",
+            "free_base": 10.0,
+            "price": 40.0,
+            "value_usd": 400.0,
+        }
+    ]
+    v_ro = {
+        "hyperliquid": {
+            "HYPE": {
+                "last_action_side": "BUY",
+                "active_avg_buy_px": 38.0,
+                "last_buy": {"price": 38.0, "qty": 10.0, "ts_ms": entry_24h_ago_ms},
+                "open_lots": [{"entry_px": 38.0, "qty": 10.0, "ts_ms": entry_24h_ago_ms}],
+            }
+        }
+    }
+    hl_cycles = {
+        "HYPE": {
+            "qty": 10.0,
+            "cost_usd": 380.0,
+            "avg_cost_px": 38.0,
+            "pos_peak": 38.0,
+        }
+    }
+    enrich_positions_with_orders_and_cycles(
+        t_pos,
+        {"HYPEUSDC": {"price": 40.0, "high_24h": 44.0}},
+        {},
+        v_ro,
+        {},
+        {},
+        hl_cycles,
+        {},
+        {},
+    )
+    assert t_pos[0]["trailing_peak"] == 44.0
+    assert hl_cycles["HYPE"]["pos_peak"] == 44.0
+
+

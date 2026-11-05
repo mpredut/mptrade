@@ -260,16 +260,19 @@ def enrich_open_limit_orders_tca(
             "bid_wall_ahead_usd",
         ):
             o.pop(_stale_tca_k, None)
+        v_norm = normalize_venue_name(o.get("venue"))
+        is_eq_o = sym.endswith(("_EQ", "_US_EQ")) or v_norm == "t212"
         dist_pct = abs(safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0)
         raw_vol_1h = safe_pos_float((p_entry or {}).get("vol_1h_pct"), default=None)
         if raw_vol_1h is None and isinstance(prices_and_trends, dict):
             for cand in cache_symbol_variants(sym, include_base=True):
+                if str(cand).upper().endswith(("_EQ", "_US_EQ")) != is_eq_o:
+                    continue
                 cand_p = casefold_get(prices_and_trends, cand)
                 if isinstance(cand_p, dict) and (v_cand := safe_pos_float(cand_p.get("vol_1h_pct"), default=None)) is not None:
                     raw_vol_1h = v_cand
                     break
         vol_1h = max(0.35, raw_vol_1h or 1.1)
-        v_norm = normalize_venue_name(o.get("venue"))
         if v_norm == "t212":
             dec = 2
         elif v_norm == "hyperliquid":
@@ -304,8 +307,8 @@ def enrich_open_limit_orders_tca(
                         if can_front_run and fr_px < aw_px and fr_px < lim_px:
                             o["recommended_front_run_px"] = fr_px
                         queue_penalty = 0.60
-                    elif abs(lim_px - aw_px) / aw_px <= 0.0003:
-                        o["wall_queue_pos"] = "AT_ASK_WALL"
+                    elif lim_px >= aw_px - 0.5 * tick_step and (lim_px - aw_px) / aw_px <= 0.0003:
+                        o.update({"wall_queue_pos": "AT_ASK_WALL", "ask_wall_ahead_px": aw_px, "ask_wall_ahead_usd": round(aw_usd, 0)})
                         if can_front_run and fr_px < aw_px and fr_px < lim_px:
                             o["recommended_front_run_px"] = fr_px
                         queue_penalty = 0.78
@@ -332,8 +335,8 @@ def enrich_open_limit_orders_tca(
                         if can_front_run and fr_px > bw_px and fr_px > lim_px:
                             o["recommended_front_run_px"] = fr_px
                         queue_penalty = 0.60
-                    elif abs(lim_px - bw_px) / bw_px <= 0.0003:
-                        o["wall_queue_pos"] = "AT_BID_WALL"
+                    elif lim_px <= bw_px + 0.5 * tick_step and (bw_px - lim_px) / bw_px <= 0.0003:
+                        o.update({"wall_queue_pos": "AT_BID_WALL", "bid_wall_ahead_px": bw_px, "bid_wall_ahead_usd": round(bw_usd, 0)})
                         if can_front_run and fr_px > bw_px and fr_px > lim_px:
                             o["recommended_front_run_px"] = fr_px
                         queue_penalty = 0.78
@@ -374,16 +377,17 @@ def compute_enterprise_portfolio_risk_metrics(
             p_info = casefold_get(prices_and_trends, sym) if isinstance(prices_and_trends, dict) else None
             if not isinstance(p_info, dict):
                 p_info = {}
+            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
             def _resolve_p_metric(m_key: str) -> Any:
                 if p_info.get(m_key) is not None:
                     return p_info.get(m_key)
                 if isinstance(prices_and_trends, dict):
                     for c in cache_symbol_variants(sym, include_base=True):
+                        if str(c).upper().endswith(("_EQ", "_US_EQ")) != is_eq:
+                            continue
                         if isinstance(v_d := casefold_get(prices_and_trends, c), dict) and v_d.get(m_key) is not None:
                             return v_d.get(m_key)
                 return None
-
-            is_eq = sym.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
             beta_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("beta_btc_24h"), default=(0.35 if is_eq else 1.15))
             raw_corr_v = 1.0 if base == "BTC" else safe_float(_resolve_p_metric("corr_btc_24h"), default=(0.30 if is_eq else 0.78))
             if 1.0 < abs(raw_corr_v) <= 100.0:
