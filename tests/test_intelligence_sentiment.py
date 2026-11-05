@@ -7245,6 +7245,27 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert tao_m_flat15["cvd_regime"] == "aggressive_buying"
     assert tao_m_flat15["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
 
+    sa_6m_bull = {
+        "directional_bias": "BULLISH",
+        "recommended_action": "ACCUMULATE",
+        "age_min": 6.7,
+        "summary": "BTC advancing as aggressive taker buy flow returns (taker buy/sell ratio 1.5621, 5m CVD +$0.82M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_6m_bull,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.6002,
+                "cvd_15m_usd": -29_800_000.0,
+                "taker_ratio_5m": 0.43,
+                "cvd_5m_usd": -35_460_000.0,
+                "taker_ratio_1h": 0.78,
+                "cvd_1h_usd": -33_060_000.0,
+            }
+        },
+    )
+    assert sa_6m_bull.get("live_flow_divergence", "").startswith("LIVE_SELL_REVERSAL (")
+
     assert not has_financial_or_geopolitical_context("Nintendo Switch 2 sales plunge 41% as price hikes and memory crunch bite")
     assert has_financial_or_geopolitical_context("Oil prices slide as Asian stocks rise")
 

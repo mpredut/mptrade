@@ -471,7 +471,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
         ),
         {},
     )
-    if sa_age < 10.0 or not isinstance(btc_m, dict):
+    if sa_age < 5.0 or not isinstance(btc_m, dict):
         return
     live_tr = safe_pos_float(btc_m.get("taker_buy_sell_ratio"), default=None)
     live_cvd = safe_float(btc_m.get("cvd_15m_usd"), None)

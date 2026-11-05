@@ -846,8 +846,11 @@ def _format_microstructure_section(
             cvd_reg = minfo.get("cvd_regime") or "balanced_flow"
             usd_s = f"{'+' if cvd_u >= 0.0 else '-'}{_fmt_liq_usd(abs(cvd_u))}"
             cvd_b = minfo.get("cvd_15m_base")
+            cvd_b_s = f"{_parse_finite_float(cvd_b, 0.0):+.3f}".rstrip("0").rstrip(".") if cvd_b is not None else ""
+            if cvd_b_s in ("+", "-", ""):
+                cvd_b_s = "+0"
             cvd_sfx = (
-                f", cvd_15m={_parse_finite_float(cvd_b, 0.0):+g} {b_canon_3b} ({usd_s}, {cvd_reg})"
+                f", cvd_15m={cvd_b_s} {b_canon_3b} ({usd_s}, {cvd_reg})"
                 if cvd_b is not None
                 else f", cvd_15m={usd_s} ({cvd_reg})"
             )
