@@ -6,10 +6,6 @@ No external dependencies; standard library only.
 The SINGLE source for functions previously duplicated and beginning to diverge in
 kraken/common.py, hyperliquid/common.py, and 212trading/ipo_common.py. Each module
 re-exports these functions, preserving compatibility with `from common import log`.
-
-`now_str()` is intentionally excluded because bots differ: T212 also includes ET,
-while Kraken/HL use only Bucharest time. It remains provider-specific. HTTP transport
-is shared, and venue shims only re-export the JSON/form helpers defined here.
 """
 from __future__ import annotations
 
@@ -32,7 +28,7 @@ from zoneinfo import ZoneInfo
 HTTP_TIMEOUT = 25
 BUCHAREST = ZoneInfo("Europe/Bucharest")
 
-_LOCKS: dict = globals().get("_LOCKS") or {}   # retain open lock fds for process lifetime; prevent garbage collection
+_LOCKS: dict = globals().get("_LOCKS") or {}
 _LOG_LOCK = globals().get("_LOG_LOCK") or threading.RLock()
 
 
@@ -43,15 +39,11 @@ def log(msg: str) -> None:
 
 def now_str() -> str:
     """Return current timestamp formatted in Europe/Bucharest timezone."""
-    n = datetime.now(timezone.utc)
-    return f"{n.astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"
+    return f"{datetime.now(timezone.utc).astimezone(BUCHAREST):%Y-%m-%d %H:%M:%S} Bucuresti"
 
 
 def single_instance(name: str, lockdir: str = "/tmp") -> None:
-    """Enforce a single instance with an exclusive flock.
-    The first process holds <lockdir>/binance_<name>.lock for its lifetime; a second exits
-    successfully when it cannot acquire the lock. This prevents duplicate launches and
-    trades regardless of whether bots_start, healthcheck, systemd, or a user starts it."""
+    """Enforce a single instance with an exclusive flock."""
     path = os.path.join(lockdir, f"binance_{name}.lock")
     fd = open(path, "w")
     try:
@@ -59,8 +51,9 @@ def single_instance(name: str, lockdir: str = "/tmp") -> None:
     except OSError:
         print(f"[{name}] already running (lock held: {path}) — exiting.", flush=True)
         sys.exit(0)
-    fd.write(str(os.getpid())); fd.flush()
-    _LOCKS[name] = fd   # retain the reference so the lock lasts until process exit
+    fd.write(str(os.getpid()))
+    fd.flush()
+    _LOCKS[name] = fd
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -72,10 +65,7 @@ def safe_float(val: object, default: float | None = 0.0) -> float | None:
     """Safely coerce ``val`` to finite float, rejecting booleans, None, non-finite values, and non-numeric objects."""
     if val is None or isinstance(val, bool):
         return default
-    if (
-        not isinstance(val, (int, float, str, bytes, bytearray, numbers.Real))
-        and type(val).__name__ != "Decimal"
-    ):
+    if not isinstance(val, (int, float, str, bytes, bytearray, numbers.Real)) and type(val).__name__ != "Decimal":
         return default
     try:
         f = float(val)
@@ -100,8 +90,13 @@ def safe_pos_float(val: object, default: float | None = 0.0) -> float | None:
     return f if (f is not None and f > 0.0) else default
 
 
-def safe_int(val: object, default: int | None = 0) -> int | None:
-    """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
+def safe_nonneg_float(val: object, default: float | None = 0.0) -> float | None:
+    """Safely coerce ``val`` to a non-negative finite float (>= 0.0), otherwise return ``default``."""
+    f = safe_float(val, default=None)
+    return f if (f is not None and f >= 0.0) else default
+
+
+def _coerce_int(val: object, default: int | None, *, exact: bool) -> int | None:
     if val is None or isinstance(val, bool):
         return default
     if isinstance(val, int):
@@ -112,7 +107,7 @@ def safe_int(val: object, default: int | None = 0) -> int | None:
         except (TypeError, ValueError):
             pass
     f = safe_float(val, default=None)
-    if f is None or not math.isfinite(f):
+    if f is None or (exact and not f.is_integer()):
         return default
     try:
         return int(f)
@@ -120,10 +115,9 @@ def safe_int(val: object, default: int | None = 0) -> int | None:
         return default
 
 
-def safe_nonneg_float(val: object, default: float | None = 0.0) -> float | None:
-    """Safely coerce ``val`` to a non-negative finite float (>= 0.0), otherwise return ``default``."""
-    f = safe_float(val, default=None)
-    return f if (f is not None and f >= 0.0) else default
+def safe_int(val: object, default: int | None = 0) -> int | None:
+    """Safely coerce ``val`` to an integer, rejecting booleans, None, non-finite values, and non-numeric objects."""
+    return _coerce_int(val, default, exact=False)
 
 
 def safe_pos_int(val: object, default: int | None = 1) -> int | None:
@@ -140,22 +134,7 @@ def safe_nonneg_int(val: object, default: int | None = 0) -> int | None:
 
 def exact_int(val: object, default: int | None = 0) -> int | None:
     """Safely coerce ``val`` to an exact integer without truncating fractional floats or strings."""
-    if val is None or isinstance(val, bool):
-        return default
-    if isinstance(val, int):
-        return val
-    if isinstance(val, (str, bytes, bytearray)):
-        try:
-            return int(val, 10)
-        except (TypeError, ValueError):
-            pass
-    f = safe_float(val, default=None)
-    if f is None or not f.is_integer():
-        return default
-    try:
-        return int(f)
-    except (ValueError, OverflowError):
-        return default
+    return _coerce_int(val, default, exact=True)
 
 
 def exact_pos_int(val: object, default: int | None = 1) -> int | None:
@@ -171,11 +150,7 @@ def exact_nonneg_int(val: object, default: int | None = 0) -> int | None:
 
 
 def strict_ascii_int(
-    val: object,
-    default: int | None = None,
-    *,
-    min_value: int | None = None,
-    allow_float_str: bool = False,
+    val: object, default: int | None = None, *, min_value: int | None = None, allow_float_str: bool = False
 ) -> int | None:
     """Coerce ``val`` (int, integral float, or ASCII digit string) to int, rejecting booleans and non-ASCII digits."""
     if isinstance(val, bool) or not isinstance(val, (int, float, str)):
@@ -190,57 +165,35 @@ def strict_ascii_int(
         parsed = exact_int(s, default=None)
     else:
         parsed = exact_int(val, default=None)
-    if parsed is None:
-        return default
-    if min_value is not None and parsed < min_value:
+    if parsed is None or (min_value is not None and parsed < min_value):
         return default
     return parsed
 
 
 def require_finite_float(
-    val: object,
-    name: str = "value",
-    *,
-    min_value: float | None = None,
-    error_msg: str | None = None,
+    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
 ) -> float:
     """Coerce ``val`` to a finite float (optionally ``>= min_value``) or raise ``ValueError``."""
     f = safe_float(val, default=None)
     if f is None or (min_value is not None and f < min_value):
-        raise ValueError(
-            error_msg
-            or (f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite")
-        )
+        msg = f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite"
+        raise ValueError(error_msg or msg)
     return f
 
 
 def require_pos_float(
-    val: object,
-    name: str = "value",
-    *,
-    min_value: float | None = None,
-    error_msg: str | None = None,
+    val: object, name: str = "value", *, min_value: float | None = None, error_msg: str | None = None
 ) -> float:
     """Coerce ``val`` to a finite positive float (optionally ``>= min_value``) or raise ``ValueError``."""
     f = safe_pos_float(val, default=None)
     if f is None or (min_value is not None and f < min_value):
-        raise ValueError(
-            error_msg
-            or (
-                f"{name} must be finite and >= {min_value}"
-                if min_value is not None
-                else f"{name} must be finite and positive"
-            )
-        )
+        msg = f"{name} must be finite and >= {min_value}" if min_value is not None else f"{name} must be finite and positive"
+        raise ValueError(error_msg or msg)
     return f
 
 
 def require_int(
-    val: object,
-    name: str = "value",
-    *,
-    min_value: int | None = None,
-    error_msg: str | None = None,
+    val: object, name: str = "value", *, min_value: int | None = None, error_msg: str | None = None
 ) -> int:
     """Coerce ``val`` to an exact integer (optionally ``>= min_value``) or raise ``ValueError``."""
     parsed = exact_int(val, default=None)
@@ -267,10 +220,7 @@ def clean_json_value(val: object, *, stringify_keys: bool = True) -> object:
     if isinstance(val, float):
         return safe_float(val, default=None)
     if isinstance(val, dict):
-        return {
-            (str(k) if stringify_keys else k): clean_json_value(v, stringify_keys=stringify_keys)
-            for k, v in val.items()
-        }
+        return {(str(k) if stringify_keys else k): clean_json_value(v, stringify_keys=stringify_keys) for k, v in val.items()}
     if isinstance(val, (list, tuple, set, frozenset)):
         return [clean_json_value(v, stringify_keys=stringify_keys) for v in val]
     return val
@@ -308,7 +258,6 @@ def _strip_env_value_quotes_and_comment(val: str) -> str:
             tail = val[close_idx + 1:].strip()
             if not tail or tail.startswith("#"):
                 return val[1:close_idx]
-            return val.strip('"').strip("'")
         return val.strip('"').strip("'")
     return val.split("#", 1)[0].strip()
 
@@ -348,11 +297,7 @@ def _dotenv_pairs(path: str | os.PathLike, *, strict: bool = False) -> tuple[lis
         return [], False
     try:
         with open(path, "r", encoding="utf-8") as f:
-            pairs = []
-            for raw in f:
-                parsed = parse_dotenv_line(raw, strict=strict)
-                if parsed is not None:
-                    pairs.append(parsed)
+            pairs = [parsed for raw in f if (parsed := parse_dotenv_line(raw, strict=strict)) is not None]
         return pairs, True
     except OSError as e:
         log(f"  ! cannot read {path}: {e}")
@@ -390,20 +335,13 @@ def _is_unmodified_root_key(key: str) -> bool:
 
 
 def _parse_bool_flag(val, default: bool | None = False):
-    if default is None:
-        fb = None
-    elif isinstance(default, bool):
-        fb = default
-    else:
-        fb = _parse_bool_flag(default, False)
+    fb = None if default is None else (default if isinstance(default, bool) else _parse_bool_flag(default, False))
     if isinstance(val, bool):
         return val
     if val is None or isinstance(val, (dict, list, tuple, set, frozenset)):
         return fb
     if isinstance(val, (int, float)):
-        if isinstance(val, float) and not math.isfinite(val):
-            return fb
-        return val != 0
+        return fb if (isinstance(val, float) and not math.isfinite(val)) else (val != 0)
     if isinstance(val, str):
         s = val.split("#", 1)[0].split(";", 1)[0].strip().strip('"').strip("'").strip().lower()
         if not s or s in {"none", "null"}:
@@ -414,13 +352,8 @@ def _parse_bool_flag(val, default: bool | None = False):
             return True
         if s in {"0", "0.0", "false", "no", "off", "n", "f"}:
             return False
-        try:
-            fv = float(s)
-            if not math.isfinite(fv):
-                return fb
-            return fv != 0.0
-        except (TypeError, ValueError):
-            return fb
+        fv = safe_float(s, default=None)
+        return (fv != 0.0) if fv is not None else fb
     return fb
 
 
@@ -453,15 +386,7 @@ def load_env_stack(
     config_name: str | os.PathLike = "config.env",
     override: bool = False,
 ) -> None:
-    """Load secrets/overrides and the adjacent versioned configuration.
-
-    Local venue configurations take precedence over any globally loaded root config.env.
-    Precedence (highest to lowest):
-      1. Explicit process environment (unless override=True)
-      2. Secrets/profile env file (env_file)
-      3. Venue versioned configuration (config_name)
-      4. Global root config.env defaults
-    """
+    """Load secrets/overrides and the adjacent versioned configuration."""
     override = _parse_bool_flag(override, False)
     eff_env = os.path.join(_REPO_ROOT, ".env") if env_file is None else os.fspath(env_file)
     env_path = os.path.abspath(eff_env)
@@ -590,32 +515,24 @@ _INI_CONFIG_LOCK = globals().get("_INI_CONFIG_LOCK") or threading.RLock()
 
 
 def load_ini_config(
-    path: str | os.PathLike,
-    *,
-    must_exist: bool = True,
-    inline_comments: bool = True,
+    path: str | os.PathLike, *, must_exist: bool = True, inline_comments: bool = True
 ) -> configparser.ConfigParser:
     """Load and cache an INI ``.conf`` file by ``(mtime_ns, size)`` using ``ConfigParser(interpolation=None)``."""
     if isinstance(path, bool) or not isinstance(path, (str, os.PathLike)) or not str(path).strip():
         raise ValueError(f"Invalid INI configuration path: {path!r}")
     abs_path = os.path.abspath(os.fspath(path))
+    prefixes = ("#", ";") if inline_comments else ()
     if not os.path.exists(abs_path):
         if must_exist:
             raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
-        return configparser.ConfigParser(
-            interpolation=None,
-            inline_comment_prefixes=("#", ";") if inline_comments else (),
-        )
+        return configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
     st = os.stat(abs_path)
     sig = (st.st_mtime_ns, st.st_size, bool(inline_comments))
     with _INI_CONFIG_LOCK:
         cached = _INI_CONFIG_CACHE.get(abs_path)
         if cached is not None and cached[0] == sig:
             return cached[1]
-        cp = configparser.ConfigParser(
-            interpolation=None,
-            inline_comment_prefixes=("#", ";") if inline_comments else (),
-        )
+        cp = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=prefixes)
         with open(abs_path, "r", encoding="utf-8") as handle:
             cp.read_file(handle)
         lru_dict_put(_INI_CONFIG_CACHE, abs_path, (sig, cp), 64)
@@ -654,8 +571,7 @@ def _clean_env_str(val: object) -> str:
 
 
 def float_env(key: str, env: dict | float | None = None, default: float | None = None) -> float | None:
-    """Read a float from os.environ or an injected dictionary, ignoring inline comments.
-    Supports both float_env(key, env_dict) and float_env(key, default_val)."""
+    """Read a float from os.environ or an injected dictionary, ignoring inline comments."""
     if env is not None and not hasattr(env, "get"):
         default, env = env, None
     src = os.environ if env is None else env
@@ -669,8 +585,7 @@ def pos_float_env(key: str, default: float, env: dict | None = None) -> float:
 
 
 def int_env(key: str, env: dict | int | None = None, default: int | None = None) -> int | None:
-    """Read an integer from os.environ or an injected dictionary, ignoring inline comments.
-    Supports both int_env(key, env_dict) and int_env(key, default_val)."""
+    """Read an integer from os.environ or an injected dictionary, ignoring inline comments."""
     if env is not None and not hasattr(env, "get"):
         default, env = env, None
     src = os.environ if env is None else env
@@ -729,9 +644,7 @@ def required_int_env(key: str, env: dict | None = None) -> int:
     if iv is not None:
         return iv
     value = required_float_env(key, env)
-    if not value.is_integer():
-        raise ValueError(f"Invalid integer setting: {key}={value!r}")
-    return int(value)
+    raise ValueError(f"Invalid integer setting: {key}={value!r}")
 
 
 def required_bool_env(key: str, env: dict | None = None) -> bool:
@@ -769,8 +682,7 @@ def env_value(folder: str | os.PathLike, key: str) -> str | None:
         try:
             parsed = parse_dotenv(path)
             if key in parsed:
-                val = str(parsed[key]).strip()
-                return val or None
+                return str(parsed[key]).strip() or None
         except Exception:
             continue
     return None
@@ -826,9 +738,7 @@ def bool_env(
 
 
 def resolve_cli_arg(
-    argv: list[str] | tuple[str, ...] | None,
-    flags: str | tuple[str, ...],
-    default: str | None = None,
+    argv: list[str] | tuple[str, ...] | None, flags: str | tuple[str, ...], default: str | None = None
 ) -> str | None:
     """Extract the last value of ``flags`` (e.g. ``'--env-file'``) from ``argv`` before full argparse."""
     args = sys.argv if argv is None else argv
@@ -877,27 +787,23 @@ def _read_properties_file(path: str) -> dict:
 def load_config():
     """Load configuration from config.env (and legacy config.txt if present) and refresh cache."""
     global config_cache, _CONFIG_MTIME, _CONFIG_LAST_CHECK
-    new_config = {}
+    new_config: dict = {}
 
-    env_file_settings = _read_properties_file(CONFIG_ENV_PATH)
-    for k, v in env_file_settings.items():
-        if isinstance(k, str) and k.lower() == "trade_enabled" and str(v).strip() != "":
-            new_config["trade_enabled"] = _parse_bool(v, default=True)
-
-    txt_settings = _read_properties_file(CONFIG_TXT_PATH)
-    for k, v in txt_settings.items():
-        if k.lower() == "trade_enabled":
-            if str(v).strip() != "":
-                new_config["trade_enabled"] = _parse_bool(v, default=True)
-        else:
-            new_config[k.lower()] = v
+    for path, allow_other in ((CONFIG_ENV_PATH, False), (CONFIG_TXT_PATH, True)):
+        for k, v in _read_properties_file(path).items():
+            if not isinstance(k, str):
+                continue
+            kl = k.lower()
+            if kl == "trade_enabled":
+                if str(v).strip() != "":
+                    new_config["trade_enabled"] = _parse_bool(v, default=True)
+            elif allow_other:
+                new_config[kl] = v
 
     env_trade = os.environ.get("TRADE_ENABLED")
     if env_trade is not None and env_trade.strip() != "":
         new_config["trade_enabled"] = _parse_bool(env_trade, default=True)
-
-    if "trade_enabled" not in new_config:
-        new_config["trade_enabled"] = True
+    new_config.setdefault("trade_enabled", True)
 
     _CONFIG_MTIME = (_file_mtime(CONFIG_ENV_PATH), _file_mtime(CONFIG_TXT_PATH))
     _CONFIG_LAST_CHECK = _time.time()
@@ -934,11 +840,7 @@ def start_config_watcher():
     if watcher_thread and watcher_thread.is_alive():
         return
     _watcher_stop_event.clear()
-    watcher_thread = threading.Thread(
-        target=config_watcher,
-        name="start_config_watcher",
-        daemon=True,
-    )
+    watcher_thread = threading.Thread(target=config_watcher, name="start_config_watcher", daemon=True)
     watcher_thread.start()
     print("Config watcher started.")
 
@@ -961,7 +863,6 @@ load_config()
 class Config:
     """Explicit C++-style namespace grouping all configuration loading, parsing, key-value lookup, and watcher APIs."""
 
-    # File & stack loaders
     load_dotenv = staticmethod(load_dotenv)
     load_env_stack = staticmethod(load_env_stack)
     load_root_config = staticmethod(load_root_config)
@@ -971,7 +872,6 @@ class Config:
     load_key_value_conf = staticmethod(load_key_value_conf)
     load_ini_config = staticmethod(load_ini_config)
 
-    # Parsers
     parse_dotenv_line = staticmethod(parse_dotenv_line)
     parse_dotenv = staticmethod(parse_dotenv)
     parse_env_file = staticmethod(parse_env_file)
@@ -979,7 +879,6 @@ class Config:
     parse_notify_enabled_flag = staticmethod(parse_notify_enabled_flag)
     conf_or_override = staticmethod(conf_or_override)
 
-    # Typed key-value / environment lookups
     float_env = staticmethod(float_env)
     pos_float_env = staticmethod(pos_float_env)
     int_env = staticmethod(int_env)
@@ -994,7 +893,6 @@ class Config:
     env_values_map = staticmethod(env_values_map)
     resolve_cli_arg = staticmethod(resolve_cli_arg)
 
-    # Global trade_enabled cache & watcher
     load_config = staticmethod(load_config)
     is_trade_enabled = staticmethod(is_trade_enabled)
     config_watcher = staticmethod(config_watcher)
@@ -1011,19 +909,9 @@ cfg = Config
 
 
 def http_request(
-    method: str,
-    url: str,
-    headers: dict | None = None,
-    payload: dict | None = None,
-    *,
-    form: dict | None = None,
+    method: str, url: str, headers: dict | None = None, payload: dict | None = None, *, form: dict | None = None
 ) -> tuple[int, bytes]:
-    """Shared standard-library HTTP transport with a ``(status, body)`` contract.
-
-    Serialize ``payload`` as JSON and ``form`` as application/x-www-form-urlencoded;
-    the two forms are mutually exclusive. HTTP errors retain status/body, while
-    transport errors fail closed as ``(0, b"")``, matching the replaced venue helpers.
-    """
+    """Shared standard-library HTTP transport with a ``(status, body)`` contract."""
     if payload is not None and form is not None:
         raise ValueError("payload and form are mutually exclusive")
 
@@ -1034,9 +922,7 @@ def http_request(
         request_headers.setdefault("Content-Type", "application/json")
     elif form is not None:
         data = urllib.parse.urlencode(form).encode()
-        request_headers.setdefault(
-            "Content-Type", "application/x-www-form-urlencoded"
-        )
+        request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
 
     if not method or isinstance(method, bool) or not isinstance(method, str) or not method.strip():
         return 0, b""
@@ -1044,9 +930,7 @@ def http_request(
         return 0, b""
     verb = method.strip().upper()
     try:
-        req = urllib.request.Request(
-            url.strip(), data=data, headers=request_headers, method=verb,
-        )
+        req = urllib.request.Request(url.strip(), data=data, headers=request_headers, method=verb)
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
@@ -1060,15 +944,11 @@ def http_get(url: str, headers: dict | None = None) -> tuple[int, bytes]:
     return http_request("GET", url, headers=headers)
 
 
-def http_post_json(
-    url: str, payload: dict, headers: dict | None = None,
-) -> tuple[int, bytes]:
+def http_post_json(url: str, payload: dict, headers: dict | None = None) -> tuple[int, bytes]:
     return http_request("POST", url, headers=headers, payload=payload)
 
 
-def http_post_form(
-    url: str, data: dict, headers: dict | None = None,
-) -> tuple[int, bytes]:
+def http_post_form(url: str, data: dict, headers: dict | None = None) -> tuple[int, bytes]:
     return http_request("POST", url, headers=headers, form=data)
 
 
@@ -1079,16 +959,10 @@ def _urlopen_json(req: urllib.request.Request, timeout: float) -> object:
 
 
 def _fetch_public_json_impl(
-    url: str,
-    *,
-    timeout: float = 5.0,
-    user_agent: str = "mptrade-intelligence/1.0",
-    headers: dict | None = None,
+    url: str, *, timeout: float = 5.0, user_agent: str = "mptrade-intelligence/1.0", headers: dict | None = None
 ) -> object:
     """Fetch and decode a JSON payload from a public HTTP GET endpoint."""
-    req_headers = {"User-Agent": user_agent}
-    if isinstance(headers, dict):
-        req_headers.update(headers)
+    req_headers = {"User-Agent": user_agent, **(headers if isinstance(headers, dict) else {})}
     return _urlopen_json(urllib.request.Request(url, headers=req_headers), timeout)
 
 
@@ -1096,16 +970,10 @@ fetch_public_json = globals().get("fetch_public_json") or _fetch_public_json_imp
 
 
 def fetch_json_post(
-    url: str,
-    payload: dict | bytes | None = None,
-    *,
-    timeout: float = 5.0,
-    headers: dict | None = None,
+    url: str, payload: dict | bytes | None = None, *, timeout: float = 5.0, headers: dict | None = None
 ) -> object:
     """Send an HTTP POST request with a JSON body and decode the JSON response."""
-    req_headers = {"Content-Type": "application/json"}
-    if isinstance(headers, dict):
-        req_headers.update(headers)
+    req_headers = {"Content-Type": "application/json", **(headers if isinstance(headers, dict) else {})}
     if payload is None:
         data = b"{}"
     elif isinstance(payload, (bytes, bytearray)):
@@ -1116,9 +984,7 @@ def fetch_json_post(
 
 
 # ── DETERMINISTIC percentage-based approximate comparisons ───────────────────
-# Single source for the fleet and bots. Replaces utils.are_close, whose random.randint
-# tolerance loop could return True OR False for the same input in [tol*1.01, tol*1.5],
-# which is unacceptable for trading decisions.
+
 
 def diff_percent(value1: float, value2: float) -> float:
     """Return symmetric percentage difference relative to the values' absolute mean."""
@@ -1129,16 +995,11 @@ def diff_percent(value1: float, value2: float) -> float:
     if v1 == v2:
         return 0.0
     denom = (abs(v1) + abs(v2)) / 2.0
-    if denom == 0.0:
-        return 0.0
-    return abs(v1 - v2) / denom * 100.0
+    return 0.0 if denom == 0.0 else abs(v1 - v2) / denom * 100.0
 
 
 def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> bool:
-    """Return deterministically whether values differ by at most tolerance_percent.
-
-    For price thresholds, are_close(price, threshold, 0.05) treats a price within
-    0.05% as reached, avoiding missed entries by a few cents."""
+    """Return deterministically whether values differ by at most tolerance_percent."""
     tol = safe_nonneg_float(tolerance_percent, default=None)
     if tol is None:
         return False
@@ -1146,12 +1007,10 @@ def are_close(value1: float, value2: float, tolerance_percent: float = 1.0) -> b
     return diff_f is not None and diff_f <= tol
 
 
-def diff_equals_percent(value1: float, value2: float, target_percent: float,
-                        tolerance_percent: float = 1.0) -> bool:
-    """Return whether the percentage DIFFERENCE is near target_percent using a
-    deterministic two-sided band. Unlike are_close, this asks whether values differ by
-    about X percent, e.g. whether price fell about 10%. Replaces the randomized
-    utils.are_difference_equal_with_aprox_proc implementation."""
+def diff_equals_percent(
+    value1: float, value2: float, target_percent: float, tolerance_percent: float = 1.0
+) -> bool:
+    """Return whether the percentage DIFFERENCE is near target_percent using a deterministic two-sided band."""
     target = safe_nonneg_float(target_percent, default=None)
     tol = safe_nonneg_float(tolerance_percent, default=None)
     if target is None or tol is None:
@@ -1170,9 +1029,7 @@ def is_us_rth_open(now_ts: float | None = None) -> bool:
         ny_dt = datetime.fromtimestamp(ts, tz=ET)
     except (ValueError, OverflowError, OSError):
         ny_dt = datetime.fromtimestamp(_time.time(), tz=ET)
-    if ny_dt.weekday() >= 5:
-        return False
-    return dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
+    return ny_dt.weekday() < 5 and dt_time(9, 30) <= ny_dt.time() < dt_time(16, 0)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1190,14 +1047,9 @@ def extract_current_price_item(item: object) -> float | None:
         return safe_pos_float(item.get("price") if item.get("price") is not None else item.get("c"), None)
     if isinstance(item, (list, tuple)):
         for entry in reversed(item):
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                px_f = safe_pos_float(entry[1], None)
-                if px_f is not None:
-                    return px_f
-            else:
-                px_f = safe_pos_float(entry, None)
-                if px_f is not None:
-                    return px_f
+            target = entry[1] if isinstance(entry, (list, tuple)) and len(entry) >= 2 else entry
+            if (px_f := safe_pos_float(target, None)) is not None:
+                return px_f
     return None
 
 
@@ -1221,22 +1073,19 @@ def ensure_local_module_priority(directory: str, *module_names: str) -> None:
 
 
 _AMBIGUOUS_LOCAL_MODULES = (
-    "strategy",
-    "market_data",
-    "replay",
-    "common",
-    "hl_client",
-    "t212_client",
-    "ipo_common",
+    "strategy", "market_data", "replay", "common", "hl_client", "t212_client", "ipo_common",
 )
-
 
 _LEGACY_ARCHIVE_DIR: str | None = None
 
 
+def _has_module_target(directory: str, stem: str) -> bool:
+    return os.path.isfile(os.path.join(directory, f"{stem}.py")) or os.path.isdir(os.path.join(directory, stem))
+
+
 def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
     global _LEGACY_ARCHIVE_DIR
-    if os.path.isfile(os.path.join(abs_dir, f"{stem}.py")) or os.path.isdir(os.path.join(abs_dir, stem)):
+    if _has_module_target(abs_dir, stem):
         return abs_dir
     archive_tar = os.path.join(_REPO_ROOT, "archive", "legacy_archive.tar.gz")
     if not os.path.isfile(archive_tar):
@@ -1249,25 +1098,17 @@ def _resolve_archived_module_dir(abs_dir: str, stem: str) -> str:
         import shutil
         import tarfile
         import tempfile
+
         _LEGACY_ARCHIVE_DIR = tempfile.mkdtemp(prefix="mptrade_legacy_archive_")
         atexit.register(shutil.rmtree, _LEGACY_ARCHIVE_DIR, True)
         with tarfile.open(archive_tar, "r:gz") as tf:
             tf.extractall(_LEGACY_ARCHIVE_DIR, filter="data")
     extracted_dir = os.path.join(_LEGACY_ARCHIVE_DIR, rel)
-    return (
-        extracted_dir
-        if (os.path.isfile(os.path.join(extracted_dir, f"{stem}.py")) or os.path.isdir(os.path.join(extracted_dir, stem)))
-        else abs_dir
-    )
+    return extracted_dir if _has_module_target(extracted_dir, stem) else abs_dir
 
 
 def load_local_module(
-    directory: str,
-    name: str,
-    *,
-    module_key: str | None = None,
-    register: bool = True,
-    reload: bool = False,
+    directory: str, name: str, *, module_key: str | None = None, register: bool = True, reload: bool = False
 ):
     """Load a sibling module ``<name>.py`` from ``directory`` without colliding with other venue modules."""
     with _LOCAL_MODULE_LOCK:
@@ -1280,14 +1121,11 @@ def load_local_module(
             if (
                 mod is not None
                 and getattr(mod, "__mptrade_exec_done__", True)
-                and (
-                    not isinstance(mod_file, str)
-                    or not mod_file
-                    or os.path.dirname(os.path.abspath(mod_file)) == abs_dir
-                )
+                and (not isinstance(mod_file, str) or not mod_file or os.path.dirname(os.path.abspath(mod_file)) == abs_dir)
             ):
                 return mod
         import importlib.util
+
         orig_sys_path = list(sys.path)
         saved_ambiguous: dict[str, object] = {}
         for amb_name in _AMBIGUOUS_LOCAL_MODULES:
@@ -1385,6 +1223,7 @@ def touch_heartbeat_file(
         return last_ts
     try:
         from state_io import atomic_write_json
+
         hb_path = str(path)
         payload = build_heartbeat_payload(
             status,
@@ -1416,12 +1255,7 @@ def touch_module_heartbeat(
     extra: dict | None = None,
     path: str | os.PathLike | None = None,
 ) -> float:
-    """Thread-safe shared heartbeat writer for any bot or fleet daemon.
-
-    Resolves ``cachedb/system/heartbeat/<module_name>.heartbeat`` via ``cachepaths.cache_path``
-    (unless ``path`` is explicitly provided), throttles writes to ``interval_sec``, and persists
-    the canonical heartbeat JSON schema via ``touch_heartbeat_file``.
-    """
+    """Thread-safe shared heartbeat writer for any bot or fleet daemon."""
     clean_name = str(module_name or "").strip() if not isinstance(module_name, bool) else ""
     if not clean_name and path is None:
         return float("-inf")
@@ -1431,9 +1265,10 @@ def touch_module_heartbeat(
         fname = clean_name if clean_name.endswith(".heartbeat") else f"{clean_name}.heartbeat"
         try:
             from cachepaths import cache_path as _cache_path, resolve_cachedb_filepath as _resolve_hb
+
             hb_path = str(_resolve_hb(_cache_path(fname)))
         except Exception:
-            hb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cachedb", "system", "heartbeat", fname)
+            hb_path = os.path.join(_REPO_ROOT, "cachedb", "system", "heartbeat", fname)
     with _MODULE_HEARTBEAT_LOCK:
         meta = _MODULE_HEARTBEAT_META.setdefault(hb_path, {})
         if status is not None:
@@ -1469,10 +1304,7 @@ def evaluate_heartbeat_files_freshness(
     *,
     fallback_start_ts: float | None = None,
 ) -> tuple[bool, float, float, str]:
-    """Evaluate heartbeat freshness across ``hb_paths``.
-
-    Returns ``(is_fresh, max_existing_age_sec, max_stale_duration_sec, stale_or_missing_path)``.
-    """
+    """Evaluate heartbeat freshness across ``hb_paths``."""
     if not hb_paths:
         return True, 0.0, 0.0, ""
     try:
@@ -1508,17 +1340,11 @@ def evaluate_heartbeat_files_freshness(
 
 
 def clamp_float(
-    val: object,
-    minimum: float = 0.0,
-    maximum: float = 1.0,
-    *,
-    default: float = 0.0,
+    val: object, minimum: float = 0.0, maximum: float = 1.0, *, default: float = 0.0
 ) -> float:
     """Safely coerce ``val`` to a float and clamp it to ``[minimum, maximum]``."""
     v = safe_float(val, default=default)
-    if v is None:
-        v = default
-    return max(minimum, min(maximum, v))
+    return max(minimum, min(maximum, default if v is None else v))
 
 
 def parse_ratio_or_pct(raw: object, pct_cutoff: float = 0.05) -> float:
@@ -1549,9 +1375,7 @@ def resolve_order_notional(
         return default
     px_clean = safe_pos_float(price, 0.0)
     qty_clean = safe_pos_float(qty, 0.0)
-    if px_clean > 0.0 and qty_clean > 0.0:
-        return px_clean * qty_clean
-    return default
+    return (px_clean * qty_clean) if (px_clean > 0.0 and qty_clean > 0.0) else default
 
 
 def clean_scale(
@@ -1580,11 +1404,7 @@ def clean_scale(
 
 
 def normalize_epoch_sec(
-    val: object,
-    default: float | None = None,
-    *,
-    allow_zero: bool = False,
-    allow_iso: bool = False,
+    val: object, default: float | None = None, *, allow_zero: bool = False, allow_iso: bool = False
 ) -> float | None:
     """Normalize a timestamp in seconds, milliseconds (>= 1e11), or optional ISO-8601 string into epoch seconds."""
     f = safe_nonneg_float(val, default=None) if allow_zero else safe_pos_float(val, default=None)
@@ -1625,11 +1445,7 @@ def resolve_now_ms(now_ms: object = None) -> int:
 
 
 def is_cache_fresh(
-    last_ts: object,
-    now_ts: float,
-    ttl_sec: object,
-    *,
-    force_refresh: object = False,
+    last_ts: object, now_ts: float, ttl_sec: object, *, force_refresh: object = False
 ) -> bool:
     """Return True if cached state at ``last_ts`` is still within ``ttl_sec`` at ``now_ts``."""
     if _parse_bool_flag(force_refresh, False):
@@ -1640,11 +1456,7 @@ def is_cache_fresh(
 
 
 def is_interval_due(
-    current_ts: float,
-    last_ts: object,
-    interval_sec: object,
-    *,
-    force: object = False,
+    current_ts: float, last_ts: object, interval_sec: object, *, force: object = False
 ) -> bool:
     """Return True if ``force`` is truthy or ``interval_sec`` has elapsed since ``last_ts``."""
     if _parse_bool_flag(force, False):
@@ -1655,11 +1467,7 @@ def is_interval_due(
 
 
 def check_cooldown_gate(
-    cooldown_map: dict,
-    key: object,
-    now_ts: float,
-    cooldown_sec: float = 1800.0,
-    max_entries: int = 1000,
+    cooldown_map: dict, key: object, now_ts: float, cooldown_sec: float = 1800.0, max_entries: int = 1000
 ) -> bool:
     """Return True and record ``now_ts`` if ``key`` is not within ``cooldown_sec``."""
     last = cooldown_map.get(key, -1e18)
@@ -1693,18 +1501,11 @@ def parse_symbol_list(symbols: object) -> list[str]:
         if isinstance(symbols, str)
         else (symbols if isinstance(symbols, (list, tuple, set, frozenset)) else [])
     )
-    return [
-        s.strip().upper()
-        for s in raw
-        if isinstance(s, str) and s.strip()
-    ]
+    return [s.strip().upper() for s in raw if isinstance(s, str) and s.strip()]
 
 
 def validate_required_env_keys(
-    keys: list[str] | tuple[str, ...],
-    *,
-    env: dict | None = None,
-    label: str = "configuration",
+    keys: list[str] | tuple[str, ...], *, env: dict | None = None, label: str = "configuration"
 ) -> None:
     """Abort startup with the complete list of missing or empty mandatory environment keys."""
     src = os.environ if env is None else env
@@ -1726,9 +1527,7 @@ def resolve_patched_attr(
     unpatched = tuple(d for d in (defaults if defaults else (default_val,)) if d is not None)
 
     def _is_valid(cand: object) -> bool:
-        if cand is _UNSET or cand is None:
-            return False
-        return callable(cand) if require_callable else True
+        return False if (cand is _UNSET or cand is None) else (callable(cand) if require_callable else True)
 
     def _is_patched(cand: object) -> bool:
         return _is_valid(cand) and all(cand is not d for d in unpatched)
@@ -1787,6 +1586,20 @@ _SAFE_ID_DOT_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _SAFE_ID_NODOT_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _TREND_UP_TOKENS = frozenset(("up", "bull", "uptrend", "bullish"))
 _TREND_DOWN_TOKENS = frozenset(("down", "bear", "downtrend", "bearish"))
+_BUY_SIDE_TOKENS = frozenset(("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"))
+_SELL_SIDE_TOKENS = frozenset(("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"))
+
+
+def normalize_side(side: object) -> str:
+    """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'`` (or ``''`` when unrecognized)."""
+    if side is None or isinstance(side, bool):
+        return ""
+    s = " ".join(str(side).strip().upper().replace("_", " ").replace("-", " ").split())
+    if s in _BUY_SIDE_TOKENS:
+        return "BUY"
+    if s in _SELL_SIDE_TOKENS:
+        return "SELL"
+    return ""
 
 
 def normalize_trend_direction(
@@ -1809,9 +1622,7 @@ def normalize_trend_direction(
 
 def sanitize_pipe_field(value: object) -> str:
     """Sanitize a field value for pipe-delimited logs by replacing ``|``, ``\\r``, and ``\\n``."""
-    if value is None:
-        return ""
-    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+    return "" if value is None else str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
 
 
 def sanitize_identifier(
@@ -1834,17 +1645,11 @@ def normalize_class_name(cls_or_name: object) -> str:
     """Return the class name for a ``type`` object or stripped string, else ``''``."""
     if isinstance(cls_or_name, type):
         return cls_or_name.__name__
-    if isinstance(cls_or_name, str):
-        return cls_or_name.strip()
-    return ""
+    return cls_or_name.strip() if isinstance(cls_or_name, str) else ""
 
 
 async def async_interruptible_sleep(
-    stop_event: object,
-    delay: object,
-    step: object = 0.2,
-    *,
-    sleep_fn: object = None,
+    stop_event: object, delay: object, step: object = 0.2, *, sleep_fn: object = None
 ) -> None:
     """Sleep asynchronously up to ``delay`` seconds in ``step`` increments while ``stop_event`` is not set."""
     eff_delay = safe_pos_float(delay, default=None)
@@ -1939,10 +1744,7 @@ class _MergedModuleAliasLoader:
 
         if self.target_name == "hyperliquid.signals":
             hl_dir = os.path.join(_REPO_ROOT, "hyperliquid")
-            is_reload = (
-                module is sys.modules.get("signals")
-                and getattr(module, "__mptrade_exec_done__", False)
-            )
+            is_reload = module is sys.modules.get("signals") and getattr(module, "__mptrade_exec_done__", False)
             target_mod = load_local_module(hl_dir, "signals", reload=is_reload)
             for alias_k in ("signals", "hyperliquid.signals", "price_analysis", "hyperliquid.price_analysis"):
                 sys.modules[alias_k] = target_mod
@@ -2042,12 +1844,11 @@ class _MergedModuleAliasFinder:
         )
 
 
-if not any(getattr(f, "__name__", "") == "_MergedModuleAliasFinder" or isinstance(f, _MergedModuleAliasFinder) for f in sys.meta_path):
+if not any(
+    getattr(f, "__name__", "") == "_MergedModuleAliasFinder" or isinstance(f, _MergedModuleAliasFinder)
+    for f in sys.meta_path
+):
     sys.meta_path.append(_MergedModuleAliasFinder())
 
 
 register_module_aliases(__name__, "config")
-
-
-
-

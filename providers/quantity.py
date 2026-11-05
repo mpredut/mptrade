@@ -5,12 +5,18 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import logging
 import math
-import sys
 import time
 from typing import Any, Callable, Optional, Tuple
 
-
-from botcore import _parse_bool_flag, register_module_aliases, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    obj_attr,
+    register_module_aliases,
+    safe_float,
+    safe_int,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import _LEGACY_KRAKEN_X_BASES, normalize_venue_name
 from .order_ohlc_utils import (
     clean_order_id_str,
@@ -24,7 +30,6 @@ from .order_ohlc_utils import (
 
 logger = logging.getLogger(__name__)
 
-
 QUOTE_SUFFIXES = (
     "USDC", "USDT", "FDUSD", "BUSD", "TUSD", "USDP", "DAI",
     "EUR", "GBP", "RON", "BTC", "ETH", "USD",
@@ -34,13 +39,7 @@ _clean_fill_id = clean_order_id_str
 
 
 def remaining_average_cost(fills, held_qty):
-    """Reconstruct moving-average acquisition cost from chronological real fills.
-
-    Normalized rows require id, timestamp, side, qty, price, base_fee and quote_fee.
-    Reject incomplete/inconsistent history instead of treating all historic BUYs as
-    the current position. Fees in other assets are not converted into quote cost.
-    Matching inventory is necessary evidence, not proof of complete transfer history.
-    """
+    """Reconstruct moving-average acquisition cost from chronological real fills."""
     try:
         held_qty = safe_pos_float(held_qty, default=None)
         if held_qty is None or fills is None or isinstance(fills, (str, bytes, bool)):
@@ -127,30 +126,22 @@ def compute_fills_cost_basis(
         if fee_info is None:
             if require_explicit_fee_asset:
                 return None
-            base_fee = 0.0
-            quote_fee = 0.0
+            base_fee, quote_fee = 0.0, 0.0
         else:
-            base_fee = fee_info["base_fee"]
-            quote_fee = fee_info["quote_fee"]
+            base_fee, quote_fee = fee_info["base_fee"], fee_info["quote_fee"]
         fill_id = next(
-            (
-                v
-                for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid")
-                if (v := row.get(k)) is not None
-            ),
+            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := row.get(k)) is not None),
             idx + 1,
         )
-        normalized.append(
-            {
-                "id": fill_id,
-                "timestamp": ts_ms,
-                "qty": qty,
-                "price": px,
-                "side": side,
-                "base_fee": base_fee,
-                "quote_fee": quote_fee,
-            }
-        )
+        normalized.append({
+            "id": fill_id,
+            "timestamp": ts_ms,
+            "qty": qty,
+            "price": px,
+            "side": side,
+            "base_fee": base_fee,
+            "quote_fee": quote_fee,
+        })
 
     def _trade_sort_key(item: dict) -> tuple[int, int, str]:
         raw_id = item.get("id")
@@ -176,19 +167,18 @@ class QuantityDecision:
     applied_scale: float = 1.0
 
 
-def resolve_assets(symbol: str, base: Optional[str] = None,
-                   quote: Optional[str] = None) -> tuple[str, Optional[str]]:
-    symbol_u = "" if isinstance(symbol, bool) or hasattr(symbol, "_mock_name") else str(symbol or "").strip().upper()
-    base_u = (
-        (str(base).strip().upper() or None)
-        if (base and not isinstance(base, bool) and not hasattr(base, "_mock_name"))
-        else None
-    )
-    quote_u = (
-        (str(quote).strip().upper() or None)
-        if (quote and not isinstance(quote, bool) and not hasattr(quote, "_mock_name"))
-        else None
-    )
+def _clean_asset_arg(val: Any) -> Optional[str]:
+    if not val or isinstance(val, bool) or hasattr(val, "_mock_name"):
+        return None
+    return str(val).strip().upper() or None
+
+
+def resolve_assets(
+    symbol: str, base: Optional[str] = None, quote: Optional[str] = None
+) -> tuple[str, Optional[str]]:
+    symbol_u = _clean_asset_arg(symbol) or ""
+    base_u = _clean_asset_arg(base)
+    quote_u = _clean_asset_arg(quote)
     if base_u and quote_u:
         return base_u, quote_u
     if base_u and symbol_u.startswith(base_u) and symbol_u != base_u:
@@ -197,12 +187,7 @@ def resolve_assets(symbol: str, base: Optional[str] = None,
     for suffix in QUOTE_SUFFIXES:
         if symbol_u.endswith(suffix) and len(symbol_u) > len(suffix):
             stem = symbol_u[:-len(suffix)].rstrip("/-_")
-            if (
-                len(stem) == 5
-                and stem.startswith("X")
-                and stem.endswith("Z")
-                and stem[:-1] in _LEGACY_KRAKEN_X_BASES
-            ):
+            if len(stem) == 5 and stem.startswith("X") and stem.endswith("Z") and stem[:-1] in _LEGACY_KRAKEN_X_BASES:
                 stem = stem[:-1]
             if stem:
                 return base_u or stem, quote_u or suffix
@@ -213,11 +198,15 @@ def resolve_assets(symbol: str, base: Optional[str] = None,
     return base_u or symbol_u, quote_u
 
 
-def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
-                         symbol: str, side: str, price: float, *,
-                         base: Optional[str] = None,
-                         quote: Optional[str] = None
-                         ) -> tuple[Optional[float], Optional[str]]:
+def balance_cap_quantity(
+    free_balance: Callable[[str], Optional[float]],
+    symbol: str,
+    side: str,
+    price: float,
+    *,
+    base: Optional[str] = None,
+    quote: Optional[str] = None,
+) -> tuple[Optional[float], Optional[str]]:
     base, quote = resolve_assets(symbol, base, quote)
     side = normalize_side(side)
     if side not in {"BUY", "SELL"}:
@@ -225,12 +214,9 @@ def balance_cap_quantity(free_balance: Callable[[str], Optional[float]],
     asset = base if side == "SELL" else quote
     if not asset:
         return None, asset
-    if side == "BUY":
-        price_f = safe_pos_float(price, default=None)
-        if price_f is None:
-            return None, asset
-    else:
-        price_f = 0.0
+    price_f = safe_pos_float(price, default=None) if side == "BUY" else 0.0
+    if side == "BUY" and price_f is None:
+        return None, asset
     balance = safe_nonneg_float(free_balance(asset), default=None)
     if balance is None:
         return None, asset
@@ -267,10 +253,7 @@ def t212_sell_balance_cap(balance: float, price: float) -> float:
 
 
 def t212_adjust_partial_sell_qty(
-    requested_qty: float,
-    balance: float,
-    price: float,
-    min_notional_usd: float = 0.0,
+    requested_qty: float, balance: float, price: float, min_notional_usd: float = 0.0
 ) -> Tuple[float, Optional[str]]:
     """Adjust a partial T212 SELL quantity if it would leave an unsellable <$6 remainder."""
     req_f = safe_pos_float(requested_qty, default=0.0) or 0.0
@@ -288,12 +271,7 @@ def t212_adjust_partial_sell_qty(
 
 
 def venue_fee_cap_quantity(
-    venue: Any,
-    side: str,
-    price: float,
-    available_qty: float,
-    *,
-    default_buy_buf: float = 1.0,
+    venue: Any, side: str, price: float, available_qty: float, *, default_buy_buf: float = 1.0
 ) -> float:
     """Apply venue-specific BUY slippage/fee buffers and T212 SELL dust caps."""
     venue_l = normalize_venue_name(str(venue or ""))
@@ -305,9 +283,7 @@ def venue_fee_cap_quantity(
     if normalize_side(side) == "BUY":
         buf = 0.95 if venue_l == "hyperliquid" else (0.998 if venue_l == "t212" else default_buy_buf)
         return avail_f * buf
-    if venue_l == "t212":
-        return t212_sell_balance_cap(avail_f, price)
-    return avail_f
+    return t212_sell_balance_cap(avail_f, price) if venue_l == "t212" else avail_f
 
 
 def clamp_notional_to_wallet_balance(
@@ -319,12 +295,7 @@ def clamp_notional_to_wallet_balance(
     min_notional_usd: float = 10.0,
     symbol: Optional[str] = None,
 ) -> Tuple[bool, float, str]:
-    """Single Source of Truth to clamp desired USD notional to real spot wallet liquidity.
-
-    Returns ``(allowed, clamped_usd, reason)`` symmetrically across BUY (quote asset)
-    and SELL (base asset), applying venue BUY slippage/fee buffers and T212 SELL
-    fractional-dust protection.
-    """
+    """Single Source of Truth to clamp desired USD notional to real spot wallet liquidity."""
     desired_f = safe_pos_float(desired_usd, default=None)
     if desired_f is None:
         return False, 0.0, f"Invalid desired notional USD: {desired_usd!r}"
@@ -376,17 +347,11 @@ def clamp_notional_to_wallet_balance(
 
     min_usd = safe_nonneg_float(min_notional_usd, default=10.0) or 0.0
     if avail_usd < min_usd:
-        return (
-            False,
-            0.0,
-            f"Insufficient free {target_asset} balance (${avail_usd:.2f} < ${min_usd:.2f})",
-        )
+        return False, 0.0, f"Insufficient free {target_asset} balance (${avail_usd:.2f} < ${min_usd:.2f})"
     if avail_usd < desired_usd:
         return True, avail_usd, f"Clamped notional from ${desired_usd:.2f} to available ${avail_usd:.2f}"
     if side_u == "SELL" and venue_l == "t212" and price > 0:
-        adj_qty, adj_mode = t212_adjust_partial_sell_qty(
-            desired_usd / price, bal, price, min_notional_usd=min_usd
-        )
+        adj_qty, adj_mode = t212_adjust_partial_sell_qty(desired_usd / price, bal, price, min_notional_usd=min_usd)
         if adj_mode == "leave_min_6_remainder":
             max_part_usd = round(adj_qty * price, 4)
             return (
@@ -454,35 +419,33 @@ def extract_regime_buy_scale(regime_context: Any, explicit_scale: Any = None) ->
     """Extract the BUY risk-reduction scale factor from ``explicit_scale`` or ``regime_context``."""
     raw_scale = explicit_scale
     if raw_scale is None and regime_context is not None:
-        raw_scale = (
-            regime_context.get("suggested_scale")
-            if isinstance(regime_context, dict)
-            else getattr(regime_context, "suggested_scale", None)
-        )
+        raw_scale = obj_attr(regime_context, "suggested_scale")
         if raw_scale is None:
-            by_side = (
-                regime_context.get("_suggested_scale_by_side")
-                if isinstance(regime_context, dict)
-                else getattr(regime_context, "_suggested_scale_by_side", None)
-            )
+            by_side = obj_attr(regime_context, "_suggested_scale_by_side")
             if isinstance(by_side, dict):
                 raw_scale = by_side.get("BUY")
     return parse_scale_factor(raw_scale, default=None)
 
 
-def decide_quantity(provider, symbol: str, side: str, price: float,
-                    requested_qty: Optional[float], *, base: Optional[str] = None,
-                    quote: Optional[str] = None, cancelorders: bool = False,
-                    hours: float = 5,
-                    apply_policy: bool = True,
-                    market: bool = False,
-                    enforce_business_minimum: bool = True,
-                    regime_context=None,
-                    scale: Optional[float] = None,
-                    known_balance: Optional[float] = None,
-                    **kwargs) -> QuantityDecision:
-    # Historical safe contract: None means "maximum permitted", not missing
-    # validation. Balance, policy, and the fee cap determine final quantity.
+def decide_quantity(
+    provider,
+    symbol: str,
+    side: str,
+    price: float,
+    requested_qty: Optional[float],
+    *,
+    base: Optional[str] = None,
+    quote: Optional[str] = None,
+    cancelorders: bool = False,
+    hours: float = 5,
+    apply_policy: bool = True,
+    market: bool = False,
+    enforce_business_minimum: bool = True,
+    regime_context=None,
+    scale: Optional[float] = None,
+    known_balance: Optional[float] = None,
+    **kwargs,
+) -> QuantityDecision:
     side = normalize_side(side)
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be BUY or SELL")
@@ -496,21 +459,25 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     bal_fn = (lambda _asset: known_balance) if known_balance is not None else provider.free_balance
     balance_cap, asset = balance_cap_quantity(bal_fn, symbol, side, price, base=base, quote=quote)
     if balance_cap is None:
-        return QuantityDecision(requested, None, None, None, 0.0,
-                                "balance_unavailable", asset)
+        return QuantityDecision(requested, None, None, None, 0.0, "balance_unavailable", asset)
     if balance_cap <= 0:
-        return QuantityDecision(requested, 0.0, 0.0, 0.0, 0.0,
-                                "insufficient_funds", asset)
+        return QuantityDecision(requested, 0.0, 0.0, 0.0, 0.0, "insufficient_funds", asset)
     policy_cap = requested
     if _parse_bool_flag(apply_policy, default=True):
         raw_policy_cap = provider.policy_cap_quantity(
-            symbol, side, price, requested, balance_cap,
-            base=base, quote=quote,
-            cancelorders=_parse_bool_flag(cancelorders, default=False), hours=hours)
+            symbol,
+            side,
+            price,
+            requested,
+            balance_cap,
+            base=base,
+            quote=quote,
+            cancelorders=_parse_bool_flag(cancelorders, default=False),
+            hours=hours,
+        )
         policy_cap = safe_nonneg_float(raw_policy_cap, default=None)
         if policy_cap is None:
-            return QuantityDecision(requested, balance_cap, None, None, 0.0,
-                                    "policy_unavailable", asset)
+            return QuantityDecision(requested, balance_cap, None, None, 0.0, "policy_unavailable", asset)
     raw_fee_cap = provider.fee_cap_quantity(symbol, side, price, balance_cap)
     fee_cap = safe_nonneg_float(raw_fee_cap, default=0.0) or 0.0
 
@@ -522,14 +489,13 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
     if side == "SELL" and venue_l == "t212" and final > 0:
         final = _round_qty(
             t212_adjust_partial_sell_qty(
-                final, balance_cap, price,
+                final,
+                balance_cap,
+                price,
                 min_notional_usd=6.0 if _parse_bool_flag(enforce_business_minimum, default=True) else 0.0,
             )[0]
         )
 
-    # Market-intelligence quantity scaling (e.g. Weibull trend exhaustion, derivatives crowding)
-    # Applied per-order without mutating the shared market context.
-    # Exclusively applies to BUY entries; exits and SELL orders must never be shrunk by entry risk guards.
     scale_applied = False
     applied_scale = 1.0
     eff_scale_f = extract_regime_buy_scale(regime_context, scale) if side == "BUY" else None
@@ -540,8 +506,10 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
             eff_scale_f = 0.0
         else:
             scaled_amount = _round_qty(final * eff_scale_f)
-        print(f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
-              f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})")
+        print(
+            f"[{symbol}] {side.upper()} quantity scaled by market-intelligence: "
+            f"{final} -> {scaled_amount} (scale={eff_scale_f:.2f})"
+        )
         final = scaled_amount
         scale_applied = True
         applied_scale = eff_scale_f
@@ -554,22 +522,16 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
         if final > 0
         else (
             "insufficient_funds"
-            if (
-                wallet_constrained
-                and wallet_final <= 0
-                and (requested == float("inf") or _round_qty(requested) > 0)
-            )
+            if (wallet_constrained and wallet_final <= 0 and (requested == float("inf") or _round_qty(requested) > 0))
             else "qty_zero_after_policy"
         )
     )
-    # Reject a venue-invalid candidate before it can become a durable retry intent.
-    # The provider owns exact step, tick, notional, and market-applicability rules.
     refusal = (
         check_order_filter_refusal(
-            provider, symbol, side, price, final,
-            market=market, enforce_business_minimum=enforce_business_minimum,
+            provider, symbol, side, price, final, market=market, enforce_business_minimum=enforce_business_minimum
         )
-        if final > 0 else None
+        if final > 0
+        else None
     )
     if refusal:
         if (
@@ -579,8 +541,13 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                 or (
                     _round_qty(requested) > 0
                     and not check_order_filter_refusal(
-                        provider, symbol, side, price, _round_qty(requested),
-                        market=market, enforce_business_minimum=enforce_business_minimum,
+                        provider,
+                        symbol,
+                        side,
+                        price,
+                        _round_qty(requested),
+                        market=market,
+                        enforce_business_minimum=enforce_business_minimum,
                     )
                 )
             )
@@ -589,24 +556,30 @@ def decide_quantity(provider, symbol: str, side: str, price: float,
                 or (
                     wallet_final > 0
                     and check_order_filter_refusal(
-                        provider, symbol, side, price, wallet_final,
-                        market=market, enforce_business_minimum=enforce_business_minimum,
+                        provider,
+                        symbol,
+                        side,
+                        price,
+                        wallet_final,
+                        market=market,
+                        enforce_business_minimum=enforce_business_minimum,
                     )
                 )
             )
         ):
             refusal = "insufficient_funds"
-        return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
-                                0.0, refusal, asset,
-                                scale_applied=scale_applied, applied_scale=applied_scale)
-    return QuantityDecision(requested, balance_cap, policy_cap, fee_cap,
-                            final, reason, asset,
-                            scale_applied=scale_applied, applied_scale=applied_scale)
+        return QuantityDecision(
+            requested, balance_cap, policy_cap, fee_cap, 0.0, refusal, asset, scale_applied=scale_applied, applied_scale=applied_scale
+        )
+    return QuantityDecision(
+        requested, balance_cap, policy_cap, fee_cap, final, reason, asset, scale_applied=scale_applied, applied_scale=applied_scale
+    )
 
 
 # ---------------------------------------------------------------------------
 # Binance symbol-filter parser and financially safe order normalization
 # ---------------------------------------------------------------------------
+
 
 class BinanceFilterError(ValueError):
     """Symbol metadata or a requested order violates Binance exchange filters."""
@@ -671,9 +644,7 @@ class BinanceOrderRules:
         filters = {
             row.get("filterType").strip(): row
             for row in (raw_filters or [])
-            if isinstance(row, dict)
-            and isinstance(row.get("filterType"), str)
-            and row.get("filterType").strip()
+            if isinstance(row, dict) and isinstance(row.get("filterType"), str) and row.get("filterType").strip()
         }
         price = filters.get("PRICE_FILTER")
         lot = filters.get("LOT_SIZE")
@@ -707,8 +678,7 @@ class BinanceOrderRules:
             raise BinanceFilterError("baseAsset and quoteAsset must not be boolean")
         if not isinstance(raw_base, str) or not isinstance(raw_quote, str):
             raise BinanceFilterError("baseAsset and quoteAsset are mandatory")
-        base = raw_base.strip()
-        quote = raw_quote.strip()
+        base, quote = raw_base.strip(), raw_quote.strip()
         if not base or not quote:
             raise BinanceFilterError("baseAsset and quoteAsset are mandatory")
         return cls(
@@ -721,13 +691,17 @@ class BinanceOrderRules:
             market_step=_decimal(market.get("stepSize"), name="marketStepSize", allow_zero=False),
             market_min=_decimal(market.get("minQty", 0), name="marketMinQty"),
             market_max=_decimal(market.get("maxQty", 0), name="marketMaxQty"),
-            min_notional=min_notional, max_notional=max_notional,
-            min_notional_market=min_market, max_notional_market=max_market,
-            base_asset=base, quote_asset=quote,
+            min_notional=min_notional,
+            max_notional=max_notional,
+            min_notional_market=min_market,
+            max_notional_market=max_market,
+            base_asset=base,
+            quote_asset=quote,
         )
 
-    def normalize(self, *, quantity, price=None, market: bool = False,
-                  reference_price=None, business_min_notional=0) -> tuple[Decimal, Decimal | None]:
+    def normalize(
+        self, *, quantity, price=None, market: bool = False, reference_price=None, business_min_notional=0
+    ) -> tuple[Decimal, Decimal | None]:
         market = _parse_bool(market, default=False)
         qty = _decimal(quantity, name="quantity", allow_zero=False)
         step = self.market_step if market else self.lot_step
@@ -739,45 +713,34 @@ class BinanceOrderRules:
 
         normalized_price = None
         if not market:
-            normalized_price = _floor_step(
-                _decimal(price, name="price", allow_zero=False), self.tick_size)
-            if (normalized_price <= 0 or normalized_price < self.min_price
-                    or (self.max_price > 0 and normalized_price > self.max_price)):
+            normalized_price = _floor_step(_decimal(price, name="price", allow_zero=False), self.tick_size)
+            if normalized_price <= 0 or normalized_price < self.min_price or (self.max_price > 0 and normalized_price > self.max_price):
                 raise BinanceFilterError(
-                    f"price {normalized_price} violates [{self.min_price}, "
-                    f"{self.max_price or 'unbounded'}]")
+                    f"price {normalized_price} violates [{self.min_price}, {self.max_price or 'unbounded'}]"
+                )
 
-        notional_price = (reference_price if market else normalized_price)
-        notional = None
-        if notional_price is not None:
-            notional = qty * _decimal(notional_price, name="reference_price", allow_zero=False)
+        notional_price = reference_price if market else normalized_price
+        notional = (
+            qty * _decimal(notional_price, name="reference_price", allow_zero=False)
+            if notional_price is not None
+            else None
+        )
         business_min = _decimal(business_min_notional, name="business_min_notional")
         exchange_min = self.min_notional if (not market or self.min_notional_market) else Decimal(0)
         required_min = max(exchange_min, business_min)
         if required_min > 0 and (notional is None or notional < required_min):
             raise BinanceFilterError(f"notional {notional} is below minimum {required_min}")
-        if (self.max_notional > 0 and (not market or self.max_notional_market)
-                and (notional is None or notional > self.max_notional)):
+        if self.max_notional > 0 and (not market or self.max_notional_market) and (notional is None or notional > self.max_notional):
             raise BinanceFilterError(f"notional {notional} exceeds maximum {self.max_notional}")
         return qty, normalized_price
 
 
 def decimal_places(step: Decimal | str | int | float) -> int:
     """Return display precision implied by a positive tick or step."""
-    if isinstance(step, bool) or step is None:
+    if not isinstance(step, (Decimal, int, float, str)):
         raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
-    if isinstance(step, Decimal):
-        if not step.is_finite() or step <= 0:
-            raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
-        parsed = step
-    elif isinstance(step, (int, float, str)):
-        parsed = _decimal(step, name="step for decimal_places", allow_zero=False)
-    else:
-        raise BinanceFilterError(f"invalid step for decimal_places: {step!r}")
+    parsed = _decimal(step, name="step for decimal_places", allow_zero=False)
     return max(0, -int(parsed.normalize().as_tuple().exponent))
 
 
 register_module_aliases(__name__, "providers.binance_filters")
-
-
-

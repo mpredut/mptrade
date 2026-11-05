@@ -9,7 +9,7 @@ import os
 from typing import Any, Callable, Iterable
 
 import binance_cache_health as account_cache_health
-from botcore import exact_int, safe_pos_int, strict_ascii_int
+from botcore import safe_pos_int, strict_ascii_int
 from state_io import read_json_dict
 
 CACHE_META_SCHEMA_VERSION = 2
@@ -20,15 +20,11 @@ def _is_strict_int(val: Any, min_val: int = 0) -> bool:
 
 
 def normalize_timestamp_map(
-    mapping: Any,
-    label: str = "timestamp map",
-    *,
-    error_message: str | None = None,
+    mapping: Any, label: str = "timestamp map", *, error_message: str | None = None
 ) -> dict[str, int]:
     """Validate and copy a ``{symbol: non_negative_int_ms}`` map."""
-    msg = error_message or f"invalid {label}"
     if not isinstance(mapping, dict):
-        raise ValueError(msg)
+        raise ValueError(error_message or f"invalid {label}")
     normalized: dict[str, int] = {}
     for symbol, value in mapping.items():
         if not isinstance(symbol, str) or not symbol.strip() or not _is_strict_int(value):
@@ -39,12 +35,7 @@ def normalize_timestamp_map(
 
 def snapshot_data_version(items: dict[str, Any], fetchtime: dict[str, Any] | None = None) -> str:
     """Compute a deterministic Blake2s-128 content version for an Order items snapshot."""
-    canonical = json.dumps(
-        {"items": items},
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    canonical = json.dumps({"items": items}, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "snapshot:" + hashlib.blake2s(canonical, digest_size=16).hexdigest()
 
 
@@ -55,16 +46,10 @@ def trade_data_version(stream_id: str, revision: int) -> str:
     return f"{stream_id}:{revision}"
 
 
-def trade_records_digest(
-    records: Iterable[tuple[str, dict[str, Any]]],
-    initial_digest: str = "",
-) -> str:
+def trade_records_digest(records: Iterable[tuple[str, dict[str, Any]]], initial_digest: str = "") -> str:
     """Extend a deterministic Blake2s-128 digest chain with canonical Trade rows."""
     if initial_digest:
-        if (
-            not isinstance(initial_digest, str)
-            or not initial_digest.startswith("chain:")
-        ):
+        if not isinstance(initial_digest, str) or not initial_digest.startswith("chain:"):
             raise ValueError("invalid Trade content digest")
         try:
             state = bytes.fromhex(initial_digest.removeprefix("chain:"))
@@ -75,11 +60,7 @@ def trade_records_digest(
     else:
         state = bytes(16)
     for symbol, item in records:
-        row = json.dumps(
-            {"s": symbol, "i": item},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        ).encode("utf-8") + b"\n"
+        row = json.dumps({"s": symbol, "i": item}, ensure_ascii=True, separators=(",", ":")).encode("utf-8") + b"\n"
         state = hashlib.blake2s(state + row, digest_size=16).digest()
     return "chain:" + state.hex()
 
@@ -123,15 +104,7 @@ def trade_semantic_signature(item: dict[str, Any]) -> tuple[Any, ...]:
         raise ValueError("invalid Trade price or qty") from exc
     if not (price_dec.is_finite() and qty_dec.is_finite()):
         raise ValueError("non-finite Trade price or qty")
-    return (
-        raw_sym.strip().upper(),
-        trade_id_int,
-        order_id_int,
-        price_dec,
-        qty_dec,
-        time_int,
-        raw_buyer,
-    )
+    return (raw_sym.strip().upper(), trade_id_int, order_id_int, price_dec, qty_dec, time_int, raw_buyer)
 
 
 def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -143,9 +116,7 @@ def dedupe_trade_items_by_id(items: Iterable[dict[str, Any]]) -> list[dict[str, 
         trade_id = str(signature[1])
         if trade_id in seen:
             if seen[trade_id] != signature:
-                raise ValueError(
-                    f"conflicting Trade rows for immutable ID {trade_id}"
-                )
+                raise ValueError(f"conflicting Trade rows for immutable ID {trade_id}")
             continue
         seen[trade_id] = signature
         deduped.append(item)
@@ -162,11 +133,8 @@ def counts_for_records(records: Iterable[tuple[str, Any]]) -> dict[str, int]:
     except TypeError:
         return {}
     for entry in iterator:
-        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
-            continue
-        symbol, _item = entry
-        if isinstance(symbol, str) and symbol:
-            counts[symbol] += 1
+        if isinstance(entry, (tuple, list)) and len(entry) == 2 and isinstance(entry[0], str) and entry[0]:
+            counts[entry[0]] += 1
     return dict(counts)
 
 
@@ -174,14 +142,11 @@ def nonzero_counts(counts: dict[str, int]) -> dict[str, int]:
     """Filter ``counts`` to symbols with at least one record."""
     if not isinstance(counts, dict):
         return {}
-    out: dict[str, int] = {}
-    for symbol, count in counts.items():
-        if not isinstance(symbol, str) or not symbol:
-            continue
-        c_int = safe_pos_int(count, default=0)
-        if c_int > 0:
-            out[symbol] = c_int
-    return out
+    return {
+        symbol: c_int
+        for symbol, count in counts.items()
+        if isinstance(symbol, str) and symbol and (c_int := safe_pos_int(count, default=0)) > 0
+    }
 
 
 def _normalize_cursor_map(
@@ -209,14 +174,9 @@ def build_account_meta_snapshot(
     schema_version: int = CACHE_META_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """Build a schema v2 ``.meta`` manifest dictionary for an account cache."""
-    normalized_fetchtime = normalize_timestamp_map(
-        fetchtime,
-        error_message="invalid cache manifest fetchtime",
-    )
+    normalized_fetchtime = normalize_timestamp_map(fetchtime, error_message="invalid cache manifest fetchtime")
     normalized_rest_cursor = _normalize_cursor_map(
-        rest_sync_cursor,
-        normalized_fetchtime,
-        error_message="invalid cache manifest rest_sync_cursor",
+        rest_sync_cursor, normalized_fetchtime, error_message="invalid cache manifest rest_sync_cursor"
     )
     payload: dict[str, Any] = {
         "schema_version": schema_version,
@@ -254,25 +214,18 @@ def load_versioned_account_meta_file(
     """Load and strictly validate a versioned account-cache ``.meta`` manifest."""
     try:
         metadata = read_json_dict(meta_path)
+        if metadata.get("schema_version") != schema_version:
+            raise ValueError("schema_version mismatch")
+        if is_trade_cache:
+            content_digest = metadata.get("content_digest")
+            if not content_digest:
+                raise ValueError("missing Trade content digest")
+            trade_records_digest([], content_digest)
     except (OSError, ValueError, TypeError) as exc:
         if optional:
             return None
         raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
 
-    if metadata.get("schema_version") != schema_version:
-        if optional:
-            return None
-        raise account_cache_health.AccountCacheNotReady(reader_reason)
-    if is_trade_cache:
-        content_digest = metadata.get("content_digest")
-        try:
-            if not content_digest:
-                raise ValueError("missing Trade content digest")
-            trade_records_digest([], content_digest)
-        except ValueError as exc:
-            if optional:
-                return None
-            raise account_cache_health.AccountCacheNotReady(reader_reason) from exc
     try:
         version = metadata["data_version"]
         fetchtime = metadata["fetchtime"]
@@ -283,19 +236,11 @@ def load_versioned_account_meta_file(
             raise ValueError("cache marker and manifest versions differ")
         if not isinstance(fetchtime, dict) or not isinstance(counts, dict):
             raise ValueError("invalid cache manifest maps")
-        normalized_fetchtime = normalize_timestamp_map(
-            fetchtime,
-            error_message="invalid cache manifest fetchtime",
-        )
+        normalized_fetchtime = normalize_timestamp_map(fetchtime, error_message="invalid cache manifest fetchtime")
         normalized_rest_cursor = _normalize_cursor_map(
-            metadata.get("rest_sync_cursor"),
-            normalized_fetchtime,
-            error_message="invalid cache manifest rest_sync_cursor",
+            metadata.get("rest_sync_cursor"), normalized_fetchtime, error_message="invalid cache manifest rest_sync_cursor"
         )
-        normalized_counts = normalize_timestamp_map(
-            counts,
-            error_message="invalid cache manifest count",
-        )
+        normalized_counts = normalize_timestamp_map(counts, error_message="invalid cache manifest count")
         result: dict[str, Any] = {
             "schema_version": schema_version,
             "data_version": version,
@@ -380,11 +325,7 @@ def read_trade_snapshot_strict(
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int]]:
     """Read and validate a complete committed Trade JSONL snapshot against its manifest."""
     records = read_trade_records_range_strict(
-        path,
-        0,
-        metadata["committed_bytes"],
-        is_valid_item_fn=is_valid_item_fn,
-        reader_reason=reader_reason,
+        path, 0, metadata["committed_bytes"], is_valid_item_fn=is_valid_item_fn, reader_reason=reader_reason
     )
     if trade_records_digest(records) != metadata["content_digest"]:
         raise account_cache_health.AccountCacheNotReady(reader_reason)
@@ -407,8 +348,7 @@ def read_trade_snapshot_strict(
 
 
 def _validate_order_items_map(
-    items: Any,
-    is_valid_item_fn: Callable[[dict[str, Any]], bool] | None = None,
+    items: Any, is_valid_item_fn: Callable[[dict[str, Any]], bool] | None = None
 ) -> dict[str, int]:
     for symbol, orders in items.items():
         if (
@@ -421,8 +361,7 @@ def _validate_order_items_map(
 
 
 def read_legacy_order_snapshot_strict(
-    path: str,
-    legacy_meta: dict[str, Any] | None,
+    path: str, legacy_meta: dict[str, Any] | None
 ) -> tuple[dict[str, list[Any]], dict[str, int], dict[str, int], dict[str, int]]:
     """Read and validate a pre-v2 Order snapshot against optional legacy metadata."""
     data = read_json_dict(path)
@@ -466,16 +405,10 @@ def read_order_snapshot_strict(
             raise ValueError("invalid Order cache maps")
         if payload.get("data_version") != required_version:
             raise ValueError("Order cache and marker versions differ")
-        normalized_fetchtime = normalize_timestamp_map(
-            fetchtime,
-            error_message="invalid Order cache fetchtime",
-        )
+        normalized_fetchtime = normalize_timestamp_map(fetchtime, error_message="invalid Order cache fetchtime")
         raw_rest_cursor = payload.get("rest_sync_cursor")
         if raw_rest_cursor is not None:
-            normalize_timestamp_map(
-                raw_rest_cursor,
-                error_message="invalid Order cache rest_sync_cursor",
-            )
+            normalize_timestamp_map(raw_rest_cursor, error_message="invalid Order cache rest_sync_cursor")
         actual_counts = _validate_order_items_map(items, is_valid_item_fn)
         if actual_counts != metadata["counts"]:
             raise ValueError("Order cache counts differ from its manifest")
@@ -501,14 +434,10 @@ def validate_account_cache_state(
     is_valid_item_fn: Callable[[dict[str, Any]], bool],
 ) -> None:
     """Reject any in-memory account cache row or timestamp map that strict readers could not accept."""
-    normalize_timestamp_map(
-        fetchtime_per_symbol,
-        error_message=f"invalid {cls_name} cache fetchtime",
-    )
+    normalize_timestamp_map(fetchtime_per_symbol, error_message=f"invalid {cls_name} cache fetchtime")
     if rest_sync_cursor_per_symbol:
         normalize_timestamp_map(
-            rest_sync_cursor_per_symbol,
-            error_message=f"invalid {cls_name} cache rest_sync_cursor",
+            rest_sync_cursor_per_symbol, error_message=f"invalid {cls_name} cache rest_sync_cursor"
         )
     for symbol, items in cache.items():
         if not isinstance(symbol, str) or not isinstance(items, list):
@@ -521,10 +450,7 @@ def validate_account_cache_state(
             if is_trade_cache and str(item["symbol"]).upper() != symbol.upper():
                 raise ValueError("Trade row symbol differs from its bucket")
             if is_order_cache:
-                if (
-                    item.get("symbol") is not None
-                    and str(item["symbol"]).upper() != symbol.upper()
-                ):
+                if item.get("symbol") is not None and str(item["symbol"]).upper() != symbol.upper():
                     raise ValueError("Order row symbol differs from its bucket")
                 order_id = str(_strict_int_field(item["orderId"]))
                 if order_id in order_ids:
@@ -535,8 +461,7 @@ def validate_account_cache_state(
                     previous_order = fill_owners.get(fill_key)
                     if previous_order is not None:
                         raise ValueError(
-                            f"immutable fill ID {fill_key} belongs to both "
-                            f"orders {previous_order} and {order_id}"
+                            f"immutable fill ID {fill_key} belongs to both orders {previous_order} and {order_id}"
                         )
                     fill_owners[fill_key] = order_id
         if is_trade_cache and len(dedupe_trade_items_by_id(items)) != len(items):

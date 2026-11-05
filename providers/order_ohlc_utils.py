@@ -9,6 +9,7 @@ from botcore import (
     _parse_bool_flag,
     exact_pos_int,
     normalize_epoch_sec,
+    normalize_side,
     obj_attr,
     resolve_now_ts,
     safe_float,
@@ -18,7 +19,9 @@ from botcore import (
 from cachepaths import canonical_base_asset
 
 
-_TIMESTAMP_KEYS = ("timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms")
+_TIMESTAMP_KEYS = (
+    "timestamp", "time", "updateTime", "transactTime", "opentm", "closetm", "workingTime", "T", "E", "ts", "ts_ms",
+)
 _ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "txid", "oid", "i", "id")
 _PRICE_KEYS = ("price", "px", "limitPx", "fillPrice", "limit", "limitPrice", "averagePrice", "avgPrice", "rate", "L", "p")
 _QTY_KEYS = (
@@ -62,19 +65,11 @@ def _nonneg_abs_float(value: Any) -> Optional[float]:
 
 def _parse_epoch_or_iso_s(value: Any) -> Optional[float]:
     numeric = safe_nonneg_float(value, default=None)
-    if numeric is not None:
-        return numeric
-    return normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
+    return numeric if numeric is not None else normalize_epoch_sec(value, default=None, allow_zero=True, allow_iso=True)
 
 
 def normalize_timestamp_ms(value: Any, default: Optional[int] = None) -> Optional[int]:
-    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds.
-
-    Epoch values in ``[1_000_000_000, 100_000_000_000)`` (all Unix seconds between
-    2001 and 2286) and non-integer float seconds are converted to milliseconds.
-    Millisecond values (``>= 100_000_000_000``) and small synthetic test integers
-    (``< 1_000_000_000``) are preserved as-is.
-    """
+    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
     numeric = safe_nonneg_float(value, default=None)
     if numeric is None:
         numeric = _parse_epoch_or_iso_s(value)
@@ -107,6 +102,13 @@ def extract_timestamp_s(order: Any, default: Optional[float] = None) -> Optional
     return _first_mapped(order, _TIMESTAMP_KEYS, lambda v: normalize_epoch_sec(v, allow_zero=True, allow_iso=True), default)
 
 
+_INVALID_OID_STRINGS = frozenset({
+    "0", "0.0", "-0", "+0", "+0.0", "-0.0",
+    "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
+    "none", "null",
+})
+
+
 def clean_order_id(val: Any) -> Optional[str]:
     if val is None or isinstance(val, (bool, dict, list, tuple, set, frozenset)):
         return None
@@ -117,15 +119,7 @@ def clean_order_id(val: Any) -> Optional[str]:
     if not isinstance(val, (str, int)):
         return None
     text = str(val).strip()
-    if (
-        not text
-        or text.startswith("-")
-        or text.lower() in {
-            "0", "0.0", "-0", "+0", "+0.0", "-0.0",
-            "nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity",
-            "none", "null",
-        }
-    ):
+    if not text or text.startswith("-") or text.lower() in _INVALID_OID_STRINGS:
         return None
     if text.endswith(".0") and text[:-2].lstrip("+").isdigit():
         text = text[:-2]
@@ -151,17 +145,12 @@ def normalize_scalar_order_id(val: Any) -> int | str | None:
 
 
 def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]:
-    """Extract and normalize a venue order ID from any response shape.
-
-    Handles ``SubmissionOutcome`` objects, venue dicts (``orderId``, ``order_id``,
-    ``id``, ``txid``, ``oid``, ``i``), Kraken ``txid`` lists/tuples, and scalar IDs.
-    """
+    """Extract and normalize a venue order ID from any response shape."""
     if order is None or isinstance(order, bool):
         return default
     if isinstance(order, (list, tuple)):
         for item in order:
-            cleaned = extract_order_id(item)
-            if cleaned is not None:
+            if (cleaned := extract_order_id(item)) is not None:
                 return cleaned
         return default
     if hasattr(order, "order_id") and hasattr(order, "state"):
@@ -171,18 +160,6 @@ def extract_order_id(order: Any, default: Optional[str] = None) -> Optional[str]
         return _first_mapped(order, _ORDER_ID_KEYS, extract_order_id, default)
     cleaned = clean_order_id(order)
     return cleaned if cleaned is not None else default
-
-
-def normalize_side(side: Any) -> str:
-    """Normalize a scalar order side token to ``'BUY'`` or ``'SELL'``."""
-    if side is None or isinstance(side, bool):
-        return ""
-    s = str(side).strip().upper()
-    if s in ("B", "BUY", "BID", "LONG", "OPEN LONG", "CLOSE SHORT"):
-        return "BUY"
-    if s in ("A", "S", "SELL", "SOLD", "ASK", "SHORT", "CLOSE LONG", "OPEN SHORT"):
-        return "SELL"
-    return ""
 
 
 def resolve_market_flag(force: Any = False, market: Any = False, **kwargs) -> bool:
@@ -199,18 +176,15 @@ def extract_order_side(order: Any) -> str:
         return s_norm
     descr = order.get("descr")
     for raw_type in (order.get("type"), descr.get("type") if isinstance(descr, dict) else None):
-        t_norm = normalize_side(raw_type)
-        if t_norm in ("BUY", "SELL"):
+        if (t_norm := normalize_side(raw_type)) in ("BUY", "SELL"):
             return t_norm
     raw_buyer = order.get("isBuyer")
     if raw_buyer is not None:
         parsed_b = _parse_bool_flag(raw_buyer, None)
         if parsed_b is not None:
             return "BUY" if parsed_b else "SELL"
-        if isinstance(raw_buyer, str):
-            b_norm = raw_buyer.strip().lower()
-            if b_norm in ("b", "buy", "s", "sell"):
-                return "BUY" if b_norm.startswith("b") else "SELL"
+        if isinstance(raw_buyer, str) and (b_norm := raw_buyer.strip().lower()) in ("b", "buy", "s", "sell"):
+            return "BUY" if b_norm.startswith("b") else "SELL"
     for sq_key in ("signed_qty", "orderedQuantity", "quantity"):
         sq = safe_float(order.get(sq_key), default=0.0)
         if sq < 0.0:
@@ -218,6 +192,20 @@ def extract_order_side(order: Any) -> str:
         if sq > 0.0 and (sq_key in ("signed_qty", "orderedQuantity") or "ticker" in order or "limitPrice" in order):
             return "BUY"
     return ""
+
+
+_COST_EXEC_KEY_PAIRS = (
+    ("cummulativeQuoteQty", "executedQty"),
+    ("cummulativeQuoteQty", "qty"),
+    ("cummulativeQuoteQty", "quantity"),
+    ("quoteQty", "qty"),
+    ("quoteQty", "quantity"),
+    ("cost", "vol_exec"),
+    ("cost", "vol"),
+    ("filledValue", "filledQuantity"),
+    ("Y", "l"),
+    ("Z", "z"),
+)
 
 
 def extract_order_price(order: Any, default: float = 0.0) -> float:
@@ -228,33 +216,17 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
     if val is not None:
         return val
     descr = order.get("descr")
-    if isinstance(descr, dict):
-        val = safe_pos_float(descr.get("price"), default=None)
-        if val is not None:
-            return val
-    for cost_key, exec_key in (
-        ("cummulativeQuoteQty", "executedQty"),
-        ("cummulativeQuoteQty", "qty"),
-        ("cummulativeQuoteQty", "quantity"),
-        ("quoteQty", "qty"),
-        ("quoteQty", "quantity"),
-        ("cost", "vol_exec"),
-        ("cost", "vol"),
-        ("filledValue", "filledQuantity"),
-        ("Y", "l"),
-        ("Z", "z"),
-    ):
+    if isinstance(descr, dict) and (val := safe_pos_float(descr.get("price"), default=None)) is not None:
+        return val
+    for cost_key, exec_key in _COST_EXEC_KEY_PAIRS:
         if cost_key in order and exec_key in order:
             cost_val = _pos_abs_float(order.get(cost_key))
             exec_val = _pos_abs_float(order.get(exec_key))
-            if cost_val and exec_val:
-                res = safe_pos_float(cost_val / exec_val, default=None)
-                if res is not None:
-                    return res
+            if cost_val and exec_val and (res := safe_pos_float(cost_val / exec_val, default=None)) is not None:
+                return res
     fills = order.get("fills")
     if isinstance(fills, list) and fills:
-        total_quote = 0.0
-        total_qty = 0.0
+        total_quote, total_qty = 0.0, 0.0
         for f in fills:
             if isinstance(f, dict):
                 f_px = safe_pos_float(f.get("price", f.get("px", 0.0)), default=None)
@@ -262,14 +234,11 @@ def extract_order_price(order: Any, default: float = 0.0) -> float:
                 if f_px is not None and f_qty is not None:
                     total_quote += f_px * f_qty
                     total_qty += f_qty
-        if total_qty > 0:
-            res = safe_pos_float(total_quote / total_qty, default=None)
-            if res is not None:
-                return res
+        if total_qty > 0 and (res := safe_pos_float(total_quote / total_qty, default=None)) is not None:
+            return res
     msg_str = order.get("msg")
     if isinstance(msg_str, str) and "@" in msg_str and msg_str.strip().lower().startswith("filled "):
-        msg_px = safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)
-        if msg_px is not None:
+        if (msg_px := safe_pos_float(msg_str.rsplit("@", 1)[1].strip(), default=None)) is not None:
             return msg_px
     return default
 
@@ -299,8 +268,7 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
     if msg_str.lower() == "resting":
         return 0.0
     if msg_str.lower().startswith("filled "):
-        msg_qty = safe_pos_float(msg_str[7:].split("@", 1)[0].strip(), default=None)
-        if msg_qty is not None:
+        if (msg_qty := safe_pos_float(msg_str[7:].split("@", 1)[0].strip(), default=None)) is not None:
             return msg_qty
     raw_st = str(order.get("status") or "").strip().upper()
     if raw_st in _UNFILLED_ORDER_STATUSES or (isinstance(order.get("resting"), dict) and not filled_sub):
@@ -309,20 +277,13 @@ def extract_executed_qty(order: Any, default: float = 0.0) -> float:
 
 
 def extract_orig_qty(order: Any, default: Optional[float] = None) -> Optional[float]:
-    """Extract the venue-accepted original order quantity from any response shape.
-
-    Prioritizes original-quantity fields (``origQty``, ``origSz``, ``vol``,
-    ``orderedQuantity``, etc.) over executed-quantity fields so recovering a
-    ``PARTIALLY_FILLED`` order never overwrites the total order quantity with
-    the partial fill quantity.
-    """
+    """Extract the venue-accepted original order quantity from any response shape."""
     if hasattr(order, "native") and hasattr(order, "state"):
         order = getattr(order, "native", None)
     if order is None or isinstance(order, bool):
         return default
     for key in (*_ORIG_QTY_KEYS, *_EXEC_QTY_KEYS):
-        val = _pos_abs_float(obj_attr(order, key))
-        if val is not None:
+        if (val := _pos_abs_float(obj_attr(order, key))) is not None:
             return val
     return default
 
@@ -331,19 +292,20 @@ def extract_remaining_qty(order: Any, default: float = 0.0) -> float:
     """Extract remaining unfilled quantity for an open/cancelled order across any venue shape."""
     if not isinstance(order, dict):
         return default
-    for k in ("remainingQty", "remaining_qty", "leavesQty", "leaves_qty"):
-        rem_f = safe_nonneg_float(order.get(k), default=None)
-        if rem_f is not None:
-            return rem_f
+    val = _first_mapped(order, ("remainingQty", "remaining_qty", "leavesQty", "leaves_qty"), lambda v: safe_nonneg_float(v, default=None))
+    if val is not None:
+        return val
     if "origSz" in order and "sz" in order and not any(k in order for k in _EXEC_QTY_KEYS):
-        sz_f = _nonneg_abs_float(order.get("sz"))
-        if sz_f is not None:
+        if (sz_f := _nonneg_abs_float(order.get("sz"))) is not None:
             return sz_f
     orig = extract_orig_qty(order, default=0.0) or 0.0
     if orig > 0:
         exec_q = _first_mapped(order, _EXEC_QTY_KEYS, _pos_abs_float, 0.0)
         return max(0.0, orig - exec_q) if exec_q > 0 else orig
     return default
+
+
+_QUOTE_FEE_ALIASES = {"ZUSD": "USD", "ZEUR": "EUR", "ZUSDT": "USDT"}
 
 
 def extract_order_fee(
@@ -353,12 +315,7 @@ def extract_order_fee(
     fill_price: Optional[float] = None,
     require_explicit_asset: bool = False,
 ) -> Optional[dict]:
-    """Extract and normalize order/fill fee metadata across any venue shape.
-
-    Returns ``None`` when no fee field is present or when fee metadata is invalid,
-    otherwise returns ``{"fee": float, "fee_asset": str, "base_fee": float,
-    "quote_fee": float, "fee_in_quote": Optional[float]}``.
-    """
+    """Extract and normalize order/fill fee metadata across any venue shape."""
     if not isinstance(order, dict):
         return None
     fee = _first_mapped(order, _FEE_KEYS, lambda v: safe_nonneg_float(v, default=None))
@@ -380,16 +337,14 @@ def extract_order_fee(
         fee_asset = quote_u
 
     px = safe_pos_float(fill_price, default=0.0) or extract_order_price(order, default=0.0)
-    base_fee = 0.0
-    quote_fee = 0.0
+    base_fee, quote_fee = 0.0, 0.0
     fee_in_quote: Optional[float] = 0.0 if fee == 0.0 else None
 
     if fee > 0.0:
-        _quote_aliases = {"ZUSD": "USD", "ZEUR": "EUR", "ZUSDT": "USDT"}
         fee_base_canon = canonical_base_asset(fee_asset) if fee_asset else ""
         base_canon = canonical_base_asset(base_u) if base_u else ""
-        fee_quote_canon = _quote_aliases.get(fee_asset, fee_asset)
-        quote_canon = _quote_aliases.get(quote_u, quote_u)
+        fee_quote_canon = _QUOTE_FEE_ALIASES.get(fee_asset, fee_asset)
+        quote_canon = _QUOTE_FEE_ALIASES.get(quote_u, quote_u)
         if base_u and (fee_asset == base_u or (fee_base_canon and fee_base_canon == base_canon)):
             base_fee = fee
             if px > 0.0:
@@ -420,32 +375,13 @@ def normalize_order(order: dict) -> dict:
 
 
 _BOT_CID_PREFIX_MODULES: tuple[tuple[str, str], ...] = (
-    ("MO_MN", "manual"),
-    ("MO_TA", "tradeall"),
-    ("MO_MT", "monitortrades"),
-    ("MO_RT", "rtrade"),
-    ("MO_SD", "trailing"),
-    ("TA_OR", "tradeall"),
-    ("MT_OR", "monitortrades"),
-    ("AG_OR", "assetguardian"),
-    ("RT_OR", "rtrade"),
-    ("SD_OR", "trailing"),
-    ("MO_OR", "monitororder"),
-    ("MN_OR", "manual"),
-    ("AGS", "assetguardian"),
-    ("AGB", "assetguardian"),
-    ("TRL", "trailing"),
-    ("TA", "tradeall"),
-    ("TO", "tradeall"),
-    ("MT", "monitortrades"),
-    ("AG", "assetguardian"),
-    ("RT", "rtrade"),
-    ("MO", "monitororder"),
-    ("TS", "trailing"),
-    ("SD", "trailing"),
-    ("MN", "manual"),
+    ("MO_MN", "manual"), ("MO_TA", "tradeall"), ("MO_MT", "monitortrades"), ("MO_RT", "rtrade"), ("MO_SD", "trailing"),
+    ("TA_OR", "tradeall"), ("MT_OR", "monitortrades"), ("AG_OR", "assetguardian"), ("RT_OR", "rtrade"),
+    ("SD_OR", "trailing"), ("MO_OR", "monitororder"), ("MN_OR", "manual"),
+    ("AGS", "assetguardian"), ("AGB", "assetguardian"), ("TRL", "trailing"),
+    ("TA", "tradeall"), ("TO", "tradeall"), ("MT", "monitortrades"), ("AG", "assetguardian"),
+    ("RT", "rtrade"), ("MO", "monitororder"), ("TS", "trailing"), ("SD", "trailing"), ("MN", "manual"),
 )
-# Venue-native manual order client-ID prefixes (Binance app/web/API UIs); SSOT shared with order_id_context.
 MANUAL_CID_PREFIXES: tuple[str, ...] = ("and_", "ios_", "web_", "x-", "electron_")
 _GENERIC_CID_TOKENS = frozenset({"OR", "MAINTHREAD", "WORKER", "BOT", "ORDER", "RETRY", "OUTBOX"})
 _CLIENT_ORDER_ID_KEYS = ("clientOrderId", "client_order_id", "cloid", "cl_ord_id", "userref")
@@ -467,9 +403,7 @@ def resolve_order_actor(order: Any, known_ai_order_ids: Optional[set[str]] = Non
     if oid and known_ai_order_ids and str(oid) in known_ai_order_ids:
         return "AI"
     raw_cid = (extract_client_order_id(order, default="") or "").upper()
-    if raw_cid.startswith("AI_"):
-        return "AI"
-    if raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids:
+    if raw_cid.startswith("AI_") or (raw_cid and known_ai_order_ids and raw_cid.lower() in known_ai_order_ids):
         return "AI"
     return "BOT"
 
@@ -510,10 +444,14 @@ def resolve_order_origin(
                     if pfx in ("AGS", "AGB"):
                         rule = "SL_PROTECT" if pfx == "AGS" else "BUY_TIER"
                     else:
-                        rem = raw_cid[len(pfx) :].lstrip("_-")
+                        rem = raw_cid[len(pfx):].lstrip("_-")
                         tokens = [t for t in re.split(r"[_-]+", rem) if t and t.upper() not in _GENERIC_CID_TOKENS]
                         if tokens:
-                            cand = "_".join(tokens[:-1]) if len(tokens) > 1 and (tokens[-1].isdigit() or len(tokens[-1]) >= 8) else tokens[0]
+                            cand = (
+                                "_".join(tokens[:-1])
+                                if len(tokens) > 1 and (tokens[-1].isdigit() or len(tokens[-1]) >= 8)
+                                else tokens[0]
+                            )
                             if not (len(cand) >= 8 and all(c in "0123456789abcdefABCDEF" for c in cand)) and not cand.isdigit():
                                 rule = cand.upper()
                 break
@@ -567,16 +505,10 @@ def normalize_open_order(
         order.get("order_type")
         or order.get("orderType")
         or descr.get("ordertype")
-        or (
-            order.get("type")
-            if str(order.get("type") or "").strip().upper() not in ("BUY", "SELL", "B", "S", "")
-            else ""
-        )
+        or (order.get("type") if str(order.get("type") or "").strip().upper() not in ("BUY", "SELL", "B", "S", "") else "")
         or "LIMIT"
     )
-    actor, mod, rule = resolve_order_origin(
-        order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map
-    )
+    actor, mod, rule = resolve_order_origin(order, known_ai_order_ids=known_ai_order_ids, audit_origin_map=audit_origin_map)
     rec = {
         "venue": venue,
         "symbol": symbol or str(order.get("symbol") or "").strip().upper(),
@@ -603,8 +535,7 @@ def normalize_open_order(
         rec["client_order_id"] = cid
     ts_ms = extract_timestamp_ms(order, default=None)
     if ts_ms is None and cid:
-        m_ts = re.search(r"(?:^|[_-])(1[789]\d{8}(?:\d{3})?)(?:$|[_-])", str(cid))
-        if m_ts:
+        if m_ts := re.search(r"(?:^|[_-])(1[789]\d{8}(?:\d{3})?)(?:$|[_-])", str(cid)):
             ts_ms = normalize_timestamp_ms(m_ts.group(1), default=None)
     if ts_ms is None and isinstance(order_ts_map, dict):
         for tk in (str(oid) if oid is not None else "", str(cid or ""), str(cid or "").lower()):
@@ -624,26 +555,14 @@ _PARENT_ORDER_ID_KEYS = ("orderId", "order_id", "ordertxid", "oid")
 
 
 def aggregate_fills_by_order_id(
-    rows: list,
-    *,
-    cutoff_ms: Optional[float] = None,
-    side: Optional[str] = None,
+    rows: list, *, cutoff_ms: Optional[float] = None, side: Optional[str] = None
 ) -> List[dict]:
-    """Normalize and aggregate fills sharing the same parent order ID and side.
-
-    Multi-fill executions sharing the same parent order ID (``orderId``, ``order_id``,
-    ``ordertxid``, ``oid``) and side are combined into a single order record with
-    volume-weighted average ``price``, summed ``qty``, and ``max(timestamp)``,
-    matching ``BinanceProvider.get_orders()``.
-    """
+    """Normalize and aggregate fills sharing the same parent order ID and side."""
     if rows is None or isinstance(rows, (str, bytes, bool)) or not hasattr(rows, "__iter__"):
         return []
     want = None
     if side is not None:
-        if isinstance(side, bool):
-            return []
-        want = normalize_side(side)
-        if not want:
+        if isinstance(side, bool) or not (want := normalize_side(side)):
             return []
     out: List[dict] = []
     grouped: dict[tuple[str, str], dict] = {}
@@ -702,7 +621,6 @@ def aggregate_fills_by_order_id(
     ]
 
 
-# Compatibility alias retained for existing internal and external imports.
 _normalize_order = normalize_order
 
 
@@ -751,9 +669,7 @@ def format_strategy_execution_mode(
     """Format the standard operator banner string for bot execution mode."""
     if _parse_bool_flag(observe_only, False):
         return "OBSERVE ONLY (AI managed)"
-    if _parse_bool_flag(dry_run, True):
-        return paper_label
-    return real_label
+    return paper_label if _parse_bool_flag(dry_run, True) else real_label
 
 
 from .strategy_executor import ProviderError  # noqa: E402
@@ -783,11 +699,7 @@ def _derive_128bit_client_order_id(
 
 
 def require_clean_order_id(
-    order_id: Any,
-    err_prefix: str,
-    *,
-    str_only: bool = False,
-    msg_suffix: str = "invalid order id",
+    order_id: Any, err_prefix: str, *, str_only: bool = False, msg_suffix: str = "invalid order id"
 ) -> str:
     """Validate and return a clean string order ID, or raise ``ProviderError``."""
     clean = clean_order_id(order_id) if (not str_only or isinstance(order_id, str)) else None
@@ -827,40 +739,15 @@ def build_price_history_points(
 
 
 OHLC_INTERVALS_MIN_TO_STR: dict[int, str] = {
-    1: "1m",
-    3: "3m",
-    5: "5m",
-    15: "15m",
-    30: "30m",
-    60: "1h",
-    120: "2h",
-    240: "4h",
-    360: "6h",
-    480: "8h",
-    720: "12h",
-    1440: "1d",
-    4320: "3d",
-    10080: "1w",
-    43200: "1M",
+    1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m",
+    60: "1h", 120: "2h", 240: "4h", 360: "6h", 480: "8h", 720: "12h",
+    1440: "1d", 4320: "3d", 10080: "1w", 43200: "1M",
 }
-
-OHLC_INTERVALS_STR_TO_MIN: dict[str, int] = {
-    v: k for k, v in OHLC_INTERVALS_MIN_TO_STR.items()
-}
-
+OHLC_INTERVALS_STR_TO_MIN: dict[str, int] = {v: k for k, v in OHLC_INTERVALS_MIN_TO_STR.items()}
 OHLC_CASE_INSENSITIVE_INTERVAL_ALIASES: dict[str, str] = {
-    "1H": "1h",
-    "2H": "2h",
-    "4H": "4h",
-    "6H": "6h",
-    "8H": "8h",
-    "12H": "12h",
-    "1D": "1d",
-    "3D": "3d",
-    "1W": "1w",
+    "1H": "1h", "2H": "2h", "4H": "4h", "6H": "6h", "8H": "8h", "12H": "12h",
+    "1D": "1d", "3D": "3d", "1W": "1w",
 }
-
-
 _OHLC_UNIT_MULTIPLIERS: dict[str, int] = {"m": 1, "h": 60, "d": 1440}
 
 
@@ -893,9 +780,7 @@ def parse_ohlc_interval_minutes(
                 minutes = int(num_part) * _OHLC_UNIT_MULTIPLIERS[unit]
                 if minutes <= 0:
                     raise ValueError(
-                        "the interval must be positive"
-                        if require_unit_suffix
-                        else f"interval must be positive: {interval}"
+                        "the interval must be positive" if require_unit_suffix else f"interval must be positive: {interval}"
                     )
                 return minutes
         if require_unit_suffix:
@@ -927,10 +812,7 @@ def parse_ohlc_interval(
     m2s = min_to_str if min_to_str is not None else OHLC_INTERVALS_MIN_TO_STR
     s2m = str_to_min if str_to_min is not None else {v: k for k, v in m2s.items()}
     minutes = parse_ohlc_interval_minutes(
-        interval,
-        str_to_min=s2m,
-        reject_float=reject_float,
-        venue_label=venue_label,
+        interval, str_to_min=s2m, reject_float=reject_float, venue_label=venue_label
     )
     interval_str = m2s.get(minutes)
     if interval_str is None:
@@ -949,34 +831,26 @@ def resolve_ohlc_time_window_ms(
     strict_numeric_types: bool = False,
 ) -> tuple[int, int, int, float]:
     """Validate and resolve ``(now_ms, final_start, final_end, timeout_f)`` for OHLC candle fetches."""
+    def _valid_num(val: Any, name: str, *, pos: bool = True, scale_ms: float = 1.0) -> float:
+        f = (safe_pos_float if pos else safe_nonneg_float)(val, default=None)
+        if f is None or (pos and int(f * scale_ms) <= 0 and scale_ms >= 1.0 and name != "timeout") or (
+            strict_numeric_types and not isinstance(val, (int, float))
+        ):
+            kind = "positive" if pos else "non-negative"
+            raise ValueError(f"invalid OHLC window parameters: {name} must be finite and {kind}: {val!r}")
+        return f
+
     now_ms = int(time.time() * 1000)
-    timeout_f = safe_pos_float(timeout, default=None)
-    if timeout_f is None or (strict_numeric_types and not isinstance(timeout, (int, float))):
-        raise ValueError(f"invalid OHLC window parameters: timeout must be finite and positive: {timeout!r}")
-    if end_ms is not None:
-        end_f = safe_pos_float(end_ms, default=None)
-        if end_f is None or int(end_f) <= 0 or (strict_numeric_types and not isinstance(end_ms, (int, float))):
-            raise ValueError(f"invalid OHLC window parameters: end_ms must be finite and positive: {end_ms!r}")
-        final_end = int(end_f)
-    else:
-        final_end = now_ms
+    timeout_f = _valid_num(timeout, "timeout")
+    final_end = int(_valid_num(end_ms, "end_ms")) if end_ms is not None else now_ms
     if final_end <= 0:
         raise ValueError(f"end_ms must be positive: {end_ms!r}")
     if start_ms is not None:
-        start_f = safe_nonneg_float(start_ms, default=None)
-        if start_f is None or (strict_numeric_types and not isinstance(start_ms, (int, float))):
-            raise ValueError(f"invalid OHLC window parameters: start_ms must be finite and non-negative: {start_ms!r}")
-        final_start = int(start_f)
+        final_start = int(_valid_num(start_ms, "start_ms", pos=False))
     elif lookback_days is not None:
-        lb_f = safe_pos_float(lookback_days, default=None)
-        if lb_f is None or int(lb_f * 86400 * 1000) <= 0 or (strict_numeric_types and not isinstance(lookback_days, (int, float))):
-            raise ValueError(f"invalid OHLC window parameters: lookback_days must be finite and positive: {lookback_days!r}")
-        final_start = int(final_end - lb_f * 86400 * 1000)
+        final_start = int(final_end - _valid_num(lookback_days, "lookback_days", scale_ms=86400 * 1000) * 86400 * 1000)
     elif lookback_hours is not None:
-        lb_f = safe_pos_float(lookback_hours, default=None)
-        if lb_f is None or int(lb_f * 3600 * 1000) <= 0 or (strict_numeric_types and not isinstance(lookback_hours, (int, float))):
-            raise ValueError(f"invalid OHLC window parameters: lookback_hours must be finite and positive: {lookback_hours!r}")
-        final_start = int(final_end - lb_f * 3600 * 1000)
+        final_start = int(final_end - _valid_num(lookback_hours, "lookback_hours", scale_ms=3600 * 1000) * 3600 * 1000)
     else:
         final_start = final_end - default_lookback_days * 86400 * 1000
     if final_start >= final_end:
@@ -1018,18 +892,11 @@ def validate_ohlc_candle_bar(
         close_i = int(ct_f)
         if close_i < open_i:
             return None
-        if drop_incomplete and now_ms is not None:
-            if (close_i >= now_ms) if close_inclusive else (close_i > now_ms):
-                return None
+        if drop_incomplete and now_ms is not None and ((close_i >= now_ms) if close_inclusive else (close_i > now_ms)):
+            return None
     if h_v < l_v or h_v < max(o_v, c_v) or l_v > min(o_v, c_v):
         return None
     ts_sec = open_i // 1000 if ts_in_ms else open_i
     if ts_sec <= 0:
         return None
-    return {
-        "timestamp": ts_sec,
-        "open": o_v,
-        "high": h_v,
-        "low": l_v,
-        "close": c_v,
-    }
+    return {"timestamp": ts_sec, "open": o_v, "high": h_v, "low": l_v, "close": c_v}
