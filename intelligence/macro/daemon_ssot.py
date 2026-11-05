@@ -350,6 +350,8 @@ def run_daemon_loop(
     daemon_obj.running = True
 
     def _handle_exit(signum, frame):
+        if not getattr(daemon_obj, "running", False):
+            return
         log.info("Received termination signal (%d), stopping %s...", signum, stop_label)
         daemon_obj.running = False
         raise SystemExit(0)

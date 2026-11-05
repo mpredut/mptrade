@@ -8103,11 +8103,24 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     t_agy_s = time.strftime("%H:%M:%S", time.localtime(now_s_rec - 60))
     (ldir_agy_int / "assetguardian.log").write_text(
         f"agy CLI with model 'gemini-4-argon-high' failed (code 1): error: interrupted\n"
-        f"{t_agy_s}  Started. check_interval=54.0s, sell_tiers=((9.0, 0.12),)\n",
+        f"{t_agy_s}  Started. check_interval=54.0s, sell_tiers=((9.0, 0.12),)\n"
+        f"Exception ignored in: <module 'threading' from '/usr/lib/python3.12/threading.py'>\n"
+        f"Traceback (most recent call last):\n"
+        f"  File \"/usr/lib/python3.12/threading.py\", line 1573, in _shutdown\n"
+        f"SystemExit: 0\n",
         encoding="utf-8",
     )
     anom_agy_int = harvest_log_anomalies_from_dirs([str(ldir_agy_int)], lookback_hours=2.0)
     assert anom_agy_int.error_count == 0
+
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_profile_metrics
+
+    mixed_vp_series = [
+        [int((now_s_rec - 86400 + i * 3600) * 1000), round(1.38 - (i % 4) * 0.03, 4), 600.0]
+        for i in range(20)
+    ] + [[int((now_s_rec - (90 - j) * 10) * 1000), 1.20] for j in range(90)]
+    vp_mixed = compute_volume_profile_metrics(mixed_vp_series)
+    assert vp_mixed.get("vp_source") == "REAL_VOL"
 
 
 

@@ -755,7 +755,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             ("Exception ignored in:" in line or "Traceback (most recent call last):" in line)
                             and any(
                                 "BaseSubprocessTransport.__del__" in lines[j]
-                                for j in range(max(0, idx - 1), min(total_lines, idx + 3))
+                                or "<module 'threading'" in lines[j]
+                                or "SystemExit: 0" in lines[j]
+                                for j in range(max(0, idx - 1), min(total_lines, idx + 8))
                             )
                         ):
                             continue
