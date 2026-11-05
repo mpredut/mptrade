@@ -697,9 +697,16 @@ def reconcile_venue_cycles_with_recent_orders(
                 or abs(sum(float(b["qty"]) for b in buys_after) - live_held) <= max(1e-4, live_held * 0.02)
             ):
                 ro_c["lifo_realized_pnl_usd"] = 0.0
+            buys_after_qty = sum(float(b["qty"]) for b in buys_after)
+            has_pre_sell_rem = (
+                buys_after_qty > 0.0
+                and (cyc_qty_cur - buys_after_qty) > 1e-6
+                and rem_q_ro > 1e-8
+                and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05)
+            )
             already_deducted_partial = bool(
                 not reconciled_external_buy
-                and (not buys_after or ls_qty < cyc_qty_cur * 0.95)
+                and (not buys_after or ls_qty < cyc_qty_cur * 0.95 or has_pre_sell_rem)
                 and cyc_qty_cur > 1e-8
                 and (
                     (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0)

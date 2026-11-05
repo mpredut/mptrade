@@ -314,7 +314,7 @@ def enrich_open_limit_orders_tca(
             else:
                 bw_px = safe_pos_float(m_entry.get("bid_wall_px"), default=None)
                 bw_usd = safe_pos_float(m_entry.get("bid_wall_usd"), default=0.0) or 0.0
-                if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0 and (not spot_px or bw_px <= spot_px * 0.9998):
+                if bw_px is not None and bw_px > 0.0 and bw_usd >= 5000.0 and (not spot_px or bw_px <= spot_px):
                     can_front_run = (not spot_px or bw_px <= spot_px * 0.9985) and abs(lim_px - bw_px) / bw_px <= 0.015
                     raw_fr = bw_px + max(tick_step, min(bw_px * 0.0001, 5.0))
                     ceil_bid = min(

@@ -5519,3 +5519,114 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     )
     assert "btc_seller_reversal" not in itv_reason
     assert itv_sec > 300.0
+
+
+def test_bugs_93_94_95_pretrade_venue_ob_isolation_tight_wall_tca_and_partial_trim_scalein_dca(tmp_path):
+    import json
+    import time
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+
+    # 1. Bug 93: OrderbookDepthCollector and collect_pretrade_telemetry isolate HYPEUSD/TAOUSD from HYPEUSDC/TAOUSDC
+    now_s = time.time()
+    (tmp_path / "orderbook_depth_HYPEUSDC.json").write_text(
+        json.dumps({
+            "symbol": "HYPEUSDC",
+            "mid_price": 84.303,
+            "bid_depth_usd": 12_969_835.0,
+            "ask_depth_usd": 14_760_427.0,
+            "imbalance_ratio": 0.468,
+            "largest_bid_wall_usd": 1_948_059.0,
+            "largest_bid_wall_price": 83.90,
+            "largest_ask_wall_usd": 2_490_997.0,
+            "largest_ask_wall_price": 84.60,
+            "ts": now_s - 2.0,
+            "best_bid": 84.298,
+            "best_ask": 84.308,
+            "spread_bps": 1.19,
+            "depth_1pct_bid_usd": 11_431_151.0,
+            "depth_1pct_ask_usd": 11_866_477.0,
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({
+            "symbol": "HYPEUSD",
+            "mid_price": 84.29,
+            "bid_depth_usd": 2_084_086.0,
+            "ask_depth_usd": 1_497_495.0,
+            "imbalance_ratio": 0.582,
+            "largest_bid_wall_usd": 377_879.0,
+            "largest_bid_wall_price": 83.37,
+            "largest_ask_wall_usd": 383_098.0,
+            "largest_ask_wall_price": 85.14,
+            "ts": now_s - 40.0,
+            "best_bid": 84.28,
+            "best_ask": 84.30,
+            "spread_bps": 2.37,
+            "depth_1pct_bid_usd": 1_265_681.0,
+            "depth_1pct_ask_usd": 988_184.0,
+        }),
+        encoding="utf-8",
+    )
+    col = OrderbookDepthCollector(cache_dir=str(tmp_path))
+    snap_hl = col.fetch("HYPEUSDC", allow_network=False, now=now_s)
+    snap_kr = col.fetch("HYPEUSD", allow_network=False, now=now_s)
+    assert isinstance(snap_hl, OrderbookSnapshot) and snap_hl.symbol == "HYPEUSDC"
+    assert isinstance(snap_kr, OrderbookSnapshot) and snap_kr.symbol == "HYPEUSD"
+    assert snap_kr.spread_bps == 2.37
+
+    pt_hype_kr = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(tmp_path))
+    assert pt_hype_kr.get("Orderbook Depth Imbalance") == "0.58 (58% bids vs 42% asks)"
+    assert pt_hype_kr.get("Orderbook Bid-Ask Spread") == "2.37 bps"
+    assert "Cross-Venue Relative Value (Arbitrage)" in pt_hype_kr
+    assert "arb_vs_HYPEUSDC=" in pt_hype_kr["Cross-Venue Relative Value (Arbitrage)"]
+
+    # 2. Bug 94: enrich_open_limit_orders_tca preserves wall_queue_pos when bid_wall <= spot_px within 2 bps
+    orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_type": "LIMIT", "price": 78620.0, "qty": 0.01017}
+    ]
+    enrich_open_limit_orders_tca(
+        orders,
+        {"BTCUSDC": {"price": 80705.025, "vol_1h_pct": 0.36}},
+        {"BTCUSDC": {"ob_mid_price": 80705.025, "best_bid": 80705.02, "best_ask": 80705.03, "spread_bps": 0.0012, "bid_wall_px": 80700.0, "bid_wall_usd": 3342279.0}},
+    )
+    assert orders[0].get("wall_queue_pos") == "DEEP_PASSIVE_BID"
+    assert orders[0].get("bid_wall_ahead_px") == 80700.0
+    assert orders[0].get("bid_wall_ahead_usd") == 3342279.0
+
+    # 3. Bug 95: reconcile_venue_cycles_with_recent_orders increments dca_buys when partial core remains + scale-in buy
+    t212_cycs = {
+        "NVDA_US_EQ": {
+            "qty": 0.41,
+            "cost_usd": 84.39,
+            "avg_cost_px": 205.8293,
+            "entry_price": 207.9271,
+            "last_buy_price": 205.6579,
+            "last_sell_price": 208.1,
+            "last_exit_kind": "TP",
+            "dca_buys": 0,
+            "_last_sell_ts_ms": 1793718965337,
+        }
+    }
+    ro_nvda = {
+        "last_sell": {"price": 207.9, "qty": 0.93, "ts_ms": 1793724500000},
+        "recent_buys": [
+            {"price": 207.93, "qty": 0.96, "ts_ms": 1793710000000},
+            {"price": 205.65, "qty": 0.38, "ts_ms": 1793804500000},
+        ],
+        "active_cycle_rem_qty": 0.41,
+        "lifo_realized_pnl_usd": 8.20,
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        t212_cycs,
+        {"t212": {"NVDA_US_EQ": ro_nvda}},
+        {("t212", "NVDA_US_EQ"): 0.41},
+        {"NVDA_US_EQ": {"price": 198.55}},
+    )
+    assert t212_cycs["NVDA_US_EQ"]["dca_buys"] == 1
+    assert t212_cycs["NVDA_US_EQ"]["last_sell_price"] == 207.9
