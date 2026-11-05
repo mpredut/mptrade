@@ -3597,6 +3597,49 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     assert rgnt_cycs["RGNT_US_EQ"]["last_exit_kind"] == "REDUCE"
     assert rgnt_cycs["RGNT_US_EQ"]["dca_buys"] == 1
 
+    # Also verify when _last_sell_ts_ms already matches last_sell.ts_ms on an already-deducted partial sell
+    rgnt_cycs_synced = {
+        "RGNT_US_EQ": {
+            "qty": 122.51,
+            "cost_usd": 176.35,
+            "avg_cost_px": 1.4395,
+            "entry_price": 1.50,
+            "_last_sell_ts_ms": now_ms - 3600_000 * 50,
+            "last_buy_price": 1.43,
+            "last_sell_price": 1.37,
+            "last_exit_kind": "STOP",
+            "dca_buys": 0,
+        }
+    }
+    rgnt_ro_synced = {
+        "t212": {
+            "RGNT_US_EQ": {
+                "active_cycle_rem_qty": 122.51,
+                "active_avg_buy_px": 1.4395,
+                "lifo_realized_pnl_usd": -12.85,
+                "last_buy": {"price": 1.43, "qty": 72.14, "ts_ms": now_ms - 3600_000 * 20},
+                "last_sell": {"price": 1.37, "qty": 72.46, "ts_ms": now_ms - 3600_000 * 50},
+                "recent_buys": [
+                    {"price": 1.42, "qty": 57.14, "ts_ms": now_ms - 3600_000 * 60},
+                    {"price": 1.43, "qty": 32.6, "ts_ms": now_ms - 3600_000 * 50 + 1000},
+                    {"price": 1.43, "qty": 72.14, "ts_ms": now_ms - 3600_000 * 20},
+                ],
+                "recent_sells": [
+                    {"price": 1.37, "qty": 72.46, "ts_ms": now_ms - 3600_000 * 50},
+                ],
+            }
+        }
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        {},
+        {},
+        rgnt_cycs_synced,
+        rgnt_ro_synced,
+        {("t212", "RGNT_US_EQ"): 122.51},
+        {"RGNT_US_EQ": {"price": 1.32}},
+    )
+    assert rgnt_cycs_synced["RGNT_US_EQ"]["last_exit_kind"] == "REDUCE"
+
     tao_cache = tmp_path / "tao_micro"
     tao_cache.mkdir(parents=True, exist_ok=True)
     (tao_cache / "orderbook_depth_TAOUSD.json").write_text(

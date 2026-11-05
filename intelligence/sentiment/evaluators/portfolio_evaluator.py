@@ -805,7 +805,11 @@ def reconcile_venue_cycles_with_recent_orders(
                         not post_sell_new_cycle
                         and rem_q > 1e-6
                         and ls_ts_ms > 0.0
-                        and (sell_ts_ms is None or float(sell_ts_ms) < ls_ts_ms - 5000.0)
+                        and (
+                            sell_ts_ms is None
+                            or float(sell_ts_ms) < ls_ts_ms - 5000.0
+                            or (already_deducted_partial and float(sell_ts_ms) <= ls_ts_ms + 60000.0)
+                        )
                     )
                     replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
                     lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
@@ -1170,8 +1174,11 @@ def enrich_positions_with_orders_and_cycles(
                 if pos_px_f > 0.0:
                     cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
                     act_avg_c = safe_pos_float(pos.get("active_avg_buy_px") or cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
-                    if raw_pk_orig is None or (
-                        act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5)
+                    c_entry_c = safe_pos_float(cyc.get("entry_price"), default=None)
+                    if (
+                        raw_pk_orig is None
+                        or (act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5))
+                        or (c_entry_c is not None and abs(raw_pk_orig - c_entry_c) <= max(1e-6, max(raw_pk_orig, c_entry_c) * 1e-5))
                     ):
                         c_lot_ts_p = [
                             t for x in ((ro.get("open_lots") or ro.get("recent_buys") or []) if isinstance(ro, dict) else ())
@@ -1293,9 +1300,12 @@ def enrich_positions_with_orders_and_cycles(
             ) or resolve_symbol_price(c_sym_u, prices_and_trends)
             if c_px > 0.0:
                 c_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
+                c_entry = safe_pos_float(cyc.get("entry_price"), default=None)
                 c_pk = safe_pos_float(cyc.get("pos_peak"), default=None)
-                c_pk_missing_or_unwarmed = c_pk is None or (
-                    c_avg is not None and abs(c_pk - c_avg) <= max(1e-6, max(c_pk, c_avg) * 1e-5)
+                c_pk_missing_or_unwarmed = (
+                    c_pk is None
+                    or (c_avg is not None and abs(c_pk - c_avg) <= max(1e-6, max(c_pk, c_avg) * 1e-5))
+                    or (c_entry is not None and abs(c_pk - c_entry) <= max(1e-6, max(c_pk, c_entry) * 1e-5))
                 )
                 if c_pk_missing_or_unwarmed:
                     c_lot_ts = [
