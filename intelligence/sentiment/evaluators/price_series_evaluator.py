@@ -452,7 +452,14 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                 low_6h = min(prior_low, recent_low)
                 dd_low_6h = ((low_6h / high_6h) - 1.0) * 100.0 if high_6h > 0.0 else 0.0
                 pos_6h = ((cur_px - low_6h) / (high_6h - low_6h)) if high_6h > low_6h else 1.0
-                if dd_low_6h <= -1.45 and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
+                dd_24h = safe_float(out.get("dd_24h_high_pct"), 0.0) or 0.0
+                pos_24h = safe_float(out.get("pos_24h_pct"), 100.0)
+                if pos_24h is None:
+                    pos_24h = 100.0
+                has_meaningful_bottom_dd = dd_low_6h <= -1.45 or (
+                    dd_low_6h <= -0.85 and dd_24h <= -1.45 and pos_24h <= 35.0
+                )
+                if has_meaningful_bottom_dd and pos_6h <= 0.70 and prior_low > 0.0 and recent_low > 0.0:
                     eff_dec = _auto_px_decimals(cur_px)
                     if recent_low < prior_low and cur_px > prior_low:
                         out["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"

@@ -9066,6 +9066,47 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "CAUTION" not in s1_compound_posture
     assert "/HOLD" not in s1_compound_posture
 
+    # 7. harvest_log_anomalies_from_dirs collapses tick-level float variations in guard_interventions samples
+    import tempfile
+    from pathlib import Path
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_24h_price_metrics
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    with tempfile.TemporaryDirectory() as tmp_d:
+        guard_log = Path(tmp_d) / "guard_dedup.log"
+        guard_log.write_text(
+            "\n".join(
+                [
+                    "20:54:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.8, diff -0.28%, threshold 1.15%",
+                    "20:57:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.4, diff -0.09%, threshold 1.15%",
+                    "21:00:04 [order_guard.py:2174] [GUARD] BUY ARBUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 0.1180, price 0.1182, diff -0.17%, threshold 1.05%",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        g_res = harvest_log_anomalies_from_dirs([tmp_d], lookback_hours=6.0)
+        assert g_res.warning_count == 3
+        assert len(g_res.guard_interventions) == 2
+        assert "price 216.4, diff -0.09%" in g_res.guard_interventions[0]
+        assert "ARBUSDC" in g_res.guard_interventions[1]
+
+    # 8. compute_24h_price_metrics preserves 6h bottom structure during extended 24h selloff when 6h range contracts to -1.38%
+    now_ms_b24 = 1_793_860_000_000
+    btc_ext_bottom = [
+        [now_ms_b24 - 18 * 3_600_000, 77427.71],
+        [now_ms_b24 - 5 * 3_600_000, 76583.02],
+        [now_ms_b24 - 3 * 3_600_000, 75605.27],
+        [now_ms_b24 - 2 * 3_600_000, 75850.00],
+        [now_ms_b24 - 30 * 60_000, 75680.00],
+        [now_ms_b24, 75525.005],
+    ]
+    m_btc_ext = compute_24h_price_metrics(btc_ext_bottom)
+    assert m_btc_ext.get("bottom_structure_6h") == "FRESH_6H_LOW_TEST"
+    assert m_btc_ext.get("prior_6h_low_px") == 75605.27
+    assert m_btc_ext.get("recent_1h_low_px") == 75525.01
+
+
 
 
 

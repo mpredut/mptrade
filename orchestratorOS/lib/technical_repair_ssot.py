@@ -893,7 +893,14 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 continue
                             warning_count += 1
                             cleaned = line.strip()
-                            g_sig = normalize_error_signature(cleaned) or cleaned
+                            g_sig = (
+                                re.sub(
+                                    r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?(?:[hsm]\b)?",
+                                    "NUM",
+                                    normalize_error_signature(cleaned),
+                                )
+                                or cleaned
+                            )
                             if g_sig in guard_sig_to_idx:
                                 guard_interventions[guard_sig_to_idx[g_sig]] = cleaned
                             elif len(guard_interventions) < 50:
