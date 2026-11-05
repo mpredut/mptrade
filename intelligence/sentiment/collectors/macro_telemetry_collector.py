@@ -175,6 +175,11 @@ def collect_macro_benchmarks_snapshot(
             )
             if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and safe_float(meta.get("fulldayChangePercent"), default=None) is None):
                 prev_close = safe_pos_float(meta.get("previousClose") or meta.get("chartPreviousClose"), default=None)
+                if prev_close is not None and pts_24h:
+                    lo_24_b = min(p[1] for p in pts_24h)
+                    hi_24_b = max(p[1] for p in pts_24h)
+                    if not (lo_24_b * 0.90 <= prev_close <= hi_24_b * 1.10):
+                        prev_close = None
                 if prev_close is not None and prev_close > 0:
                     chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2) + 0.0
                 elif len(pts_24h) >= 2 and pts_24h[0][1] > 0:
@@ -365,9 +370,22 @@ def harvest_macro_and_news_sensors(
                             mb_hi = safe_pos_float(mb_copy.get("high_24h"), default=None)
                             if mb_px is not None:
                                 if mb_lo is not None and mb_px < mb_lo:
-                                    mb_copy["low_24h"] = mb_px
+                                    mb_copy["low_24h"] = mb_lo = mb_px
                                 if mb_hi is not None and mb_px > mb_hi:
-                                    mb_copy["high_24h"] = mb_px
+                                    mb_copy["high_24h"] = mb_hi = mb_px
+                                chg_24_raw = safe_float(mb_copy.get("chg_24h_pct"), default=None)
+                                if (
+                                    chg_24_raw is not None
+                                    and mb_lo is not None
+                                    and mb_hi is not None
+                                    and mb_lo > 0.0
+                                    and mb_hi >= mb_lo
+                                ):
+                                    span_24_pct = ((mb_hi - mb_lo) / mb_lo) * 100.0
+                                    if abs(chg_24_raw) > max(span_24_pct * 2.5, 5.0):
+                                        ref_bound = mb_hi if chg_24_raw < 0.0 else mb_lo
+                                        mb_copy["chg_24h_pct"] = round(((mb_px - ref_bound) / ref_bound) * 100.0, 2) + 0.0
+                                        stripped_stale_intraday = True
                             if mb_k in ("SPY", "QQQ", "IBIT", "US10Y"):
                                 bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
                                 is_stale_us_bar = False

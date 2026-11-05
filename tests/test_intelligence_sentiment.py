@@ -7116,8 +7116,16 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
                         "chg_1h_pct": 0.05,
                         "chg_15m_pct": 0.06,
                     },
+                    "US10Y": {
+                        "symbol": "US10Y",
+                        "unit": "yield_pct",
+                        "price": 4.894,
+                        "chg_24h_pct": -50.3,
+                        "low_24h": 4.884,
+                        "high_24h": 4.958,
+                    },
                 },
-                "summary_line": "SPY=$765.31 (+1.45% 24h, -0.27% 1h, -0.27% 15m) | ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m)",
+                "summary_line": "SPY=$765.31 (+1.45% 24h, -0.27% 1h, -0.27% 15m) | ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m) | US10Y=4.89% (-50.30% 24h)",
             }
         ),
         encoding="utf-8",
@@ -7128,6 +7136,8 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert "chg_1h_pct" not in bm_iter20["items"]["SPY"]
     assert "chg_15m_pct" not in bm_iter20["items"]["SPY"]
     assert bm_iter20["items"]["ES=F"]["chg_1h_pct"] == 0.05
+    assert bm_iter20["items"]["US10Y"]["chg_24h_pct"] == -1.29
     assert "SPY=$765.31 (+1.45% 24h)" in bm_iter20["summary_line"]
     assert "ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m)" in bm_iter20["summary_line"]
+    assert "US10Y=4.89% (-1.29% 24h)" in bm_iter20["summary_line"]
 

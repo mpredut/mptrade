@@ -366,10 +366,14 @@ def compute_liquidation_clusters(
             )
             or (
                 (cvd_reg == "spot_absorbing" or div_reg in ("accumulation", "short_covering", "bullish_absorption"))
-                and chg_15m_v >= 0.15
-                and ob_imb_v >= 0.58
+                and chg_15m_v >= 0.05
+                and ob_imb_v >= 0.54
                 and spot_cvd_15m_v > 0.0
-                and kalman_vel > 0.0
+                and (
+                    kalman_vel > 0.0
+                    or (tr_1h_v is not None and tr_1h_v >= 1.10)
+                    or div_reg in ("accumulation", "short_covering", "bullish_absorption")
+                )
             )
         )
     ) or (
@@ -423,10 +427,14 @@ def compute_liquidation_clusters(
             )
             or (
                 (cvd_reg == "ask_absorbing" or div_reg in ("distribution", "long_liquidation", "bearish_distribution"))
-                and chg_15m_v <= -0.15
-                and ob_imb_v <= 0.42
+                and chg_15m_v <= -0.05
+                and ob_imb_v <= 0.46
                 and spot_cvd_15m_v < 0.0
-                and kalman_vel < 0.0
+                and (
+                    kalman_vel < 0.0
+                    or (tr_1h_v is not None and tr_1h_v <= 0.90)
+                    or div_reg in ("distribution", "long_liquidation", "bearish_distribution")
+                )
             )
         )
     ):
