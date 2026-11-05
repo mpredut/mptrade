@@ -7087,6 +7087,23 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     assert canonical_base_asset("SOLBUSD") == "SOL"
     assert canonical_base_asset("MSTRBTUSD") == "MSTRB"
     assert canonical_base_asset("PYUSDUSDT") == "PYUSD"
+    assert canonical_base_asset("XBTUSD") == "BTC"
+    assert canonical_base_asset("ARBUSD") == "ARB"
+    assert canonical_base_asset("DOTUSD") == "DOT"
+    assert canonical_base_asset("BATUSD") == "BAT"
+    assert canonical_base_asset("HOTUSD") == "HOT"
+    assert canonical_base_asset("NOTUSD") == "NOT"
+    assert canonical_base_asset("ACTUSD") == "ACT"
+    assert canonical_base_asset("CRBUSD") == "CRB"
+    assert canonical_base_asset("SUBUSD") == "SUB"
+    assert canonical_base_asset("USDTUSD") == "USDT"
+    from cachepaths import split_symbol_assets
+    assert split_symbol_assets("XBTUSD") == ("XBT", "USD")
+    assert split_symbol_assets("ARBUSD") == ("ARB", "USD")
+    assert split_symbol_assets("SOLTUSD") == ("SOL", "TUSD")
+    assert split_symbol_assets("SOLBUSD") == ("SOL", "BUSD")
+    assert split_symbol_assets("DOTTUSD") == ("DOT", "TUSD")
+    assert split_symbol_assets("ARBBUSD") == ("ARB", "BUSD")
     for bare_st in ("PYUSD", "RLUSD", "TUSD", "BUSD", "FDUSD", "USD1"):
         assert normalize_cache_base_asset(bare_st) == bare_st
         assert canonical_base_asset(bare_st) == bare_st
@@ -7180,6 +7197,50 @@ def test_iter94_live_flow_contradictory_posture_guard_multi_venue_spot_isolation
     enrich_24h_and_microstructure(str(ms_dir), str(tmp_path), p_trends, micro_out, {}, {}, now_s)
     assert micro_out["HYPEUSD"]["ob_mid_price"] == pytest.approx(42.0)
     assert p_trends["HYPEUSD"]["price"] == pytest.approx(42.0)
+
+    # 7. _refresh_stale_t212_cached_positions updates stale pos:t212:* prices and collect_pretrade_telemetry refreshes microstructure
+    from intelligence.sentiment.collectors import microstructure_collector as ms_col_mod
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as pt_col_mod
+    from providers import t212_provider as t212_prov_mod
+
+    vb_file = ms_dir / "venue_balances_state.json"
+    vb_data = {
+        "pos:t212:NVDA_US_EQ": {
+            "symbol": "NVDA_US_EQ",
+            "free": 3.0,
+            "price": 199.33,
+            "value_usd": 597.99,
+            "ts": now_s - 600.0,
+        }
+    }
+    vb_file.write_text(json.dumps(vb_data), encoding="utf-8")
+
+    class _MockT212Client:
+        def get_portfolio(self):
+            return [{"ticker": "NVDA_US_EQ", "currentPrice": 199.06}]
+
+    class _MockT212Provider:
+        def _client(self):
+            return _MockT212Client()
+
+    monkeypatch.setattr(t212_prov_mod, "T212Provider", _MockT212Provider)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    refreshed = ms_col_mod._refresh_stale_t212_cached_positions(vb_data, str(vb_file), now_s)
+    assert refreshed is True
+    assert vb_data["pos:t212:NVDA_US_EQ"]["price"] == pytest.approx(199.06)
+    assert vb_data["pos:t212:NVDA_US_EQ"]["value_usd"] == pytest.approx(597.18)
+    assert vb_data["pos:t212:NVDA_US_EQ"]["ts"] == pytest.approx(now_s)
+
+    refreshed_syms = []
+    monkeypatch.setattr(
+        pt_col_mod,
+        "ensure_fresh_symbol_microstructure",
+        lambda cdir, sym, **kw: refreshed_syms.append(sym),
+    )
+    pt_col_mod.collect_pretrade_telemetry("HYPEUSDC", cachedb_dir=str(ms_dir))
+    assert "HYPEUSDC" in refreshed_syms
+    assert "HYPEUSD" in refreshed_syms
+
 
 
 

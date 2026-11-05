@@ -25,7 +25,9 @@ from intelligence.macro_sentiment_ssot import (
 from intelligence.sentiment.collectors.microstructure_collector import (
     _LAST_7D_SPAN_MS_BY_SYM,
     _load_stitched_7d_ohlc_closes,
+    _refresh_stale_t212_cached_positions,
     _resolve_fallback_ohlc_fn,
+    ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
 )
@@ -57,7 +59,10 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
 )
 from instrument_registry import casefold_get
-from state_io import read_json_dict_recovering as _default_read_json_cached
+from state_io import (
+    read_json_dict_recovering as _default_read_json_cached,
+    resolve_cachedb_filepath,
+)
 
 read_json_cached = _default_read_json_cached
 
@@ -95,8 +100,34 @@ def collect_pretrade_telemetry(
         cachedb_dir = default_cdir
     sym_quotes = compatible_quote_suffixes(symbol)
     is_usd_sym = "USD" in sym_quotes
+    is_eq_sym = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
     sym_variants = cache_symbol_variants(symbol, include_base=True)
     quote_variants = cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes)
+    if (
+        is_usd_sym
+        and not is_eq_sym
+        and "PYTEST_CURRENT_TEST" not in os.environ
+        and _rj is _default_read_json_cached
+    ):
+        refresh_cands = list(quote_variants)
+        if canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
+            refresh_cands.append("BTCUSDC")
+        for cand_m in refresh_cands:
+            cand_mu = str(cand_m or "").strip().upper()
+            if not cand_mu:
+                continue
+            has_existing_m = any(
+                os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, f"{pfx_m}{cand_mu}.json"))))
+                for pfx_m in ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_")
+            )
+            if has_existing_m:
+                ensure_fresh_symbol_microstructure(
+                    cachedb_dir,
+                    cand_mu,
+                    max_age_ob_sec=180.0,
+                    max_age_whale_sec=360.0,
+                    include_derivatives=True,
+                )
 
     def _snap_ts(obj: Any) -> float:
         raw_t = obj_attr(obj, "ts", obj_attr(obj, "timestamp", None))
@@ -263,7 +294,12 @@ def collect_pretrade_telemetry(
             0.0,
         )
         vb_pos_ts = 0.0
-        if live_cur_px <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
+        vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
+        if live_cur_px <= 0.0 and isinstance(vb_d := _rj(vb_path), dict):
+            if is_eq_sym and _rj is _default_read_json_cached:
+                import time as _pt_time
+
+                _refresh_stale_t212_cached_positions(vb_d, vb_path, _pt_time.time())
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if str(vb_v.get("symbol") or vb_k.split(":", 2)[-1]).strip().upper() == str(symbol).strip().upper():
@@ -272,7 +308,6 @@ def collect_pretrade_telemetry(
                         if live_cur_px > 0.0:
                             break
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
-        is_eq_sym = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
         rth_fresh_eq = True
         eq_post_rth_override = False
         eq_px_diverged_05pct = False

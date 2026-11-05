@@ -555,6 +555,48 @@ _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
     "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
 })
 
+_CANONICAL_BASE_ALIASES: dict[str, str] = {
+    "XBT": "BTC",
+    "XXBT": "BTC",
+    "XXBTZ": "BTC",
+    "XETH": "ETH",
+    "XETHZ": "ETH",
+    "XDG": "DOGE",
+    "XXDG": "DOGE",
+    "XXDGZ": "DOGE",
+}
+_CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "BTC": ("XBT",),
+    "XBT": ("BTC",),
+    "ETH": ("XETH",),
+    "XETH": ("ETH",),
+    "DOGE": ("XDG",),
+    "XDG": ("DOGE",),
+}
+
+
+def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
+    """Return True if a symbol ending in TUSD or BUSD is actually a USD quote pair
+    whose base ends in 'T' (e.g. XBTUSD, DOTUSD, BATUSD, HOTUSD, NOTUSD, ACTUSD, USDTUSD, XXBTUSD)
+    or 'B' (e.g. ARBUSD, CRBUSD, SUBUSD)."""
+    if quote not in ("TUSD", "BUSD"):
+        return False
+    # If stripping TUSD/BUSD leaves <= 2 characters (e.g. XBTUSD -> XB, ARBUSD -> AR, DOTUSD -> DO, BATUSD -> BA),
+    # this is a USD pair whose base ends in T or B, not a TUSD/BUSD pair.
+    stem_len = len(token) - len(quote)
+    if stem_len < 3:
+        return True
+    if token.endswith("USD"):
+        stem_usd = token[:-3]
+        if (
+            stem_usd in _CANONICAL_BASE_ALIASES
+            or stem_usd in _LEGACY_KRAKEN_X_BASES
+            or stem_usd in _BARE_STABLECOIN_BASES
+            or stem_usd.endswith("XBT")
+        ):
+            return True
+    return False
+
 
 def _strip_kraken_asset_suffixes(token: str) -> str:
     """Strip Kraken xStock/futures/staking suffixes (``x.T``, ``.T``, ``.F``, ``.S``)."""
@@ -599,6 +641,8 @@ def normalize_cache_base_asset(symbol: object) -> str:
         raw_base = raw
     # Strip lowercase 'x' xStock marker before quote or end (e.g. SPCXx, SPCXx/USD, SPCXxUSD)
     for quote in CACHE_QUOTE_SUFFIXES:
+        if _is_false_tusd_or_busd_match(raw_base.upper(), quote):
+            continue
         if raw_base.upper().endswith(quote) and len(raw_base) > len(quote) + 2:
             stem = raw_base[: -len(quote)]
             if stem.endswith("x") and stem[:-1].isalnum() and stem[:-1].isupper():
@@ -611,6 +655,8 @@ def normalize_cache_base_asset(symbol: object) -> str:
         s = s[:-4]
     elif s not in _BARE_STABLECOIN_BASES:
         for quote in CACHE_QUOTE_SUFFIXES:
+            if _is_false_tusd_or_busd_match(s, quote):
+                continue
             if s.endswith(quote) and len(s) > len(quote):
                 s = s[: -len(quote)]
                 break
@@ -624,26 +670,6 @@ def normalize_cache_base_asset(symbol: object) -> str:
     if s in _LEGACY_KRAKEN_X_BASES:
         return s[1:]
     return s
-
-
-_CANONICAL_BASE_ALIASES: dict[str, str] = {
-    "XBT": "BTC",
-    "XXBT": "BTC",
-    "XXBTZ": "BTC",
-    "XETH": "ETH",
-    "XETHZ": "ETH",
-    "XDG": "DOGE",
-    "XXDG": "DOGE",
-    "XXDGZ": "DOGE",
-}
-_CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
-    "BTC": ("XBT",),
-    "XBT": ("BTC",),
-    "ETH": ("XETH",),
-    "XETH": ("ETH",),
-    "DOGE": ("XDG",),
-    "XDG": ("DOGE",),
-}
 
 
 _VENUE_ALIASES: dict[str, str] = {
@@ -698,6 +724,8 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
     if (sym_u.endswith("USEQ") and len(sym_u) > 4) or (raw.upper().endswith("_EQ") and len(sym_u) > 2):
         return normalize_cache_base_asset(raw), "USD"
     for quote in (*CACHE_QUOTE_SUFFIXES, "BTC", "ETH"):
+        if _is_false_tusd_or_busd_match(sym_u, quote):
+            continue
         if sym_u.endswith(quote) and len(sym_u) > len(quote):
             if "/" in raw:
                 base_raw = raw.split("/", 1)[0].strip()

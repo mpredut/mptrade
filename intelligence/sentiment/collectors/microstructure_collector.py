@@ -777,6 +777,61 @@ def _iter_t212_state_files(workspace_dir: str) -> List[Tuple[str, str]]:
     return out
 
 
+def _refresh_stale_t212_cached_positions(
+    cached_bals: Dict[str, Any],
+    bcache_path: Optional[str],
+    now_ts: float,
+    *,
+    max_age_sec: float = 180.0,
+) -> bool:
+    """Refresh stale (`>= max_age_sec`) `pos:t212:*` prices in `cached_bals` from Trading212 live portfolio."""
+    if (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or not isinstance(cached_bals, dict)
+        or not bcache_path
+        or not os.path.exists(bcache_path)
+    ):
+        return False
+    t212_ts_vals = [
+        safe_pos_float(bval.get("ts"), default=0.0) or 0.0
+        for bkey, bval in cached_bals.items()
+        if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict)
+    ]
+    if not t212_ts_vals:
+        return False
+    max_t212_ts = max(t212_ts_vals)
+    if max_t212_ts <= 0.0 or (now_ts - max_t212_ts) < max_age_sec:
+        return False
+    try:
+        from providers.t212_provider import T212Provider
+        from state_io import save_json_state
+
+        t212_rows = T212Provider()._client().get_portfolio()
+        if not isinstance(t212_rows, list) or not t212_rows:
+            return False
+        t212_dirty = False
+        for row in t212_rows:
+            if not isinstance(row, dict):
+                continue
+            rticker = str(row.get("ticker") or "").strip().upper()
+            cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
+            if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(f"pos:t212:{rticker}"), dict):
+                c_free = safe_pos_float(
+                    c_pos.get("free") if c_pos.get("free") is not None else c_pos.get("free_base"),
+                    default=0.0,
+                ) or 0.0
+                c_pos["price"] = round(cur_px_r, 4)
+                if c_free > 0.0:
+                    c_pos["value_usd"] = round(c_free * cur_px_r, 2)
+                c_pos["ts"] = now_ts
+                t212_dirty = True
+        if t212_dirty:
+            save_json_state(bcache_path, cached_bals, indent=2)
+        return t212_dirty
+    except Exception:
+        return False
+
+
 def enrich_24h_and_microstructure(
     cache_dir: str,
     workspace_dir: str,
@@ -814,6 +869,12 @@ def enrich_24h_and_microstructure(
                 bticker in prices_and_trends or b_free > 0.0
             ):
                 t212_seed_tickers.append(bticker)
+    if (
+        t212_seed_tickers
+        and not any(t in inst_by_sym for t in t212_seed_tickers)
+        and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached)
+    ):
+        _refresh_stale_t212_cached_positions(cached_bals, bcache_path, now_ts)
     for ticker in t212_seed_tickers:
         cached_pos = cached_bals.get(f"pos:t212:{ticker}")
         cached_t212_px = safe_pos_float(cached_pos.get("price") if isinstance(cached_pos, dict) else None, default=None)
@@ -1297,6 +1358,15 @@ def enrich_24h_and_microstructure(
             microstructure[sym] = m_info
 
     for msym in discover_reference_microstructure_symbols(cache_dir, microstructure, _rj):
+        if "USD" in compatible_quote_suffixes(msym) and _rj in (_default_read_json_cached, read_json_recovering, read_json_cached):
+            ensure_fresh_symbol_microstructure(
+                cache_dir,
+                msym.upper(),
+                now_ts=now_ts,
+                max_age_ob_sec=180.0,
+                max_age_whale_sec=360.0,
+                include_derivatives=True,
+            )
         if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
             msym_quotes = compatible_quote_suffixes(msym)
             p_ref = _first_variant_dict(
@@ -1394,6 +1464,7 @@ __all__ = [
     "_load_stitched_24h_ohlc_points",
     "_parse_ts_px_row",
     "_prices_diverged",
+    "_refresh_stale_t212_cached_positions",
     "_resolve_non_static_prev_metric",
     "apply_live_24trend_windows",
     "apply_short_trend_item",
