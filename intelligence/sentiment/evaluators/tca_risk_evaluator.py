@@ -683,7 +683,7 @@ def build_cross_market_context(
                 and not (k == "chg_7d_pct" and is_sub24h_dup_7d)
                 and not (k == "profile_shape" and pinfo.get(k) != "BIMODAL")
                 and (k not in _round_slope_keys or (sf_v := safe_float(pinfo.get(k), default=None)) is not None)
-                and not (k == "kalman_vel" and abs(sf_v) < 1e-12)
+                and not (k == "kalman_vel" and abs(sf_v) < 1e-9)
             },
         }
         if pinfo.get("pos_24h_pct") is None and not is_sub24h_dup_7d:
@@ -696,13 +696,21 @@ def build_cross_market_context(
                     eq_entry[k7] = pinfo[k7]
         eq_m_info = casefold_get(microstructure, eq_sym)
         if isinstance(eq_m_info, dict):
+            eq_no_oi = (safe_float(eq_m_info.get("oi_usd"), 0.0) or 0.0) <= 0.0
             for mk_eq in (
                 "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
                 "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
                 "depth_1pct_bid_usd", "depth_1pct_ask_usd",
             ):
-                if eq_m_info.get(mk_eq) is not None:
-                    eq_entry[mk_eq] = eq_m_info.get(mk_eq)
+                if eq_m_info.get(mk_eq) is None:
+                    continue
+                if (
+                    eq_no_oi
+                    and mk_eq in ("funding_rate", "oi_1h_chg_pct", "perp_spot_basis_bps")
+                    and abs(safe_float(eq_m_info.get(mk_eq), 0.0) or 0.0) < 1e-9
+                ):
+                    continue
+                eq_entry[mk_eq] = eq_m_info.get(mk_eq)
         if t_cyc:
             eq_entry["t212_cycle"] = {
                 k: t_cyc.get(k)

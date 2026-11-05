@@ -9046,6 +9046,25 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         "Yes, Trump Was Already Running Out of Gas Before the Iran War"
     )
 
+    s1_compound_posture = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "confidence": 0.80,
+                    "age_min": 18.0,
+                    "summary": "Balanced flow.",
+                    "live_flow_divergence": "LIVE_SELL_REVERSAL (taker_ratio=0.55 vs 18.0m-old CAUTION/HOLD (advisor ratio=1.10))",
+                },
+                geopolitical_threat=None,
+                macro_benchmarks={"coinbase_premium_bps": -8.4},
+                breaking_news=[],
+            )
+        )
+    )
+    assert "CB_Prem=-8.4bps vs 18.0m-old summary (advisor ratio=1.10)" in s1_compound_posture
+    assert "CAUTION" not in s1_compound_posture
+    assert "/HOLD" not in s1_compound_posture
+
 
 
 

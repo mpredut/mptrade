@@ -876,7 +876,10 @@ def collect_pretrade_telemetry(
                 if isinstance(k_sym := _first_variant_dict(k_items, sym_variants), dict):
                     k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
                     k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
-                    if not (k_vel is not None and abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)) or t_entry.get("kalman_vel") is None:
+                    if not (
+                        k_vel is not None
+                        and (abs(k_vel) < 1e-9 or (abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)))
+                    ) or t_entry.get("kalman_vel") is None:
                         t_entry["kalman_vel"] = k_sym.get("kalman_vel")
                         t_entry["kalman_vel_std"] = k_sym.get("kalman_vel_std")
                         t_entry["kalman_trend"] = k_sym.get("kalman_trend")
@@ -967,11 +970,16 @@ def collect_pretrade_telemetry(
                 fr_base = telemetry.get("Perpetual Funding Rate") or f"{fr_v * 100:+.4f}% (8h)"
                 f_ann = safe_float(cur_m_info.get("funding_annualized_pct"), default=None)
                 b_bps = safe_float(cur_m_info.get("perp_spot_basis_bps"), default=None)
+                eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
                 fr_extras = [
                     x
                     for x in (
-                        f"funding_ann={f_ann:+.1f}%" if f_ann is not None else "",
-                        f"perp_basis={b_bps:+.1f}bps" if b_bps is not None else "",
+                        f"funding_ann={f_ann:+.1f}%"
+                        if f_ann is not None and not (is_eq_sym and abs(f_ann) < 1e-9 and abs(fr_v) < 1e-12)
+                        else "",
+                        f"perp_basis={b_bps:+.1f}bps"
+                        if b_bps is not None and not (eq_no_oi_pt and abs(b_bps) < 1e-9)
+                        else "",
                     )
                     if x and x.split("=", 1)[0] not in fr_base
                 ]
@@ -1043,7 +1051,10 @@ def collect_pretrade_telemetry(
                             if isinstance(sib_k := casefold_get(k_items_map, cand_u), dict):
                                 sib_k_vel = safe_float(sib_k.get("kalman_vel"), default=None)
                                 sib_k_std = safe_float(sib_k.get("kalman_vel_std"), default=None)
-                                if not (sib_k_vel is not None and abs(sib_k_vel) < 1e-12 and (sib_k_std is None or sib_k_std >= 5.99)) or sib_p_est.get("kalman_vel") is None:
+                                if not (
+                                    sib_k_vel is not None
+                                    and (abs(sib_k_vel) < 1e-9 or (abs(sib_k_vel) < 1e-12 and (sib_k_std is None or sib_k_std >= 5.99)))
+                                ) or sib_p_est.get("kalman_vel") is None:
                                     sib_p_est["kalman_vel"] = sib_k.get("kalman_vel")
                                     sib_p_est["kalman_vel_std"] = sib_k.get("kalman_vel_std")
                                     sib_p_est["kalman_trend"] = sib_k.get("kalman_trend")

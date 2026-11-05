@@ -8572,6 +8572,19 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     )
     assert pt_zero_k["RGNT_US_EQ"]["kalman_vel"] == -0.2842
 
+    # Conversely, if entry has zero kalman_vel (-0.0) and kalman_data has real non-zero kalman_vel, it upgrades
+    pt_upgrade_k = {"RGNT_US_EQ": {"price": 1.17, "kalman_vel": -0.0, "kalman_vel_std": 0.21944, "kalman_trend": 0}}
+    enrich_cross_venue_trends(
+        pt_upgrade_k,
+        {},
+        {"RGNT_US_EQ": {"kalman_vel": -0.2842, "kalman_vel_std": 0.59, "kalman_trend": -1}},
+        {},
+        {},
+        {},
+        {},
+    )
+    assert pt_upgrade_k["RGNT_US_EQ"]["kalman_vel"] == -0.2842
+
     sec_3b_eq = "\n".join(
         _format_microstructure_section(
             {

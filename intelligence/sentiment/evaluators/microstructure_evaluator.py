@@ -955,7 +955,11 @@ def enrich_cross_venue_trends(
             )
             cur_e_vel = safe_float(entry.get("kalman_vel"), default=None)
             cur_e_std = safe_float(entry.get("kalman_vel_std"), default=None)
-            cur_is_unseeded = cur_e_vel is None or (abs(cur_e_vel) < 1e-12 and (cur_e_std is None or cur_e_std >= 5.99))
+            cur_is_unseeded = (
+                cur_e_vel is None
+                or abs(cur_e_vel) < 1e-9
+                or (abs(cur_e_vel) < 1e-12 and (cur_e_std is None or cur_e_std >= 5.99))
+            )
             if cur_is_unseeded and (not is_unseeded_cold_kalman or cur_e_vel is None):
                 entry["kalman_vel"], entry["kalman_vel_std"], entry["kalman_trend"] = (
                     k_sym.get("kalman_vel"), k_sym.get("kalman_vel_std"), k_sym.get("kalman_trend")

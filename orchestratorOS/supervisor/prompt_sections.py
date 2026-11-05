@@ -229,7 +229,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
     )
     if sa_flow_delta:
         sa_flow_delta = re.sub(
-            r"(-old\s+)(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL)\b",
+            r"(-old\s+)(?:(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION)(?:/(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL|CAUTION))?)\b",
             r"\1summary",
             sa_flow_delta,
             flags=re.IGNORECASE,

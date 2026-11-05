@@ -340,6 +340,30 @@ def _is_excluded_non_crisis_attack_keyword(
     return any(w.startswith("attack") for w in kw_words)
 
 
+_EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
+    "stocks to buy",
+    "stocks to watch",
+    "best stocks to",
+    "top stocks to",
+    "value trap",
+    "is it a bargain",
+    "running out of gas",
+)
+
+_EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
+    r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b"
+)
+
+
+def _is_editorial_clickbait_or_advice_title(title_low: str) -> bool:
+    """Return True if a lowercase headline matches first-person financial advice or stock-pick clickbait."""
+    if not title_low:
+        return False
+    return any(p in title_low for p in _EDITORIAL_CLICKBAIT_SUBSTRINGS) or bool(
+        _EDITORIAL_CLICKBAIT_OR_ADVICE_RE.search(title_low)
+    )
+
+
 def filter_valid_severity_keywords(
     raw_keywords: Any,
     *,
@@ -353,7 +377,7 @@ def filter_valid_severity_keywords(
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
     title_low = title.lower() if isinstance(title, str) and title.strip() else ""
-    if title_low and any(p in title_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
+    if _is_editorial_clickbait_or_advice_title(title_low):
         return ()
     title_words = set(re.findall(r"[a-zA-Z]{3,}", title_low)) if title_low else set()
     out: List[str] = []
@@ -784,10 +808,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     title_l = title_s.lower()
     url_l = str(url or "").strip().lower()
     src_l = str(source or "").strip().lower()
-    if title_l and re.search(
-        r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^best\s+[a-z0-9-]+\s+dip\s+buys\b|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b",
-        title_l,
-    ):
+    if _is_editorial_clickbait_or_advice_title(title_l):
         return True
     if url_l and ("/investingclub/" in url_l or "watch-options-action-live" in url_l):
         return True
@@ -971,7 +992,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if (words & {"hoax", "hoaxes", "protest", "protests"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
         return False
-    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
+    if _is_editorial_clickbait_or_advice_title(clean_low):
         return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})
@@ -993,7 +1014,7 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     words = set(re.findall(r"[a-z]{3,}", clean_low))
     if not words or has_financial_or_geopolitical_context(title):
         return False
-    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
+    if _is_editorial_clickbait_or_advice_title(clean_low):
         return True
     return bool(words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS))
 
@@ -1027,7 +1048,7 @@ def match_high_severity_keywords(
 ) -> Tuple[str, ...]:
     """Return all matched high-severity keywords for ``text`` using the active lexicon."""
     lower = (text or "").lower()
-    if not lower:
+    if not lower or _is_editorial_clickbait_or_advice_title(lower):
         return ()
     seed_set, crisis_stems = _get_seed_terms_set(), _get_crisis_stems_set()
     text_words = set(re.findall(r"[a-zA-Z]{3,}", lower))
@@ -1063,7 +1084,7 @@ def has_acute_shock_keywords(
     items = (texts,) if isinstance(texts, str) else texts
     for t in items:
         low = str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower()
-        if not low:
+        if not low or _is_editorial_clickbait_or_advice_title(low):
             continue
         words = set(re.findall(r"[a-zA-Z]{3,}", low))
         if any(
