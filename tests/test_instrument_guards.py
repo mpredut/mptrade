@@ -1583,6 +1583,19 @@ import multiprocessing as mp
 from active_intents import build_active_intent_index, format_summary
 
 
+class _PipePutAdapter:
+    """Semaphore-free multiprocessing pipe adapter immune to systemd-logind RemoveIPC /dev/shm wipes."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def put(self, item):
+        try:
+            self._conn.send(item)
+        finally:
+            self._conn.close()
+
+
 def _proc_attempt(state_file, lock_file, q):
     tc.STATE_FILE = state_file
     tc.LOCK_FILE = lock_file
@@ -1643,16 +1656,26 @@ class TestTradeCooldown(unittest.TestCase):
 
     def test_concurrent_processes_single_winner(self):
         ctx = mp.get_context("spawn")
-        q = ctx.Queue()
-        procs = [ctx.Process(target=_proc_attempt, args=(tc.STATE_FILE, tc.LOCK_FILE, q))
-                 for _ in range(10)]
-        for p in procs:
+        pipes = [ctx.Pipe(duplex=False) for _ in range(10)]
+        procs = [
+            ctx.Process(
+                target=_proc_attempt,
+                args=(tc.STATE_FILE, tc.LOCK_FILE, _PipePutAdapter(w_conn)),
+            )
+            for _, w_conn in pipes
+        ]
+        for p, (_, w_conn) in zip(procs, pipes):
             p.start()
+            w_conn.close()
         for p in procs:
-            p.join(timeout=10)
-        results = [q.get() for _ in range(10)]
-        q.close()
-        q.join_thread()
+            p.join(timeout=15)
+        results = []
+        for r_conn, _ in pipes:
+            try:
+                self.assertTrue(r_conn.poll(5.0), "spawned worker did not report result")
+                results.append(r_conn.recv())
+            finally:
+                r_conn.close()
         self.assertEqual(sum(1 for r in results if r), 1)
 
     def test_slot_commit_keeps_reservation(self):

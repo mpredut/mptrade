@@ -1443,7 +1443,7 @@ class TestCacheFactory(unittest.TestCase):
             with self.subTest(factory=name):
                 cm.CacheFactory.remove(name)
                 with patch("cacheManager.get_current_price_manager", return_value=cur_mock):
-                    result = cm.CacheFactory.get(name, symbols=symbols)
+                    result = cm.CacheFactory.get(name, symbols=symbols, start_sync=False)
                 self.assertIsInstance(result, dict)
                 for symbol in symbols:
                     self.assertIn(symbol, result)
@@ -1466,8 +1466,8 @@ class TestCacheFactory(unittest.TestCase):
 
     def test_get_cache_manager_delegates_to_factory(self):
         with patch("binance_api.bapi_allorders.paginate_my_trades", return_value=[]):
-            r1 = cm.get_cache_manager("Trade", symbols=["BTC"])
-            r2 = cm.CacheFactory.get("Trade", symbols=["BTC"])
+            r1 = cm.get_cache_manager("Trade", symbols=["BTC"], start_sync=False)
+            r2 = cm.CacheFactory.get("Trade", symbols=["BTC"], start_sync=False)
         self.assertIs(r1, r2)
 
     def test_factory_default_symbols_use_ssot_price_tracking(self):

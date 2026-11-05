@@ -120,7 +120,7 @@ do_run() {
     echo "[dev_regression $start_iso] Starting regression on commit $commit_short: $commit_msg" | tee -a "$LOG_FILE"
     unset BACKTEST_MODE REPLAY_MODE DISABLE_EXTERNAL_NOTIFICATIONS DISABLE_GEMINI_LLM
 
-    ( exec 8>&-; "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
+    ( exec 8>&-; timeout --kill-after=30 600 "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
     duration=$(($(date +%s) - start_ts))
     cat "$LOG_FILE.run" >> "$LOG_FILE"
     prev_status="$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
