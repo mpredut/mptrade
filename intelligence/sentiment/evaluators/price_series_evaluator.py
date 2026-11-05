@@ -837,17 +837,15 @@ def _compute_kalman_from_series(series_24h: List[Any]) -> Optional[Dict[str, Any
     if len(pts) < 5:
         return None
     cutoff_s = pts[-1][0] - 7200.0
-    subsampled: List[Tuple[float, float]] = []
-    last_ts = -1e18
-    for ts_s, px_v in pts:
-        if ts_s >= cutoff_s and ts_s - last_ts >= 55.0:
-            subsampled.append((ts_s, px_v))
-            last_ts = ts_s
-    if subsampled and pts[-1][0] > subsampled[-1][0]:
-        if pts[-1][0] - subsampled[-1][0] >= 15.0:
-            subsampled.append(pts[-1])
-        else:
-            subsampled[-1] = pts[-1]
+    subsampled_rev: List[Tuple[float, float]] = [pts[-1]]
+    next_allowed_ts = pts[-1][0] - 55.0
+    for ts_s, px_v in reversed(pts[:-1]):
+        if ts_s < cutoff_s:
+            break
+        if ts_s <= next_allowed_ts:
+            subsampled_rev.append((ts_s, px_v))
+            next_allowed_ts = ts_s - 55.0
+    subsampled = list(reversed(subsampled_rev))
     if len(subsampled) < 5:
         subsampled = pts[-min(len(pts), 30) :]
     if len(subsampled) < 5:

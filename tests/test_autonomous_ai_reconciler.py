@@ -9106,6 +9106,16 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert m_btc_ext.get("prior_6h_low_px") == 75605.27
     assert m_btc_ext.get("recent_1h_low_px") == 75525.01
 
+    # 9. _compute_kalman_from_series backward-anchored subsampling avoids 15s tail-step velocity discontinuity
+    from intelligence.sentiment.evaluators.price_series_evaluator import _compute_kalman_from_series
+
+    base_10s = [[(1_793_860_000 + i * 10) * 1000, 100.0 - i * 0.01] for i in range(180)]
+    k_14s = _compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 4) * 1000, 98.20]])
+    k_16s = _compute_kalman_from_series(base_10s + [[(1_793_860_000 + 180 * 10 + 6) * 1000, 98.20]])
+    assert k_14s is not None and k_16s is not None
+    assert k_14s["kalman_vel"] < 0.0 and k_16s["kalman_vel"] < 0.0
+    assert abs(k_14s["kalman_vel"] - k_16s["kalman_vel"]) < 0.005
+
 
 
 
