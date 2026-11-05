@@ -5851,6 +5851,7 @@ def test_all_ai_agent_modules_propagate_6h_bottom_smt_and_contrarian_rules(tmp_p
     )
     assert "BTC Intraday Structure:" in captured_prompts["sentiment"]
     assert "bottom_6h(prior_6h_low=$76739.78, 1h_low=$76387.17)" in captured_prompts["sentiment"]
+    assert "'divergence_regime': 'accumulation'" not in captured_prompts["sentiment"]
     assert "LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION" in captured_prompts["sentiment"]
 
     # 4. GeopoliticalThreatAnalyzer

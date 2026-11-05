@@ -125,8 +125,23 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             mb_med = obj_float(breadth, "median_change_pct", 0.0)
             prompt_context.append(f"- 24h Market Breadth: {mb_adv*100:.1f}% advancing, median change {mb_med:+.2f}%")
         if whale_telemetry:
+            _wt_label_keys = (
+                "divergence_regime",
+                "div_regime",
+                "cvd_regime",
+                "spot_perp_flow_regime",
+                "liq_magnet_bias",
+            )
             wt_clean = (
-                {k: v for k, v in whale_telemetry.items() if k not in ("divergence_regime", "div_regime")}
+                {
+                    k: (
+                        {ik: iv for ik, iv in v.items() if ik not in _wt_label_keys}
+                        if isinstance(v, dict)
+                        else v
+                    )
+                    for k, v in whale_telemetry.items()
+                    if k not in _wt_label_keys
+                }
                 if isinstance(whale_telemetry, dict)
                 else whale_telemetry
             )
@@ -173,7 +188,6 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                 c_m = compute_24h_price_metrics(c_pts) if c_pts else {}
                 if not c_m:
                     continue
-                b_struct = str(c_m.get("bottom_structure_6h") or "NONE")
                 parsed_pts = _extract_sorted_ts_px(c_pts or [])
                 last_px = (
                     parsed_pts[-1][1]

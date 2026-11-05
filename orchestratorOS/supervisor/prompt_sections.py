@@ -1253,6 +1253,8 @@ def _format_portfolio_section(
                 "spot_perp_flow_regime",
                 "liq_magnet_bias",
                 "futures_lead_regime",
+                "divergence_regime",
+                "div_regime",
             }
             _clean_bw = lambda bw_map: (
                 {
