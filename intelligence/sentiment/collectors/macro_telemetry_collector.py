@@ -900,7 +900,6 @@ def populate_market_and_portfolio_snapshot(
     snapshot.portfolio_summary.update(
         harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))
     )
-    enrich_sentiment_advisor_live_flow_divergence(getattr(snapshot, "sentiment_advisor", None), snapshot.microstructure)
     if isinstance(mb_snap_pre := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap_pre:
         btc_chg_24h_live = next(
             (
@@ -917,6 +916,11 @@ def populate_market_and_portfolio_snapshot(
                 mb_snap_pre["cross_asset_regime"] = cross_reg_live
                 if summary_live := format_macro_benchmarks_summary_line(mb_snap_pre):
                     mb_snap_pre["summary_line"] = summary_live
+    enrich_sentiment_advisor_live_flow_divergence(
+        getattr(snapshot, "sentiment_advisor", None),
+        snapshot.microstructure,
+        macro_benchmarks=getattr(snapshot, "macro_benchmarks", None),
+    )
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends, snapshot.microstructure, snapshot.portfolio_summary, scope, inst_by_sym, t212_cycles
     )

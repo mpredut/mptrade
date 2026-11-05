@@ -1733,6 +1733,106 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert "- Cross-Asset Macro & Options Surface:" in captured_sa_prompts[0]
     assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in captured_sa_prompts[0]
 
+    # 5. Dynamic Sentiment Interval & Stale SentimentAdvisor Live Institutional Divergence (BUY & SELL symmetry)
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard
+    from intelligence.sentiment.guards.post_stop_reentry_guard import PostStopReentryGuard
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    # Use a timestamp outside 15:30-18:30 EET overlap so institutional divergence rule is evaluated
+    non_overlap_ts = 1_793_840_000.0
+    bear_cached = SimpleNamespace(
+        market_bias="BEARISH",
+        risk_level="MODERATE",
+        recommended_action="DEFENSIVE",
+        summary="Prior defensive posture.",
+        key_risks=[],
+    )
+    itv_buy_div, rsn_buy_div = compute_dynamic_sentiment_interval(
+        base_interval_sec=10800.0,
+        last_eval_ts=non_overlap_ts - 1800.0,
+        now_ts=non_overlap_ts,
+        cached_assessment=bear_cached,
+        btc_taker_ratio=1.05,
+        macro_benchmarks=decouple_crypto,
+    )
+    assert itv_buy_div <= 300.0
+    assert "institutional_buy_divergence_crypto_bullish_decoupling_+9.4bps" in rsn_buy_div
+
+    bull_cached = SimpleNamespace(
+        market_bias="BULLISH",
+        risk_level="MODERATE",
+        recommended_action="ACCUMULATE",
+        summary="Prior accumulate posture.",
+        key_risks=[],
+    )
+    decouple_equity = {
+        "cross_asset_regime": "EQUITY_BULLISH_DECOUPLING",
+        "coinbase_premium_bps": -7.5,
+        "IBIT": {"price": 43.5, "chg_1h_pct": -0.95, "chg_24h_pct": -1.40},
+    }
+    itv_sell_div, rsn_sell_div = compute_dynamic_sentiment_interval(
+        base_interval_sec=10800.0,
+        last_eval_ts=non_overlap_ts - 1800.0,
+        now_ts=non_overlap_ts,
+        cached_assessment=bull_cached,
+        btc_taker_ratio=0.98,
+        macro_benchmarks=decouple_equity,
+    )
+    assert itv_sell_div <= 300.0
+    assert "institutional_sell_divergence_equity_bullish_decoupling_-7.5bps" in rsn_sell_div
+
+    sa_stale_bear = {
+        "age_min": 22.0,
+        "recommended_action": "DEFENSIVE",
+        "market_bias": "BEARISH",
+        "summary": "Bearish macro posture",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_stale_bear,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 1.02}},
+        macro_benchmarks=decouple_crypto,
+    )
+    assert "LIVE_INSTITUTIONAL_BUY_DECOUPLING" in str(sa_stale_bear.get("live_flow_divergence"))
+    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in str(sa_stale_bear.get("live_flow_divergence"))
+
+    sa_stale_bull = {
+        "age_min": 22.0,
+        "recommended_action": "ACCUMULATE",
+        "market_bias": "BULLISH",
+        "summary": "Bullish macro posture",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_stale_bull,
+        {"BTCUSDC": {"taker_buy_sell_ratio": 0.98}},
+        macro_benchmarks=decouple_equity,
+    )
+    assert "LIVE_INSTITUTIONAL_SELL_DECOUPLING" in str(sa_stale_bull.get("live_flow_divergence"))
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(sa_stale_bull.get("live_flow_divergence"))
+
+    # 6. Pre-Trade Guards (HighStakeGuard BUY/SELL & PostStopReentryGuard) & Executor Prompt Policy Symmetry
+    hsg = HighStakeGuard(gemini_client=GeminiClient(custom_runner=_sa_runner))
+    hsg_buy_prompt = hsg._build_high_stake_prompt("BUY", 1200.0, f"- Equity & Macro Regime: {eq_macro_line}")
+    hsg_sell_prompt = hsg._build_high_stake_prompt("SELL", 1200.0, f"- Equity & Macro Regime: {eq_macro_line}")
+    psg_prompt = PostStopReentryGuard._build_post_stop_prompt("BTCUSDC", f"- Equity & Macro Regime: {eq_macro_line}")
+    for gp in (hsg_buy_prompt, hsg_sell_prompt, psg_prompt):
+        assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL FLOW" in gp
+        assert "CRYPTO_BULLISH_DECOUPLING" in gp
+        assert "EQUITY_BULLISH_DECOUPLING" in gp
+        assert "CB_Premium" in gp
+        assert "Options_Surface" in gp
+
+    sup_cr = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_cryptotrade_executor")
+    sup_eq = build_supervisor_prompt(sensors_ns, SimpleNamespace(), topic_key="auto_sharetrade_executor")
+    for sp in (sup_cr, sup_eq):
+        assert "CROSS-ASSET MACRO, VIX & INSTITUTIONAL CRYPTO/OPTIONS SURFACE SYMMETRY" in sp
+        assert "CRYPTO_BULLISH_DECOUPLING" in sp
+        assert "EQUITY_BULLISH_DECOUPLING" in sp
+
+
 
 
 

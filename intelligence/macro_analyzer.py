@@ -37,6 +37,7 @@ from intelligence.macro_sentiment_ssot import (
     extract_high_severity_headlines_and_digest,
     is_interval_due,
     load_cached_fear_greed_snapshot,
+    load_cached_macro_benchmarks,
     load_cached_market_breadth_snapshot,
     load_cached_whale_telemetry,
     obj_attr,
@@ -358,12 +359,17 @@ class MacroAnalyzer:
         fg_snap = load_cached_fear_greed_snapshot(self.cache_dir, now_ts=current_ts)
         mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=current_ts)
         whale_snap = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
+        macro_bench = load_cached_macro_benchmarks(self.cache_dir)
         cur_btc_tr = safe_pos_float(whale_snap.get("taker_buy_sell_ratio"), default=None) if isinstance(whale_snap, dict) else None
         cached_adv = getattr(self.sentiment_advisor, "_cached_assessment", None)
         latest_geo = getattr(self.geopolitical_analyzer, "_cached_assessment", cached_geo)
         geo_threat_str = str(obj_attr(latest_geo, "threat_level") or "NORMAL")
 
-        adv_interval, adv_reason = compute_dynamic_sentiment_interval(
+        adv_interval, adv_reason = _call_with_optional_kwarg(
+            compute_dynamic_sentiment_interval,
+            opt_key="macro_benchmarks",
+            opt_val=macro_bench,
+            include_opt=bool(macro_bench),
             base_interval_sec=self.advisor_interval_sec,
             last_eval_ts=self._last_advisor_ts,
             now_ts=current_ts,

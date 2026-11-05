@@ -638,6 +638,7 @@ def compute_dynamic_sentiment_interval(
     geopolitical_threat_level: str = "NORMAL",
     btc_taker_ratio: Optional[float] = None,
     prev_btc_taker_ratio: Optional[float] = None,
+    macro_benchmarks: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, str]:
     """Compute context-adaptive interval for ``macro_sentiment`` evaluation."""
     if base_interval_sec is None:
@@ -735,6 +736,35 @@ def compute_dynamic_sentiment_interval(
                 return min(min_interval, 300.0), f"btc_seller_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
             if cur_tr >= 1.40:
                 return min(min_interval, 300.0), f"btc_buyer_reversal_taker_ratio_{cur_tr:.2f}_vs_{(cached_act or cached_bias).lower()}"
+    if isinstance(macro_benchmarks, dict) and macro_benchmarks and cached_assessment is not None:
+        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_cross_asset_regime
+
+        cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
+        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps"), default=None)
+        if (
+            (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias)
+            and (
+                (cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON") and cb_bps is not None and cb_bps >= 5.0)
+                or (cb_bps is not None and cb_bps >= 10.0)
+            )
+            and (cur_tr is None or cur_tr >= 0.95)
+        ):
+            return (
+                min(min_interval, 300.0),
+                f"institutional_buy_divergence_{(cross_reg or 'cb_premium').lower()}_{cb_bps:+.1f}bps_vs_{(cached_act or cached_bias).lower()}",
+            )
+        if (
+            (cached_act == "ACCUMULATE" or "BULL" in cached_bias)
+            and (
+                (cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF") and cb_bps is not None and cb_bps <= -5.0)
+                or (cb_bps is not None and cb_bps <= -10.0)
+            )
+            and (cur_tr is None or cur_tr <= 1.05)
+        ):
+            return (
+                min(min_interval, 300.0),
+                f"institutional_sell_divergence_{(cross_reg or 'cb_premium').lower()}_{cb_bps:+.1f}bps_vs_{(cached_act or cached_bias).lower()}",
+            )
     cur_fg_val = safe_int(obj_attr(fear_greed, "value", None), None)
     prev_fg_val = safe_int(prev_fear_greed_val, None)
     prev_adv = clean_scale(prev_advance_ratio, default=None, allow_percent=True)

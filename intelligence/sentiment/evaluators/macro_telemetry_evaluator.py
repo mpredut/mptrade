@@ -539,8 +539,9 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
 def enrich_sentiment_advisor_live_flow_divergence(
     sentiment_advisor: Any,
     microstructure: Dict[str, Any],
+    macro_benchmarks: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Detect and annotate live BTC taker/CVD flow divergence against a stale (>=10m) sentiment_advisor posture."""
+    """Detect and annotate live BTC taker/CVD or cross-asset institutional flow divergence against a stale sentiment_advisor posture."""
     if not isinstance(sentiment_advisor, dict) or not isinstance(microstructure, dict):
         return
     sentiment_advisor.pop("live_flow_divergence", None)
@@ -817,6 +818,45 @@ def enrich_sentiment_advisor_live_flow_divergence(
         ):
             sentiment_advisor["live_flow_divergence"] = (
                 f"LIVE_5M_FLOW_RECOVERY ({flow_lbl} vs {sa_age:.1f}m-old advisor 5m_ratio={cited_tr_5m:.2f})"
+            )
+    if (
+        "live_flow_divergence" not in sentiment_advisor
+        and sa_age >= 15.0
+        and isinstance(macro_benchmarks, dict)
+        and macro_benchmarks
+    ):
+        cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
+        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps"), default=None)
+        ibit_d = macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {}
+        ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
+        inst_parts = [
+            x
+            for x in (
+                f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
+                f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
+                f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
+                flow_lbl,
+            )
+            if x
+        ]
+        inst_lbl = ", ".join(inst_parts)
+        if (
+            is_bear_posture
+            and cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
+            and ((cb_bps is not None and cb_bps >= 5.0) or (ibit_1h is not None and ibit_1h >= 0.75))
+            and (live_tr is None or live_tr >= 0.95)
+        ):
+            sentiment_advisor["live_flow_divergence"] = (
+                f"LIVE_INSTITUTIONAL_BUY_DECOUPLING ({inst_lbl} vs {sa_age:.1f}m-old {sa_act or sa_bias})"
+            )
+        elif (
+            is_bull_posture
+            and cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
+            and ((cb_bps is not None and cb_bps <= -5.0) or (ibit_1h is not None and ibit_1h <= -0.75))
+            and (live_tr is None or live_tr <= 1.05)
+        ):
+            sentiment_advisor["live_flow_divergence"] = (
+                f"LIVE_INSTITUTIONAL_SELL_DECOUPLING ({inst_lbl} vs {sa_age:.1f}m-old {sa_act or sa_bias})"
             )
 
 
