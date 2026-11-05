@@ -8662,6 +8662,7 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     assert is_symbol_market_open("BTCUSDC", sun_closed) is True
 
     _DiskBackedSymbolCollector._EQUITY_CTX_MEMO.clear()
+    _DiskBackedSymbolCollector._EQUITY_OPTIONS_MEMO.clear()
     _DiskBackedSymbolCollector._EQUITY_NO_OPTIONS_TS.clear()
     called_urls = []
 

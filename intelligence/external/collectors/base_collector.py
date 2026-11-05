@@ -562,18 +562,91 @@ class _DiskBackedSymbolCollector:
         return None
 
     _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
+    _EQUITY_OPTIONS_MEMO: Dict[str, Tuple[float, Tuple[float, float, float, float]]] = {}
     _EQUITY_NO_OPTIONS_TS: Dict[str, float] = {}
+
+    def _populate_equity_options_context(
+        self,
+        ticker: str,
+        ctx_out: Dict[str, Any],
+        now: float,
+        *,
+        timeout: float = 2.5,
+        opt_memo_ttl: float = 60.0,
+        no_options_ttl: float = 1800.0,
+    ) -> None:
+        import re as _re
+
+        cached_opt = self._EQUITY_OPTIONS_MEMO.get(ticker)
+        if cached_opt is not None and 0.0 <= (now - cached_opt[0]) < opt_memo_ttl:
+            c_oi, p_oi, c_vol, p_vol = cached_opt[1]
+            ctx_out.update(call_oi=c_oi, put_oi=p_oi, call_vol=c_vol, put_vol=p_vol, _options_loaded=True)
+            return
+
+        call_oi = 0.0
+        put_oi = 0.0
+        call_vol = 0.0
+        put_vol = 0.0
+        no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
+        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
+            opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
+            cboe_paths = (
+                (f"_{ticker}.json", f"{ticker}.json")
+                if ticker in get_cboe_index_tickers()
+                else (f"{ticker}.json",)
+            )
+            found_opts = False
+            for cboe_path in cboe_paths:
+                try:
+                    cb = self._fetch_json_dict(
+                        get_cboe_delayed_options_url(cboe_path),
+                        "cboe_options",
+                        ticker,
+                        timeout=timeout,
+                        user_agent="Mozilla/5.0",
+                    )
+                    opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
+                    if isinstance(opts, list) and opts:
+                        found_opts = True
+                        for opt in opts:
+                            if not isinstance(opt, dict):
+                                continue
+                            opt_sym = str(opt.get("option") or "")
+                            m = opt_rx.search(opt_sym)
+                            if not m:
+                                continue
+                            oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0
+                            vol_v = safe_nonneg_float(opt.get("volume"), default=0.0) or 0.0
+                            if m.group(1) == "C":
+                                call_oi += oi_v
+                                call_vol += vol_v
+                            else:
+                                put_oi += oi_v
+                                put_vol += vol_v
+                        break
+                except Exception:
+                    continue
+            if not found_opts:
+                if len(self._EQUITY_NO_OPTIONS_TS) > 64:
+                    self._EQUITY_NO_OPTIONS_TS.clear()
+                self._EQUITY_NO_OPTIONS_TS[ticker] = now
+            else:
+                self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
+                if len(self._EQUITY_OPTIONS_MEMO) > 32:
+                    self._EQUITY_OPTIONS_MEMO.clear()
+                self._EQUITY_OPTIONS_MEMO[ticker] = (now, (call_oi, put_oi, call_vol, put_vol))
+
+        ctx_out.update(call_oi=call_oi, put_oi=put_oi, call_vol=call_vol, put_vol=put_vol, _options_loaded=True)
 
     def _fetch_equity_market_context(
         self,
         symbol: str,
         now: float,
         *,
-        timeout: float = 4.0,
+        timeout: float = 2.5,
+        include_options: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Fetch and memoize zero-cost equity quote, intraday 5m OHLCV, and Cboe options OI for ``symbol``."""
-        import re as _re
-
         ticker = _extract_base_asset(symbol)
         if not ticker:
             return None
@@ -585,6 +658,15 @@ class _DiskBackedSymbolCollector:
         if cached_ctx is not None:
             memo_ttl = neg_memo_ttl if cached_ctx[1] is None else pos_memo_ttl
             if 0.0 <= (now - cached_ctx[0]) < memo_ttl:
+                if cached_ctx[1] is not None and include_options and not cached_ctx[1].get("_options_loaded"):
+                    self._populate_equity_options_context(
+                        ticker,
+                        cached_ctx[1],
+                        now,
+                        timeout=timeout,
+                        opt_memo_ttl=neg_memo_ttl,
+                        no_options_ttl=no_options_ttl,
+                    )
                 return cached_ctx[1]
 
         def _parse_num(val: Any) -> Optional[float]:
@@ -678,57 +760,6 @@ class _DiskBackedSymbolCollector:
             self._EQUITY_CTX_MEMO[ticker] = (now, None)
             return None
 
-        # 3. Cboe Delayed Options JSON (Open Interest & Put/Call positioning)
-        call_oi = 0.0
-        put_oi = 0.0
-        call_vol = 0.0
-        put_vol = 0.0
-        no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
-        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < no_options_ttl):
-            opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
-            cboe_paths = (
-                (f"_{ticker}.json", f"{ticker}.json")
-                if ticker in get_cboe_index_tickers()
-                else (f"{ticker}.json",)
-            )
-            found_opts = False
-            for cboe_path in cboe_paths:
-                try:
-                    cb = self._fetch_json_dict(
-                        get_cboe_delayed_options_url(cboe_path),
-                        "cboe_options",
-                        ticker,
-                        timeout=timeout,
-                        user_agent="Mozilla/5.0",
-                    )
-                    opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
-                    if isinstance(opts, list) and opts:
-                        found_opts = True
-                        for opt in opts:
-                            if not isinstance(opt, dict):
-                                continue
-                            opt_sym = str(opt.get("option") or "")
-                            m = opt_rx.search(opt_sym)
-                            if not m:
-                                continue
-                            oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0
-                            vol_v = safe_nonneg_float(opt.get("volume"), default=0.0) or 0.0
-                            if m.group(1) == "C":
-                                call_oi += oi_v
-                                call_vol += vol_v
-                            else:
-                                put_oi += oi_v
-                                put_vol += vol_v
-                        break
-                except Exception:
-                    continue
-            if not found_opts:
-                if len(self._EQUITY_NO_OPTIONS_TS) > 64:
-                    self._EQUITY_NO_OPTIONS_TS.clear()
-                self._EQUITY_NO_OPTIONS_TS[ticker] = now
-            else:
-                self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
-
         ctx_out: Dict[str, Any] = {
             "ticker": ticker,
             "last_price": last_px,
@@ -738,14 +769,24 @@ class _DiskBackedSymbolCollector:
             "ask_size_sh": ask_size_sh,
             "daily_vol_sh": daily_vol_sh,
             "bars": bars,
-            "call_oi": call_oi,
-            "put_oi": put_oi,
-            "call_vol": call_vol,
-            "put_vol": put_vol,
+            "call_oi": 0.0,
+            "put_oi": 0.0,
+            "call_vol": 0.0,
+            "put_vol": 0.0,
+            "_options_loaded": False,
         }
         if len(self._EQUITY_CTX_MEMO) > 32:
             self._EQUITY_CTX_MEMO.clear()
         self._EQUITY_CTX_MEMO[ticker] = (now, ctx_out)
+        if include_options:
+            self._populate_equity_options_context(
+                ticker,
+                ctx_out,
+                now,
+                timeout=timeout,
+                opt_memo_ttl=neg_memo_ttl,
+                no_options_ttl=no_options_ttl,
+            )
         return ctx_out
 
 

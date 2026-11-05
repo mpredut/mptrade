@@ -340,7 +340,7 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
 
     def _fetch_equity_orderbook(self, symbol: str, now: float) -> Optional[OrderbookSnapshot]:
         """Build an equity OrderbookSnapshot from Nasdaq L1 quote and Yahoo 5m volume-by-price liquidity."""
-        ctx = self._fetch_equity_market_context(symbol, now)
+        ctx = self._fetch_equity_market_context(symbol, now, include_options=False)
         if not isinstance(ctx, dict):
             return None
         bars = ctx.get("bars") or []
