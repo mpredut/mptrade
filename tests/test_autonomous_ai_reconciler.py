@@ -8992,6 +8992,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                 "assetguardian_state": {
                     "ARBUSDC": {"buy": {"pending": False, "last_price": 0.15}, "sell": {"pending": False}},
                     "TAOUSDC": {"buy": {"completed_tiers": ["tier10"], "terminal_orders": {"1": {"status": "closed"}}}},
+                    "SOLUSDC": {"buy": {"open_orders": {}}},
                 },
                 "recent_ai_intents": [
                     {"decision": "HOLD", "symbol": "BTCUSDC", "venue": "binance", "age_h": 0.1},

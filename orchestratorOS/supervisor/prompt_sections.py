@@ -1531,22 +1531,27 @@ def _format_portfolio_section(
                         "spent_quote_by_tier",
                         "last_refusal",
                     }
-                    filt_d = {
-                        sk: ({k: v for k, v in sv.items() if k not in _ag_hist_keys} if isinstance(sv, dict) else sv)
-                        for sk, sv in ag_d.items()
-                        if not (
-                            isinstance(sv, dict)
-                            and not sv.get("active")
-                            and (
+                    filt_d: Dict[str, Any] = {}
+                    for sk, sv in ag_d.items():
+                        if isinstance(sv, dict):
+                            if not sv.get("active") and (
                                 sv.get("pending") is False
                                 or (
                                     not sv.get("pending")
                                     and not sv.get("open_orders")
-                                    and any(k in sv for k in _ag_hist_keys)
+                                    and (not sv or any(k in sv for k in (*_ag_hist_keys, "open_orders")))
                                 )
-                            )
-                        )
-                    }
+                            ):
+                                continue
+                            sv_clean = {
+                                k: v
+                                for k, v in sv.items()
+                                if k not in _ag_hist_keys and not (k == "open_orders" and not v)
+                            }
+                            if sv_clean:
+                                filt_d[sk] = sv_clean
+                        elif sv is not None:
+                            filt_d[sk] = sv
                     if filt_d:
                         active_ag[ag_sym] = filt_d
                 if not active_ag:
