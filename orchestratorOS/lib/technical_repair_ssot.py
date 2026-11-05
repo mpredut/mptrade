@@ -626,7 +626,7 @@ def normalize_error_signature(line: str) -> str:
     s = _FULL_TS_RE.sub("", line)
     s = _GLOG_TS_RE.sub("", s)
     s = _CLOCK_TS_RE.sub("", s)
-    s = re.sub(r"\[[A-Za-z0-9_.-]+:\d+\]\s*", "", s)
+    s = re.sub(r"\[(?:[A-Za-z0-9_.-]+:\d+|unknown)\]\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"\[(?:STDERR|STDOUT)\]\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", s)
     s = re.sub(r"\b\d{4,}\b", "NUM", s)
@@ -706,7 +706,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         re.IGNORECASE,
     )
     startup_fatal_exc_pattern = re.compile(
-        r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError):|\bname '[^']+' is not defined\b)",
+        r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError|UnboundLocalError):|"
+        r"\bname '[^']+' is not defined\b|"
+        r"\bcannot access local variable '[^']+' where it is not associated with a value\b)",
         re.IGNORECASE,
     )
     ignored_test_prefixes = ("pytest_", "__main___", "py.test_", "c_")
@@ -770,7 +772,12 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             )
                         ):
                             cleaned = line.strip()
-                            if not cleaned or traceback_boilerplate_pattern.match(cleaned):
+                            norm_cleaned = normalize_error_signature(cleaned)
+                            if (
+                                not cleaned
+                                or traceback_boilerplate_pattern.match(cleaned)
+                                or traceback_boilerplate_pattern.match(norm_cleaned)
+                            ):
                                 continue
                             if (
                                 line.startswith("    ")
@@ -778,8 +785,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 and lines[idx - 1].lstrip().startswith('File "')
                             ):
                                 continue
-                            if cleaned == "Traceback (most recent call last):" and any(
-                                py_exc_line_pattern.match(lines[j].strip())
+                            if norm_cleaned == "Traceback (most recent call last):" and any(
+                                py_exc_line_pattern.match(normalize_error_signature(lines[j]))
+                                or traceback_boilerplate_pattern.match(normalize_error_signature(lines[j]))
                                 for j in range(idx + 1, min(total_lines, idx + 45))
                             ):
                                 continue
@@ -878,7 +886,9 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             for sig_k, st_prev in list(file_sig_stats.items()):
                                 st_prev["unresolved_at_tail"] = False
                                 sample_prev = str(st_prev.get("sample") or "").strip()
-                                if startup_fatal_exc_pattern.search(sample_prev):
+                                if startup_fatal_exc_pattern.search(sample_prev) or startup_fatal_exc_pattern.search(
+                                    normalize_error_signature(sample_prev)
+                                ):
                                     error_count = max(0, error_count - int(st_prev.get("count", 0)))
                                     file_sig_stats.pop(sig_k, None)
                                     c_sig_prev = sig_k or sample_prev

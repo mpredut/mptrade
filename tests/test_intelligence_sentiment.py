@@ -4284,6 +4284,9 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         '  File "/app/kraken/kraken_bot.py", line 28, in <module>\n'
         "    from kraken_client import KrakenRestClient\n"
         "ImportError: cannot import name 'normalize_epoch_sec' from 'botcore'\n"
+        f"{clk_now} [unknown] [STDERR] Traceback (most recent call last):\n"
+        f'{clk_now} [unknown] [STDERR]   File "/app/macro_telemetry_collector.py", line 583, in harvest_macro_and_news_sensors\n'
+        "UnboundLocalError: cannot access local variable 'datetime' where it is not associated with a value\n"
         f"[{clk_now}]   [STRAT] state loaded\n"
         "=== STRATEGIE KRAKEN PORNITA ===\n",
         encoding="utf-8",
