@@ -228,13 +228,30 @@ class GeminiClient(GeminiQuotaRouterMixin):
             ", ".join(newly_dirty),
         )
         try:
-            _ORIG_SUBPROCESS_RUN(
+            proc = _ORIG_SUBPROCESS_RUN(
                 ["git", "-C", repo_dir, "checkout", "HEAD", "--", *newly_dirty],
                 capture_output=True,
                 text=True,
                 timeout=5.0,
                 check=False,
             )
+            if getattr(proc, "returncode", 0) != 0 and len(newly_dirty) >= 1:
+                for rel_p in newly_dirty:
+                    p_one = _ORIG_SUBPROCESS_RUN(
+                        ["git", "-C", repo_dir, "checkout", "HEAD", "--", rel_p],
+                        capture_output=True,
+                        text=True,
+                        timeout=5.0,
+                        check=False,
+                    )
+                    if getattr(p_one, "returncode", 0) != 0:
+                        _ORIG_SUBPROCESS_RUN(
+                            ["git", "-C", repo_dir, "reset", "HEAD", "--", rel_p],
+                            capture_output=True,
+                            text=True,
+                            timeout=5.0,
+                            check=False,
+                        )
         except Exception as exc:
             logger.warning("Failed restoring newly dirtied tracked files %s: %s", newly_dirty, exc)
 

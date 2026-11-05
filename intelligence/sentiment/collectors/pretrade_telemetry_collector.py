@@ -565,8 +565,11 @@ def collect_pretrade_telemetry(
                     continue
                 w0, w1 = _parse_ts_px_row(w_ser[0]), _parse_ts_px_row(w_ser[-1])
                 w_span_7d = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
-                if m7d and (is_eq or (0.0 <= w_span_7d < 5 * 86400 * 1000)):
+                arch_span_7d_pt = _LAST_7D_SPAN_MS_BY_SYM.get(str(symbol).strip().upper(), 0.0)
+                if m7d and (is_eq or arch_span_7d_pt >= 5 * 86400 * 1000 or (0.0 <= w_span_7d < 5 * 86400 * 1000)):
                     continue
+                if cur_px_est > 0.0 and not _prices_diverged(cur_px_est, vals_7d[-1]) and abs(cur_px_est - vals_7d[-1]) > 1e-9:
+                    vals_7d = list(vals_7d) + [cur_px_est]
                 if m7d_w := compute_7d_range_metrics(vals_7d, decimals=4 if is_eq else 6):
                     m7d = m7d_w
                     partial_w_7d_span = 0.0 <= w_span_7d < 5 * 86400 * 1000

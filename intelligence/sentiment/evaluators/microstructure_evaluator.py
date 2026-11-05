@@ -649,7 +649,10 @@ def enrich_cross_venue_trends(
             k_vel = safe_float(k_sym.get("kalman_vel"), default=None)
             k_std = safe_float(k_sym.get("kalman_vel_std"), default=None)
             is_unseeded_cold_kalman = k_vel is not None and abs(k_vel) < 1e-12 and (k_std is None or k_std >= 5.99)
-            if not is_unseeded_cold_kalman or entry.get("kalman_vel") is None:
+            cur_e_vel = safe_float(entry.get("kalman_vel"), default=None)
+            cur_e_std = safe_float(entry.get("kalman_vel_std"), default=None)
+            cur_is_unseeded = cur_e_vel is None or (abs(cur_e_vel) < 1e-12 and (cur_e_std is None or cur_e_std >= 5.99))
+            if cur_is_unseeded and (not is_unseeded_cold_kalman or cur_e_vel is None):
                 entry["kalman_vel"], entry["kalman_vel_std"], entry["kalman_trend"] = (
                     k_sym.get("kalman_vel"), k_sym.get("kalman_vel_std"), k_sym.get("kalman_trend")
                 )
@@ -741,7 +744,11 @@ def enrich_cross_venue_trends(
                     continue
                 w0, w1 = _parse_ts_px_row(cand_ser[0]), _parse_ts_px_row(cand_ser[-1])
                 w_span_ms = (w1[0] - w0[0]) if (w0 is not None and w1 is not None) else -1.0
-                if "chg_7d_pct" in entry and (sym.endswith(("_EQ", "_US_EQ")) or (0.0 <= w_span_ms < 5 * 86400 * 1000)):
+                if "chg_7d_pct" in entry and (
+                    sym.endswith(("_EQ", "_US_EQ"))
+                    or entry.get("_partial_7d_span_ms") is None
+                    or w_span_ms <= safe_float(entry.get("_partial_7d_span_ms"), 0.0)
+                ):
                     entry.pop("_partial_7d_span_ms", None)
                     continue
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]

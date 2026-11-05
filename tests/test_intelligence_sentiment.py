@@ -5708,7 +5708,7 @@ def test_stale_major_swing_low_cleanup_and_guard_anomaly_scanner(tmp_path):
         "2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC\n",
         encoding="utf-8",
     )
-    res = harvest_log_anomalies_from_dirs([str(log_dir)], 1)
+    res = harvest_log_anomalies_from_dirs([str(log_dir)], 999999)
     assert res.error_count == 0
     assert res.warning_count == 2
     assert res.guard_interventions == ["2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC"]

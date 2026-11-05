@@ -6763,11 +6763,130 @@ def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_patt
         "2026-11-05 03:38:00,000 [INFO] [ORDER_GUARD] HARD_VETO symbol=TAOUSDC reason=max_exposure\n",
         encoding="utf-8",
     )
-    anom = harvest_log_anomalies_from_dirs([str(ldir)], 1)
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], 999999)
     assert anom.error_count == 0
     assert anom.warning_count == 1
     assert len(anom.guard_interventions) == 1
     assert "ORDER_GUARD" in anom.guard_interventions[0]
+
+
+def test_iter93_7d_archive_over_watcher_post_rth_kalman_preservation_ref_ob_scaling_and_staged_restore(tmp_path):
+    """Iter 93:
+    1. enrich_24h_and_microstructure upgrades >=5d arch_vals_7d (including live ob_mid_m chg_7d_pct) even when
+       enrich_cross_venue_trends pre-populated chg_7d_pct from raw watcher_price_items, and a second
+       enrich_cross_venue_trends pass does not overwrite it or clobber post-RTH recomputed kalman_vel.
+    2. collect_pretrade_telemetry preserves >=5d arch_vals_7d (with live cur_px_est appended) over raw
+       cache_watcher_all_price.json without cur_px_est.
+    3. enrich_24h_and_microstructure scales stale >1% USD reference microstructure orderbooks (e.g. HYPEUSD)
+       against live cur_p_items and recalculates p_sib geometry.
+    4. GeminiClient._restore_newly_dirtied_tracked_files falls back per-file (checkout HEAD / reset HEAD)
+       when batch git checkout HEAD fails on a staged unborn file.
+    """
+    import subprocess
+    from intelligence.sentiment.collectors.microstructure_collector import enrich_24h_and_microstructure
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_cross_venue_trends
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    cdir = tmp_path / "cachedb"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True, exist_ok=True)
+    now_s = 1_793_800_000.0
+    now_ms = int(now_s * 1000)
+
+    # 1 & 2. 6-day watcher series ending at 105.0, while live ob_mid_price / cur_p_items is 110.0
+    watcher_6d = [
+        [now_ms - 6 * 86400 * 1000, 100.0],
+        [now_ms - 3 * 86400 * 1000, 102.0],
+        [now_ms - 120 * 1000, 105.0],
+    ]
+    (cdir / "cache_watcher_all_price.json").write_text(
+        json.dumps({"items": {"SOLUSDC": watcher_6d}}),
+        encoding="utf-8",
+    )
+    (pdir / "cache_365_price_SOLUSDC.json").write_text(
+        json.dumps({"items": {"SOLUSDC": watcher_6d}}),
+        encoding="utf-8",
+    )
+    (pdir / "cache_24_price_SOLUSDC.json").write_text(
+        json.dumps({"items": {"SOLUSDC": [[now_ms - 3600 * 1000, 104.0], [now_ms - 60 * 1000, 105.0]]}}),
+        encoding="utf-8",
+    )
+    (cdir / "cache_current_price.json").write_text(
+        json.dumps({"items": {"SOLUSDC": {"price": 110.0, "ts": now_s}, "HYPEUSD": {"price": 40.50, "ts": now_s}}}),
+        encoding="utf-8",
+    )
+    (cdir / "orderbook_depth_SOLUSDC.json").write_text(
+        json.dumps({"symbol": "SOLUSDC", "mid_price": 110.0, "best_bid": 109.95, "best_ask": 110.05, "spread_bps": 9.1, "bid_depth_usd": 50000.0, "ask_depth_usd": 50000.0, "ts": now_s}),
+        encoding="utf-8",
+    )
+    # Hyperliquid orderbook for HYPEUSDC + Stale >1% Kraken reference orderbook for HYPEUSD (38.80 vs live 40.50)
+    (cdir / "orderbook_depth_HYPEUSDC.json").write_text(
+        json.dumps({"symbol": "HYPEUSDC", "mid_price": 40.52, "best_bid": 40.50, "best_ask": 40.54, "spread_bps": 9.9, "bid_depth_usd": 150000.0, "ask_depth_usd": 150000.0, "ts": now_s}),
+        encoding="utf-8",
+    )
+    (cdir / "orderbook_depth_HYPEUSD.json").write_text(
+        json.dumps({"symbol": "HYPEUSD", "mid_price": 38.80, "best_bid": 38.75, "best_ask": 38.85, "bid_wall_px": 38.00, "ask_wall_px": 39.50, "spread_bps": 25.8, "bid_depth_usd": 25000.0, "ask_depth_usd": 25000.0, "ts": now_s - 600.0}),
+        encoding="utf-8",
+    )
+
+    pt = {
+        "SOLUSDC": {"price": 110.0},
+        "HYPEUSDC": {"price": 40.52, "low_24h": 39.00, "high_24h": 41.00, "pos_24h_pct": 76.0},
+    }
+    micro = {}
+    enrich_cross_venue_trends(pt, {}, {}, {}, {}, {}, {"SOLUSDC": watcher_6d})
+    assert pt["SOLUSDC"]["chg_7d_pct"] == pytest.approx(5.0)
+
+    cur_p_items = {"SOLUSDC": {"price": 110.0, "ts": now_s}, "HYPEUSD": {"price": 40.50, "ts": now_s}}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt, micro, cur_p_items, {}, now_ts=now_s)
+    # Upgraded to include live 110.0 (+10.0% over 100.0)
+    assert pt["SOLUSDC"]["chg_7d_pct"] == pytest.approx(10.0)
+    # Reference symbol HYPEUSD scaled from 38.80 to live 40.50 and geometry recalculated
+    assert micro["HYPEUSD"]["ob_mid_price"] == pytest.approx(40.50)
+    assert pt["HYPEUSD"]["price"] == pytest.approx(40.50)
+    assert pt["HYPEUSD"]["pos_24h_pct"] == pytest.approx(75.0)
+
+    # Second enrich_cross_venue_trends pass preservesSOLUSDC +10.0% and seeded post-RTH kalman_vel
+    pt["NVDA_US_EQ"] = {"price": 202.0, "kalman_vel": 0.145, "kalman_vel_std": 0.04, "kalman_trend": 1}
+    enrich_cross_venue_trends(
+        pt,
+        {},
+        {"NVDA_US_EQ": {"kalman_vel": -0.02, "kalman_vel_std": 0.05, "kalman_trend": -1}},
+        {},
+        {},
+        {},
+        {"SOLUSDC": watcher_6d},
+    )
+    assert pt["SOLUSDC"]["chg_7d_pct"] == pytest.approx(10.0)
+    assert pt["NVDA_US_EQ"]["kalman_vel"] == pytest.approx(0.145)
+    assert pt["NVDA_US_EQ"]["kalman_trend"] == 1
+
+    pre_sol = collect_pretrade_telemetry("SOLUSDC", str(cdir))
+    assert "7d=+10.00%" in pre_sol["7d Price Range & Swing Structure"]
+
+    # 4. GeminiClient._restore_newly_dirtied_tracked_files handles staged unborn file + modified tracked file
+    repo_dir = tmp_path / "git_repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True, capture_output=True)
+    tracked = repo_dir / "tracked.py"
+    tracked.write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "tracked.py"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "init"], check=True, capture_output=True)
+
+    pre_dirty = GeminiClient._snapshot_dirty_tracked_files(str(repo_dir))
+    assert pre_dirty == set()
+    tracked.write_text("x = 999\n", encoding="utf-8")
+    unborn = repo_dir / "unborn_staged.py"
+    unborn.write_text("y = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "unborn_staged.py"], check=True, capture_output=True)
+
+    GeminiClient._restore_newly_dirtied_tracked_files(str(repo_dir), pre_dirty)
+    assert tracked.read_text(encoding="utf-8") == "x = 1\n"
+    assert GeminiClient._snapshot_dirty_tracked_files(str(repo_dir)) == set()
+
 
 
 

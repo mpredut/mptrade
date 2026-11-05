@@ -948,6 +948,7 @@ def enrich_24h_and_microstructure(
         if arch_vals_7d and len(arch_vals_7d) >= 2 and (
             is_eq_sym
             or "chg_7d_pct" not in prices_and_trends[sym]
+            or arch_span_7d_ms >= 5 * 86400 * 1000
             or (
                 prices_and_trends[sym].get("_partial_7d_span_ms") is not None
                 and arch_span_7d_ms > safe_float(prices_and_trends[sym].get("_partial_7d_span_ms"), 0.0)
@@ -1289,9 +1290,31 @@ def enrich_24h_and_microstructure(
             )
             if p_ref is not None and msym not in prices_and_trends:
                 ob_mid_sib = safe_pos_float(m_info_ref.get("ob_mid_price"), default=None)
+                if msym.upper().endswith("USD") and ob_mid_sib is not None:
+                    sib_live_px = extract_current_price_item(casefold_get(cur_p_items, msym))
+                    if (not sib_live_px or sib_live_px <= 0.0) and cache_dir:
+                        if isinstance(l24_s := _rj(os.path.join(cache_dir, "24trend", f"live_{msym.upper()}.json")), dict):
+                            w_src = l24_s.get("windows") if isinstance(l24_s.get("windows"), dict) else l24_s
+                            sib_live_px = safe_pos_float(
+                                ((w_src.get("222") or w_src.get("900") or {}) if isinstance(w_src, dict) else {}).get("current_price"),
+                                default=None,
+                            )
+                    if (
+                        sib_live_px
+                        and sib_live_px > 0.0
+                        and abs(sib_live_px - ob_mid_sib) / max(sib_live_px, ob_mid_sib) > 0.01
+                        and not _prices_diverged(sib_live_px, ob_mid_sib)
+                    ):
+                        s_scale = sib_live_px / ob_mid_sib
+                        s_dec = _auto_px_decimals(sib_live_px)
+                        ob_mid_sib = m_info_ref["ob_mid_price"] = round(sib_live_px, s_dec)
+                        for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+                            if (v_sc := safe_pos_float(m_info_ref.get(k_sc), default=None)) is not None:
+                                m_info_ref[k_sc] = round(v_sc * s_scale, s_dec)
                 if ob_mid_sib is not None and not _prices_diverged(ob_mid_sib, safe_float(p_ref.get("price"), 0.0)):
                     p_sib = dict(p_ref)
                     p_sib["price"] = ob_mid_sib
+                    recalculate_live_price_geometry(p_sib, ob_mid_sib)
                     if m_info_ref.get("spread_bps") is not None:
                         p_sib["spread_bps"] = m_info_ref["spread_bps"]
                     prices_and_trends[msym] = p_sib
