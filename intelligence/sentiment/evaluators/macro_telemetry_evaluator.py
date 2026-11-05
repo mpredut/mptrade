@@ -315,6 +315,26 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                             sp_list[0]["value_usd"] = round(v_pos_sum, 2)
                             sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
                             sp_list[0]["snapshot_age_min"] = 0.0
+                    else:
+                        if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
+                            hl_ro_d["qty"] = 0.0
+                            hl_ro_d["value_usd"] = 0.0
+                            hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
+                        if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
+                            sp_list[0]["qty"] = 0.0
+                            sp_list[0]["value_usd"] = 0.0
+                            sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
+                            sp_list[0]["snapshot_age_min"] = 0.0
+                else:
+                    if "qty" in hl_ro_d or "value_usd" in hl_ro_d:
+                        hl_ro_d["qty"] = 0.0
+                        hl_ro_d["value_usd"] = 0.0
+                        hl_ro_d["cash_usd"] = round(v_cash_sum, 2)
+                    if isinstance(sp_list := hl_ro_d.get("spot_positions"), list) and len(sp_list) == 1 and isinstance(sp_list[0], dict):
+                        sp_list[0]["qty"] = 0.0
+                        sp_list[0]["value_usd"] = 0.0
+                        sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
+                        sp_list[0]["snapshot_age_min"] = 0.0
 
 
 def enrich_sentiment_advisor_live_flow_divergence(

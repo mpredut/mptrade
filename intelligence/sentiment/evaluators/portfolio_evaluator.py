@@ -582,14 +582,23 @@ def _populate_cycle_fallback_recent_order(
     cyc_avg = safe_pos_float(cyc.get("avg_cost_px") or cyc.get("entry_price"), default=0.0) or 0.0
     cyc_lb = safe_pos_float(cyc.get("last_buy_price") or cyc.get("entry_price"), default=None)
     cyc_ls = safe_pos_float(cyc.get("last_sell_price"), default=None)
-    cyc_ls_ts = cyc_sell_ts_map.get((p_venue, p_sym))
+    cyc_ls_ts = cyc_sell_ts_map.get((p_venue, p_sym)) or normalize_timestamp_ms(cyc.get("_last_sell_ts_ms"), default=None)
+    cyc_lb_ts = cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or normalize_timestamp_ms(cyc.get("_entry_ts_ms"), default=None)
     created_ro = False
+    existing_ro = recent_orders.get(p_sym) if isinstance(recent_orders, dict) else None
+    existing_venue = normalize_venue_name(existing_ro.get("venue")) if isinstance(existing_ro, dict) else ""
+    can_create_ro = (
+        p_venue == "t212"
+        or p_sym not in recent_orders
+        or (existing_venue and existing_venue != p_venue and f"{p_venue}:{p_sym}" not in recent_orders)
+    )
     if (
         not isinstance(ro, dict)
-        and (p_venue == "t212" or p_sym not in recent_orders)
+        and can_create_ro
         and (cyc_lb is not None or cyc_ls is not None or cyc_avg > 0)
     ):
         ro = {
+            "venue": p_venue,
             "last_action_side": "BUY" if cyc_has_open_qty else ("SELL" if cyc_ls is not None else "BUY"),
             "last_action_actor": "BOT",
             "last_action_actor_tag": "BOT",
@@ -598,9 +607,15 @@ def _populate_cycle_fallback_recent_order(
             "active_avg_buy_px": None,
             "recent_buys": [],
         }
-        recent_orders[p_sym] = v_ro_map[p_sym] = ro
+        v_ro_map[p_sym] = ro
+        if p_sym not in recent_orders or p_venue == "t212":
+            recent_orders[p_sym] = ro
+        else:
+            recent_orders[f"{p_venue}:{p_sym}"] = ro
         created_ro = True
     if isinstance(ro, dict):
+        if created_ro:
+            ro.setdefault("venue", p_venue)
         if (p_venue == "t212" or created_ro) and cyc_avg > 0 and cyc_has_open_qty:
             if (
                 p_venue == "t212"
@@ -613,9 +628,13 @@ def _populate_cycle_fallback_recent_order(
             ro["active_avg_buy_px"] = round(cyc_avg, 6)
         if (p_venue == "t212" or created_ro) and ro.get("last_buy") is None and cyc_lb is not None:
             lb_d: Dict[str, Any] = {"price": cyc_lb, "actor": "BOT", "actor_tag": "BOT"}
+            if cyc_lb_ts is not None:
+                lb_d["ts_ms"] = cyc_lb_ts
             if not ro.get("recent_buys"):
                 lb_d["qty"] = cyc.get("qty") if not cyc.get("dca_buys") and cyc_has_open_qty else None
             ro["last_buy"] = lb_d
+        elif isinstance(ro.get("last_buy"), dict) and ro["last_buy"].get("ts_ms") is None and cyc_lb_ts is not None:
+            ro["last_buy"]["ts_ms"] = cyc_lb_ts
         if ro.get("last_sell") is None and cyc_ls is not None:
             ro["last_sell"] = {"price": cyc_ls, "ts_ms": cyc_ls_ts, "actor": "BOT", "actor_tag": "BOT"}
     return ro
@@ -641,6 +660,11 @@ def reconcile_venue_cycles_with_recent_orders(
             entry_ts_ms, sell_ts_ms = cyc.pop("_entry_ts_ms", None), cyc.pop("_last_sell_ts_ms", None)
             c_quotes = compatible_quote_suffixes(c_sym)
             c_cands = (c_sym, *cache_symbol_variants(c_sym, include_base="USD" in c_quotes, quotes=c_quotes))
+            if entry_ts_ms:
+                entry_ts_i = int(entry_ts_ms)
+                for cand in c_cands:
+                    cyc_sell_ts_map.setdefault((f"{c_venue}:entry", str(cand).upper()), entry_ts_i)
+                cyc_sell_ts_map[(f"{c_venue}:entry", str(c_sym).upper())] = entry_ts_i
             if sell_ts_ms:
                 sell_ts_i = int(sell_ts_ms)
                 for cand in c_cands:
@@ -988,7 +1012,7 @@ def enrich_positions_with_orders_and_cycles(
                     hi_24h = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
                     ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
                     ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
-                    if hi_24h > 0.0 and not _prices_diverged(pos_px_f, hi_24h):
+                    if hi_24h > 0.0 and not _prices_diverged(pos_px_f, hi_24h, threshold=0.35):
                         seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
                         set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
         for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
@@ -996,6 +1020,9 @@ def enrich_positions_with_orders_and_cycles(
             if not isinstance(cyc, dict):
                 continue
             cyc_qty = safe_nonneg_float(cyc.get("qty"), default=None)
+            c_pk_orig = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+            p_pk_orig = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+            raw_pk_orig = max(c_pk_orig, p_pk_orig) if max(c_pk_orig, p_pk_orig) > 0.0 else None
             if (
                 held_cur > 1e-8
                 and not is_flat_balance
@@ -1075,6 +1102,36 @@ def enrich_positions_with_orders_and_cycles(
                     set_pos_anchor(
                         pos, "trailing_peak", "dd_from_peak_pct", max(c_pk_sync, p_pk_sync), pos_px_f, overwrite=(c_pk_sync > p_pk_sync)
                     )
+                if pos_px_f > 0.0:
+                    cur_pk_c = safe_pos_float(pos.get("trailing_peak"), default=None)
+                    act_avg_c = safe_pos_float(pos.get("active_avg_buy_px") or cyc.get("avg_cost_px") or cyc.get("entry_price"), default=None)
+                    if raw_pk_orig is None or (
+                        act_avg_c is not None and abs(raw_pk_orig - act_avg_c) <= max(1e-6, max(raw_pk_orig, act_avg_c) * 1e-5)
+                    ):
+                        c_lot_ts_p = [
+                            t for x in ((ro.get("open_lots") or ro.get("recent_buys") or []) if isinstance(ro, dict) else ())
+                            if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
+                        ]
+                        if not c_lot_ts_p and isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict):
+                            if (lb_t_p := int(safe_pos_float(ro["last_buy"].get("ts_ms"), default=0) or 0)) > 0:
+                                c_lot_ts_p.append(lb_t_p)
+                        oldest_c_ts_p = min(c_lot_ts_p) if c_lot_ts_p else (cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0)
+                        c_age_ms_p = (int(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
+                        if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
+                            pt_c_p = next(
+                                (
+                                    val for cand in (p_sym, *p_quote_variants)
+                                    if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
+                                    and safe_pos_float(val.get("high_24h"), default=0.0)
+                                ),
+                                None,
+                            )
+                            hi_24h_p = safe_pos_float(pt_c_p.get("high_24h") if isinstance(pt_c_p, dict) else None, default=0.0) or 0.0
+                            if hi_24h_p > 0.0 and not _prices_diverged(pos_px_f, hi_24h_p, threshold=0.35):
+                                seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
+                                set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
+                                cyc["pos_peak"] = round(seed_pk_p, 6)
+                                cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, seed_pk_p)
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
             has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))
@@ -1154,7 +1211,7 @@ def enrich_positions_with_orders_and_cycles(
                     ),
                     None,
                 )
-            _populate_cycle_fallback_recent_order(
+            ro = _populate_cycle_fallback_recent_order(
                 c_venue, c_sym_u, cyc, True, ro, recent_orders, v_ro_map, cyc_sell_ts_map
             )
             c_px = resolve_symbol_price(c_sym_u, prices_and_trends)
@@ -1172,15 +1229,22 @@ def enrich_positions_with_orders_and_cycles(
                     if not c_lot_ts and isinstance(ro, dict) and isinstance(ro.get("last_buy"), dict):
                         if (lb_t := int(safe_pos_float(ro["last_buy"].get("ts_ms"), default=0) or 0)) > 0:
                             c_lot_ts.append(lb_t)
-                    oldest_c_ts = min(c_lot_ts) if c_lot_ts else 0
+                    oldest_c_ts = min(c_lot_ts) if c_lot_ts else (cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0)
                     c_age_ms = (int(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
                     if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
-                        pt_c = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(prices_and_trends, cand)), dict)), None)
+                        pt_c = next(
+                            (
+                                val for cand in (c_sym_u, *c_quote_variants)
+                                if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
+                                and safe_pos_float(val.get("high_24h"), default=0.0)
+                            ),
+                            None,
+                        )
                         hi_24h_c = safe_pos_float(pt_c.get("high_24h") if isinstance(pt_c, dict) else None, default=0.0) or 0.0
                         ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                         ls_c_ts = int(safe_pos_float(ls_c_d.get("ts_ms"), default=0) or 0)
                         ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
-                        if hi_24h_c > 0.0 and not _prices_diverged(c_px, hi_24h_c):
+                        if hi_24h_c > 0.0 and not _prices_diverged(c_px, hi_24h_c, threshold=0.35):
                             c_pk = max(
                                 hi_24h_c,
                                 ls_c_px,

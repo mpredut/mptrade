@@ -479,11 +479,12 @@ def compute_enterprise_portfolio_risk_metrics(
         else ("DEFENSIVE_HIGH_CASH" if free_cash_pct >= 55.0 else "BALANCED_DIVERSIFIED")
     )
 
-    lifo_pnl_total = sum(
-        safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
-        for r_info in rec_orders.values()
-        if isinstance(r_info, dict)
-    )
+    seen_ro_ids: set[int] = set()
+    lifo_pnl_total = 0.0
+    for r_info in rec_orders.values():
+        if isinstance(r_info, dict) and id(r_info) not in seen_ro_ids:
+            seen_ro_ids.add(id(r_info))
+            lifo_pnl_total += safe_float(r_info.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
 
     out_risk: Dict[str, Any] = {
         "unified_nav_usd": unified_nav,
@@ -561,12 +562,20 @@ def build_cross_market_context(
             },
         }
         sym_quotes = compatible_quote_suffixes(sym)
-        m_info, m_same_quote = microstructure.get(sym), True
+        m_info, m_same_quote = casefold_get(microstructure, sym), True
         if not isinstance(m_info, dict):
-            m_info, m_same_quote = next(
-                ((mv, compatible_quote_suffixes(mk) == sym_quotes) for mk, mv in microstructure.items() if canonical_base_asset(mk) == b_canon and isinstance(mv, dict)),
-                (None, False),
-            )
+            m_cands = [
+                (mv, compatible_quote_suffixes(mk) == sym_quotes, len(mv))
+                for mk, mv in microstructure.items()
+                if not str(mk).upper().endswith(("_EQ", "_US_EQ"))
+                and canonical_base_asset(mk) == b_canon
+                and isinstance(mv, dict)
+            ]
+            if m_cands:
+                m_cands.sort(key=lambda item: (1 if item[1] else 0, item[2]), reverse=True)
+                m_info, m_same_quote = m_cands[0][0], m_cands[0][1]
+            else:
+                m_info, m_same_quote = None, False
         if isinstance(m_info, dict):
             for mk_copy in (
                 "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",

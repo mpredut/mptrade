@@ -7739,3 +7739,132 @@ def test_iter98_tca_front_run_wall_pos_asset_scope_and_trailing_peak_variants():
     assert hl_cycles["HYPE"]["pos_peak"] == 44.0
 
 
+def test_iter99_cycle_fallback_entry_ts_peak_hl_flat_snapshot_and_bellwether_micro():
+    import time as _time
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        enrich_positions_with_orders_and_cycles,
+        reconcile_venue_cycles_with_recent_orders,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import (
+        build_cross_market_context,
+        compute_enterprise_portfolio_risk_metrics,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        reconcile_live_venue_equity_summary,
+    )
+
+    # 1. reconcile_venue_cycles_with_recent_orders preserves _entry_ts_ms in cyc_sell_ts_map
+    #    so _populate_cycle_fallback_recent_order and enrich_positions_with_orders_and_cycles
+    #    can reconcile unwarmed pos_peak / trailing_peak from high_24h even when trade cache is absent.
+    now_ms = int(_time.time() * 1000)
+    entry_24h_ago_ms = now_ms - 24 * 3600 * 1000
+    hl_cycles = {
+        "HYPE": {
+            "qty": 10.0,
+            "cost_usd": 380.0,
+            "avg_cost_px": 38.0,
+            "entry_price": 38.0,
+            "last_buy_price": 38.0,
+            "pos_peak": 38.0,
+            "_entry_ts_ms": entry_24h_ago_ms,
+        }
+    }
+    kr_cycles = {
+        "TAOUSD": {
+            "qty": 2.0,
+            "cost_usd": 800.0,
+            "avg_cost_px": 400.0,
+            "entry_price": 400.0,
+            "last_buy_price": 400.0,
+            "pos_peak": 400.0,
+            "_entry_ts_ms": entry_24h_ago_ms,
+        }
+    }
+    pt = {
+        "HYPEUSDC": {"price": 40.0, "high_24h": 45.0},
+        "TAOUSD": {"price": 410.0, "high_24h": 440.0},
+    }
+    cyc_map = reconcile_venue_cycles_with_recent_orders(
+        kr_cycles, hl_cycles, {}, {"kraken": {}, "hyperliquid": {}}, {}, pt
+    )
+    assert cyc_map.get(("hyperliquid:entry", "HYPE")) == entry_24h_ago_ms
+    assert cyc_map.get(("kraken:entry", "TAOUSD")) == entry_24h_ago_ms
+
+    t_pos = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "quote": "USDC",
+            "free_base": 10.0,
+            "price": 40.0,
+            "value_usd": 400.0,
+        }
+    ]
+    rec_orders = {"HYPE": {"venue": "binance", "last_action_side": "BUY", "lifo_realized_pnl_usd": 12.5}}
+    v_ro = {"kraken": {}, "hyperliquid": {}}
+    enrich_positions_with_orders_and_cycles(
+        t_pos,
+        pt,
+        {},
+        v_ro,
+        rec_orders,
+        kr_cycles,
+        hl_cycles,
+        {},
+        cyc_map,
+    )
+    assert t_pos[0]["trailing_peak"] == 45.0
+    assert hl_cycles["HYPE"]["pos_peak"] == 45.0
+    assert "hyperliquid:HYPE" in rec_orders
+    assert rec_orders["hyperliquid:HYPE"]["last_buy"]["ts_ms"] == entry_24h_ago_ms
+    # TAOUSD (not in tradable_positions) also gets ro captured and pos_peak reconciled from high_24h
+    assert kr_cycles["TAOUSD"]["pos_peak"] == 440.0
+    assert rec_orders["TAOUSD"]["last_buy"]["ts_ms"] == entry_24h_ago_ms
+
+    # 2. compute_enterprise_portfolio_risk_metrics deduplicates aliased recent_orders dicts by id()
+    shared_ro = {"venue": "binance", "lifo_realized_pnl_usd": 15.0}
+    pf_dup = {
+        "tradable_positions": [{"venue": "binance", "symbol": "BTCUSDC", "value_usd": 1000.0}],
+        "venue_quote_cash": {},
+        "recent_orders": {"BTCUSDC": shared_ro, "binance:BTCUSDC": shared_ro},
+    }
+    risk_dup = compute_enterprise_portfolio_risk_metrics(pf_dup, {"BTCUSDC": {"price": 75000.0}}, {})
+    assert risk_dup["subcycle_lifo_realized_pnl_usd"] == 15.0
+
+    # 3. build_cross_market_context prefers compatible quote microstructure and skips _EQ/_US_EQ
+    cmc = build_cross_market_context(
+        {"COINUSDC": {"price": 250.0, "chg_24h_pct": 3.5}},
+        {
+            "COIN_US_EQ": {"ob_imbalance": -0.9, "spread_bps": 50.0},
+            "COINEUR": {"ob_imbalance": -0.5, "spread_bps": 25.0, "long_liq_px": 200.0},
+            "COINUSDT": {"ob_imbalance": 0.42, "spread_bps": 4.0, "long_liq_px": 235.0},
+        },
+    )
+    cb_coin = cmc["crypto_bellwethers"]["COIN"]
+    assert cb_coin["ob_imbalance"] == 0.42
+    assert cb_coin["long_liq_px"] == 235.0
+
+    # 4. reconcile_live_venue_equity_summary zeroes stale Hyperliquid spot qty/value when position is flat (only cash remains)
+    pf_hl_flat = {
+        "tradable_positions": [],
+        "venue_quote_cash": {"hyperliquid:USDC": {"venue": "hyperliquid", "free_usd": 520.0}},
+        "hyperliquid_readonly": {
+            "qty": 12.5,
+            "value_usd": 500.0,
+            "cash_usd": 20.0,
+            "spot_positions": [{"coin": "HYPE", "qty": 12.5, "value_usd": 500.0, "cash_usd": 20.0, "snapshot_age_min": 45.0}],
+        },
+    }
+    reconcile_live_venue_equity_summary(pf_hl_flat)
+    hl_ro_after = pf_hl_flat["hyperliquid_readonly"]
+    assert hl_ro_after["live_reconciled_spot_usd"] == 520.0
+    assert hl_ro_after["qty"] == 0.0
+    assert hl_ro_after["value_usd"] == 0.0
+    assert hl_ro_after["cash_usd"] == 520.0
+    assert hl_ro_after["spot_positions"][0]["qty"] == 0.0
+    assert hl_ro_after["spot_positions"][0]["value_usd"] == 0.0
+    assert hl_ro_after["spot_positions"][0]["cash_usd"] == 520.0
+    assert hl_ro_after["spot_positions"][0]["snapshot_age_min"] == 0.0
+
+
+
