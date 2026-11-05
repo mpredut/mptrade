@@ -5131,6 +5131,10 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     deesc = geo.assess(snap, now_ts=now_s)
     assert deesc.threat_level == "NORMAL"
     assert deesc.recommended_brake == "NONE"
+    # Even with force_refresh=True or recent eval_ts (<30m), >=90m-aged headlines stay de-escalated to NORMAL
+    deesc_forced = geo.assess(snap, force_refresh=True, now_ts=now_s)
+    assert deesc_forced.threat_level == "NORMAL"
+    assert deesc_forced.recommended_brake == "NONE"
 
     # Bug 23 & 24: load_cached_whale_telemetry string symbol & SentimentAdvisor prior_6h_low/1h_low fallback
     (cdir / "telemetry" / "whale_snapshot_BTCUSDC.json").write_text(

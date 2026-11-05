@@ -636,9 +636,28 @@ def compute_dynamic_geopolitical_interval(
     has_shock = _parse_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False)) if news_snapshot is not None else False
     high_sev_count = safe_int(obj_attr(news_snapshot, "high_severity_count", 0), 0) if news_snapshot is not None else 0
 
-    has_new_acute = not bool(last_headlines_digest)
-    new_high_sev_count = high_sev_count
-    if changed_b and last_headlines_digest and news_snapshot is not None:
+    all_high_sev_aged_90m = False
+    if high_sev_count > 0 and news_snapshot is not None:
+        high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
+        if high_sev_all:
+            from intelligence.macro.news_feed_collector import NewsFeedCollector
+
+            all_high_sev_aged_90m = all(
+                0.0
+                < (
+                    _ssot.safe_nonneg_ts(
+                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
+                        0.0,
+                    )
+                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), ts) or 0.0)
+                )
+                <= ts - 5400.0
+                for h in high_sev_all
+            )
+
+    has_new_acute = not bool(last_headlines_digest) and not all_high_sev_aged_90m
+    new_high_sev_count = 0 if all_high_sev_aged_90m else high_sev_count
+    if changed_b and last_headlines_digest and news_snapshot is not None and not all_high_sev_aged_90m:
         high_sev, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
         prev_lower = last_headlines_digest.lower()
         prev_titles = _ssot.split_headlines_digest(last_headlines_digest)
@@ -675,30 +694,11 @@ def compute_dynamic_geopolitical_interval(
         if crossed_cp is not None:
             return min(base, cp_cooldown_itv), f"geopolitical_session_checkpoint_{crossed_cp}"
 
-    if high_sev_count == 0 and threat_level == "NORMAL":
+    if (high_sev_count == 0 or all_high_sev_aged_90m) and threat_level == "NORMAL":
         session_ctx = resolve_global_trading_session(ts)
         if not session_ctx.is_active_western_session:
             return min(max_geo_itv, base * 1.3333), "global_overnight_calm_6h"
         return min(max_geo_itv, base * 1.15), "global_daytime_calm"
-
-    all_high_sev_aged_90m = False
-    if high_sev_count > 0 and news_snapshot is not None and (not changed_b or new_high_sev_count == 0):
-        high_sev_all, _ = _ssot.extract_high_severity_headlines_and_digest(news_snapshot)
-        if high_sev_all:
-            from intelligence.macro.news_feed_collector import NewsFeedCollector
-
-            all_high_sev_aged_90m = all(
-                0.0
-                < (
-                    _ssot.safe_nonneg_ts(
-                        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-                        0.0,
-                    )
-                    or (NewsFeedCollector._parse_recent_pub_date_ts(obj_attr(h, "pub_date", None), ts) or 0.0)
-                )
-                <= ts - 5400.0
-                for h in high_sev_all
-            )
 
     if (high_sev_count == 0 or all_high_sev_aged_90m) and threat_level in ("ELEVATED", "CRITICAL_SHOCK") and news_snapshot is not None:
         return min(base, min_geo_itv * 2.0), "threat_deescalation_zero_high_sev_recheck"

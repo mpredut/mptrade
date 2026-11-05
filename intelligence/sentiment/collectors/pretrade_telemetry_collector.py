@@ -253,7 +253,7 @@ def collect_pretrade_telemetry(
         if not cur_px_est or cur_px_est <= 0.0:
             cur_px_est = live_cur_px
         if (
-            not m24
+            (not m24 or "chg_24h_pct" not in m24)
             and is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
         ):

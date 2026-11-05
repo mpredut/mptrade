@@ -217,17 +217,9 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
             and has_new_acute_phrase
         )
-        deescalate_aged_90m = bool(
+        all_high_sev_aged_90m = bool(
             high_sev
             and not acute_shock_alert
-            and self._cached_assessment is not None
-            and not self._cached_assessment.is_fallback
-            and self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
-            and age_sec >= 1800.0
-            and (
-                not self._last_headlines_digest
-                or headline_digest.lower() == self._last_headlines_digest.lower()
-            )
             and all(
                 0.0
                 < (
@@ -240,6 +232,12 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 <= now - 5400.0
                 for h in high_sev
             )
+        )
+        deescalate_aged_90m = bool(
+            all_high_sev_aged_90m
+            and self._cached_assessment is not None
+            and not self._cached_assessment.is_fallback
+            and self._cached_assessment.threat_level in ("ELEVATED", "CRITICAL_SHOCK")
         )
         if not force_refresh and not acute_shock_alert and not deescalate_aged_90m and self._cached_assessment and not is_stale:
             if headline_digest and not self._last_headlines_digest and not self._cached_assessment.is_fallback:
@@ -270,7 +268,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 "",
             )
 
-        if deescalate_aged_90m:
+        if all_high_sev_aged_90m:
             return self._commit_assessment(
                 GeopoliticalThreatAssessment(
                     threat_level="NORMAL",
