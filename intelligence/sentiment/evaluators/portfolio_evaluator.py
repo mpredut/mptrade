@@ -413,12 +413,18 @@ def extract_symbol_recent_fills(
             tactical_qty, tactical_avg = 0.0, 0.0
             if q_f is not None and q_f > 0.0:
                 prev_cost_qty = cost_qty
+                prev_top_lot_ts = int(open_lots[-1].get("ts_ms") or 0) if open_lots else 0
                 is_full_exit = q_f >= cost_qty * 0.98 or cost_qty - q_f <= 1e-12
                 last_exit_oversold = bool(
                     is_full_exit
                     and (
                         (prev_cost_qty > 1e-12 and q_f > prev_cost_qty * 1.05)
                         or (prev_cost_qty <= 1e-12 and (last_exit_oversold or bool(buys_fmt)))
+                    )
+                    and (
+                        not ts_raw
+                        or prev_top_lot_ts <= 0
+                        or (int(ts_raw) - prev_top_lot_ts) <= 7 * 86400 * 1000
                     )
                 )
                 if ts_raw:

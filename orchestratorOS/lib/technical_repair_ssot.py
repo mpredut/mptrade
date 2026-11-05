@@ -727,6 +727,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 ):
                                     continue
                             if (
+                                "insufficient-free-for-stocks-buy" in cleaned
+                                and any("Successfully placed BUY" in lines[j] for j in range(idx + 1, total_lines))
+                            ):
+                                continue
+                            if (
                                 (
                                     "Failed to recover daemon" in cleaned
                                     or "Error: not signed in:" in cleaned

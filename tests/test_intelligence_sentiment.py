@@ -5272,5 +5272,73 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
     )
     assert parse_cited_taker_ratio(live_summary) == 0.60
 
+    # Bug 30b: extract_symbol_recent_fills clears lifo_realized_pnl_usd when a full exit of >7d-old lots is followed by a new cycle BUY
+    from intelligence.sentiment.evaluators.portfolio_evaluator import extract_symbol_recent_fills
+
+    tao_fills = extract_symbol_recent_fills(
+        [
+            {"side": "BUY", "price": 272.94, "qty": 1.19073, "ts_ms": 1791889520952},
+            {"side": "BUY", "price": 264.7238, "qty": 0.58748, "ts_ms": 1792030636688},
+            {"side": "BUY", "price": 256.0432, "qty": 1.26932, "ts_ms": 1792072494450},
+            {"side": "SELL", "price": 226.016729, "qty": 7.40379, "ts_ms": 1793319677319},
+            {"side": "BUY", "price": 235.741094, "qty": 3.70189, "ts_ms": 1793331231572},
+        ],
+        symbol="TAOUSD",
+    )
+    assert tao_fills is not None
+    assert tao_fills.get("lifo_realized_pnl_usd", 0.0) == 0.0
+
+    # Bug 31a & 31b: execute_enforce_intent_order retries T212 insufficient-free-for-stocks-buy with 0.94x downscale,
+    # and harvest_log_anomalies_from_dirs suppresses insufficient-free-for-stocks-buy followed by 'Successfully placed BUY'
+    from providers.execution_audit import execute_enforce_intent_order
+
+    t212_calls: list[float] = []
+
+    def _fake_place(**kw):
+        t212_calls.append(kw["qty"])
+        if len(t212_calls) == 1:
+            kw["_outcome_context"].update({"state": "refused", "reason": "T212 HTTP 400: {'type': '/api-errors/insufficient-free-for-stocks-buy'}"})
+            return None
+        return {"id": "59907459622", "orderId": "59907459622"}
+
+    dummy_t212_inst = SimpleNamespace(
+        symbol="NVDA_US_EQ",
+        provider_name="t212",
+        _provider=SimpleNamespace(round_quantity=lambda sym, q: round(q, 2)),
+        place=_fake_place,
+    )
+    intent_31 = {"intent_id": "intent_1_buy_nvda", "history": []}
+    execute_enforce_intent_order(
+        dummy_t212_inst,
+        intent_31,
+        intent_id="intent_1_buy_nvda",
+        decision="BUY",
+        target_qty=0.44,
+        price=201.73,
+        effective_usd=88.76,
+        guard_allowed=True,
+        guard_reason="OK",
+        thesis="test",
+        trade_tag="[auto_sharetrade_executor]",
+        now_ts=now_s,
+        bypass_guards=frozenset({"all"}),
+    )
+    assert len(t212_calls) == 2
+    assert t212_calls[0] == 0.44
+    assert t212_calls[1] == 0.41
+    assert intent_31["status"] == "EXECUTED"
+
+    ldir_31 = tmp_path / "logs_b31"
+    ldir_31.mkdir(exist_ok=True)
+    (ldir_31 / "auto_sharetrade_executor.log").write_text(
+        f"{t_err} [T212] place_order NVDA_US_EQ failed (HTTP 400): {{'type': '/api-errors/insufficient-free-for-stocks-buy'}}\n"
+        f"{t_err} [NVDA_US_EQ] BUY BLOCKED (pre-submit): T212 HTTP 400: {{'type': '/api-errors/insufficient-free-for-stocks-buy'}}\n"
+        f"{t_rec} [INFO] [LLM TRADER · ENFORCE] Successfully placed BUY NVDA_US_EQ: {{'id': 59907459622}}\n",
+        encoding="utf-8",
+    )
+    anom_31 = harvest_log_anomalies_from_dirs([str(ldir_31)], lookback_hours=2.0)
+    assert anom_31.error_count == 0
+
+
 
 

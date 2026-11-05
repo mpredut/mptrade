@@ -1762,18 +1762,27 @@ def execute_enforce_intent_order(
             if is_limit:
                 place_kwargs["smart"] = False
             order_res = inst.place(**place_kwargs)
-            if (
-                order_res
-                or attempt > 0
-                or (
-                    outcome_ctx.get("state") != "refused"
-                    and outcome_ctx.get("category") != "refused_pre_submit"
-                )
-                or outcome_ctx.get("reason") not in ("account_cache_not_fresh", "account_cache_snapshot_changed")
-            ):
+            if order_res or attempt > 0:
                 break
-            _cleanup_refused_retry_records()
-            time.sleep(0.25)
+            refused_state = outcome_ctx.get("state") == "refused" or outcome_ctx.get("category") == "refused_pre_submit"
+            reason_str = str(outcome_ctx.get("reason") or "")
+            if refused_state and reason_str in ("account_cache_not_fresh", "account_cache_snapshot_changed"):
+                _cleanup_refused_retry_records()
+                time.sleep(0.25)
+                continue
+            if refused_state and decision == "BUY" and not is_limit and "insufficient-free-for-stocks-buy" in reason_str.lower():
+                from .quantity import _floor_2dec, round_provider_qty
+
+                scaled_qty = _floor_2dec(
+                    round_provider_qty(getattr(inst, "_provider", None), str(getattr(inst, "symbol", "") or ""), target_qty * 0.94)
+                )
+                if 0.0 < scaled_qty < target_qty and (price <= 0.0 or scaled_qty * price >= 1.0):
+                    target_qty = scaled_qty
+                    if price > 0.0:
+                        effective_usd = round(target_qty * price, 2)
+                    _cleanup_refused_retry_records()
+                    continue
+            break
         if order_res:
             _cleanup_refused_retry_records()
             if log:
