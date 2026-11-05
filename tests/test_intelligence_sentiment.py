@@ -7373,3 +7373,56 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     )
     assert tao_liq["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
 
+    # Wave 12:
+    # 1. LIVE_1H_CVD_FLIP_NEGATIVE triggers when cited 1h CVD (+11.72M) flips to -10.79M with live_tr=0.9765 (<=1.0) and live_tr_1h=0.93 (<=0.95)
+    sa_1h_cvd_flip = {
+        "market_bias": "BULLISH",
+        "recommended_action": "HOLD",
+        "age_min": 24.3,
+        "summary": (
+            "BTC is digesting recent European morning gains at $80,552.01 (82% range position) as short-term "
+            "taker sell pressure (0.6894 overall, 0.4109 5m, -$5.42M 5m CVD) cools the divergence regime back to "
+            "'neutral'. Broader structural support remains intact with constructive 24h market breadth (63.2% advancing), "
+            "positive 1h open interest growth (+0.18% to $7.72B), and sustained 1h/4h CVD inflows (+$11.72M / +$36.57M), "
+            "favoring a disciplined HOLD posture."
+        ),
+        "key_risks": [
+            "Acute 5m taker selling (0.4109 ratio, -$5.42M CVD) alongside moderating 24h breadth could push price down."
+        ],
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_1h_cvd_flip,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.9765,
+                "cvd_15m_usd": -1_306_139.0,
+                "taker_ratio_5m": 1.01,
+                "cvd_5m_usd": 209_046.0,
+                "taker_ratio_1h": 0.93,
+                "cvd_1h_usd": -10_794_598.0,
+            }
+        },
+    )
+    assert "LIVE_1H_CVD_FLIP_NEGATIVE" in sa_1h_cvd_flip.get("live_flow_divergence", "")
+    assert "1h_cvd=+11.72M" in sa_1h_cvd_flip.get("live_flow_divergence", "")
+
+    # 2. compute_dynamic_sentiment_interval triggers 300s refresh when cited_tr <= 0.70 (0.6894) recovers to cur_tr >= 0.95 (0.9765)
+    iv_w12, rsn_w12 = compute_dynamic_sentiment_interval(
+        base_interval_sec=14400.0,
+        last_eval_ts=1_793_863_600.0,
+        now_ts=1_793_865_060.0,
+        cached_assessment=SimpleNamespace(
+            market_bias="BULLISH",
+            risk_level="MODERATE",
+            recommended_action="HOLD",
+            summary=sa_1h_cvd_flip["summary"],
+            key_risks=sa_1h_cvd_flip["key_risks"],
+            is_fallback=False,
+            ts=1_793_863_600.0,
+        ),
+        btc_taker_ratio=0.9765,
+        prev_btc_taker_ratio=0.94,
+    )
+    assert iv_w12 <= 300.0
+    assert "btc_whale_flow_regime_flip_0.69_to_0.98" in rsn_w12
+

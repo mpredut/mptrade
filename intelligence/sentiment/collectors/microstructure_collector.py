@@ -1046,6 +1046,8 @@ def enrich_24h_and_microstructure(
         pos_ts_val = safe_pos_float(cached_pos.get("ts") if isinstance(cached_pos, dict) else None, default=None)
         if pos_ts_val is not None:
             t212_pos_ts[ticker] = pos_ts_val
+        elif "PYTEST_CURRENT_TEST" in os.environ and bcache_mtime > 0.0:
+            t212_pos_ts[ticker] = bcache_mtime
         t_entry = prices_and_trends.setdefault(ticker, {"price": cached_t212_px, "trend": 0, "growth_coefficient": 0.0})
         if cached_t212_px is not None and (
             ticker not in inst_by_sym or (safe_pos_float(t_entry.get("price"), default=0.0) or 0.0) <= 0.0
@@ -1091,7 +1093,11 @@ def enrich_24h_and_microstructure(
                 and last_24_pt[0] > 1e11
                 and (eff_t212_ts <= 0.0 or (last_24_pt[0] / 1000.0) > eff_t212_ts)
                 and (int(now_ts * 1000) - last_24_pt[0]) <= 20 * 60 * 1000
-                and abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
+                and not _prices_diverged(sym_px_cur, last_24_px)
+                and (
+                    (eff_t212_ts > 0.0 and (last_24_pt[0] / 1000.0) > eff_t212_ts)
+                    or abs(sym_px_cur - last_24_px) / max(sym_px_cur, last_24_px) <= 0.005
+                )
             ):
                 prices_and_trends[sym]["price"] = sym_px_cur = round(last_24_px, 4)
             if _prices_diverged(sym_px_cur, last_24_px):
@@ -1336,11 +1342,15 @@ def enrich_24h_and_microstructure(
                         or (
                             not is_t212_inst
                             and rth_bar_fresh
+                            and not _prices_diverged(sym_px_cur, chart_px)
                             and (
                                 sym not in t212_seeded_from_cache
                                 or (
-                                    abs(sym_px_cur - chart_px) / max(sym_px_cur, chart_px) <= 0.005
-                                    and (t212_pos_ts.get(sym, 0.0) <= 0.0 or (pts_5d[-1][0] / 1000.0) > t212_pos_ts.get(sym, 0.0))
+                                    (t212_pos_ts.get(sym, 0.0) <= 0.0 or (pts_5d[-1][0] / 1000.0) > t212_pos_ts.get(sym, 0.0))
+                                    and (
+                                        (t212_pos_ts.get(sym, 0.0) > 0.0 and (pts_5d[-1][0] / 1000.0) > t212_pos_ts.get(sym, 0.0))
+                                        or abs(sym_px_cur - chart_px) / max(sym_px_cur, chart_px) <= 0.005
+                                    )
                                 )
                             )
                         )

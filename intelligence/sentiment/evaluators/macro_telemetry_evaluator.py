@@ -596,7 +596,11 @@ def enrich_sentiment_advisor_live_flow_divergence(
         sa_age >= 15.0
         and cited_tr is not None
         and (eff_live_tr := (live_tr if live_tr is not None else live_tr_1h)) is not None
-        and abs(eff_live_tr - cited_tr) >= 0.30
+        and (
+            abs(eff_live_tr - cited_tr) >= 0.30
+            or (cited_tr <= 0.70 and eff_live_tr >= 0.95 and (live_cvd is None or live_cvd >= 0.0))
+            or (cited_tr >= 1.35 and eff_live_tr <= 1.05 and (live_cvd is None or live_cvd <= 0.0))
+        )
         and not (eff_live_tr > cited_tr and sa_bias == "BULLISH" and cited_tr >= 1.10)
         and not (eff_live_tr < cited_tr and sa_bias == "BEARISH" and cited_tr <= 0.90)
     ):
@@ -612,7 +616,10 @@ def enrich_sentiment_advisor_live_flow_divergence(
             and cited_cvd_1h <= -500_000.0
             and live_cvd_1h >= 5_000_000.0
             and (live_cvd is None or live_cvd > 0.0)
-            and (live_tr is None or live_tr >= 1.05)
+            and (
+                (live_tr is None or live_tr >= 1.05)
+                or ((live_tr is None or live_tr >= 1.0) and live_tr_1h is not None and live_tr_1h >= 1.05)
+            )
         ):
             sentiment_advisor["live_flow_divergence"] = (
                 f"LIVE_1H_CVD_FLIP_POSITIVE ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
@@ -622,7 +629,10 @@ def enrich_sentiment_advisor_live_flow_divergence(
             and cited_cvd_1h >= 500_000.0
             and live_cvd_1h <= -5_000_000.0
             and (live_cvd is None or live_cvd < 0.0)
-            and (live_tr is None or live_tr <= 0.95)
+            and (
+                (live_tr is None or live_tr <= 0.95)
+                or ((live_tr is None or live_tr <= 1.0) and live_tr_1h is not None and live_tr_1h <= 0.95)
+            )
         ):
             sentiment_advisor["live_flow_divergence"] = (
                 f"LIVE_1H_CVD_FLIP_NEGATIVE ({flow_lbl} vs {sa_age:.1f}m-old advisor 1h_cvd={cited_cvd_1h / 1e6:+.2f}M)"
@@ -635,7 +645,10 @@ def enrich_sentiment_advisor_live_flow_divergence(
         if (
             cited_tr_5m is not None
             and cited_tr_5m >= 1.35
-            and live_tr_5m <= 0.90
+            and (
+                live_tr_5m <= 0.90
+                or (cited_tr_5m >= 1.65 and live_tr_5m <= 1.00 and (cited_tr_5m - live_tr_5m) >= 0.45)
+            )
             and (live_cvd_5m is None or live_cvd_5m < 0.0)
         ):
             sentiment_advisor["live_flow_divergence"] = (
@@ -644,7 +657,10 @@ def enrich_sentiment_advisor_live_flow_divergence(
         elif (
             cited_tr_5m is not None
             and cited_tr_5m <= 0.74
-            and live_tr_5m >= 1.15
+            and (
+                live_tr_5m >= 1.15
+                or (cited_tr_5m <= 0.55 and live_tr_5m >= 1.00 and (live_tr_5m - cited_tr_5m) >= 0.45)
+            )
             and (live_cvd_5m is None or live_cvd_5m > 0.0)
         ):
             sentiment_advisor["live_flow_divergence"] = (

@@ -623,7 +623,8 @@ def _apply_open_orders_locked_balances(
                     pos_entry["dd_from_peak_pct"] = pend_peak[1]
             pos_bkey = f"pos:{p_v_norm}:{p_sym_u}"
             if pos_bkey in updated_bals:
-                updated_bals[pos_bkey] = dict(pos_entry)
+                prev_b_ts = updated_bals[pos_bkey].get("ts") if isinstance(updated_bals[pos_bkey], dict) else None
+                updated_bals[pos_bkey] = {**pos_entry, "ts": prev_b_ts} if prev_b_ts is not None else dict(pos_entry)
 
 
 def harvest_tradable_positions_and_orders(
@@ -815,7 +816,7 @@ def harvest_tradable_positions_and_orders(
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
-                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd"):
+                for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts"):
                     rec_pos.pop(stale_k, None)
                 p_sym = str(rec_pos.get("symbol") or "").strip().upper()
                 p_quote = str(rec_pos.get("quote") or "USD").strip().upper()

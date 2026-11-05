@@ -702,6 +702,8 @@ def compute_dynamic_sentiment_interval(
         or (cur_tr is not None and cited_tr >= 1.25 and cur_tr >= 1.25 and abs(cur_tr - cited_tr) < 0.20)
         or (cur_tr is not None and (cached_act == "ACCUMULATE" or "BULL" in cached_bias) and cited_tr >= 1.15 and cur_tr >= 1.20 and abs(cur_tr - cited_tr) < 0.25)
         or (cur_tr is not None and (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias) and cited_tr <= 0.85 and cur_tr <= 0.80 and abs(cur_tr - cited_tr) < 0.25)
+        or (cur_tr is not None and cited_tr <= 0.70 and cur_tr >= 0.95)
+        or (cur_tr is not None and cited_tr >= 1.35 and cur_tr <= 1.05)
     ):
         prev_tr = cited_tr
     if cur_tr is not None:
@@ -709,6 +711,7 @@ def compute_dynamic_sentiment_interval(
             (prev_tr <= 0.75 and cur_tr >= 1.25)
             or (prev_tr >= 1.25 and cur_tr <= 0.75)
             or (prev_tr <= 0.65 and cur_tr >= 0.90)
+            or (prev_tr <= 0.70 and cur_tr >= 0.95)
             or (prev_tr >= 1.35 and cur_tr <= 1.10)
             or (prev_tr >= 0.80 and cur_tr <= 0.60)
             or (prev_tr <= 1.20 and cur_tr >= 1.40)
