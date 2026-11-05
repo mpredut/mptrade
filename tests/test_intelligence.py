@@ -7952,5 +7952,165 @@ def test_iter100_portfolio_collector_audit_origins_hl_active_cycle_best_fills_an
     assert rt_states["assetguardian_state"]["BTCUSDC"]["buy"] == {"active": True}
 
 
+def test_iter101_macro_benchmarks_24h_ext_px_cached_bals_ro_and_prompt_asset_scope(tmp_path):
+    """Iter #101:
+    1. collect_macro_benchmarks_snapshot selects extended-hours price (postMarketPrice / post-close bar)
+       when marketState is POST/PRE and fulldayPrice is absent, and uses 24h boundary pts_24h[0] (not 48h pts[0])
+       or previousClose (before chartPreviousClose) for chg_24h_pct fallback.
+    2. harvest_recent_orders_and_enrich_positions populates live_held_by_venue_sym from venue_balances_state.json
+       for kraken and hyperliquid cycles (not only t212) when tradable_positions is empty.
+    3. _format_market_prices_section and _format_microstructure_section isolate _EQ/_US_EQ equities from crypto
+       sibling groups, and _format_portfolio_section deduplicates resting orders by client_order_id as well as order_id.
+    """
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_recent_orders_and_enrich_positions
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_market_prices_section,
+        _format_microstructure_section,
+        _format_portfolio_section,
+    )
+
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    now_s = 1710200000.0
+
+    def _fetch_yahoo(url, **kw):
+        if "SPY" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "marketState": "POST",
+                                "regularMarketPrice": 500.0,
+                                "regularMarketTime": int(now_s - 3600),
+                                "regularMarketChangePercent": 0.50,
+                                "previousClose": 497.51,
+                                "chartPreviousClose": 480.0,
+                            },
+                            "timestamp": [
+                                int(now_s - 170000),  # ~47h ago (480.0)
+                                int(now_s - 86000),   # ~24h ago (497.51)
+                                int(now_s - 3600),    # regular close (500.0)
+                                int(now_s - 60),      # post-market bar (505.0)
+                            ],
+                            "indicators": {"quote": [{"close": [480.0, 497.51, 500.0, 505.0]}]},
+                        }
+                    ]
+                }
+            }
+        if "QQQ" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 440.0},
+                            "timestamp": [
+                                int(now_s - 170000),  # ~47h ago (400.0)
+                                int(now_s - 86000),   # ~24h ago (430.0)
+                                int(now_s - 60),      # latest (440.0)
+                            ],
+                            "indicators": {"quote": [{"close": [400.0, 430.0, 440.0]}]},
+                        }
+                    ]
+                }
+            }
+        return {}
+
+    mb = collect_macro_benchmarks_snapshot(str(cdir), now_ts=now_s, persist=False, fetch_fn=_fetch_yahoo)
+    assert mb is not None
+    # SPY uses post-market bar 505.0 (newer than regularMarketTime) and previousClose 497.51 (+1.51%), not 480.0
+    assert mb["items"]["SPY"]["price"] == 505.0
+    assert mb["items"]["SPY"]["chg_24h_pct"] == pytest.approx(((505.0 - 497.51) / 497.51) * 100.0, abs=0.02)
+    # QQQ fallback without previousClose uses 24h bar 430.0 (+2.33%), not 48h bar 400.0 (+10.0%)
+    assert mb["items"]["QQQ"]["chg_24h_pct"] == pytest.approx(((440.0 - 430.0) / 430.0) * 100.0, abs=0.02)
+
+    # 2. harvest_recent_orders_and_enrich_positions reads cached flat balance for kraken cycle when tradable_positions is empty
+    (cdir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:kraken:HYPEUSD": {"venue": "kraken", "symbol": "HYPEUSD", "free_base": 0.0, "locked_base_qty": 0.0}}),
+        encoding="utf-8",
+    )
+    (cdir / "cache_trade_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "HYPEUSD": [
+                        {"side": "BUY", "status": "FILLED", "price": 40.0, "executedQty": 10.0, "time": 1710000000000},
+                        {"side": "SELL", "status": "FILLED", "price": 44.0, "executedQty": 10.0, "time": 1710005000000},
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    kr_cycles = {
+        "HYPEUSD": {
+            "qty": 10.0,
+            "cost_usd": 400.0,
+            "avg_cost_px": 40.0,
+            "entry_price": 40.0,
+            "pos_peak": 45.0,
+            "_entry_ts_ms": 1710000000000,
+        }
+    }
+    harvest_recent_orders_and_enrich_positions(
+        str(cdir),
+        {},
+        [],
+        {"HYPEUSD": {"price": 44.0}},
+        kr_cycles,
+        {},
+        {},
+    )
+    assert kr_cycles["HYPEUSD"]["qty"] == 0.0
+    assert "pos_peak" not in kr_cycles["HYPEUSD"]
+
+    # 3. Prompt section equity vs crypto isolation + client_order_id resting deduplication
+    sec_3a = "\n".join(
+        _format_market_prices_section(
+            {
+                "COIN_US_EQ": {"price": 250.0, "chg_24h_pct": 1.5},
+                "COINUSD": {"price": 1.25, "chg_24h_pct": -2.0},
+            }
+        )
+    )
+    assert "* COIN_US_EQ: Price=$250.00" in sec_3a
+    assert "* COINUSD: Price=$1.25" in sec_3a
+
+    sec_3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "HYPEUSD": {"ob_imbalance": 0.62, "bid_depth_usd": 50000.0, "ask_depth_usd": 30000.0, "cvd_15m_usd": 12000.0},
+            },
+            {
+                "HYPEUSDC": {"price": 40.0, "chg_15m_pct": -1.5, "vol_24h_usd": 2_400_000.0},
+            },
+        )
+    )
+    assert "ask_absorbing" in sec_3b
+    assert "magnet=LONG_SWEEP_MAGNET_DOWN" in sec_3b
+
+    sec_3c = "\n".join(
+        _format_portfolio_section(
+            {
+                "open_limit_orders": [
+                    {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "price": 300.0, "qty": 1.0, "client_order_id": "ai-cid-77"}
+                ],
+                "last_cycle_execution_status": [
+                    {"symbol": "TAOUSDC", "status": "OPEN_RESTING", "age_min": 45.0, "client_order_id": "ai-cid-77"}
+                ],
+                "recent_ai_intents": [
+                    {"symbol": "TAOUSDC", "status": "EXECUTED", "venue_status": "OPEN", "age_h": 1.2, "client_order_id": "ai-cid-77"},
+                    {"symbol": "BTCUSDC", "status": "EXECUTED", "venue_status": "FILLED", "age_h": 0.2, "order_id": "oid-88"},
+                ],
+            },
+            include_macro_benchmarks=False,
+        )
+    )
+    assert "last_cycle_execution_status" not in sec_3c
+    assert "ai-cid-77" not in sec_3c.split("Recent Autonomous Intents:")[-1]
+
+
+
 
 

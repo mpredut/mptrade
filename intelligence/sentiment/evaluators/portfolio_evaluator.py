@@ -746,8 +746,8 @@ def reconcile_venue_cycles_with_recent_orders(
                 and (not buys_after or ls_qty < cyc_qty_cur * 0.95 or has_pre_sell_rem)
                 and cyc_qty_cur > 1e-8
                 and (
-                    (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0)
-                    or (rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
+                    (sell_ts_ms is not None and float(sell_ts_ms) >= ls_ts_ms - 5000.0 and (live_held is None or live_held > 1e-6))
+                    or (live_held is None and rem_q_ro > 1e-8 and abs(rem_q_ro - cyc_qty_cur) <= max(1e-4, max(rem_q_ro, cyc_qty_cur) * 0.05))
                     or (live_held is not None and live_held > 1e-8 and abs(live_held - cyc_qty_cur) <= max(1e-4, max(live_held, cyc_qty_cur) * 0.05))
                 )
             )

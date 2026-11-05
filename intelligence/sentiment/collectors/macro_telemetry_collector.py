@@ -153,19 +153,32 @@ def collect_macro_benchmarks_snapshot(
                 ),
                 key=lambda pt: pt[0],
             )
-            px = safe_pos_float(meta.get("fulldayPrice"), default=None) or safe_pos_float(meta.get("regularMarketPrice"), default=None) or (pts[-1][1] if pts else None)
+            pts_24h = ([p for p in pts if p[0] >= pts[-1][0] - 86400.0] or pts) if pts else []
+            mkt_state = str(meta.get("marketState") or "").strip().upper()
+            reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
+            ext_px = None
+            if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT"):
+                ext_px = safe_pos_float(meta.get("postMarketPrice") or meta.get("preMarketPrice"), default=None)
+                if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
+                    ext_px = pts[-1][1]
+            px = (
+                safe_pos_float(meta.get("fulldayPrice"), default=None)
+                or ext_px
+                or safe_pos_float(meta.get("regularMarketPrice"), default=None)
+                or (pts[-1][1] if pts else None)
+            )
             if px is None:
                 continue
             chg_24h = next(
                 (round(v, 2) + 0.0 for mk in ("fulldayChangePercent", "regularMarketChangePercent") if (v := safe_float(meta.get(mk), default=None)) is not None and abs(v) > 1e-9),
                 None,
             )
-            if chg_24h is None:
-                prev_close = safe_pos_float(meta.get("chartPreviousClose") or meta.get("previousClose"), default=None)
+            if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and safe_float(meta.get("fulldayChangePercent"), default=None) is None):
+                prev_close = safe_pos_float(meta.get("previousClose") or meta.get("chartPreviousClose"), default=None)
                 if prev_close is not None and prev_close > 0:
                     chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2) + 0.0
-                elif len(pts) >= 2 and pts[0][1] > 0:
-                    chg_24h = round(((px - pts[0][1]) / pts[0][1]) * 100.0, 2) + 0.0
+                elif len(pts_24h) >= 2 and pts_24h[0][1] > 0:
+                    chg_24h = round(((px - pts_24h[0][1]) / pts_24h[0][1]) * 100.0, 2) + 0.0
 
             dec = 4 if unit_kind == "yield_pct" else 2
             item_entry: Dict[str, Any] = {
@@ -179,10 +192,10 @@ def collect_macro_benchmarks_snapshot(
                     ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
                     if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
                         item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2) + 0.0
-            if meta.get("marketState"):
-                item_entry["market_state"] = str(meta.get("marketState")).strip().upper()
-            if pts:
-                vals_24h = ([p[1] for p in pts if p[0] >= pts[-1][0] - 86400.0] or [p[1] for p in pts]) + [px]
+            if mkt_state:
+                item_entry["market_state"] = mkt_state
+            if pts_24h:
+                vals_24h = [p[1] for p in pts_24h] + [px]
                 item_entry["low_24h"], item_entry["high_24h"] = round(min(vals_24h), dec), round(max(vals_24h), dec)
             items[label] = item_entry
         except Exception:

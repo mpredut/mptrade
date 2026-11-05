@@ -1127,30 +1127,47 @@ def harvest_recent_orders_and_enrich_positions(
     bcache_path_ro = str(resolve_cachedb_filepath(os.path.join(cache_dir, "venue_balances_state.json"))) if cache_dir else None
     raw_cb_ro = _rj(bcache_path_ro) if bcache_path_ro and os.path.exists(bcache_path_ro) else None
     cached_bals_ro: Dict[str, Any] = raw_cb_ro if isinstance(raw_cb_ro, dict) else {}
-    for t_sym, t_cyc in (t212_cycles or {}).items():
-        t_sym_u = str(t_sym).strip().upper()
-        if not t_sym_u or ("t212", t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
-            continue
-        c_pos = cached_bals_ro.get(f"pos:t212:{t_sym_u}")
-        fb_c = safe_nonneg_float(
-            c_pos.get("free_base") if isinstance(c_pos, dict) else cached_bals_ro.get(f"t212:{t_sym_u}"),
-            default=None,
-        )
-        lb_c = safe_pos_float(c_pos.get("locked_base_qty") if isinstance(c_pos, dict) else None, default=0.0) or 0.0
-        if fb_c is not None:
-            held_c = fb_c + lb_c
-            live_held_by_venue_sym[("t212", t_sym_u)] = held_c
-            if held_c > 1e-8:
-                t_cyc["qty"] = round(held_c, 6)
-                t_px = resolve_symbol_price(t_sym_u, prices_and_trends)
-                if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
-                    t_cyc["cost_usd"] = round(held_c * t_avg, 2)
-                    if t_px > 0.0:
-                        t_cyc["pnl_vs_avg_pct"] = t_cyc["dd_pct"] = round(((t_px - t_avg) / t_avg) * 100.0, 2) + 0.0
-                if t_px > 0.0 and (t_pk := safe_pos_float(t_cyc.get("pos_peak"), default=None)) is not None:
-                    eff_t_pk = max(t_pk, t_px)
-                    t_cyc["pos_peak"] = round(eff_t_pk, 6)
-                    t_cyc["dd_from_peak_pct"] = round(((t_px - eff_t_pk) / eff_t_pk) * 100.0, 2) + 0.0
+    for c_venue_ro, cyc_map_ro in (("kraken", kraken_cycles), ("hyperliquid", hyperliquid_cycles), ("t212", t212_cycles)):
+        for t_sym, t_cyc in (cyc_map_ro or {}).items():
+            t_sym_u = str(t_sym).strip().upper()
+            if not t_sym_u or (c_venue_ro, t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
+                continue
+            t_base_u = canonical_base_asset(t_sym_u)
+            c_pos = next(
+                (
+                    v_pos
+                    for cand_k in (t_sym_u, *cache_symbol_variants(t_sym_u, include_base=True))
+                    if isinstance((v_pos := cached_bals_ro.get(f"pos:{c_venue_ro}:{cand_k.upper()}")), dict)
+                ),
+                None,
+            )
+            fb_c = safe_nonneg_float(
+                c_pos.get("free_base")
+                if isinstance(c_pos, dict)
+                else (
+                    cached_bals_ro.get(f"{c_venue_ro}:{t_sym_u}")
+                    if cached_bals_ro.get(f"{c_venue_ro}:{t_sym_u}") is not None
+                    else (cached_bals_ro.get(f"{c_venue_ro}:{t_base_u}") if t_base_u else None)
+                ),
+                default=None,
+            )
+            lb_c = safe_pos_float(c_pos.get("locked_base_qty") if isinstance(c_pos, dict) else None, default=0.0) or 0.0
+            if fb_c is not None:
+                held_c = fb_c + lb_c
+                for sv_c in (t_sym_u, *cache_symbol_variants(t_sym_u, include_base=True)):
+                    live_held_by_venue_sym.setdefault((c_venue_ro, sv_c.upper()), held_c)
+                live_held_by_venue_sym[(c_venue_ro, t_sym_u)] = held_c
+                if c_venue_ro == "t212" and held_c > 1e-8:
+                    t_cyc["qty"] = round(held_c, 6)
+                    t_px = resolve_symbol_price(t_sym_u, prices_and_trends)
+                    if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
+                        t_cyc["cost_usd"] = round(held_c * t_avg, 2)
+                        if t_px > 0.0:
+                            t_cyc["pnl_vs_avg_pct"] = t_cyc["dd_pct"] = round(((t_px - t_avg) / t_avg) * 100.0, 2) + 0.0
+                    if t_px > 0.0 and (t_pk := safe_pos_float(t_cyc.get("pos_peak"), default=None)) is not None:
+                        eff_t_pk = max(t_pk, t_px)
+                        t_cyc["pos_peak"] = round(eff_t_pk, 6)
+                        t_cyc["dd_from_peak_pct"] = round(((t_px - eff_t_pk) / eff_t_pk) * 100.0, 2) + 0.0
     cyc_sell_ts_map = reconcile_venue_cycles_with_recent_orders(
         kraken_cycles, hyperliquid_cycles, t212_cycles, venue_recent_orders, live_held_by_venue_sym, prices_and_trends
     )
