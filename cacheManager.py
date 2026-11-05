@@ -33,6 +33,7 @@ from cachepaths import (
     canonical_base_asset,
     canonical_symbol_key,
     clean_symbol_key,
+    compute_venue_nav_breakdown,
     migrate_legacy_filename_if_needed as _migrate_legacy_filename_if_needed,
     normalize_venue_name,
 )
@@ -3004,50 +3005,21 @@ class CacheAssetValueManager(CacheManagerInterface):
                         break
             if not isinstance(vb_data, dict) or not vb_data:
                 return {}
-            cash_by_venue_asset: dict[tuple[str, str], float] = {}
-            free_by_venue_base: dict[tuple[str, str], float] = {}
-            locked_by_venue_sym: dict[tuple[str, str], float] = {}
-            for key, entry in vb_data.items():
-                if not isinstance(key, str) or not isinstance(entry, dict):
-                    continue
-                if key.startswith("cash:"):
-                    parts = key.split(":", 2)
-                    venue = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
-                    if not venue or venue == "binance":
-                        continue
-                    asset_u = str(entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")).strip().upper() or "USD"
-                    free_v = safe_nonneg_float(entry.get("free"), None)
-                    if free_v is None:
-                        free_v = safe_nonneg_float(entry.get("free_quote_usd"), None)
-                    if free_v is None:
-                        free_v = safe_nonneg_float(entry.get("free_usd"), 0.0) or 0.0
-                    amt = free_v + (safe_nonneg_float(entry.get("locked_quote_usd"), 0.0) or 0.0)
-                    ca_key = (venue, asset_u)
-                    cash_by_venue_asset[ca_key] = max(cash_by_venue_asset.get(ca_key, 0.0), amt)
-                elif key.startswith("pos:"):
-                    parts = key.split(":", 2)
-                    venue = normalize_venue_name(entry.get("venue") or (parts[1] if len(parts) > 1 else ""))
-                    if not venue or venue == "binance":
-                        continue
-                    sym_u = str(entry.get("symbol") or (parts[2] if len(parts) > 2 else key)).strip().upper()
-                    base_u = canonical_base_asset(entry.get("base") or sym_u) or sym_u
-                    val_u = safe_nonneg_float(entry.get("value_usd"), None)
-                    if val_u is None:
-                        fb_v = safe_nonneg_float(entry.get("free_base"), 0.0) or 0.0
-                        px_v = safe_nonneg_float(entry.get("price"), 0.0) or 0.0
-                        val_u = fb_v * px_v
-                    locked_u = safe_nonneg_float(entry.get("locked_base_usd"), 0.0) or 0.0
-                    vb_key = (venue, base_u)
-                    vs_key = (venue, sym_u)
-                    free_by_venue_base[vb_key] = max(free_by_venue_base.get(vb_key, 0.0), val_u)
-                    locked_by_venue_sym[vs_key] = max(locked_by_venue_sym.get(vs_key, 0.0), locked_u)
-            other_venues: dict[str, float] = {}
-            for (venue, _), amt in cash_by_venue_asset.items():
-                other_venues[venue] = other_venues.get(venue, 0.0) + amt
-            for (venue, _), amt in free_by_venue_base.items():
-                other_venues[venue] = other_venues.get(venue, 0.0) + amt
-            for (venue, _), amt in locked_by_venue_sym.items():
-                other_venues[venue] = other_venues.get(venue, 0.0) + amt
+            live_cp_data = None
+            for cp_cand in (
+                os.path.join(cache_root, "prices", "cache_current_price.json"),
+                os.path.join(cache_root, "cache_current_price.json"),
+            ):
+                if os.path.isfile(cp_cand):
+                    live_cp_data = read_json_dict(cp_cand, default=None)
+                    if isinstance(live_cp_data, dict) and live_cp_data:
+                        break
+            nav = compute_venue_nav_breakdown(
+                venue_balances_state=vb_data,
+                live_prices=live_cp_data,
+                exclude_venues=("binance",),
+            )
+            other_venues = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
             if not other_venues:
                 return {}
             venues_usd: dict[str, float] = {"binance": round(binance_total_val, 2)}

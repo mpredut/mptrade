@@ -9,6 +9,7 @@ from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
     compatible_quote_suffixes,
+    compute_venue_nav_breakdown,
     normalize_venue_name,
     resolve_kraken_lookup_symbol,
     split_symbol_assets,
@@ -385,32 +386,24 @@ def compute_enterprise_portfolio_risk_metrics(
     vq_cash = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
     rec_orders = portfolio_summary.get("recent_orders") if isinstance(portfolio_summary.get("recent_orders"), dict) else {}
 
-    venue_pos_usd: Dict[str, float] = {}
-    venue_cash_usd: Dict[str, float] = {}
-    venue_free_cash_usd: Dict[str, float] = {}
-    venue_locked_quote_usd: Dict[str, float] = {}
+    bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
+    hl_ro = portfolio_summary.get("hyperliquid_readonly") if isinstance(portfolio_summary.get("hyperliquid_readonly"), dict) else {}
+    hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
+    nav = compute_venue_nav_breakdown(
+        positions=t_pos,
+        quote_cash=vq_cash,
+        venue_overrides={"binance": bn_snap, "hyperliquid": hl_snap},
+    )
+    venue_nav = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
+    grouped_positions = nav.get("grouped_positions") if isinstance(nav.get("grouped_positions"), list) else []
+    invested_usd = float(nav.get("invested_usd") or 0.0)
+    free_cash_usd = float(nav.get("free_cash_usd") or 0.0)
+    locked_quote_usd = float(nav.get("locked_quote_usd") or 0.0)
+    total_quote_reserve_usd = float(nav.get("total_quote_reserve_usd") or 0.0)
+    unified_nav = float(nav.get("portfolio_total_usd") or 0.0)
+
     pos_exposures: List[Tuple[str, bool, float, float, float, float]] = []
-
-    grouped_pos: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
-    for p in t_pos:
-        if not isinstance(p, dict):
-            continue
-        v_name = normalize_venue_name(p.get("venue")) or "unknown"
-        sym_raw = str(p.get("symbol") or "").strip().upper()
-        is_eq_p = sym_raw.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
-        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
-        grp_k = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
-        grouped_pos.setdefault(grp_k, []).append(p)
-
-    for (v_name, _), grp_list in grouped_pos.items():
-        p = grp_list[0]
-        free_val_u = max((safe_pos_float(gp.get("value_usd"), default=0.0) or 0.0 for gp in grp_list), default=0.0)
-        locked_by_sym: Dict[str, float] = {}
-        for idx_g, gp in enumerate(grp_list):
-            s_g = str(gp.get("symbol") or f"SYM_{idx_g}").strip().upper()
-            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), safe_pos_float(gp.get("locked_base_usd"), default=0.0) or 0.0)
-        val_u = free_val_u + sum(locked_by_sym.values())
-        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
+    for v_name, p, val_u in grouped_positions:
         if val_u >= 1.0:
             sym = str(p.get("symbol") or "").strip().upper()
             base = canonical_base_asset(p.get("base") or sym)
@@ -447,54 +440,6 @@ def compute_enterprise_portfolio_risk_metrics(
                 daily_vol_pct = min(25.0, max(0.8, 1.0 * math.sqrt(24.0)))
             pos_exposures.append((base, is_eq, val_u, beta_v, corr_v, daily_vol_pct))
 
-    dedup_cash: Dict[tuple[str, str], tuple[float, float]] = {}
-    for c_key, c in vq_cash.items():
-        k_parts = str(c_key or "").split(":", 1)
-        v_fallback = normalize_venue_name(k_parts[0])
-        if isinstance(c, dict):
-            v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
-            c_asset_u = str(c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")).strip().upper()
-            f_u = (
-                safe_pos_float(c.get("free"), default=None)
-                or safe_pos_float(c.get("free_quote_usd"), default=None)
-                or safe_pos_float(c.get("free_usd"), default=0.0)
-                or 0.0
-            )
-            l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
-        else:
-            f_u = safe_pos_float(c, default=0.0) or 0.0
-            if f_u <= 0.0:
-                continue
-            v_name = v_fallback or "unknown"
-            c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
-            l_u = 0.0
-        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
-        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
-    for (v_name, _), (f_u, l_u) in dedup_cash.items():
-        venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
-        venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
-        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
-
-    all_venues = sorted(set(venue_pos_usd) | set(venue_cash_usd))
-    venue_nav: Dict[str, float] = {}
-    for v_k in all_venues:
-        v_tot = round(venue_pos_usd.get(v_k, 0.0) + venue_cash_usd.get(v_k, 0.0), 2)
-        if v_tot > 0.0:
-            venue_nav[v_k] = v_tot
-
-    bn_snap = safe_pos_float(portfolio_summary.get("live_binance_equity_usdc") or portfolio_summary.get("total_value_usdc"), default=0.0) or 0.0
-    if bn_snap > venue_nav.get("binance", 0.0):
-        venue_nav["binance"] = round(bn_snap, 2)
-    hl_ro = portfolio_summary.get("hyperliquid_readonly") if isinstance(portfolio_summary.get("hyperliquid_readonly"), dict) else {}
-    hl_snap = safe_pos_float(hl_ro.get("live_reconciled_spot_usd") or hl_ro.get("total_equity_usd"), default=0.0) or 0.0
-    if hl_snap > venue_nav.get("hyperliquid", 0.0):
-        venue_nav["hyperliquid"] = round(hl_snap, 2)
-
-    invested_usd = round(sum(venue_pos_usd.values()), 2)
-    free_cash_usd = round(sum(venue_free_cash_usd.values()), 2)
-    locked_quote_usd = round(sum(venue_locked_quote_usd.values()), 2)
-    total_quote_reserve_usd = round(free_cash_usd + locked_quote_usd, 2)
-    unified_nav = round(max(sum(venue_nav.values()), invested_usd + total_quote_reserve_usd), 2)
     if unified_nav <= 0.0:
         return {}
 

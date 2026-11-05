@@ -968,6 +968,23 @@ class TestCacheAssetValueManager(unittest.TestCase):
             self.assertEqual(snap["venues_usd"], {"binance": 2000.0, "kraken": 950.0, "t212": 100.0})
             self.assertEqual(snap["portfolio_total_usd"], 3050.0)
 
+            prices_dir = os.path.join(self.tmp, "prices")
+            os.makedirs(prices_dir, exist_ok=True)
+            cp_path = os.path.join(prices_dir, "cache_current_price.json")
+            with open(cp_path, "w", encoding="utf-8") as handle:
+                json.dump({"items": {"NVDA_US_EQ": [[1700000000000, 250.0]]}}, handle)
+            items_live = mgr.get_remote_items("TOTAL", 0)
+            self.assertEqual(items_live[0]["venues_usd"]["t212"], 121.5)
+            self.assertEqual(items_live[0]["portfolio_total_usd"], 3071.5)
+
+            from cachepaths import compute_venue_nav_breakdown
+            with open(vb_path, encoding="utf-8") as handle:
+                vb_loaded = json.load(handle)
+            eq_only = compute_venue_nav_breakdown(venue_balances_state=vb_loaded, scope="equities")
+            self.assertEqual(eq_only["venues_usd"], {"t212": 100.0})
+            cr_only = compute_venue_nav_breakdown(venue_balances_state=vb_loaded, scope="crypto")
+            self.assertEqual(cr_only["venues_usd"], {"kraken": 950.0})
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. CacheCurrentPriceManager

@@ -936,6 +936,223 @@ def cache_symbol_variants(
     return variants
 
 
+def _extract_live_prices_map(live_prices: object) -> dict[str, float]:
+    """Normalize a cache_current_price payload, prices_and_trends dict, or raw symbol->price map."""
+    if not isinstance(live_prices, dict) or not live_prices:
+        return {}
+    from botcore import extract_current_price_item, safe_pos_float
+
+    src = live_prices.get("items") if isinstance(live_prices.get("items"), dict) else live_prices
+    if not isinstance(src, dict):
+        return {}
+    out: dict[str, float] = {}
+    for raw_k, raw_v in src.items():
+        if not isinstance(raw_k, str) or not raw_k.strip():
+            continue
+        sym_u = raw_k.strip().upper()
+        px = safe_pos_float(raw_v, default=None) if isinstance(raw_v, (int, float)) else None
+        if px is None and isinstance(raw_v, dict):
+            px = safe_pos_float(raw_v.get("price"), default=None)
+        if px is None:
+            px = extract_current_price_item(raw_v)
+        if px is not None and px > 0.0:
+            out[sym_u] = float(px)
+    return out
+
+
+def compute_venue_nav_breakdown(
+    *,
+    positions: object = None,
+    quote_cash: object = None,
+    venue_balances_state: object = None,
+    live_prices: object = None,
+    venue_overrides: object = None,
+    exclude_venues: tuple[str, ...] = (),
+    scope: str = "all",
+) -> dict[str, object]:
+    """Canonical SSOT multi-venue NAV calculator and position/cash deduplicator.
+
+    Accepts either ``venue_balances_state`` (``cash:<venue>:<asset>`` / ``pos:<venue>:<symbol>``)
+    or in-memory ``(positions, quote_cash)`` structures, optionally re-marking held quantities
+    against ``live_prices`` (e.g. ``cache_current_price.json``).
+    Deduplicates free base balance by ``(venue, asset_class, base_asset)``, locked base balance
+    by ``(venue, symbol)``, and quote cash by ``(venue, quote_asset)``.
+    """
+    from botcore import safe_nonneg_float, safe_pos_float
+
+    excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
+    scope_norm = str(scope or "all").strip().lower()
+    live_px_map = _extract_live_prices_map(live_prices)
+
+    pos_rows: list[dict] = []
+    cash_items: list[tuple[str, object]] = []
+
+    if isinstance(venue_balances_state, dict):
+        for key, entry in venue_balances_state.items():
+            if not isinstance(key, str) or not isinstance(entry, dict):
+                continue
+            if key.startswith("cash:"):
+                parts = key.split(":", 2)
+                v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
+                a_cand = entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")
+                cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
+            elif key.startswith("pos:"):
+                parts = key.split(":", 2)
+                v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
+                s_cand = entry.get("symbol") or (parts[2] if len(parts) > 2 else key)
+                pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
+
+    if isinstance(positions, (list, tuple)):
+        for p in positions:
+            if isinstance(p, dict):
+                pos_rows.append(p)
+
+    if isinstance(quote_cash, dict):
+        for ck, cv in quote_cash.items():
+            cash_items.append((str(ck or ""), cv))
+
+    def _matches_scope(v_name: str, sym_u: str = "") -> bool:
+        if v_name in excl_set:
+            return False
+        if scope_norm not in ("equities", "crypto"):
+            return True
+        is_eq = v_name == "t212" or sym_u.endswith(("_EQ", "_US_EQ"))
+        return is_eq if scope_norm == "equities" else (not is_eq)
+
+    grouped_pos: dict[tuple[str, str], list[dict]] = {}
+    for p in pos_rows:
+        v_name = normalize_venue_name(p.get("venue")) or "unknown"
+        sym_raw = str(p.get("symbol") or "").strip().upper()
+        if not _matches_scope(v_name, sym_raw):
+            continue
+        is_eq_p = sym_raw.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+        base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
+        grp_k = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
+        grouped_pos.setdefault(grp_k, []).append(p)
+
+    def _resolve_pos_free_usd(gp: dict) -> float:
+        sym_u = str(gp.get("symbol") or "").strip().upper()
+        if live_px_map and sym_u in live_px_map:
+            fb_live = safe_nonneg_float(gp.get("free_base"), None)
+            if fb_live is not None:
+                return round(fb_live * live_px_map[sym_u], 2)
+        val_u = safe_nonneg_float(gp.get("value_usd"), None)
+        if val_u is not None:
+            return val_u
+        fb_v = safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0
+        px_v = safe_nonneg_float(gp.get("price"), 0.0) or 0.0
+        return round(fb_v * px_v, 2)
+
+    def _resolve_pos_locked_usd(gp: dict) -> float:
+        sym_u = str(gp.get("symbol") or "").strip().upper()
+        if live_px_map and sym_u in live_px_map and gp.get("locked_base_usd") is None:
+            lb_live = safe_pos_float(gp.get("locked_base_qty"), None)
+            if lb_live is not None:
+                return round(lb_live * live_px_map[sym_u], 2)
+        return safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
+
+    venue_pos_usd: dict[str, float] = {}
+    grouped_positions_out: list[tuple[str, dict, float]] = []
+    for (v_name, _), grp_list in grouped_pos.items():
+        p0 = grp_list[0]
+        free_val_u = max((_resolve_pos_free_usd(gp) for gp in grp_list), default=0.0)
+        locked_by_sym: dict[str, float] = {}
+        for idx_g, gp in enumerate(grp_list):
+            s_g = str(gp.get("symbol") or f"SYM_{idx_g}").strip().upper()
+            locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), _resolve_pos_locked_usd(gp))
+        val_u = free_val_u + sum(locked_by_sym.values())
+        venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
+        grouped_positions_out.append((v_name, p0, val_u))
+
+    dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
+    for c_key, c in cash_items:
+        k_parts = str(c_key or "").split(":", 1)
+        v_fallback = normalize_venue_name(k_parts[0])
+        if isinstance(c, dict):
+            v_name = normalize_venue_name(c.get("venue")) or v_fallback or "unknown"
+            c_asset_u = str(
+                c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")
+            ).strip().upper() or "USD"
+            f_u = (
+                safe_pos_float(c.get("free"), default=None)
+                or safe_pos_float(c.get("free_quote_usd"), default=None)
+                or safe_pos_float(c.get("free_usd"), default=0.0)
+                or 0.0
+            )
+            l_u = safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0
+        else:
+            f_u = safe_pos_float(c, default=0.0) or 0.0
+            if f_u <= 0.0:
+                continue
+            v_name = v_fallback or "unknown"
+            c_asset_u = k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD"
+            l_u = 0.0
+        if not _matches_scope(v_name):
+            continue
+        prev_f, prev_l = dedup_cash.get((v_name, c_asset_u), (0.0, 0.0))
+        dedup_cash[(v_name, c_asset_u)] = (max(prev_f, f_u), max(prev_l, l_u))
+
+    venue_free_cash_usd: dict[str, float] = {}
+    venue_locked_quote_usd: dict[str, float] = {}
+    venue_cash_usd: dict[str, float] = {}
+    for (v_name, _), (f_u, l_u) in dedup_cash.items():
+        venue_free_cash_usd[v_name] = venue_free_cash_usd.get(v_name, 0.0) + f_u
+        venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
+        venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
+
+    all_venues = sorted(set(venue_pos_usd) | set(venue_cash_usd))
+    venues_usd: dict[str, float] = {}
+    venue_breakdown: dict[str, dict[str, float]] = {}
+    for v_k in all_venues:
+        p_u = round(venue_pos_usd.get(v_k, 0.0), 2)
+        fc_u = round(venue_free_cash_usd.get(v_k, 0.0), 2)
+        lq_u = round(venue_locked_quote_usd.get(v_k, 0.0), 2)
+        c_u = round(venue_cash_usd.get(v_k, 0.0), 2)
+        v_tot = round(p_u + c_u, 2)
+        if v_tot > 0.0:
+            venues_usd[v_k] = v_tot
+            venue_breakdown[v_k] = {
+                "pos_usd": p_u,
+                "free_cash_usd": fc_u,
+                "locked_quote_usd": lq_u,
+                "cash_usd": c_u,
+                "total_usd": v_tot,
+            }
+
+    if isinstance(venue_overrides, dict):
+        for ov_k, ov_v in venue_overrides.items():
+            v_norm = normalize_venue_name(ov_k) or str(ov_k or "").strip().lower()
+            if not v_norm or not _matches_scope(v_norm):
+                continue
+            ov_f = safe_pos_float(ov_v, default=0.0) or 0.0
+            if ov_f > venues_usd.get(v_norm, 0.0):
+                venues_usd[v_norm] = round(ov_f, 2)
+                if v_norm in venue_breakdown:
+                    venue_breakdown[v_norm]["total_usd"] = round(ov_f, 2)
+
+    venues_usd = {k: venues_usd[k] for k in sorted(venues_usd)}
+    invested_usd = round(sum(venue_pos_usd.values()), 2)
+    free_cash_usd = round(sum(venue_free_cash_usd.values()), 2)
+    locked_quote_usd = round(sum(venue_locked_quote_usd.values()), 2)
+    total_quote_reserve_usd = round(free_cash_usd + locked_quote_usd, 2)
+    portfolio_total_usd = round(max(sum(venues_usd.values()), invested_usd + total_quote_reserve_usd), 2)
+
+    return {
+        "venues_usd": venues_usd,
+        "venue_breakdown": venue_breakdown,
+        "grouped_positions": grouped_positions_out,
+        "venue_pos_usd": venue_pos_usd,
+        "venue_free_cash_usd": venue_free_cash_usd,
+        "venue_locked_quote_usd": venue_locked_quote_usd,
+        "venue_cash_usd": venue_cash_usd,
+        "invested_usd": invested_usd,
+        "free_cash_usd": free_cash_usd,
+        "locked_quote_usd": locked_quote_usd,
+        "total_quote_reserve_usd": total_quote_reserve_usd,
+        "portfolio_total_usd": portfolio_total_usd,
+    }
+
+
 if __name__ == "__main__":
     organize_cachedb_subdomains()
 

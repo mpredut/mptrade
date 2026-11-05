@@ -4,7 +4,12 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
+from cachepaths import (
+    cache_symbol_variants,
+    canonical_base_asset,
+    compute_venue_nav_breakdown,
+    normalize_venue_name,
+)
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
@@ -326,6 +331,14 @@ def apply_asset_scope_filter(
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         portfolio_summary.pop("t212_cycles", None)
+        if isinstance(portfolio_summary.get("venues_value_usd"), dict):
+            crypto_venues = {
+                vk: vv
+                for vk, vv in portfolio_summary["venues_value_usd"].items()
+                if normalize_venue_name(vk) != "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+            }
+            _set_or_pop("venues_value_usd", crypto_venues)
+            _set_or_pop("portfolio_total_usd", round(sum(crypto_venues.values()), 2) if crypto_venues else None)
     if isinstance(portfolio_summary.get("venue_quote_cash"), dict):
         def _is_t212_cash_entry(ck: Any, cv: Any) -> bool:
             v_str = cv.get("venue") if isinstance(cv, dict) and cv.get("venue") else str(ck or "").split(":", 1)[0]
@@ -410,49 +423,32 @@ def build_cycle_fallback_prices(microstructure: Dict[str, Any], watcher_price_it
 
 
 def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> None:
-    """Reconcile live Binance and Hyperliquid spot equity from `tradable_positions` and `venue_quote_cash`."""
+    """Reconcile live multi-venue spot equity from `tradable_positions` and `venue_quote_cash` via SSOT `compute_venue_nav_breakdown`."""
     if not isinstance(portfolio_summary, dict):
         return
     t_pos_list = portfolio_summary.get("tradable_positions") if isinstance(portfolio_summary.get("tradable_positions"), list) else []
     vq_cash_map = portfolio_summary.get("venue_quote_cash") if isinstance(portfolio_summary.get("venue_quote_cash"), dict) else {}
     if not (t_pos_list or vq_cash_map):
         return
+    nav = compute_venue_nav_breakdown(positions=t_pos_list, quote_cash=vq_cash_map)
+    venues_usd = nav.get("venues_usd") if isinstance(nav.get("venues_usd"), dict) else {}
+    if isinstance(portfolio_summary.get("venues_value_usd"), dict) and venues_usd:
+        merged_vv = dict(portfolio_summary["venues_value_usd"])
+        for vk, vv in venues_usd.items():
+            if vv > 0.0 and vk in merged_vv:
+                merged_vv[vk] = vv
+        portfolio_summary["venues_value_usd"] = merged_vv
+        portfolio_summary["portfolio_total_usd"] = round(sum(merged_vv.values()), 2)
+    venue_pos_map = nav.get("venue_pos_usd") if isinstance(nav.get("venue_pos_usd"), dict) else {}
+    venue_cash_map = nav.get("venue_cash_usd") if isinstance(nav.get("venue_cash_usd"), dict) else {}
     for v_target, eq_key in (("binance", "live_binance_equity_usdc"), ("hyperliquid", "live_hl_spot_equity_usd")):
+        tot_v = safe_pos_float(venues_usd.get(v_target), default=0.0) or 0.0
+        v_pos_sum = safe_pos_float(venue_pos_map.get(v_target), default=0.0) or 0.0
+        v_cash_sum = safe_pos_float(venue_cash_map.get(v_target), default=0.0) or 0.0
         v_pos_list = [
             p for p in t_pos_list
             if isinstance(p, dict) and normalize_venue_name(p.get("venue")) == v_target
         ]
-        free_by_base: Dict[str, float] = {}
-        locked_by_sym: Dict[str, float] = {}
-        for p in v_pos_list:
-            b_k = canonical_base_asset(p.get("base") or p.get("symbol") or "") or str(p.get("symbol") or "").strip().upper()
-            s_k = str(p.get("symbol") or b_k).strip().upper()
-            free_by_base[b_k] = max(free_by_base.get(b_k, 0.0), safe_pos_float(p.get("value_usd"), default=0.0) or 0.0)
-            locked_by_sym[s_k] = max(locked_by_sym.get(s_k, 0.0), safe_pos_float(p.get("locked_base_usd"), default=0.0) or 0.0)
-        v_pos_sum = sum(free_by_base.values()) + sum(locked_by_sym.values())
-        cash_by_asset: Dict[str, float] = {}
-        for c_key, c in vq_cash_map.items():
-            k_parts = str(c_key or "").split(":", 1)
-            c_venue = normalize_venue_name(c.get("venue") if isinstance(c, dict) and c.get("venue") else k_parts[0])
-            if c_venue != v_target:
-                continue
-            if isinstance(c, dict):
-                c_asset_u = str(c.get("asset") or (k_parts[1] if len(k_parts) > 1 and k_parts[1].strip() else c_key or "USD")).strip().upper()
-                c_val = (
-                    (
-                        safe_pos_float(c.get("free"), default=None)
-                        or safe_pos_float(c.get("free_quote_usd"), default=None)
-                        or safe_pos_float(c.get("free_usd"), default=0.0)
-                        or 0.0
-                    )
-                    + (safe_pos_float(c.get("locked_quote_usd"), default=0.0) or 0.0)
-                )
-            else:
-                c_asset_u = (k_parts[1].strip().upper() if len(k_parts) > 1 and k_parts[1].strip() else "USD")
-                c_val = safe_pos_float(c, default=0.0) or 0.0
-            cash_by_asset[c_asset_u] = max(cash_by_asset.get(c_asset_u, 0.0), c_val)
-        v_cash_sum = sum(cash_by_asset.values())
-        tot_v = round(v_pos_sum + v_cash_sum, 2)
         if tot_v > 0.0:
             if v_target == "binance":
                 portfolio_summary[eq_key] = tot_v
