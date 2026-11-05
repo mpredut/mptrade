@@ -877,12 +877,30 @@ def reconcile_venue_cycles_with_recent_orders(
     return cyc_sell_ts_map
 
 
-_FLAT_RO_KEYS = ("active_avg_buy_px", "tactical_avg_buy_px", "swing_subcycle_avg_px", "open_lots")
+_FLAT_RO_KEYS = (
+    "active_avg_buy_px",
+    "tactical_avg_buy_px",
+    "swing_subcycle_avg_px",
+    "swing_subcycle_qty",
+    "active_cycle_rem_qty",
+    "open_lots",
+)
 _FLAT_POS_KEYS = (
     "active_avg_buy_px", "pnl_vs_avg_pct", "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct",
-    "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", "open_lots", "lowest_buy_px",
-    "pnl_vs_lowest_buy_pct", "trailing_peak", "dd_from_peak_pct",
+    "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct",
+    "open_lots", "lowest_buy_px", "pnl_vs_lowest_buy_pct", "trailing_peak", "dd_from_peak_pct",
 )
+
+
+def _scope_variants(sym: str, variants: Any, *, is_eq: Optional[bool] = None) -> tuple[str, ...]:
+    eq_flag = str(sym or "").strip().upper().endswith(("_EQ", "_US_EQ")) if is_eq is None else is_eq
+    if eq_flag:
+        return tuple(
+            c
+            for c in variants
+            if not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+        )
+    return tuple(c for c in variants if not str(c).strip().upper().endswith(("_EQ", "_US_EQ")))
 
 
 def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, Any], *, full_pos_clear: bool = False) -> None:
@@ -913,12 +931,17 @@ def enrich_positions_with_orders_and_cycles(
             continue
         p_sym = str(pos.get("symbol") or "").upper()
         p_venue = normalize_venue_name(pos.get("venue"))
+        p_is_eq = p_sym.endswith(("_EQ", "_US_EQ")) or p_venue == "t212"
         p_quotes = compatible_quote_suffixes(p_sym, pos.get("quote"))
-        p_quote_variants = cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes)
+        p_quote_variants = _scope_variants(
+            p_sym,
+            cache_symbol_variants(p_sym, include_base="USD" in p_quotes, quotes=p_quotes),
+            is_eq=p_is_eq,
+        )
         if p_venue and p_sym:
             for cand_vs in (p_sym, *p_quote_variants):
                 seen_venue_syms.add((p_venue, str(cand_vs).upper()))
-        p_variants = (*p_quote_variants, *cache_symbol_variants(p_sym))
+        p_variants = (*p_quote_variants, *_scope_variants(p_sym, cache_symbol_variants(p_sym), is_eq=p_is_eq))
         pos_px_f = safe_float(pos.get("price"), 0.0)
         cand_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=pos.get("quote"))
         if cand_px > 0 and (pos_px_f <= 0 or (abs(pos_px_f - cand_px) > 1e-9 and not _prices_diverged(pos_px_f, cand_px))):
@@ -950,7 +973,7 @@ def enrich_positions_with_orders_and_cycles(
             if ro.get("last_action_side"):
                 pos["last_action_side"] = str(ro.get("last_action_side")).upper()
             if is_flat_after_exit:
-                _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=False)
+                _clear_flat_ro_and_pos_anchors(ro, pos, full_pos_clear=True)
             else:
                 set_pos_anchor(pos, "active_avg_buy_px", "pnl_vs_avg_pct", ro.get("active_avg_buy_px"), pos_px_f)
                 set_pos_anchor(pos, "tactical_avg_buy_px", "pnl_vs_tactical_avg_pct", ro.get("tactical_avg_buy_px"), pos_px_f)
@@ -1201,7 +1224,11 @@ def enrich_positions_with_orders_and_cycles(
             if cyc_qty <= 1e-8:
                 continue
             c_quotes = compatible_quote_suffixes(c_sym_u)
-            c_quote_variants = cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes)
+            c_quote_variants = _scope_variants(
+                c_sym_u,
+                cache_symbol_variants(c_sym_u, include_base="USD" in c_quotes, quotes=c_quotes),
+                is_eq=(c_venue == "t212" or c_sym_u.endswith(("_EQ", "_US_EQ"))),
+            )
             ro = next((val for cand in (c_sym_u, *c_quote_variants) if isinstance((val := casefold_get(v_ro_map, cand)), dict)), None)
             if ro is None and isinstance(recent_orders, dict):
                 ro = next(

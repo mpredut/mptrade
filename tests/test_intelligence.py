@@ -8295,6 +8295,127 @@ def test_iter103_price_series_microstructure_tca_and_bellwether_equity_crypto_is
     assert "COIN_US_EQ" in cmc.get("equity_bellwethers", {})
 
 
+def test_iter104_portfolio_flat_ro_pos_clear_equity_scope_and_7d_swing_sync(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from intelligence.sentiment.evaluators.price_series_evaluator import _apply_24h_series_enrichment
+
+    # 1. Flat Binance position after SELL clears stale cost-basis anchors on pos and swing_subcycle_qty/active_cycle_rem_qty on ro
+    pos_bn_flat = {
+        "venue": "binance",
+        "symbol": "SOLUSDC",
+        "quote": "USDC",
+        "price": 150.0,
+        "free_base": 0.0,
+        "free_quote": 500.0,
+        "active_avg_buy_px": 140.0,
+        "pnl_vs_avg_pct": 7.14,
+        "tactical_avg_buy_px": 142.0,
+        "pnl_vs_tactical_avg_pct": 5.63,
+        "swing_subcycle_avg_px": 141.0,
+        "pnl_vs_swing_avg_pct": 6.38,
+        "open_lots": [{"lot_id": "L1", "qty": 1.0, "entry_px": 140.0}],
+        "lowest_buy_px": 140.0,
+        "pnl_vs_lowest_buy_pct": 7.14,
+        "trailing_peak": 155.0,
+        "dd_from_peak_pct": -3.23,
+    }
+    ro_sol = {
+        "venue": "binance",
+        "last_action_side": "SELL",
+        "active_avg_buy_px": 140.0,
+        "tactical_avg_buy_px": 142.0,
+        "swing_subcycle_avg_px": 141.0,
+        "swing_subcycle_qty": 1.0,
+        "active_cycle_rem_qty": 1.0,
+        "open_lots": [{"lot_id": "L1", "qty": 1.0, "entry_px": 140.0}],
+        "last_buy": {"price": 140.0, "qty": 1.0, "ts_ms": 1_710_000_000_000},
+        "last_sell": {"price": 150.0, "qty": 1.0, "ts_ms": 1_710_003_600_000},
+        "recent_buys": [{"price": 140.0, "qty": 1.0, "ts_ms": 1_710_000_000_000}],
+        "recent_sells": [{"price": 150.0, "qty": 1.0, "ts_ms": 1_710_003_600_000}],
+    }
+    pos_eq = {
+        "venue": "t212",
+        "symbol": "COIN_US_EQ",
+        "quote": "USD",
+        "price": 250.0,
+        "free_base": 1.0,
+        "free_quote": 100.0,
+    }
+    pt = {
+        "SOLUSDC": {"price": 150.0, "spread_bps": 1.5},
+        "COIN_US_EQ": {"price": 250.0},
+        "COINUSDC": {"price": 1.30, "spread_bps": 18.5, "high_24h": 1.45},
+    }
+    enrich_positions_with_orders_and_cycles(
+        [pos_bn_flat, pos_eq],
+        pt,
+        {},
+        {"binance": {"SOLUSDC": ro_sol}, "t212": {}},
+        {"SOLUSDC": ro_sol},
+        {},
+        {},
+        {},
+        {},
+    )
+    for stale_k in (
+        "active_avg_buy_px",
+        "pnl_vs_avg_pct",
+        "tactical_avg_buy_px",
+        "pnl_vs_tactical_avg_pct",
+        "swing_subcycle_avg_px",
+        "pnl_vs_swing_avg_pct",
+        "open_lots",
+        "lowest_buy_px",
+        "pnl_vs_lowest_buy_pct",
+        "trailing_peak",
+        "dd_from_peak_pct",
+    ):
+        assert stale_k not in pos_bn_flat
+    assert "swing_subcycle_qty" not in ro_sol
+    assert "active_cycle_rem_qty" not in ro_sol
+    assert pos_bn_flat.get("last_sell_px") == pytest.approx(150.0)
+    # T212 COIN_US_EQ must not inherit COINUSDC's 18.5 bps crypto spread
+    assert "spread_bps" not in pos_eq
+
+    # 2. load_symbol_best_recent_fills isolates t212 vs crypto venues
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "cache_trade_kraken.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "COIN": [
+                        {"symbol": "COINUSD", "side": "BUY", "price": 1.25, "qty": 100.0, "executedQty": 100.0, "timestamp": 1_710_000_000_000, "status": "FILLED"}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_symbol_best_recent_fills(str(cdir), "COIN_US_EQ", ("COIN_US_EQ", "COIN")) is None
+
+    # 3. _apply_24h_series_enrichment syncs swing_low_px, swing_high_px, and chg_7d_pct when 24h range widens 7d range
+    p_entry = {
+        "price": 105.0,
+        "low_7d": 100.0,
+        "high_7d": 110.0,
+        "chg_7d_pct": 12.0,
+        "swing_low_px": 100.0,
+        "swing_high_px": 110.0,
+        "rally_from_swing_low_pct": 5.0,
+        "pullback_from_swing_high_pct": -4.55,
+    }
+    m24 = {"low_24h": 98.1234, "high_24h": 112.5678, "chg_1h_pct": 0.5}
+    _apply_24h_series_enrichment("SOLUSDC", p_entry, m24, [[1_710_000_000_000, 100.0], [1_710_003_600_000, 105.0]], None)
+    assert p_entry["low_7d"] == pytest.approx(98.1234)
+    assert p_entry["high_7d"] == pytest.approx(112.5678)
+    assert p_entry["swing_low_px"] == pytest.approx(98.1234)
+    assert p_entry["swing_high_px"] == pytest.approx(112.5678)
+    assert p_entry["chg_7d_pct"] == pytest.approx(p_entry["bounce_7d_low_pct"])
+
+
 
 
 

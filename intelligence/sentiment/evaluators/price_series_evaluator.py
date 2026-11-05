@@ -1129,15 +1129,34 @@ def _apply_24h_series_enrichment(
     cur_e_px = safe_pos_float(entry.get("price"), default=None)
     l24_e, h24_e = safe_pos_float(entry.get("low_24h"), default=None), safe_pos_float(entry.get("high_24h"), default=None)
     l7d_e, h7d_e = safe_pos_float(entry.get("low_7d"), default=None), safe_pos_float(entry.get("high_7d"), default=None)
+    is_eq = sym.endswith(("_EQ", "_US_EQ"))
     if cur_e_px is not None and l24_e is not None and h24_e is not None and l7d_e is not None and h7d_e is not None:
         if l24_e < l7d_e or h24_e > h7d_e:
-            eff_dec_7d = _auto_px_decimals(cur_e_px)
-            entry.update(_compute_horizon_range_dict(cur_e_px, round(min(l7d_e, l24_e, cur_e_px), eff_dec_7d), round(max(h7d_e, h24_e, cur_e_px), eff_dec_7d), "7d"))
+            eff_dec_7d = 4 if is_eq else 6
+            new_l7d = round(min(l7d_e, l24_e, cur_e_px), eff_dec_7d)
+            new_h7d = round(max(h7d_e, h24_e, cur_e_px), eff_dec_7d)
+            entry.update(_compute_horizon_range_dict(cur_e_px, new_l7d, new_h7d, "7d"))
+            if (c7d_e := safe_float(entry.get("chg_7d_pct"), default=None)) is not None:
+                dd7_e, b7_e = safe_float(entry.get("dd_7d_high_pct"), default=None), safe_float(entry.get("bounce_7d_low_pct"), default=None)
+                if dd7_e is not None and c7d_e < dd7_e:
+                    entry["chg_7d_pct"] = dd7_e
+                elif b7_e is not None and c7d_e > b7_e:
+                    entry["chg_7d_pct"] = b7_e
+            sw_lo_e = safe_pos_float(entry.get("swing_low_px"), default=None)
+            sw_hi_e = safe_pos_float(entry.get("swing_high_px"), default=None)
+            if sw_lo_e is not None and sw_hi_e is not None:
+                has_swings_e = bool(entry.get("recent_swings_7d"))
+                sw_lo_n = round(min(sw_lo_e, cur_e_px, *([l24_e] if not has_swings_e or l24_e < sw_lo_e else [])), eff_dec_7d)
+                sw_hi_n = round(max(sw_hi_e, cur_e_px, *([h24_e] if not has_swings_e else [])), eff_dec_7d)
+                entry["swing_low_px"], entry["swing_high_px"] = sw_lo_n, sw_hi_n
+                if sw_lo_n > 0.0:
+                    entry["rally_from_swing_low_pct"] = pct_delta(cur_e_px, sw_lo_n)
+                if sw_hi_n > 0.0:
+                    entry["pullback_from_swing_high_pct"] = pct_delta(cur_e_px, sw_hi_n)
     if entry.get("trend", 0) == 0 and "chg_1h_pct" in m24:
         c1h = safe_float(m24.get("chg_1h_pct"), 0.0)
         if c1h >= 0.25 or c1h <= -0.25:
             entry["trend"] = 1 if c1h >= 0.25 else -1
-    is_eq = sym.endswith(("_EQ", "_US_EQ"))
     if series_24h and btc_series_24h and not is_eq and canonical_base_asset(sym) != "BTC":
         cross_btc = compute_cross_btc_metrics(series_24h, btc_series_24h)
         for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):

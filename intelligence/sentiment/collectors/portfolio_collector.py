@@ -924,9 +924,13 @@ def load_symbol_best_recent_fills(
     best_venue: Optional[str] = None
     best_fill_key: Tuple[int, int, float] = (-1, -1, -1.0)
     sym_upper = str(symbol or "").strip().upper()
+    is_eq_sym = sym_upper.endswith(("_EQ", "_US_EQ"))
+    is_crypto_pair = (not is_eq_sym) and (split_symbol_assets(sym_upper) is not None)
     sym_quotes = compatible_quote_suffixes(sym_upper)
     base_upper = canonical_base_asset(sym_upper)
     for ord_file, cache_venue in _ORDER_CACHE_FILES:
+        if (is_eq_sym and cache_venue != "t212") or (is_crypto_pair and cache_venue == "t212"):
+            continue
         ord_data = _rj(os.path.join(cachedb_dir, ord_file))
         o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
         matched_cand = next((cand for cand in quote_variants if casefold_get(o_items, cand)), None)
@@ -968,7 +972,11 @@ def load_symbol_best_recent_fills(
         ws_dir = os.path.dirname(norm_cdir) if os.path.basename(norm_cdir).lower() == "cachedb" else norm_cdir
         if ws_dir and os.path.isdir(ws_dir):
             k_cycs, hl_cycs, t212_cycs = harvest_venue_cycles(ws_dir, {}, {}, read_json_fn=_rj)
-            cyc_maps = [("t212", t212_cycs), ("kraken", k_cycs), ("hyperliquid", hl_cycs)]
+            cyc_maps = [
+                vc
+                for vc in (("t212", t212_cycs), ("kraken", k_cycs), ("hyperliquid", hl_cycs))
+                if not ((is_eq_sym and vc[0] != "t212") or (is_crypto_pair and vc[0] == "t212"))
+            ]
             if best_venue:
                 cyc_maps.sort(key=lambda vc: 0 if vc[0] == best_venue else 1)
             cyc_cands = list(dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in quote_variants if str(c).strip())]))
