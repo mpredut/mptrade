@@ -7662,15 +7662,24 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
     from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
 
+    eq_ps_summary = {
+        "total_value_usdc": 2000.0,
+        "total_value_usdc_age_min": 1.2,
+        "venues_value_usd": {"binance": 2000.0, "kraken": 950.0, "t212": 100.0},
+        "portfolio_total_usd": 3050.0,
+    }
     _, eq_micro_filtered = apply_asset_scope_filter(
         {"NVDA_US_EQ": {"price": 206.69}, "BTCUSDC": {"price": 85000.0}},
         {"NVDA_US_EQ": {"ob_imbalance": 0.58, "whale_long_pct": 0.62}, "BTCUSDC": {"ob_imbalance": 0.45}},
-        {},
+        eq_ps_summary,
         "equities",
         {},
         {"NVDA_US_EQ": {}},
     )
     assert "NVDA_US_EQ" in eq_micro_filtered and "BTCUSDC" not in eq_micro_filtered
+    assert "total_value_usdc" not in eq_ps_summary and "total_value_usdc_age_min" not in eq_ps_summary
+    assert eq_ps_summary.get("venues_value_usd") == {"t212": 100.0}
+    assert eq_ps_summary.get("portfolio_total_usd") == 100.0
     cm_ctx = build_cross_market_context(
         {"NVDA_US_EQ": {"price": 206.69, "chg_24h_pct": 1.2}},
         {"NVDA_US_EQ": {"ob_imbalance": 0.58, "whale_long_pct": 0.62, "cvd_15m_usd": 125000.0}},

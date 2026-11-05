@@ -950,9 +950,10 @@ class TestCacheAssetValueManager(unittest.TestCase):
                 json.dump(
                     {
                         "cash:kraken:USD": {"venue": "kraken", "asset": "USD", "free": 500.0, "locked_quote_usd": 100.0},
-                        "pos:kraken:HYPEUSD": {"venue": "kraken", "symbol": "HYPEUSD", "value_usd": 300.0, "locked_base_usd": 50.0},
-                        "cash:t212:USD": {"venue": "t212", "asset": "USD", "free": 14.0},
-                        "pos:t212:NVDA_US_EQ": {"venue": "t212", "symbol": "NVDA_US_EQ", "value_usd": 86.0},
+                        "pos:kraken:HYPEUSD": {"venue": "kraken", "symbol": "HYPEUSD", "base": "HYPE", "value_usd": 300.0, "locked_base_usd": 50.0},
+                        "pos:kraken:HYPEUSDC": {"venue": "kraken", "symbol": "HYPEUSDC", "base": "HYPE", "value_usd": 300.0, "locked_base_usd": 0.0},
+                        "cash:t212:USD": {"venue": "t212", "asset": "USD", "free_quote_usd": 14.0},
+                        "pos:t212:NVDA_US_EQ": {"venue": "t212", "symbol": "NVDA_US_EQ", "free_base": 0.43, "price": 200.0},
                     },
                     handle,
                 )

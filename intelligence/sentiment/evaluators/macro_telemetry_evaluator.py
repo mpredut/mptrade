@@ -235,11 +235,21 @@ def apply_asset_scope_filter(
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
         microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
         for crypto_key in (
-            "total_value_usdc", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
+            "total_value_usdc", "total_value_usdc_age_min", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
             "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",
             "monitortrades_active_state", "assetguardian_state", "smart_stop_loss_state", "trailing_peaks",
         ):
             portfolio_summary.pop(crypto_key, None)
+        if isinstance(portfolio_summary.get("venues_value_usd"), dict):
+            eq_venues = {
+                vk: vv
+                for vk, vv in portfolio_summary["venues_value_usd"].items()
+                if normalize_venue_name(vk) == "t212" and (safe_pos_float(vv, default=0.0) or 0.0) > 0.0
+            }
+            _set_or_pop("venues_value_usd", eq_venues)
+            _set_or_pop("portfolio_total_usd", round(sum(eq_venues.values()), 2) if eq_venues else None)
+        else:
+            portfolio_summary.pop("portfolio_total_usd", None)
     else:
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
         microstructure = {k: v for k, v in microstructure.items() if not str(k).upper().endswith(("_EQ", "_US_EQ")) and str(k).upper() not in t212_sym_set}
