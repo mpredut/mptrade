@@ -14,6 +14,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     legacy_filenames_for,
     normalize_venue_name,
+    resolve_cache_dir_path,
 )
 from intelligence.external.collectors.orderbook_depth_collector import round_spread_bps
 from intelligence.macro_sentiment_ssot import (
@@ -668,7 +669,10 @@ def ensure_fresh_symbol_microstructure(
     include_derivatives: bool = False,
 ) -> None:
     """Trigger on-demand orderbook, derivatives, or whale collector fetches when cached files are missing or stale."""
-    if "PYTEST_CURRENT_TEST" in os.environ or not cache_dir or not os.path.isdir(cache_dir):
+    if "PYTEST_CURRENT_TEST" in os.environ or not cache_dir:
+        return
+    eff_cache_dir = resolve_cache_dir_path(cache_dir)
+    if not eff_cache_dir or not os.path.isdir(eff_cache_dir):
         return
     sym_u = str(symbol or "").strip().upper()
     if not sym_u or "PYTEST_CURRENT_TEST" in os.environ:
@@ -676,7 +680,7 @@ def ensure_fresh_symbol_microstructure(
     eff_now = resolve_now_ts(now_ts)
 
     def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
-        fpath = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{prefix}{sym_u}.json")))
+        fpath = str(resolve_cachedb_filepath(os.path.join(eff_cache_dir, f"{prefix}{sym_u}.json")))
         if not os.path.exists(fpath):
             return True
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
@@ -685,21 +689,21 @@ def ensure_fresh_symbol_microstructure(
         try:
             from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 
-            OrderbookDepthCollector(cache_dir=cache_dir).fetch(sym_u)
+            OrderbookDepthCollector(cache_dir=eff_cache_dir).fetch(sym_u)
         except Exception:
             pass
     if include_derivatives and _needs_fetch("derivatives_telemetry_", max_age_whale_sec):
         try:
             from intelligence.external.collectors.derivatives_telemetry_collector import DerivativesTelemetryCollector
 
-            DerivativesTelemetryCollector(cache_dir=cache_dir).fetch(sym_u)
+            DerivativesTelemetryCollector(cache_dir=eff_cache_dir).fetch(sym_u)
         except Exception:
             pass
     if _needs_fetch("whale_snapshot_", max_age_whale_sec):
         try:
             from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 
-            WhalePositioningCollector(cache_dir=cache_dir).fetch(sym_u)
+            WhalePositioningCollector(cache_dir=eff_cache_dir).fetch(sym_u)
         except Exception:
             pass
 

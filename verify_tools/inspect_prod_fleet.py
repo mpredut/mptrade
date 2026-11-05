@@ -53,6 +53,8 @@ def ssh_cat(remote_path: str) -> dict | list | str | None:
             return json.loads(res.stdout)
         except Exception:
             return res.stdout
+    if "PYTEST_CURRENT_TEST" not in os.environ and os.path.isfile(prod_path):
+        return read_json_file(prod_path, default=None)
     return None
 
 

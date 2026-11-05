@@ -744,7 +744,7 @@ def resolve_cache_dir_path(cache_dir: object, *, fallback_default: bool = False)
     raw = _clean_path_str(cache_dir)
     if not raw:
         return get_cachedb_dir() if fallback_default else None
-    if raw == "cachedb":
+    if raw == "cachedb" or os.path.abspath(raw) == os.path.abspath(_ROOT):
         return get_cachedb_dir()
     return raw
 
