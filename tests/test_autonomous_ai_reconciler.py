@@ -9029,5 +9029,23 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     assert "slopes(90s=+0.00308, 3.7m=+0.00120, 15m=+0.00070, 2.5h=-0.00050)" in s3a
     assert "g_coeff(" not in s3a
 
+    # 6. live_btc_flow_delta strips '-old ACCUMULATE' -> '-old summary' and appends CB_Prem,
+    #    and lexicon_ssot filters value-trap / running-out-of-gas filler
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context, is_off_topic_general_news_title
+
+    assert not has_financial_or_geopolitical_context(
+        "Sandisk Stock Is Down 45% Over the Past Four Months. Is It a Bargain or a Value Trap?"
+    )
+    assert is_off_topic_general_news_title(
+        "Sandisk Stock Is Down 45% Over the Past Four Months. Is It a Bargain or a Value Trap?"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "Yes, Trump Was Already Running Out of Gas Before the Iran War"
+    )
+    assert is_off_topic_general_news_title(
+        "Yes, Trump Was Already Running Out of Gas Before the Iran War"
+    )
+
+
 
 

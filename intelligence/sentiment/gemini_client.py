@@ -627,7 +627,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                             try:
                                                 c_proc = self._execute_cli(
                                                     turn_cid,
-                                                    "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards. Do NOT call any tools or read/modify any files.",
+                                                    "/compact Summarize prior turns concisely in Romanian, preserving only exact factual recent decisions, resting limit orders, and user instructions from the latest turn. Do NOT approximate or recalculate position USD values (the next turn provides live telemetry), do NOT invent risk guard rules or fixed thresholds, and do NOT call any tools or read/modify any files.",
                                                     compact_timeout,
                                                     compact_model,
                                                     bot_cli_base,

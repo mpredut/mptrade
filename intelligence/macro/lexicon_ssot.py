@@ -32,7 +32,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "shocks however", "profit thanks", "thanks gold", "insane plan", "focus live",
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
     "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
-    "emergency sanction",
+    "emergency sanction", "supply shock", "warfare cyber",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -187,34 +187,41 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "acknowledge", "acknowledges", "active", "adds", "admit", "admits",
     "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
-    "already", "amid", "answered", "app", "apparently", "apps", "arrested",
-    "article", "articles", "baseball", "bat", "belgium", "blame", "blamed",
-    "blames", "blaming", "bondi", "boy", "brake", "breaking", "briefing",
-    "bus", "calls", "car", "carried", "carries", "caused", "chip",
-    "commentary", "concede", "concedes", "conduct", "conducted", "conducts",
-    "continue", "continues", "criticize", "criticized", "criticizes",
-    "damaged", "debunked", "defensive", "digested", "discourse", "discount",
-    "discounts", "downscale", "efforts", "eight", "elevated", "end", "essay",
-    "essays", "eve", "exceptionally", "exists", "expert", "experts",
-    "expiration", "explained", "exposes", "faces", "facing", "false", "fare",
-    "features", "five", "fleet", "florida", "four", "fresh", "functioning",
-    "golf", "headlines", "heighten", "highlights", "history", "horrific",
-    "humanitarian", "hurt", "intel", "institute", "introduces", "involvement",
-    "island", "jet", "join", "keyword", "landing", "latest", "limited",
-    "links", "liv", "localized", "loser", "losers", "losses", "media",
-    "members", "midterm", "midterms", "mobile", "moderate", "mutual",
-    "narrative", "nine", "non", "normal", "noting", "official", "officials",
-    "one", "orderly", "peacefully", "physical", "plane", "played", "political",
-    "position", "post", "potential", "prices", "processed", "progress",
-    "pursues", "qeshm", "questions", "rather", "readiness", "record",
-    "renewed", "reported", "reportedly", "represent", "researchers",
-    "reshapes", "retaining", "rhetoric", "role", "routine", "ryanair", "say",
-    "seven", "showdown", "six", "sizing", "somalia", "south", "story",
-    "striker", "study", "suspected", "sweden", "tactical", "targets",
-    "techspot", "ten", "tenerife", "three", "timeline", "trace", "traced",
-    "train", "trains", "truck", "two", "uganda", "uncertainty", "unpriced",
-    "veto", "victim", "victims", "volunteer", "withdrawing", "workers",
-    "worse", "wrap",
+    "already", "amid", "answered", "app", "apparently", "appears", "apps",
+    "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
+    "blame", "blamed", "blames", "blaming", "bondi", "boy", "brake",
+    "breaking", "briefing", "bus", "calls", "car", "carried", "carries",
+    "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
+    "concedes", "conduct", "conducted", "conducts", "continue", "continued",
+    "continues", "contagion", "criticize", "criticized", "criticizes",
+    "damaged", "deadly", "debunked", "defensive", "digested", "discourse",
+    "discount", "discounts", "downscale", "efforts", "eight", "elevated",
+    "end", "essay", "essays", "eve", "exceptionally", "exists", "expert",
+    "experts", "expiration", "explained", "exposes", "faces", "facing",
+    "fallout", "false", "fare", "features", "five", "fleet", "florida",
+    "forced", "four", "fresh", "functioning", "golf", "headlines", "heighten",
+    "highlights", "history", "horrific", "humanitarian", "hurt", "intel",
+    "institute", "introduces", "involvement", "island", "jet", "join",
+    "keyword", "kinetic", "landing", "latest", "likely", "limited", "links",
+    "liquidation", "liquidations", "liv", "localized", "long", "loser",
+    "losers", "losses", "macro", "media", "members", "midterm", "midterms",
+    "mobile", "moderate", "mutual", "narrative", "nine", "non", "normal",
+    "noting", "official", "officials", "one", "orderly", "outlook",
+    "peacefully", "physical", "plane", "playbook", "played", "plunge",
+    "plunged", "plunges", "plunging", "political", "position", "post",
+    "potential", "prices", "processed", "progress", "prolongation", "pursues",
+    "qeshm", "questions", "rather", "readiness", "record", "reflect",
+    "reflects", "related", "renewed", "reported", "reportedly", "represent",
+    "researchers", "reshapes", "retaining", "rhetoric", "risk", "risks",
+    "role", "rout", "routine", "ryanair", "say", "scrutiny", "secondary",
+    "selloff", "seven", "short", "showdown", "six", "sizing", "somalia",
+    "south", "stocks", "story", "strategy", "striker", "study", "suspected",
+    "sustain", "sustains", "sweden", "systemic", "tactical", "targets",
+    "tech", "techspot", "ten", "tenerife", "three", "timeline", "trace",
+    "traced", "train", "trains", "truck", "trump", "two", "uganda",
+    "unabsorbed", "unanticipated", "uncertainty", "unpriced", "veto",
+    "victim", "victims", "volatility", "volunteer", "wave", "waves",
+    "withdrawing", "workers", "worse", "wrap",
 })
 
 
@@ -314,6 +321,8 @@ def filter_valid_severity_keywords(
     crisis_stems = _get_crisis_stems_set()
     sw = _get_stopwords_set()
     title_low = title.lower() if isinstance(title, str) and title.strip() else ""
+    if title_low and any(p in title_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
+        return ()
     title_words = set(re.findall(r"[a-zA-Z]{3,}", title_low)) if title_low else set()
     out: List[str] = []
     if isinstance(raw_keywords, (list, tuple)):
@@ -930,7 +939,7 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if (words & {"hoax", "hoaxes", "protest", "protests"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
         return False
-    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to")):
+    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
         return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})
@@ -948,9 +957,12 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     """Return True if a headline is sports/wildlife/entertainment/weather filler without macro or market relevance."""
     if not isinstance(title, str) or not title.strip():
         return False
-    words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
+    clean_low = _strip_headline_publisher_suffix(title).lower()
+    words = set(re.findall(r"[a-z]{3,}", clean_low))
     if not words or has_financial_or_geopolitical_context(title):
         return False
+    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to", "value trap", "is it a bargain", "running out of gas")):
+        return True
     return bool(words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS))
 
 

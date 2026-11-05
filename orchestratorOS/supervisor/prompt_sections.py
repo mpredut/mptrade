@@ -227,6 +227,20 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         if "(" in sa_flow_raw
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
+    if sa_flow_delta:
+        sa_flow_delta = re.sub(
+            r"(-old\s+)(?:ACCUMULATE|HOLD|DEFENSIVE|TRIM_PROFITS|BULLISH|BEARISH|NEUTRAL)\b",
+            r"\1summary",
+            sa_flow_delta,
+            flags=re.IGNORECASE,
+        )
+        if (
+            "CB_Prem=" not in sa_flow_delta
+            and " vs " in sa_flow_delta
+            and isinstance(mb_bench, dict)
+            and (cb_v := _parse_finite_float(mb_bench.get("coinbase_premium_bps"), None)) is not None
+        ):
+            sa_flow_delta = sa_flow_delta.replace(" vs ", f", CB_Prem={cb_v:+.1f}bps vs ", 1)
     if not sa_flow_delta and sa and (_parse_finite_float(sa.get("age_min"), 0.0) or 0.0) >= 5.0:
         micro_map = getattr(sensors, "microstructure", None) or {}
         btc_m = (
@@ -1573,7 +1587,6 @@ def _format_portfolio_section(
                     if (
                         v_st in ("OPEN", "NEW", "RESTING", "PARTIALLY_FILLED")
                         and bool(it_oids & shown_open_oids)
-                        and age_h > 0.5
                     ):
                         continue
                     fmt_intents.append(it_copy)
