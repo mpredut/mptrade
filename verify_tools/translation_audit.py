@@ -83,7 +83,7 @@ def doc_is_runtime_text(source: str) -> bool:
     """True when the module docstring is reused as runtime text, e.g. passed to argparse.
 
     Translating such a docstring changes user-visible CLI output, so it is not a
-    prose-only edit. tradeall_price_archiver.py is the known case in this repository.
+    prose-only edit.
     """
     return "__doc__" in source
 

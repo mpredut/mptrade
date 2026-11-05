@@ -209,7 +209,6 @@ PROCS.CONF
     ├── assetguardian             (assetguardian.py)
     ├── priceAnalysis             (priceAnalysis.py)
     ├── tradeall                  (tradeall.py)
-    ├── tradeall_price_archiver   (tradeall_price_archiver.py)
     ├── monitortrades             (monitortrades.py)
     ├── monitororder              (monitororder.py)
     ├── rtrade                    (rtrade.py)

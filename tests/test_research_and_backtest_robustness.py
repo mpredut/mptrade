@@ -2839,10 +2839,8 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     spec_pa.loader.exec_module(t212_pa)
     assert t212_pa.push("   ", "NVDA at 100", "body") is False
 
-    # 7. cachepaths, tradeall_price_archiver._symbols, and kraken backtest_trail
+    # 7. cachepaths and kraken backtest_trail
     import cachepaths
-    import pytest
-    import tradeall_price_archiver
     from kraken import backtest_trail as k_bt_tr
 
     monkeypatch.setenv("MPTRADE_CACHEDB_DIR", "   ")
@@ -2851,11 +2849,6 @@ def test_venue_replay_and_tooling_hardening(monkeypatch, tmp_path):
     assert cachepaths.cache_path("./cachedb/foo.json") == os.path.join(str(tmp_path), "foo.json")
     assert cachepaths.legacy_filenames_for(None) == ()  # type: ignore[arg-type]
     assert cachepaths.legacy_filenames_for(True) == ()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError):
-        tradeall_price_archiver._symbols(None)
-    with pytest.raises(ValueError):
-        tradeall_price_archiver._symbols(True)
 
     bars_sample = [(100.0, 102.0, 99.0, 101.0), (101.0, 103.0, 100.0, 102.0)]
     assert k_bt_tr.simulate_trail(bars_sample, {"trail": None, "reentry_drop": None, "fee": None, "interval": None})["initial_capital"] > 0
@@ -3833,11 +3826,10 @@ def test_batch20_visuals_summary_store_and_composite_hardening(tmp_path):
     assert ev2.price == 0.0 and ev2.can_execute is False
 
 
-def test_batch21_monitortrades_position_exit_manager_active_intents_and_archiver_hardening():
+def test_batch21_monitortrades_position_exit_manager_and_active_intents_hardening():
     from types import SimpleNamespace
     import active_intents
     import monitortrades as mt
-    import tradeall_price_archiver as archiver
     from strategies.position_exit_manager import (
         PositionExitConfig,
         PositionExitManager,
@@ -3912,24 +3904,6 @@ def test_batch21_monitortrades_position_exit_manager_active_intents_and_archiver
         inherited={},
     )
     assert row_term is None
-
-    # 5. tradeall_price_archiver._shutdown isolates component failures so remaining caches flush and ws stops
-    events = []
-    bad_cache = SimpleNamespace(
-        shutdown=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-        save_state_to_file=lambda: events.append("bad_flushed"),
-    )
-    good_cache = SimpleNamespace(
-        shutdown=lambda: events.append("good_shutdown"),
-        save_state_to_file=lambda: events.append("good_flushed"),
-    )
-    cp_mgr = SimpleNamespace(
-        unsubscribe_price=lambda c: events.append("unsub"),
-        shutdown=lambda: events.append("cp_shutdown"),
-    )
-    ws_mod = SimpleNamespace(bapi_ws_manager=SimpleNamespace(stop=lambda: events.append("ws_stop")))
-    archiver._shutdown([bad_cache, good_cache], cp_mgr, ws_mod)
-    assert events == ["unsub", "unsub", "bad_flushed", "good_shutdown", "good_flushed", "cp_shutdown", "ws_stop"]
 
 
 def test_batch22_binance_ws_market_data_trailing_stop_and_providers_hardening():

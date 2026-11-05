@@ -1976,7 +1976,8 @@ class CacheManagerInterface(ABC):
             def run():
                 if self._first_sleep and self._stop_event.wait(self.sync_ts):
                     return   # Run the first iteration after one interval, as CurrentPrice requires.
-                last_maint = time.time()
+                maint_stagger = safe_nonneg_float(getattr(self, "_maint_stagger_sec", 0.0), default=0.0) or 0.0
+                last_maint = time.time() + maint_stagger
                 last_resync = time.time()
                 while not self._stop_event.is_set():
                     try:
@@ -2579,6 +2580,8 @@ class Cache365PriceManager(Cache24PriceManager):
     and duplicate them, so this class compacts whenever trimming actually removes data.
     """
 
+    KEEP_HOURS = CM_LONG_ARCHIVE_MONTHS * 30 * 24
+    RETENTION_DAYS = CM_LONG_ARCHIVE_MONTHS * 30
     LONG_TRIM_INTERVAL_SEC = 24 * 3600
 
     def __init__(self, sync_ts, symbols, filename, api_client=api, read_only=False):
@@ -2691,8 +2694,46 @@ class Cache365PriceManager(Cache24PriceManager):
     def _write_current_meta_locked(self) -> bool:
         return self._write_meta(self._build_basic_meta_locked(self._persisted_counts))
 
+    def _collect_live_delta_locked(
+        self, snap_item_ids: set[int], *, min_ts_ms: int = 0
+    ) -> dict[str, list]:
+        """Collect in-memory ticks added by WebSocket while disk streaming ran unlocked."""
+        delta = {}
+        for symbol, items in self.cache.items():
+            extra = [
+                item
+                for item in items
+                if id(item) not in snap_item_ids
+                and (min_ts_ms <= 0 or self._entry_timestamp_ms(item) >= min_ts_ms)
+            ]
+            if extra:
+                delta[symbol] = extra
+        return delta
+
+    def _merge_live_delta_locked(self, delta_by_sym: dict[str, list]) -> None:
+        """Re-apply live ticks that arrived while an unlocked disk pass was running."""
+        for symbol, extra_items in delta_by_sym.items():
+            if not extra_items:
+                continue
+            bucket = self.cache.setdefault(symbol, [])
+            seen = {
+                json.dumps(it, sort_keys=True)
+                for it in bucket[-self.DEDUP_WINDOW:]
+            }
+            for item in extra_items:
+                key = json.dumps(item, sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    bucket.append(item)
+            overflow = max(0, len(bucket) - CM_LONG_ARCHIVE_MEMORY_ROWS)
+            if overflow:
+                self.cache[symbol] = bucket[overflow:]
+                self._persisted_counts[symbol] = max(
+                    0, self._persisted_counts.get(symbol, 0) - overflow
+                )
+
     def maintain_append_persist(self):
-        """Prune the full disk archive with bounded memory, then reload its recent tail."""
+        """Prune the full disk archive without holding ``self.lock`` during disk I/O."""
         if not self.save_state:
             return False
         cutoff_ms = int((time.time() - self.RETENTION_DAYS * 86400) * 1000)
@@ -2701,7 +2742,9 @@ class Cache365PriceManager(Cache24PriceManager):
         changed = False
         backup_path = None
         original_state = None
+        snap_item_ids: set[int] = set()
         try:
+            # Phase 1 (<0.1ms under lock): snapshot bounded in-memory state.
             with self.lock:
                 original_state = self._snapshot_memory_state_locked()
                 (
@@ -2710,33 +2753,65 @@ class Cache365PriceManager(Cache24PriceManager):
                     original_fetchtimes,
                     original_rest_cursors,
                 ) = original_state
-                backup_path = self.filename + ".maint_backup"
-                atomic_snapshot_file(self.filename, backup_path)
-                with atomic_write(self.filename) as target, open(backup_path, encoding="utf-8") as source:
-                    for line in source:
-                        try:
-                            rec = json.loads(line)
-                            keep = (
-                                isinstance(rec, dict)
-                                and isinstance(rec.get("s"), str)
-                                and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
-                            )
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            keep = False
-                        if keep:
-                            target.write(line if line.endswith("\n") else line + "\n")
-                        else:
-                            changed = True
-                    if self._write_unpersisted_memory_tail_locked(
-                        target, original_cache, original_persisted_counts, min_ts_ms=cutoff_ms
-                    ):
+                snap_item_ids = {
+                    id(item)
+                    for items in original_cache.values()
+                    for item in items
+                }
+
+            # Phase 2 (unlocked): stream and filter the multi-hundred-MB file on disk
+            # so WebSocket price callbacks never wait on disk I/O.
+            backup_path = self.filename + ".maint_backup"
+            atomic_snapshot_file(self.filename, backup_path)
+            with atomic_write(self.filename) as target, open(backup_path, encoding="utf-8") as source:
+                for line_idx, line in enumerate(source, 1):
+                    if line_idx % 4096 == 0:
+                        time.sleep(0)
+                    try:
+                        rec = json.loads(line)
+                        keep = (
+                            isinstance(rec, dict)
+                            and isinstance(rec.get("s"), str)
+                            and self._entry_timestamp_ms(rec.get("i")) >= cutoff_ms
+                        )
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        keep = False
+                    if keep:
+                        target.write(line if line.endswith("\n") else line + "\n")
+                    else:
                         changed = True
-                self._reload_and_merge_timestamps_locked(
-                    original_fetchtimes, original_rest_cursors
+                if self._write_unpersisted_memory_tail_locked(
+                    target, original_cache, original_persisted_counts, min_ts_ms=cutoff_ms
+                ):
+                    changed = True
+                with self.lock:
+                    delta_by_sym = self._collect_live_delta_locked(
+                        snap_item_ids, min_ts_ms=cutoff_ms
+                    )
+                    for symbol, extra_items in delta_by_sym.items():
+                        for item in extra_items:
+                            target.write(_jsonl_line(symbol, item))
+                            changed = True
+
+            # Phase 3 (<0.5ms under lock): reload bounded tail and merge any live ticks.
+            with self.lock:
+                post_delta = self._collect_live_delta_locked(
+                    snap_item_ids, min_ts_ms=cutoff_ms
                 )
+                live_fetchtimes = dict(original_fetchtimes)
+                for s_sym, ft in self.fetchtime_per_symbol.items():
+                    live_fetchtimes[s_sym] = max(int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0))
+                live_rest_cursors = dict(original_rest_cursors)
+                for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
+                    live_rest_cursors[s_sym] = max(int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0))
+                self._reload_and_merge_timestamps_locked(
+                    live_fetchtimes, live_rest_cursors
+                )
+                self._merge_live_delta_locked(post_delta)
                 if changed:
                     if not self._write_current_meta_locked():
                         self._restore_memory_state_locked(original_state)
+                        self._merge_live_delta_locked(post_delta)
                         self._restore_previous_generation(backup_path)
                         backup_path = None
                         return False
@@ -2749,12 +2824,15 @@ class Cache365PriceManager(Cache24PriceManager):
                 return self._rotate_disk_archive()
             return True
         except OSError as exc:
-            self._restore_memory_state_locked(original_state)
-            if backup_path is not None and os.path.exists(backup_path):
-                try:
-                    self._restore_previous_generation(backup_path)
-                except OSError:
-                    pass
+            with self.lock:
+                post_delta = self._collect_live_delta_locked(snap_item_ids)
+                self._restore_memory_state_locked(original_state)
+                self._merge_live_delta_locked(post_delta)
+                if backup_path is not None and os.path.exists(backup_path):
+                    try:
+                        self._restore_previous_generation(backup_path)
+                    except OSError:
+                        pass
             builtins.print(f"[{self.cls_name}][Error] streaming maintenance {self.filename}: {exc}")
             return False
 
@@ -2765,14 +2843,9 @@ class Cache365PriceManager(Cache24PriceManager):
         return super().compact_jsonl()  # Legacy JSON migration still starts from full memory.
 
     def _rotate_disk_archive(self):
-        """Archive an oversized file while retaining a complete-line tail on disk."""
+        """Archive an oversized file while retaining a complete-line tail without holding ``self.lock`` during disk I/O."""
+        archive = f"{self.filename}.{int(time.time())}.archive"
         with self.lock:
-            archive = f"{self.filename}.{int(time.time())}.archive"
-            try:
-                atomic_snapshot_file(self.filename, archive)
-            except OSError as exc:
-                builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
-                return False
             original_state = self._snapshot_memory_state_locked()
             (
                 original_cache,
@@ -2780,43 +2853,70 @@ class Cache365PriceManager(Cache24PriceManager):
                 original_fetchtimes,
                 original_rest_cursors,
             ) = original_state
-            try:
-                archive_size = os.path.getsize(archive)
-                keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
-                with open(archive, "rb") as source:
-                    source.seek(max(0, archive_size - keep_bytes))
-                    if source.tell() > 0:
-                        source.readline()
-                    tail = source.read()
-                    if not tail.strip() and archive_size > 0:
-                        source.seek(0)
-                        lines = [line for line in source.read().splitlines(keepends=True) if line.strip()]
-                        tail = lines[-1] if lines else b""
-                with atomic_write(self.filename) as target:
-                    decoded_tail = tail.decode("utf-8", errors="ignore")
-                    target.write(decoded_tail)
-                    if decoded_tail and not decoded_tail.endswith("\n"):
-                        target.write("\n")
-                    self._write_unpersisted_memory_tail_locked(
-                        target, original_cache, original_persisted_counts
-                    )
-                self._reload_and_merge_timestamps_locked(
-                    original_fetchtimes, original_rest_cursors
+            snap_item_ids = {
+                id(item)
+                for items in original_cache.values()
+                for item in items
+            }
+        try:
+            atomic_snapshot_file(self.filename, archive)
+        except OSError as exc:
+            builtins.print(f"[{self.cls_name}][maintain] archiving failed: {exc}")
+            return False
+        try:
+            archive_size = os.path.getsize(archive)
+            keep_bytes = max(1, int(archive_size * self.ROTATE_KEEP_FRACTION))
+            with open(archive, "rb") as source:
+                source.seek(max(0, archive_size - keep_bytes))
+                if source.tell() > 0:
+                    source.readline()
+                tail = source.read()
+                if not tail.strip() and archive_size > 0:
+                    source.seek(0)
+                    lines = [line for line in source.read().splitlines(keepends=True) if line.strip()]
+                    tail = lines[-1] if lines else b""
+            with atomic_write(self.filename) as target:
+                decoded_tail = tail.decode("utf-8", errors="ignore")
+                target.write(decoded_tail)
+                if decoded_tail and not decoded_tail.endswith("\n"):
+                    target.write("\n")
+                self._write_unpersisted_memory_tail_locked(
+                    target, original_cache, original_persisted_counts
                 )
+                with self.lock:
+                    delta_by_sym = self._collect_live_delta_locked(snap_item_ids)
+                    for symbol, extra_items in delta_by_sym.items():
+                        for item in extra_items:
+                            target.write(_jsonl_line(symbol, item))
+            with self.lock:
+                post_delta = self._collect_live_delta_locked(snap_item_ids)
+                live_fetchtimes = dict(original_fetchtimes)
+                for s_sym, ft in self.fetchtime_per_symbol.items():
+                    live_fetchtimes[s_sym] = max(int(live_fetchtimes.get(s_sym, 0) or 0), int(ft or 0))
+                live_rest_cursors = dict(original_rest_cursors)
+                for s_sym, cur in self._rest_sync_cursor_per_symbol.items():
+                    live_rest_cursors[s_sym] = max(int(live_rest_cursors.get(s_sym, 0) or 0), int(cur or 0))
+                self._reload_and_merge_timestamps_locked(
+                    live_fetchtimes, live_rest_cursors
+                )
+                self._merge_live_delta_locked(post_delta)
                 meta_ok = self._write_current_meta_locked()
-            except Exception as exc:
-                builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
-                meta_ok = False
-            if not meta_ok:
+        except Exception as exc:
+            builtins.print(f"[{self.cls_name}][maintain] rotation rewrite failed: {exc}")
+            meta_ok = False
+        if not meta_ok:
+            with self.lock:
+                post_delta = self._collect_live_delta_locked(snap_item_ids)
                 self._restore_memory_state_locked(original_state)
+                self._merge_live_delta_locked(post_delta)
                 try:
                     self._restore_previous_generation(archive)
                 except OSError as restore_err:
                     builtins.print(f"[{self.cls_name}][maintain] failed to restore active file from {archive}: {restore_err}")
-                builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
-                return False
-            self._compress_and_prune_archive(archive)
-            return True
+            builtins.print(f"[{self.cls_name}][maintain] rotation aborted; restored active file and in-memory state")
+            return False
+        self._compress_and_prune_archive(archive)
+        return True
 
     # Inherit get_remote_items from Cache24PriceManager, including real observation timestamps.
 
@@ -3365,7 +3465,7 @@ ORDER_SYNC_INTERVAL_SEC = 0.4 * 60   # 24 seconds
 TRADE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
 SPARSE_PRICE_SYNC_INTERVAL_SEC = 3 * 60     # 3 minutes
 PRICE_24_SYNC_INTERVAL_SEC = 30         # Fallback polling while WebSocket is inactive.
-PRICE_365_SYNC_INTERVAL_SEC = 30        # Long-archive 24h/365d price sync interval.
+PRICE_365_SYNC_INTERVAL_SEC = CM_LONG_ARCHIVE_FLUSH_SEC  # Long-archive 365d price flush interval.
 CURRENT_PRICE_SYNC_INTERVAL_SEC = 30    # Same policy for CacheCurrentPriceManager.
 SHORT_TREND_EVAL_INTERVAL_SEC = (
     CacheShortTrendManager.FULL_EVAL_INTERVAL_SEC
@@ -3790,8 +3890,10 @@ if __name__ == "__main__":
 
     for name, config in CacheFactory._CONFIG.items():
         if name == "365Price":
-            continue
-        cache = get_cache_manager(name, start_sync=False)
+            _arch_syms = tracked_price_instruments(role="archive")[0]
+            cache = get_cache_manager(name, symbols=_arch_syms or None, start_sync=False)
+        else:
+            cache = get_cache_manager(name, start_sync=False)
         interval = (
             cache.sync_ts
             if name == "CurrentPrice" and hasattr(cache, "sync_ts")
@@ -3799,14 +3901,16 @@ if __name__ == "__main__":
         )
 
         if isinstance(cache, dict):
-            # SparsePrice and 24Price are dictionaries keyed by symbol.
-            for manager in cache.values():
+            # SparsePrice, 24Price, and 365Price are dictionaries keyed by symbol.
+            for idx, manager in enumerate(cache.values()):
+                if name == "365Price":
+                    manager._maint_stagger_sec = float(idx * 300)
                 threads.append(manager.periodic_sync(interval))
         else:
             threads.append(cache.periodic_sync(interval))
         CacheFactory._sync_started.add(name)
 
-    # Trend chain: market-data WebSocket to CurrentPrice, Cache24, and ShortTrend.
+    # Trend chain: market-data WebSocket to CurrentPrice, Cache24, Cache365, and ShortTrend.
     # Full calculation here keeps the shared snapshot current independently of tradeall.
     try:
         if _trend_cpm is None:
@@ -3816,6 +3920,10 @@ if __name__ == "__main__":
                 sync_ts=0.8,
             )
         _trend_cache24 = CacheFactory.get("24Price")
+        _trend_cache365 = CacheFactory._instances.get("365Price") or {}
+        if isinstance(_trend_cache365, dict):
+            for _c365 in _trend_cache365.values():
+                _trend_cpm.subscribe_price(_c365)
         _trend_mgr = get_short_trend_manager(writer=True)   # Sole file writer.
         _trend_mgr.start_computation(_trend_cache24, _trend_cpm, run_full_eval=True)
         print("⚙️ cacheManager: full trend computation started (cache_short_trend.json).")
@@ -3873,6 +3981,9 @@ if __name__ == "__main__":
                         pass
         if _trend_mgr is not None and hasattr(_trend_mgr, "_stop_event"):
             _trend_mgr._stop_event.set()
+        _c365_Shutdown_managers = list(
+            CacheFactory._iter_managers(CacheFactory._instances.get("365Price") or {})
+        )
         for _inst in list(CacheFactory._instances.values()):
             for _mgr in CacheFactory._iter_managers(_inst):
                 if hasattr(_mgr, "_stop_event"):
@@ -3884,6 +3995,11 @@ if __name__ == "__main__":
         if _trend_mgr is not None:
             _trend_mgr.shutdown(timeout=min(0.8, max(0.05, shutdown_deadline - time.monotonic())))
         CacheFactory.shutdown_all(timeout=min(1.0, max(0.05, shutdown_deadline - time.monotonic())))
+        for _c365_mgr in _c365_Shutdown_managers:
+            try:
+                _c365_mgr.save_state_to_file_if_enabled()
+            except Exception:
+                pass
         if _current_price_instance is not None:
             _current_price_instance.shutdown(timeout=min(0.3, max(0.05, shutdown_deadline - time.monotonic())))
         for _ws_obj in (_ws_bridge, _bws_mgr):

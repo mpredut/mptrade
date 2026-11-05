@@ -340,7 +340,7 @@ def test_trailing_and_shadow_hardening(tmp_path, monkeypatch):
 def test_market_monitor_and_pricewindow_hardening():
     import time
     import pytest
-    import tradeall_price_archiver
+    import botcore
     from market_monitor import alerts_config
     from market_monitor.pricechecker import PriceChecker
     from pricewindow import IncrementalTrendBuffer, PriceWindow
@@ -350,7 +350,7 @@ def test_market_monitor_and_pricewindow_hardening():
     with pytest.raises(ValueError):
         alerts_config._pair("nan / 10")
     with pytest.raises(ValueError):
-        tradeall_price_archiver._positive_finite(True, "test")
+        botcore.require_pos_float(True, "test")
 
     checker = PriceChecker(cachePriceAll=None)
     checker._last_alert_time["BTC_up"] = time.time() + 7200.0

@@ -299,72 +299,16 @@ def test_kalman_gate_blocks_handles_unmapped_symbols():
 
 
 # ---------------------------------------------------------------------------
-# Consolidated from tests/test_tradeall_price_archiver.py
+# Cache365PriceManager long-archive persistence & maintenance tests
 # ---------------------------------------------------------------------------
 
-import inspect
 import tempfile
 import unittest
 from unittest import mock
 import cacheManager as cm
-import tradeall_price_archiver as archiver
-
-
-class _Current:
-    def __init__(self, events):
-        self.events = events
-
-    def unsubscribe_price(self, cache):
-        self.events.append(("unsubscribe", cache))
-
-    def shutdown(self):
-        self.events.append(("current_shutdown", None))
-
-
-class _Cache:
-    def __init__(self, events):
-        self.events = events
-
-    def shutdown(self):
-        self.events.append(("cache_shutdown", self))
-
-    def save_state_to_file(self):
-        self.events.append(("flush", self))
-
-
-class _WsManager:
-    def __init__(self, events):
-        self.events = events
-
-    def stop(self):
-        self.events.append(("ws_stop", None))
-
-
-class _WsModule:
-    def __init__(self, events):
-        self.bapi_ws_manager = _WsManager(events)
 
 
 class TestArchiverLifecycle(unittest.TestCase):
-    def test_main_never_starts_the_private_account_stream(self):
-        source = inspect.getsource(archiver.main)
-        self.assertNotIn("enable_real_ws_event_sync", source)
-
-    def test_symbols_are_normalized_deduplicated_and_validated(self):
-        self.assertEqual(archiver._symbols(" btcusdc,TAOUSDC,BTCUSDC "),
-                         ["BTCUSDC", "TAOUSDC"])
-        with self.assertRaises(ValueError):
-            archiver._symbols("../escape")
-        with self.assertRaises(ValueError):
-            archiver._symbols("")
-
-    def test_shutdown_unsubscribes_then_stops_and_flushes_before_ws_close(self):
-        events = []
-        cache = _Cache(events)
-        archiver._shutdown([cache], _Current(events), _WsModule(events))
-        self.assertEqual([name for name, _ in events], [
-            "unsubscribe", "cache_shutdown", "flush", "current_shutdown", "ws_stop"])
-
     def test_jsonl_restart_loads_existing_history_and_appends_only_new_tick(self):
         fd, path = tempfile.mkstemp(suffix=".jsonl")
         os.close(fd)
@@ -558,6 +502,77 @@ class TestArchiverLifecycle(unittest.TestCase):
                 os.rmdir(tmp_dir)
             except OSError:
                 pass
+
+    def test_cache365_maintenance_streams_unlocked_and_merges_concurrent_ws_ticks(self):
+        tmp_dir = tempfile.mkdtemp()
+        target_jsonl = os.path.join(tmp_dir, "cache_365_price_BTCUSDC.jsonl")
+        try:
+            self.assertEqual(
+                cm.Cache365PriceManager.KEEP_HOURS,
+                cm.CM_LONG_ARCHIVE_MONTHS * 30 * 24,
+            )
+            self.assertEqual(
+                cm.Cache365PriceManager.RETENTION_DAYS,
+                cm.CM_LONG_ARCHIVE_MONTHS * 30,
+            )
+            self.assertEqual(
+                cm.PRICE_365_SYNC_INTERVAL_SEC,
+                cm.CM_LONG_ARCHIVE_FLUSH_SEC,
+            )
+            now_ms = int(cm.time.time() * 1000)
+            with open(target_jsonl, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps({"s": "BTCUSDC", "i": [now_ms - 2000, 10.0]}) + "\n"
+                )
+            manager = cm.Cache365PriceManager(60, ["BTCUSDC"], target_jsonl)
+            manager.save_state = True
+            real_snapshot = cm.atomic_snapshot_file
+            ws_lock_acquired = []
+
+            def _snapshot_with_concurrent_ws(src, dst):
+                real_snapshot(src, dst)
+                # Simulate the WebSocket thread delivering a tick while disk I/O runs.
+                # Because maintain_append_persist releases self.lock during disk I/O,
+                # another thread can acquire manager.lock immediately without blocking.
+                def _ws_tick():
+                    acquired = manager.lock.acquire(blocking=False)
+                    ws_lock_acquired.append(acquired)
+                    if acquired:
+                        manager.lock.release()
+                    manager.on_price_update("BTCUSDC", now_ms + 500, 14.0)
+
+                t = cm.threading.Thread(target=_ws_tick)
+                t.start()
+                t.join(timeout=2.0)
+
+            with mock.patch("cacheManager.atomic_snapshot_file", side_effect=_snapshot_with_concurrent_ws):
+                self.assertTrue(manager.maintain_append_persist())
+
+            self.assertEqual(ws_lock_acquired, [True])
+            self.assertEqual(
+                manager.cache.get("BTCUSDC"),
+                [[now_ms - 2000, 10.0], [now_ms + 500, 14.0]],
+            )
+            with open(target_jsonl, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(
+                rows,
+                [
+                    {"s": "BTCUSDC", "i": [now_ms - 2000, 10.0]},
+                    {"s": "BTCUSDC", "i": [now_ms + 500, 14.0]},
+                ],
+            )
+        finally:
+            for name in os.listdir(tmp_dir):
+                try:
+                    os.remove(os.path.join(tmp_dir, name))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(tmp_dir)
+            except OSError:
+                pass
+
 
 
 

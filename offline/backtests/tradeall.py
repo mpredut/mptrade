@@ -536,9 +536,8 @@ def main():
     p.add_argument("--run-id", default=None, help="default: <symbol>_<start>_<timestamp>")
     p.add_argument("--source", choices=["history", "cache24"], default="history",
                    help="history = cache_sparse_price_*.jsonl (~11 months, but SPARSE, see the caveat in the plan); "
-                        "cache24 = cache_24_price_*.json, a DENSE resolution (~1s) but only what was retained "
-                        "that cache (by default the last ~24h, or a file with long retention if "
-                        "tradeall_price_archiver.py is already running)")
+                        "cache24 = cache_24_price_*.json or cache_365_price_*.jsonl, DENSE resolution (~1s) "
+                        "persisted by cacheManager.py")
     p.add_argument("--cache24-file", default=None,
                    help="an explicit path to a cache24 file (e.g. cache_365_price_BTCUSDC.jsonl); "
                         "default: cachedb/cache_24_price_<symbol>.json")
