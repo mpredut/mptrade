@@ -7141,3 +7141,57 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert "ES=F=$7,705.25 (-0.20% 24h, +0.05% 1h, +0.06% 15m)" in bm_iter20["summary_line"]
     assert "US10Y=4.89% (-1.29% 24h)" in bm_iter20["summary_line"]
 
+    # 5. Slash-separated horizon taker ratio list, aggressive_buying on near-flat 15m with bid dominance, and Nintendo Switch price filter
+    from types import SimpleNamespace
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval, parse_cited_taker_ratio
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    from intelligence.sentiment.evaluators.microstructure_evaluator import enrich_microstructure_cvd
+
+    sa_slash_sum = (
+        "Constructive 24h market breadth (67.5% advancing, median +2.64%) and sustained 5m/1h/4h taker buy dominance "
+        "(1.1211 / 1.2618 / 1.0985) confirm institutional bid absorption despite minor top-of-range supply."
+    )
+    assert parse_cited_taker_ratio(sa_slash_sum) == 1.2618
+    _, slash_reason = compute_dynamic_sentiment_interval(
+        base_interval_sec=14400.0,
+        last_eval_ts=1_793_862_562.0,
+        now_ts=1_793_862_730.0,
+        cached_assessment=SimpleNamespace(
+            market_bias="BULLISH",
+            risk_level="MODERATE",
+            recommended_action="ACCUMULATE",
+            summary=sa_slash_sum,
+            key_risks=[],
+            is_fallback=False,
+            ts=1_793_862_562.0,
+        ),
+        btc_taker_ratio=1.37,
+        prev_btc_taker_ratio=0.97,
+    )
+    assert "btc_whale_flow_regime_flip" not in slash_reason
+
+    btc_m_iter20 = {
+        "cvd_15m_usd": 12_564_049.0,
+        "spot_cvd_15m_usd": 1_587_017.0,
+        "ob_imbalance": 0.705,
+        "taker_buy_sell_ratio": 1.4832,
+        "cvd_1h_usd": 12_830_000.0,
+    }
+    enrich_microstructure_cvd(btc_m_iter20, {"price": 80604.14, "chg_15m_pct": -0.01})
+    assert btc_m_iter20["cvd_regime"] == "aggressive_buying"
+    assert btc_m_iter20["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+    ada_m_iter20 = {
+        "cvd_15m_usd": 165_000.0,
+        "spot_cvd_15m_usd": 30_600.0,
+        "ob_imbalance": 0.605,
+        "taker_buy_sell_ratio": 1.9652,
+    }
+    enrich_microstructure_cvd(ada_m_iter20, {"price": 0.1978, "chg_15m_pct": 0.02})
+    assert ada_m_iter20["cvd_regime"] == "aggressive_buying"
+    assert ada_m_iter20["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+    assert not has_financial_or_geopolitical_context("Nintendo Switch 2 sales plunge 41% as price hikes and memory crunch bite")
+    assert has_financial_or_geopolitical_context("Oil prices slide as Asian stocks rise")
+
+

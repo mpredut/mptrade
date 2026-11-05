@@ -829,6 +829,8 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if matched_fin and matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
+    if matched_fin and matched_fin <= {"price", "prices"} and (words & {"nintendo", "switch", "playstation", "xbox", "console", "ticket", "tickets", "menu", "grocery"}):
+        return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})
     ):

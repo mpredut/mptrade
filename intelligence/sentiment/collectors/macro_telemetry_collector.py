@@ -173,6 +173,11 @@ def collect_macro_benchmarks_snapshot(
                 (round(v, 2) + 0.0 for mk in ("fulldayChangePercent", "regularMarketChangePercent") if (v := safe_float(meta.get(mk), default=None)) is not None and abs(v) > 1e-9),
                 None,
             )
+            if chg_24h is not None and pts_24h:
+                lo_24_m = min(p[1] for p in pts_24h)
+                hi_24_m = max(p[1] for p in pts_24h)
+                if chg_24h <= -90.0 or not (lo_24_m * 0.90 <= (px / (1.0 + chg_24h / 100.0)) <= hi_24_m * 1.10):
+                    chg_24h = None
             if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and safe_float(meta.get("fulldayChangePercent"), default=None) is None):
                 prev_close = safe_pos_float(meta.get("previousClose") or meta.get("chartPreviousClose"), default=None)
                 if prev_close is not None and pts_24h:

@@ -489,7 +489,9 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
     for m_pg in _TAKER_PAREN_GROUP_RE.finditer(text):
         raw_prefix = text[max(0, m_pg.start() - 32) : m_pg.start()].lower()
         outer_ctx = f"{re.split(r'[.;,()\n]', raw_prefix)[-1]} {m_pg.group(0).split('(', 1)[0].lower()}"
-        for sub_item in re.split(r"[,;]", m_pg.group(2)):
+        outer_hz_list = _HORIZON_TOKEN_RE.findall(outer_ctx)
+        sub_items = re.split(r"[,;]|\s+/\s+|(?<=\d)/(?=\d)", m_pg.group(2))
+        for idx, sub_item in enumerate(sub_items):
             sub_low = sub_item.strip().lower()
             if not sub_low or re.search(r"\b(?:cvd|oi|vol|volume|funding|change|chg|range|position|breadth|advancing)\b", sub_low):
                 continue
@@ -503,11 +505,12 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
             if val is None or not (0.05 <= val <= 25.0):
                 continue
             sub_hz = m_sub.group(1) or m_sub.group(4) or m_sub.group(7) or sub_low
-            rank = (
-                _rank_taker_ratio_context(sub_hz)
-                if _HORIZON_TOKEN_RE.search(sub_hz)
-                else _rank_taker_ratio_context(outer_ctx)
-            )
+            if _HORIZON_TOKEN_RE.search(sub_hz):
+                rank = _rank_taker_ratio_context(sub_hz)
+            elif len(outer_hz_list) >= 2 and idx < len(outer_hz_list):
+                rank = _rank_taker_ratio_context(outer_hz_list[idx])
+            else:
+                rank = _rank_taker_ratio_context(outer_ctx)
             if rank > best_rank:
                 best_rank = rank
                 best_val = val
@@ -607,6 +610,8 @@ def compute_dynamic_sentiment_interval(
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
     cur_tr = safe_pos_float(btc_taker_ratio, default=None)
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
+    cached_act = str(obj_attr(cached_assessment, "recommended_action", "") or "").upper()
+    cached_bias = str(obj_attr(cached_assessment, "market_bias", "") or obj_attr(cached_assessment, "directional_bias", "") or "").upper()
     cited_tr = (
         parse_cited_taker_ratio(
             (
@@ -621,6 +626,8 @@ def compute_dynamic_sentiment_interval(
         prev_tr is None
         or (cur_tr is not None and cited_tr <= 0.75 and cur_tr <= 0.75 and abs(cur_tr - cited_tr) < 0.20)
         or (cur_tr is not None and cited_tr >= 1.25 and cur_tr >= 1.25 and abs(cur_tr - cited_tr) < 0.20)
+        or (cur_tr is not None and (cached_act == "ACCUMULATE" or "BULL" in cached_bias) and cited_tr >= 1.15 and cur_tr >= 1.20 and abs(cur_tr - cited_tr) < 0.25)
+        or (cur_tr is not None and (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias) and cited_tr <= 0.85 and cur_tr <= 0.80 and abs(cur_tr - cited_tr) < 0.25)
     ):
         prev_tr = cited_tr
     if cur_tr is not None:
@@ -634,8 +641,6 @@ def compute_dynamic_sentiment_interval(
             or abs(cur_tr - prev_tr) >= 0.40
         ):
             return min(min_interval, 300.0), f"btc_whale_flow_regime_flip_{prev_tr:.2f}_to_{cur_tr:.2f}"
-        cached_act = str(obj_attr(cached_assessment, "recommended_action", "") or "").upper()
-        cached_bias = str(obj_attr(cached_assessment, "market_bias", "") or obj_attr(cached_assessment, "directional_bias", "") or "").upper()
         if (
             (cached_act in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in cached_bias)
             and cur_tr >= 1.35

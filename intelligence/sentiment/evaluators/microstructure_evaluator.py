@@ -108,7 +108,24 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
     div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
     if not minfo.get("cvd_regime") or pinfo is not None:
         if cvd_usd > 0.0:
-            minfo["cvd_regime"] = ("ask_absorbing" if chg_15m <= 0.02 else "aggressive_buying") if has_chg_15m else ("ask_absorbing" if ob_imb <= 0.44 else "aggressive_buying")
+            tr_cur = safe_pos_float(minfo.get("taker_buy_sell_ratio"), default=1.0) or 1.0
+            cvd_1h_cur = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0
+            is_ask_absorbing = (
+                (
+                    chg_15m <= 0.02
+                    and not (
+                        chg_15m > -0.04
+                        and div_reg not in ("distribution", "long_liquidation", "bearish_distribution", "aggressive_shorting")
+                        and (
+                            (chg_15m > 0.0 and ob_imb >= 0.54)
+                            or (ob_imb >= 0.58 and tr_cur >= 1.25 and cvd_1h_cur > 0.0)
+                        )
+                    )
+                )
+                if has_chg_15m
+                else (ob_imb <= 0.44)
+            )
+            minfo["cvd_regime"] = "ask_absorbing" if is_ask_absorbing else "aggressive_buying"
         elif cvd_usd < 0.0:
             is_bid_absorbing = (
                 (
