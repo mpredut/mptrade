@@ -26,6 +26,7 @@ if _ROOT not in sys.path:
 from binance_api.market_data import fetch_ohlc_candles
 from botcore import (
     _parse_bool_flag,
+    lru_dict_put,
     normalize_epoch_sec,
     resolve_patched_attr,
     safe_float,
@@ -35,12 +36,14 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import cache_path, cache_symbol_variants, canonical_symbol_key, normalize_cache_base_asset
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_equity_symbol
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items
 from state_io import read_json_dict_cached, save_json_state
 
 _DEFAULT_T_CACHE_FILE = os.path.join(_ROOT, "cachedb", "cache_T_trend.json")
 T_CACHE_FILE = _DEFAULT_T_CACHE_FILE
+_ON_DEMAND_T_MISS_TS: dict[str, float] = {}
+_ON_DEMAND_T_MISS_TTL_SEC = 600.0
 
 
 def _resolve_facade_attr(name: str, current: Any, default: Any) -> Any:
@@ -65,7 +68,7 @@ def _effective_t_cache_file() -> str:
 def fetch_klines(symbol: str, days: int, interval: str = "1h") -> tuple[np.ndarray, np.ndarray]:
     """Return paginated Binance history with 1,000 candles per request (falling back to Kraken 1h OHLC or Yahoo Finance for equities)."""
     sym_u = str(symbol or "").strip().upper()
-    if sym_u.endswith("_EQ"):
+    if is_equity_symbol(sym_u):
         try:
             import importlib
 
@@ -396,7 +399,7 @@ def estimate_T(
                 return ent
 
     sym_u = symbol.upper().strip()
-    is_eq = sym_u.endswith("_EQ")
+    is_eq = is_equity_symbol(sym_u)
     clean_sym_u = sym_u if is_eq else canonical_symbol_key(sym_u)
     base = _extract_base_symbol(sym_u)
     candidates = [clean_sym_u] if clean_sym_u else ([sym_u] if sym_u else [symbol])
@@ -477,12 +480,21 @@ def get_trend_survival_metrics(
     if cached_entry:
         _apply_entry(cached_entry)
     elif _parse_bool_flag(allow_network, False):
-        try:
-            _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
-            if est := _est_fn(symbol):
-                _apply_entry(est, require_n=True)
-        except Exception:
-            pass
+        sym_key = str(symbol or "").strip().upper()
+        now_s = time.time()
+        last_miss = _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)
+        if not sym_key or (now_s - last_miss) >= _ON_DEMAND_T_MISS_TTL_SEC or "PYTEST_CURRENT_TEST" in os.environ:
+            try:
+                _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+                est = _est_fn(symbol)
+                if est:
+                    _ON_DEMAND_T_MISS_TS.pop(sym_key, None)
+                    _apply_entry(est, require_n=True)
+                elif sym_key:
+                    lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
+            except Exception:
+                if sym_key:
+                    lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
 
     ratio = duration_days / p90_d if p90_d > 0 else 0.0
     is_exhausted = duration_days > p90_d if duration_days > 0 else False
@@ -516,11 +528,19 @@ def estimate_remaining_trend_hours(
     if (med_f is None or p90_f is None or p_cont is None) and isinstance(symbol, str) and symbol.strip():
         cached_ent = get_cached_t_entry(symbol)
         if cached_ent is None and "PYTEST_CURRENT_TEST" not in os.environ:
-            try:
-                _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
-                cached_ent = _est_fn(symbol)
-            except Exception:
-                cached_ent = None
+            sym_key = symbol.strip().upper()
+            now_s = time.time()
+            if (now_s - _ON_DEMAND_T_MISS_TS.get(sym_key, 0.0)) >= _ON_DEMAND_T_MISS_TTL_SEC:
+                try:
+                    _est_fn = _resolve_facade_attr("estimate_T", estimate_T, _ORIG_ESTIMATE_T)
+                    cached_ent = _est_fn(symbol)
+                    if cached_ent is None:
+                        lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
+                    else:
+                        _ON_DEMAND_T_MISS_TS.pop(sym_key, None)
+                except Exception:
+                    lru_dict_put(_ON_DEMAND_T_MISS_TS, sym_key, now_s, 128)
+                    cached_ent = None
         if isinstance(cached_ent, dict):
             if med_f is None:
                 med_f = safe_pos_float(cached_ent.get("median_d"), default=None)

@@ -37,7 +37,7 @@ from intelligence.internal.state.persistence import (
 )
 from intelligence.internal.state.survival import estimate_T, estimate_remaining_trend_hours, fetch_klines
 from intelligence.macro_sentiment_ssot import lookup_symbol_cache_items, scan_latest_long_trend_value
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_equity_symbol
 from providers.base import normalize_side
 from state_io import atomic_write_json, save_json_state
 
@@ -192,6 +192,27 @@ _OHLC_BACKFILL_MEMO: dict[str, Tuple[float, List[Tuple[float, float]]]] = {}
 _OHLC_BACKFILL_TTL_SEC = 1800.0
 
 
+def _interpolate_price_gaps(
+    points: List[Tuple[float, float]],
+    max_gap_s: float = 7200.0,
+    step_s: float = 180.0,
+) -> List[Tuple[float, float]]:
+    """Linearly interpolate gaps in ``(step_s, max_gap_s]`` at ``step_s`` cadence."""
+    if len(points) < 2:
+        return list(points)
+    out: List[Tuple[float, float]] = [points[0]]
+    for t_cur, p_cur in points[1:]:
+        t_prev, p_prev = out[-1]
+        dt = t_cur - t_prev
+        if step_s < dt <= max_gap_s:
+            n_steps = int(round(dt / step_s))
+            for step_k in range(1, n_steps):
+                frac = step_k / n_steps
+                out.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
+        out.append((t_cur, p_cur))
+    return out
+
+
 def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tuple[float, float]]:
     """Fetch and memoize 3-minute-resampled OHLC points for symbols whose local sparse price cache spans < 7 days."""
     sym_u = str(symbol or "").strip().upper()
@@ -204,7 +225,7 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
         if 0.0 <= (now_s - cached[0]) < ttl_s:
             return cached[1]
     days_int = max(30, int(round(safe_pos_float(lookback_days, 30.0) or 30.0)) + 3)
-    is_eq = sym_u.endswith("_EQ")
+    is_eq = is_equity_symbol(sym_u)
     cands = (
         [sym_u]
         if is_eq
@@ -223,18 +244,7 @@ def _backfill_ohlc_series(symbol: str, lookback_days: float = 30.0) -> List[Tupl
                 continue
         if raw_pts:
             break
-    max_gap_s = 345600.0 if is_eq else 7200.0
-    pts: List[Tuple[float, float]] = []
-    for idx, (t_cur, p_cur) in enumerate(raw_pts):
-        if idx > 0:
-            t_prev, p_prev = raw_pts[idx - 1]
-            dt = t_cur - t_prev
-            if 180.0 < dt <= max_gap_s:
-                n_steps = int(round(dt / 180.0))
-                for step_k in range(1, n_steps):
-                    frac = step_k / n_steps
-                    pts.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
-        pts.append((t_cur, p_cur))
+    pts = _interpolate_price_gaps(raw_pts, max_gap_s=345600.0 if is_eq else 7200.0, step_s=180.0)
     lru_dict_put(_OHLC_BACKFILL_MEMO, sym_u, (now_s, pts), 64)
     return pts
 
@@ -253,34 +263,36 @@ def _load_sorted_price_series(
         and (pf := safe_pos_float(p, default=None)) is not None
     ]
     norm_data.sort(key=lambda x: x[0])
+    is_eq = is_equity_symbol(symbol)
     min_req_span_s = min((safe_pos_float(lookback_days, 30.0) or 30.0) * 0.5, 7.0) * 86400.0
     cur_span_s = (norm_data[-1][0] - norm_data[0][0]) if len(norm_data) >= 2 else 0.0
     if cur_span_s < min_req_span_s and priceLstFor is _ORIG_PRICE_LST_FOR and price_cache_manager is not None:
         oldest_ts = norm_data[0][0] if norm_data else float("inf")
         anchor_px = norm_data[0][1] if norm_data else None
-        for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
-            sib_raw = priceLstFor(sib)
-            if len(sib_raw) >= 2:
-                sib_norm = sorted(
-                    (
-                        (tf, pf)
-                        for ts, p in sib_raw
-                        if (tf := normalize_epoch_sec(ts, default=None)) is not None
-                        and (pf := safe_pos_float(p, default=None)) is not None
-                    ),
-                    key=lambda x: x[0],
-                )
-                older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
-                if older_pts and (
-                    anchor_px is None
-                    or abs(older_pts[-1][1] - anchor_px) / max(older_pts[-1][1], anchor_px) <= 0.10
-                ):
-                    norm_data = older_pts + norm_data
-                    oldest_ts = norm_data[0][0]
-                    anchor_px = norm_data[0][1]
-                    cur_span_s = norm_data[-1][0] - norm_data[0][0]
-                    if cur_span_s >= min_req_span_s:
-                        break
+        if not is_eq:
+            for sib in cache_symbol_variants(symbol, include_original=False, include_base=False, quotes=("USDC", "USDT", "USD")):
+                sib_raw = priceLstFor(sib)
+                if len(sib_raw) >= 2:
+                    sib_norm = sorted(
+                        (
+                            (tf, pf)
+                            for ts, p in sib_raw
+                            if (tf := normalize_epoch_sec(ts, default=None)) is not None
+                            and (pf := safe_pos_float(p, default=None)) is not None
+                        ),
+                        key=lambda x: x[0],
+                    )
+                    older_pts = [pt for pt in sib_norm if pt[0] < oldest_ts - 1.0]
+                    if older_pts and (
+                        anchor_px is None
+                        or abs(older_pts[-1][1] - anchor_px) / max(older_pts[-1][1], anchor_px) <= 0.10
+                    ):
+                        norm_data = older_pts + norm_data
+                        oldest_ts = norm_data[0][0]
+                        anchor_px = norm_data[0][1]
+                        cur_span_s = norm_data[-1][0] - norm_data[0][0]
+                        if cur_span_s >= min_req_span_s:
+                            break
         if cur_span_s < min_req_span_s and "PYTEST_CURRENT_TEST" not in os.environ:
             ohlc_pts = _backfill_ohlc_series(symbol, lookback_days=safe_pos_float(lookback_days, 30.0) or 30.0)
             if ohlc_pts:
@@ -291,22 +303,12 @@ def _load_sorted_price_series(
                 ):
                     norm_data = older_ohlc + norm_data
     if (
-        str(symbol or "").strip().upper().endswith("_EQ")
+        is_eq
         and len(norm_data) >= 2
         and priceLstFor is _ORIG_PRICE_LST_FOR
         and price_cache_manager is not None
     ):
-        bridged: List[Tuple[float, float]] = [norm_data[0]]
-        for t_cur, p_cur in norm_data[1:]:
-            t_prev, p_prev = bridged[-1]
-            dt = t_cur - t_prev
-            if 180.0 < dt <= 345600.0:
-                n_steps = int(round(dt / 180.0))
-                for step_k in range(1, n_steps):
-                    frac = step_k / n_steps
-                    bridged.append((t_prev + frac * dt, p_prev + frac * (p_cur - p_prev)))
-            bridged.append((t_cur, p_cur))
-        norm_data = bridged
+        norm_data = _interpolate_price_gaps(norm_data, max_gap_s=345600.0, step_s=180.0)
     if len(norm_data) < 2:
         return None
     if lookback_days is not None:
