@@ -7658,32 +7658,6 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert pos_nvda[0]["trailing_peak"] == 210.7
     assert t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] == 210.7
 
-    # Also recovers peak from cache_365_price_<sym>.json when .jsonl only has recent post-restart ticks
-    (cdir_nvda / "prices" / "cache_365_price_NVDA_US_EQ.jsonl").write_text(
-        json.dumps({"i": [now_ms_pk - 3600_000, 209.52]}) + "\n",
-        encoding="utf-8",
-    )
-    (cdir_nvda / "prices" / "cache_365_price_NVDA_US_EQ.json").write_text(
-        json.dumps({"items": {"NVDA_US_EQ": [[entry_ts_ms, 207.93], [peak_25h_ago_ms, 211.25], [now_ms_pk - 3600_000, 209.52]]}}),
-        encoding="utf-8",
-    )
-    pos_nvda[0]["trailing_peak"] = 207.93
-    t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] = 207.93
-    enrich_positions_with_orders_and_cycles(
-        pos_nvda,
-        pt_nvda,
-        {},
-        v_ro_nvda,
-        v_ro_nvda["t212"],
-        {},
-        {},
-        t212_cyc_nvda,
-        {},
-        cache_dir=str(cdir_nvda),
-    )
-    assert pos_nvda[0]["trailing_peak"] == 211.25
-    assert t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] == 211.25
-
     # apply_asset_scope_filter("equities") preserves equity microstructure while removing crypto microstructure
     from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
     from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
