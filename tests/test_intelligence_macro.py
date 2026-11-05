@@ -2065,6 +2065,81 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(live_rth_selloff_mb)
 
 
+def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path):
+    """Verify LLM prose/derivatives bigrams are pruned from dynamic lexicon and non-kinetic war/nuclear/default headlines do not trigger high-severity."""
+    from intelligence.macro.lexicon_ssot import (
+        filter_valid_severity_keywords,
+        has_acute_shock_keywords,
+        is_excluded_reference_news_item,
+        load_dynamic_lexicon,
+        match_high_severity_keywords,
+        record_dynamic_crisis_terms_from_assessment,
+        update_dynamic_lexicon,
+    )
+
+    now = 1_793_913_000.0
+    update_dynamic_lexicon(
+        [
+            "shock likely", "shock appears", "unanticipated shock", "unabsorbed shock",
+            "volatility shock", "systemic shock", "kinetic shock", "supply shock",
+            "long liquidation", "forced liquidation", "secondary liquidation", "macro liquidation",
+            "liquidation wave", "liquidation cascade", "liquidations below", "liquidations reflect",
+            "continued war", "related war", "war fallout", "war strategy", "war ceasefire",
+            "stocks plunge", "stock plunges", "tech stocks", "default risk", "soaring default",
+            "missile activity", "tanker strikes", "hormuz blockade",
+        ],
+        cache_dir=str(tmp_path),
+        now_ts=now,
+    )
+    loaded = load_dynamic_lexicon(cache_dir=str(tmp_path), now_ts=now)["high_severity_terms"]
+    assert set(loaded) == {"tanker strikes", "hormuz blockade"}
+
+    rec = record_dynamic_crisis_terms_from_assessment(
+        "Volatility shock appears likely as forced liquidations below $75,000 reflect secondary liquidation waves and soaring default risk.",
+        ["Continued war fallout and tech stocks plunge", "Tanker strikes in Hormuz"],
+        cache_dir=str(tmp_path),
+        now_ts=now + 10.0,
+    )
+    assert rec == ("tanker strikes",)
+
+    non_crisis_titles = [
+        ("Iran's war strategy from Putin's playbook - Tomorrow's Affairs", ["war", "war strategy"]),
+        ("US Stocks Plunge as Traders Dump Everything With AI Exposure - AdvisorHub", ["stocks plunge"]),
+        ("Elon Musk's SpaceX Default Risk Hits Record High as Democratic Sweep Adds to AI Rout", ["default", "default risk"]),
+        ("Oil Climbs From Two-Month Low as Traders Parse Iran War Outlook - Bloomberg.com", ["war", "iran war"]),
+        ("Iran war energy crisis fuels 61% jump in China's electric vehicle exports - Yahoo Finance UK", ["war", "energy crisis", "iran war"]),
+        ("Yes, Trump Was Already Running Out of Gas Before the Iran War - National Review", ["war", "iran war"]),
+        ("Putin offers to help end Iran war in talks with Tehran's security chief | Daily Sabah", ["war", "iran war"]),
+        ("Pentagon shake-up possible as Trump officials face scrutiny over Iran war and Republican losses", ["war", "iran war"]),
+        ("Iran is Reviewing 'Concrete Proposals' on Nuclear Program, Officials Say - The New York Times", ["nuclear"]),
+    ]
+    for title, raw_kws in non_crisis_titles:
+        assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
+        assert match_high_severity_keywords(title, cache_dir=str(tmp_path), now_ts=now) == ()
+
+    assert has_acute_shock_keywords(
+        ["Iran is Reviewing 'Concrete Proposals' on Nuclear Program, Officials Say"],
+        cache_dir=str(tmp_path),
+        now_ts=now,
+    ) is False
+    assert has_acute_shock_keywords(
+        ["Breaking: Strait of Hormuz closed after declared war and nuclear strike threat"],
+        cache_dir=str(tmp_path),
+        now_ts=now,
+    ) is True
+
+    assert is_excluded_reference_news_item(
+        "My 93-year-old father changed his will at the 11th hour, leaving my brother his entire $500,000 estate. Can I challenge it?"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "SpaceX and Tesla Stock Plunges Have Wiped About $450 Billion in Value Since the Midterms. Is It Time to Buy?"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Not Nvidia. Not Micron. This Dutch Company Controls a Key Bottleneck of AI Chip Production."
+    ) is True
+
+
+
 
 
 

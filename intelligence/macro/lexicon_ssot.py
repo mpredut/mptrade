@@ -185,7 +185,7 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
-    "acknowledge", "acknowledges", "active", "adds", "admit", "admits",
+    "acknowledge", "acknowledges", "active", "activity", "adds", "admit", "admits",
     "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
     "already", "amid", "answered", "app", "apparently", "appears", "apps",
     "arrested", "article", "articles", "baseball", "bat", "belgium", "below",
@@ -194,7 +194,7 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "cascade", "caused", "ceasefire", "chip", "commentary", "concede",
     "concedes", "conduct", "conducted", "conducts", "continue", "continued",
     "continues", "contagion", "criticize", "criticized", "criticizes",
-    "damaged", "deadly", "debunked", "defensive", "digested", "discourse",
+    "damaged", "deadly", "debunked", "deepening", "defensive", "digested", "discourse",
     "discount", "discounts", "downscale", "efforts", "eight", "elevated",
     "end", "essay", "essays", "eve", "exceptionally", "exists", "expert",
     "experts", "expiration", "explained", "exposes", "faces", "facing",
@@ -202,25 +202,25 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "forced", "four", "fresh", "functioning", "golf", "headlines", "heighten",
     "highlights", "history", "horrific", "humanitarian", "hurt", "intel",
     "institute", "introduces", "involvement", "island", "jet", "join",
-    "keyword", "kinetic", "landing", "latest", "likely", "limited", "links",
+    "keyword", "kinetic", "landing", "latest", "likely", "limited", "lingering", "links",
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
     "losers", "losses", "macro", "media", "members", "midterm", "midterms",
-    "mobile", "moderate", "mutual", "narrative", "nine", "non", "normal",
+    "mobile", "moderate", "mounting", "mutual", "narrative", "nine", "non", "normal",
     "noting", "official", "officials", "one", "orderly", "outlook",
-    "peacefully", "physical", "plane", "playbook", "played", "plunge",
+    "peacefully", "persistent", "physical", "plane", "playbook", "played", "plunge",
     "plunged", "plunges", "plunging", "political", "position", "post",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
     "qeshm", "questions", "rather", "readiness", "record", "reflect",
     "reflects", "related", "renewed", "reported", "reportedly", "represent",
     "researchers", "reshapes", "retaining", "rhetoric", "risk", "risks",
     "role", "rout", "routine", "ryanair", "say", "scrutiny", "secondary",
-    "selloff", "seven", "short", "showdown", "six", "sizing", "somalia",
-    "south", "stocks", "story", "strategy", "striker", "study", "suspected",
-    "sustain", "sustains", "sweden", "systemic", "tactical", "targets",
+    "selloff", "seven", "short", "showdown", "six", "sizing", "soaring", "somalia",
+    "south", "stocks", "story", "strategy", "striker", "study", "surging", "suspected",
+    "sustain", "sustained", "sustaining", "sustains", "sweden", "systemic", "tactical", "targets",
     "tech", "techspot", "ten", "tenerife", "three", "timeline", "trace",
     "traced", "train", "trains", "truck", "trump", "two", "uganda",
     "unabsorbed", "unanticipated", "uncertainty", "unpriced", "veto",
-    "victim", "victims", "volatility", "volunteer", "wave", "waves",
+    "victim", "victims", "volatility", "volunteer", "wave", "waves", "widespread",
     "withdrawing", "workers", "worse", "wrap",
 })
 
@@ -266,7 +266,9 @@ def _is_excluded_non_crisis_attack_keyword(
     """Return True if a keyword appears solely in a non-crisis local crime, partisan election, commercial metaphor, sports, or single-stock earnings context."""
     kw_words = set(re.findall(r"[a-zA-Z]{3,}", (kw_clean or "").lower()))
     combined_words = text_words | kw_words
-    kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {"crude", "oil", "ceasefire", "escalation"}
+    kinetic_only = _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS - {
+        "crude", "oil", "ceasefire", "escalation", "tehran", "pentagon", "idf", "military", "nuclear",
+    }
     if (combined_words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (text_words & (kinetic_only - kw_words)):
         if kw_words and (kw_words & {"war", "wars"}):
             return True
@@ -274,26 +276,56 @@ def _is_excluded_non_crisis_attack_keyword(
         return True
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
         return True
-    if kw_words and kw_words <= {"war", "wars", "conflict", "escalation", "iran", "israel", "ukraine", "russia", "gaza", "middle", "east"}:
-        if (combined_words & (_PARTISAN_ELECTION_CONTEXT_WORDS | _HUMAN_INTEREST_WAR_FILLER_WORDS)) and not (
-            combined_words & (kinetic_only | _BROAD_MARKET_INDEX_CONTEXT_WORDS)
-        ):
+    if kw_words and kw_words <= {
+        "war", "wars", "conflict", "escalation", "iran", "israel", "ukraine",
+        "russia", "gaza", "middle", "east", "energy", "crisis", "nuclear",
+    }:
+        if (
+            combined_words
+            & (
+                _PARTISAN_ELECTION_CONTEXT_WORDS
+                | _HUMAN_INTEREST_WAR_FILLER_WORDS
+                | {
+                    "strategy", "playbook", "outlook", "parse", "parsing",
+                    "before", "already", "scrutiny", "rumors", "prolongation",
+                    "electric", "vehicle", "vehicles",
+                }
+            )
+        ) and not (combined_words & ((kinetic_only - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
             return True
         if (
             combined_words
-            & {"diplomatic", "diplomacy", "peace", "resolution", "truce", "halt", "halts", "halted", "halting", "deescalation", "deescalate", "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending"}
+            & {
+                "diplomatic", "diplomacy", "peace", "resolution", "truce",
+                "halt", "halts", "halted", "halting", "deescalation", "deescalate",
+                "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending",
+                "talks", "negotiation", "negotiations", "proposal", "proposals", "reviewing",
+            }
         ) and not (
             combined_words
             & (
-                kinetic_only
+                (kinetic_only - kw_words)
                 | {
                     "collapse", "collapses", "collapsed", "fail", "fails", "failed",
                     "reject", "rejects", "rejected", "violate", "violates", "violated",
                     "resume", "resumes", "resumed", "abandon", "abandons", "abandoned",
-                    "shatter", "shatters", "shattered",
+                    "shatter", "shatters", "shattered", "threat", "threatens", "threatened",
                 }
             )
         ):
+            return True
+    if kw_words and kw_words <= {"default", "risk", "risks", "insolvency"}:
+        if (
+            combined_words
+            & (
+                _PARTISAN_ELECTION_CONTEXT_WORDS
+                | _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS
+                | {
+                    "democratic", "sweep", "rout", "spacex", "spcx", "musk", "elon",
+                    "tesla", "nvda", "nvidia", "rgnt", "regentis", "student", "mortgage",
+                }
+            )
+        ) and not (combined_words & {"sovereign", "treasury", "government", "ceiling", "bank", "banks", "exchange"}):
             return True
     if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):
         if (combined_words & _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS) and not (combined_words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
@@ -753,7 +785,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     url_l = str(url or "").strip().lower()
     src_l = str(source or "").strip().lower()
     if title_l and re.search(
-        r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b",
+        r"^(?:['‘\"].*['’\"]:\s*)?(?:i(?:['’]m|['’]ve|\s+have|\s+am)\s+(?:\d{2}\b|worth\b|retired\b|inheriting\b|saving\b)|we(?:['’]re|['’]ve|\s+have|\s+are)\s+(?:\d{2}\b|in\s+our\b|worth\b|retired\b)|my\s+(?:(?:[\d-]+-year-old|elderly|late|aging)\s+)?(?:husband|wife|spouse|partner|parents|mother|father|brother|sister|son|daughter|adviser|advisor|financial\s+adviser|financial\s+advisor))\b|^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are))\b|^cramer:\s|^prediction:\s|^not\s+[a-z]+\.\s+not\s+[a-z]+\.|^historically\s+(?:bullish|bearish)\s+signal\s+emerges\s+for\b|\(hint:\s*only\s+\d+\s+is\s+a\s+(?:buy|sell)\)|\bis\s+it\s+(?:time\s+to\s+buy|a\s+bargain\s+or\s+a\s+value\s+trap)\?|\b(?:can i buy a\s+\$?\d|can we afford\s+a\s+\$?\d|how to buy a\s+(?:new\s+|used\s+)?(?:car|home|house)\b|should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive|(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+(?:[a-z0-9&-]+\s+){0,3}stocks?\s+to\s+(?:buy|sell|watch|avoid))\b",
         title_l,
     ):
         return True
@@ -1027,11 +1059,19 @@ def has_acute_shock_keywords(
     if not texts:
         return False
     phrases = get_active_acute_shock_phrases(cache_dir=cache_dir, now_ts=now_ts)
+    crisis_stems = _get_crisis_stems_set()
     items = (texts,) if isinstance(texts, str) else texts
-    return any(
-        any(p in str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower() for p in phrases)
-        for t in items
-    )
+    for t in items:
+        low = str(obj_attr(t, "title", None) or (t if isinstance(t, str) else "")).lower()
+        if not low:
+            continue
+        words = set(re.findall(r"[a-zA-Z]{3,}", low))
+        if any(
+            p in low and not _is_excluded_non_crisis_attack_keyword(p, words, crisis_stems)
+            for p in phrases
+        ):
+            return True
+    return False
 
 
 import intelligence.macro_sentiment_ssot as _ssot  # noqa: E402
