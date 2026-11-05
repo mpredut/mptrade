@@ -9079,17 +9079,21 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
                 [
                     "20:54:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.8, diff -0.28%, threshold 1.15%",
                     "20:57:04 [order_guard.py:2174] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 216.2, price 216.4, diff -0.09%, threshold 1.15%",
+                    "20:58:04 [order_guard.py:1727] [GUARD] BUY TAOUSDC: dynamic mode (24.0h window, trend='flat') recent sell ref 216.2, price 213.2, diff 1.39% >= 1.15%. Permitted.",
                     "21:00:04 [order_guard.py:2174] [GUARD] BUY ARBUSDC: dynamic mode (24.0h window, trend='flat') found recent sell ref 0.1180, price 0.1182, diff -0.17%, threshold 1.05%",
+                    "21:01:04 [llm_order_guard.py:153] [LLM_GUARD_ENFORCE] BUY TAOUSDC €1079.15: Gemini downscaled high-stake BUY (brake=DOWNSCALE_QTY, suggested_scale=0.35)",
                 ]
             )
             + "\n",
             encoding="utf-8",
         )
         g_res = harvest_log_anomalies_from_dirs([tmp_d], lookback_hours=6.0)
-        assert g_res.warning_count == 3
-        assert len(g_res.guard_interventions) == 2
+        assert g_res.warning_count == 4
+        assert len(g_res.guard_interventions) == 3
         assert "price 216.4, diff -0.09%" in g_res.guard_interventions[0]
+        assert "Permitted." not in " ".join(g_res.guard_interventions)
         assert "ARBUSDC" in g_res.guard_interventions[1]
+        assert "BUY TAOUSDC $1079.15:" in g_res.guard_interventions[2]
 
     # 8. compute_24h_price_metrics preserves 6h bottom structure during extended 24h selloff when 6h range contracts to -1.38%
     now_ms_b24 = 1_793_860_000_000

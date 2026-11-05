@@ -146,11 +146,12 @@ def evaluate_high_stake_order_guard(
             except Exception:
                 pass
 
+        ccy_sym = "€" if str(symbol or "").strip().upper().endswith("EUR") else "$"
         do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
         if do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
-                f"{prefix} {side} {symbol} €{computed_notional:.2f}: {g_dec.reason} "
+                f"{prefix} {side} {symbol} {ccy_sym}{computed_notional:.2f}: {g_dec.reason} "
                 f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
@@ -177,10 +178,10 @@ def evaluate_high_stake_order_guard(
 
                 px_clean = _pos_float(price, 0.0)
                 qty_clean = _pos_float(qty, 0.0)
-                price_str = f"${px_clean:,.2f}" if px_clean > 0.0 else ""
+                price_str = f"{ccy_sym}{px_clean:,.2f}" if px_clean > 0.0 else ""
                 qty_str = f"{qty_clean:g} " if qty_clean > 0.0 else ""
                 order_header = f"Order: {side} {qty_str}{symbol}" + (f" @ {price_str}" if price_str else "")
-                order_header += f" · €{computed_notional:,.0f} (Scale: {scale_pct}%)"
+                order_header += f" · {ccy_sym}{computed_notional:,.0f} (Scale: {scale_pct}%)"
                 notify(title=g_title, body=f"{order_header}\n{clean_reason}", source="order_guard", symbol=symbol)
             except Exception:
                 pass

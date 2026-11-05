@@ -879,6 +879,13 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if idx >= tail_start_idx:
                                     st["unresolved_at_tail"] = True
                         elif guard_pattern.search(line):
+                            if re.search(
+                                r"(\bPermitted\.|\bprice\s+\S+\s+permitted\b|\bfrom older period bypassed\b|"
+                                r"\breference is off for this venue/module\b|\bbrake=(?:BrakeAction\.)?ALLOW\b)",
+                                line,
+                                re.IGNORECASE,
+                            ):
+                                continue
                             if (
                                 "account_cache_not_fresh" in line
                                 or "account_cache_initializing" in line
@@ -892,7 +899,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             ):
                                 continue
                             warning_count += 1
-                            cleaned = line.strip()
+                            cleaned = re.sub(
+                                r"(\b(?:BUY|SELL)\s+[A-Z0-9_]*?(?:USD|USDC|USDT|_EQ)\s+)€(?=\d)",
+                                r"\1$",
+                                line.strip(),
+                            )
                             g_sig = (
                                 re.sub(
                                     r"(?<![A-Za-z_])[-+]?\d+(?:\.\d+)?%?(?:[hsm]\b)?",
