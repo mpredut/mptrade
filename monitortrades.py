@@ -185,12 +185,13 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
                 quote = (cachepaths.split_symbol_assets(sym_name) or ("", ""))[1] or "USD"
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
+                avg_px_str = f"{avg_price:.2f}" if avg_price >= 1.0 else (f"{avg_price:.6f}".rstrip("0").rstrip(".") or "0")
                 print(
                     f"[MONITORTRADES] 🎉 New executed order: {side} {total_qty:.6f} "
-                    f"{sym_name} @ {avg_price:.2f} (orderId={oid}{fill_suffix})"
+                    f"{sym_name} @ {avg_px_str} (orderId={oid}{fill_suffix})"
                 )
                 alert.notify(
-                    title=f"🎉 {side} {sym_name} @ {avg_price:.2f}",
+                    title=f"🎉 {side} {sym_name} @ {avg_px_str}",
                     body=f"Order {oid} executed! Filled: {total_qty:.4f} {sym_name} (~{total_val:.2f} {quote}){fill_suffix}",
                     source="monitortrades",
                     symbol=sym_name,

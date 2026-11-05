@@ -247,7 +247,8 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         print("Could not obtain the current price.")
         return
     
-    print(f"The current price : {current_price:.2f}")
+    cur_px_str = f"{current_price:.2f}" if current_price >= 1.0 else (f"{current_price:.6f}".rstrip("0").rstrip(".") or "0")
+    print(f"The current price : {cur_px_str}")
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     custom_ttl_map = {}

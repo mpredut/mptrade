@@ -362,7 +362,8 @@ def track_and_place_order(action, symbol, count, proposed_price, current_price, 
     except Exception as _e:
         print(f"[TRADEALL] cancel_expired_orders error for {symbol}: {_e}")
 
-    print(f"{action} price: {base_price:.2f} {quote}".strip())
+    base_px_str = f"{base_price:.2f}" if base_price >= 1.0 else (f"{base_price:.6f}".rstrip("0").rstrip(".") or "0")
+    print(f"{action} price: {base_px_str} {quote}".strip())
 
     direction = -1 if action == "BUY" else 1
     for i in range(num_orders):

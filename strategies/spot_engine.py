@@ -829,6 +829,7 @@ class Strategy(BaseSpotMixin):
         self.s["cycle_fees"] += fee
         self.s["fees_total"] += fee
         self.s["realized_net"] -= fee
+        px_str = f"{price:.2f}" if price >= 1.0 else (f"{price:.6f}".rstrip("0").rstrip(".") or "0")
         if o["side"] == "buy":
             self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
             if self.s.get("entry_ts") is None:
@@ -837,16 +838,18 @@ class Strategy(BaseSpotMixin):
                 self.s["trend_mode"] = True
                 self.s["trend_peak"] = price
             avg = self._avg()
+            avg_str = f"{avg:.2f}" if avg >= 1.0 else (f"{avg:.6f}".rstrip("0").rstrip(".") or "0")
             log(f"  [STRAT] {tag}BUY FILLED {vol} @ {price} {self.ccy} ({o.get('kind')})  "
                 f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f} fee={fee}")
             self._emit(
-                title=f"{tag}{self.pair} BUY {vol:.2f}@{price:.2f}",
-                body=f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg:.2f} | desf{self.s['spent']:.0f}{self.ccy}",
+                title=f"{tag}{self.pair} BUY {vol:.2f}@{px_str}",
+                body=f"{o.get('kind')} | q{self.s['qty']:.2f} a{avg_str} | desf{self.s['spent']:.0f}{self.ccy}",
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
             self._cancel_orders("sell", exclude_market=True)
         else:
             avg = self._avg() or price
+            avg_str = f"{avg:.2f}" if avg >= 1.0 else (f"{avg:.6f}".rstrip("0").rstrip(".") or "0")
             gross = (price - avg) * vol
             net = gross - fee
             self.s["realized_gross"] += gross
@@ -855,8 +858,8 @@ class Strategy(BaseSpotMixin):
             log(f"  [STRAT] {tag}SELL FILLED {vol} @ {price} {self.ccy}  "
                 f"brut={gross:+.4f} fee_ciclu={self.s['cycle_fees']:.4f} net={net:+.4f}")
             self._emit(
-                title=f"{tag}{self.pair} SELL {vol:.2f}@{price:.2f} N{net:+.2f}{self.ccy}",
-                body=(f"a{avg:.2f} · br{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
+                title=f"{tag}{self.pair} SELL {vol:.2f}@{px_str} N{net:+.2f}{self.ccy}",
+                body=(f"a{avg_str} · br{gross:+.2f} fee{self.s['cycle_fees']:.2f} N{net:+.2f} | "
                       f"Ntot{self.s['realized_net']:+.2f}{self.ccy}"),
                 source=self.notification_source, price=price, desktop=self.desktop,
             )
