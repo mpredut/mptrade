@@ -18,6 +18,7 @@ import importlib
 from typing import Optional, List
 
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from cachepaths import canonical_base_asset
 from .base import (
     MarketDataProvider,
     aggregate_fills_by_order_id,
@@ -73,15 +74,9 @@ def _live() -> bool:
 
 def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
     """Return whether two T212 ticker strings refer to the same equity instrument."""
-    if not isinstance(sym_a, str) or not isinstance(sym_b, str):
-        return False
-    a = sym_a.strip().upper()
-    b = sym_b.strip().upper()
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    return a.split("_", 1)[0] == b.split("_", 1)[0]
+    base_a = canonical_base_asset(sym_a)
+    base_b = canonical_base_asset(sym_b)
+    return bool(base_a and base_a == base_b)
 
 
 class T212Provider(MarketDataProvider):

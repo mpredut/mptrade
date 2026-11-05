@@ -449,6 +449,27 @@ def get_yahoo_chart_url(symbol: str) -> str:
     return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
 
 
+def get_yahoo_equity_chart_5d_url(symbol: str) -> str:
+    tmpl = _cfg_str("feeds", "yahoo_equity_chart_5d_url_template")
+    if not tmpl:
+        raise ValueError("Missing required [feeds] yahoo_equity_chart_5d_url_template in macro_intelligence.conf")
+    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+
+
+def get_nasdaq_equity_quote_url(symbol: str) -> str:
+    tmpl = _cfg_str("feeds", "nasdaq_equity_quote_url_template")
+    if not tmpl:
+        raise ValueError("Missing required [feeds] nasdaq_equity_quote_url_template in macro_intelligence.conf")
+    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+
+
+def get_cboe_delayed_options_url(option_path: str) -> str:
+    tmpl = _cfg_str("feeds", "cboe_delayed_options_url_template")
+    if not tmpl:
+        raise ValueError("Missing required [feeds] cboe_delayed_options_url_template in macro_intelligence.conf")
+    return tmpl.format(option_path=str(option_path or "").strip().lstrip("/"))
+
+
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
     raw = _cfg_str("feeds", "macro_benchmark_specs")
     if not raw:

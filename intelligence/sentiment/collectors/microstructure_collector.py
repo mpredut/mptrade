@@ -1386,7 +1386,7 @@ def enrich_24h_and_microstructure(
                     chart_res = memo_chart[1]
                 else:
                     _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
-                    chart_res = _chart(sym.split("_", 1)[0], rng="5d", interval="5m")
+                    chart_res = _chart(canonical_base_asset(sym) or sym, rng="5d", interval="5m")
                     if "PYTEST_CURRENT_TEST" not in os.environ:
                         _EQ_YAHOO_CHART_MEMO[sym] = (now_ts, chart_res)
                 pts_5d: List[List[Any]] = []
@@ -1540,7 +1540,7 @@ def enrich_24h_and_microstructure(
                         active_7d_vals = list(vals_5d)
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
                         try:
-                            from state_io import save_json_state
+                            from state_io import atomic_write_jsonl, save_json_state
 
                             eff_p24_pts = pts_24h_to_save or pts_24h_bars
                             raw_ohlc_cnt = sum(
@@ -1564,11 +1564,14 @@ def enrich_24h_and_microstructure(
                                 save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
                             p365_jsonl_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.jsonl")))
                             if not os.path.exists(p365_jsonl_path) and pts_5d:
-                                os.makedirs(os.path.dirname(p365_jsonl_path), exist_ok=True)
-                                with open(p365_jsonl_path, "w", encoding="utf-8") as _f365:
-                                    for _pt in pts_5d:
-                                        if isinstance(_pt, (list, tuple)) and len(_pt) >= 2:
-                                            _f365.write(f'{{"i": [{int(_pt[0])}, {_pt[1]}]}}\n')
+                                atomic_write_jsonl(
+                                    p365_jsonl_path,
+                                    [
+                                        {"i": [int(_pt[0]), _pt[1]]}
+                                        for _pt in pts_5d
+                                        if isinstance(_pt, (list, tuple)) and len(_pt) >= 2
+                                    ],
+                                )
                         except Exception:
                             pass
             except Exception:

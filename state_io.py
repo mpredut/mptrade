@@ -169,8 +169,9 @@ def _atomic_stream_writer(
     destination = os.path.abspath(str(resolve_cachedb_filepath(os.fspath(path))))
     directory = os.path.dirname(destination)
     os.makedirs(directory, exist_ok=True)
+    prefix = f".{os.path.basename(destination)}."
     fd, temporary = tempfile.mkstemp(
-        dir=directory, prefix=f".{os.path.basename(destination)}.", suffix=".tmp",
+        dir=directory, prefix=prefix, suffix=".tmp",
     )
     handle = os.fdopen(fd, mode, **open_kwargs)
     try:
@@ -186,6 +187,20 @@ def _atomic_stream_writer(
         handle.close()
         discard_generation_file(temporary)
         raise
+    finally:
+        try:
+            now_s = time.time()
+            tmp_base = os.path.basename(temporary)
+            for entry in os.listdir(directory):
+                if entry != tmp_base and entry.startswith(prefix) and entry.endswith(".tmp"):
+                    cand_path = os.path.join(directory, entry)
+                    try:
+                        if (now_s - os.path.getmtime(cand_path)) > 60.0:
+                            os.unlink(cand_path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
 
 def atomic_text_writer(path: str, *, encoding: str = "utf-8",
