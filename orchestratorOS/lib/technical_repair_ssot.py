@@ -699,11 +699,14 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"(Daemon status:\s*active|Remote-control daemon started|Daemon is active and healthy|ui-sync:\s*check healthy|"
         r"===\s*STRATEGIE\s+.*?\s+PORNITA\s*===|===\s*TRAILING STOP started|\[STRAT\]\s+state loaded|"
         r"\[kraken_cache\]\s+start:|\[kraken_cache\]\[ws\]\s+subscribed ownTrades|"
-        r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is)",
+        r"\[verify\].*is LISTED and tradable|total size is [\d,]+\s+speedup is|"
+        r"Starting GlobalTelemetryCollector|Global telemetry cycle active:|"
+        r"Starting Autonomous AI Supervisor cycle|\[INTENT GATEWAY\]|"
+        r"\[TRADEALL\]\s+[A-Z0-9_]+\s+resolved trend:)",
         re.IGNORECASE,
     )
     startup_fatal_exc_pattern = re.compile(
-        r"^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError):",
+        r"(?:^(?:ImportError|ModuleNotFoundError|SyntaxError|IndentationError|NameError):|\bname '[^']+' is not defined\b)",
         re.IGNORECASE,
     )
     ignored_test_prefixes = ("pytest_", "__main___", "py.test_", "c_")
@@ -868,7 +871,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             for sig_k, st_prev in list(file_sig_stats.items()):
                                 st_prev["unresolved_at_tail"] = False
                                 sample_prev = str(st_prev.get("sample") or "").strip()
-                                if startup_fatal_exc_pattern.match(sample_prev):
+                                if startup_fatal_exc_pattern.search(sample_prev):
                                     error_count = max(0, error_count - int(st_prev.get("count", 0)))
                                     file_sig_stats.pop(sig_k, None)
                                     c_sig_prev = sig_k or sample_prev

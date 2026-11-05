@@ -1275,6 +1275,7 @@ def harvest_recent_orders_and_enrich_positions(
         t212_cycles,
         cyc_sell_ts_map,
         gateway_max_usd=gateway_max_usd,
+        cache_dir=cache_dir,
     )
     return recent_orders
 

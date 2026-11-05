@@ -117,7 +117,13 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         return
     if m_px is not None and m_px > 0.0:
         minfo["cvd_15m_base"] = round(cvd_usd / m_px, 3 if m_px >= 100.0 else (2 if m_px >= 1.0 else 1))
-    ob_imb = clean_scale(minfo.get("ob_imbalance"), default=0.5, allow_percent=True)
+    ob_imb = clean_scale(
+        minfo.get("_cross_venue_ob_imbalance")
+        if minfo.get("_cross_venue_ob_imbalance") is not None
+        else minfo.get("ob_imbalance"),
+        default=0.5,
+        allow_percent=True,
+    )
     has_chg_15m = "chg_15m_pct" in p_dict and p_dict.get("chg_15m_pct") is not None
     chg_15m = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     div_reg = str(minfo.get("divergence_regime") or minfo.get("div_regime") or "").strip().lower()
@@ -1169,14 +1175,17 @@ def reconcile_sibling_flow_and_liq_regimes(
             chg_15m = safe_float(p_d.get("chg_15m_pct"), 0.0) or 0.0
             vel_adj = ref_scale * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
             max_spot_cvd = ref_scale * 0.85
+            agg_ob_imb = round(agg_b / agg_tot, 4)
             unified_spot_cvd = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * agg_ob_net_pct * 0.35 + vel_adj)), 0)
             for s_k, m_s in non_div:
                 if m_s.get("_synthetic_spot_cvd") or m_s.get("_cross_venue_spot_cvd"):
                     m_s["spot_cvd_15m_usd"] = unified_spot_cvd
                     m_s["_cross_venue_spot_cvd"] = True
+                    m_s["_cross_venue_ob_imbalance"] = agg_ob_imb
                     s_p = casefold_get(pt_map, s_k)
                     enrich_microstructure_cvd(m_s, s_p if isinstance(s_p, dict) else (p_d if p_d else None))
             prim_m["_cross_venue_spot_cvd"] = True
+            prim_m["_cross_venue_ob_imbalance"] = agg_ob_imb
             enrich_microstructure_cvd(prim_m, p_d if p_d else None)
             if prim_m.get("liq_magnet_bias") is not None and isinstance(prim_p_dict, dict):
                 prim_m.update(compute_liquidation_clusters(prim_p_dict, prim_m))

@@ -7556,4 +7556,128 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert m_tao["TAOUSD"]["cycle_delta"]["oi_delta_pct"] == m_tao["TAOUSDC"]["cycle_delta"]["oi_delta_pct"]
     assert m_tao["TAOUSD"]["cycle_delta"]["ob_imbalance_delta"] != m_tao["TAOUSDC"]["cycle_delta"]["ob_imbalance_delta"]
 
+    # 4. Cross-venue ob_imbalance in reconcile_sibling_flow_and_liq_regimes preserves INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE
+    m_tao_abs = {
+        "TAOUSDC": {
+            "ob_mid_price": 235.15,
+            "ob_imbalance": 0.576,  # just below 0.58 single-venue threshold
+            "bid_depth_usd": 179129.0,
+            "ask_depth_usd": 131701.0,
+            "taker_buy_vol_usd": 798258.0,
+            "taker_sell_vol_usd": 929869.0,
+            "cvd_15m_usd": -131611.0,
+            "cvd_5m_usd": -84534.0,
+            "cvd_1h_usd": -117761.0,
+            "funding_rate": -0.000018,
+            "cvd_regime": "spot_absorbing",
+            "_synthetic_spot_cvd": True,
+        },
+        "TAOUSD": {
+            "ob_mid_price": 235.16,
+            "ob_imbalance": 0.675,  # strong bid depth on sibling venue -> cross-venue ob_imb = 0.6547 >= 0.58
+            "bid_depth_usd": 653789.0,
+            "ask_depth_usd": 307617.0,
+            "taker_buy_vol_usd": 798258.0,
+            "taker_sell_vol_usd": 929869.0,
+            "cvd_15m_usd": -131611.0,
+            "cvd_5m_usd": -84534.0,
+            "cvd_1h_usd": -117761.0,
+            "funding_rate": -0.000018,
+            "cvd_regime": "spot_absorbing",
+            "_synthetic_spot_cvd": True,
+        },
+    }
+    pt_tao_abs = {
+        "TAOUSDC": {"price": 235.15, "chg_15m_pct": 0.08, "chg_5m_pct": 0.04},
+        "TAOUSD": {"price": 235.16, "chg_15m_pct": 0.08, "chg_5m_pct": 0.04},
+    }
+    reconcile_sibling_flow_and_liq_regimes(m_tao_abs, pt_tao_abs)
+    assert m_tao_abs["TAOUSDC"]["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+    assert m_tao_abs["TAOUSD"]["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+
+    # 5. enrich_positions_with_orders_and_cycles recovers multi-day cycle peak from cache_365_price_<sym>.jsonl when >24h old
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+
+    cdir_nvda = tmp_path / "cachedb_nvda_pk"
+    (cdir_nvda / "prices").mkdir(parents=True, exist_ok=True)
+    now_ms_pk = int(time.time() * 1000)
+    entry_ts_ms = now_ms_pk - int(43.6 * 3600 * 1000)
+    peak_25h_ago_ms = now_ms_pk - int(24.6 * 3600 * 1000)
+    (cdir_nvda / "prices" / "cache_365_price_NVDA_US_EQ.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"i": [entry_ts_ms, 207.93]}),
+                json.dumps({"i": [peak_25h_ago_ms, 210.70]}),
+                json.dumps({"i": [now_ms_pk - 3600_000, 209.52]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    pos_nvda = [
+        {
+            "venue": "t212",
+            "symbol": "NVDA_US_EQ",
+            "free_base": 2.910252,
+            "price": 206.69,
+            "trailing_peak": 207.93,
+            "active_avg_buy_px": 207.93,
+        }
+    ]
+    t212_cyc_nvda = {
+        "NVDA_US_EQ": {
+            "qty": 2.910252,
+            "entry_price": 207.93,
+            "avg_cost_px": 207.93,
+            "pos_peak": 207.93,
+        }
+    }
+    v_ro_nvda = {
+        "t212": {
+            "NVDA_US_EQ": {
+                "last_action_side": "BUY",
+                "active_avg_buy_px": 207.93,
+                "open_lots": [{"lot_id": 28, "qty": 0.03, "entry_px": 207.93, "ts_ms": entry_ts_ms}],
+                "last_buy": {"price": 207.93, "qty": 0.03, "ts_ms": entry_ts_ms},
+            }
+        }
+    }
+    pt_nvda = {"NVDA_US_EQ": {"price": 206.69, "high_24h": 209.52}}
+    enrich_positions_with_orders_and_cycles(
+        pos_nvda,
+        pt_nvda,
+        {},
+        v_ro_nvda,
+        v_ro_nvda["t212"],
+        {},
+        {},
+        t212_cyc_nvda,
+        {},
+        cache_dir=str(cdir_nvda),
+    )
+    assert pos_nvda[0]["trailing_peak"] == 210.7
+    assert t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] == 210.7
+
+    # 6. harvest_log_anomalies_from_dirs clears pre-restart SyntaxError and NameError once daemon/cycle recovery lines appear
+    log_dir_rec = tmp_path / "logs_rec"
+    log_dir_rec.mkdir(parents=True, exist_ok=True)
+    now_s_rec = time.time()
+    fmt_rec = lambda ago: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s_rec - ago))  # noqa: E731
+    (log_dir_rec / "tradeall.log").write_text(
+        f"{fmt_rec(180)} [TrendCoordinator] Error while evaluating BTCUSDC: name 'sys' is not defined\n"
+        f"{fmt_rec(60)} [TRADEALL] BTCUSDC resolved trend: flat\n",
+        encoding="utf-8",
+    )
+    (log_dir_rec / "globaltelemetry_collector.log").write_text(
+        "SyntaxError: invalid decimal literal\n"
+        f"{fmt_rec(120)} [INFO] [intelligence.telemetry_collector] Starting GlobalTelemetryCollector for symbols: BTCUSDC\n"
+        f"{fmt_rec(60)} [INFO] [intelligence.telemetry_collector] Global telemetry cycle active: 10 symbols monitored\n",
+        encoding="utf-8",
+    )
+    rec_sum = harvest_log_anomalies_from_dirs([str(log_dir_rec)], lookback_hours=1.0)
+    assert rec_sum.error_count == 0
+    assert rec_sum.persistent_errors == []
+
+
+
 

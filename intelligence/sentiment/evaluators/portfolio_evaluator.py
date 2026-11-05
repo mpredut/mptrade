@@ -1,6 +1,7 @@
 """Stateless order-lot accounting (FIFO/LIFO), venue DCA cycle state parsing, and position cost-basis reconciliation evaluators."""
 from __future__ import annotations
 
+import os
 import time as _time
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,7 @@ from cachepaths import (
     compatible_quote_suffixes,
     normalize_venue_name,
 )
+from state_io import read_tail_jsonl_records, resolve_cachedb_filepath
 from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_nonneg_float,
@@ -955,6 +957,51 @@ def _clear_flat_ro_and_pos_anchors(ro: Optional[Dict[str, Any]], pos: Dict[str, 
         pos.pop(k_p, None)
 
 
+def _resolve_cycle_high_since(
+    symbol: str,
+    quote_variants: tuple[str, ...] | list[str],
+    oldest_ts_ms: int,
+    prices_and_trends: Dict[str, Any],
+    cache_dir: str = "",
+    memo: Optional[Dict[tuple[str, int], float]] = None,
+) -> float:
+    """Resolve the highest price reached during an active position cycle since ``oldest_ts_ms``."""
+    sym_u = str(symbol or "").strip().upper()
+    if memo is not None and (sym_u, oldest_ts_ms) in memo:
+        return memo[(sym_u, oldest_ts_ms)]
+    cands = (sym_u, *[str(c).strip().upper() for c in (quote_variants or ()) if str(c).strip()])
+    pt_entry = next(
+        (
+            val for cand in cands
+            if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
+            and safe_pos_float(val.get("high_24h"), default=0.0)
+        ),
+        casefold_get(prices_and_trends, sym_u),
+    )
+    best_high = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
+    now_ms = int(_time.time() * 1000)
+    if cache_dir and oldest_ts_ms > 0 and (now_ms - oldest_ts_ms) > 24 * 3600 * 1000:
+        for cand in dict.fromkeys(cands):
+            for pfx in ("cache_365_price_", "cache_sparse_price_"):
+                arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"{pfx}{cand}.jsonl")))
+                if not os.path.exists(arch_path):
+                    continue
+                try:
+                    for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
+                        item = rec.get("i") if isinstance(rec, dict) else (rec if isinstance(rec, (list, tuple)) else None)
+                        if isinstance(item, (list, tuple)) and len(item) >= 2:
+                            t_f = safe_pos_float(item[0], default=0.0) or 0.0
+                            p_f = safe_pos_float(item[1], default=0.0) or 0.0
+                            t_ms = int(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                            if t_ms >= oldest_ts_ms and p_f > best_high:
+                                best_high = p_f
+                except Exception:
+                    pass
+    if memo is not None:
+        memo[(sym_u, oldest_ts_ms)] = best_high
+    return best_high
+
+
 def enrich_positions_with_orders_and_cycles(
     tradable_positions: List[Dict[str, Any]],
     prices_and_trends: Dict[str, Any],
@@ -967,9 +1014,11 @@ def enrich_positions_with_orders_and_cycles(
     cyc_sell_ts_map: Dict[tuple[str, str], int],
     *,
     gateway_max_usd: float = 2000.0,
+    cache_dir: str = "",
 ) -> None:
     """Enrich `tradable_positions` and venue cycles in-place with cost-basis anchors, LIFO PnL, trailing peaks, and venue fee/limits."""
     seen_venue_syms: set[tuple[str, str]] = set()
+    _cycle_high_memo: Dict[tuple[str, int], float] = {}
     for pos in tradable_positions:
         if not isinstance(pos, dict):
             continue
@@ -1070,15 +1119,9 @@ def enrich_positions_with_orders_and_cycles(
                     act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
                 )
                 if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
-                    pt_entry = next(
-                        (
-                            val for cand in (p_sym, *p_quote_variants)
-                            if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
-                            and safe_pos_float(val.get("high_24h"), default=0.0)
-                        ),
-                        prices_and_trends.get(p_sym),
+                    hi_24h = _resolve_cycle_high_since(
+                        p_sym, p_quote_variants, oldest_pos_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                     )
-                    hi_24h = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
                     ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
                     ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
                     if hi_24h > 0.0 and not _prices_diverged(pos_px_f, hi_24h, threshold=0.35):
@@ -1190,15 +1233,9 @@ def enrich_positions_with_orders_and_cycles(
                         oldest_c_ts_p = min(c_lot_ts_p) if c_lot_ts_p else (cyc_sell_ts_map.get((f"{p_venue}:entry", p_sym)) or 0)
                         c_age_ms_p = (int(_time.time() * 1000) - oldest_c_ts_p) if oldest_c_ts_p > 0 else 0
                         if 12 * 3600 * 1000 <= c_age_ms_p <= 90 * 86400 * 1000:
-                            pt_c_p = next(
-                                (
-                                    val for cand in (p_sym, *p_quote_variants)
-                                    if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
-                                    and safe_pos_float(val.get("high_24h"), default=0.0)
-                                ),
-                                None,
+                            hi_24h_p = _resolve_cycle_high_since(
+                                p_sym, p_quote_variants, oldest_c_ts_p, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                             )
-                            hi_24h_p = safe_pos_float(pt_c_p.get("high_24h") if isinstance(pt_c_p, dict) else None, default=0.0) or 0.0
                             if hi_24h_p > 0.0 and not _prices_diverged(pos_px_f, hi_24h_p, threshold=0.35):
                                 seed_pk_p = max(hi_24h_p, pos_px_f, cur_pk_c or 0.0, act_avg_c or 0.0, c_pk_sync)
                                 set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk_p, pos_px_f, overwrite=True)
@@ -1318,15 +1355,9 @@ def enrich_positions_with_orders_and_cycles(
                     oldest_c_ts = min(c_lot_ts) if c_lot_ts else (cyc_sell_ts_map.get((f"{c_venue}:entry", c_sym_u)) or 0)
                     c_age_ms = (int(_time.time() * 1000) - oldest_c_ts) if oldest_c_ts > 0 else 0
                     if 12 * 3600 * 1000 <= c_age_ms <= 90 * 86400 * 1000:
-                        pt_c = next(
-                            (
-                                val for cand in (c_sym_u, *c_quote_variants)
-                                if isinstance((val := casefold_get(prices_and_trends, cand)), dict)
-                                and safe_pos_float(val.get("high_24h"), default=0.0)
-                            ),
-                            casefold_get(prices_and_trends, c_sym_u),
+                        hi_24h_c = _resolve_cycle_high_since(
+                            c_sym_u, c_quote_variants, oldest_c_ts, prices_and_trends, cache_dir=cache_dir, memo=_cycle_high_memo
                         )
-                        hi_24h_c = safe_pos_float(pt_c.get("high_24h") if isinstance(pt_c, dict) else None, default=0.0) or 0.0
                         ls_c_d = ro.get("last_sell") if isinstance(ro, dict) and isinstance(ro.get("last_sell"), dict) else {}
                         ls_c_ts = int(safe_pos_float(ls_c_d.get("ts_ms"), default=0) or 0)
                         ls_c_px = (safe_pos_float(cyc.get("last_sell_price") or ls_c_d.get("price"), default=0.0) or 0.0) if ls_c_ts >= oldest_c_ts else 0.0
