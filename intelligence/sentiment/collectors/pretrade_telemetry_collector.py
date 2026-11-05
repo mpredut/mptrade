@@ -283,8 +283,13 @@ def collect_pretrade_telemetry(
                         key=lambda pt: pt[0],
                     )
                 if pts_5d_eq:
-                    cutoff_eq_ms = int((_pt_time.time() - 86400.0) * 1000)
+                    anchor_eq_ms = min(int(_pt_time.time() * 1000), int(pts_5d_eq[-1][0]))
+                    cutoff_eq_ms = anchor_eq_ms - 86400 * 1000
                     pts_24_eq = [pt for pt in pts_5d_eq if pt[0] >= cutoff_eq_ms]
+                    if pts_24_eq and (pts_24_eq[-1][0] - pts_24_eq[0][0]) < 18 * 3600 * 1000:
+                        older_eq = [pt for pt in pts_5d_eq if pt[0] < cutoff_eq_ms]
+                        if older_eq:
+                            pts_24_eq = [older_eq[-1], *pts_24_eq]
                     if len(pts_24_eq) < 10:
                         pts_24_eq = list(pts_5d_eq[-78:])
                     alt_series_24h = list(pts_24_eq)

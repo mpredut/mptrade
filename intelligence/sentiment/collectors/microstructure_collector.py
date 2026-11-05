@@ -300,7 +300,11 @@ def load_symbol_price_series(
             a0, a1 = _parse_ts_px_row(archive_pts[0]), _parse_ts_px_row(archive_pts[-1])
             arch_span_ms = (a1[0] - a0[0]) if (a0 and a1) else 0.0
             if include_7d and arch_span_ms < 5.0 * 86400.0 * 1000.0 and not sparse_7d_pts:
-                for sp_path in _cand_paths(f"cache_sparse_price_{cand}.jsonl"):
+                for sp_path in _cand_paths(
+                    f"cache_sparse_price_{cand}.jsonl",
+                    f"cache_365_price_{cand}.jsonl",
+                    f"cache_365_price_{cand}.json",
+                ):
                     if sp_rows := _read_arch_file(sp_path, max_b=512 * 1024):
                         sp0, sp1 = _parse_ts_px_row(sp_rows[0]), _parse_ts_px_row(sp_rows[-1])
                         if sp0 and sp1 and (sp1[0] - sp0[0]) > arch_span_ms:
@@ -758,8 +762,12 @@ def enrich_24h_and_microstructure(
     for bkey, bval in cached_bals.items():
         if isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(bval, dict):
             bticker = str(bval.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
+            b_free = safe_pos_float(
+                bval.get("free") if bval.get("free") is not None else bval.get("free_base"),
+                default=0.0,
+            ) or 0.0
             if bticker and bticker not in t212_seed_tickers and (
-                bticker in prices_and_trends or (safe_pos_float(bval.get("free"), default=0.0) or 0.0) > 0.0
+                bticker in prices_and_trends or b_free > 0.0
             ):
                 t212_seed_tickers.append(bticker)
     for ticker in t212_seed_tickers:
@@ -1022,8 +1030,13 @@ def enrich_24h_and_microstructure(
                     ):
                         prices_and_trends[sym]["price"] = chart_px
                         sym_px_cur = chart_px
-                    cutoff_24h_ms = int((now_ts - 86400.0) * 1000)
+                    anchor_24h_ms = min(int(now_ts * 1000), int(pts_5d[-1][0])) if pts_5d else int(now_ts * 1000)
+                    cutoff_24h_ms = anchor_24h_ms - 86400 * 1000
                     pts_24h_bars = [pt for pt in pts_5d if pt[0] >= cutoff_24h_ms]
+                    if pts_24h_bars and (pts_24h_bars[-1][0] - pts_24h_bars[0][0]) < 18 * 3600 * 1000:
+                        older_bars = [pt for pt in pts_5d if pt[0] < cutoff_24h_ms]
+                        if older_bars:
+                            pts_24h_bars = [older_bars[-1], *pts_24h_bars]
                     if len(pts_24h_bars) < 10:
                         pts_24h_bars = list(pts_5d[-78:])
                     pts_24h = list(pts_24h_bars)

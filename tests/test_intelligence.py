@@ -5833,27 +5833,89 @@ def test_iter88_cachetrend_adapt_thresholds_compact_repo_rules_whale_delta_4dec_
     assert (sub_cdir / "trends" / "cache_short_trend.json.meta").is_file()
 
 
+def test_iter13_equity_post_rth_24h_cutoff_and_archive_7d_fallback(tmp_path, monkeypatch):
+    import json
+    import types
+    from intelligence.sentiment.collectors import microstructure_collector as mc_mod
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+        load_symbol_price_series,
+    )
+    from state_io import save_json_state
 
+    # 1. Discrepancy BB: when cache_sparse_price has < 5d span (and need_24h_supplement is False),
+    #    load_symbol_price_series falls back to cache_365_price with longer (>5d) span
+    now_ms = 1_793_836_000_000
+    p24 = tmp_path / "prices" / "cache_24_price_ADAUSD.json"
+    p24.parent.mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(p24),
+        {"items": {"ADAUSD": [[now_ms - 24 * 3600 * 1000, 0.19], [now_ms, 0.20]]}},
+    )
+    psparse = tmp_path / "prices" / "cache_sparse_price_ADAUSD.jsonl"
+    psparse.write_text(
+        "\n".join(
+            [
+                json.dumps({"s": "ADAUSD", "i": [now_ms - 26 * 3600 * 1000, 0.191]}),
+                json.dumps({"s": "ADAUSD", "i": [now_ms, 0.20]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    p365 = tmp_path / "prices" / "cache_365_price_ADAUSD.json"
+    save_json_state(
+        str(p365),
+        {
+            "items": {
+                "ADAUSD": [
+                    [now_ms - 7 * 86400 * 1000, 0.21],
+                    [now_ms - 3 * 86400 * 1000, 0.195],
+                    [now_ms, 0.20],
+                ]
+            }
+        },
+    )
+    s24, vals_7d = load_symbol_price_series(str(tmp_path), "ADAUSD", include_7d=True)
+    assert len(s24) >= 2
+    assert vals_7d[0] == pytest.approx(0.21)
 
+    # 2. Discrepancy BA & BC: enrich_24h_and_microstructure seeds T212 position via free_base from venue_balances_state.json
+    #    and anchors 24h chart cutoff to min(now_ms, pts_5d[-1][0]) - 86400_000 so post-RTH equities preserve chg_24h_pct
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(state_dir / "venue_balances_state.json"),
+        {
+            "pos:t212:RGNT_US_EQ": {
+                "venue": "t212",
+                "symbol": "RGNT_US_EQ",
+                "price": 1.32,
+                "free_base": 122.51,
+                "ts": (now_ms / 1000.0) - 60.0,
+            }
+        },
+    )
+    # Last RTH bar was 2.5 hours ago (e.g. 23:00 EET while now_ts is 01:30 EET)
+    rth_close_ms = now_ms - int(2.5 * 3600 * 1000)
+    prev_rth_close_ms = rth_close_ms - 86400 * 1000
+    fake_5d_bars = [[prev_rth_close_ms, 1.37, 1500.0]] + [
+        [rth_close_ms - (24 - i) * 15 * 60 * 1000, round(1.35 - i * 0.00125, 4), 800.0]
+        for i in range(25)
+    ]
+    fake_md = types.SimpleNamespace(_chart=lambda sym, rng="5d", interval="5m": ({}, fake_5d_bars))
+    monkeypatch.setattr(mc_mod, "load_local_module", lambda *_a, **_kw: fake_md)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    pt_map: dict = {}
+    micro_map: dict = {}
+    enrich_24h_and_microstructure(
+        str(tmp_path),
+        str(tmp_path),
+        pt_map,
+        micro_map,
+        {},
+        {"RGNT_US_EQ": types.SimpleNamespace(provider_name="t212")},
+        now_ms / 1000.0,
+    )
+    assert "RGNT_US_EQ" in pt_map
+    assert pt_map["RGNT_US_EQ"].get("chg_24h_pct") == pytest.approx(round(((1.32 - 1.37) / 1.37) * 100.0, 2))
