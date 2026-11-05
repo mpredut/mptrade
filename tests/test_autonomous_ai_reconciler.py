@@ -928,7 +928,8 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert len(captured_prompts) == 1
     prompt_text = captured_prompts[0]
     assert "conf=0.88" in prompt_text
-    assert "Breadth collapse" in prompt_text
+    assert "summary=Broad washout risk" in prompt_text
+    assert "key_risks=" not in prompt_text
     assert "risk_score=0.62" in prompt_text
     assert "Sudden escalation alert in Strait of Hormuz" in prompt_text
     assert "median_chg=-3.1%" in prompt_text
@@ -8946,6 +8947,27 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         }
     )
     assert "open_lifo_lots=[3@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line_clipped
+    assert "profitable_lifo_usd=$516.22(2.38_TAO@+0.84%)" in pos_line_clipped
+
+    # Contiguous top-of-stack LIFO check + venue-resolved round-trip fee threshold (Kraken 26bps * 2 = 0.52%)
+    pos_line_kraken_lifo = _format_tradable_position_line(
+        {
+            "venue": "kraken",
+            "symbol": "SOLUSD",
+            "base": "SOL",
+            "quote": "USD",
+            "free_base": 3.0,
+            "value_usd": 300.9,
+            "free_quote": 500.0,
+            "price": 100.3,
+            "open_lots": [
+                {"lot_id": "L1", "qty": 1.0, "entry_px": 95.0},   # +5.58%, but buried under L2/L3
+                {"lot_id": "L2", "qty": 1.0, "entry_px": 105.0},  # -4.48% underwater blocker
+                {"lot_id": "L3", "qty": 1.0, "entry_px": 100.0},  # +0.30% < 0.52% Kraken round-trip fee
+            ],
+        }
+    )
+    assert "profitable_lifo_usd=" not in pos_line_kraken_lifo
 
     cyc_line = _format_venue_cycle_line(
         "kraken",

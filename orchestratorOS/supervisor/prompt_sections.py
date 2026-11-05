@@ -10,7 +10,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import safe_float as _parse_finite_float, safe_pos_float
-from cachepaths import canonical_base_asset, compatible_quote_suffixes
+from cachepaths import cache_symbol_variants, canonical_base_asset, compatible_quote_suffixes, normalize_venue_name
 from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     format_bottom_structure_6h_parts,
@@ -1057,6 +1057,25 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 pct_val = pct_val + 0.0
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
+    venue = pos.get("venue")
+    fb_fees = resolve_venue_fee_and_limits(
+        str(venue or "t212"),
+        str(pos.get("symbol") or ""),
+        price=_parse_finite_float(pos.get("price"), 0.0),
+        free_quote=pos.get("free_quote"),
+        free_base=pos.get("free_base"),
+        locked_quote_usd=pos.get("locked_quote_usd"),
+        locked_base_qty=pos.get("locked_base_qty"),
+        spread_bps=pos.get("spread_bps"),
+        gateway_max_usd=max_usd,
+    )
+    eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
+    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
+        cap_v = _parse_finite_float(eff_pos.get(cap_k), None)
+        if cap_v is not None and max_usd > 0 and cap_v > max_usd:
+            eff_pos[cap_k] = round(float(max_usd), 2)
+    taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
+    maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
     if isinstance(open_lots := pos.get("open_lots"), list) and len(open_lots) > 1:
         held_pos_q = (_parse_finite_float(pos.get("free_base"), 0.0) or 0.0) + (
             _parse_finite_float(pos.get("locked_base_qty"), 0.0) or 0.0
@@ -1078,10 +1097,8 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                     rem_q -= take_q
             eff_lots = list(reversed(clipped_rev))
         lot_parts: List[str] = []
-        prof_q = 0.0
-        prof_usd = 0.0
-        prof_cost = 0.0
-        min_net_pct = max(0.20, (_parse_finite_float(pos.get("taker_fee_bps"), 10.0) or 10.0) * 2.0 / 100.0)
+        valid_lots: List[Tuple[float, float, float]] = []
+        min_net_pct = max(0.20, (taker_bps or 10.0) * 2.0 / 100.0)
         for lt in eff_lots:
             if not isinstance(lt, dict):
                 continue
@@ -1091,36 +1108,24 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
                 l_pnl_pct = ((px_f - l_px) / l_px) * 100.0 if px_f > 0.0 else 0.0
                 l_pnl_s = f"({_parse_finite_float(l_pnl_pct, 0.0):+.2f}%)" if px_f > 0.0 else ""
                 lot_parts.append(f"{l_q:g}@{l_px}{l_pnl_s}")
+                valid_lots.append((l_q, l_px, l_pnl_pct))
+        if len(lot_parts) > 1:
+            t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
+            prof_q = 0.0
+            prof_usd = 0.0
+            prof_cost = 0.0
+            for l_q, l_px, l_pnl_pct in reversed(valid_lots):
                 if px_f > 0.0 and l_pnl_pct > min_net_pct:
                     prof_q += l_q
                     prof_usd += l_q * px_f
                     prof_cost += l_q * l_px
-        if len(lot_parts) > 1:
-            t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
+                else:
+                    break
             if prof_usd >= 10.0 and prof_cost > 0.0:
                 prof_avg_pct = ((prof_usd - prof_cost) / prof_cost) * 100.0
                 t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{base_lbl}@{prof_avg_pct:+.2f}%)"
     if (lifo_p := _parse_finite_float(pos.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_p) >= 0.01:
         t_extra += f", lifo_realized_pnl=${lifo_p:+.2f}"
-    venue = pos.get("venue")
-    fb_fees = resolve_venue_fee_and_limits(
-        str(venue or "t212"),
-        str(pos.get("symbol") or ""),
-        price=_parse_finite_float(pos.get("price"), 0.0),
-        free_quote=pos.get("free_quote"),
-        free_base=pos.get("free_base"),
-        locked_quote_usd=pos.get("locked_quote_usd"),
-        locked_base_qty=pos.get("locked_base_qty"),
-        spread_bps=pos.get("spread_bps"),
-        gateway_max_usd=max_usd,
-    )
-    eff_pos = {**fb_fees, **{k: v for k, v in pos.items() if v is not None}}
-    for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd", "replace_max_buy_usd", "replace_max_sell_usd"):
-        cap_v = _parse_finite_float(eff_pos.get(cap_k), None)
-        if cap_v is not None and max_usd > 0 and cap_v > max_usd:
-            eff_pos[cap_k] = round(float(max_usd), 2)
-    taker_bps = _parse_finite_float(eff_pos.get("taker_fee_bps"), 15.0)
-    maker_bps = _parse_finite_float(eff_pos.get("maker_fee_bps"), 15.0)
     fee_tier = eff_pos.get("fee_tier") or "STANDARD"
     sp_part = f", spread={eff_pos.get('spread_bps')}bps" if eff_pos.get("spread_bps") is not None else ""
     t_extra += (
@@ -1346,11 +1351,15 @@ def _format_portfolio_section(
         lines.append(
             "  * Active Open Limit Orders on Exchange — open_limit_orders: [] (none resting)"
         )
-    pos_lifo_pnl_by_sym: Dict[str, float] = {}
+    pos_lifo_pnl_by_vs: Dict[Tuple[str, str], float] = {}
     for p_it in (ps.get("tradable_positions") or ()):
         if isinstance(p_it, dict) and p_it.get("symbol") and p_it.get("lifo_realized_pnl_usd") is not None:
             if (lp_v := _parse_finite_float(p_it.get("lifo_realized_pnl_usd"), None)) is not None:
-                pos_lifo_pnl_by_sym[str(p_it["symbol"]).upper()] = lp_v
+                p_v_norm = normalize_venue_name(p_it.get("venue"))
+                p_sym_u = str(p_it["symbol"]).strip().upper()
+                for cand_s in (p_sym_u, *cache_symbol_variants(p_sym_u, include_base=True)):
+                    pos_lifo_pnl_by_vs.setdefault((p_v_norm, str(cand_s).strip().upper()), lp_v)
+                pos_lifo_pnl_by_vs[(p_v_norm, p_sym_u)] = lp_v
     for cyc_key, venue_lbl, venue_id in (
         ("kraken_cycles", "Kraken", "kraken"),
         ("hyperliquid_cycles", "Hyperliquid", "hyperliquid"),
@@ -1360,8 +1369,8 @@ def _format_portfolio_section(
             lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
             for c_sym, c_data in sorted(ps[cyc_key].items()):
                 if isinstance(c_data, dict):
-                    c_up = str(c_sym).upper()
-                    lp_sym = pos_lifo_pnl_by_sym.get(c_up)
+                    c_up = str(c_sym).strip().upper()
+                    lp_sym = pos_lifo_pnl_by_vs.get((venue_id, c_up), pos_lifo_pnl_by_vs.get(("", c_up)))
                     c_rpnl = _parse_finite_float(c_data.get("realized_pnl_usd"), None)
                     if lp_sym is not None and c_rpnl is not None and c_rpnl < 0.0 and lp_sym > c_rpnl:
                         c_data = {**c_data, "realized_pnl_usd": lp_sym}
