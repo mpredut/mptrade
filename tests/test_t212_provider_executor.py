@@ -584,6 +584,39 @@ class T212ClientTransportTest(unittest.TestCase):
                 self.assertIsNone(c3.list_instruments())
                 self.assertEqual(len(calls_429), 1)
 
+            # Verify _instr_cache lives in dedicated _instruments.json sidecar, stale .tmp files are cleaned,
+            # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
+            instr_sidecar = c1._instr_shared_cache_path()
+            self.assertTrue(os.path.exists(instr_sidecar))
+            stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
+            with open(stale_tmp, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            old_ts = time.time() - 300.0
+            os.utime(stale_tmp, (old_ts, old_ts))
+
+            trade_cache_file = os.path.join(tmpdir, "cache_trade_t212.json")
+            c1._trade_cache_path = trade_cache_file
+            hist_body = (
+                b'{"items":['
+                b'{"order":{"id":777,"ticker":"SPCX_US_EQ","status":"FILLED","orderedQuantity":4.01,"type":"LIMIT"},'
+                b'"fill":{"quantity":4.01,"price":156.47,"filledAt":"2026-10-13T15:37:40.000Z"}},'
+                b'{"order":{"id":778,"ticker":"SPCX_US_EQ","status":"CANCELLED","orderedQuantity":-1.0,"limitPrice":180.0}}'
+                b']}'
+            )
+            with mock.patch.object(t212_client, "http_get", side_effect=[(404, b""), (200, hist_body)]):
+                ord_res = c1.get_order_status(777)
+            self.assertEqual(ord_res["status"], "FILLED")
+            self.assertFalse(os.path.exists(stale_tmp))
+            self.assertTrue(os.path.exists(trade_cache_file))
+            from state_io import read_json_dict
+            saved_trades = read_json_dict(trade_cache_file, default={})
+            self.assertIn("SPCX_US_EQ", saved_trades.get("items", {}))
+            self.assertEqual(len(saved_trades["items"]["SPCX_US_EQ"]), 1)
+            row = saved_trades["items"]["SPCX_US_EQ"][0]
+            self.assertEqual(row["orderId"], "777")
+            self.assertEqual(row["side"], "BUY")
+            self.assertAlmostEqual(row["price"], 156.47)
+            self.assertAlmostEqual(row["qty"], 4.01)
 
 
 if __name__ == "__main__":

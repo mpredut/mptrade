@@ -31,8 +31,14 @@ except ImportError:
     ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
-from providers.base import _clean_single_order_id, extract_order_id
-from state_io import atomic_write_json, read_json_dict
+from cachepaths import cache_path
+from providers.base import (
+    _clean_single_order_id,
+    extract_order_id,
+    normalize_side,
+    normalize_timestamp_ms,
+)
+from state_io import atomic_write_json, read_json_dict, save_json_state
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -91,6 +97,7 @@ class T212Client:
             os.path.dirname(os.path.abspath(__file__)),
             f".t212_shared_cache_{self.env}_{key_hash}.json",
         )
+        self._trade_cache_path: str | None = None
         self._enable_shared_disk_cache: bool | None = None
 
     def _shared_cache_enabled(self) -> bool:
@@ -98,36 +105,91 @@ class T212Client:
             return bool(self._enable_shared_disk_cache)
         return "PYTEST_CURRENT_TEST" not in os.environ and bool(getattr(self, "_shared_cache_path", ""))
 
+    def _instr_shared_cache_path(self) -> str:
+        base_path = str(getattr(self, "_shared_cache_path", "") or "").strip()
+        if not base_path:
+            return ""
+        if base_path.endswith(".json"):
+            return f"{base_path[:-5]}_instruments.json"
+        return f"{base_path}.instruments"
+
+    @staticmethod
+    def _cleanup_stale_tmp_files(target_path: str, max_age_sec: float = 120.0) -> None:
+        if not target_path:
+            return
+        try:
+            parent = os.path.dirname(os.path.abspath(target_path))
+            base = os.path.basename(target_path)
+            if not os.path.isdir(parent):
+                return
+            prefix = f".{base}."
+            now = time.time()
+            for fname in os.listdir(parent):
+                if fname.startswith(prefix) and fname.endswith(".tmp"):
+                    fpath = os.path.join(parent, fname)
+                    try:
+                        if (now - os.path.getmtime(fpath)) >= max_age_sec:
+                            os.remove(fpath)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
     def _read_shared_cache(self, attr: str, max_age_sec: float) -> tuple[bool, list | dict | None, float]:
         if not self._shared_cache_enabled() or max_age_sec <= 0.0:
             return False, None, 0.0
-        try:
-            payload = read_json_dict(self._shared_cache_path, default=None)
-            if not isinstance(payload, dict):
-                return False, None, 0.0
-            entry = payload.get(attr)
-            if not isinstance(entry, dict):
-                return False, None, 0.0
-            ts = safe_pos_float(entry.get("ts"), default=None)
-            data = entry.get("data")
-            if ts is None or not isinstance(data, (list, dict)):
-                return False, None, 0.0
-            age = time.time() - ts
-            if 0.0 <= age < max_age_sec:
-                return True, data, age
-        except Exception:
-            pass
+        paths = (
+            (self._instr_shared_cache_path(), self._shared_cache_path)
+            if attr == "_instr_cache"
+            else (self._shared_cache_path,)
+        )
+        for cpath in paths:
+            if not cpath:
+                continue
+            try:
+                payload = read_json_dict(cpath, default=None)
+                if not isinstance(payload, dict):
+                    continue
+                entry = payload.get(attr)
+                if not isinstance(entry, dict):
+                    continue
+                ts = safe_pos_float(entry.get("ts"), default=None)
+                data = entry.get("data")
+                if ts is None or not isinstance(data, (list, dict)):
+                    continue
+                age = time.time() - ts
+                if 0.0 <= age < max_age_sec:
+                    return True, data, age
+            except Exception:
+                pass
         return False, None, 0.0
 
     def _write_shared_cache(self, attr: str, data: list | dict) -> None:
         if not self._shared_cache_enabled():
             return
+        now_ts = time.time()
         try:
+            if attr == "_instr_cache":
+                instr_path = self._instr_shared_cache_path() or self._shared_cache_path
+                self._cleanup_stale_tmp_files(instr_path)
+                atomic_write_json(instr_path, {"_instr_cache": {"ts": now_ts, "data": data}})
+                return
+            self._cleanup_stale_tmp_files(self._shared_cache_path)
             payload = read_json_dict(self._shared_cache_path, default={})
             if not isinstance(payload, dict):
                 payload = {}
-            payload[attr] = {"ts": time.time(), "data": data}
+            legacy_instr = payload.pop("_instr_cache", None)
+            if isinstance(legacy_instr, dict):
+                instr_path = self._instr_shared_cache_path()
+                if instr_path and not os.path.exists(instr_path):
+                    try:
+                        atomic_write_json(instr_path, {"_instr_cache": legacy_instr})
+                    except Exception:
+                        pass
+            payload[attr] = {"ts": now_ts, "data": data}
             atomic_write_json(self._shared_cache_path, payload)
+            if attr == "_hist_cache" and isinstance(data, list):
+                self._sync_trade_cache(data)
         except Exception:
             pass
 
@@ -150,8 +212,10 @@ class T212Client:
             try:
                 payload = read_json_dict(self._shared_cache_path, default=None)
                 if isinstance(payload, dict) and "_instr_cache" in payload:
-                    atomic_write_json(self._shared_cache_path, {"_instr_cache": payload["_instr_cache"]})
-                elif os.path.exists(self._shared_cache_path):
+                    instr_path = self._instr_shared_cache_path()
+                    if instr_path and not os.path.exists(instr_path):
+                        atomic_write_json(instr_path, {"_instr_cache": payload["_instr_cache"]})
+                if os.path.exists(self._shared_cache_path):
                     os.remove(self._shared_cache_path)
             except Exception:
                 pass
@@ -351,6 +415,158 @@ class T212Client:
                 matches.append((order, item.get("fill")))
         return matches
 
+    @staticmethod
+    def _aggregate_history_fills(matches: list[tuple[dict, dict | None]]) -> dict:
+        result = dict(matches[0][0])
+        total_qty = total_cost = total_fee = priced_qty = 0.0
+        fee_currencies = set()
+        latest_fill_ts_ms: int | None = None
+        seen_fill_ids: set[str] = set()
+        for order, fill in matches:
+            cand_ts = normalize_timestamp_ms(
+                (fill.get("filledAt") if isinstance(fill, dict) else None)
+                or order.get("createdAt")
+                or order.get("dateCreated"),
+                default=None,
+            )
+            if cand_ts is not None and (latest_fill_ts_ms is None or cand_ts > latest_fill_ts_ms):
+                latest_fill_ts_ms = cand_ts
+            if not isinstance(fill, dict):
+                continue
+            fill_id = extract_order_id(fill)
+            if fill_id is not None:
+                if fill_id in seen_fill_ids:
+                    continue
+                seen_fill_ids.add(fill_id)
+            qf = safe_float(fill.get("quantity"), default=None)
+            pf = safe_float(fill.get("price"), default=None)
+            if qf is None or pf is None:
+                continue
+            qty = abs(qf)
+            price = abs(pf)
+            total_qty += qty
+            if price > 0.0 and qty > 0.0:
+                total_cost += qty * price
+                priced_qty += qty
+            wallet = fill.get("walletImpact")
+            taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
+            for tax in taxes or []:
+                if not isinstance(tax, dict):
+                    continue
+                tqf = safe_float(tax.get("quantity"), default=None)
+                if tqf is None:
+                    continue
+                tax_amt = abs(tqf)
+                if tax_amt <= 0.0:
+                    continue
+                total_fee += tax_amt
+                raw_cur = tax.get("currency")
+                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
+                if currency:
+                    fee_currencies.add(currency)
+        if total_qty > 0:
+            result["filledQuantity"] = total_qty
+            result["filledValue"] = total_cost
+            if priced_qty > 0:
+                result["fillPrice"] = total_cost / priced_qty
+        result["fee"] = total_fee
+        if fee_currencies:
+            result["_feeCurrencies"] = sorted(fee_currencies)
+        if latest_fill_ts_ms is not None:
+            result["_timestamp_ms"] = latest_fill_ts_ms
+        return result
+
+    @classmethod
+    def normalize_history_items(cls, items: list) -> dict[str, list[dict]]:
+        """Group FILLED T212 history items by ticker and orderId into canonical cache_trade_t212 records."""
+        grouped: dict[str, list[tuple[dict, dict | None]]] = {}
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            order = item.get("order") if isinstance(item.get("order"), dict) else item
+            if not isinstance(order, dict):
+                continue
+            if str(order.get("status") or "").strip().upper() != "FILLED":
+                continue
+            oid = extract_order_id(order)
+            if not oid:
+                continue
+            grouped.setdefault(str(oid), []).append((order, item.get("fill") if isinstance(item.get("fill"), dict) else None))
+        by_symbol: dict[str, list[dict]] = {}
+        for oid, matches in grouped.items():
+            enriched = cls._aggregate_history_fills(matches)
+            inst_d = enriched.get("instrument") if isinstance(enriched.get("instrument"), dict) else {}
+            ticker = str(enriched.get("ticker") or inst_d.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            raw_qty = safe_float(
+                enriched.get("orderedQuantity")
+                if enriched.get("orderedQuantity") is not None
+                else enriched.get("quantity"),
+                default=0.0,
+            )
+            side = normalize_side(enriched.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
+            qty = safe_pos_float(enriched.get("filledQuantity"), default=None) or safe_pos_float(abs(raw_qty), default=None)
+            px = safe_pos_float(enriched.get("fillPrice") or enriched.get("limitPrice"), default=None)
+            ts_ms = enriched.get("_timestamp_ms")
+            if qty is None or px is None or ts_ms is None:
+                continue
+            cost = safe_pos_float(enriched.get("filledValue"), default=px * qty) or (px * qty)
+            fee = safe_nonneg_float(enriched.get("fee"), default=0.0) or 0.0
+            by_symbol.setdefault(ticker, []).append({
+                "symbol": ticker,
+                "orderId": str(oid),
+                "side": side,
+                "type": str(enriched.get("type") or "MARKET").strip().upper(),
+                "price": round(px, 6),
+                "qty": round(qty, 6),
+                "executedQty": round(qty, 6),
+                "cummulativeQuoteQty": round(cost, 4),
+                "fee": round(fee, 6),
+                "timestamp": int(ts_ms),
+                "time": int(ts_ms),
+                "status": "FILLED",
+            })
+        for sym_list in by_symbol.values():
+            sym_list.sort(key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
+        return by_symbol
+
+    def _sync_trade_cache(self, items: list) -> None:
+        explicit_path = getattr(self, "_trade_cache_path", None)
+        if not explicit_path and "PYTEST_CURRENT_TEST" in os.environ:
+            return
+        by_symbol = self.normalize_history_items(items)
+        if not by_symbol:
+            return
+        target_path = str(explicit_path) if explicit_path else str(cache_path("cache_trade_t212.json"))
+        try:
+            loaded = read_json_dict(target_path, default=None, recover_previous=True)
+            cache_obj = (
+                loaded
+                if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict) and isinstance(loaded.get("fetchtime"), dict)
+                else {"items": {}, "fetchtime": {}}
+            )
+            now_ms = int(time.time() * 1000)
+            changed = False
+            for sym, new_rows in by_symbol.items():
+                existing = cache_obj["items"].get(sym)
+                by_oid: dict[str, dict] = {}
+                for row in (existing if isinstance(existing, list) else ()):
+                    if isinstance(row, dict) and (r_oid := extract_order_id(row)):
+                        by_oid[str(r_oid)] = row
+                for row in new_rows:
+                    r_oid = str(row["orderId"])
+                    if by_oid.get(r_oid) != row:
+                        by_oid[r_oid] = row
+                        changed = True
+                merged = sorted(by_oid.values(), key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
+                cache_obj["items"][sym] = merged
+                cache_obj["fetchtime"][sym] = now_ms
+            if changed or not os.path.exists(target_path):
+                save_json_state(target_path, cache_obj)
+        except Exception:
+            pass
+
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.
 
@@ -418,46 +634,8 @@ class T212Client:
 
         # History uses {order, fill}, and one order may have several fills. Return
         # the client's order shape enriched with actual aggregate execution data.
-        result = dict(matches[0][0])
-        total_qty = total_cost = total_fee = priced_qty = 0.0
-        fee_currencies = set()
-        for _, fill in matches:
-            if not isinstance(fill, dict):
-                continue
-            qf = safe_float(fill.get("quantity"), default=None)
-            pf = safe_float(fill.get("price"), default=None)
-            if qf is None or pf is None:
-                continue
-            qty = abs(qf)
-            price = abs(pf)
-            total_qty += qty
-            if price > 0.0 and qty > 0.0:
-                total_cost += qty * price
-                priced_qty += qty
-            wallet = fill.get("walletImpact")
-            taxes = wallet.get("taxes") if isinstance(wallet, dict) else []
-            for tax in taxes or []:
-                if not isinstance(tax, dict):
-                    continue
-                tqf = safe_float(tax.get("quantity"), default=None)
-                if tqf is None:
-                    continue
-                tax_amt = abs(tqf)
-                if tax_amt <= 0.0:
-                    continue
-                total_fee += tax_amt
-                raw_cur = tax.get("currency")
-                currency = raw_cur.strip().upper() if isinstance(raw_cur, str) else ""
-                if currency:
-                    fee_currencies.add(currency)
-        if total_qty > 0:
-            result["filledQuantity"] = total_qty
-            result["filledValue"] = total_cost
-            if priced_qty > 0:
-                result["fillPrice"] = total_cost / priced_qty
-        result["fee"] = total_fee
-        if fee_currencies:
-            result["_feeCurrencies"] = sorted(fee_currencies)
+        result = self._aggregate_history_fills(matches)
+        result.pop("_timestamp_ms", None)
         return result
 
     def get_order_status(self, order_id) -> dict | bool | None:
