@@ -5330,9 +5330,11 @@ def test_bugs_21_to_26_tape5m_geodeescalation_advisor_lows_whale_str_and_taousdc
 
     ldir_31 = tmp_path / "logs_b31"
     ldir_31.mkdir(exist_ok=True)
+    interleaved = "".join(f"{t_err} [INFO] [INTENT GATEWAY] auto_cryptotrade_executor decision is HOLD (cycle {i}).\n" for i in range(35))
     (ldir_31 / "auto_sharetrade_executor.log").write_text(
         f"{t_err} [T212] place_order NVDA_US_EQ failed (HTTP 400): {{'type': '/api-errors/insufficient-free-for-stocks-buy'}}\n"
         f"{t_err} [NVDA_US_EQ] BUY BLOCKED (pre-submit): T212 HTTP 400: {{'type': '/api-errors/insufficient-free-for-stocks-buy'}}\n"
+        f"{interleaved}"
         f"{t_rec} [INFO] [LLM TRADER · ENFORCE] Successfully placed BUY NVDA_US_EQ: {{'id': 59907459622}}\n",
         encoding="utf-8",
     )

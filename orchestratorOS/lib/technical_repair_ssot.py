@@ -749,10 +749,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             if "insufficient-free-for-stocks-buy" in cleaned:
                                 m_t212_sym = re.search(r"\b([A-Z0-9]+_(?:US_)?EQ)\b", cleaned)
                                 t212_sym_tok = m_t212_sym.group(1) if m_t212_sym else ""
+                                lookahead_end = total_lines if t212_sym_tok else min(total_lines, idx + 15)
                                 if any(
                                     "Successfully placed BUY" in lines[j]
                                     and (not t212_sym_tok or t212_sym_tok in lines[j])
-                                    for j in range(idx + 1, min(total_lines, idx + 15))
+                                    for j in range(idx + 1, lookahead_end)
                                 ):
                                     continue
                             if (
