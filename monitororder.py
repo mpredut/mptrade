@@ -119,13 +119,14 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
             symbol, order_type, price, quantity, owner
         )
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
-        px_str = f"{px:,.2f}" if px >= 10 else f"{px:.6g}"
+        px_str = f"{px:,.2f}" if px >= 10 else (f"{px:.8f}".rstrip("0").rstrip(".") or "0")
+        qty_str = f"{qty:.8f}".rstrip("0").rstrip(".") or "0"
+        print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px_str} (orderId={order_id})")
         alert.notify(
             title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
             body=(
                 f"Order {order_id}{owner_body} active for {age_str} exceeded TTL of {ttl_str}. Canceled on venue. "
-                f"Qty: {qty:.6g} {symbol} @ ${px_str} (~${val:.2f} {quote}) | Time: {now_str}"
+                f"Qty: {qty_str} {symbol} @ ${px_str} (~${val:.2f} {quote}) | Time: {now_str}"
             ),
             source="monitororder",
             symbol=str(symbol),
@@ -201,9 +202,10 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
-        print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px:.2f} (orderId={order_id})")
+        px_disp = f"{px:.2f}" if px >= 1.0 else (f"{px:.6f}".rstrip("0").rstrip(".") or "0")
+        print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
         alert.notify(
-            title=f"📝 {side} {symbol} @ {px:.2f}{owner_tag}",
+            title=f"📝 {side} {symbol} @ {px_disp}{owner_tag}",
             body=f"Order {order_id}{owner_body} placed on venue. Qty: {qty:.4f} {symbol} (~{val:.2f} {quote})",
             source="monitororder",
             symbol=str(symbol),

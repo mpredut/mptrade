@@ -680,6 +680,10 @@ def _format_ts(ts):
         return "N/A"
 
 
+def _fmt_num(val: float) -> str:
+    return f"{float(val):.8f}".rstrip("0").rstrip(".") or "0"
+
+
 def _format_record_context(rec, *, include_lease=False):
     """Build a structured summary of order time, base asset qty/price, and quote value."""
     raw_side = rec.get("side")
@@ -698,9 +702,9 @@ def _format_record_context(rec, *, include_lease=False):
 
     effective_px = req_px if req_px is not None else ref_px
     if req_px is not None and ref_px is not None and abs(req_px - ref_px) > 1e-9:
-        price_str = f"@ ${req_px:.6g} (ref ${ref_px:.6g})"
+        price_str = f"@ ${_fmt_num(req_px)} (ref ${_fmt_num(ref_px)})"
     elif effective_px is not None:
-        price_str = f"@ ${effective_px:.6g}"
+        price_str = f"@ ${_fmt_num(effective_px)}"
     else:
         price_str = "@ market"
 
@@ -726,7 +730,7 @@ def _format_record_context(rec, *, include_lease=False):
     place_kw = raw_place_kw if isinstance(raw_place_kw, dict) else {}
     client_order_id = place_kw.get("client_order_id") or rec.get("order_id") or rec.get("id") or "N/A"
     return (
-        f"Order: {side} {qty_val:.6g} {base_asset} ({symbol} · {provider}) {price_str} | Value: {value_str}\n"
+        f"Order: {side} {_fmt_num(qty_val)} {base_asset} ({symbol} · {provider}) {price_str} | Value: {value_str}\n"
         f"Time: {time_line}\n"
         f"ID: {client_order_id}"
     )
@@ -1031,7 +1035,7 @@ def _alert_giveups(records, now):
                 if (cnt > 0 and tot_notional > 0)
                 else ((unit_qty * float(px_val)) if px_val else None)
             )
-            price_part = f" @ ${float(px_val):.6g}" if px_val else ""
+            price_part = f" @ ${_fmt_num(float(px_val))}" if px_val else ""
             value_part = f", Value: ~${unit_notional:.2f} {quote_asset}" if unit_notional is not None else ""
             time_parts = [
                 f"{lbl}: {val}"
@@ -1058,7 +1062,7 @@ def _alert_giveups(records, now):
                     title=f"🛑 order-retry GIVE UP{suffix} {side} {sym}",
                     body=(
                         f"{side} {sym} ({prov}){kind_str}: {cnt} intent(s) expired "
-                        f"(size ~{unit_qty:.6g} {base_asset}{price_part}{value_part}{attempts_str}). "
+                        f"(size ~{_fmt_num(unit_qty)} {base_asset}{price_part}{value_part}{attempts_str}). "
                         f"{time_info}Blocked by {reason} (expiry={expiry_detail}). "
                         f"No order submitted to exchange."
                     ),
