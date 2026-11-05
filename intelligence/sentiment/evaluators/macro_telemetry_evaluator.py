@@ -52,22 +52,36 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
     if not isinstance(items, dict):
         return {}
     out: Dict[str, Any] = {}
+    any_cash_live_rth = False
     for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
         fut, cash = items.get(fut_sym), items.get(cash_sym)
         if not isinstance(fut, dict) or not isinstance(cash, dict):
             continue
         fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
         fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
+        cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
+        fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
+        cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
         cash_state = str(cash.get("market_state") or "").strip().upper()
-        is_off_rth = (cash_state and cash_state != "REGULAR") or (cash_1h is None and fut_1h is not None)
+        cash_has_fresh_intraday = (cash_1h is not None or cash_15m is not None) and not (
+            fut_ts is not None and cash_ts is not None and (fut_ts - cash_ts) > 900.0
+        )
+        is_off_rth = (cash_state not in ("", "REGULAR")) or not cash_has_fresh_intraday
+        if not is_off_rth:
+            any_cash_live_rth = True
+            continue
         if fut_24h is not None and cash_24h is not None:
             diff_v = round(fut_24h - cash_24h, 2) + 0.0
-            if abs(diff_v) >= 0.35 or (is_off_rth and abs(diff_v) >= 0.25):
+            dir_ok = (
+                (diff_v > 0.0 and (fut_24h >= -0.15 or (fut_1h is not None and fut_1h >= 0.15)))
+                or (diff_v < 0.0 and (fut_24h <= 0.15 or (fut_1h is not None and fut_1h <= -0.15)))
+            )
+            if dir_ok and abs(diff_v) >= 0.25:
                 out[lead_key] = diff_v
-        elif is_off_rth and fut_1h is not None and abs(fut_1h) >= 0.25:
+        elif fut_1h is not None and abs(fut_1h) >= 0.25:
             out[lead_key] = round(fut_1h, 2) + 0.0
     lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
-    if lead_v is None:
+    if lead_v is None and not any_cash_live_rth:
         lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
     if lead_v is not None and abs(lead_v) >= 0.25:
         out["futures_lead_pct"] = round(lead_v, 2) + 0.0
@@ -299,11 +313,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             d_parts.append(m_state.lower())
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
-    lead_info = (
-        {"futures_lead_pct": data.get("futures_lead_pct"), "futures_lead_regime": data.get("futures_lead_regime")}
-        if data.get("futures_lead_pct") is not None and data.get("futures_lead_regime")
-        else compute_futures_premarket_lead(data)
-    )
+    lead_info = compute_futures_premarket_lead(data)
     if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and (
         lead_reg := str(lead_info.get("futures_lead_regime") or "").strip()
     ) in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):

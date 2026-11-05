@@ -1952,6 +1952,20 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert nvda_bw["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
     assert nvda_bw["futures_lead_pct"] == fut_lead_up["futures_lead_pct"]
 
+    live_rth_selloff_mb = {
+        "items": {
+            "SPY": {"price": 738.57, "chg_24h_pct": -3.68, "chg_1h_pct": -2.06, "chg_15m_pct": -0.86, "last_bar_ts": 1_793_893_900},
+            "QQQ": {"price": 650.13, "chg_24h_pct": -6.05, "chg_1h_pct": -2.50, "chg_15m_pct": -1.09, "last_bar_ts": 1_793_893_900},
+            "ES=F": {"price": 7495.25, "chg_24h_pct": -2.92, "chg_1h_pct": -1.53, "chg_15m_pct": -0.44, "last_bar_ts": 1_793_893_300},
+            "NQ=F": {"price": 27126.50, "chg_24h_pct": -5.04, "chg_1h_pct": -1.89, "chg_15m_pct": -0.59, "last_bar_ts": 1_793_893_300},
+        },
+        "futures_lead_pct": 1.01,
+        "futures_lead_regime": "FUTURES_PREMARKET_GAP_UP",
+    }
+    assert compute_futures_premarket_lead(live_rth_selloff_mb) == {}
+    assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(live_rth_selloff_mb)
+
+
 
 
 

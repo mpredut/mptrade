@@ -599,15 +599,8 @@ def build_cross_market_context(
 
     equity_bellwethers: Dict[str, Any] = {}
     fut_lead = compute_futures_premarket_lead(macro_benchmarks) if isinstance(macro_benchmarks, dict) else {}
-    lead_v = safe_float(
-        macro_benchmarks.get("futures_lead_pct") if isinstance(macro_benchmarks, dict) else None,
-        default=safe_float(fut_lead.get("futures_lead_pct"), default=None),
-    )
-    lead_reg = str(
-        (macro_benchmarks.get("futures_lead_regime") if isinstance(macro_benchmarks, dict) else None)
-        or fut_lead.get("futures_lead_regime")
-        or ""
-    ).strip()
+    lead_v = safe_float(fut_lead.get("futures_lead_pct"), default=None)
+    lead_reg = str(fut_lead.get("futures_lead_regime") or "").strip()
     active_premarket_lead = (
         round(lead_v, 2) + 0.0
         if lead_v is not None

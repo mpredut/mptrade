@@ -435,8 +435,10 @@ def harvest_macro_and_news_sensors(
                         else:
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
-                if "futures_lead_pct" not in enriched:
-                    enriched.update(compute_futures_premarket_lead(enriched))
+                lead_recomputed = compute_futures_premarket_lead(enriched)
+                for lk in ("futures_lead_pct", "futures_lead_regime", "nq_qqq_lead_pct", "es_spy_lead_pct"):
+                    enriched.pop(lk, None)
+                enriched.update(lead_recomputed)
                 if str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
                     enriched["equity_regime"] = compute_equity_macro_regime(enriched)
                 btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
