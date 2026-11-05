@@ -533,7 +533,8 @@ def build_cross_market_context(
     raw_horizon_keys = (
         "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
         "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
-        "chg_7d_pct", "pos_24h_pct", "poc_px", "sec_poc_px", "lvn_px", "vah_px", "val_px", "va_regime", "profile_shape",
+        "chg_7d_pct", "pos_24h_pct", "low_24h", "high_24h", "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px",
+        "poc_px", "sec_poc_px", "lvn_px", "vah_px", "val_px", "va_regime", "profile_shape",
         "slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel",
     )
     _round_slope_keys = {"slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h", "kalman_vel"}

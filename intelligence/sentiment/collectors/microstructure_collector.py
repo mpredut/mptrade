@@ -1205,28 +1205,38 @@ def enrich_24h_and_microstructure(
                         active_7d_vals = list(vals_7d)
                 except Exception:
                     pass
-            if m24.get("vp_source") == "TPO":
-                try:
-                    pts_vp = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0, require_positive_volume=True)
-                    if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
-                        vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
-                        if sym_px_cur <= 0.0 or (vp_last_px > 0.0 and abs(sym_px_cur - vp_last_px) / max(sym_px_cur, vp_last_px) <= 0.015):
-                            l24_b = safe_pos_float(m24.get("low_24h"), default=None)
-                            h24_b = safe_pos_float(m24.get("high_24h"), default=None)
-                            vp_pxs = [float(p[1]) for p in pts_vp if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
-                            if (
-                                l24_b is None
-                                or h24_b is None
-                                or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
-                            ):
-                                if l24_b is not None and h24_b is not None:
-                                    pts_vp = [[p[0], min(h24_b, max(l24_b, float(p[1]))), *p[2:]] for p in pts_vp]
-                                if sym_px_cur > 0:
-                                    pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
-                                if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
-                                    m24.update(vp_real)
-                except Exception:
-                    pass
+        if (
+            s24_is_live_clock
+            and m24.get("vp_source") == "TPO"
+            and (
+                callable(ohlc_fn)
+                or "PYTEST_CURRENT_TEST" not in os.environ
+                or os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
+            )
+        ):
+            try:
+                pts_vp = _load_stitched_24h_ohlc_points(ohlc_fn, sym, now_ts - 86400.0, require_positive_volume=True)
+                if len(pts_vp) >= 8 and (pts_vp[-1][0] - pts_vp[0][0]) >= 18 * 3600 * 1000:
+                    vp_last_px = safe_pos_float(pts_vp[-1][1], default=0.0) or 0.0
+                    if sym_px_cur <= 0.0 or (vp_last_px > 0.0 and abs(sym_px_cur - vp_last_px) / max(sym_px_cur, vp_last_px) <= 0.015):
+                        l24_b = safe_pos_float(m24.get("low_24h"), default=None)
+                        h24_b = safe_pos_float(m24.get("high_24h"), default=None)
+                        vp_pxs = [float(p[1]) for p in pts_vp if len(p) >= 2 and safe_pos_float(p[1], 0.0)]
+                        if (
+                            l24_b is None
+                            or h24_b is None
+                            or (vp_pxs and min(vp_pxs) >= l24_b * 0.985 and max(vp_pxs) <= h24_b * 1.015)
+                        ):
+                            if l24_b is not None and h24_b is not None:
+                                pts_vp = [[p[0], min(h24_b, max(l24_b, float(p[1]))), *p[2:]] for p in pts_vp]
+                            if sym_px_cur > 0:
+                                pts_vp.append([int(now_ts * 1000), sym_px_cur, 0.0])
+                            if (vp_real := compute_volume_profile_metrics(pts_vp)) and vp_real.get("vp_source") == "REAL_VOL":
+                                for _vp_clr_k in ("sec_poc_px", "hvn2_px", "lvn_px"):
+                                    m24.pop(_vp_clr_k, None)
+                                m24.update(vp_real)
+            except Exception:
+                pass
         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
         is_t212_inst = sym in inst_by_sym and normalize_venue_name(getattr(inst_by_sym[sym], "provider_name", "")) == "t212"
         p24_eq_path = (

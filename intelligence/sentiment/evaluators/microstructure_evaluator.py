@@ -818,12 +818,24 @@ def sync_sibling_symbol_telemetry(
                 px_diverged = (not cand_same_quote_family) or _prices_diverged(p_px, s_px)
                 has_own_vp = pinfo.get("poc_px") is not None
                 has_own_bottom = pinfo.get("bottom_structure_6h") is not None
+                if not has_own_bottom and pinfo.get("chg_6h_pct") is not None:
+                    p_l15 = safe_pos_float(pinfo.get("low_15m"), default=None)
+                    p_l24 = safe_pos_float(pinfo.get("low_24h"), default=None)
+                    s_r1h = safe_pos_float(sib_pinfo.get("recent_1h_low_px"), default=None)
+                    s_p6h = safe_pos_float(sib_pinfo.get("prior_6h_low_px"), default=None)
+                    if (p_l15 is not None and s_r1h is not None and s_r1h > p_l15 + 1e-9) or (
+                        p_l24 is not None
+                        and s_r1h is not None
+                        and s_p6h is not None
+                        and min(s_r1h, s_p6h) < p_l24 - 1e-9
+                    ):
+                        has_own_bottom = True
                 for k, v in sib_pinfo.items():
                     if v is None or k == "price" or (px_diverged and k in range_bound_keys):
                         continue
                     if has_own_vp and k in ("sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "vp_source"):
                         continue
-                    if has_own_bottom and k in ("prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct"):
+                    if has_own_bottom and k in ("bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct"):
                         continue
                     if k not in pinfo or pinfo.get(k) is None:
                         pinfo[k] = v

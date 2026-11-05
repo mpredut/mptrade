@@ -438,11 +438,22 @@ def compute_24h_price_metrics(series: list) -> Dict[str, Any]:
                     elif (
                         recent_low >= prior_low
                         and ((recent_low / prior_low) - 1.0) * 100.0 <= 4.5
-                        and (cur_px > recent_low * 1.002 or (recent_low > prior_low * 1.002 and cur_px >= recent_low))
+                        and (
+                            cur_px > recent_low * 1.002
+                            or (recent_low > prior_low * 1.002 and cur_px >= recent_low)
+                            or (recent_low > prior_low and cur_px > recent_low * 1.0005 and cur_px > prior_low * 1.001)
+                        )
                     ):
                         out["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
                         out["higher_low_vs_prior_pct"] = pct_delta(recent_low, prior_low)
-                    elif recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5:
+                    elif (
+                        (recent_low <= prior_low and cur_px <= prior_low and ((cur_px / recent_low) - 1.0) * 100.0 <= 2.5)
+                        or (
+                            recent_low >= prior_low
+                            and ((recent_low / prior_low) - 1.0) * 100.0 <= 0.20
+                            and ((cur_px / prior_low) - 1.0) * 100.0 <= 0.25
+                        )
+                    ):
                         out["bottom_structure_6h"] = "FRESH_6H_LOW_TEST"
                     if "bottom_structure_6h" in out:
                         out["prior_6h_low_px"], out["recent_1h_low_px"] = round(prior_low, eff_dec), round(recent_low, eff_dec)
@@ -908,14 +919,18 @@ def _load_stitched_24h_ohlc_points(
 ) -> List[List[Any]]:
     """Load 5m OHLC points since `cutoff_24h` and prepend older 15m OHLC points when span < 18h."""
     in_pytest = "PYTEST_CURRENT_TEST" in os.environ
+    allow_offline_disk = os.environ.get("MPTRADE_OFFLINE_DISK_CACHE") == "1"
     sym_u = str(sym or "").strip().upper()
     cutoff_ms = (normalize_epoch_sec(cutoff_24h, default=0.0, allow_zero=True) or 0.0) * 1000.0
     cpath = ""
-    if not in_pytest and sym_u and sym_u.replace("_", "").isalnum():
+    disk_fallback_pts: List[List[Any]] = []
+    if (not in_pytest or (allow_offline_disk and not callable(ohlc_fn))) and sym_u and sym_u.replace("_", "").isalnum():
         try:
             cpath = str(cache_path(f"cache_ohlc_24h_{sym_u}.json"))
             st = os.stat(cpath)
-            if 0.0 <= (_time.time() - st.st_mtime) < 240.0:
+            age_s = _time.time() - st.st_mtime
+            max_disk_age = 7200.0 if allow_offline_disk else 3600.0
+            if 0.0 <= age_s < max_disk_age:
                 mkey = (cpath, st.st_mtime_ns, st.st_size)
                 raw_pts = _OHLC_24H_DISK_MEMO.get(mkey)
                 if raw_pts is None:
@@ -938,11 +953,13 @@ def _load_stitched_24h_ohlc_points(
                         and (not require_positive_volume or (len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0))
                     ]
                     if len(filt) >= 8 and (filt[-1][0] - filt[0][0]) >= 18 * 3600 * 1000:
-                        return filt
+                        if age_s < 240.0 or allow_offline_disk or not callable(ohlc_fn):
+                            return filt
+                        disk_fallback_pts = filt
         except Exception:
             pass
     if not callable(ohlc_fn):
-        return []
+        return disk_fallback_pts
     if in_pytest:
         pts = _extract_ohlc_series_points(ohlc_fn(sym, 5), min_ts=cutoff_24h, require_positive_volume=require_positive_volume)
         if not pts or (pts[-1][0] - pts[0][0]) < 18 * 3600 * 1000:
@@ -966,11 +983,14 @@ def _load_stitched_24h_ohlc_points(
             _OHLC_24H_DISK_MEMO[(cpath, st_new.st_mtime_ns, st_new.st_size)] = [list(p) for p in pts_all]
         except Exception:
             pass
-    return (
+    res_pts = (
         [list(p) for p in pts_all if len(p) >= 3 and (safe_pos_float(p[2], 0.0) or 0.0) > 0.0]
         if require_positive_volume
         else pts_all
     )
+    if (len(res_pts) < 8 or (res_pts[-1][0] - res_pts[0][0]) < 18 * 3600 * 1000) and disk_fallback_pts:
+        return disk_fallback_pts
+    return res_pts
 
 
 def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
@@ -1043,7 +1063,14 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo["bottom_structure_6h"] = "LIQUIDITY_SWEEP_RECLAIM"
             pinfo.pop("higher_low_vs_prior_pct", None)
             pinfo["reclaim_above_prior_low_pct"] = pct_delta(p_cur, p6h_lo)
-        elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" or (b_struct == "FRESH_6H_LOW_TEST" and r1h_new >= p6h_lo and p_cur > r1h_new * 1.002):
+        elif b_struct == "HIGHER_LOW_DOUBLE_BOTTOM" or (
+            b_struct == "FRESH_6H_LOW_TEST"
+            and r1h_new >= p6h_lo
+            and (
+                p_cur > r1h_new * 1.002
+                or (r1h_new > p6h_lo and p_cur > r1h_new * 1.0005 and p_cur > p6h_lo * 1.001)
+            )
+        ):
             pinfo["bottom_structure_6h"] = "HIGHER_LOW_DOUBLE_BOTTOM"
             pinfo.pop("reclaim_above_prior_low_pct", None)
             pinfo["higher_low_vs_prior_pct"] = pct_delta(r1h_new, p6h_lo)

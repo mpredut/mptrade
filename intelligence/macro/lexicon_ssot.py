@@ -807,14 +807,30 @@ _PARTISAN_MARKET_CONTEXT_WHITELIST: frozenset[str] = (
     })
 )
 
+_MAJOR_GEOPOLITICAL_THEATER_WORDS: frozenset[str] = frozenset({
+    "china", "chinese", "europe", "gaza", "hormuz", "iran", "iranian", "israel",
+    "israeli", "korea", "korean", "lebanon", "middle", "nato", "pentagon",
+    "russia", "russian", "saudi", "syria", "taiwan", "tehran", "ukraine",
+    "ukrainian", "yemen",
+})
+
 
 def has_financial_or_geopolitical_context(title: Any) -> bool:
     """Return True if a headline contains explicit financial, market, macro, or geopolitical context tokens."""
     if not isinstance(title, str) or not title.strip():
         return False
-    words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
-    if not (words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS):
+    clean_low = _strip_headline_publisher_suffix(title).lower()
+    words = set(re.findall(r"[a-z]{3,}", clean_low))
+    matched_fin = words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS
+    if not matched_fin:
         return False
+    if matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+        return False
+    if "prediction market" in clean_low and (
+        words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})
+    ):
+        if not (words & (_PARTISAN_MARKET_CONTEXT_WHITELIST - {"market", "markets"})):
+            return False
     if (words & _PARTISAN_ELECTION_CONTEXT_WORDS) and not (words & _PARTISAN_MARKET_CONTEXT_WHITELIST):
         return False
     if (words & _COMMERCIAL_METAPHOR_WAR_WORDS) and not (words & (_PARTISAN_MARKET_CONTEXT_WHITELIST | {"chip", "chips", "semiconductor", "semiconductors", "trade"})):
