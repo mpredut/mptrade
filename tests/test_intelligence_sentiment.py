@@ -7684,6 +7684,27 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert pos_nvda[0]["trailing_peak"] == 211.25
     assert t212_cyc_nvda["NVDA_US_EQ"]["pos_peak"] == 211.25
 
+    # apply_asset_scope_filter("equities") preserves equity microstructure while removing crypto microstructure
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import apply_asset_scope_filter
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    _, eq_micro_filtered = apply_asset_scope_filter(
+        {"NVDA_US_EQ": {"price": 206.69}, "BTCUSDC": {"price": 85000.0}},
+        {"NVDA_US_EQ": {"ob_imbalance": 0.58, "whale_long_pct": 0.62}, "BTCUSDC": {"ob_imbalance": 0.45}},
+        {},
+        "equities",
+        {},
+        {"NVDA_US_EQ": {}},
+    )
+    assert "NVDA_US_EQ" in eq_micro_filtered and "BTCUSDC" not in eq_micro_filtered
+    cm_ctx = build_cross_market_context(
+        {"NVDA_US_EQ": {"price": 206.69, "chg_24h_pct": 1.2}},
+        {"NVDA_US_EQ": {"ob_imbalance": 0.58, "whale_long_pct": 0.62, "cvd_15m_usd": 125000.0}},
+        {"NVDA_US_EQ": {"qty": 2.91, "avg_cost_px": 207.93}},
+    )
+    assert cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]["ob_imbalance"] == 0.58
+    assert cm_ctx["equity_bellwethers"]["NVDA_US_EQ"]["whale_long_pct"] == 0.62
+
     # 6. harvest_log_anomalies_from_dirs clears pre-restart SyntaxError and NameError once daemon/cycle recovery lines appear
     log_dir_rec = tmp_path / "logs_rec"
     log_dir_rec.mkdir(parents=True, exist_ok=True)

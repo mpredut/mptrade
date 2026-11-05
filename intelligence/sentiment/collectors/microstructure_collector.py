@@ -855,11 +855,23 @@ def ensure_fresh_symbol_microstructure(
     if not sym_u or "PYTEST_CURRENT_TEST" in os.environ:
         return
     eff_now = resolve_now_ts(now_ts)
+    is_eq = is_equity_symbol(sym_u)
+    if is_eq:
+        try:
+            from instrument_registry import is_symbol_market_open
+
+            rth_open = is_symbol_market_open(sym_u, eff_now)
+        except Exception:
+            rth_open = True
+    else:
+        rth_open = True
 
     def _needs_fetch(prefix: str, max_age: Optional[float]) -> bool:
         fpath = str(resolve_cachedb_filepath(os.path.join(eff_cache_dir, f"{prefix}{sym_u}.json")))
         if not os.path.exists(fpath):
             return True
+        if is_eq and not rth_open:
+            return False
         return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
 
     if _needs_fetch("orderbook_depth_", max_age_ob_sec):
@@ -1509,7 +1521,7 @@ def enrich_24h_and_microstructure(
             if post_rth_px_override is not None:
                 recalculate_live_price_geometry(prices_and_trends[sym], post_rth_px_override)
 
-        if not is_eq_sym and "USD" in compatible_quote_suffixes(sym):
+        if is_eq_sym or "USD" in compatible_quote_suffixes(sym):
             ensure_fresh_symbol_microstructure(
                 cache_dir,
                 sym.upper(),

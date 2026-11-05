@@ -233,7 +233,7 @@ def apply_asset_scope_filter(
 
     if want_t212:
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
-        microstructure = {}
+        microstructure = {k: v for k, v in microstructure.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
         for crypto_key in (
             "total_value_usdc", "live_binance_equity_usdc", "live_hl_spot_equity_usd",
             "kraken_cycles", "hyperliquid_cycles", "hyperliquid_signal", "hyperliquid_readonly",

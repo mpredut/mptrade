@@ -694,6 +694,15 @@ def build_cross_market_context(
             ):
                 if pinfo.get(k7) is not None:
                     eq_entry[k7] = pinfo[k7]
+        eq_m_info = casefold_get(microstructure, eq_sym)
+        if isinstance(eq_m_info, dict):
+            for mk_eq in (
+                "ob_imbalance", "spread_bps", "whale_long_pct", "funding_rate", "oi_1h_chg_pct",
+                "cvd_15m_usd", "cvd_regime", "spot_cvd_15m_usd", "spot_perp_flow_regime", "perp_spot_basis_bps",
+                "depth_1pct_bid_usd", "depth_1pct_ask_usd",
+            ):
+                if eq_m_info.get(mk_eq) is not None:
+                    eq_entry[mk_eq] = eq_m_info.get(mk_eq)
         if t_cyc:
             eq_entry["t212_cycle"] = {
                 k: t_cyc.get(k)
