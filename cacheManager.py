@@ -2445,7 +2445,7 @@ class _PriceSeriesCacheMixin:
                 if self.cache.get(symbol):
                     return []
         try:
-            entry = get_current_price_manager().get_price(symbol)
+            entry = get_current_price_manager(start_sync=False).get_price(symbol)
         except Exception as e:
             print(f"[{self.cls_name}][Error] get_price {symbol}: {e}")
             return []

@@ -1541,6 +1541,19 @@ class TestGetCurrentPriceManagerSingleton(unittest.TestCase):
             )
             ws.subscribe.assert_called_once_with(mgr)
 
+        with self.subTest("price series get_remote_items does not start sync on start_sync=False singleton"):
+            mgr = cm.get_current_price_manager(symbols=["BTC"], start_sync=False)
+            self.assertIsNone(mgr.thread)
+            now_ms = int(time.time() * 1000)
+            with mgr.lock:
+                mgr.cache["BTC"] = [[now_ms, 95000.0]]
+            mixin = cm._PriceSeriesCacheMixin()
+            mixin.lock = cm.threading.RLock()
+            mixin.cache = {}
+            items = mixin.get_remote_items("BTC", 0)
+            self.assertEqual(items, [[now_ms, 95000.0]])
+            self.assertIsNone(mgr.thread)
+
         with self.subTest("initialized singletons and periodic_sync use lock-free fast path"):
             class _ForbidLock:
                 def __enter__(self):
