@@ -50,7 +50,7 @@ _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
 _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
     "campaign", "congressional", "democrat", "democrats", "desantis", "election",
     "elections", "gop", "midterm", "midterms", "poll", "polling", "polls",
-    "primary", "republican", "republicans", "voter", "voters",
+    "primary", "republican", "republicans", "vance", "voter", "voters",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({

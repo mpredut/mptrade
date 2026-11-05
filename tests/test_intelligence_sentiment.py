@@ -6292,6 +6292,14 @@ def test_geopolitical_zero_high_sev_digest_reset_and_false_positive_shield_clean
     high_sev, digest = extract_high_severity_headlines_and_digest(snap_talent_war)
     assert high_sev == []
     assert digest == ""
+    from intelligence.macro.lexicon_ssot import filter_valid_severity_keywords
+    assert (
+        filter_valid_severity_keywords(
+            ["war", "iran war"],
+            title="JD Vance Breaks With Trump on Iran War and Israel, Positions Himself Ahead of 2028",
+        )
+        == ()
+    )
 
     # 2. GeopoliticalThreatAnalyzer.assess immediately resets cached headline-based assessment to calm NORMAL
     #    when news_snapshot has headlines and high_sev is empty, even before cache_ttl_sec expires

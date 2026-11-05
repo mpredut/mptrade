@@ -472,7 +472,6 @@ def harvest_macro_and_news_sensors(
     if (
         isinstance(gt_cur, dict)
         and (gt_digest := str(gt_cur.get("headlines_digest") or "").strip())
-        and valid_news
         and not any(n.get("is_high_severity") for n in valid_news)
     ):
         gt_digest_titles = split_headlines_digest(gt_digest)
@@ -488,7 +487,8 @@ def harvest_macro_and_news_sensors(
             if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
                 try:
                     _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
-                    _save_fn(os.path.join(cache_dir, "geopolitical_eval.json"), {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
+                    geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
+                    _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
                 except Exception:
                     pass
     if (
