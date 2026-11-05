@@ -775,6 +775,29 @@ class TestMacroSentimentSSOTAndDynamicIntervals:
         assert len(urls) >= 5
         assert any("bbci.co.uk" in u for u in urls)
         assert any("aljazeera.com" in u for u in urls)
+        assert any("feeds.finance.yahoo.com" in u and "NVDA" in u for u in urls)
+
+        from intelligence.macro_sentiment_ssot import (
+            build_equity_tickers_rss_url,
+            has_tracked_equity_entity,
+            is_excluded_reference_news_item,
+        )
+
+        eq_rss = build_equity_tickers_rss_url()
+        assert "NVDA" in eq_rss and "SPCX" in eq_rss and "RGNT" in eq_rss
+        assert has_tracked_equity_entity("Morgan Stanley Sees SpaceX Stock Hitting $300 as AI Forecasts Explode")
+        assert has_tracked_equity_entity("AMD Faces Nvidia Software Hurdle, Morningstar Says")
+        assert not has_tracked_equity_entity("2 Bank Stocks to Buy After Their Third-Quarter Earnings Reports")
+        assert is_excluded_reference_news_item(
+            "2 Bank Stocks to Buy After Their Third-Quarter Earnings Reports",
+            "Yahoo! Finance: NVDA SPCX RGNT News",
+            "https://finance.yahoo.com/news/2-bank-stocks",
+        )
+        assert not is_excluded_reference_news_item(
+            "Morgan Stanley Sees SpaceX Stock Hitting $300 as AI Forecasts Explode",
+            "Yahoo! Finance: NVDA SPCX RGNT News",
+            "https://finance.yahoo.com/news/morgan-stanley-spacex",
+        )
 
         # 2. Automatic discovery of emerging crisis bigrams from multi-source headlines
         multi_source_headlines = [

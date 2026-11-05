@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_hist_vol_url,
     get_deribit_options_book_url,
     has_financial_or_geopolitical_context,
+    has_tracked_equity_entity,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
     is_off_topic_general_news_title,
@@ -304,7 +305,7 @@ def _read_first_cached_dict(
 
 
 def harvest_macro_and_news_sensors(
-    cache_dir: str, now_ts: float, read_json_fn: Any = None,
+    cache_dir: str, now_ts: float, read_json_fn: Any = None, *, scope: str = "",
 ) -> tuple[Dict[str, Optional[Dict[str, Any]]], List[Dict[str, Any]]]:
     """Harvest Fear & Greed, Market Breadth, Sentiment Advisor, Geopolitical Threat, Macro Benchmarks, and Breaking News."""
     now_ts = resolve_now_ts(now_ts)
@@ -530,9 +531,29 @@ def harvest_macro_and_news_sensors(
                     break
             if not merged_dup:
                 valid_news.append(cand_entry)
+        scope_norm = str(scope or "").strip().lower()
         valid_news.sort(
             key=lambda x: (
                 1 if x.get("is_high_severity") else 0,
+                (
+                    1
+                    if (
+                        scope_norm == "equities"
+                        and (
+                            has_tracked_equity_entity(x.get("title"))
+                            or "yahoo! finance" in str(x.get("source") or "").lower()
+                        )
+                    )
+                    else (
+                        -1
+                        if (
+                            scope_norm == "crypto"
+                            and "yahoo! finance" in str(x.get("source") or "").lower()
+                            and not x.get("is_high_severity")
+                        )
+                        else 0
+                    )
+                ),
                 0
                 if is_off_topic_general_news_title(x.get("title"))
                 else (2 if has_financial_or_geopolitical_context(x.get("title")) else 1),
@@ -717,7 +738,10 @@ def populate_market_and_portfolio_snapshot(
     now_ts = resolve_now_ts(now_ts)
     _rj = _resolve_read_json_cached(read_json_fn, default_fn=read_json_recovering)
     _rj_any = read_json_recovering if _rj is _default_read_json_cached else _rj
-    macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
+    try:
+        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj, scope=scope)
+    except TypeError:
+        macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
         setattr(snapshot, attr, val)
     if str(scope or "").strip().lower() == "equities":

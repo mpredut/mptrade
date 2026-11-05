@@ -646,10 +646,69 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
     return template.format(query=query_str) if "{query}" in template else template
 
 
+def build_equity_tickers_rss_url() -> str:
+    """Build the Yahoo Finance RSS headline feed URL for all active tracked equity tickers."""
+    template = _ssot._cfg_str("feeds", "equity_tickers_rss_template")
+    if not template:
+        return ""
+    try:
+        from cachepaths import canonical_base_asset
+        from instrument_registry import is_equity_symbol, tracked_price_instruments
+
+        all_syms = tracked_price_instruments()[0]
+        tickers = [
+            base
+            for sym in all_syms
+            if is_equity_symbol(sym) and (base := canonical_base_asset(sym))
+        ]
+    except Exception:
+        tickers = []
+    dedup_tickers = list(dict.fromkeys(tickers))
+    if not dedup_tickers:
+        return ""
+    return template.format(tickers=",".join(dedup_tickers)) if "{tickers}" in template else template
+
+
+def get_equity_entity_keywords() -> Tuple[str, ...]:
+    """Return configured equity company/ticker keywords plus active tracked equity base symbols."""
+    cfg_kws = list(_split_csv(_ssot._cfg_str("feeds", "equity_entity_keywords"), lower=True))
+    try:
+        from cachepaths import canonical_base_asset
+        from instrument_registry import is_equity_symbol, tracked_price_instruments
+
+        for sym in tracked_price_instruments()[0]:
+            if is_equity_symbol(sym):
+                base = canonical_base_asset(sym).lower()
+                if base and base not in cfg_kws:
+                    cfg_kws.append(base)
+    except Exception:
+        pass
+    return tuple(dict.fromkeys(k for k in cfg_kws if k))
+
+
+def has_tracked_equity_entity(title: Any) -> bool:
+    """Return True if ``title`` explicitly mentions any tracked equity ticker or company keyword."""
+    if not isinstance(title, str) or not title.strip():
+        return False
+    words = set(re.findall(r"[a-z0-9]{2,}", _strip_headline_publisher_suffix(title).lower()))
+    if not words:
+        return False
+    return bool(words & set(get_equity_entity_keywords()))
+
+
 def get_specialized_rss_urls(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Tuple[str, ...]:
-    """Return curated specialized editorial RSS feeds + dynamically built crisis query feed."""
+    """Return curated specialized editorial RSS feeds + equity ticker RSS feed + dynamically built crisis query feed."""
     dyn_url = build_dynamic_rss_url(cache_dir=cache_dir, now_ts=now_ts)
-    return tuple(dict.fromkeys((*_split_csv(_ssot._cfg_str("feeds", "specialized_rss_urls")), *([dyn_url] if dyn_url else []))))
+    eq_url = build_equity_tickers_rss_url()
+    return tuple(
+        dict.fromkeys(
+            (
+                *_split_csv(_ssot._cfg_str("feeds", "specialized_rss_urls")),
+                *([eq_url] if eq_url else []),
+                *([dyn_url] if dyn_url else []),
+            )
+        )
+    )
 
 
 def get_excluded_reference_sources() -> Tuple[str, ...]:
@@ -662,6 +721,7 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     title_s = str(title or "").strip()
     title_l = title_s.lower()
     url_l = str(url or "").strip().lower()
+    src_l = str(source or "").strip().lower()
     if title_l and re.search(
         r"^['‘\"].*['’\"]:\s*(?:i(?:['’]m|['’]ve|\s+have|\s+am)|we(?:['’]re|['’]ve|\s+have|\s+are)|my\s+(?:husband|wife|spouse|partner|parents|mother|father|adviser|advisor))\b|^cramer:\s|\b(?:should i stop going|pushing roth conversions|we.re in our|annuity sales pitch|what politician speaks for me|worst-performing s&p 500 stock is finally seeing|a massive trade just happened in a leading|most investors are blind to|here is the [a-z0-9-]+(?:\s+strategy|\s+plan|\s+way)\s+to\s+survive)\b",
         title_l,
@@ -669,10 +729,12 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
         return True
     if url_l and ("/investingclub/" in url_l or "watch-options-action-live" in url_l):
         return True
+    if ("yahoo! finance" in src_l or "feeds.finance.yahoo.com" in url_l) and title_s:
+        if not has_tracked_equity_entity(title_s) and not match_high_severity_keywords(title_s):
+            return True
     excluded = get_excluded_reference_sources()
     if not excluded:
         return False
-    src_l = str(source or "").strip().lower()
     pub_sfx = ""
     if " - " in title_s:
         pub_sfx = title_s.rsplit(" - ", 1)[-1].strip().lower()
@@ -787,11 +849,13 @@ _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
         "currency", "debt", "dollar", "economy", "economic", "energy", "etf",
         "exports", "fed", "fomc", "gas", "gdp", "gold", "imports", "inflation",
         "interest", "investor", "investors", "jobs", "liquidity", "loan",
-        "loans", "macro", "opec", "payroll", "payrolls", "pce", "policy",
-        "powell", "price", "prices", "rate", "rates", "recession", "reserve",
-        "retail", "sec", "semiconductor", "semiconductors", "shares", "supply",
-        "tariff", "tariffs", "tax", "taxes", "tech", "trade", "trading",
-        "treasuries", "unemployment", "yield", "yields",
+        "loans", "macro", "nvda", "nvidia", "opec", "payroll", "payrolls",
+        "pce", "policy", "powell", "price", "prices", "rate", "rates",
+        "recession", "regentis", "reserve", "retail", "rgnt", "sec",
+        "semiconductor", "semiconductors", "shares", "spacex", "spcx",
+        "starlink", "stock", "supply", "tariff", "tariffs", "tax", "taxes",
+        "tech", "trade", "trading", "treasuries", "unemployment", "yield",
+        "yields",
     })
 )
 
