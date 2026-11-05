@@ -1152,7 +1152,10 @@ def harvest_heartbeats_and_state_files(
         s_path = os.path.join(workspace_dir, s_file)
         if os.path.exists(s_path):
             try:
-                state_files[s_file] = {"age_hours": max(0.0, (now_ts - os.path.getmtime(s_path)) / 3600.0)}
+                age_h = max(0.0, (now_ts - os.path.getmtime(s_path)) / 3600.0)
+                if s_file != ".resource_watchdog_state.json" and age_h > 24.0:
+                    continue
+                state_files[s_file] = {"age_hours": round(age_h, 4)}
             except OSError:
                 pass
     return active_heartbeats, state_files

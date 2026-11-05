@@ -740,7 +740,7 @@ def reconcile_venue_cycles_with_recent_orders(
                     replaceable_kinds = ("", "TP", "STOP") if is_newer_partial_sell else ("", "TP")
                     lifo_pnl_ro = safe_float(ro_c.get("lifo_realized_pnl_usd"), default=0.0) or 0.0
                     is_loss_or_scratch_sell = sell_p < ref_avg * 0.995 or (
-                        sell_p < ref_avg - 1e-6 and (is_newer_partial_sell or lifo_pnl_ro < 0.0)
+                        sell_p < ref_avg - 1e-6 and (lifo_pnl_ro < 0.0 or (is_newer_partial_sell and lifo_pnl_ro <= 0.0))
                     )
                     if is_loss_or_scratch_sell and cur_kind in replaceable_kinds:
                         c_dict["last_exit_kind"] = "REDUCE"

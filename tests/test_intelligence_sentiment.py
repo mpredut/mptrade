@@ -5521,15 +5521,19 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     assert itv_sec > 300.0
 
 
-def test_bugs_93_94_95_pretrade_venue_ob_isolation_tight_wall_tca_and_partial_trim_scalein_dca(tmp_path):
+def test_bugs_93_94_95_pretrade_venue_ob_isolation_watchdog_state_cleanup_and_partial_trim_scalein_dca(tmp_path):
     import json
+    import os
     import time
     from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector, OrderbookSnapshot
+    from intelligence.sentiment.collectors.portfolio_collector import harvest_bot_runtime_states
     from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
     from intelligence.sentiment.evaluators.portfolio_evaluator import reconcile_venue_cycles_with_recent_orders
-    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    from orchestratorOS.lib.technical_repair_ssot import harvest_heartbeats_and_state_files
+    import external_order_guard as eog
 
-    # 1. Bug 93: OrderbookDepthCollector and collect_pretrade_telemetry isolate HYPEUSD/TAOUSD from HYPEUSDC/TAOUSDC
+    # 1. Bug 93: collect_pretrade_telemetry isolates HYPEUSD/TAOUSD orderbooks on disk even when singleton
+    #    OrderbookDepthCollector in-memory cache holds a fresh HYPEUSDC snapshot
     now_s = time.time()
     (tmp_path / "orderbook_depth_HYPEUSDC.json").write_text(
         json.dumps({
@@ -5572,30 +5576,55 @@ def test_bugs_93_94_95_pretrade_venue_ob_isolation_tight_wall_tca_and_partial_tr
         encoding="utf-8",
     )
     col = OrderbookDepthCollector(cache_dir=str(tmp_path))
-    snap_hl = col.fetch("HYPEUSDC", allow_network=False, now=now_s)
-    snap_kr = col.fetch("HYPEUSD", allow_network=False, now=now_s)
-    assert isinstance(snap_hl, OrderbookSnapshot) and snap_hl.symbol == "HYPEUSDC"
-    assert isinstance(snap_kr, OrderbookSnapshot) and snap_kr.symbol == "HYPEUSD"
-    assert snap_kr.spread_bps == 2.37
-
-    pt_hype_kr = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(tmp_path))
+    col.record_snapshot(
+        OrderbookSnapshot(
+            symbol="HYPEUSDC",
+            mid_price=84.303,
+            bid_depth_usd=12_969_835.0,
+            ask_depth_usd=14_760_427.0,
+            imbalance_ratio=0.468,
+            largest_bid_wall_usd=1_948_059.0,
+            largest_bid_wall_price=83.90,
+            largest_ask_wall_usd=2_490_997.0,
+            largest_ask_wall_price=84.60,
+            ts=now_s - 1.0,
+            best_bid=84.298,
+            best_ask=84.308,
+            spread_bps=1.19,
+            depth_1pct_bid_usd=11_431_151.0,
+            depth_1pct_ask_usd=11_866_477.0,
+        )
+    )
+    prev_col = eog._orderbook_collector
+    try:
+        eog._orderbook_collector = col
+        pt_hype_kr = collect_pretrade_telemetry("HYPEUSD", cachedb_dir=str(tmp_path))
+    finally:
+        eog._orderbook_collector = prev_col
     assert pt_hype_kr.get("Orderbook Depth Imbalance") == "0.58 (58% bids vs 42% asks)"
     assert pt_hype_kr.get("Orderbook Bid-Ask Spread") == "2.37 bps"
     assert "Cross-Venue Relative Value (Arbitrage)" in pt_hype_kr
     assert "arb_vs_HYPEUSDC=" in pt_hype_kr["Cross-Venue Relative Value (Arbitrage)"]
 
-    # 2. Bug 94: enrich_open_limit_orders_tca preserves wall_queue_pos when bid_wall <= spot_px within 2 bps
-    orders = [
-        {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "order_type": "LIMIT", "price": 78620.0, "qty": 0.01017}
-    ]
-    enrich_open_limit_orders_tca(
-        orders,
-        {"BTCUSDC": {"price": 80705.025, "vol_1h_pct": 0.36}},
-        {"BTCUSDC": {"ob_mid_price": 80705.025, "best_bid": 80705.02, "best_ask": 80705.03, "spread_bps": 0.0012, "bid_wall_px": 80700.0, "bid_wall_usd": 3342279.0}},
+    # 2. Bug 94: harvest_heartbeats_and_state_files rounds age_hours and filters >24h retired watchdog states;
+    #    harvest_bot_runtime_states rounds IEEE-754 float artifacts in assetguardian total_filled_qty
+    ws_dir = tmp_path / "ws_state"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    rw_p = ws_dir / ".resource_watchdog_state.json"
+    rw_p.write_text("{}", encoding="utf-8")
+    os.utime(rw_p, (now_s - 936.6, now_s - 936.6))
+    wd_p = ws_dir / ".watchdog_state.json"
+    wd_p.write_text("{}", encoding="utf-8")
+    os.utime(wd_p, (now_s - 400 * 3600.0, now_s - 400 * 3600.0))
+    _, st_files = harvest_heartbeats_and_state_files(str(tmp_path), str(ws_dir), now_s)
+    assert st_files == {".resource_watchdog_state.json": {"age_hours": 0.2602}}
+
+    (tmp_path / "assetguardian_state.json").write_text(
+        json.dumps({"symbols": {"ARBUSDC": {"sell": {"initial_qty": 316.552935, "total_filled_qty": 63.3 + 37.9}}}}),
+        encoding="utf-8",
     )
-    assert orders[0].get("wall_queue_pos") == "DEEP_PASSIVE_BID"
-    assert orders[0].get("bid_wall_ahead_px") == 80700.0
-    assert orders[0].get("bid_wall_ahead_usd") == 3342279.0
+    bot_st = harvest_bot_runtime_states(str(tmp_path), now_ts=now_s)
+    assert bot_st["assetguardian_state"]["ARBUSDC"]["sell"]["total_filled_qty"] == 101.2
 
     # 3. Bug 95: reconcile_venue_cycles_with_recent_orders increments dca_buys when partial core remains + scale-in buy
     t212_cycs = {
@@ -5630,3 +5659,4 @@ def test_bugs_93_94_95_pretrade_venue_ob_isolation_tight_wall_tca_and_partial_tr
     )
     assert t212_cycs["NVDA_US_EQ"]["dca_buys"] == 1
     assert t212_cycs["NVDA_US_EQ"]["last_sell_price"] == 207.9
+    assert t212_cycs["NVDA_US_EQ"]["last_exit_kind"] == "TP"

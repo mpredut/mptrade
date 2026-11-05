@@ -1235,6 +1235,12 @@ def harvest_bot_runtime_states(
             if str(ag_sym).upper() in dust_binance_syms and "sell" in sym_copy:
                 if not isinstance(sell_st := sym_copy.get("sell"), dict) or not sell_st.get("pending"):
                     sym_copy.pop("sell", None)
+            if isinstance(sell_d := sym_copy.get("sell"), dict):
+                sell_copy = dict(sell_d)
+                for qk in ("total_filled_qty", "initial_qty"):
+                    if isinstance(sell_copy.get(qk), float):
+                        sell_copy[qk] = round(sell_copy[qk], 8)
+                sym_copy["sell"] = sell_copy
             if sym_copy:
                 cleaned_ag_syms[ag_sym] = sym_copy
         if cleaned_ag_syms:
