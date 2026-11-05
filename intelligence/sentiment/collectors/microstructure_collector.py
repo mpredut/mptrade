@@ -324,6 +324,7 @@ def load_symbol_price_series(
             _stat_list = []
             for _sp in _cand_paths(
                 *(f"cache_24_price_{c}.json" for c in cands),
+                *((f"cache_ohlc_24h_{c}.json" for c in cands) if is_eq_sym else ()),
                 *(f"cache_sparse_price_{c}.jsonl" for c in cands),
                 *(f"cache_365_price_{c}.jsonl" for c in cands),
                 *(f"cache_365_price_{c}.json" for c in cands),
@@ -384,7 +385,11 @@ def load_symbol_price_series(
                     rows = rows[:split_idx]
                     break
         last_ohlc_idx = max(
-            (i for i, r in enumerate(rows) if isinstance(r, (list, tuple)) and len(r) >= 3),
+            (
+                i
+                for i, r in enumerate(rows)
+                if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+            ),
             default=-1,
         )
         if 1 <= last_ohlc_idx < len(rows) - 1:
@@ -395,6 +400,7 @@ def load_symbol_price_series(
                 and tail_pts
                 and (tail_pts[-1][0] - last_ohlc_pt[0]) > 20 * 60 * 1000
                 and max(p[1] for p in tail_pts) == min(p[1] for p in tail_pts)
+                and abs(tail_pts[0][1] - last_ohlc_pt[1]) <= 1e-6
             ):
                 return rows[: last_ohlc_idx + 1]
         last_pt = _parse_ts_px_row(rows[-1])
@@ -419,14 +425,71 @@ def load_symbol_price_series(
                     anchor_idx -= 1
             anchor_pt = _parse_ts_px_row(rows[anchor_idx]) if 1 <= anchor_idx < len(rows) - 1 else None
             if anchor_pt is not None and (last_pt[0] - anchor_pt[0]) > 20 * 60 * 1000:
-                return rows[: anchor_idx + 1]
+                next_flat_pt = _parse_ts_px_row(rows[anchor_idx + 1]) if (anchor_idx + 1) < len(rows) else None
+                gap_after_anchor_ms = (next_flat_pt[0] - anchor_pt[0]) if next_flat_pt is not None else 0.0
+                rth_open_at_last = False
+                if gap_after_anchor_ms <= 20 * 60 * 1000:
+                    try:
+                        from instrument_registry import is_symbol_market_open
+
+                        rth_open_at_last = bool(is_symbol_market_open(symbol, last_pt[0] / 1000.0))
+                    except Exception:
+                        rth_open_at_last = False
+                if not rth_open_at_last or gap_after_anchor_ms > 20 * 60 * 1000:
+                    return rows[: anchor_idx + 1]
+                downsampled_flat = [rows[anchor_idx]]
+                last_kept_t = anchor_pt[0]
+                for r_fl in rows[anchor_idx + 1 : -1]:
+                    pt_fl = _parse_ts_px_row(r_fl)
+                    if pt_fl is not None and (pt_fl[0] - last_kept_t) >= 55000.0:
+                        downsampled_flat.append(r_fl)
+                        last_kept_t = pt_fl[0]
+                downsampled_flat.append(rows[-1])
+                return rows[:anchor_idx] + downsampled_flat
         return rows
 
     for cand in cands:
         for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _strip_off_rth_flat_poller_tail(_sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands)))
+            raw_ser = _sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
+            if is_eq_sym_load and len(raw_ser) >= 2:
+                for ohlc24_path in _cand_paths(f"cache_ohlc_24h_{cand}.json"):
+                    if not os.path.exists(ohlc24_path):
+                        continue
+                    ohlc24_obj = _rj(ohlc24_path)
+                    ohlc24_pts = (
+                        ohlc24_obj.get("points")
+                        if isinstance(ohlc24_obj, dict) and isinstance(ohlc24_obj.get("points"), list)
+                        else _extract_cached_items_series(ohlc24_obj, cands)
+                    )
+                    ohlc_bars = [
+                        r
+                        for r in _sort_ts_rows(ohlc24_pts or [])
+                        if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                    ]
+                    if (
+                        len(ohlc_bars) >= 4
+                        and (ohlc_0 := _parse_ts_px_row(ohlc_bars[0])) is not None
+                        and (ohlc_last := _parse_ts_px_row(ohlc_bars[-1])) is not None
+                        and (ser_last := _parse_ts_px_row(raw_ser[-1])) is not None
+                        and not _prices_diverged(ohlc_last[1], ser_last[1])
+                    ):
+                        by_bar_ts = {}
+                        for r_s in raw_ser:
+                            if (pt_s := _parse_ts_px_row(r_s)) is not None:
+                                if (
+                                    (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and (safe_pos_float(r_s[2], default=0.0) or 0.0) > 0.0)
+                                    or pt_s[0] < ohlc_0[0]
+                                    or pt_s[0] > ohlc_last[0]
+                                ):
+                                    by_bar_ts[pt_s[0]] = r_s
+                        for r_o in ohlc_bars:
+                            if (pt_o := _parse_ts_px_row(r_o)) is not None:
+                                by_bar_ts[pt_o[0]] = r_o
+                        raw_ser = [by_bar_ts[k] for k in sorted(by_bar_ts)]
+                    break
+            ser = _strip_off_rth_flat_poller_tail(raw_ser)
             if len(ser) >= 2:
                 series_24h = list(ser) if not series_24h else _prepend_older_non_diverged_points(series_24h, ser)
                 p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
@@ -1464,7 +1527,8 @@ def enrich_24h_and_microstructure(
             is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
             and (
-                memo_chart_fresh
+                memo_chart is not None
+                or eq_rth_open
                 or raw_s24_last_ts_ms <= 0.0
                 or (int(now_ts * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000
                 or "chg_24h_pct" not in m24
@@ -1668,7 +1732,25 @@ def enrich_24h_and_microstructure(
                                 )
                             ):
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
-                                save_json_state(p24_target, {"items": {sym: eff_p24_pts}})
+                                last_pt_ts = (
+                                    safe_pos_int(eff_p24_pts[-1][0], default=int(now_ts * 1000)) or int(now_ts * 1000)
+                                    if isinstance(eff_p24_pts[-1], (list, tuple)) and eff_p24_pts[-1]
+                                    else int(now_ts * 1000)
+                                )
+                                prev_meta = read_json_dict(f"{p24_target}.meta") if os.path.exists(f"{p24_target}.meta") else {}
+                                prev_ft = prev_meta.get("fetchtime") if isinstance(prev_meta.get("fetchtime"), dict) else {}
+                                prev_rc = prev_meta.get("rest_sync_cursor") if isinstance(prev_meta.get("rest_sync_cursor"), dict) else {}
+                                eff_ft_ts = max(
+                                    safe_pos_int(prev_ft.get(sym), default=0) or 0,
+                                    safe_pos_int(prev_meta.get("max_ts"), default=0) or 0,
+                                    last_pt_ts,
+                                )
+                                ft_map = {**prev_ft, sym: eff_ft_ts}
+                                rc_map = {**prev_rc, sym: safe_pos_int(prev_rc.get(sym), default=eff_ft_ts) or eff_ft_ts}
+                                save_json_state(
+                                    p24_target,
+                                    {"items": {sym: eff_p24_pts}, "fetchtime": ft_map, "rest_sync_cursor": rc_map},
+                                )
                             if pts_24h_to_save or pts_24h_bars:
                                 ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
                                 save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
@@ -1677,7 +1759,7 @@ def enrich_24h_and_microstructure(
                                 atomic_write_jsonl(
                                     p365_jsonl_path,
                                     [
-                                        {"i": [int(_pt[0]), _pt[1]]}
+                                        {"s": sym, "i": [int(_pt[0]), _pt[1]]}
                                         for _pt in pts_5d
                                         if isinstance(_pt, (list, tuple)) and len(_pt) >= 2
                                     ],

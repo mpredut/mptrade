@@ -1952,6 +1952,65 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert nvda_bw["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
     assert nvda_bw["futures_lead_pct"] == fut_lead_up["futures_lead_pct"]
 
+    # 9. SSOT evaluate_institutional_posture_divergence (Skew_25d & Futures_Lead) + Enterprise VaR Macro Vol Stress Floor
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import evaluate_institutional_posture_divergence
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import compute_enterprise_portfolio_risk_metrics
+
+    raw_unpopulated_gap = {
+        "items": {
+            "SPY": {"price": 580.0, "chg_24h_pct": -0.45},
+            "QQQ": {"price": 498.0, "chg_24h_pct": -0.60},
+            "ES=F": {"price": 5835.0, "chg_1h_pct": 0.42, "chg_24h_pct": 0.48},
+            "NQ=F": {"price": 20450.0, "chg_1h_pct": 0.55, "chg_24h_pct": 0.65},
+            "IBIT": {"price": 46.2, "chg_24h_pct": 1.20},
+        },
+        "equity_regime": "NEUTRAL",
+        "btc_skew_25d_pct": -3.10,
+    }
+    raw_eq_line = format_equity_macro_regime_line(raw_unpopulated_gap)
+    assert raw_eq_line.startswith("RISK_ON (")
+    assert "Futures_Lead=" in raw_eq_line
+
+    div_skew_buy = evaluate_institutional_posture_divergence(
+        "DEFENSIVE",
+        "BEARISH",
+        "Remaining cautious on macro.",
+        raw_unpopulated_gap,
+        live_tr=1.02,
+    )
+    assert div_skew_buy is not None
+    assert div_skew_buy["direction"] == "BUY"
+    assert "Futures_Lead=" in div_skew_buy["inst_lbl"]
+    assert "Skew_25d=-3.10%" in div_skew_buy["inst_lbl"]
+
+    base_ps = {
+        "tradable_positions": [
+            {"venue": "binance", "symbol": "ETHUSDC", "base": "ETH", "quote": "USDC", "value_usd": 4000.0},
+            {"venue": "t212", "symbol": "NVDA_US_EQ", "base": "NVDA", "quote": "USD", "value_usd": 3000.0},
+        ],
+        "venue_quote_cash": {
+            "binance": {"venue": "binance", "asset": "USDC", "free": 1000.0},
+        },
+    }
+    quiet_1h_pt = {
+        "ETHUSDC": {"price": 2800.0, "vol_1h_pct": 0.25},
+        "NVDA_US_EQ": {"price": 138.5, "vol_1h_pct": 0.25},
+    }
+    risk_calm = compute_enterprise_portfolio_risk_metrics(base_ps, quiet_1h_pt, {})
+    stress_ps = {
+        **base_ps,
+        "macro_benchmarks": {
+            "items": {"VIX": {"price": 32.0, "chg_24h_pct": 14.0}},
+            "options_vol_regime": "EXTREME_FEAR_IV",
+            "eth_dvol": 78.0,
+            "eth_rv_pct": 84.0,
+            "eth_vrp_pct": -6.0,
+        },
+    }
+    risk_stress = compute_enterprise_portfolio_risk_metrics(stress_ps, quiet_1h_pt, {})
+    assert risk_stress["intraday_var_95_usd"] > risk_calm["intraday_var_95_usd"] * 1.8
+
+
     live_rth_selloff_mb = {
         "items": {
             "SPY": {"price": 738.57, "chg_24h_pct": -3.68, "chg_1h_pct": -2.06, "chg_15m_pct": -0.86, "last_bar_ts": 1_793_893_900},

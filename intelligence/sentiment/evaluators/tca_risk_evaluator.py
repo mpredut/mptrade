@@ -404,6 +404,25 @@ def compute_enterprise_portfolio_risk_metrics(
     unified_nav = float(nav.get("portfolio_total_usd") or 0.0)
 
     pos_exposures: List[Tuple[str, bool, float, float, float, float]] = []
+    mb_snap = portfolio_summary.get("macro_benchmarks") if isinstance(portfolio_summary.get("macro_benchmarks"), dict) else {}
+    mb_items = mb_snap.get("items") if isinstance(mb_snap.get("items"), dict) else mb_snap
+    vix_entry = mb_items.get("VIX") if isinstance(mb_items, dict) and isinstance(mb_items.get("VIX"), dict) else {}
+    vix_px = safe_pos_float(vix_entry.get("price"), default=None)
+    vix_daily_floor = (vix_px / math.sqrt(252.0)) if vix_px is not None else None
+    btc_iv_rv_max = max(
+        safe_pos_float(mb_snap.get("btc_dvol"), default=0.0) or 0.0,
+        safe_pos_float(mb_snap.get("btc_rv_pct"), default=0.0) or 0.0,
+    )
+    eth_iv_rv_max = max(
+        safe_pos_float(mb_snap.get("eth_dvol"), default=0.0) or 0.0,
+        safe_pos_float(mb_snap.get("eth_rv_pct"), default=0.0) or 0.0,
+    )
+    is_macro_vol_stress = (
+        str(mb_snap.get("options_vol_regime") or "").strip().upper() == "EXTREME_FEAR_IV"
+        or (safe_float(mb_snap.get("btc_vrp_pct"), default=0.0) or 0.0) < 0.0
+        or (safe_float(mb_snap.get("eth_vrp_pct"), default=0.0) or 0.0) < 0.0
+        or (vix_px is not None and vix_px >= 28.0)
+    )
     for v_name, p, val_u in grouped_positions:
         if val_u >= 1.0:
             sym = str(p.get("symbol") or "").strip().upper()
@@ -432,13 +451,37 @@ def compute_enterprise_portfolio_risk_metrics(
                 raw_corr_v = raw_corr_v / 100.0
             corr_v = max(-1.0, min(1.0, raw_corr_v))
             vol_1h_raw = safe_pos_float(_resolve_p_metric("vol_1h_pct"), default=None)
+            macro_daily_vol = (
+                vix_daily_floor
+                if is_eq
+                else (
+                    (eth_iv_rv_max / math.sqrt(365.0))
+                    if (base == "ETH" and eth_iv_rv_max > 0.0)
+                    else (
+                        (btc_iv_rv_max / math.sqrt(365.0)) * (1.0 if base == "BTC" else max(0.8, min(1.5, abs(beta_v))))
+                        if btc_iv_rv_max > 0.0
+                        else None
+                    )
+                )
+            )
             if vol_1h_raw is not None:
-                daily_vol_pct = min(25.0, max(0.8, vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)))
+                raw_daily_v = vol_1h_raw * math.sqrt(6.5 if is_eq else 24.0)
+                if is_macro_vol_stress and macro_daily_vol is not None:
+                    raw_daily_v = max(raw_daily_v, macro_daily_vol)
+                daily_vol_pct = min(25.0, max(0.8, raw_daily_v))
             elif is_eq:
                 span_7d = safe_pos_float(_resolve_p_metric("span_7d_pct"), default=None)
-                daily_vol_pct = min(25.0, max(0.8, (span_7d / (2.0 * math.sqrt(5.0))) if span_7d is not None else 2.2))
+                daily_vol_pct = min(
+                    25.0,
+                    max(
+                        0.8,
+                        (span_7d / (2.0 * math.sqrt(5.0)))
+                        if span_7d is not None
+                        else (macro_daily_vol if macro_daily_vol is not None else 2.2),
+                    ),
+                )
             else:
-                daily_vol_pct = min(25.0, max(0.8, 1.0 * math.sqrt(24.0)))
+                daily_vol_pct = min(25.0, max(0.8, macro_daily_vol if macro_daily_vol is not None else (1.0 * math.sqrt(24.0))))
             pos_exposures.append((base, is_eq, val_u, beta_v, corr_v, daily_vol_pct))
 
     if unified_nav <= 0.0:

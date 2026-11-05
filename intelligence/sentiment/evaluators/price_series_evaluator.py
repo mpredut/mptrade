@@ -210,7 +210,18 @@ def compute_volume_profile_metrics(
                 raw_pairs = [(px_f, 0.0) for px_f in scalar_rows]
             n_with_vol_col = sum(1 for r in series if isinstance(r, (list, tuple)) and len(r) >= 3)
             n_pos_vol = sum(1 for _, vol_w in raw_pairs if vol_w > 0.0)
-            has_real_vol = n_pos_vol >= max(4, min(len(raw_pairs), max(n_with_vol_col, 16)) // 4)
+            vol_cov_fresh = True
+            if timed_rows and n_pos_vol > 0:
+                last_pos_idx = max((i for i, (_, _, v) in enumerate(s_rows) if v > 0.0), default=-1)
+                if (
+                    0 <= last_pos_idx < len(s_rows) - 1
+                    and (s_rows[-1][0] - s_rows[last_pos_idx][0]) > 6 * 3600 * 1000
+                    and (len(s_rows) - 1 - last_pos_idx) > n_pos_vol * 2
+                ):
+                    vol_cov_fresh = False
+            has_real_vol = bool(
+                vol_cov_fresh and n_pos_vol >= max(4, min(len(raw_pairs), max(n_with_vol_col, 16)) // 4)
+            )
 
         samples: list[Tuple[float, float]] = []
         prev_px: Optional[float] = None

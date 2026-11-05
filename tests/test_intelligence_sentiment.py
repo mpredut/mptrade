@@ -8122,6 +8122,36 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     vp_mixed = compute_volume_profile_metrics(mixed_vp_series)
     assert vp_mixed.get("vp_source") == "REAL_VOL"
 
+    stale_vol_series = [
+        [int((now_s_rec - 86400 + i * 300) * 1000), round(202.0 + (i % 4) * 0.5, 4), 1500.0]
+        for i in range(20)
+    ] + [[int((now_s_rec - 7200 + j * 30) * 1000), round(185.0 + (j % 5) * 0.2, 4)] for j in range(120)]
+    vp_stale_vol = compute_volume_profile_metrics(stale_vol_series)
+    assert vp_stale_vol.get("vp_source") == "TPO"
+    assert vp_stale_vol.get("poc_px", 0.0) < 190.0
+
+    cdir_eq_ohlc = tmp_path / "cdir_eq_ohlc"
+    (cdir_eq_ohlc / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir_eq_ohlc / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": stale_vol_series}}),
+        encoding="utf-8",
+    )
+    fresh_ohlc24 = [
+        [int((now_s_rec - 86400 + i * 1800) * 1000), round(200.0 - i * 0.3, 4), 1200.0]
+        for i in range(44)
+    ] + [
+        [int((now_s_rec - 3600 + k * 300) * 1000), round(185.0 + (k % 3) * 0.25, 4), 2400.0]
+        for k in range(12)
+    ]
+    (cdir_eq_ohlc / "prices" / "cache_ohlc_24h_NVDA_US_EQ.json").write_text(
+        json.dumps({"ts": now_s_rec, "symbol": "NVDA_US_EQ", "points": fresh_ohlc24}),
+        encoding="utf-8",
+    )
+    merged_nvda_24h, _ = load_symbol_price_series(str(cdir_eq_ohlc), "NVDA_US_EQ")
+    vp_merged_nvda = compute_volume_profile_metrics(merged_nvda_24h)
+    assert vp_merged_nvda.get("vp_source") == "REAL_VOL"
+    assert 184.0 <= vp_merged_nvda.get("poc_px", 0.0) <= 190.0
+
 
 
 

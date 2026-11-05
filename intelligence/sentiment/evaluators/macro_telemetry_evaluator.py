@@ -162,7 +162,9 @@ def compute_cross_asset_regime(
         if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
             eq_24h.append(c24)
     eq_regime = str(data.get("equity_regime") or "").strip().upper()
-    if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+    if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
+        eq_regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
+    ):
         eq_regime = compute_equity_macro_regime(data)
     avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
 
@@ -362,7 +364,9 @@ def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -
     if not isinstance(data, dict) or not data:
         return "NEUTRAL"
     regime = str(data.get("equity_regime") or "").strip().upper()
-    if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+    if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL") or (
+        regime == "NEUTRAL" and "futures_lead_regime" not in data and compute_futures_premarket_lead(data)
+    ):
         regime = compute_equity_macro_regime(data)
     bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
     return f"{regime} ({bench_s})" if bench_s else regime
@@ -622,6 +626,132 @@ def reconcile_live_venue_equity_summary(portfolio_summary: Dict[str, Any]) -> No
                         sp_list[0]["value_usd"] = 0.0
                         sp_list[0]["cash_usd"] = round(v_cash_sum, 2)
                         sp_list[0]["snapshot_age_min"] = 0.0
+
+
+def evaluate_institutional_posture_divergence(
+    cached_act: Any,
+    cached_bias: Any,
+    cached_text: Any,
+    macro_benchmarks: Any,
+    *,
+    live_tr: Optional[float] = None,
+    flow_lbl: str = "",
+) -> Optional[Dict[str, str]]:
+    """Detect institutional cross-asset, Coinbase premium, ETF, futures lead, or options skew divergence vs a cached posture."""
+    if not isinstance(macro_benchmarks, dict) or not macro_benchmarks:
+        return None
+    mb_items = macro_benchmarks.get("items") if isinstance(macro_benchmarks.get("items"), dict) else macro_benchmarks
+    if not isinstance(mb_items, dict):
+        mb_items = {}
+    cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
+    cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps", mb_items.get("coinbase_premium_bps")), default=None)
+    ibit_d = (
+        mb_items.get("IBIT")
+        if isinstance(mb_items.get("IBIT"), dict)
+        else (macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {})
+    )
+    ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
+    has_bench_items = any(k in mb_items for k in ("SPY", "QQQ", "ES=F", "NQ=F"))
+    lead_info = compute_futures_premarket_lead(macro_benchmarks)
+    fut_lead = (
+        safe_float(lead_info.get("futures_lead_pct"), default=None)
+        if has_bench_items
+        else safe_float(macro_benchmarks.get("futures_lead_pct", mb_items.get("futures_lead_pct")), default=None)
+    )
+    fut_reg = (
+        str(lead_info.get("futures_lead_regime") or "").strip().upper()
+        if has_bench_items
+        else str(macro_benchmarks.get("futures_lead_regime") or mb_items.get("futures_lead_regime") or "").strip().upper()
+    )
+    btc_skew = safe_float(macro_benchmarks.get("btc_skew_25d_pct", mb_items.get("btc_skew_25d_pct")), default=None)
+    eth_skew = safe_float(macro_benchmarks.get("eth_skew_25d_pct", mb_items.get("eth_skew_25d_pct")), default=None)
+    eff_skew = btc_skew if btc_skew is not None else eth_skew
+
+    txt_u = str(cached_text or "").upper()
+    if cross_reg and cross_reg != "NEUTRAL" and cross_reg in txt_u:
+        return None
+
+    act_u = str(cached_act or "").strip().upper()
+    bias_u = str(cached_bias or "").strip().upper()
+    is_bear = act_u in ("TRIM_PROFITS", "HALT_BUYS", "DEFENSIVE") or "BEAR" in bias_u
+    is_bull = act_u == "ACCUMULATE" or "BULL" in bias_u
+
+    inst_parts = [
+        x
+        for x in (
+            f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
+            f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
+            f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
+            f"Futures_Lead={fut_lead:+.2f}%"
+            if fut_lead is not None and fut_reg in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN")
+            else "",
+            f"Skew_25d={eff_skew:+.2f}%" if eff_skew is not None and (eff_skew <= -2.5 or eff_skew >= 4.0) else "",
+            flow_lbl,
+        )
+        if x
+    ]
+    inst_lbl = ", ".join(inst_parts)
+    reg_tag = (cross_reg if cross_reg and cross_reg != "NEUTRAL" else "cb_premium").lower()
+    posture_tag = (act_u or bias_u).lower()
+    metric_tag = (
+        f"{cb_bps:+.1f}bps"
+        if cb_bps is not None
+        else (
+            f"ibit_{ibit_1h:+.2f}pct"
+            if ibit_1h is not None
+            else (
+                f"lead_{fut_lead:+.2f}pct"
+                if fut_lead is not None
+                else (f"skew_{eff_skew:+.2f}pct" if eff_skew is not None else "flow")
+            )
+        )
+    )
+
+    if (
+        is_bear
+        and (live_tr is None or live_tr >= 0.95)
+        and (
+            (
+                cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
+                and (
+                    (cb_bps is not None and cb_bps >= 5.0)
+                    or (ibit_1h is not None and ibit_1h >= 0.75)
+                    or (fut_reg == "FUTURES_PREMARKET_GAP_UP" and fut_lead is not None and fut_lead >= 0.50)
+                    or (eff_skew is not None and eff_skew <= -2.5)
+                )
+            )
+            or (cb_bps is not None and cb_bps >= 10.0)
+        )
+    ):
+        return {
+            "direction": "BUY",
+            "reason": f"institutional_buy_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
+            "inst_lbl": inst_lbl,
+            "posture": act_u or bias_u,
+        }
+    if (
+        is_bull
+        and (live_tr is None or live_tr <= 1.05)
+        and (
+            (
+                cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
+                and (
+                    (cb_bps is not None and cb_bps <= -5.0)
+                    or (ibit_1h is not None and ibit_1h <= -0.75)
+                    or (fut_reg == "FUTURES_PREMARKET_GAP_DOWN" and fut_lead is not None and fut_lead <= -0.50)
+                    or (eff_skew is not None and eff_skew >= 4.0)
+                )
+            )
+            or (cb_bps is not None and cb_bps <= -10.0)
+        )
+    ):
+        return {
+            "direction": "SELL",
+            "reason": f"institutional_sell_divergence_{reg_tag}_{metric_tag}_vs_{posture_tag}",
+            "inst_lbl": inst_lbl,
+            "posture": act_u or bias_u,
+        }
+    return None
 
 
 def enrich_sentiment_advisor_live_flow_divergence(
@@ -913,47 +1043,18 @@ def enrich_sentiment_advisor_live_flow_divergence(
         and isinstance(macro_benchmarks, dict)
         and macro_benchmarks
     ):
-        mb_items = macro_benchmarks.get("items") if isinstance(macro_benchmarks.get("items"), dict) else macro_benchmarks
-        cross_reg = str(macro_benchmarks.get("cross_asset_regime") or compute_cross_asset_regime(macro_benchmarks)).strip().upper()
-        cb_bps = safe_float(macro_benchmarks.get("coinbase_premium_bps", mb_items.get("coinbase_premium_bps")), default=None)
-        ibit_d = (
-            mb_items.get("IBIT")
-            if isinstance(mb_items.get("IBIT"), dict)
-            else (macro_benchmarks.get("IBIT") if isinstance(macro_benchmarks.get("IBIT"), dict) else {})
-        )
-        ibit_1h = safe_float(ibit_d.get("chg_1h_pct"), default=None)
-        sa_txt_u = f"{sentiment_advisor.get('summary') or ''} {sentiment_advisor.get('key_risks') or ''}".upper()
-        already_cited_cross = bool(cross_reg and cross_reg != "NEUTRAL" and cross_reg in sa_txt_u)
-        inst_parts = [
-            x
-            for x in (
-                f"Cross_Asset={cross_reg}" if cross_reg and cross_reg != "NEUTRAL" else "",
-                f"CB_Premium={cb_bps:+.2f}bps" if cb_bps is not None else "",
-                f"IBIT_1h={ibit_1h:+.2f}%" if ibit_1h is not None else "",
-                flow_lbl,
-            )
-            if x
-        ]
-        inst_lbl = ", ".join(inst_parts)
-        if (
-            not already_cited_cross
-            and is_bear_posture
-            and cross_reg in ("CRYPTO_BULLISH_DECOUPLING", "COUPLED_RISK_ON")
-            and ((cb_bps is not None and cb_bps >= 5.0) or (ibit_1h is not None and ibit_1h >= 0.75))
-            and (live_tr is None or live_tr >= 0.95)
+        sa_txt = f"{sentiment_advisor.get('summary') or ''} {sentiment_advisor.get('key_risks') or ''}"
+        if inst_div := evaluate_institutional_posture_divergence(
+            sa_act,
+            sa_bias,
+            sa_txt,
+            macro_benchmarks,
+            live_tr=live_tr,
+            flow_lbl=flow_lbl,
         ):
             sentiment_advisor["live_flow_divergence"] = (
-                f"LIVE_INSTITUTIONAL_BUY_DECOUPLING ({inst_lbl} vs {sa_age:.1f}m-old {sa_act or sa_bias})"
-            )
-        elif (
-            not already_cited_cross
-            and is_bull_posture
-            and cross_reg in ("EQUITY_BULLISH_DECOUPLING", "COUPLED_RISK_OFF")
-            and ((cb_bps is not None and cb_bps <= -5.0) or (ibit_1h is not None and ibit_1h <= -0.75))
-            and (live_tr is None or live_tr <= 1.05)
-        ):
-            sentiment_advisor["live_flow_divergence"] = (
-                f"LIVE_INSTITUTIONAL_SELL_DECOUPLING ({inst_lbl} vs {sa_age:.1f}m-old {sa_act or sa_bias})"
+                f"LIVE_INSTITUTIONAL_{inst_div['direction']}_DECOUPLING "
+                f"({inst_div['inst_lbl']} vs {sa_age:.1f}m-old {inst_div['posture']})"
             )
 
 
@@ -995,6 +1096,7 @@ __all__ = [
     "compute_equity_macro_regime",
     "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
+    "evaluate_institutional_posture_divergence",
     "format_bottom_structure_6h_parts",
     "format_equity_macro_regime_line",
     "format_macro_benchmarks_summary_line",
