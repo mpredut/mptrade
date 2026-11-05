@@ -385,6 +385,19 @@ def load_symbol_price_series(
     if archive_pts:
         try:
             if (last_pt := _parse_ts_px_row(archive_pts[-1])) is not None:
+                if (
+                    str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+                    and series_24h
+                    and isinstance(series_24h[-1], (list, tuple))
+                    and len(series_24h[-1]) >= 3
+                    and isinstance(archive_pts[-1], (list, tuple))
+                    and len(archive_pts[-1]) >= 3
+                    and (s24_end_pt := _parse_ts_px_row(series_24h[-1])) is not None
+                    and s24_end_pt[0] == last_pt[0]
+                    and safe_nonneg_float(series_24h[-1][2], -1.0) == safe_nonneg_float(archive_pts[-1][2], -2.0)
+                    and abs(s24_end_pt[1] - last_pt[1]) > 1e-4
+                ):
+                    series_24h = list(series_24h[:-1]) + [[series_24h[-1][0], last_pt[1], *series_24h[-1][2:]]]
                 cutoff_24h = watcher_cutoff_24h if watcher_cutoff_24h is not None else (last_pt[0] - 86400.0 * 1000.0)
                 cutoff_7d = last_pt[0] - 7.0 * 86400.0 * 1000.0
                 pts_24, pts_7d_vals, pts_7d_ts = [], [], []
@@ -894,35 +907,37 @@ def enrich_24h_and_microstructure(
         ):
             if sym_px_cur > 0 and not _prices_diverged(sym_px_cur, s24_p1[1]) and abs(round(sym_px_cur, 4) - round(s24_p1[1], 4)) > 1e-4:
                 post_rth_px_override = round(sym_px_cur, 4)
-                if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005 and len(matched_series_24h) >= 2:
-                    post_rth_series_replaced = True
+                if len(matched_series_24h) >= 2:
                     last_bar_tail = (
                         list(matched_series_24h[-1][2:])
                         if isinstance(matched_series_24h[-1], (list, tuple)) and len(matched_series_24h[-1]) >= 3
                         else []
                     )
-                    matched_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], post_rth_px_override, *last_bar_tail]]
-                    m24 = compute_24h_price_metrics(matched_series_24h) or m24
-                    for k_ov in (
-                        "kalman_vel",
-                        "kalman_vel_std",
-                        "kalman_trend",
-                        "slope_90s",
-                        "growth_90s",
-                        "trend_90s",
-                        "slope_3_7m",
-                        "growth_3_7m",
-                        "trend_3_7m",
-                        "slope_15m",
-                        "growth_15m",
-                        "trend_15m",
-                        "slope_2_5h",
-                        "growth_2_5h",
-                        "trend_2_5h",
-                        "gradient_recent_fast",
-                        "gradient_recent",
-                    ):
-                        prices_and_trends[sym].pop(k_ov, None)
+                    override_series_24h = list(matched_series_24h[:-1]) + [[s24_p1[0], post_rth_px_override, *last_bar_tail]]
+                    m24 = compute_24h_price_metrics(override_series_24h) or m24
+                    if abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005:
+                        post_rth_series_replaced = True
+                        matched_series_24h = override_series_24h
+                        for k_ov in (
+                            "kalman_vel",
+                            "kalman_vel_std",
+                            "kalman_trend",
+                            "slope_90s",
+                            "growth_90s",
+                            "trend_90s",
+                            "slope_3_7m",
+                            "growth_3_7m",
+                            "trend_3_7m",
+                            "slope_15m",
+                            "growth_15m",
+                            "trend_15m",
+                            "slope_2_5h",
+                            "growth_2_5h",
+                            "trend_2_5h",
+                            "gradient_recent_fast",
+                            "gradient_recent",
+                        ):
+                            prices_and_trends[sym].pop(k_ov, None)
                 if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
                     m24["chg_24h_pct"] = pct_delta(post_rth_px_override, s24_p0[1])
             for k_stale in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
@@ -1102,6 +1117,7 @@ def enrich_24h_and_microstructure(
                             for r_pt in recent_sub5m:
                                 by_ts.setdefault(r_pt[0], r_pt)
                             pts_24h = [by_ts[k] for k in sorted(by_ts)]
+                    pts_24h_to_save = list(pts_24h)
                     px_diff_from_chart = bool(
                         pts_24h and sym_px_cur > 0 and not _prices_diverged(sym_px_cur, pts_24h[-1][1]) and abs(round(sym_px_cur, 4) - round(pts_24h[-1][1], 4)) > 1e-4
                     )
@@ -1110,6 +1126,7 @@ def enrich_24h_and_microstructure(
                     )
                     if px_diff_from_chart and rth_bar_fresh and not px_diverged_05pct:
                         pts_24h = list(pts_24h) + [[int(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
+                        pts_24h_to_save = list(pts_24h)
                         post_rth_series_replaced = False
                     elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
                         post_rth_series_replaced = True
@@ -1137,7 +1154,11 @@ def enrich_24h_and_microstructure(
                             prices_and_trends[sym].pop(k_ov, None)
                     else:
                         post_rth_series_replaced = False
-                    if m24 := (compute_24h_price_metrics(pts_24h) or {}):
+                    pts_24h_for_m24 = pts_24h
+                    if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
+                        last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
+                        pts_24h_for_m24 = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
+                    if m24 := (compute_24h_price_metrics(pts_24h_for_m24) or {}):
                         matched_series_24h = pts_24h
                         post_rth_px_override = None
                         if not rth_bar_fresh or px_diverged_05pct:
@@ -1159,9 +1180,9 @@ def enrich_24h_and_microstructure(
                         try:
                             from state_io import save_json_state
 
-                            if pts_24h or pts_24h_bars:
+                            if pts_24h_to_save or pts_24h_bars:
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
-                                save_json_state(p24_target, {"items": {sym: pts_24h or pts_24h_bars}})
+                                save_json_state(p24_target, {"items": {sym: pts_24h_to_save or pts_24h_bars}})
                             p365_eq_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_365_price_{sym}.json")))
                             save_json_state(p365_eq_path, {"items": {sym: pts_5d}})
                         except Exception:

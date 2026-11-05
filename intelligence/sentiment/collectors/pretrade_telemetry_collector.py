@@ -346,15 +346,17 @@ def collect_pretrade_telemetry(
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
                     eq_post_rth_override = True
-                    if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005 and len(alt_series_24h) >= 2:
-                        eq_px_diverged_05pct = True
+                    if len(alt_series_24h) >= 2:
                         last_alt_tail = (
                             list(alt_series_24h[-1][2:])
                             if isinstance(alt_series_24h[-1], (list, tuple)) and len(alt_series_24h[-1]) >= 3
                             else []
                         )
-                        alt_series_24h = list(alt_series_24h[:-1]) + [[last_alt_pt[0], cur_px_est, *last_alt_tail]]
-                        m24 = compute_24h_price_metrics(alt_series_24h) or m24
+                        override_alt_series_24h = list(alt_series_24h[:-1]) + [[last_alt_pt[0], cur_px_est, *last_alt_tail]]
+                        m24 = compute_24h_price_metrics(override_alt_series_24h) or m24
+                        if abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) > 0.005:
+                            eq_px_diverged_05pct = True
+                            alt_series_24h = override_alt_series_24h
                         for k_stale_eq in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                             m24.pop(k_stale_eq, None)
                     recalculate_live_price_geometry(m24, cur_px_est)

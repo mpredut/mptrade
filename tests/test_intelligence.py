@@ -6693,6 +6693,83 @@ def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest
     assert "resource_watchdog_offenders" not in telem_rec
 
 
+def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_pattern(tmp_path):
+    import json
+    import time
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+        load_symbol_price_series,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    cdir = tmp_path / "cachedb"
+    pdir = cdir / "prices"
+    pdir.mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    close_ms = int((now_s - 3600.0) * 1000)
+    bars_5d = [
+        [close_ms - 86400_000, 195.0, 1000.0],
+        [close_ms - 3600_000, 202.0, 1200.0],
+        [close_ms - 1800_000, 201.0, 1100.0],
+        [close_ms - 900_000, 200.5, 900.0],
+        [close_ms, 199.7731, 0.0],
+    ]
+    corrupted_24h = [*bars_5d[:-1], [close_ms, 198.55, 0.0]]
+    (pdir / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": corrupted_24h}}),
+        encoding="utf-8",
+    )
+    (pdir / "cache_365_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": bars_5d}}),
+        encoding="utf-8",
+    )
+
+    s24_healed, _ = load_symbol_price_series(str(cdir), "NVDA_US_EQ")
+    assert s24_healed[-1][1] == pytest.approx(199.7731)
+
+    # Post-RTH price move within <=0.5% (199.19 vs 199.7731 = 0.29%) updates 15m/30m/1h/24h deltas while preserving RTH slopes
+    pt = {
+        "NVDA_US_EQ": {
+            "price": 199.19,
+            "slope_15m": -0.05,
+            "kalman_vel": -0.01,
+        }
+    }
+    enrich_24h_and_microstructure(str(tmp_path), str(cdir), pt, {}, [], {}, now_ts=now_s)
+    nvda_info = pt["NVDA_US_EQ"]
+    assert nvda_info["chg_15m_pct"] == pytest.approx(((199.19 - 200.5) / 200.5) * 100.0, abs=0.02)
+    assert nvda_info["chg_30m_pct"] == pytest.approx(((199.19 - 201.0) / 201.0) * 100.0, abs=0.02)
+    assert nvda_info["chg_1h_pct"] == pytest.approx(((199.19 - 202.0) / 202.0) * 100.0, abs=0.02)
+    assert nvda_info["chg_24h_pct"] == pytest.approx(((199.19 - 195.0) / 195.0) * 100.0, abs=0.02)
+    assert nvda_info["slope_15m"] == pytest.approx(-0.05)
+
+    (cdir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:NVDA_US_EQ": {"cur_px": 199.19, "ts": now_s - 30.0}}),
+        encoding="utf-8",
+    )
+    pre_nvda = collect_pretrade_telemetry("NVDA_US_EQ", str(tmp_path), str(cdir))
+    assert pre_nvda["chg_15m_pct"] == pytest.approx(nvda_info["chg_15m_pct"], abs=0.02)
+    assert pre_nvda["chg_1h_pct"] == pytest.approx(nvda_info["chg_1h_pct"], abs=0.02)
+    assert pre_nvda["chg_24h_pct"] == pytest.approx(nvda_info["chg_24h_pct"], abs=0.02)
+
+    # Guard regex does not match across line from [WARNING] to 'risk guards.']'
+    ldir = tmp_path / "logs"
+    ldir.mkdir(parents=True, exist_ok=True)
+    (ldir / "auto_technical_repair.log").write_text(
+        "2026-11-05 03:37:48,420 [WARNING] In-place /compact for topic 'auto_technical_repair' failed: "
+        "Command '['/home/predut/.local/bin/agy-bot', '-p', '/compact Summarize prior turns, preserving active risk guards.']' timed out\n"
+        "2026-11-05 03:38:00,000 [INFO] [ORDER_GUARD] HARD_VETO symbol=TAOUSDC reason=max_exposure\n",
+        encoding="utf-8",
+    )
+    anom = harvest_log_anomalies_from_dirs([str(ldir)])
+    assert anom["error_count"] == 0
+    assert anom["warning_count"] == 0
+    assert len(anom["guard_interventions"]) == 1
+    assert "ORDER_GUARD" in anom["guard_interventions"][0]
+
+
+
 
 
 
