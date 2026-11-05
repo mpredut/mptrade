@@ -834,6 +834,7 @@ def enrich_24h_and_microstructure(
             matched_series_24h, arch_vals_7d = list(btc_series_24h), list(btc_vals_7d)
         else:
             matched_series_24h, arch_vals_7d = load_symbol_price_series(cache_dir, sym, current_price_items=cur_p_items)
+        raw_matched_series_24h = list(matched_series_24h)
         raw_s24_last_pt = _parse_ts_px_row(matched_series_24h[-1]) if matched_series_24h else None
         raw_s24_last_ts_ms = raw_s24_last_pt[0] if raw_s24_last_pt is not None else 0.0
         if sym_px_cur > 0 and matched_series_24h:
@@ -868,6 +869,8 @@ def enrich_24h_and_microstructure(
                         and int(eff_t212_ts * 1000) > last_24_pt[0]
                         else now_ms_24
                     )
+                    if is_eq_sym and last_24_pt is not None and (eq_pt_ts_ms - last_24_pt[0]) > 300 * 1000:
+                        eq_pt_ts_ms = int(last_24_pt[0] + 1000)
                     matched_series_24h = list(matched_series_24h) + [[eq_pt_ts_ms, sym_px_cur]]
         if sym_px_cur > 0 and arch_vals_7d:
             if _prices_diverged(sym_px_cur, safe_float(arch_vals_7d[-1], 0.0)):
@@ -1085,13 +1088,13 @@ def enrich_24h_and_microstructure(
                     if len(pts_24h_bars) < 10:
                         pts_24h_bars = list(pts_5d[-78:])
                     pts_24h = list(pts_24h_bars)
-                    if rth_bar_fresh and matched_series_24h and pts_24h:
+                    if rth_bar_fresh and raw_matched_series_24h and pts_24h:
                         last_bar_ts = pts_24h[-1][0]
                         recent_sub5m = [
-                            pt for pt in matched_series_24h
+                            pt for pt in raw_matched_series_24h
                             if isinstance(pt, (list, tuple))
                             and len(pt) >= 2
-                            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= now_ms_i + 5000
+                            and last_bar_ts - 15 * 60 * 1000 <= pt[0] <= min(now_ms_i + 5000, last_bar_ts + 300 * 1000)
                             and not _prices_diverged(pt[1], pts_24h[-1][1])
                         ]
                         if recent_sub5m:
@@ -1166,13 +1169,21 @@ def enrich_24h_and_microstructure(
             except Exception:
                 pass
         if m24:
+            if is_eq_sym and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
+                for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                    m24.pop(k_stale_15m, None)
             _apply_24h_series_enrichment(sym, prices_and_trends[sym], m24, matched_series_24h, btc_series_24h)
             if (
                 is_eq_sym
                 and not post_rth_series_replaced
-                and matched_series_24h
-                and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
-                and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+                and (
+                    not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct"))
+                    or (
+                        matched_series_24h
+                        and (last_eq_pt := _parse_ts_px_row(matched_series_24h[-1])) is not None
+                        and (int(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+                    )
+                )
             ):
                 for k_stale_s in (
                     "slope_90s",

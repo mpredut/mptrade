@@ -326,6 +326,8 @@ def collect_pretrade_telemetry(
                         if vb_pos_ts > 0.0 and int(vb_pos_ts * 1000) > last_alt_pt[0]
                         else now_ms_eq
                     )
+                    if (eq_pt_ts_ms - last_alt_pt[0]) > 300 * 1000:
+                        eq_pt_ts_ms = int(last_alt_pt[0] + 1000)
                     alt_series_24h = list(alt_series_24h) + [[eq_pt_ts_ms, cur_px_est]]
                     m24 = compute_24h_price_metrics(alt_series_24h) or m24
                 elif m24:
@@ -347,6 +349,9 @@ def collect_pretrade_telemetry(
                         m24["chg_24h_pct"] = pct_delta(cur_px_est, first_alt_pt[1])
             if rth_fresh_eq and m24 and cur_px_est > 0.0:
                 recalculate_live_price_geometry(m24, cur_px_est)
+            if m24 and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
+                for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
+                    m24.pop(k_stale_15m, None)
         if m24 and m24.get("vp_source") == "TPO" and not str(symbol).strip().upper().endswith(("_EQ", "_US_EQ")) and "PYTEST_CURRENT_TEST" not in os.environ:
             try:
                 import time as _pt_time
@@ -708,7 +713,12 @@ def collect_pretrade_telemetry(
                 for sk, sv in _compute_short_slopes_from_series(alt_series_24h).items():
                     if t_entry.get(sk) is None or (s15_val == s25_val and sk in ("slope_3_7m", "slope_15m", "slope_2_5h")):
                         t_entry[sk] = sv
-            if is_eq_sym and last_alt_pt is not None and not rth_fresh_eq and not eq_px_diverged_05pct:
+            if (
+                is_eq_sym
+                and last_alt_pt is not None
+                and not eq_px_diverged_05pct
+                and (not rth_fresh_eq or not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
+            ):
                 for k_stale_s in (
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",

@@ -6316,4 +6316,73 @@ def test_iter90_cross_cycle_dca_buys_multi_fill_oversold_pnl_taker_horizon_claus
     assert best_rgnt["tactical_avg_buy_px"] == pytest.approx(1.43)
 
 
+def test_iter16_post_close_equity_pos_ts_clamp_and_partial_15m_tape_prune(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        enrich_24h_and_microstructure,
+    )
+    from state_io import save_json_state
+
+    # 1. When T212 balance harvester updates pos:t212:NVDA_US_EQ['ts'] 12.5m after the last 5m chart bar
+    #    (while still within the 20m rth_bar_fresh window), eq_pt_ts_ms is clamped to last_bar_ts + 1000ms
+    #    so no artificial 12.5m gap breaks chg_5m_pct or advances last_eq_pt[0] past the real bar close
+    close_ms = 1_793_840_397_000
+    pts_nvda = [
+        [close_ms - (20 - i) * 300_000, round(201.0 - i * 0.06, 4), 1000.0]
+        for i in range(21)
+    ]
+    p24_f = tmp_path / "prices" / "cache_24_price_NVDA_US_EQ.json"
+    p24_f.parent.mkdir(parents=True, exist_ok=True)
+    save_json_state(str(p24_f), {"items": {"NVDA_US_EQ": pts_nvda}})
+    vb_f = tmp_path / "state" / "venue_balances_state.json"
+    vb_f.parent.mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(vb_f),
+        {
+            "pos:t212:NVDA_US_EQ": {
+                "venue": "t212",
+                "symbol": "NVDA_US_EQ",
+                "price": 199.05,
+                "free_base": 0.41,
+                "ts": (close_ms / 1000.0) + 747.0,
+            }
+        },
+    )
+    pt_14m: dict = {}
+    enrich_24h_and_microstructure(
+        str(tmp_path),
+        str(tmp_path),
+        pt_14m,
+        {},
+        {},
+        {},
+        now_ts=(close_ms / 1000.0) + 867.0,
+    )
+    assert pt_14m["NVDA_US_EQ"].get("chg_5m_pct") is not None
+    assert any(
+        str(x).startswith("-5m:")
+        for x in (pt_14m["NVDA_US_EQ"].get("recent_tape_15m") or [])
+    )
+
+    # 2. If an equity series already has a >10.2m tail gap (no chg_1m/3m/5m_pct) and <=0.5% price diff,
+    #    partial recent_tape_15m and stale slope_3_7m are pruned
+    pts_gapped = pts_nvda + [[close_ms + 747_000, 199.05]]
+    save_json_state(str(p24_f), {"items": {"NVDA_US_EQ": pts_gapped}})
+    pt_gapped: dict = {"NVDA_US_EQ": {"price": 199.05, "slope_3_7m": -0.00029, "slope_15m": -0.00021}}
+    enrich_24h_and_microstructure(
+        str(tmp_path),
+        str(tmp_path),
+        pt_gapped,
+        {},
+        {},
+        {},
+        now_ts=(close_ms / 1000.0) + 867.0,
+    )
+    assert "chg_5m_pct" not in pt_gapped["NVDA_US_EQ"]
+    assert "recent_tape_15m" not in pt_gapped["NVDA_US_EQ"]
+    assert "slope_3_7m" not in pt_gapped["NVDA_US_EQ"]
+    assert "slope_15m" in pt_gapped["NVDA_US_EQ"]
+
+
+
 
