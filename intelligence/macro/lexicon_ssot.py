@@ -363,6 +363,9 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "best bets for",
     "millionaire-maker",
     "wants to be the nvidia of",
+    "should you buy the dip",
+    "names at fire-sale prices",
+    ": a guide",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
@@ -1055,7 +1058,19 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"nintendo", "switch", "playstation", "xbox", "console", "ticket", "tickets", "menu", "grocery"}):
         return False
-    if matched_fin and matched_fin <= {"tax", "taxes"} and (words & {"estate", "gift", "exemption", "deduction", "refund", "irs", "filing", "retirees", "retirement"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
+    if (
+        matched_fin
+        and matched_fin <= {"tax", "taxes"}
+        and (
+            words
+            & {
+                "estate", "gift", "exemption", "deduction", "deductible", "deductibles",
+                "refund", "irs", "filing", "retirees", "retirement", "roth",
+                "conversion", "conversions", "bracket", "brackets", "hsa", "401k", "medicare",
+            }
+        )
+        and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS)
+    ):
         return False
     if (words & _HUMAN_INTEREST_WAR_FILLER_WORDS) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
         return False

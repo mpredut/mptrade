@@ -518,13 +518,15 @@ def harvest_macro_and_news_sensors(
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
             item_seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             is_stale_sev = item_seen_ts > 0.0 and now_ts > item_seen_ts and (now_ts - item_seen_ts) > 5400.0
-            if is_stale_sev and bool(item.get("is_high_severity")) and (clean_kws or not raw_kws):
+            was_valid_aged_sev = bool(is_stale_sev and item.get("is_high_severity") and (clean_kws or not raw_kws))
+            if was_valid_aged_sev:
                 stale_valid_sev_titles.add(_strip_headline_publisher_suffix(str(item.get("title") or "")).strip().lower())
                 stale_valid_sev_titles.add(str(item.get("title") or "").strip().lower())
             cand_entry = {
                 **item,
                 "matched_keywords": clean_kws,
                 "is_high_severity": False if (is_stale_sev or (raw_kws and not clean_kws)) else bool(item.get("is_high_severity")),
+                "_aged_high_sev_context": was_valid_aged_sev,
             }
             merged_dup = False
             for exist_entry in valid_news:
@@ -541,6 +543,9 @@ def harvest_macro_and_news_sensors(
                         dict.fromkeys([*(exist_entry.get("matched_keywords") or []), *(cand_entry.get("matched_keywords") or [])])
                     )
                     exist_entry["is_high_severity"] = bool(exist_entry.get("is_high_severity") or cand_entry.get("is_high_severity"))
+                    exist_entry["_aged_high_sev_context"] = bool(
+                        exist_entry.get("_aged_high_sev_context") or cand_entry.get("_aged_high_sev_context")
+                    )
                     merged_dup = True
                     break
             if not merged_dup:
@@ -578,7 +583,18 @@ def harvest_macro_and_news_sensors(
             ),
             reverse=True,
         )
-        for item in valid_news[:6]:
+        top_news = list(valid_news[:6])
+        if len(valid_news) > 6 and not any(
+            x.get("is_high_severity") or x.get("_aged_high_sev_context") for x in top_news
+        ):
+            aged_ctx = sorted(
+                (x for x in valid_news[6:] if x.get("_aged_high_sev_context")),
+                key=lambda x: safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0,
+                reverse=True,
+            )[:2]
+            if aged_ctx:
+                top_news = top_news[: 6 - len(aged_ctx)] + aged_ctx
+        for item in top_news:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             raw_title = str(item.get("title") or "")
             clean_title = _strip_headline_publisher_suffix(raw_title) if raw_title else item.get("title")

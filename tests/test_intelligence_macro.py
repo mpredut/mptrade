@@ -2141,6 +2141,20 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     assert is_excluded_reference_news_item(
         "Best Mag7 dip buys: NVIDIA leads on valuation, Alphabet on RSI - Seeking Alpha"
     ) is True
+    assert is_excluded_reference_news_item(
+        "Memory Stocks Are Tanking. Should You Buy the Dip? - Barron's"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "China's Military Helicopters: A Guide - TWZ"
+    ) is True
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+
+    assert has_financial_or_geopolitical_context(
+        "How much in Roth conversions can you do in 2027 with the new tax brackets?"
+    ) is False
+    assert has_financial_or_geopolitical_context(
+        "HSA-eligible health plans in 2027: What to know about tax savings vs. higher deductibles"
+    ) is False
 
 
 def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path, monkeypatch):
