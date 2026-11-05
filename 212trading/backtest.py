@@ -199,7 +199,7 @@ def main() -> int:
     mdb_raw = (os.environ.get("STRAT_MAX_DCA_BUYS") or "auto").strip().lower()
     if args.maxdca is not None:
         maxdca = args.maxdca
-    elif mdb_raw in ("auto", "buget", "budget"):
+    elif mdb_raw in ("auto", "budget"):
         maxdca = max(0, int((budget - entry) // dca)) if dca > 0 else 0
     else:
         maxdca = required_int_env("STRAT_MAX_DCA_BUYS")
@@ -229,7 +229,7 @@ def main() -> int:
         m = simulate(ohlc, base)
         prof_info = f" [profile={args.profile}]" if args.profile else ""
         print_single_backtest_report(
-            f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bare){prof_info} ===",
+            f"=== BACKTEST T212 {sym} {args.range}/{args.interval} ({len(ohlc)} bars){prof_info} ===",
             f"entry={entry:.1f} dca={dca:.1f} drop={drop}% tp={tp}% sl={sl}% fee={fee}%/leg | MHDSL={'ON' if sl_mhdsl else 'OFF'} MDHTP={'ON' if tp_mdhtp else 'OFF'}",
             m,
             budget=budget,

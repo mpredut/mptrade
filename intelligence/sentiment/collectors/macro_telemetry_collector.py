@@ -61,8 +61,10 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     apply_asset_scope_filter,
     build_cycle_fallback_prices,
     compute_deribit_options_surface,
+    compute_equity_macro_regime,
     enrich_sentiment_advisor_live_flow_divergence,
     format_bottom_structure_6h_parts,
+    format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
     reconcile_live_venue_equity_summary,
 )
@@ -276,6 +278,7 @@ def collect_macro_benchmarks_snapshot(
     payload: Dict[str, Any] = {
         "ts": eff_now,
         "items": items,
+        "equity_regime": compute_equity_macro_regime({"items": items}),
         **extra_macro,
     }
     payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
@@ -419,6 +422,8 @@ def harvest_macro_and_news_sensors(
                         else:
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
+                if str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+                    enriched["equity_regime"] = compute_equity_macro_regime(enriched)
                 cur_sum = str(enriched.get("summary_line") or "")
                 if (
                     stripped_stale_intraday
@@ -711,6 +716,10 @@ def populate_market_and_portfolio_snapshot(
     macro_sensors, snapshot.breaking_news = harvest_macro_and_news_sensors(cache_dir, now_ts, _rj)
     for attr, val in macro_sensors.items():
         setattr(snapshot, attr, val)
+    if str(scope or "").strip().lower() == "equities":
+        snapshot.fear_greed = None
+        snapshot.market_breadth = None
+        snapshot.sentiment_advisor = None
 
     prices_data = _rj(os.path.join(cache_dir, "cache_current_price.json"))
     trends_data = _rj(os.path.join(cache_dir, "cache_short_trend.json"))

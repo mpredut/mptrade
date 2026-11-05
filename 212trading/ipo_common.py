@@ -55,5 +55,5 @@ def now_str() -> str:
     n = datetime.now(timezone.utc)
     return (
         f"{n.astimezone(ET):%Y-%m-%d %H:%M:%S} ET  |  "
-        f"{n.astimezone(BUCHAREST):%H:%M:%S} Bucuresti"
+        f"{n.astimezone(BUCHAREST):%H:%M:%S} Bucharest"
     )

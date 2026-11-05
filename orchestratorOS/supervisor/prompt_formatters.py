@@ -89,7 +89,7 @@ def build_supervisor_prompt(
         f"### 0. RUN TIMESTAMP & OPERATIONAL CLOCK: {now_ts_str}\n"
     ]
     if not is_pure_sre:
-        context_items.extend(_format_macro_and_news_section(sensors))
+        context_items.extend(_format_macro_and_news_section(sensors, getattr(spec, "asset_scope", "all")))
     if spec.can_self_heal:
         context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}

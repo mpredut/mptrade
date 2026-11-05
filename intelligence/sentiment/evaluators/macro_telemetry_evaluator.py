@@ -27,6 +27,7 @@ MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
 )
 
 _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
+    "equity_regime",
     "coinbase_premium_bps",
     "coinbase_premium_regime",
     "btc_dvol",
@@ -37,6 +38,41 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
     "btc_pc_oi_ratio",
     "btc_skew_25d_pct",
 })
+
+
+def compute_equity_macro_regime(data: Any) -> str:
+    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/DXY."""
+    if not isinstance(data, dict):
+        return "NEUTRAL"
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        items = {}
+    eq_24h: List[float] = []
+    eq_1h: List[float] = []
+    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+        entry = items.get(sym)
+        if not isinstance(entry, dict):
+            continue
+        if (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+            eq_24h.append(c24)
+        if (c1 := safe_float(entry.get("chg_1h_pct"), default=None)) is not None:
+            eq_1h.append(c1)
+    if not eq_24h and not eq_1h:
+        explicit = str(data.get("equity_regime") or "").strip().upper()
+        return explicit if explicit in ("RISK_ON", "RISK_OFF", "NEUTRAL") else "NEUTRAL"
+    avg_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+    avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
+    dxy_entry = items.get("DXY")
+    dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
+    if avg_24h >= 0.35 or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25)):
+        return "RISK_ON"
+    if (
+        avg_24h <= -0.35
+        or (avg_24h <= -0.15 and avg_1h <= -0.15)
+        or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
+    ):
+        return "RISK_OFF"
+    return "NEUTRAL"
 
 
 def compute_deribit_options_surface(
@@ -96,7 +132,7 @@ def compute_deribit_options_surface(
     return out
 
 
-def format_macro_benchmarks_summary_line(data: Any) -> str:
+def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     if not isinstance(data, dict):
         return ""
@@ -104,7 +140,9 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
     if not isinstance(items, dict):
         return ""
     meta_skip = {"ts", "age_min", "summary_line", "items"} | _MACRO_EXTRA_TELEMETRY_KEYS
-    ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items] + [
+    if not include_crypto:
+        meta_skip = meta_skip | {"IBIT"}
+    ordered_keys = [k for k, _, _ in MACRO_BENCHMARK_SPECS if k in items and k not in meta_skip] + [
         k for k in items if k not in {s[0] for s in MACRO_BENCHMARK_SPECS} and k not in meta_skip
     ]
     parts: List[str] = []
@@ -123,6 +161,8 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
             d_parts.append(m_state.lower())
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
+    if not include_crypto:
+        return " | ".join(parts)
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
     if cb_bps is not None:
         cb_bps = round(cb_bps, 1) + 0.0
@@ -146,6 +186,17 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
     if opt_parts:
         parts.append(f"Options_Surface({', '.join(opt_parts)})")
     return " | ".join(parts)
+
+
+def format_equity_macro_regime_line(data: Any) -> str:
+    """Format the US Equity & Macro Regime summary replacing Crypto Fear & Greed / Breadth for equities."""
+    if not isinstance(data, dict) or not data:
+        return "NEUTRAL"
+    regime = str(data.get("equity_regime") or "").strip().upper()
+    if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+        regime = compute_equity_macro_regime(data)
+    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=False)
+    return f"{regime} ({bench_s})" if bench_s else regime
 
 
 def apply_asset_scope_filter(

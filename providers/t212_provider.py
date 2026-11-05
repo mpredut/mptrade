@@ -20,6 +20,7 @@ from typing import Optional, List
 from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
 from .base import (
     MarketDataProvider,
+    aggregate_fills_by_order_id,
     bool_env,
     env_value,
     env_values_map,
@@ -84,6 +85,10 @@ def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
 
 
 class T212Provider(MarketDataProvider):
+    _DEFAULT_FILLS_CACHE_FILENAME = "cache_trade_t212.json"
+    _FILLS_CACHE_MAX_STALE_S = 86400.0 * 30
+    _fills_match_fn = staticmethod(_t212_tickers_match)
+
     def __init__(self, client=None, live_enabled: Optional[bool] = None,
                  order_validity: Optional[str] = None):
         self._cli = client
@@ -261,13 +266,21 @@ class T212Provider(MarketDataProvider):
         return max(0.0, round(total_qty - open_sell_qty, 6))
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
-        """Represent the portfolio position as one synthetic average-price buy."""
+        """Return recent fills from SSOT cache_trade_t212.json, falling back to one synthetic average-price buy for active holdings."""
         since_val = safe_pos_float(since_s, default=None)
         if since_val is None:
             return []
         if side is not None:
-            if isinstance(side, bool) or normalize_side(side) != "BUY":
-                return []                         # Historical sells are not modeled.
+            if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
+                return []
+        rows = self._fills_from_cache(symbol)
+        if rows:
+            cutoff_ms = (time.time() - since_val) * 1000.0
+            cached_orders = aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
+            if cached_orders:
+                return cached_orders
+        if side is not None and normalize_side(side) != "BUY":
+            return []
         # Financial guards must block on account errors rather than mistake them
         # for a legitimately empty portfolio.
         p = self._position(symbol, strict=True)

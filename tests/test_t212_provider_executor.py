@@ -624,6 +624,38 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(latest_buy["price"], 156.47)
             self.assertIsNone(c1.latest_filled_order_for_ticker("SPCX_US_EQ", side="SELL", refresh=False))
 
+            # Verify T212Provider.get_orders reads real BUY/SELL fills from cache_trade_t212.json
+            now_ms = int(time.time() * 1000)
+            from state_io import save_json_state
+            save_json_state(
+                trade_cache_file,
+                {
+                    "items": {
+                        "SPCX_US_EQ": [
+                            {"orderId": "801", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 138.0, "qty": 1.0, "timestamp": now_ms - 1800_000},
+                            {"orderId": "802", "symbol": "SPCX_US_EQ", "side": "SELL", "price": 145.0, "qty": 0.5, "timestamp": now_ms - 900_000},
+                        ]
+                    },
+                    "fetchtime": {"SPCX_US_EQ": now_ms},
+                },
+            )
+            fake_prov = T212Provider(client=FakeT212Client())
+            fake_prov._ssot_fills_cache_path = trade_cache_file
+            buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
+            sells = fake_prov.get_orders("SPCX_US_EQ", "SELL", 3600.0)
+            self.assertEqual(len(buys), 1)
+            self.assertEqual(buys[0]["orderId"], "801")
+            self.assertAlmostEqual(buys[0]["price"], 138.0)
+            self.assertEqual(len(sells), 1)
+            self.assertEqual(sells[0]["orderId"], "802")
+            self.assertAlmostEqual(sells[0]["price"], 145.0)
+            # When window is narrower than cached fills, BUY falls back to synthetic portfolio averagePrice
+            fake_prov._cli.portfolio_result = [{"ticker": "SPCX_US_EQ", "quantity": 2.0, "averagePrice": 140.5, "currentPrice": 142.0}]
+            synth_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 60.0)
+            self.assertEqual(len(synth_buys), 1)
+            self.assertAlmostEqual(synth_buys[0]["price"], 140.5)
+            self.assertEqual(fake_prov.get_orders("SPCX_US_EQ", "SELL", 60.0), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

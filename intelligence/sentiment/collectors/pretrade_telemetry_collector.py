@@ -33,7 +33,10 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     load_symbol_price_series,
 )
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
-from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_bottom_structure_6h_parts
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    format_bottom_structure_6h_parts,
+    format_equity_macro_regime_line,
+)
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_PRICE_ANCHOR_KEYS,
     _first_variant_dict,
@@ -1140,21 +1143,30 @@ def collect_pretrade_telemetry(
     except Exception:
         pass
 
-    # 5. Macro Sentiment Bias, Fear/Greed Index & Geopolitical Threat Shield (Pillars 3 & 4)
-    try:
-        if isinstance(m_data := _read_first_cached_dict(cachedb_dir, "sentiment_eval_files", "sentiment_eval.json")[0], dict):
-            bias, risk, action = (str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action"))
-            if bias or risk or action:
-                telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
-    except Exception:
-        pass
-    try:
-        if isinstance(fg_data := _read_first_cached_dict(cachedb_dir, "fear_greed_files", "fear_greed_collect.json")[0], dict):
-            val, label = fg_data.get("value", ""), fg_data.get("classification", "")
-            if val is not None and not isinstance(val, bool) and str(val).strip() != "":
-                telemetry["Fear & Greed Index"] = f"{val} ({str(label).strip() if label is not None and not isinstance(label, bool) else ''})"
-    except Exception:
-        pass
+    # 5. Macro Regime, Sentiment Bias, Fear/Greed Index & Geopolitical Threat Shield (Pillars 3 & 4)
+    if is_eq_sym:
+        try:
+            if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
+                eq_reg_line = format_equity_macro_regime_line(mb_data)
+                if eq_reg_line:
+                    telemetry["Equity & Macro Regime"] = eq_reg_line
+        except Exception:
+            pass
+    else:
+        try:
+            if isinstance(m_data := _read_first_cached_dict(cachedb_dir, "sentiment_eval_files", "sentiment_eval.json")[0], dict):
+                bias, risk, action = (str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action"))
+                if bias or risk or action:
+                    telemetry["Macro Sentiment Bias"] = f"{bias or 'UNKNOWN'} (Risk: {risk or 'UNKNOWN'}, Recommendation: {action or 'NONE'})"
+        except Exception:
+            pass
+        try:
+            if isinstance(fg_data := _read_first_cached_dict(cachedb_dir, "fear_greed_files", "fear_greed_collect.json")[0], dict):
+                val, label = fg_data.get("value", ""), fg_data.get("classification", "")
+                if val is not None and not isinstance(val, bool) and str(val).strip() != "":
+                    telemetry["Fear & Greed Index"] = f"{val} ({str(label).strip() if label is not None and not isinstance(label, bool) else ''})"
+        except Exception:
+            pass
     try:
         if isinstance(g_data := _read_first_cached_dict(cachedb_dir, "geopolitical_eval_file", "geopolitical_eval.json")[0], dict):
             level = g_data.get("threat_level", "")

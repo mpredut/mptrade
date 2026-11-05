@@ -560,7 +560,7 @@ class MarketDataProvider(ABC):
         kr_lookup = resolve_kraken_lookup_symbol(raw_u) if (parts is not None and parts[1] == "USD") else ""
         return tuple(dict.fromkeys(c for c in (cleaned, raw_u, canon, kr_lookup) if c))
 
-    _REAL_CLIENT_CLASS_NAMES = frozenset({"KrakenClient", "HLClient"})
+    _REAL_CLIENT_CLASS_NAMES = frozenset({"KrakenClient", "HLClient", "T212Client"})
     _DEFINITIVE_REFUSAL_TOKENS = (
         "insufficient",
         "minimum value",

@@ -13,6 +13,7 @@ from cachepaths import canonical_base_asset, compatible_quote_suffixes
 from intelligence.macro_sentiment_ssot import resolve_macro_economic_calendar
 from intelligence.sentiment.collectors.macro_telemetry_collector import (
     format_bottom_structure_6h_parts,
+    format_equity_macro_regime_line,
     format_macro_benchmarks_summary_line,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
@@ -101,11 +102,14 @@ def _format_horizon_range(pinfo: Dict[str, Any], px_f: float, horizon: str) -> s
     return f"{horizon}_range=[{lo}, {hi}]{pos_sfx}"
 
 
-def _extract_macro_benchmarks_line(mb_raw: Any) -> str:
+def _extract_macro_benchmarks_line(mb_raw: Any, *, include_crypto: bool = True) -> str:
     """Extract or synthesize the 1-line SPY / QQQ / ES=F / NQ=F / DXY / US10Y benchmark summary."""
     if not isinstance(mb_raw, dict) or not mb_raw:
         return ""
-    summary_s = str(mb_raw.get("summary_line") or "").strip() or format_macro_benchmarks_summary_line(mb_raw)
+    if not include_crypto:
+        summary_s = format_macro_benchmarks_summary_line(mb_raw, include_crypto=False)
+    else:
+        summary_s = str(mb_raw.get("summary_line") or "").strip() or format_macro_benchmarks_summary_line(mb_raw)
     return f"{summary_s}{_age_sfx(mb_raw, parens=True)}" if summary_s else ""
 
 
@@ -153,8 +157,9 @@ def _fmt_slope_val(val: Any, decimals: int = 5, *, signed: bool = True) -> str:
     return f"{vf:+.{decimals}f}" if signed else f"{vf:.{decimals}f}"
 
 
-def _format_macro_and_news_section(sensors: Any) -> List[str]:
+def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> List[str]:
     """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
+    is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
     fg = getattr(sensors, "fear_greed", None) or macro.get("fear_greed") or {}
     mb = getattr(sensors, "market_breadth", None) or macro.get("market_breadth") or {}
@@ -222,13 +227,21 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         + f" | summary={gt.get('summary', '')}"
         if gt else "None"
     )
-    lines = [
-        "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
-        f"- Fear & Greed: {fg_line}",
-        f"- Market Breadth: {mb_line}",
-        f"- Macro Sentiment Advisor: {sa_line}",
-        f"- Geopolitical Threat Shield: {gt_line}",
-    ]
+    if is_equities_scope:
+        eq_reg_line = format_equity_macro_regime_line(mb_bench) if isinstance(mb_bench, dict) and mb_bench else "NEUTRAL"
+        lines = [
+            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
+            f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True) if isinstance(mb_bench, dict) else ''}",
+            f"- Geopolitical Threat Shield: {gt_line}",
+        ]
+    else:
+        lines = [
+            "### 1. ACTIVE MACRO, SENTIMENT, GEOPOLITICAL & LIVE BREAKING NEWS TELEMETRY:",
+            f"- Fear & Greed: {fg_line}",
+            f"- Market Breadth: {mb_line}",
+            f"- Macro Sentiment Advisor: {sa_line}",
+            f"- Geopolitical Threat Shield: {gt_line}",
+        ]
     breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
     mc = (
         getattr(sensors, "macro_calendar", None)
@@ -253,7 +266,7 @@ def _format_macro_and_news_section(sensors: Any) -> List[str]:
         if mc.get("live_macro_prints"):
             mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
         lines.append(f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}")
-    mb_bench_line = _extract_macro_benchmarks_line(mb_bench)
+    mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=not is_equities_scope)
     if mb_bench_line:
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"

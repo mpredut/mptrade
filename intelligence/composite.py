@@ -230,13 +230,15 @@ class CompositeMarketIntelligence:
             if (veto := _apply_guard_dec(fund_dec)) is not None:
                 return veto
 
-        # 6. Sentiment Extreme Greed Guard (GLLM2)
-        if fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
+        is_eq_sym = str(symbol or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+
+        # 6. Sentiment Extreme Greed Guard (GLLM2 — Crypto only)
+        if not is_eq_sym and fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
             if (veto := _apply_guard_dec(self.greed_guard.check(symbol, side, fear_greed_snapshot))) is not None:
                 return veto
 
-        # 7. Sentiment Panic Washout Guard (GLLM2)
-        if (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
+        # 7. Sentiment Panic Washout Guard (GLLM2 — Crypto only)
+        if not is_eq_sym and (market_breadth_snapshot is not None or fear_greed_snapshot is not None) and not _is_bypassed("GLLM2", "panic_guard", "panicwashoutguard"):
             panic_dec = self.panic_guard.check(
                 symbol, side,
                 breadth_snapshot=market_breadth_snapshot,
@@ -255,10 +257,14 @@ class CompositeMarketIntelligence:
             and computed_notional >= self.gemini_guard.min_notional_eur
             and not _is_bypassed("GLLM1", "gemini_guard", "highstakeguard")
         ):
-            telemetry_ctx = {
-                "fear_greed": obj_attr(fear_greed_snapshot, "value"),
-                "breadth_regime": obj_attr(market_breadth_snapshot, "regime"),
-            }
+            telemetry_ctx = (
+                {}
+                if is_eq_sym
+                else {
+                    "fear_greed": obj_attr(fear_greed_snapshot, "value"),
+                    "breadth_regime": obj_attr(market_breadth_snapshot, "regime"),
+                }
+            )
             eff_price = price_finite if price_finite is not None else price
             eff_qty = qty_finite if qty_finite is not None else 1.0
             try:
@@ -330,12 +336,13 @@ class CompositeMarketIntelligence:
             if l_event:
                 triggered_events.append(l_event)
 
-        if fear_greed_snapshot is not None:
+        is_eq_sym = str(symbol or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+        if not is_eq_sym and fear_greed_snapshot is not None:
             _, s_event = self.sentiment_trigger.evaluate(symbol, price, fear_greed_snapshot, ts=now_ts)
             if s_event:
                 triggered_events.append(s_event)
 
-        if market_breadth_snapshot is not None:
+        if not is_eq_sym and market_breadth_snapshot is not None:
             _, b_event = self.breadth_trigger.evaluate(
                 symbol, price, market_breadth_snapshot, asset_24h_change_pct=asset_24h_change_pct, ts=now_ts
             )

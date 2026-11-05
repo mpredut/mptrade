@@ -1370,6 +1370,10 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in share_prompt
     assert "venue_fee_per_leg=15bps" in share_prompt
     assert '"venue": "t212"' in share_prompt
+    assert "- US Equity & Macro Regime:" in share_prompt
+    assert "- Fear & Greed:" not in share_prompt
+    assert "- Market Breadth:" not in share_prompt
+    assert "- Macro Sentiment Advisor:" not in share_prompt
 
     # Outside US RTH, auto_sharetrade_executor skips LLM evaluation unless force_rth_open=True
     with patch("orchestratorOS.supervisor.autonomous_ai_reconciler._is_us_rth_open", return_value=False):
@@ -1396,6 +1400,9 @@ def test_harvest_and_synthesize_enriches_hyperliquid_and_t212_cycles(temp_env):
     eq_snap = reconciler.harvest_sensors_telemetry(asset_scope="equities")
     assert [i["venue"] for i in eq_snap.portfolio_summary.get("recent_ai_intents", [])] == ["t212"]
     assert [r["venue"] for r in eq_snap.portfolio_summary.get("active_retry_queue", [])] == ["t212"]
+    assert eq_snap.fear_greed is None
+    assert eq_snap.market_breadth is None
+    assert eq_snap.sentiment_advisor is None
 
     cr_snap = reconciler.harvest_sensors_telemetry(asset_scope="crypto")
     assert [i["venue"] for i in cr_snap.portfolio_summary.get("recent_ai_intents", [])] == ["binance"]
