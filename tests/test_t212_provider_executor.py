@@ -684,6 +684,45 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertEqual(refresh_calls, [0.0])
             self.assertEqual([o["orderId"] for o in refreshed_buys], ["801", "901"])
 
+            # Verify 10-minute (600s) 429 shared-cache fallback and cross-process fail_ts backoff
+            save_json_state(
+                shared_path,
+                {
+                    "_ord_cache": {
+                        "ts": time.time() - 300.0,
+                        "data": [{"id": 501, "ticker": "SPCX_US_EQ", "quantity": 1.0, "limitPrice": 120.0}],
+                    }
+                },
+            )
+            c_p1 = t212_client.T212Client(
+                "demo-key", "demo-secret", env="demo",
+                min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+            )
+            c_p1._shared_cache_path = shared_path
+            c_p1._enable_shared_disk_cache = True
+            c_p2 = t212_client.T212Client(
+                "demo-key", "demo-secret", env="demo",
+                min_gap_sec=0.0, portfolio_ttl_sec=6.0, order_min_gap_sec=0.0,
+            )
+            c_p2._shared_cache_path = shared_path
+            c_p2._enable_shared_disk_cache = True
+            p1_calls = []
+
+            def fake_429_orders(url, headers=None):
+                p1_calls.append(url)
+                return 429, b'{"error": "rate limit"}'
+
+            with mock.patch.object(t212_client, "http_get", side_effect=fake_429_orders):
+                ords_p1 = c_p1.list_active_orders()
+                self.assertEqual(len(ords_p1), 1)
+                self.assertEqual(ords_p1[0]["id"], 501)
+                self.assertEqual(len(p1_calls), 1)
+                # Process 2 reads the fail_ts-stamped shared cache entry without making a duplicate 429 request
+                ords_p2 = c_p2.list_active_orders()
+                self.assertEqual(len(ords_p2), 1)
+                self.assertEqual(ords_p2[0]["id"], 501)
+                self.assertEqual(len(p1_calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

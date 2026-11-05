@@ -10,6 +10,7 @@ There is no ``side`` field, and the ticker key is not ``instrumentTicker``.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -32,6 +33,7 @@ except ImportError:
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
 from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
+from lock.cooldown import FileLock
 from providers.base import (
     MarketDataProvider,
     _clean_single_order_id,
@@ -93,6 +95,7 @@ class T212Client:
         )
         # On TTL expiry, one thread fetches while others wait and reuse its result.
         self._fetch_lock = threading.Lock()
+        self._lock_tls = threading.local()
         key_hash = hashlib.sha256(self.api_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
         self._shared_cache_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -105,6 +108,32 @@ class T212Client:
         if self._enable_shared_disk_cache is not None:
             return bool(self._enable_shared_disk_cache)
         return "PYTEST_CURRENT_TEST" not in os.environ and bool(getattr(self, "_shared_cache_path", ""))
+
+    @contextlib.contextmanager
+    def _shared_cache_file_lock(self):
+        if not self._shared_cache_enabled():
+            yield
+            return
+        tls = getattr(self, "_lock_tls", None)
+        if tls is None:
+            tls = self._lock_tls = threading.local()
+        depth = getattr(tls, "depth", 0)
+        if depth > 0:
+            tls.depth = depth + 1
+            try:
+                yield
+            finally:
+                tls.depth = depth
+            return
+        lock_path = f"{self._shared_cache_path}.lock"
+        tls.depth = 1
+        try:
+            with FileLock(lock_path):
+                yield
+        except Exception:
+            yield
+        finally:
+            tls.depth = 0
 
     def _instr_shared_cache_path(self) -> str:
         base_path = str(getattr(self, "_shared_cache_path", "") or "").strip()
@@ -144,6 +173,7 @@ class T212Client:
             if attr == "_instr_cache"
             else (self._shared_cache_path,)
         )
+        now_ts = time.time()
         for cpath in paths:
             if not cpath:
                 continue
@@ -158,12 +188,34 @@ class T212Client:
                 data = entry.get("data")
                 if ts is None or not isinstance(data, (list, dict)):
                     continue
-                age = time.time() - ts
+                age = now_ts - ts
                 if 0.0 <= age < max_age_sec:
                     return True, data, age
+                fail_ts = safe_pos_float(entry.get("fail_ts"), default=None)
+                if fail_ts is not None:
+                    fail_age = now_ts - fail_ts
+                    stale_cap = max(600.0, max_age_sec * 100.0)
+                    if 0.0 <= fail_age < max_age_sec and 0.0 <= age < stale_cap:
+                        return True, data, min(age, max_age_sec * 0.5)
             except Exception:
                 pass
         return False, None, 0.0
+
+    def _record_shared_cache_fail(self, attr: str) -> None:
+        if not self._shared_cache_enabled() or attr == "_instr_cache":
+            return
+        try:
+            with self._shared_cache_file_lock():
+                payload = read_json_dict(self._shared_cache_path, default=None)
+                if not isinstance(payload, dict):
+                    return
+                entry = payload.get(attr)
+                if not isinstance(entry, dict) or not isinstance(entry.get("data"), (list, dict)):
+                    return
+                entry["fail_ts"] = time.time()
+                atomic_write_json(self._shared_cache_path, payload)
+        except Exception:
+            pass
 
     def _write_shared_cache(self, attr: str, data: list | dict) -> None:
         if not self._shared_cache_enabled():
@@ -175,20 +227,21 @@ class T212Client:
                 self._cleanup_stale_tmp_files(instr_path)
                 atomic_write_json(instr_path, {"_instr_cache": {"ts": now_ts, "data": data}})
                 return
-            self._cleanup_stale_tmp_files(self._shared_cache_path)
-            payload = read_json_dict(self._shared_cache_path, default={})
-            if not isinstance(payload, dict):
-                payload = {}
-            legacy_instr = payload.pop("_instr_cache", None)
-            if isinstance(legacy_instr, dict):
-                instr_path = self._instr_shared_cache_path()
-                if instr_path and not os.path.exists(instr_path):
-                    try:
-                        atomic_write_json(instr_path, {"_instr_cache": legacy_instr})
-                    except Exception:
-                        pass
-            payload[attr] = {"ts": now_ts, "data": data}
-            atomic_write_json(self._shared_cache_path, payload)
+            with self._shared_cache_file_lock():
+                self._cleanup_stale_tmp_files(self._shared_cache_path)
+                payload = read_json_dict(self._shared_cache_path, default={})
+                if not isinstance(payload, dict):
+                    payload = {}
+                legacy_instr = payload.pop("_instr_cache", None)
+                if isinstance(legacy_instr, dict):
+                    instr_path = self._instr_shared_cache_path()
+                    if instr_path and not os.path.exists(instr_path):
+                        try:
+                            atomic_write_json(instr_path, {"_instr_cache": legacy_instr})
+                        except Exception:
+                            pass
+                payload[attr] = {"ts": now_ts, "data": data}
+                atomic_write_json(self._shared_cache_path, payload)
             if attr == "_hist_cache" and isinstance(data, list):
                 self._sync_trade_cache(data)
         except Exception:
@@ -560,30 +613,36 @@ class T212Client:
                 matches = self._extract_history_matches(hc[1], target_oid)
         if not matches:
             with self._fetch_lock:
-                with self._lock:
-                    hc = getattr(self, "_hist_cache", None)
-                    if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
-                        matches = self._extract_history_matches(hc[1], target_oid)
-                if not matches:
-                    s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
-                    if s_hit and isinstance(s_val, list):
-                        s_matches = self._extract_history_matches(s_val, target_oid)
-                        if s_matches:
-                            with self._lock:
-                                self._hist_cache = (time.monotonic() - s_age, s_val)
-                                self._fetch_fail.pop("_hist_cache", None)
-                            matches = s_matches
-                if not matches:
-                    items = self._fetch_order_history_locked()
-                    if items is None:
-                        with self._lock:
-                            hc = getattr(self, "_hist_cache", None)
-                            if hc and (time.monotonic() - hc[0]) < 60.0:
-                                matches = self._extract_history_matches(hc[1], target_oid)
-                        if not matches:
-                            return None
-                    else:
-                        matches = self._extract_history_matches(items, target_oid)
+                with self._shared_cache_file_lock():
+                    with self._lock:
+                        hc = getattr(self, "_hist_cache", None)
+                        if hc and (time.monotonic() - hc[0]) < self._pf_ttl:
+                            matches = self._extract_history_matches(hc[1], target_oid)
+                    if not matches:
+                        s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", self._pf_ttl)
+                        if s_hit and isinstance(s_val, list):
+                            s_matches = self._extract_history_matches(s_val, target_oid)
+                            if s_matches:
+                                with self._lock:
+                                    self._hist_cache = (time.monotonic() - s_age, s_val)
+                                    self._fetch_fail.pop("_hist_cache", None)
+                                matches = s_matches
+                    if not matches:
+                        items = self._fetch_order_history_locked()
+                        if items is None:
+                            s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache("_hist_cache", 600.0)
+                            if s_fb_hit and isinstance(s_fb_val, list):
+                                self._record_shared_cache_fail("_hist_cache")
+                                matches = self._extract_history_matches(s_fb_val, target_oid)
+                            if not matches:
+                                with self._lock:
+                                    hc = getattr(self, "_hist_cache", None)
+                                    if hc and (time.monotonic() - hc[0]) < 600.0:
+                                        matches = self._extract_history_matches(hc[1], target_oid)
+                            if not matches:
+                                return None
+                        else:
+                            matches = self._extract_history_matches(items, target_oid)
         if not matches:
             return False
 
@@ -630,18 +689,19 @@ class T212Client:
             if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
                 return hc[1]
         with self._fetch_lock:
-            with self._lock:
-                hc = getattr(self, "_hist_cache", None)
-                if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
-                    return hc[1]
-            s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
-            if s_hit and isinstance(s_val, list):
+            with self._shared_cache_file_lock():
                 with self._lock:
-                    self._hist_cache = (time.monotonic() - s_age, s_val)
-                    self._fetch_fail.pop("_hist_cache", None)
-                self._sync_trade_cache(s_val)
-                return s_val
-            return self._fetch_order_history_locked()
+                    hc = getattr(self, "_hist_cache", None)
+                    if hc and (time.monotonic() - hc[0]) < ttl and isinstance(hc[1], list):
+                        return hc[1]
+                s_hit, s_val, s_age = self._read_shared_cache("_hist_cache", ttl)
+                if s_hit and isinstance(s_val, list):
+                    with self._lock:
+                        self._hist_cache = (time.monotonic() - s_age, s_val)
+                        self._fetch_fail.pop("_hist_cache", None)
+                    self._sync_trade_cache(s_val)
+                    return s_val
+                return self._fetch_order_history_locked()
 
     def latest_filled_order_for_ticker(
         self,
@@ -754,7 +814,7 @@ class T212Client:
             return True, c[1]
         fail_ts = self._fetch_fail.get(attr, 0.0)
         if (now - fail_ts) < self._pf_ttl:
-            stale_limit = max(60.0, ttl * 10.0)
+            stale_limit = max(600.0, ttl * 100.0)
             return True, (c[1] if (c and (now - c[0]) < stale_limit) else None)
         return False, None
 
@@ -773,55 +833,57 @@ class T212Client:
         triggers near-simultaneous requests against roughly five-second limits.
         """
         eff_ttl = max(self._pf_ttl, self._pf_ttl * safe_pos_float(ttl_mult, default=1.0))
-        stale_limit = max(60.0, eff_ttl * 10.0)
+        stale_limit = max(600.0, eff_ttl * 100.0)
         with self._lock:
             hit, val = self._peek_cached_locked(attr, eff_ttl)
             if hit:
                 return val
         with self._fetch_lock:
-            with self._lock:   # Another thread may have refilled while this one waited.
-                hit, val = self._peek_cached_locked(attr, eff_ttl)
-                if hit:
-                    return val
-            s_hit, s_val, s_age = self._read_shared_cache(attr, eff_ttl)
-            if s_hit and isinstance(s_val, expect_type):
-                with self._lock:
-                    setattr(self, attr, (time.monotonic() - s_age, s_val))
-                    self._fetch_fail.pop(attr, None)
-                return s_val
-            status, body = http_get(f"{self.base}{path}", headers=self._headers_for_endpoint(attr))
-            if status != 200 or not body:
-                s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, stale_limit)
-                if s_fb_hit and isinstance(s_fb_val, expect_type):
+            with self._shared_cache_file_lock():
+                with self._lock:   # Another thread may have refilled while this one waited.
+                    hit, val = self._peek_cached_locked(attr, eff_ttl)
+                    if hit:
+                        return val
+                s_hit, s_val, s_age = self._read_shared_cache(attr, eff_ttl)
+                if s_hit and isinstance(s_val, expect_type):
                     with self._lock:
-                        setattr(self, attr, (time.monotonic() - min(s_fb_age, eff_ttl * 0.5), s_fb_val))
+                        setattr(self, attr, (time.monotonic() - s_age, s_val))
+                        self._fetch_fail.pop(attr, None)
+                    return s_val
+                status, body = http_get(f"{self.base}{path}", headers=self._headers_for_endpoint(attr))
+                if status != 200 or not body:
+                    s_fb_hit, s_fb_val, s_fb_age = self._read_shared_cache(attr, stale_limit)
+                    if s_fb_hit and isinstance(s_fb_val, expect_type):
+                        self._record_shared_cache_fail(attr)
+                        with self._lock:
+                            setattr(self, attr, (time.monotonic() - min(s_fb_age, eff_ttl * 0.5), s_fb_val))
+                            self._fetch_fail[attr] = time.monotonic()
+                        return s_fb_val
+                    if status == 429:
+                        self.notify_rate_limit(max(5.0, self._pf_ttl))
+                    self._log_read_fail(what, status)
+                    with self._lock:
                         self._fetch_fail[attr] = time.monotonic()
-                    return s_fb_val
-                if status == 429:
-                    self.notify_rate_limit(max(5.0, self._pf_ttl))
-                self._log_read_fail(what, status)
+                        c = getattr(self, attr, None)
+                        if c and (time.monotonic() - c[0]) < stale_limit:
+                            return c[1]
+                    return None
+                try:
+                    data = json.loads(body)
+                except ValueError:
+                    self._log_read_fail(f"{what} (invalid JSON)", status)
+                    with self._lock:
+                        self._fetch_fail[attr] = time.monotonic()
+                    return None
+                if not isinstance(data, expect_type):
+                    return None
+                if expect_type is list:
+                    data = [item for item in data if isinstance(item, dict)]
                 with self._lock:
-                    self._fetch_fail[attr] = time.monotonic()
-                    c = getattr(self, attr, None)
-                    if c and (time.monotonic() - c[0]) < stale_limit:
-                        return c[1]
-                return None
-            try:
-                data = json.loads(body)
-            except ValueError:
-                self._log_read_fail(f"{what} (invalid JSON)", status)
-                with self._lock:
-                    self._fetch_fail[attr] = time.monotonic()
-                return None
-            if not isinstance(data, expect_type):
-                return None
-            if expect_type is list:
-                data = [item for item in data if isinstance(item, dict)]
-            with self._lock:
-                setattr(self, attr, (time.monotonic(), data))
-                self._fetch_fail.pop(attr, None)
-            self._write_shared_cache(attr, data)
-            return data
+                    setattr(self, attr, (time.monotonic(), data))
+                    self._fetch_fail.pop(attr, None)
+                self._write_shared_cache(attr, data)
+                return data
 
     def get_portfolio(self) -> list[dict] | None:
         """Return open account positions, the reconciliation source of truth.
