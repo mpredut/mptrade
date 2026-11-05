@@ -350,9 +350,21 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_age_suffix(h, now)})"
             for h in high_sev[:12]
         )
+        market_reaction_line = ""
+        try:
+            from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks
+            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_equity_macro_regime_line
+
+            if isinstance(mb_geo := load_cached_macro_benchmarks(state_cache_dir), dict) and mb_geo:
+                eq_macro_s = format_equity_macro_regime_line(mb_geo)
+                if eq_macro_s and eq_macro_s != "NEUTRAL":
+                    market_reaction_line = f"Live Cross-Asset Market Reaction: {eq_macro_s}\n"
+        except Exception:
+            market_reaction_line = ""
         prompt = (
             "You are a senior macroeconomic and geopolitical risk officer for an algorithmic crypto & equities fund.\n"
             f"Active Global Trading Session: {session_ctx.session_label} ({session_ctx.eet_time_str} / {session_ctx.ny_time_str})\n"
+            f"{market_reaction_line}"
             "Evaluate these breaking worldwide headlines (military conflicts, energy/shipping chokepoints, "
             "sweeping tariffs/sanctions, central bank emergency actions, or systemic financial shocks):\n\n"
             f"{headline_list}\n\n"
@@ -360,7 +372,8 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n"
             "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
             "- Reserve 'CRITICAL_SHOCK' ('HARD_VETO_NEW_BUYS') strictly for a brand-new, sudden, unpriced kinetic or systemic escalation breaking right now (e.g., surprise military strike, sudden strait closure, emergency sanctions/tariff shock) that markets have not yet absorbed.\n"
-            "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n\n"
+            "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n"
+            "- Cross-check headline severity against Live Cross-Asset Market Reaction when present (SPY/QQQ/ES=F/NQ=F, VIX, DXY, US10Y, Futures_Lead, IBIT, CB_Premium, BTC_DVOL/ETH_DVOL, Options_Surface/ETH_Options, Cross_Asset): if markets are calm or advancing (COUPLED_RISK_ON, CRYPTO_BULLISH_DECOUPLING, FUTURES_PREMARKET_GAP_UP, subdued VIX/DVOL, positive CB_Premium), treat recycled conflict headlines as priced-in ('NORMAL' or 'ELEVATED') rather than 'CRITICAL_SHOCK'.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
             "{\n"
             '  "threat_level": "NORMAL" | "ELEVATED" | "CRITICAL_SHOCK",\n'

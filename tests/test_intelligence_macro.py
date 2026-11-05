@@ -2025,6 +2025,35 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     risk_stress = compute_enterprise_portfolio_risk_metrics(stress_ps, quiet_1h_pt, {})
     assert risk_stress["intraday_var_95_usd"] > risk_calm["intraday_var_95_usd"] * 1.8
 
+    # 10. SSOT load_cached_macro_benchmarks enrichment & GeopoliticalThreatAnalyzer Live Cross-Asset Market Reaction
+    from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks
+
+    loaded_mb = load_cached_macro_benchmarks(str(cdir))
+    assert loaded_mb is not None
+    assert loaded_mb["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
+
+    captured_geo_prompts: list[str] = []
+
+    def _geo_runner(prompt: str, model: str, timeout: float) -> str:
+        captured_geo_prompts.append(prompt)
+        return json.dumps({
+            "threat_level": "ELEVATED",
+            "risk_score": 0.45,
+            "summary": "Markets calm despite ongoing headlines.",
+            "recommended_brake": "DOWNSCALE_50",
+        })
+
+    geo_agent = GeopoliticalThreatAnalyzer(
+        gemini_client=GeminiClient(custom_runner=_geo_runner),
+        state_file=str(cdir / "geopolitical_eval.json"),
+    )
+    war_snap = NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR)
+    geo_res = geo_agent.assess(war_snap, force_refresh=True, now_ts=1_793_865_000.0)
+    assert geo_res.threat_level == "ELEVATED"
+    assert captured_geo_prompts
+    assert "Live Cross-Asset Market Reaction:" in captured_geo_prompts[-1]
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_geo_prompts[-1]
+
 
     live_rth_selloff_mb = {
         "items": {

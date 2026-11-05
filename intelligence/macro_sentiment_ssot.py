@@ -811,9 +811,37 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
 
 
 def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
-    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O."""
+    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O, enriched with live futures lead and BTC 24h delta."""
     data, _ = read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
-    return data if isinstance(data, dict) and data else None
+    if not isinstance(data, dict) or not data:
+        return None
+    out = dict(data)
+    try:
+        from intelligence.sentiment.collectors.microstructure_collector import resolve_cached_btc_24h_change_pct
+        from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+            compute_cross_asset_regime,
+            compute_equity_macro_regime,
+            compute_futures_premarket_lead,
+        )
+
+        lead_recomputed = compute_futures_premarket_lead(out)
+        prev_lead_sig = (out.get("futures_lead_pct"), out.get("futures_lead_regime"))
+        for lk in ("futures_lead_pct", "futures_lead_regime", "nq_qqq_lead_pct", "es_spy_lead_pct"):
+            out.pop(lk, None)
+        out.update(lead_recomputed)
+        lead_changed = prev_lead_sig != (out.get("futures_lead_pct"), out.get("futures_lead_regime"))
+        if lead_changed or str(out.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+            out["equity_regime"] = compute_equity_macro_regime(out)
+        btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
+        if (
+            lead_changed
+            or str(out.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes()
+            or (btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6)
+        ):
+            out["cross_asset_regime"] = compute_cross_asset_regime(out, btc_chg_24h_pct=btc_chg_24h_live)
+    except Exception:
+        pass
+    return out
 
 
 def lookup_symbol_cache_items(
