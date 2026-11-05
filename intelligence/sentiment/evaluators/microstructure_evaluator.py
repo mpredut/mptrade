@@ -861,14 +861,22 @@ def enrich_cross_venue_trends(
                             entry[k_inh] = sib[k_inh]
                     break
 
-        if entry.get("vol_1h_pct") is None and trends_items_map:
+        if safe_pos_float(entry.get("vol_1h_pct"), default=None) is None and trends_items_map:
             for ck in cand_keys:
-                if isinstance(t_vol_info := casefold_get(trends_items_map, ck), dict) and t_vol_info.get("vol_1h_pct") is not None:
+                if (
+                    isinstance(t_vol_info := casefold_get(trends_items_map, ck), dict)
+                    and (
+                        safe_pos_float(t_vol_info.get("vol_1h_pct"), default=None) is not None
+                        or entry.get("vol_1h_pct") is None
+                    )
+                    and t_vol_info.get("vol_1h_pct") is not None
+                ):
                     entry["vol_1h_pct"] = t_vol_info.get("vol_1h_pct")
                     for ak in ("adapt_reentry_pct", "adapt_dca_pct"):
-                        if entry.get(ak) is None and t_vol_info.get(ak) is not None:
+                        if safe_pos_float(entry.get(ak), default=None) is None and t_vol_info.get(ak) is not None:
                             entry[ak] = t_vol_info[ak]
-                    break
+                    if safe_pos_float(entry.get("vol_1h_pct"), default=None) is not None:
+                        break
 
         if isinstance(kalman_data, dict) and isinstance(k_sym := _first_variant_dict(kalman_data, cand_keys), dict):
             k_vel = safe_float(k_sym.get("kalman_vel"), default=None)

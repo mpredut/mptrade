@@ -7699,6 +7699,66 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert rec_sum.error_count == 0
     assert rec_sum.persistent_errors == []
 
+    # 7. load_symbol_price_series strips off-RTH flat 2-element poller ticks after 3-element OHLC bars
+    #    and _apply_24h_series_enrichment heals vol_1h_pct == 0.0 from RTH bars
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_price_series
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        _apply_24h_series_enrichment,
+        compute_24h_price_metrics,
+    )
+
+    cdir_rgnt = tmp_path / "cachedb_rgnt"
+    (cdir_rgnt / "prices").mkdir(parents=True, exist_ok=True)
+    rth_close_ms = now_ms_pk - 14 * 3600_000
+    rth_bars_21 = [
+        [rth_close_ms - (20 - idx) * 900_000, round(1.41 - 0.004 * idx + (0.01 if idx % 2 else 0.0), 4), 500.0 + idx * 25.0]
+        for idx in range(21)
+    ]
+    rth_bars_21[-1] = [rth_close_ms, 1.32, 708.0]
+    flat_off_rth_ticks = [[rth_close_ms + 13 * 3600_000 + idx * 60_000, 1.32] for idx in range(30)]
+    (cdir_rgnt / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rth_bars_21 + flat_off_rth_ticks}}),
+        encoding="utf-8",
+    )
+    older_rth_bars = [
+        [rth_close_ms - 86400_000 + idx * 3600_000, round(1.38 - 0.002 * idx, 4), 400.0]
+        for idx in range(8)
+    ]
+    (cdir_rgnt / "prices" / "cache_365_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": older_rth_bars + rth_bars_21}}),
+        encoding="utf-8",
+    )
+    s24_rgnt, _ = load_symbol_price_series(
+        str(cdir_rgnt),
+        "RGNT_US_EQ",
+        current_price_items={"RGNT_US_EQ": [[rth_close_ms + 14 * 3600_000, 1.32]]},
+    )
+    assert s24_rgnt[-1][0] == rth_close_ms
+    assert all(len(pt) >= 3 for pt in s24_rgnt)
+    m24_rgnt = compute_24h_price_metrics(s24_rgnt)
+    assert m24_rgnt.get("vp_source") == "REAL_VOL"
+    assert m24_rgnt.get("chg_1h_pct") is not None
+    assert m24_rgnt.get("chg_24h_pct") is not None
+    entry_rgnt = {
+        "price": 1.32,
+        "vol_1h_pct": 0.0,
+        "adapt_reentry_pct": 0.0,
+        "adapt_dca_pct": 0.0,
+        "kalman_vel": 0.0,
+        "kalman_vel_std": 0.008,
+        "slope_15m": 0.0,
+        "slope_2_5h": 0.0,
+        "growth_15m": 0.0,
+        "growth_2_5h": 0.0,
+    }
+    _apply_24h_series_enrichment("RGNT_US_EQ", entry_rgnt, m24_rgnt, s24_rgnt, None)
+    assert entry_rgnt["vol_1h_pct"] > 0.0
+    assert entry_rgnt["adapt_reentry_pct"] > 0.0
+    assert entry_rgnt["adapt_dca_pct"] > 0.0
+    assert entry_rgnt["kalman_vel"] != 0.0
+    assert entry_rgnt["slope_2_5h"] != 0.0
+
+
 
 
 

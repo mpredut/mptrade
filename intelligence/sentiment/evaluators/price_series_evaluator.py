@@ -1209,14 +1209,27 @@ def _apply_24h_series_enrichment(
                         tail_pts_m.append((t_ms, px_v))
                         last_t_ms = t_ms
                 has_dense_1h_bars = len(tail_pts_m) >= 20
-                if len(tail_pts_m) < 20 and (entry.get("vol_1h_pct") is None or stale_short_cache):
+                no_pos_vol_1h = safe_pos_float(entry.get("vol_1h_pct"), default=None) is None
+                if len(tail_pts_m) < 20 and (no_pos_vol_1h or stale_short_cache):
                     tail_pts_m = all_pts_m[-60:]
-            if len(tail_pts_m) >= 20 and (has_dense_1h_bars or entry.get("vol_1h_pct") is None or stale_short_cache):
+            if len(tail_pts_m) >= 20 and (
+                has_dense_1h_bars
+                or safe_pos_float(entry.get("vol_1h_pct"), default=None) is None
+                or stale_short_cache
+            ):
                 dt_s_m = max(60.0, (float(tail_pts_m[-1][0]) - float(tail_pts_m[0][0])) / (1000.0 * max(1, len(tail_pts_m) - 1)))
                 if (v1h_m := calculate_volatility_1h([float(r[1]) for r in tail_pts_m], dt_s_m)) is not None and v1h_m > 0:
                     entry["vol_1h_pct"] = v1h_m
                     re_th_m, dca_th_m = adaptive_thresholds(v1h_m)
-                    if re_th_m is not None and (has_dense_1h_bars or entry.get("adapt_reentry_pct") is None or stale_short_cache):
+                    if re_th_m is not None and (
+                        has_dense_1h_bars
+                        or safe_pos_float(entry.get("adapt_reentry_pct"), default=None) is None
+                        or stale_short_cache
+                    ):
                         entry["adapt_reentry_pct"] = re_th_m
-                    if dca_th_m is not None and (has_dense_1h_bars or entry.get("adapt_dca_pct") is None or stale_short_cache):
+                    if dca_th_m is not None and (
+                        has_dense_1h_bars
+                        or safe_pos_float(entry.get("adapt_dca_pct"), default=None) is None
+                        or stale_short_cache
+                    ):
                         entry["adapt_dca_pct"] = dca_th_m

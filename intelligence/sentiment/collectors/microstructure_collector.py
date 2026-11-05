@@ -363,11 +363,32 @@ def load_symbol_price_series(
     p0: Optional[Tuple[float, float]] = None
     p1: Optional[Tuple[float, float]] = None
     span_24h_ms = 0.0
+    is_eq_sym_load = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+
+    def _strip_off_rth_flat_poller_tail(rows: list) -> list:
+        if not is_eq_sym_load or len(rows) < 3:
+            return rows
+        last_ohlc_idx = max(
+            (i for i, r in enumerate(rows) if isinstance(r, (list, tuple)) and len(r) >= 3),
+            default=-1,
+        )
+        if 1 <= last_ohlc_idx < len(rows) - 1:
+            last_ohlc_pt = _parse_ts_px_row(rows[last_ohlc_idx])
+            tail_pts = [pt for r in rows[last_ohlc_idx + 1 :] if (pt := _parse_ts_px_row(r)) is not None]
+            if (
+                last_ohlc_pt is not None
+                and tail_pts
+                and (tail_pts[-1][0] - last_ohlc_pt[0]) > 20 * 60 * 1000
+                and max(p[1] for p in tail_pts) == min(p[1] for p in tail_pts)
+            ):
+                return rows[: last_ohlc_idx + 1]
+        return rows
+
     for cand in cands:
         for p24_path in _cand_paths(f"cache_24_price_{cand}.json"):
             if not os.path.exists(p24_path) and not os.path.exists(p24_path + ".previous"):
                 continue
-            ser = _sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands))
+            ser = _strip_off_rth_flat_poller_tail(_sort_ts_rows(_extract_cached_items_series(_rj(p24_path), cands)))
             if len(ser) >= 2:
                 series_24h = list(ser) if not series_24h else _prepend_older_non_diverged_points(series_24h, ser)
                 p0, p1 = _parse_ts_px_row(series_24h[0]), _parse_ts_px_row(series_24h[-1])
@@ -563,15 +584,16 @@ def load_symbol_price_series(
                                 continue
                     clean_arch.append(item_a)
                 older_24_arch = []
-                for pt_t, pt_p, _, raw_t0 in clean_arch:
+                for pt_t, pt_p, pt_v, raw_t0 in clean_arch:
                     if pt_t >= cutoff_7d:
                         pts_7d_vals.append(pt_p)
                         pts_7d_ts.append(pt_t)
                     if need_24h_supplement:
+                        row_24 = [raw_t0, pt_p, pt_v] if pt_v is not None else [raw_t0, pt_p]
                         if pt_t >= cutoff_24h:
-                            pts_24.append([raw_t0, pt_p])
+                            pts_24.append(row_24)
                         elif pt_t >= last_pt[0] - 36.0 * 3600.0 * 1000.0:
-                            older_24_arch.append([raw_t0, pt_p])
+                            older_24_arch.append(row_24)
                 if (
                     need_24h_supplement
                     and older_24_arch
@@ -626,10 +648,20 @@ def load_symbol_price_series(
                 if cand_pts and cand_last is not None:
                     if last_24_pt is not None and _prices_diverged(last_24_pt[1], cand_last[1]):
                         continue
+                    if (
+                        is_eq_sym_load
+                        and len(series_24h) >= 2
+                        and last_24_pt is not None
+                        and (cand_last[0] - last_24_pt[0]) > 20 * 60 * 1000
+                        and abs(cand_last[1] - last_24_pt[1]) <= 1e-6
+                    ):
+                        break
                     series_24h = list(series_24h) + cand_pts
                     break
             if (px_f := extract_current_price_item(cur_item)) is not None and series_24h and last_24_pt is not None:
                 if not _prices_diverged(last_24_pt[1], px_f):
+                    if is_eq_sym_load and len(series_24h) >= 2 and abs(px_f - last_24_pt[1]) <= 1e-6:
+                        break
                     raw_last_t = (
                         safe_pos_float(series_24h[-1][0], default=None)
                         if isinstance(series_24h[-1], (list, tuple)) and series_24h[-1]
@@ -681,7 +713,7 @@ def load_symbol_price_series(
                             continue
                     filtered_24h.append(cur_d)
                 filtered_24h.append(dedup_24h[-1])
-                dedup_24h = filtered_24h
+                dedup_24h = _strip_off_rth_flat_poller_tail(filtered_24h)
             series_24h = dedup_24h if len(dedup_24h) >= 2 else []
         else:
             series_24h = []
@@ -1295,30 +1327,25 @@ def enrich_24h_and_microstructure(
             if cache_dir and is_eq_sym
             else ""
         )
-        eq_cache_stale = False
-        if (
+        memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
+        memo_chart_fresh = bool(memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < 240.0)
+        eq_cache_stale = bool(
             is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
             and (
-                raw_s24_last_ts_ms <= 0.0
+                memo_chart_fresh
+                or raw_s24_last_ts_ms <= 0.0
                 or (int(now_ts * 1000) - raw_s24_last_ts_ms) > 5 * 60 * 1000
                 or "chg_24h_pct" not in m24
+                or "chg_1h_pct" not in m24
+                or m24.get("vp_source") == "TPO"
+                or not p24_eq_path
+                or not os.path.exists(p24_eq_path)
             )
-        ):
-            try:
-                memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym)
-                eq_cache_stale = (
-                    memo_chart is None
-                    or (now_ts - memo_chart[0]) >= 240.0
-                    or not p24_eq_path
-                    or not os.path.exists(p24_eq_path)
-                )
-            except Exception:
-                eq_cache_stale = True
+        )
         if (not m24 and (is_t212_inst or (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ))) or eq_cache_stale:
             try:
-                memo_chart = _EQ_YAHOO_CHART_MEMO.get(sym) if "PYTEST_CURRENT_TEST" not in os.environ else None
-                if memo_chart is not None and 0.0 <= (now_ts - memo_chart[0]) < 240.0:
+                if memo_chart_fresh and memo_chart is not None:
                     chart_res = memo_chart[1]
                 else:
                     _chart = load_local_module(os.path.join(workspace_dir, "212trading"), "market_data")._chart
@@ -1365,7 +1392,7 @@ def enrich_24h_and_microstructure(
                         sym_px_cur <= 0.0
                         or abs(sym_px_cur - chart_px) < 1e-4
                         or (
-                            not is_t212_inst
+                            (not is_t212_inst or ("PYTEST_CURRENT_TEST" not in os.environ and eq_cache_stale))
                             and rth_bar_fresh
                             and not _prices_diverged(sym_px_cur, chart_px)
                             and (
@@ -1421,6 +1448,9 @@ def enrich_24h_and_microstructure(
                         post_rth_series_replaced = True
                         last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
                         pts_24h = list(pts_24h[:-1]) + [[pts_24h[-1][0], round(sym_px_cur, 4), *last_bar_tail]]
+                    else:
+                        post_rth_series_replaced = False
+                    if (post_rth_series_replaced or (eq_cache_stale and len(pts_24h) >= 5)):
                         for k_ov in (
                             "kalman_vel",
                             "kalman_vel_std",
@@ -1441,8 +1471,6 @@ def enrich_24h_and_microstructure(
                             "gradient_recent",
                         ):
                             prices_and_trends[sym].pop(k_ov, None)
-                    else:
-                        post_rth_series_replaced = False
                     pts_24h_for_m24 = pts_24h
                     if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
                         last_bar_tail = list(pts_24h[-1][2:]) if isinstance(pts_24h[-1], (list, tuple)) and len(pts_24h[-1]) >= 3 else []
@@ -1477,9 +1505,23 @@ def enrich_24h_and_microstructure(
                         try:
                             from state_io import save_json_state
 
-                            if (pts_24h_to_save or pts_24h_bars) and len(raw_matched_series_24h) < 10:
+                            eff_p24_pts = pts_24h_to_save or pts_24h_bars
+                            raw_ohlc_cnt = sum(
+                                1 for p in raw_matched_series_24h if isinstance(p, (list, tuple)) and len(p) >= 3
+                            )
+                            new_ohlc_cnt = sum(
+                                1 for p in eff_p24_pts if isinstance(p, (list, tuple)) and len(p) >= 3
+                            )
+                            if eff_p24_pts and (
+                                len(raw_matched_series_24h) < 10
+                                or raw_ohlc_cnt < new_ohlc_cnt
+                                or (
+                                    not rth_bar_fresh
+                                    and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in raw_matched_series_24h)
+                                )
+                            ):
                                 p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
-                                save_json_state(p24_target, {"items": {sym: pts_24h_to_save or pts_24h_bars}})
+                                save_json_state(p24_target, {"items": {sym: eff_p24_pts}})
                             if pts_24h_to_save or pts_24h_bars:
                                 ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
                                 save_json_state(ohlc24_target, {"ts": now_ts, "symbol": sym, "points": pts_24h_to_save or pts_24h_bars})
