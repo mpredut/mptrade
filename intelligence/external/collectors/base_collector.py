@@ -32,6 +32,7 @@ from intelligence.macro_sentiment_ssot import (
     is_cache_fresh,
     resolve_now_ts as _effective_now_ts,
 )
+from instrument_registry import is_equity_symbol, is_symbol_market_open
 from providers.base import resolve_ssot_price_from_cache
 from state_io import read_json_dict, read_json_dict_recovering, save_json_state
 

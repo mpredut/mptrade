@@ -203,13 +203,21 @@ def get_signal(client, coin: str) -> dict:
 
 
 _self_mod = sys.modules.get(__name__)
-if _self_mod is not None:
-    for _alias_k in ("price_analysis", "hyperliquid.price_analysis", "hyperliquid.signals"):
+if _self_mod is not None and __name__ in (
+    "signals",
+    "hyperliquid.signals",
+    "price_analysis",
+    "hyperliquid.price_analysis",
+):
+    for _alias_k in ("price_analysis", "hyperliquid.price_analysis"):
         _prev_mod = sys.modules.get(_alias_k)
         if _prev_mod is None or getattr(_prev_mod, "__file__", None) == __file__:
             sys.modules[_alias_k] = _self_mod
+    if __name__ == "hyperliquid.signals":
+        sys.modules["hyperliquid.signals"] = _self_mod
     _hl_pkg = sys.modules.get("hyperliquid")
     if _hl_pkg is not None:
         setattr(_hl_pkg, "price_analysis", _self_mod)
-        setattr(_hl_pkg, "signals", _self_mod)
+        if __name__ == "hyperliquid.signals" or not hasattr(_hl_pkg, "signals"):
+            setattr(_hl_pkg, "signals", _self_mod)
 
