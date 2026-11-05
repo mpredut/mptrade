@@ -8541,6 +8541,11 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert spcx_micro["spot_cvd_15m_usd"] < 0
     assert spcx_micro["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
 
+    from intelligence.macro_sentiment_ssot import get_breadth_excluded_bases
+
+    excl_bases = get_breadth_excluded_bases()
+    assert "RGNTB" in excl_bases and "NVDAB" in excl_bases and "SNDKB" in excl_bases
+
 
 
 

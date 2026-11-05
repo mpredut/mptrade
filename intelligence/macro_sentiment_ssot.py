@@ -499,7 +499,18 @@ def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
 
 
 def get_breadth_excluded_bases() -> Set[str]:
-    return set(_tax_tuple("breadth_excluded_bases"))
+    out = set(_tax_tuple("breadth_excluded_bases"))
+    try:
+        from instrument_registry import symbols_for
+
+        for eq_sym in symbols_for("t212"):
+            eq_base = str(eq_sym or "").strip().upper().split("_", 1)[0]
+            if eq_base:
+                out.add(f"{eq_base}B")
+                out.add(f"{eq_base}XB")
+    except Exception:
+        pass
+    return out
 
 
 def get_breadth_quote_suffixes() -> Tuple[str, ...]:
