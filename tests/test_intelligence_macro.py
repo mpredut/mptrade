@@ -1633,6 +1633,21 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
         "btc_skew_25d_pct": -1.25,
     }
     assert compute_cross_asset_regime(decouple_crypto) == "CRYPTO_BULLISH_DECOUPLING"
+    assert compute_cross_asset_regime(decouple_crypto, btc_chg_24h_pct=0.0) == "CRYPTO_BULLISH_DECOUPLING"
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 586.0, "chg_24h_pct": 0.70},
+                    "QQQ": {"price": 508.0, "chg_24h_pct": 1.05},
+                    "IBIT": {"price": 43.5, "chg_24h_pct": -1.40},
+                },
+                "coinbase_premium_bps": 0.0,
+            },
+            btc_chg_24h_pct=0.0,
+        )
+        == "EQUITY_BULLISH_DECOUPLING"
+    )
     assert (
         compute_cross_asset_regime(
             {

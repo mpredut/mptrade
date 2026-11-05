@@ -108,7 +108,8 @@ def compute_cross_asset_regime(
 
     ibit_entry = items.get("IBIT")
     ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
-    crypto_px_chg = safe_float(btc_chg_24h_pct, default=ibit_24h)
+    btc_24h = safe_float(btc_chg_24h_pct, default=None)
+    crypto_px_chg = btc_24h if (btc_24h is not None and (ibit_24h is None or abs(btc_24h) > 1e-6)) else ibit_24h
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
 
     if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):

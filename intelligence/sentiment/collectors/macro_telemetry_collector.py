@@ -431,18 +431,7 @@ def harvest_macro_and_news_sensors(
                     enriched["equity_regime"] = compute_equity_macro_regime(enriched)
                 if str(enriched.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes():
                     enriched["cross_asset_regime"] = compute_cross_asset_regime(enriched)
-                cur_sum = str(enriched.get("summary_line") or "")
-                if (
-                    stripped_stale_intraday
-                    or not cur_sum
-                    or "-0.00%" in cur_sum
-                    or "-0.0bps" in cur_sum
-                    or "-0.0%" in cur_sum
-                    or (
-                        enriched.get("cross_asset_regime") not in (None, "", "NEUTRAL")
-                        and f"Cross_Asset={enriched['cross_asset_regime']}" not in cur_sum
-                    )
-                ) and (summary_s := format_macro_benchmarks_summary_line(enriched)):
+                if summary_s := format_macro_benchmarks_summary_line(enriched):
                     enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
@@ -922,7 +911,7 @@ def populate_market_and_portfolio_snapshot(
             ),
             None,
         )
-        if btc_chg_24h_live is not None:
+        if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
             cross_reg_live = compute_cross_asset_regime(mb_snap_pre, btc_chg_24h_pct=btc_chg_24h_live)
             if cross_reg_live != mb_snap_pre.get("cross_asset_regime"):
                 mb_snap_pre["cross_asset_regime"] = cross_reg_live

@@ -26,6 +26,7 @@ from cachepaths import (
     resolve_kraken_lookup_symbol,
     telemetry_cache_file_path,
 )
+from instrument_registry import is_equity_symbol
 from intelligence.macro_sentiment_ssot import (
     fetch_public_json,
     is_cache_fresh,
@@ -75,7 +76,7 @@ def _cached_registry_specs() -> Tuple[Any, ...]:
 def _resolve_configured_venue(symbol: str) -> str:
     """Return the SSOT configured provider ('t212', 'hyperliquid', 'kraken', or 'binance') for symbol."""
     raw_sym = str(symbol or "").strip().upper()
-    if raw_sym.endswith(("_EQ", "_US_EQ")):
+    if is_equity_symbol(raw_sym):
         return "t212"
     canon_sym = canonical_symbol_key(symbol)
     if not canon_sym:
@@ -321,7 +322,7 @@ class _DiskBackedSymbolCollector:
         venue = _resolve_configured_venue(sym_clean)
         return bool(
             venue in ("hyperliquid", "t212")
-            or sym_clean.endswith(("_EQ", "_US_EQ"))
+            or is_equity_symbol(sym_clean)
             or (
                 self._QUOTE_ISOLATED
                 and (venue != "binance" or _is_multi_venue_base(sym_clean))
@@ -383,7 +384,7 @@ class _DiskBackedSymbolCollector:
             if disk_ex is not None:
                 return sym_clean, now_f, cached_ex, disk_ex, False
             if (
-                sym_clean.endswith(("_EQ", "_US_EQ"))
+                is_equity_symbol(sym_clean)
                 and (
                     os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
                     or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
