@@ -6866,7 +6866,99 @@ def test_6h_bottom_dead_zone_sibling_low_guard_cross_market_bounds_and_military_
     )
     assert has_financial_or_geopolitical_context("Pentagon deploys additional military assets to Middle East")
     assert has_financial_or_geopolitical_context("Futures Mixed After Postelection Rally; Three Giants Are Buys")
+    assert has_financial_or_geopolitical_context(
+        'Russia, China may be more aggressive if they feel Trump is on "his way out": Brookings'
+    )
 
 
+def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow():
+    from intelligence.macro.calendar_ssot import parse_cited_cvd_usd
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        compute_liquidation_clusters,
+    )
 
+    # 1. Bug 117: parse_cited_cvd_usd & enrich_sentiment_advisor_live_flow_divergence detect 1h CVD sign flips
+    adv_summary = (
+        "BTC trades at $80,416.12 as strong short-term taker buying (aggregate ratio 1.6606, 5m CVD +$5.69M) "
+        "meets stabilizing OI, while 1h CVD remains slightly negative (-$2.48M)."
+    )
+    assert parse_cited_cvd_usd(adv_summary, horizon="1h") == -2_480_000.0
+    assert parse_cited_cvd_usd(adv_summary, horizon="5m") == 5_690_000.0
+
+    sa_pos_flip = {
+        "market_bias": "BULLISH",
+        "recommended_action": "HOLD",
+        "age_min": 32.2,
+        "summary": adv_summary,
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_pos_flip,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 1.4956,
+                "cvd_15m_usd": 10_660_000.0,
+                "taker_ratio_5m": 1.08,
+                "cvd_5m_usd": 380_200.0,
+                "taker_ratio_1h": 1.16,
+                "cvd_1h_usd": 14_710_000.0,
+            }
+        },
+    )
+    assert "LIVE_1H_CVD_FLIP_POSITIVE" in sa_pos_flip.get("live_flow_divergence", "")
+    assert "advisor 1h_cvd=-2.48M" in sa_pos_flip.get("live_flow_divergence", "")
+
+    sa_neg_flip = {
+        "market_bias": "BEARISH",
+        "recommended_action": "HOLD",
+        "age_min": 25.0,
+        "summary": "Short-term selling (aggregate ratio 0.62) meets positive 1h CVD (+$6.40M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_neg_flip,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.68,
+                "cvd_15m_usd": -4_200_000.0,
+                "taker_ratio_1h": 0.82,
+                "cvd_1h_usd": -9_100_000.0,
+            }
+        },
+    )
+    assert "LIVE_1H_CVD_FLIP_NEGATIVE" in sa_neg_flip.get("live_flow_divergence", "")
+    assert "advisor 1h_cvd=+6.40M" in sa_neg_flip.get("live_flow_divergence", "")
+
+    # 2. Bug 118: compute_liquidation_clusters neutralizes LONG_SWEEP_MAGNET_DOWN when ask_absorbing + strong taker/5m/OB/spot flow
+    tao_liq = compute_liquidation_clusters(
+        {
+            "price": 232.95,
+            "vol_1h_pct": 0.565,
+            "kalman_vel": -0.01422,
+            "kalman_vel_std": 0.045,
+            "chg_15m_pct": -0.32,
+            "val_px": 229.66,
+            "vah_px": 238.02,
+            "low_24h": 226.65,
+            "high_24h": 239.8,
+        },
+        {
+            "oi_usd": 52_694_654.38,
+            "whale_long_pct": 0.7652,
+            "funding_rate": 0.00005,
+            "ob_imbalance": 0.602,
+            "bid_wall_px": 232.5,
+            "ask_wall_px": 233.5,
+            "taker_buy_sell_ratio": 1.4194,
+            "cvd_15m_usd": 78_947.0,
+            "cvd_regime": "ask_absorbing",
+            "spot_cvd_15m_usd": 39_727.0,
+            "taker_ratio_5m": 2.22,
+            "cvd_5m_usd": 77_397.0,
+            "taker_ratio_1h": 0.88,
+            "cvd_1h_usd": -131_091.0,
+        },
+    )
+    assert tao_liq["liq_magnet_bias"] == "BALANCED_LIQ_MAGNET"
 

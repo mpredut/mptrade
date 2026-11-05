@@ -283,10 +283,15 @@ def compute_liquidation_clusters(
         ),
         default=0.0,
     ) or 0.0
+    kalman_std = safe_pos_float(p_dict.get("kalman_vel_std"), default=None)
     chg_15m_v = safe_float(p_dict.get("chg_15m_pct"), default=0.0) or 0.0
     taker_r = safe_nonneg_float(minfo.get("taker_buy_sell_ratio"), default=1.0)
     ob_imb_v = clean_scale(minfo.get("ob_imbalance"), default=0.5, allow_percent=True)
-    vel_sign = 1.0 if kalman_vel > 0.0 else (-1.0 if kalman_vel < 0.0 else 0.0)
+    vel_deadband = max(0.025, 0.5 * kalman_std) if kalman_std is not None and kalman_std > 0.0 else 0.0
+    if vel_deadband > 0.0 and abs(kalman_vel) < vel_deadband:
+        vel_sign = kalman_vel / vel_deadband
+    else:
+        vel_sign = 1.0 if kalman_vel > 0.0 else (-1.0 if kalman_vel < 0.0 else 0.0)
     vel_tilt = max(
         -0.35,
         min(
@@ -303,18 +308,55 @@ def compute_liquidation_clusters(
     cvd_reg = str(minfo.get("cvd_regime") or "").strip().lower()
     sp_reg = str(minfo.get("spot_perp_flow_regime") or "").strip().upper()
     slope_15m_v = safe_float(p_dict.get("slope_15m"), default=0.0) or 0.0
+    cvd_15m_v = safe_float(minfo.get("cvd_15m_usd"), default=0.0) or 0.0
+    spot_cvd_15m_v = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
+    tr_5m_v = safe_pos_float(minfo.get("taker_ratio_5m"), default=None)
+    cvd_5m_v = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
+    tr_1h_v = safe_pos_float(minfo.get("taker_ratio_1h"), default=None)
     if (
         liq_magnet_bias == "LONG_SWEEP_MAGNET_DOWN"
-        and cvd_reg == "aggressive_buying"
-        and chg_15m_v >= 0.05
-        and (kalman_vel > 0.0 or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55))
-        and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
+        and (
+            (
+                cvd_reg == "aggressive_buying"
+                and chg_15m_v >= 0.05
+                and (kalman_vel > 0.0 or (slope_15m_v > 0.0 and taker_r >= 1.15 and ob_imb_v >= 0.55))
+                and (sp_reg == "SYNCHRONIZED_SPOT_PERP_BUYING" or taker_r >= 1.35)
+            )
+            or (
+                (cvd_reg in ("aggressive_buying", "ask_absorbing", "spot_absorbing") or cvd_15m_v > 0.0)
+                and taker_r >= 1.25
+                and chg_15m_v >= -0.45
+                and (
+                    sp_reg in ("INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE", "SYNCHRONIZED_SPOT_PERP_BUYING")
+                    or abs(short_liq_dist_pct) <= abs(long_liq_dist_pct)
+                    or (tr_1h_v is not None and tr_1h_v >= 1.15)
+                    or (ob_imb_v >= 0.58 and spot_cvd_15m_v > 0.0)
+                    or (tr_5m_v is not None and tr_5m_v >= 1.35 and cvd_5m_v > 0.0)
+                )
+            )
+        )
     ) or (
         liq_magnet_bias == "SHORT_SQUEEZE_MAGNET_UP"
-        and cvd_reg == "aggressive_market_dumps"
-        and chg_15m_v <= -0.05
-        and (kalman_vel < 0.0 or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45))
-        and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
+        and (
+            (
+                cvd_reg == "aggressive_market_dumps"
+                and chg_15m_v <= -0.05
+                and (kalman_vel < 0.0 or (slope_15m_v < 0.0 and taker_r <= 0.85 and ob_imb_v <= 0.45))
+                and (sp_reg == "SYNCHRONIZED_SPOT_PERP_SELLING" or taker_r <= 0.74)
+            )
+            or (
+                (cvd_reg in ("aggressive_market_dumps", "bid_absorbing") or cvd_15m_v < 0.0)
+                and taker_r <= 0.78
+                and chg_15m_v <= 0.45
+                and (
+                    sp_reg in ("RETAIL_PERP_LONG_TRAP", "SYNCHRONIZED_SPOT_PERP_SELLING")
+                    or abs(long_liq_dist_pct) <= abs(short_liq_dist_pct)
+                    or (tr_1h_v is not None and tr_1h_v <= 0.85)
+                    or (ob_imb_v <= 0.42 and spot_cvd_15m_v < 0.0)
+                    or (tr_5m_v is not None and tr_5m_v <= 0.65 and cvd_5m_v < 0.0)
+                )
+            )
+        )
     ):
         liq_magnet_bias = "BALANCED_LIQ_MAGNET"
     return {

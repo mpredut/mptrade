@@ -498,6 +498,41 @@ def parse_cited_taker_ratio(text: Any) -> Optional[float]:
     return best_val
 
 
+def parse_cited_cvd_usd(text: Any, horizon: str = "1h") -> Optional[float]:
+    """Extract a cited BTC CVD dollar figure (e.g. `-$2.48M`, `+$5.69M`) for the specified horizon (`1h`, `15m`, `5m`)."""
+    if isinstance(text, (list, tuple)):
+        parts: List[str] = []
+        for item in text:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, (list, tuple)):
+                parts.extend(str(sub).strip() for sub in item if isinstance(sub, str) and str(sub).strip())
+        text = "\n".join(parts)
+    if not isinstance(text, str) or not text:
+        return None
+    hz_pat = {"1h": r"(?:1h|1-hour)", "15m": r"(?:15m|15-minute)", "5m": r"(?:5m|5-minute)"}.get(
+        str(horizon or "1h").lower(), re.escape(str(horizon or "1h"))
+    )
+    pattern = re.compile(
+        rf"(?:\b(?:{hz_pat}[\s_]+cvd|cvd[\s_]+{hz_pat})\b[^.;,\n()]{{0,35}}?\(?\s*([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\b"
+        rf"|([+-]?)\s*\$?\s*([+-]?)\s*([0-9]+(?:\.[0-9]+)?)\s*([kKmMbB])\s+{hz_pat}[\s_]+cvd\b)",
+        re.IGNORECASE,
+    )
+    m = pattern.search(text)
+    if m is None:
+        return None
+    if m.group(3) is not None:
+        s1, s2, num_s, unit_s = m.group(1) or "", m.group(2) or "", m.group(3), m.group(4)
+    else:
+        s1, s2, num_s, unit_s = m.group(5) or "", m.group(6) or "", m.group(7), m.group(8)
+    val = safe_pos_float(num_s, default=None)
+    if val is None:
+        return None
+    sign = -1.0 if ("-" in s1 or "-" in s2) else 1.0
+    mult = {"k": 1e3, "m": 1e6, "b": 1e9}.get((unit_s or "m").lower(), 1.0)
+    return sign * val * mult
+
+
 def compute_dynamic_sentiment_interval(
     base_interval_sec: Optional[float] = None,
     last_eval_ts: float = 0.0,

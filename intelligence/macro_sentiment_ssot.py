@@ -928,6 +928,7 @@ from intelligence.macro.calendar_ssot import (
     get_macro_calendar_routine_labels,
     get_macro_calendar_windows_eet,
     get_session_transition_checkpoints_eet,
+    parse_cited_cvd_usd,
     parse_cited_taker_ratio,
     parse_live_macro_release_surprises,
     resolve_global_trading_session,

@@ -822,9 +822,12 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     clean_low = _strip_headline_publisher_suffix(title).lower()
     words = set(re.findall(r"[a-z]{3,}", clean_low))
     matched_fin = words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS
-    if not matched_fin:
+    has_multi_theater_geo = len(words & _MAJOR_GEOPOLITICAL_THEATER_WORDS) >= 2 and bool(
+        words & {"aggressive", "alliance", "conflict", "cooperation", "deal", "defence", "defense", "escalation", "pact", "security", "summit", "tensions", "treaty"}
+    )
+    if not matched_fin and not has_multi_theater_geo:
         return False
-    if matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+    if matched_fin and matched_fin <= {"military", "troops"} and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})
