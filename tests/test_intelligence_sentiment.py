@@ -8002,6 +8002,37 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert "15m=-0.10833" not in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
     assert "15m=+" in str(pt_nvda_stale.get("Dynamic Multi-Window Slopes"))
 
+    # 10k. _extract_sorted_ts_px strips multi-tick zero-volume plateaus & _apply_24h_series_enrichment replaces inflated vol_1h_pct on sparse 1h series.
+    from intelligence.sentiment.evaluators.price_series_evaluator import _extract_sorted_ts_px
+
+    rgnt_s24 = [
+        [int((now_s_rec - 86400 + i * 1800) * 1000), round(1.38 - (i % 3) * 0.01, 4), 400.0]
+        for i in range(25)
+    ] + [
+        [int((now_s_rec - 3900) * 1000), 1.32, 500.0],
+        [int((now_s_rec - 3800) * 1000), 1.27, 0.0],
+        [int((now_s_rec - 3700) * 1000), 1.27, 0.0],
+        [int((now_s_rec - 3500) * 1000), 1.33, 600.0],
+    ] + [
+        [int((now_s_rec - (15 - j) * 60) * 1000), 1.29 if j < 10 else 1.28]
+        for j in range(16)
+    ]
+    extracted_rgnt = _extract_sorted_ts_px(rgnt_s24)
+    assert all(abs(px - 1.27) > 1e-6 for _, px in extracted_rgnt)
+
+    rgnt_entry = {
+        "price": 1.28,
+        "vol_1h_pct": 16.4353,
+        "adapt_reentry_pct": 32.871,
+        "adapt_dca_pct": 16.435,
+        "_short_trend_ts": now_s_rec,
+    }
+    _apply_24h_series_enrichment("RGNT_US_EQ", rgnt_entry, compute_24h_price_metrics(rgnt_s24), rgnt_s24, None)
+    assert 0.1 < rgnt_entry["vol_1h_pct"] < 4.0
+    assert rgnt_entry["adapt_reentry_pct"] < 8.0
+    assert rgnt_entry["adapt_dca_pct"] < 4.0
+
+
 
 
 
