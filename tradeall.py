@@ -1014,12 +1014,13 @@ if __name__ == "__main__":
     cm.enable_real_ws_event_sync()
     current_price_mgr = cm.get_current_price_manager(
         ws_manager=bapi_ws.get_ws_manager(),
+        symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
     )
-    cache24_managers = cm.CacheFactory.get("24Price")   # dict {symbol: Cache24PriceManager}
+    cache24_managers = cm.CacheFactory.get("24Price", symbols=_main_symbols)   # dict {symbol: Cache24PriceManager}
 
     # Trend manager owns windows, calculations, and the cross-process cache.
-    instant_mgr = cm.get_short_trend_manager()
+    instant_mgr = cm.get_short_trend_manager(symbols=_main_symbols)
     instant_mgr.start_computation(cache24_managers, current_price_mgr)
 
     coordinator = TrendCoordinator(
@@ -1028,4 +1029,29 @@ if __name__ == "__main__":
         current_price_mgr=current_price_mgr,
         cache24_managers=cache24_managers,
     )
-    coordinator.run()
+    import signal as _signal
+
+    def _request_stop(_signum=None, _frame=None):
+        coordinator.stop()
+
+    _signal.signal(_signal.SIGTERM, _request_stop)
+    _signal.signal(_signal.SIGINT, _request_stop)
+    try:
+        coordinator.run()
+    finally:
+        coordinator.stop()
+        for _ws_obj in (getattr(cm, "_ws_bridge", None), getattr(bapi_ws, "bapi_ws_manager", None)):
+            if _ws_obj is not None and hasattr(_ws_obj, "_stop_event"):
+                try:
+                    _ws_obj._stop_event.set()
+                except Exception:
+                    pass
+        instant_mgr.shutdown(timeout=0.5)
+        cm.CacheFactory.shutdown_all(timeout=0.5)
+        current_price_mgr.shutdown(timeout=0.3)
+        for _ws_obj in (getattr(cm, "_ws_bridge", None), getattr(bapi_ws, "bapi_ws_manager", None)):
+            if _ws_obj is not None:
+                try:
+                    _ws_obj.stop(timeout=0.3)
+                except Exception:
+                    pass
