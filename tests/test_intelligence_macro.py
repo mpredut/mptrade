@@ -2137,6 +2137,10 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     assert is_excluded_reference_news_item(
         "Not Nvidia. Not Micron. This Dutch Company Controls a Key Bottleneck of AI Chip Production."
     ) is True
+    assert is_excluded_reference_news_item(
+        "Best Mag7 dip buys: NVIDIA leads on valuation, Alphabet on RSI - Seeking Alpha"
+    ) is True
+
 
 
 
