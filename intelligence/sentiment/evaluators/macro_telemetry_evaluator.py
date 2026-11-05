@@ -407,6 +407,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
         )
     ) or (
         is_neutral_posture
+        and not (sa_bias == "CAUTION" and already_cited_buy_on_hold)
         and (
             (live_cvd is not None and live_cvd >= 5_000_000.0 and (live_tr is None or live_tr >= 1.25))
             or (live_tr is not None and live_tr >= 1.35 and (live_cvd is None or live_cvd >= 2_500_000.0))
@@ -473,6 +474,7 @@ def enrich_sentiment_advisor_live_flow_divergence(
         )
     ) or (
         is_neutral_posture
+        and not (sa_bias == "CAUTION" and already_cited_sell_on_hold)
         and (
             (live_cvd is not None and live_cvd <= -5_000_000.0 and (live_tr is None or live_tr <= 0.75))
             or (live_tr is not None and live_tr <= 0.65 and (live_cvd is None or live_cvd <= -2_500_000.0))

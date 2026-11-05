@@ -5484,6 +5484,23 @@ def test_bugs_90_91_92_active_cycle_recent_buys_resource_watchdog_sustained_and_
     )
     assert "live_flow_divergence" not in sa_bull_hold_already_low_tr
 
+    sa_caution_hold_already_low_tr = {
+        "market_bias": "CAUTION",
+        "recommended_action": "HOLD",
+        "age_min": 11.5,
+        "summary": "Intraday derivatives shifted into aggressive_shorting with heavy taker sell volume (taker ratio 0.53, 5m CVD -$31.3M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_caution_hold_already_low_tr,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.55,
+                "cvd_15m_usd": -12_000_000.0,
+            }
+        },
+    )
+    assert "live_flow_divergence" not in sa_caution_hold_already_low_tr
+
     cached_bull_hold = SimpleNamespace(
         market_bias="BULLISH",
         recommended_action="HOLD",
