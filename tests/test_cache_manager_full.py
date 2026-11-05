@@ -984,6 +984,20 @@ class TestCacheAssetValueManager(unittest.TestCase):
             self.assertEqual(eq_only["venues_usd"], {"t212": 100.0})
             cr_only = compute_venue_nav_breakdown(venue_balances_state=vb_loaded, scope="crypto")
             self.assertEqual(cr_only["venues_usd"], {"kraken": 950.0})
+            cr_remarked = compute_venue_nav_breakdown(
+                positions=[
+                    {
+                        "venue": "kraken",
+                        "symbol": "XBTUSD",
+                        "free_base": 0.01,
+                        "value_usd": 800.0,
+                        "locked_base_qty": 0.005,
+                        "locked_base_usd": 400.0,
+                    }
+                ],
+                live_prices={"BTCUSDC": 100000.0},
+            )
+            self.assertEqual(cr_remarked["venues_usd"], {"kraken": 1500.0})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

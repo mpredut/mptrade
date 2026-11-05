@@ -1030,12 +1030,24 @@ def compute_venue_nav_breakdown(
         grp_k = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
         grouped_pos.setdefault(grp_k, []).append(p)
 
+    def _lookup_live_px(sym_u: str) -> float | None:
+        if not live_px_map or not sym_u:
+            return None
+        if sym_u in live_px_map:
+            return live_px_map[sym_u]
+        if sym_u.endswith(("_EQ", "_US_EQ")):
+            return None
+        for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
+            if isinstance(cand, str) and not cand.endswith(("_EQ", "_US_EQ")) and cand in live_px_map:
+                return live_px_map[cand]
+        return None
+
     def _resolve_pos_free_usd(gp: dict) -> float:
         sym_u = str(gp.get("symbol") or "").strip().upper()
-        if live_px_map and sym_u in live_px_map:
+        if (live_px := _lookup_live_px(sym_u)) is not None:
             fb_live = safe_nonneg_float(gp.get("free_base"), None)
             if fb_live is not None:
-                return round(fb_live * live_px_map[sym_u], 2)
+                return round(fb_live * live_px, 2)
         val_u = safe_nonneg_float(gp.get("value_usd"), None)
         if val_u is not None:
             return val_u
@@ -1045,10 +1057,10 @@ def compute_venue_nav_breakdown(
 
     def _resolve_pos_locked_usd(gp: dict) -> float:
         sym_u = str(gp.get("symbol") or "").strip().upper()
-        if live_px_map and sym_u in live_px_map and gp.get("locked_base_usd") is None:
+        if (live_px := _lookup_live_px(sym_u)) is not None:
             lb_live = safe_pos_float(gp.get("locked_base_qty"), None)
             if lb_live is not None:
-                return round(lb_live * live_px_map[sym_u], 2)
+                return round(lb_live * live_px, 2)
         return safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
 
     venue_pos_usd: dict[str, float] = {}
