@@ -7803,8 +7803,18 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert snap_eq_ob.largest_bid_wall_price < snap_eq_ob.mid_price
     assert snap_eq_ob.largest_ask_wall_price > snap_eq_ob.mid_price
 
+    from intelligence.sentiment.evaluators.microstructure_evaluator import align_equity_orderbook_to_spot
 
-
-
-
+    eq_m_stub = {
+        "ob_mid_price": 1.355,
+        "best_bid": 1.18,
+        "best_ask": 1.53,
+        "spread_bps": 2583.0,
+        "bid_wall_px": 1.32,
+        "ask_wall_px": 1.32,
+    }
+    assert align_equity_orderbook_to_spot(eq_m_stub, 1.32) is True
+    assert eq_m_stub["ob_mid_price"] == 1.32
+    assert eq_m_stub["spread_bps"] < 100.0
+    assert eq_m_stub["bid_wall_px"] < 1.32 < eq_m_stub["ask_wall_px"]
 

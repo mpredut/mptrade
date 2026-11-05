@@ -40,6 +40,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     _MICRO_PRICE_ANCHOR_KEYS,
     _first_variant_dict,
+    align_equity_orderbook_to_spot,
     compute_cross_venue_arb_metrics,
     compute_liquidation_clusters,
     enrich_microstructure_cvd,
@@ -118,13 +119,12 @@ def collect_pretrade_telemetry(
     sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]
     quote_variants = [c for c in cache_symbol_variants(symbol, include_base=is_usd_sym, quotes=sym_quotes) if _scope_ok_variant(c)]
     if (
-        is_usd_sym
-        and not is_eq_sym
+        (is_usd_sym or is_eq_sym)
         and "PYTEST_CURRENT_TEST" not in os.environ
         and _rj is _default_read_json_cached
     ):
         refresh_cands = list(quote_variants)
-        if canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
+        if not is_eq_sym and canonical_base_asset(symbol) != "BTC" and "BTCUSDC" not in refresh_cands:
             refresh_cands.append("BTCUSDC")
         for cand_m in refresh_cands:
             cand_mu = str(cand_m or "").strip().upper()
@@ -515,10 +515,21 @@ def collect_pretrade_telemetry(
                     if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
                         w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
                         telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
+            elif is_eq_sym and align_equity_orderbook_to_spot(cur_m_info, cur_px_est):
+                for side_lbl, usd_k, px_k in (
+                    ("Ask", "ask_wall_usd", "ask_wall_px"),
+                    ("Bid", "bid_wall_usd", "bid_wall_px"),
+                ):
+                    w_px_rc = safe_pos_float(cur_m_info.get(px_k), 0.0)
+                    w_usd_rc = safe_pos_float(cur_m_info.get(usd_k), 0.0)
+                    if w_px_rc > 0.0 and w_usd_rc > 0.0 and str(telemetry.get(f"Orderbook {side_lbl} Wall Ahead") or "").startswith("$"):
+                        w_px_fmt = f"{w_px_rc:,.2f}" if w_px_rc >= 1.0 else f"{w_px_rc:.6f}".rstrip("0").rstrip(".")
+                        telemetry[f"Orderbook {side_lbl} Wall Ahead"] = f"${w_usd_rc:,.0f} @ ${w_px_fmt}"
             ob_mid_est = safe_pos_float(cur_m_info.get("ob_mid_price"), default=None)
             is_exact_ob_sym = str(cur_m_info.get("_source_cand") or symbol).strip().upper() == str(symbol).strip().upper()
             if (
-                is_usd_sym
+                not is_eq_sym
+                and is_usd_sym
                 and is_exact_ob_sym
                 and ob_mid_est is not None
                 and (cur_px_est <= 0.0 or abs(cur_px_est - ob_mid_est) / max(cur_px_est, ob_mid_est) <= 0.01)

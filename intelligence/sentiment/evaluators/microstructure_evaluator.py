@@ -72,6 +72,44 @@ def _scope_cand_keys(sym: str, raw_cands: Any) -> Tuple[str, ...]:
     )
 
 
+def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bool:
+    """Scale equity orderbook anchors to `spot_px`, clamp stub spreads (>200 bps), and keep walls on their proper side of spot."""
+    if not isinstance(m_info, dict) or spot_px <= 0.0:
+        return False
+    ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
+    if ob_mid_m is None or _prices_diverged(spot_px, ob_mid_m):
+        return False
+    px_dec = _auto_px_decimals(spot_px)
+    changed = False
+    if abs(spot_px - ob_mid_m) > 1e-6:
+        scale_r = spot_px / ob_mid_m
+        m_info["ob_mid_price"] = round(spot_px, px_dec)
+        for k_sc in ("best_bid", "best_ask", "bid_wall_px", "ask_wall_px"):
+            if (v_sc := safe_pos_float(m_info.get(k_sc), default=None)) is not None:
+                m_info[k_sc] = round(v_sc * scale_r, px_dec)
+        changed = True
+    if (safe_pos_float(m_info.get("spread_bps"), default=0.0) or 0.0) > 200.0:
+        half_sp_eq = max(0.005, round(spot_px * 0.001, 4))
+        m_info["best_bid"] = round(max(0.01, spot_px - half_sp_eq), max(px_dec, 3))
+        m_info["best_ask"] = round(spot_px + half_sp_eq, max(px_dec, 3))
+        m_info["ob_mid_price"] = round(spot_px, px_dec)
+        m_info["spread_bps"] = round_spread_bps(
+            None,
+            best_bid=m_info["best_bid"],
+            best_ask=m_info["best_ask"],
+            mid_price=spot_px,
+        )
+        changed = True
+    tick_eq = max(0.01, round(spot_px * 0.0015, 2))
+    if (bw_eq := safe_pos_float(m_info.get("bid_wall_px"), default=None)) is not None and bw_eq >= spot_px:
+        m_info["bid_wall_px"] = max(0.01, round(spot_px - tick_eq, px_dec))
+        changed = True
+    if (aw_eq := safe_pos_float(m_info.get("ask_wall_px"), default=None)) is not None and aw_eq <= spot_px:
+        m_info["ask_wall_px"] = round(spot_px + tick_eq, px_dec)
+        changed = True
+    return changed
+
+
 def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, Any]] = None) -> None:
     """Populate 1% orderbook depth / $2k slippage and `cvd_15m_usd`, `cvd_15m_base`, `cvd_regime`, and cross-venue spot vs perp flow regime on `minfo`."""
     if not isinstance(minfo, dict):
@@ -1248,6 +1286,7 @@ __all__ = [
     "_first_variant_dict",
     "_infer_symbol_venue_and_fees_bps",
     "_resolve_non_static_prev_metric",
+    "align_equity_orderbook_to_spot",
     "compute_cross_venue_arb_metrics",
     "compute_liquidation_clusters",
     "enrich_cross_venue_trends",

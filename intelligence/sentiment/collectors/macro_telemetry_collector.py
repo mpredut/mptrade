@@ -548,7 +548,10 @@ def harvest_macro_and_news_sensors(
                         -1
                         if (
                             scope_norm == "crypto"
-                            and "yahoo! finance" in str(x.get("source") or "").lower()
+                            and (
+                                has_tracked_equity_entity(x.get("title"))
+                                or "yahoo! finance" in str(x.get("source") or "").lower()
+                            )
                             and not x.get("is_high_severity")
                         )
                         else 0

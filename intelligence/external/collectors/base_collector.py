@@ -293,7 +293,7 @@ class _DiskBackedSymbolCollector:
                 if is_cache_fresh(snapshot.ts, now, max_age):
                     if (
                         not ignore_ttl_b
-                        and sym_clean.endswith(("_EQ", "_US_EQ"))
+                        and is_equity_symbol(sym_clean)
                         and self._DISK_FILE_PREFIX == "orderbook_depth"
                         and (safe_pos_float(getattr(snapshot, "spread_bps", None), default=0.0) or 0.0) > 200.0
                     ):
