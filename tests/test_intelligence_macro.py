@@ -1531,6 +1531,195 @@ def test_contiguous_dynamic_lexicon_runs_test_log_isolation_and_dotenv_dedup(tmp
     assert len(logged_msgs) == 2
 
 
+def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
+    """Verify VIX benchmark spec, symmetric cross_asset_regime classification, and unified Crypto/Equity AI telemetry."""
+    import json
+    from types import SimpleNamespace
+    from intelligence.macro_sentiment_ssot import (
+        CROSS_ASSET_REGIMES,
+        get_macro_benchmark_specs,
+        get_yahoo_chart_url,
+    )
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        MACRO_BENCHMARK_SPECS,
+        compute_cross_asset_regime,
+        compute_equity_macro_regime,
+        format_equity_macro_regime_line,
+        format_macro_benchmarks_summary_line,
+    )
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+
+    # 1. Declarative SSOT config includes VIX (^VIX) and cross_asset_regimes
+    specs = get_macro_benchmark_specs()
+    assert specs == MACRO_BENCHMARK_SPECS
+    assert ("VIX", "^VIX", "index") in specs
+    assert "%5EVIX" in get_yahoo_chart_url("^VIX")
+    assert set(CROSS_ASSET_REGIMES) == {
+        "COUPLED_RISK_ON",
+        "COUPLED_RISK_OFF",
+        "CRYPTO_BULLISH_DECOUPLING",
+        "EQUITY_BULLISH_DECOUPLING",
+        "NEUTRAL",
+    }
+
+    # 2. VIX surge triggers RISK_OFF and blocks false RISK_ON
+    assert (
+        compute_equity_macro_regime(
+            {
+                "items": {
+                    "SPY": {"price": 580.0, "chg_24h_pct": -0.10},
+                    "VIX": {"price": 24.5, "chg_24h_pct": 11.2},
+                }
+            }
+        )
+        == "RISK_OFF"
+    )
+    assert (
+        compute_equity_macro_regime(
+            {
+                "items": {
+                    "SPY": {"price": 580.0, "chg_24h_pct": 0.40},
+                    "VIX": {"price": 24.5, "chg_24h_pct": 9.5},
+                }
+            }
+        )
+        == "NEUTRAL"
+    )
+
+    # 3. Symmetric Cross-Asset Regime classification (COUPLED_RISK_ON/OFF, CRYPTO/EQUITY_BULLISH_DECOUPLING)
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 585.0, "chg_24h_pct": 0.65},
+                    "QQQ": {"price": 505.0, "chg_24h_pct": 0.90},
+                    "IBIT": {"price": 46.2, "chg_24h_pct": 2.40},
+                },
+                "coinbase_premium_bps": 7.5,
+            }
+        )
+        == "COUPLED_RISK_ON"
+    )
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 575.0, "chg_24h_pct": -0.80},
+                    "QQQ": {"price": 495.0, "chg_24h_pct": -1.10},
+                    "IBIT": {"price": 43.1, "chg_24h_pct": -2.10},
+                },
+                "coinbase_premium_bps": -8.2,
+            }
+        )
+        == "COUPLED_RISK_OFF"
+    )
+    decouple_crypto = {
+        "items": {
+            "SPY": {"price": 576.0, "chg_24h_pct": -0.75},
+            "QQQ": {"price": 496.0, "chg_24h_pct": -0.95},
+            "VIX": {"price": 21.4, "chg_24h_pct": 6.5, "unit": "index"},
+            "IBIT": {"price": 46.8, "chg_24h_pct": 1.85},
+        },
+        "coinbase_premium_bps": 9.4,
+        "coinbase_premium_regime": "US_INSTITUTIONAL_BUYING",
+        "btc_dvol": 51.2,
+        "options_vol_regime": "NORMAL_IV",
+        "btc_rv_pct": 44.0,
+        "btc_vrp_pct": 7.2,
+        "btc_pc_oi_ratio": 0.48,
+        "btc_skew_25d_pct": -1.25,
+    }
+    assert compute_cross_asset_regime(decouple_crypto) == "CRYPTO_BULLISH_DECOUPLING"
+    assert (
+        compute_cross_asset_regime(
+            {
+                "items": {
+                    "SPY": {"price": 586.0, "chg_24h_pct": 0.70},
+                    "QQQ": {"price": 508.0, "chg_24h_pct": 1.05},
+                    "IBIT": {"price": 43.5, "chg_24h_pct": -1.40},
+                },
+                "coinbase_premium_bps": -6.8,
+            }
+        )
+        == "EQUITY_BULLISH_DECOUPLING"
+    )
+
+    # 4. Unified summary & symmetric visibility across PreTrade Telemetry, SentimentAdvisor, and Prompt Sections
+    summary_line = format_macro_benchmarks_summary_line(decouple_crypto)
+    assert "VIX=21.40 (+6.50% 24h)" in summary_line
+    assert "IBIT=$46.80 (+1.85% 24h)" in summary_line
+    assert "CB_Premium=+9.4bps (US_INSTITUTIONAL_BUYING)" in summary_line
+    assert "BTC_DVOL=51.2% (NORMAL_IV)" in summary_line
+    assert "Options_Surface(RV=44.0%, VRP=+7.2%, PC_OI=0.48, Skew_25d=-1.25%)" in summary_line
+    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in summary_line
+
+    eq_macro_line = format_equity_macro_regime_line(decouple_crypto)
+    assert eq_macro_line.startswith("RISK_OFF (")
+    assert "IBIT=$46.80" in eq_macro_line
+    assert "CB_Premium=+9.4bps" in eq_macro_line
+    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in eq_macro_line
+
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "macro_benchmarks_collect.json").write_text(json.dumps(decouple_crypto), encoding="utf-8")
+
+    # Both Crypto and Equities pre-trade telemetry receive the full Equity & Macro Regime line
+    pt_crypto = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
+    pt_equity = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir))
+    assert pt_crypto.get("Equity & Macro Regime") == eq_macro_line
+    assert pt_equity.get("Equity & Macro Regime") == eq_macro_line
+
+    # Both Crypto and Equities prompt sections receive the full cross-asset benchmark line
+    sensors_ns = SimpleNamespace(
+        fear_greed={"value": 48, "classification": "Neutral"},
+        market_breadth={"advance_ratio": 0.52, "regime": "NEUTRAL"},
+        sentiment_advisor={"market_bias": "NEUTRAL", "risk_level": "MODERATE", "recommended_action": "HOLD"},
+        geopolitical_threat={"threat_level": "NORMAL", "risk_score": 0.1, "recommended_brake": "NONE"},
+        macro_benchmarks=decouple_crypto,
+        breaking_news=[],
+    )
+    sec1_eq = "\n".join(_format_macro_and_news_section(sensors_ns, asset_scope="equities"))
+    sec1_cr = "\n".join(_format_macro_and_news_section(sensors_ns, asset_scope="crypto"))
+    for sec_txt in (sec1_eq, sec1_cr):
+        assert "VIX=21.40" in sec_txt
+        assert "IBIT=$46.80" in sec_txt
+        assert "CB_Premium=+9.4bps" in sec_txt
+        assert "BTC_DVOL=51.2%" in sec_txt
+        assert "Options_Surface(" in sec_txt
+        assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in sec_txt
+
+    # SentimentAdvisor.review injects Cross-Asset Macro & Options Surface into the LLM prompt
+    captured_sa_prompts = []
+
+    def _sa_runner(prompt, model, timeout):
+        captured_sa_prompts.append(prompt)
+        return json.dumps(
+            {
+                "market_bias": "BULLISH",
+                "risk_level": "MODERATE",
+                "confidence": 0.82,
+                "summary": "Institutional US spot accumulation decoupling from equity pullback.",
+                "key_risks": ["Equity index volatility"],
+                "recommended_action": "ACCUMULATE",
+            }
+        )
+
+    sa = SentimentAdvisor(
+        gemini_client=GeminiClient(custom_runner=_sa_runner),
+        cache_file=str(cdir / "sentiment_eval.json"),
+        cache_ttl_sec=300.0,
+    )
+    sa_res = sa.review(force_refresh=True, now_ts=1_793_860_000.0)
+    assert sa_res is not None and sa_res.market_bias == "BULLISH"
+    assert len(captured_sa_prompts) == 1
+    assert "- Cross-Asset Macro & Options Surface:" in captured_sa_prompts[0]
+    assert "Cross_Asset=CRYPTO_BULLISH_DECOUPLING" in captured_sa_prompts[0]
+
+
+
 
 
 

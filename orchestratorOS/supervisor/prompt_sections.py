@@ -266,7 +266,7 @@ def _format_macro_and_news_section(sensors: Any, asset_scope: Any = "all") -> Li
         if mc.get("live_macro_prints"):
             mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
         lines.append(f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}")
-    mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=not is_equities_scope)
+    mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True)
     if mb_bench_line:
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"

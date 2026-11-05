@@ -99,6 +99,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
         fear_greed: Optional[FearGreedSnapshot] = None,
         breadth: Optional[MarketBreadthSnapshot] = None,
         whale_telemetry: Optional[Dict[str, Any]] = None,
+        macro_benchmarks: Optional[Dict[str, Any]] = None,
         force_refresh: bool = False,
         now_ts: Optional[float] = None,
     ) -> Optional[SentimentAdvisorAssessment]:
@@ -128,8 +129,19 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             prompt_context.append(f"- Whales & Derivatives: {whale_telemetry}")
         try:
             from cachepaths import resolve_cachedb_filepath
+            from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks
+            from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_equity_macro_regime_line
 
             cache_dir = self._effective_cache_dir()
+            eff_mb = (
+                macro_benchmarks
+                if isinstance(macro_benchmarks, dict) and macro_benchmarks
+                else load_cached_macro_benchmarks(cache_dir)
+            )
+            if isinstance(eff_mb, dict) and eff_mb:
+                eq_macro_line = format_equity_macro_regime_line(eff_mb)
+                if eq_macro_line and eq_macro_line != "NEUTRAL":
+                    prompt_context.append(f"- Cross-Asset Macro & Options Surface: {eq_macro_line}")
             if any(
                 os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
                 for fn in (
@@ -194,6 +206,7 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
             "Key analytical framework:\n"
             f"- Intraday Session Guidance: {session_ctx.llm_session_guidance}\n"
             "- Correlate price change, open interest change, taker buy/sell ratio, and funding rates.\n"
+            "- Cross-Asset & Institutional Flow Symmetry: Evaluate US Equities & Macro Rates (SPY/QQQ/VIX/DXY/US10Y), Institutional Spot Flows (IBIT, CB_Premium), and Deribit Options Surface (BTC_DVOL, VRP, PC_OI, Skew_25d), distinguishing COUPLED_RISK_ON/OFF from CRYPTO_BULLISH_DECOUPLING and EQUITY_BULLISH_DECOUPLING.\n"
             "- If divergence regime is 'short_squeeze_primed' or 'short_squeeze', evaluate if trapped shorts or cascade buying can drive sudden upside squeezes.\n"
             "- Distinguish true forced liquidations ('long_liquidation') from voluntary orderly de-risking ('long_unwinding').\n"
             "- LAGGING 24H BREADTH VS INTRADAY BOTTOM ACCUMULATION: 24h Market Breadth is a rolling 24h window that remains in 'BEARISH_BREADTH' (<20% advancing) for hours after an overnight flush even after the intraday bottom is already in. When Whales & Derivatives show divergence_regime in ('accumulation', 'short_squeeze_primed') or taker_buy_sell_ratio >= 1.05 with stabilizing/rising Open Interest (or BTC Intraday Structure confirms 'LIQUIDITY_SWEEP_RECLAIM' / 'HIGHER_LOW_DOUBLE_BOTTOM'), shift recommended_action to 'ACCUMULATE' rather than staying frozen in 'HOLD' or 'DEFENSIVE'.\n\n"

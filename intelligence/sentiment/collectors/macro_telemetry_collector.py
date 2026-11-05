@@ -22,9 +22,11 @@ from intelligence.macro_sentiment_ssot import (
     get_binance_btc_ticker_url,
     get_breadth_excluded_bases,
     get_coinbase_btc_ticker_url,
+    get_cross_asset_regimes,
     get_deribit_dvol_url,
     get_deribit_hist_vol_url,
     get_deribit_options_book_url,
+    get_yahoo_chart_url,
     has_financial_or_geopolitical_context,
     has_tracked_equity_entity,
     headlines_are_semantic_duplicates,
@@ -61,6 +63,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     _MACRO_EXTRA_TELEMETRY_KEYS,
     apply_asset_scope_filter,
     build_cycle_fallback_prices,
+    compute_cross_asset_regime,
     compute_deribit_options_surface,
     compute_equity_macro_regime,
     enrich_sentiment_advisor_live_flow_divergence,
@@ -137,7 +140,7 @@ def collect_macro_benchmarks_snapshot(
     items: Dict[str, Dict[str, Any]] = {}
     for label, yahoo_sym, unit_kind in MACRO_BENCHMARK_SPECS:
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{_urlparse.quote(yahoo_sym)}?range=2d&interval=5m&includePrePost=true"
+            url = get_yahoo_chart_url(yahoo_sym)
             raw = _fetch(url, timeout=timeout_sec, headers={"User-Agent": "Mozilla/5.0"})
             res_list = (raw.get("chart") or {}).get("result") if isinstance(raw, dict) else None
             if not isinstance(res_list, list) or not res_list or not isinstance(res_list[0], dict):
@@ -282,6 +285,7 @@ def collect_macro_benchmarks_snapshot(
         "equity_regime": compute_equity_macro_regime({"items": items}),
         **extra_macro,
     }
+    payload["cross_asset_regime"] = compute_cross_asset_regime(payload)
     payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
     if persist and cache_dir:
         try:
@@ -395,7 +399,7 @@ def harvest_macro_and_news_sensors(
                                         ref_bound = mb_hi if chg_24_raw < 0.0 else mb_lo
                                         mb_copy["chg_24h_pct"] = round(((mb_px - ref_bound) / ref_bound) * 100.0, 2) + 0.0
                                         stripped_stale_intraday = True
-                            if mb_k in ("SPY", "QQQ", "IBIT", "US10Y"):
+                            if mb_k in ("SPY", "QQQ", "IBIT", "US10Y", "VIX"):
                                 bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
                                 is_stale_us_bar = False
                                 if bar_ts_v is not None and now_ts > 0.0 and (now_ts - bar_ts_v) > 2700.0:
@@ -425,6 +429,8 @@ def harvest_macro_and_news_sensors(
                     enriched["items"] = enriched_items
                 if str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
                     enriched["equity_regime"] = compute_equity_macro_regime(enriched)
+                if str(enriched.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes():
+                    enriched["cross_asset_regime"] = compute_cross_asset_regime(enriched)
                 cur_sum = str(enriched.get("summary_line") or "")
                 if (
                     stripped_stale_intraday
@@ -432,6 +438,10 @@ def harvest_macro_and_news_sensors(
                     or "-0.00%" in cur_sum
                     or "-0.0bps" in cur_sum
                     or "-0.0%" in cur_sum
+                    or (
+                        enriched.get("cross_asset_regime") not in (None, "", "NEUTRAL")
+                        and f"Cross_Asset={enriched['cross_asset_regime']}" not in cur_sum
+                    )
                 ) and (summary_s := format_macro_benchmarks_summary_line(enriched)):
                     enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
@@ -886,6 +896,22 @@ def populate_market_and_portfolio_snapshot(
         harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))
     )
     enrich_sentiment_advisor_live_flow_divergence(getattr(snapshot, "sentiment_advisor", None), snapshot.microstructure)
+    if isinstance(mb_snap_pre := getattr(snapshot, "macro_benchmarks", None), dict) and mb_snap_pre:
+        btc_chg_24h_live = next(
+            (
+                c24
+                for k in ("BTCUSDC", "BTCUSDT", "BTCUSD", "XBTUSD", "XXBTZUSD", "BTC")
+                if isinstance(b_pt := casefold_get(snapshot.prices_and_trends, k), dict)
+                and (c24 := safe_float(b_pt.get("chg_24h_pct"), default=None)) is not None
+            ),
+            None,
+        )
+        if btc_chg_24h_live is not None:
+            cross_reg_live = compute_cross_asset_regime(mb_snap_pre, btc_chg_24h_pct=btc_chg_24h_live)
+            if cross_reg_live != mb_snap_pre.get("cross_asset_regime"):
+                mb_snap_pre["cross_asset_regime"] = cross_reg_live
+                if summary_live := format_macro_benchmarks_summary_line(mb_snap_pre):
+                    mb_snap_pre["summary_line"] = summary_live
     snapshot.prices_and_trends, snapshot.microstructure = apply_asset_scope_filter(
         snapshot.prices_and_trends, snapshot.microstructure, snapshot.portfolio_summary, scope, inst_by_sym, t212_cycles
     )
@@ -919,9 +945,12 @@ __all__ = [
     "build_cycle_fallback_prices",
     "collect_macro_benchmarks_snapshot",
     "collect_pretrade_telemetry",
+    "compute_cross_asset_regime",
     "compute_deribit_options_surface",
+    "compute_equity_macro_regime",
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_bottom_structure_6h_parts",
+    "format_equity_macro_regime_line",
     "format_macro_benchmarks_summary_line",
     "harvest_initial_prices_and_trends",
     "harvest_macro_and_news_sensors",

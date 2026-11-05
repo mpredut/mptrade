@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from cachepaths import cache_symbol_variants, canonical_base_asset, normalize_venue_name
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
+    get_cross_asset_regimes,
+    get_macro_benchmark_specs,
     normalize_epoch_sec,
     parse_cited_cvd_usd,
     parse_cited_taker_ratio,
@@ -16,18 +18,11 @@ from intelligence.macro_sentiment_ssot import (
 )
 
 
-MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = (
-    ("SPY", "SPY", "usd"),
-    ("QQQ", "QQQ", "usd"),
-    ("ES=F", "ES=F", "usd"),
-    ("NQ=F", "NQ=F", "usd"),
-    ("DXY", "DX-Y.NYB", "index"),
-    ("US10Y", "^TNX", "yield_pct"),
-    ("IBIT", "IBIT", "usd"),
-)
+MACRO_BENCHMARK_SPECS: tuple[tuple[str, str, str], ...] = get_macro_benchmark_specs()
 
 _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
     "equity_regime",
+    "cross_asset_regime",
     "coinbase_premium_bps",
     "coinbase_premium_regime",
     "btc_dvol",
@@ -41,7 +36,7 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
 
 
 def compute_equity_macro_regime(data: Any) -> str:
-    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/DXY."""
+    """Classify the US equity & macro rate regime ('RISK_ON', 'RISK_OFF', or 'NEUTRAL') from SPY/QQQ/ES=F/NQ=F/VIX/DXY."""
     if not isinstance(data, dict):
         return "NEUTRAL"
     items = data.get("items") if isinstance(data.get("items"), dict) else data
@@ -64,14 +59,81 @@ def compute_equity_macro_regime(data: Any) -> str:
     avg_1h = sum(eq_1h) / len(eq_1h) if eq_1h else 0.0
     dxy_entry = items.get("DXY")
     dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
-    if avg_24h >= 0.35 or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25)):
+    vix_entry = items.get("VIX")
+    vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+    if (
+        avg_24h >= 0.35
+        or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
+    ) and (vix_24h is None or vix_24h <= 5.0):
         return "RISK_ON"
     if (
         avg_24h <= -0.35
         or (avg_24h <= -0.15 and avg_1h <= -0.15)
         or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
+        or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
     ):
         return "RISK_OFF"
+    return "NEUTRAL"
+
+
+def compute_cross_asset_regime(
+    data: Any,
+    *,
+    btc_chg_24h_pct: Optional[float] = None,
+) -> str:
+    """Classify the symmetric US Equity vs Crypto Institutional correlation regime.
+
+    Returns one of ``get_cross_asset_regimes()``:
+    - ``COUPLED_RISK_ON``: Both US Equities and Crypto/IBIT/CB_Premium are advancing together.
+    - ``COUPLED_RISK_OFF``: Both US Equities and Crypto/IBIT/CB_Premium are selling off together.
+    - ``CRYPTO_BULLISH_DECOUPLING``: US Equities are in RISK_OFF / declining, while Crypto/IBIT/CB_Premium show institutional accumulation.
+    - ``EQUITY_BULLISH_DECOUPLING``: US Equities are in RISK_ON / advancing, while Crypto/IBIT/CB_Premium show spot distribution/weakness.
+    - ``NEUTRAL``: No strong coupled trend or cross-asset divergence.
+    """
+    allowed = get_cross_asset_regimes()
+    if not isinstance(data, dict):
+        return "NEUTRAL"
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        items = {}
+    eq_24h: List[float] = []
+    for sym in ("SPY", "QQQ", "ES=F", "NQ=F"):
+        entry = items.get(sym)
+        if isinstance(entry, dict) and (c24 := safe_float(entry.get("chg_24h_pct"), default=None)) is not None:
+            eq_24h.append(c24)
+    eq_regime = str(data.get("equity_regime") or "").strip().upper()
+    if eq_regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
+        eq_regime = compute_equity_macro_regime(data)
+    avg_eq_24h = sum(eq_24h) / len(eq_24h) if eq_24h else 0.0
+
+    ibit_entry = items.get("IBIT")
+    ibit_24h = safe_float(ibit_entry.get("chg_24h_pct"), default=None) if isinstance(ibit_entry, dict) else None
+    crypto_px_chg = safe_float(btc_chg_24h_pct, default=ibit_24h)
+    cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
+
+    if (crypto_px_chg is None and cb_bps is None) or (not eq_24h and eq_regime == "NEUTRAL"):
+        explicit = str(data.get("cross_asset_regime") or "").strip().upper()
+        return explicit if explicit in allowed else "NEUTRAL"
+
+    eq_bull = eq_regime == "RISK_ON" or (bool(eq_24h) and avg_eq_24h >= 0.25)
+    eq_bear = eq_regime == "RISK_OFF" or (bool(eq_24h) and avg_eq_24h <= -0.25)
+    crypto_bull = (
+        (crypto_px_chg is not None and crypto_px_chg >= 0.35 and (cb_bps is None or cb_bps > -5.0))
+        or (cb_bps is not None and cb_bps >= 5.0 and (crypto_px_chg is None or crypto_px_chg >= -0.15))
+    )
+    crypto_bear = (
+        (crypto_px_chg is not None and crypto_px_chg <= -0.35 and (cb_bps is None or cb_bps < 5.0))
+        or (cb_bps is not None and cb_bps <= -5.0 and (crypto_px_chg is None or crypto_px_chg <= 0.15))
+    )
+
+    if eq_bull and crypto_bull:
+        return "COUPLED_RISK_ON"
+    if eq_bear and crypto_bear:
+        return "COUPLED_RISK_OFF"
+    if eq_bear and crypto_bull:
+        return "CRYPTO_BULLISH_DECOUPLING"
+    if eq_bull and crypto_bear:
+        return "EQUITY_BULLISH_DECOUPLING"
     return "NEUTRAL"
 
 
@@ -133,7 +195,7 @@ def compute_deribit_options_surface(
 
 
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
-    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
+    """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface / Cross-Asset Regime)."""
     if not isinstance(data, dict):
         return ""
     items = data.get("items") if isinstance(data.get("items"), dict) else data
@@ -151,7 +213,11 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         if not isinstance(entry, dict) or (px := safe_pos_float(entry.get("price"), default=None)) is None:
             continue
         unit_kind = str(entry.get("unit") or "").lower()
-        px_s = f"{px:.2f}%" if (sym == "US10Y" or unit_kind == "yield_pct") else (f"{px:.2f}" if (sym == "DXY" or unit_kind == "index") else f"${px:,.2f}")
+        px_s = (
+            f"{px:.2f}%"
+            if (sym == "US10Y" or unit_kind == "yield_pct")
+            else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
+        )
         d_parts = [
             f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
             for h_lbl, h_key in (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
@@ -185,17 +251,22 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
     if opt_parts:
         parts.append(f"Options_Surface({', '.join(opt_parts)})")
+    cross_reg = str(data.get("cross_asset_regime") or items.get("cross_asset_regime") or "").strip().upper()
+    if cross_reg not in get_cross_asset_regimes():
+        cross_reg = compute_cross_asset_regime(data)
+    if cross_reg and cross_reg != "NEUTRAL":
+        parts.append(f"Cross_Asset={cross_reg}")
     return " | ".join(parts)
 
 
-def format_equity_macro_regime_line(data: Any) -> str:
-    """Format the US Equity & Macro Regime summary replacing Crypto Fear & Greed / Breadth for equities."""
+def format_equity_macro_regime_line(data: Any, *, include_crypto: bool = True) -> str:
+    """Format the US Equity & Cross-Asset Macro Regime summary."""
     if not isinstance(data, dict) or not data:
         return "NEUTRAL"
     regime = str(data.get("equity_regime") or "").strip().upper()
     if regime not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
         regime = compute_equity_macro_regime(data)
-    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=False)
+    bench_s = format_macro_benchmarks_summary_line(data, include_crypto=include_crypto)
     return f"{regime} ({bench_s})" if bench_s else regime
 
 
@@ -781,9 +852,12 @@ __all__ = [
     "_MACRO_EXTRA_TELEMETRY_KEYS",
     "apply_asset_scope_filter",
     "build_cycle_fallback_prices",
+    "compute_cross_asset_regime",
     "compute_deribit_options_surface",
+    "compute_equity_macro_regime",
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_bottom_structure_6h_parts",
+    "format_equity_macro_regime_line",
     "format_macro_benchmarks_summary_line",
     "reconcile_live_venue_equity_summary",
 ]

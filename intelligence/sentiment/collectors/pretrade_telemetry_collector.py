@@ -1155,15 +1155,14 @@ def collect_pretrade_telemetry(
         pass
 
     # 5. Macro Regime, Sentiment Bias, Fear/Greed Index & Geopolitical Threat Shield (Pillars 3 & 4)
-    if is_eq_sym:
-        try:
-            if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
-                eq_reg_line = format_equity_macro_regime_line(mb_data)
-                if eq_reg_line:
-                    telemetry["Equity & Macro Regime"] = eq_reg_line
-        except Exception:
-            pass
-    else:
+    try:
+        if isinstance(mb_data := _read_first_cached_dict(cachedb_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")[0], dict):
+            eq_reg_line = format_equity_macro_regime_line(mb_data)
+            if eq_reg_line:
+                telemetry["Equity & Macro Regime"] = eq_reg_line
+    except Exception:
+        pass
+    if not is_eq_sym:
         try:
             if isinstance(m_data := _read_first_cached_dict(cachedb_dir, "sentiment_eval_files", "sentiment_eval.json")[0], dict):
                 bias, risk, action = (str(m_data.get(k) or "").strip() for k in ("market_bias", "risk_level", "recommended_action"))

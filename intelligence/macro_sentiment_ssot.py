@@ -384,12 +384,17 @@ def get_recommended_brakes() -> Tuple[str, ...]:
     return _tax_tuple("recommended_brakes")
 
 
+def get_cross_asset_regimes() -> Tuple[str, ...]:
+    return _tax_tuple("cross_asset_regimes")
+
+
 MARKET_BIASES: Tuple[str, ...] = get_market_biases()
 RISK_LEVELS: Tuple[str, ...] = get_risk_levels()
 RECOMMENDED_ACTIONS: Tuple[str, ...] = get_recommended_actions()
 BREADTH_REGIMES: Tuple[str, ...] = get_breadth_regimes()
 THREAT_LEVELS: Tuple[str, ...] = get_threat_levels()
 RECOMMENDED_BRAKES: Tuple[str, ...] = get_recommended_brakes()
+CROSS_ASSET_REGIMES: Tuple[str, ...] = get_cross_asset_regimes()
 
 _INIT_DERIVED_INTERVALS: Dict[str, float] = resolve_derived_telemetry_intervals()
 DEFAULT_SENTIMENT_INTERVAL_SEC: float = _INIT_DERIVED_INTERVALS["default_sentiment_interval_sec"]
@@ -434,6 +439,27 @@ def get_deribit_hist_vol_url(currency: str = "BTC") -> str:
 
 def get_deribit_options_book_url(currency: str = "BTC") -> str:
     return _cfg_str("feeds", "deribit_options_book_url_template").format(currency=currency)
+
+
+def get_yahoo_chart_url(symbol: str) -> str:
+    tmpl = _cfg_str("feeds", "yahoo_chart_url_template")
+    if not tmpl:
+        raise ValueError("Missing required [feeds] yahoo_chart_url_template in macro_intelligence.conf")
+    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+
+
+def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
+    raw = _cfg_str("feeds", "macro_benchmark_specs")
+    if not raw:
+        raise ValueError("Missing required [feeds] macro_benchmark_specs in macro_intelligence.conf")
+    specs: List[Tuple[str, str, str]] = []
+    for item in _split_csv(raw, lower=False, upper=False):
+        parts = [p.strip() for p in item.split(":")]
+        if len(parts) == 3 and all(parts):
+            specs.append((parts[0].upper(), parts[1].upper(), parts[2].lower()))
+    if not specs:
+        raise ValueError("Invalid [feeds] macro_benchmark_specs in macro_intelligence.conf")
+    return tuple(specs)
 
 
 def get_breadth_excluded_bases() -> Set[str]:
@@ -746,6 +772,12 @@ def load_cached_geopolitical_eval(cache_dir: str) -> Optional[Dict[str, Any]]:
             out["ts"] = ts_v
         return out
     return None
+
+
+def load_cached_macro_benchmarks(cache_dir: str) -> Optional[Dict[str, Any]]:
+    """Load cached macro benchmarks snapshot from ``cache_dir`` without network I/O."""
+    data, _ = read_first_cached_dict(cache_dir, "macro_benchmarks_files", "macro_benchmarks_collect.json")
+    return data if isinstance(data, dict) and data else None
 
 
 def lookup_symbol_cache_items(
