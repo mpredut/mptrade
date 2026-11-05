@@ -6521,5 +6521,178 @@ def test_iter91_multi_fill_stale_7d_pnl_post_sell_new_cycle_lifo_reset_t212_retr
     assert mgr._ordered_process_names_reversed() == ["worker", "monitor", "gateway"]
 
 
+def test_iter92_neutral_hold_cited_flow_stale_advisor_retry_delta_whale_freshest_and_watchdog_recovery(tmp_path):
+    import json
+    import time
+    from types import SimpleNamespace
+    from intelligence.macro.calendar_ssot import compute_dynamic_sentiment_interval
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from intelligence.macro_sentiment_ssot import load_cached_whale_telemetry
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_sentiment_advisor_live_flow_divergence,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        reconcile_venue_cycles_with_recent_orders,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import gather_system_and_vpn_telemetry
+
+    # 1. CAUTION/HOLD posture with already-cited low/high taker ratio does not trigger false LIVE_SELL_REVERSAL / LIVE_BUY_REVERSAL
+    sa_caution_sell = {
+        "market_bias": "CAUTION",
+        "recommended_action": "HOLD",
+        "age_min": 16.0,
+        "summary": "Market remains cautious on HOLD amid heavy taker sell volume (taker ratio 0.53, 5m CVD -$31.3M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_caution_sell,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 0.55,
+                "cvd_15m_usd": -12_000_000.0,
+            }
+        },
+    )
+    assert "live_flow_divergence" not in sa_caution_sell
+
+    sa_caution_buy = {
+        "market_bias": "CAUTION",
+        "recommended_action": "HOLD",
+        "age_min": 16.0,
+        "summary": "Market awaits confirmation on HOLD despite strong taker buying (taker ratio 1.38, 15m CVD +$9.2M).",
+    }
+    enrich_sentiment_advisor_live_flow_divergence(
+        sa_caution_buy,
+        {
+            "BTCUSDC": {
+                "taker_buy_sell_ratio": 1.40,
+                "cvd_15m_usd": 8_500_000.0,
+            }
+        },
+    )
+    assert "live_flow_divergence" not in sa_caution_buy
+
+    # 2. compute_dynamic_sentiment_interval uses cited_tr when already in the same extreme regime as cur_tr
+    #    even if prev_btc_taker_ratio was 0.82 (15m lagging 5m at prior evaluation)
+    cached_caution = SimpleNamespace(
+        market_bias="CAUTION",
+        risk_level="MODERATE",
+        recommended_action="HOLD",
+        summary="Intraday derivatives shifted into aggressive_shorting (taker ratio 0.53, 5m CVD -$31.3M).",
+        key_risks=[],
+        is_fallback=False,
+        ts=1_793_800_000.0,
+    )
+    itv_same_sell, reason_same_sell = compute_dynamic_sentiment_interval(
+        base_interval_sec=14400.0,
+        last_eval_ts=1_793_800_000.0,
+        now_ts=1_793_800_360.0,
+        cached_assessment=cached_caution,
+        btc_taker_ratio=0.58,
+        prev_btc_taker_ratio=0.82,
+    )
+    assert itv_same_sell > 300.0
+    assert "btc_whale_flow_regime_flip" not in reason_same_sell
+    assert "btc_seller_reversal" not in reason_same_sell
+
+    # 3. MacroAnalyzer.assess_market_advisor does not overwrite _last_fg_value / _last_btc_taker_ratio when review()
+    #    fails and returns the stale _cached_assessment
+    cdir_ma = tmp_path / "cdir_ma"
+    cdir_ma.mkdir(parents=True, exist_ok=True)
+    (cdir_ma / "fear_greed_cache.json").write_text(
+        json.dumps({"value": 72, "classification": "Greed", "ts": 1_793_800_500.0}),
+        encoding="utf-8",
+    )
+    (cdir_ma / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({"taker_buy_sell_ratio": 1.45, "ts": 1_793_800_500.0}),
+        encoding="utf-8",
+    )
+    ma = MacroAnalyzer(cache_dir=str(cdir_ma), symbols=["BTCUSDC"])
+    ma.shadow_notify = False
+    ma._last_fg_value = 50
+    ma._last_btc_taker_ratio = 0.85
+    stale_adv = SimpleNamespace(
+        market_bias="NEUTRAL",
+        risk_level="MODERATE",
+        recommended_action="HOLD",
+        summary="Prior cached summary",
+        key_risks=[],
+        is_fallback=False,
+        ts=1_793_790_000.0,
+    )
+    ma.gemini_advisor._cached_assessment = stale_adv
+    ma.gemini_advisor._last_eval_ts = 1_793_790_000.0
+    ma.gemini_advisor.review = lambda **kwargs: stale_adv
+    ma.assess_market_advisor(force=False, now=1_793_800_500.0)
+    assert ma._last_fg_value == 50
+    assert ma._last_btc_taker_ratio == pytest.approx(0.85)
+
+    # 4. load_cached_whale_telemetry picks the freshest snapshot across symbol variants
+    cdir_w = tmp_path / "cdir_w"
+    cdir_w.mkdir(parents=True, exist_ok=True)
+    (cdir_w / "whale_snapshot_BTCUSD.json").write_text(
+        json.dumps({"taker_buy_sell_ratio": 0.90, "ts": 1_793_700_000.0}),
+        encoding="utf-8",
+    )
+    (cdir_w / "whale_snapshot_BTCUSDC.json").write_text(
+        json.dumps({"taker_buy_sell_ratio": 1.32, "ts": 1_793_800_000.0}),
+        encoding="utf-8",
+    )
+    w_loaded = load_cached_whale_telemetry(str(cdir_w), symbols=["BTCUSD"])
+    assert w_loaded is not None
+    assert w_loaded["taker_buy_sell_ratio"] == pytest.approx(1.32)
+
+    # 5. reconcile_venue_cycles_with_recent_orders trims recent_buys to buys_after when post_sell_new_cycle is True
+    kr_cyc = {
+        "SUIUSD": {
+            "qty": 20.0,
+            "cost_usd": 19.2,
+            "avg_cost_px": 0.96,
+            "entry_price": 0.96,
+            "last_buy_price": 0.96,
+            "last_sell_price": 0.98,
+            "last_exit_kind": "TP",
+            "dca_buys": 0,
+            "_entry_ts_ms": 1_793_800_000_000,
+            "_last_sell_ts_ms": 1_793_750_000_000,
+        }
+    }
+    ro_sui = {
+        "last_sell": {"price": 0.98, "qty": 25.0, "ts_ms": 1_793_750_000_000, "actor": "BOT"},
+        "recent_buys": [
+            {"price": 0.90, "qty": 25.0, "ts_ms": 1_793_700_000_000, "actor": "BOT"},
+            {"price": 0.96, "qty": 20.0, "ts_ms": 1_793_800_001_000, "actor": "BOT"},
+        ],
+        "active_avg_buy_px": 0.96,
+        "active_cycle_rem_qty": 20.0,
+        "lifo_realized_pnl_usd": -3.5,
+    }
+    reconcile_venue_cycles_with_recent_orders(
+        kr_cyc,
+        {},
+        {},
+        {"kraken": {"SUIUSD": ro_sui}},
+        {("kraken", "SUIUSD"): 20.0},
+        {"SUIUSD": {"price": 0.97}},
+    )
+    assert [b["price"] for b in ro_sui["recent_buys"]] == [0.96]
+
+    # 6. gather_system_and_vpn_telemetry excludes processes that already recovered to high == 0 even if alerted is still True
+    ws_rec = tmp_path / "ws_rec"
+    ws_rec.mkdir(parents=True, exist_ok=True)
+    (ws_rec / ".resource_watchdog_state.json").write_text(
+        json.dumps(
+            {
+                "last_run": time.time() - 30.0,
+                "processes": {"101:1": {"pid": 101, "command": "python macro_analyzer.py"}},
+                "tracked": {"101:1": {"high": 0, "normal": 1, "alerted": True, "last_reasons": ["CPU 65.0%"]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    telem_rec = gather_system_and_vpn_telemetry(str(ws_rec), base_resources={})
+    assert "resource_watchdog_offenders" not in telem_rec
+
+
+
 
 

@@ -228,6 +228,7 @@ class MacroAnalyzer:
             mb_snap = load_cached_market_breadth_snapshot(self.cache_dir, now_ts=eval_now)
             whale_data = load_cached_whale_telemetry(self.cache_dir, symbols=self.symbols)
 
+            prev_cached = getattr(self.gemini_advisor, "_cached_assessment", None)
             assessment = _call_with_optional_kwarg(
                 self.gemini_advisor.review,
                 opt_key="now_ts",
@@ -239,16 +240,25 @@ class MacroAnalyzer:
                 force_refresh=force,
             )
             if assessment:
-                if fg_snap is not None:
-                    self._last_fg_value = safe_int(obj_attr(fg_snap, "value"), self._last_fg_value)
-                if mb_snap is not None:
-                    self._last_advance_ratio = clean_scale(
-                        obj_attr(mb_snap, "advance_ratio"), default=self._last_advance_ratio, allow_percent=True
-                    )
-                if isinstance(whale_data, dict):
-                    tr_val = safe_pos_float(whale_data.get("taker_buy_sell_ratio"), default=None)
-                    if tr_val is not None:
-                        self._last_btc_taker_ratio = tr_val
+                assess_ts = safe_nonneg_ts(obj_attr(assessment, "ts"), 0.0)
+                adv_last_eval = safe_nonneg_ts(getattr(self.gemini_advisor, "_last_eval_ts", None), 0.0)
+                stale_cached_fallback = (
+                    prev_cached is not None
+                    and assessment is prev_cached
+                    and 0.0 < assess_ts < eval_now
+                    and adv_last_eval < eval_now
+                ) or _parse_bool_flag(getattr(assessment, "is_fallback", False), False)
+                if not stale_cached_fallback:
+                    if fg_snap is not None:
+                        self._last_fg_value = safe_int(obj_attr(fg_snap, "value"), self._last_fg_value)
+                    if mb_snap is not None:
+                        self._last_advance_ratio = clean_scale(
+                            obj_attr(mb_snap, "advance_ratio"), default=self._last_advance_ratio, allow_percent=True
+                        )
+                    if isinstance(whale_data, dict):
+                        tr_val = safe_pos_float(whale_data.get("taker_buy_sell_ratio"), default=None)
+                        if tr_val is not None:
+                            self._last_btc_taker_ratio = tr_val
                 logger.info(
                     "Published Gemini macro advisor assessment: bias=%s, risk=%s, action=%s (ts=%.1f)",
                     assessment.market_bias, assessment.risk_level, assessment.recommended_action, assessment.ts,

@@ -672,12 +672,19 @@ def load_cached_whale_telemetry(
     reader = _resolve_ssot_json_reader()
     prefix = _cfg_str("cache_files", "whale_snapshot_prefix", "whale_snapshot_")
     for sym in (parse_symbol_list(symbols) or ["BTCUSDC"]):
+        best_w: Optional[Dict[str, Any]] = None
+        best_ts = -1.0
         for cand_sym in dict.fromkeys((sym, *cache_symbol_variants(sym))):
             safe_sym = clean_symbol_key(cand_sym)
             if safe_sym:
                 cand_w = reader(os.path.join(cache_dir, f"{prefix}{safe_sym}.json"))
                 if isinstance(cand_w, dict) and cand_w:
-                    return cand_w
+                    ts_raw = cand_w.get("ts") if cand_w.get("ts") is not None else cand_w.get("timestamp")
+                    ts_v = normalize_epoch_sec(safe_pos_float(ts_raw, default=0.0) or 0.0, default=0.0, allow_zero=True) or 0.0
+                    if best_w is None or ts_v > best_ts:
+                        best_w, best_ts = cand_w, ts_v
+        if best_w is not None:
+            return best_w
     return None
 
 

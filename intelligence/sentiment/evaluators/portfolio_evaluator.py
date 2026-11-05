@@ -697,6 +697,7 @@ def reconcile_venue_cycles_with_recent_orders(
                 or abs(sum(float(b["qty"]) for b in buys_after) - live_held) <= max(1e-4, live_held * 0.02)
             ):
                 ro_c["lifo_realized_pnl_usd"] = 0.0
+                ro_c["recent_buys"] = buys_after[-4:]
             buys_after_qty = sum(float(b["qty"]) for b in buys_after)
             has_pre_sell_rem = (
                 buys_after_qty > 0.0

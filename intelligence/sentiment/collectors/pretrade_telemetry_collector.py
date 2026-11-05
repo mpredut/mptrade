@@ -757,6 +757,18 @@ def collect_pretrade_telemetry(
                 p_est.update(m7d)
             if m24:
                 _apply_24h_series_enrichment(symbol, p_est, m24, alt_series_24h, None)
+                if (
+                    is_eq_sym
+                    and last_alt_pt is not None
+                    and not eq_px_diverged_05pct
+                    and (not rth_fresh_eq or not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
+                ):
+                    for k_stale_s in (
+                        "slope_90s", "growth_90s", "trend_90s",
+                        "slope_3_7m", "growth_3_7m", "trend_3_7m",
+                        "gradient_recent_fast",
+                    ):
+                        p_est.pop(k_stale_s, None)
             if cur_px_est and cur_px_est > 0:
                 p_est["price"] = cur_px_est
                 recalculate_live_price_geometry(p_est, cur_px_est)

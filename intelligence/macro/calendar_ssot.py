@@ -513,8 +513,17 @@ def compute_dynamic_sentiment_interval(
         return min_interval, f"extreme_market_regime_{breadth_regime.lower()}_{cached_risk.lower()}"
     cur_tr = safe_pos_float(btc_taker_ratio, default=None)
     prev_tr = safe_pos_float(prev_btc_taker_ratio, default=None)
-    if prev_tr is None and cached_assessment is not None:
-        prev_tr = parse_cited_taker_ratio(str(obj_attr(cached_assessment, "summary", "") or ""))
+    cited_tr = (
+        parse_cited_taker_ratio(str(obj_attr(cached_assessment, "summary", "") or ""))
+        if cached_assessment is not None
+        else None
+    )
+    if cited_tr is not None and (
+        prev_tr is None
+        or (cur_tr is not None and cited_tr <= 0.75 and cur_tr <= 0.75 and abs(cur_tr - cited_tr) < 0.20)
+        or (cur_tr is not None and cited_tr >= 1.25 and cur_tr >= 1.25 and abs(cur_tr - cited_tr) < 0.20)
+    ):
+        prev_tr = cited_tr
     if cur_tr is not None:
         if prev_tr is not None and (
             (prev_tr <= 0.75 and cur_tr >= 1.25)

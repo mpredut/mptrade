@@ -519,6 +519,7 @@ def gather_system_and_vpn_telemetry(
             for k, v in rw_state["tracked"].items()
             if rw_fresh
             and isinstance(v, dict)
+            and (safe_float(v.get("high"), default=0.0) or 0.0) >= 1.0
             and (
                 (safe_float(v.get("high"), default=0.0) or 0.0) >= min_consec
                 or _parse_bool_flag(v.get("alerted"), False)
