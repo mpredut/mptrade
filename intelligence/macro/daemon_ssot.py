@@ -30,6 +30,7 @@ from cachepaths import (
     canonical_base_asset,
     resolve_cachedb_filepath,
 )
+from instrument_registry import is_equity_symbol
 from state_io import (
     atomic_write_json as _default_atomic_write_json,
     discard_generation_file as _default_discard_generation_file,
@@ -78,7 +79,7 @@ def detect_active_binance_symbols(
 
     def _add_sym(raw_s: Any, *, skip_eq: bool = False, unique_base: bool = False) -> None:
         s_clean = str(raw_s or "").strip().strip("'\"").upper()
-        if not s_clean or (skip_eq and s_clean.endswith(("_EQ", "_US_EQ"))) or s_clean in out:
+        if not s_clean or (skip_eq and is_equity_symbol(s_clean)) or s_clean in out:
             return
         base = canonical_base_asset(s_clean)
         if unique_base and (not base or base in seen_bases):

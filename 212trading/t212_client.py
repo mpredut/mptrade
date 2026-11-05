@@ -33,6 +33,7 @@ except ImportError:
 
 from cachepaths import cache_path
 from providers.base import (
+    MarketDataProvider,
     _clean_single_order_id,
     extract_order_id,
     normalize_side,
@@ -539,33 +540,7 @@ class T212Client:
         if not by_symbol:
             return
         target_path = str(explicit_path) if explicit_path else str(cache_path("cache_trade_t212.json"))
-        try:
-            loaded = read_json_dict(target_path, default=None, recover_previous=True)
-            cache_obj = (
-                loaded
-                if isinstance(loaded, dict) and isinstance(loaded.get("items"), dict) and isinstance(loaded.get("fetchtime"), dict)
-                else {"items": {}, "fetchtime": {}}
-            )
-            now_ms = int(time.time() * 1000)
-            changed = False
-            for sym, new_rows in by_symbol.items():
-                existing = cache_obj["items"].get(sym)
-                by_oid: dict[str, dict] = {}
-                for row in (existing if isinstance(existing, list) else ()):
-                    if isinstance(row, dict) and (r_oid := extract_order_id(row)):
-                        by_oid[str(r_oid)] = row
-                for row in new_rows:
-                    r_oid = str(row["orderId"])
-                    if by_oid.get(r_oid) != row:
-                        by_oid[r_oid] = row
-                        changed = True
-                merged = sorted(by_oid.values(), key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
-                cache_obj["items"][sym] = merged
-                cache_obj["fetchtime"][sym] = now_ms
-            if changed or not os.path.exists(target_path):
-                save_json_state(target_path, cache_obj)
-        except Exception:
-            pass
+        MarketDataProvider.merge_ssot_fills_cache(target_path, by_symbol)
 
     def get_historical_order(self, order_id) -> dict | bool | None:
         """Find a terminal order in the first history page.

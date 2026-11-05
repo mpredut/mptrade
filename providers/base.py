@@ -1045,6 +1045,56 @@ class MarketDataProvider(ABC):
         except Exception:
             return False
 
+    @staticmethod
+    def merge_ssot_fills_cache(cache_file: str, fills_by_symbol: dict) -> bool:
+        """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`) deduplicating by `orderId`."""
+        if not cache_file or not isinstance(fills_by_symbol, dict) or not fills_by_symbol:
+            return False
+        target_path = str(cache_file)
+        try:
+            loaded = read_json_dict_recovering(target_path, default=None)
+            cache_obj = (
+                loaded
+                if isinstance(loaded, dict)
+                and isinstance(loaded.get("items"), dict)
+                and isinstance(loaded.get("fetchtime"), dict)
+                else {"items": {}, "fetchtime": {}}
+            )
+            now_ms = int(time.time() * 1000)
+            changed = False
+            for sym, new_rows in fills_by_symbol.items():
+                if not sym or isinstance(sym, bool) or not isinstance(new_rows, list):
+                    continue
+                sym_key = str(sym).strip().upper()
+                if not sym_key:
+                    continue
+                existing = cache_obj["items"].get(sym_key)
+                by_oid: dict[str, dict] = {}
+                for row in (existing if isinstance(existing, list) else ()):
+                    if isinstance(row, dict) and (r_oid := extract_order_id(row)):
+                        by_oid[str(r_oid)] = row
+                for row in new_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    r_oid = extract_order_id(row)
+                    if not r_oid:
+                        continue
+                    r_oid_s = str(r_oid)
+                    if by_oid.get(r_oid_s) != row:
+                        by_oid[r_oid_s] = dict(row)
+                        changed = True
+                merged = sorted(by_oid.values(), key=lambda r: (r.get("timestamp") or 0, str(r.get("orderId") or "")))
+                cache_obj["items"][sym_key] = merged
+                old_ft = safe_pos_float(cache_obj["fetchtime"].get(sym_key), default=None)
+                if old_ft is None or (now_ms - old_ft) >= 60_000:
+                    changed = True
+                cache_obj["fetchtime"][sym_key] = now_ms
+            if changed or not os.path.exists(target_path):
+                save_json_state(target_path, cache_obj)
+            return True
+        except Exception:
+            return False
+
     def invalidate_ssot_fills_cache(
         self, symbol: str, cache_file: str, *, match_fn: Any = None
     ) -> None:

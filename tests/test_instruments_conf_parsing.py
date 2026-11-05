@@ -198,7 +198,7 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         self.assertEqual(tao, "TAOUSDC")
 
 
-def test_current_execution_policy_is_preserved():
+def test_current_execution_policy_is_preserved(tmp_path):
     assert registry.symbols_for("binance") == ["BTCUSDC", "TAOUSDC", "ARBUSDC"]
     expected = {
         "tradeall_fire": {"BTCUSDC", "TAOUSDC", "ARBUSDC"}, "kalman_primary": {"BTCUSDC"},
@@ -256,6 +256,27 @@ def test_current_execution_policy_is_preserved():
         "TAO": ("TAOUSD", 32.0, "on"),
         "ADA": ("ADAUSD", 35.0, "on"),
     }
+    assert registry.is_equity_symbol("SPCX_US_EQ") is True
+    assert registry.is_equity_symbol("NVDA_US_EQ") is True
+    assert registry.is_equity_symbol("AAPL_EQ") is True
+    assert registry.is_equity_symbol("BTCUSDC") is False
+    assert registry.is_equity_symbol("TAOUSD") is False
+    assert registry.is_equity_symbol(None) is False
+    assert registry.is_equity_symbol(True) is False
+    custom_eq_conf = tmp_path / "instruments.conf"
+    custom_eq_conf.write_text(
+        section(
+            "T212_AAPL",
+            provider="t212",
+            symbol="AAPL",
+            base="AAPL",
+            quote="USD",
+            isolation="dedicated",
+            market_hours="rth",
+        ),
+        encoding="utf-8",
+    )
+    assert registry.is_equity_symbol("AAPL", path=custom_eq_conf) is True
 
 
 def test_invalid_policy_fails_before_selection(tmp_path):

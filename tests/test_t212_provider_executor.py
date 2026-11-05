@@ -656,6 +656,33 @@ class T212ClientTransportTest(unittest.TestCase):
             self.assertAlmostEqual(synth_buys[0]["price"], 140.5)
             self.assertEqual(fake_prov.get_orders("SPCX_US_EQ", "SELL", 60.0), [])
 
+            # Order lifecycle mutations invalidate fetchtime and trigger refresh_order_history on next get_orders
+            fake_prov._live_enabled = True
+            fake_prov._order_validity = "DAY"
+            fake_prov.submit_order("SPCX_US_EQ", "BUY", 1.0, 140.0)
+            invalidated = read_json_dict(trade_cache_file, default={})
+            self.assertNotIn("SPCX_US_EQ", invalidated.get("fetchtime", {}))
+
+            refresh_calls = []
+
+            def _fake_refresh(*, max_age_sec=None):
+                refresh_calls.append(max_age_sec)
+                from providers.base import MarketDataProvider
+                MarketDataProvider.merge_ssot_fills_cache(
+                    trade_cache_file,
+                    {
+                        "SPCX_US_EQ": [
+                            {"orderId": "901", "symbol": "SPCX_US_EQ", "side": "BUY", "price": 140.0, "qty": 1.0, "timestamp": now_ms - 10_000},
+                        ]
+                    },
+                )
+                return []
+
+            fake_prov._cli.refresh_order_history = _fake_refresh
+            refreshed_buys = fake_prov.get_orders("SPCX_US_EQ", "BUY", 3600.0)
+            self.assertEqual(refresh_calls, [0.0])
+            self.assertEqual([o["orderId"] for o in refreshed_buys], ["801", "901"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

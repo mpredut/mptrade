@@ -274,6 +274,17 @@ class T212Provider(MarketDataProvider):
             if isinstance(side, bool) or normalize_side(side) not in ("BUY", "SELL"):
                 return []
         rows = self._fills_from_cache(symbol)
+        if rows is None and (cache_file := self._fills_cache_file()):
+            try:
+                cli = self._client()
+                refresh_fn = getattr(cli, "refresh_order_history", None)
+                if callable(refresh_fn):
+                    if getattr(self, "_ssot_fills_cache_path", None) and not getattr(cli, "_trade_cache_path", None):
+                        cli._trade_cache_path = str(cache_file)
+                    refresh_fn(max_age_sec=0.0)
+                    rows = self._fills_from_cache(symbol)
+            except Exception:
+                rows = None
         if rows:
             cutoff_ms = (time.time() - since_val) * 1000.0
             cached_orders = aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
@@ -386,6 +397,7 @@ class T212Provider(MarketDataProvider):
                 return None
             # Instrument.place uses the common orderId key for cooldown. Preserve
             # T212's native id while exposing the mechanical alias on a copied payload.
+            self._invalidate_fills_cache(symbol)
             oid = extract_order_id(data)
             if isinstance(data, dict) and oid is not None and "orderId" not in data:
                 data = dict(data)
@@ -425,6 +437,7 @@ class T212Provider(MarketDataProvider):
         order_id = extract_order_id(data)
         if order_id is None:
             raise ProviderError(f"submit_order({symbol}): response without an id: {data}")
+        self._invalidate_fills_cache(symbol)
         return order_id
 
     @staticmethod
@@ -501,6 +514,8 @@ class T212Provider(MarketDataProvider):
         raw_orig = raw.get("orderedQuantity") if raw.get("orderedQuantity") is not None else raw.get("quantity")
         orig_f = safe_float(raw_orig, default=None)
         orig_qty = abs(orig_f) if orig_f is not None else None
+        if normalized == "closed":
+            self._invalidate_fills_cache(expected_symbol or ticker)
 
         return OrderStatus(
             status=normalized,
@@ -517,6 +532,7 @@ class T212Provider(MarketDataProvider):
             raise ProviderError("T212_LIVE_ORDERS is not true; the real cancellation is blocked")
         try:
             if self._client().cancel_order(clean_oid):
+                self._invalidate_fills_cache(symbol)
                 return
         except Exception as e:  # noqa: BLE001
             raise ProviderError(f"cancel_order({order_id}): {e}") from e
@@ -533,6 +549,7 @@ class T212Provider(MarketDataProvider):
             raise ProviderError(
                 f"cancel_order({order_id}): the order is still {terminal}"
             )
+        self._invalidate_fills_cache(symbol)
 
     def open_orders(self, symbol: str) -> List[dict]:
         """Return active open orders on Trading 212 matching ``symbol``."""

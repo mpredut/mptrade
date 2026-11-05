@@ -63,7 +63,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
     round_opt_px,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_equity_symbol
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     resolve_cachedb_filepath,
@@ -105,14 +105,14 @@ def collect_pretrade_telemetry(
         cachedb_dir = default_cdir
     sym_quotes = compatible_quote_suffixes(symbol)
     is_usd_sym = "USD" in sym_quotes
-    is_eq_sym = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+    is_eq_sym = is_equity_symbol(symbol)
 
     def _scope_ok_variant(cand: Any) -> bool:
         c_u = str(cand or "").strip().upper()
         if not c_u:
             return False
         if not is_eq_sym:
-            return not c_u.endswith(("_EQ", "_US_EQ"))
+            return not is_equity_symbol(c_u)
         return not c_u.endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR"))
 
     sym_variants = [c for c in cache_symbol_variants(symbol, include_base=True) if _scope_ok_variant(c)]

@@ -68,7 +68,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     recalculate_live_price_geometry,
     round_opt_px,
 )
-from instrument_registry import casefold_get
+from instrument_registry import casefold_get, is_equity_symbol
 from state_io import (
     read_json_dict_recovering as _default_read_json_cached,
     read_json_recovering,
@@ -160,7 +160,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
         return ohlc_fn if callable(ohlc_fn) else None
     try:
         prov_key = ""
-        sym_parts = split_symbol_assets(sym_u) if sym_u and not sym_u.endswith(("_EQ", "_US_EQ")) else None
+        sym_parts = split_symbol_assets(sym_u) if sym_u and not is_equity_symbol(sym_u) else None
         sym_q = sym_parts[1] if sym_parts is not None else ""
         if sym_u == "HYPEUSDC":
             prov_key = "hyperliquid"
@@ -182,7 +182,7 @@ def _resolve_fallback_ohlc_fn(sym: str, inst_by_sym: Optional[Dict[str, Any]] = 
                     ),
                     is_factory=True,
                 )
-        elif sym_q == "USD" or (sym_u.endswith("USD") and not sym_u.endswith(("_EQ", "_US_EQ", "FDUSD", "TUSD", "BUSD"))):
+        elif sym_q == "USD" or (sym_u.endswith("USD") and not is_equity_symbol(sym_u) and not sym_u.endswith(("FDUSD", "TUSD", "BUSD"))):
             prov_key = "kraken"
             if prov_key not in _FALLBACK_PROVIDER_OHLC_FNS:
                 _FALLBACK_PROVIDER_OHLC_FNS[prov_key] = _wrap_cached_ohlc_fn(
@@ -256,7 +256,7 @@ def load_symbol_price_series(
 ) -> Tuple[list, list]:
     """Load and merge high-density 24h & 7d price series from cache_24_price, cache_365_price, cache_sparse_price, and cache_current_price."""
     sym_u = str(symbol).strip().upper()
-    is_eq_sym = sym_u.endswith(("_EQ", "_US_EQ"))
+    is_eq_sym = is_equity_symbol(sym_u)
     eff_quotes = quotes if quotes is not None else compatible_quote_suffixes(symbol)
     cands = [
         c
@@ -266,7 +266,7 @@ def load_symbol_price_series(
         and (
             not c.upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
             if is_eq_sym
-            else not c.upper().endswith(("_EQ", "_US_EQ"))
+            else not is_equity_symbol(c)
         )
     ]
     series_24h: list = []
@@ -1559,13 +1559,13 @@ def enrich_24h_and_microstructure(
             )
         if m_info_ref := load_symbol_microstructure(cache_dir, msym, _rj):
             msym_quotes = compatible_quote_suffixes(msym)
-            msym_is_eq = msym.upper().endswith(("_EQ", "_US_EQ"))
+            msym_is_eq = is_equity_symbol(msym)
             p_ref = _first_variant_dict(
                 prices_and_trends,
                 [
                     c
                     for c in cache_symbol_variants(msym, include_original=True, include_base="USD" in msym_quotes, quotes=msym_quotes)
-                    if c.upper().endswith(("_EQ", "_US_EQ")) == msym_is_eq
+                    if is_equity_symbol(c) == msym_is_eq
                 ],
             )
             if p_ref is not None and msym not in prices_and_trends:

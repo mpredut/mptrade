@@ -46,6 +46,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_float,
     safe_pos_float,
 )
+from instrument_registry import is_equity_symbol
 
 
 @dataclass(frozen=True)
@@ -230,7 +231,7 @@ class CompositeMarketIntelligence:
             if (veto := _apply_guard_dec(fund_dec)) is not None:
                 return veto
 
-        is_eq_sym = str(symbol or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+        is_eq_sym = is_equity_symbol(symbol)
 
         # 6. Sentiment Extreme Greed Guard (GLLM2 — Crypto only)
         if not is_eq_sym and fear_greed_snapshot is not None and not _is_bypassed("GLLM2", "greed_guard", "extremegreedguard"):
@@ -336,7 +337,7 @@ class CompositeMarketIntelligence:
             if l_event:
                 triggered_events.append(l_event)
 
-        is_eq_sym = str(symbol or "").strip().upper().endswith(("_EQ", "_US_EQ"))
+        is_eq_sym = is_equity_symbol(symbol)
         if not is_eq_sym and fear_greed_snapshot is not None:
             _, s_event = self.sentiment_trigger.evaluate(symbol, price, fear_greed_snapshot, ts=now_ts)
             if s_event:

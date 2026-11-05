@@ -217,6 +217,37 @@ def single_symbol_for(provider, role, *, path=None):
     return symbols[0]
 
 
+_DEFAULT_RESOLVED_PATH = str(DEFAULT_PATH.resolve())
+
+
+def is_equity_symbol(symbol: object, *, path=None) -> bool:
+    """Return True if ``symbol`` represents an equity/RTH instrument (by suffix or ``instruments.conf`` SSOT)."""
+    if not isinstance(symbol, str) or isinstance(symbol, bool):
+        return False
+    sym_u = symbol.strip().strip("'\"").upper()
+    if not sym_u:
+        return False
+    if sym_u.endswith(("_EQ", "_US_EQ")):
+        return True
+    if len(sym_u) > 4 and sym_u.endswith(("USDC", "USDT", "FDUSD", "TUSD", "BUSD", "BTC", "ETH", "EUR")):
+        return False
+    try:
+        reg = None
+        if path is None:
+            for (cached_path, _, _), cached_reg in reversed(_REGISTRY_CACHE.items()):
+                if cached_path == _DEFAULT_RESOLVED_PATH:
+                    reg = cached_reg
+                    break
+        if reg is None:
+            reg = load_registry(path)
+        for spec in reg.values():
+            if (spec.provider == "t212" or spec.market_hours == "rth") and spec.symbol.upper() == sym_u:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def tracked_price_instruments(role=None, *, path=None):
     """Return ``(all_symbols, non_binance_symbols, non_binance_providers)`` from instruments.conf.
 
