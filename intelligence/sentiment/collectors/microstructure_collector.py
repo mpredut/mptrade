@@ -953,6 +953,8 @@ def enrich_24h_and_microstructure(
                 and arch_span_7d_ms > safe_float(prices_and_trends[sym].get("_partial_7d_span_ms"), 0.0)
             )
         ):
+            for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                prices_and_trends[sym].pop(k_7d_opt, None)
             prices_and_trends[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
             active_7d_vals = list(arch_vals_7d)
             if 0.0 <= arch_span_7d_ms < 5 * 86400 * 1000:
@@ -989,6 +991,8 @@ def enrich_24h_and_microstructure(
                 try:
                     vals_7d = _load_stitched_7d_ohlc_closes(ohlc_fn, sym, now_ts, m24, sym_px_cur)
                     if len(vals_7d) >= 2 and ("chg_7d_pct" not in prices_and_trends[sym] or len(vals_7d) >= 24):
+                        for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                            prices_and_trends[sym].pop(k_7d_opt, None)
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_7d))
                         prices_and_trends[sym].pop("_partial_7d_span_ms", None)
                         active_7d_vals = list(vals_7d)
@@ -1175,6 +1179,8 @@ def enrich_24h_and_microstructure(
                     elif rth_bar_fresh and px_diff_from_chart:
                         vals_5d.append(round(sym_px_cur, 4))
                     if len(vals_5d) >= 2:
+                        for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                            prices_and_trends[sym].pop(k_7d_opt, None)
                         prices_and_trends[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
                         active_7d_vals = list(vals_5d)
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:

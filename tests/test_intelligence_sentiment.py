@@ -5660,3 +5660,52 @@ def test_bugs_93_94_95_pretrade_venue_ob_isolation_watchdog_state_cleanup_and_pa
     assert t212_cycs["NVDA_US_EQ"]["dca_buys"] == 1
     assert t212_cycs["NVDA_US_EQ"]["last_sell_price"] == 207.9
     assert t212_cycs["NVDA_US_EQ"]["last_exit_kind"] == "TP"
+
+
+def test_stale_major_swing_low_cleanup_and_guard_anomaly_scanner(tmp_path):
+    """Verify stale major_swing_low_px is cleared when swing_low_px is lower, and /compact warnings do not trigger GUARD."""
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_7d_range_metrics,
+        recalculate_live_price_geometry,
+    )
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. recalculate_live_price_geometry drops major_swing_low_px when maj_lo_new >= swing_low_px
+    pinfo = {
+        "price": 133.27,
+        "swing_low_px": 129.79,
+        "swing_high_px": 139.96,
+        "rally_from_swing_low_pct": 2.68,
+        "pullback_from_swing_high_pct": -4.78,
+        "major_swing_low_px": 133.74,
+        "rally_from_major_low_pct": 0.0,
+    }
+    recalculate_live_price_geometry(pinfo, 133.27)
+    assert "major_swing_low_px" not in pinfo
+    assert "rally_from_major_low_pct" not in pinfo
+
+    # When major_swing_low_px is genuinely lower than swing_low_px, it is preserved
+    pinfo_valid = {
+        "price": 135.0,
+        "swing_low_px": 133.0,
+        "swing_high_px": 140.0,
+        "major_swing_low_px": 129.79,
+    }
+    recalculate_live_price_geometry(pinfo_valid, 135.0)
+    assert pinfo_valid.get("major_swing_low_px") == 129.79
+    assert pinfo_valid.get("rally_from_major_low_pct") == pytest.approx(((135.0 - 129.79) / 129.79) * 100.0, abs=0.01)
+
+    # 2. harvest_log_anomalies_from_dirs ignores /compact warning lines and does not false-match [GUARD] across brackets
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "python_orchestrator.log"
+    log_file.write_text(
+        "2026-11-05 03:37:48,420 [WARNING] In-place /compact for topic 'auto_technical_repair' conversation d9d22d76 failed: "
+        "Command '['/home/predut/.local/bin/agy-bot', '-p', '/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.']' timed out after 120.0 seconds\n"
+        "2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC\n",
+        encoding="utf-8",
+    )
+    res = harvest_log_anomalies_from_dirs([str(log_dir)], max_age_hours=1)
+    assert res.warning_count == 0
+    assert res. guard_interventions == ["2026-11-05 03:39:00,000 [INFO] [GUARD] AssetGuardian tier 1 triggered for ETHUSDC"]
+

@@ -955,8 +955,13 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
             pinfo["pullback_from_swing_high_pct"] = pct_delta(p_cur, sw_hi_new)
     if (maj_lo := safe_pos_float(pinfo.get("major_swing_low_px"), default=None)) is not None and maj_lo > 0.0:
         maj_lo_new = round(min(maj_lo, p_cur), 6)
-        pinfo["major_swing_low_px"] = maj_lo_new
-        pinfo["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
+        eff_sw_lo = safe_pos_float(pinfo.get("swing_low_px"), default=None)
+        if eff_sw_lo is not None and maj_lo_new >= eff_sw_lo - 1e-9:
+            pinfo.pop("major_swing_low_px", None)
+            pinfo.pop("rally_from_major_low_pct", None)
+        else:
+            pinfo["major_swing_low_px"] = maj_lo_new
+            pinfo["rally_from_major_low_pct"] = pct_delta(p_cur, maj_lo_new)
     r1h_lo = safe_pos_float(pinfo.get("recent_1h_low_px"), default=None)
     p6h_lo = safe_pos_float(pinfo.get("prior_6h_low_px"), default=None)
     if r1h_lo is not None and p6h_lo is not None and p6h_lo > 0.0:

@@ -742,6 +742,8 @@ def enrich_cross_venue_trends(
                     continue
                 vals = [safe_float(pt[1], 0.0) for pt in cand_ser if isinstance(pt, (list, tuple)) and len(pt) > 1 and safe_float(pt[1], 0.0) > 0]
                 dec_7d = 4 if sym.endswith(("_EQ", "_US_EQ")) else None
+                for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                    entry.pop(k_7d_opt, None)
                 entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))
                 if 0.0 <= w_span_ms < 5 * 86400 * 1000:
                     entry["_partial_7d_span_ms"] = w_span_ms
