@@ -782,6 +782,38 @@ def load_symbol_price_series(
     return series_24h, vals_7d
 
 
+_BTC_24H_CACHE_FILENAMES: Tuple[str, ...] = (
+    "price_24h_BTCUSDC.json",
+    "price_24h_BTCUSDT.json",
+    "cache_24_price_BTCUSDC.json",
+    "cache_24_price_BTCUSDT.json",
+)
+
+
+def resolve_cached_btc_24h_change_pct(
+    cache_dir: str,
+    *,
+    current_price_items: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Return BTC 24h percentage change from cached 24h BTCUSDC/BTCUSDT price series if available."""
+    if not cache_dir or not any(
+        os.path.exists(str(resolve_cachedb_filepath(os.path.join(cache_dir, fn))))
+        for fn in _BTC_24H_CACHE_FILENAMES
+    ):
+        return None
+    btc_pts, _ = load_symbol_price_series(
+        cache_dir,
+        "BTCUSDC",
+        current_price_items=current_price_items,
+        include_7d=False,
+    )
+    if not btc_pts:
+        return None
+    btc_m = compute_24h_price_metrics(btc_pts)
+    chg = safe_float(btc_m.get("chg_24h_pct"), default=None) if isinstance(btc_m, dict) else None
+    return chg if chg is not None and abs(chg) > 1e-6 else None
+
+
 def load_symbol_microstructure(
     cache_dir: str,
     sym: str,
@@ -1844,6 +1876,7 @@ __all__ = [
     "pct_delta",
     "range_position_pct",
     "reconcile_sibling_flow_and_liq_regimes",
+    "resolve_cached_btc_24h_change_pct",
     "round_opt_px",
     "update_microstructure_cycle_deltas",
 ]

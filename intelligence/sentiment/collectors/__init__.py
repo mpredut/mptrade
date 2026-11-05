@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         ensure_fresh_symbol_microstructure,
         load_symbol_microstructure,
         load_symbol_price_series,
+        resolve_cached_btc_24h_change_pct,
     )
     from intelligence.sentiment.collectors.portfolio_collector import (
         harvest_bot_runtime_states,
@@ -129,6 +130,7 @@ _LAZY_IMPORTS: dict[str, str] = {
     "range_position_pct": "intelligence.sentiment.evaluators.price_series_evaluator",
     "recalculate_live_price_geometry": "intelligence.sentiment.evaluators.price_series_evaluator",
     "reconcile_venue_cycles_with_recent_orders": "intelligence.sentiment.evaluators.portfolio_evaluator",
+    "resolve_cached_btc_24h_change_pct": "intelligence.sentiment.collectors.microstructure_collector",
     "resolve_symbol_price": "intelligence.sentiment.evaluators.portfolio_evaluator",
     "resolve_venue_fee_and_limits": "intelligence.sentiment.evaluators.portfolio_evaluator",
     "round_opt_px": "intelligence.sentiment.evaluators.price_series_evaluator",

@@ -48,6 +48,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     enrich_24h_and_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
+    resolve_cached_btc_24h_change_pct,
 )
 from intelligence.sentiment.collectors.portfolio_collector import (
     harvest_bot_runtime_states,
@@ -285,7 +286,10 @@ def collect_macro_benchmarks_snapshot(
         "equity_regime": compute_equity_macro_regime({"items": items}),
         **extra_macro,
     }
-    payload["cross_asset_regime"] = compute_cross_asset_regime(payload)
+    payload["cross_asset_regime"] = compute_cross_asset_regime(
+        payload,
+        btc_chg_24h_pct=resolve_cached_btc_24h_change_pct(cache_dir),
+    )
     payload["summary_line"] = format_macro_benchmarks_summary_line(payload)
     if persist and cache_dir:
         try:
@@ -429,8 +433,15 @@ def harvest_macro_and_news_sensors(
                     enriched["items"] = enriched_items
                 if str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
                     enriched["equity_regime"] = compute_equity_macro_regime(enriched)
-                if str(enriched.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes():
-                    enriched["cross_asset_regime"] = compute_cross_asset_regime(enriched)
+                btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
+                if (
+                    str(enriched.get("cross_asset_regime") or "").strip().upper() not in get_cross_asset_regimes()
+                    or btc_chg_24h_live is not None
+                ):
+                    enriched["cross_asset_regime"] = compute_cross_asset_regime(
+                        enriched,
+                        btc_chg_24h_pct=btc_chg_24h_live,
+                    )
                 if summary_s := format_macro_benchmarks_summary_line(enriched):
                     enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched

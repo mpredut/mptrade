@@ -1893,8 +1893,14 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     pt_closed_eq = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir))
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_cr.get("Equity & Macro Regime"))
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(pt_closed_eq.get("Equity & Macro Regime"))
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+
+    harvested_sensors, _ = harvest_macro_and_news_sensors(str(cdir), now_ts=1_793_865_000.0)
+    assert harvested_sensors["macro_benchmarks"]["cross_asset_regime"] == "EQUITY_BULLISH_DECOUPLING"
+    assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in str(harvested_sensors["macro_benchmarks"]["summary_line"])
     sa.review(force_refresh=True, now_ts=1_793_865_000.0)
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_sa_prompts[-1]
+
 
 
 

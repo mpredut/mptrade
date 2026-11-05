@@ -707,7 +707,7 @@ def harvest_tradable_positions_and_orders(
             prev_pos_px = safe_pos_float(prev_cached_pos.get("price"), default=0.0) or 0.0
             prev_pos_ts = safe_pos_float(prev_cached_pos.get("ts"), default=None)
             px_from_cached_pos = False
-            if px_f <= 0 or (v_norm == "t212" and "PYTEST_CURRENT_TEST" not in os.environ):
+            if px_f <= 0 or (v_norm == "t212" and (base_free or 0.0) > 0 and "PYTEST_CURRENT_TEST" not in os.environ):
                 try:
                     get_px_fn = getattr(inst._provider, "get_current_price", None)
                     if callable(get_px_fn) and (live_px := safe_pos_float(get_px_fn(sym), default=0.0) or 0.0) > 0:

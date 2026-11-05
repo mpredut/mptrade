@@ -32,6 +32,7 @@ from intelligence.sentiment.collectors.microstructure_collector import (
     ensure_fresh_symbol_microstructure,
     load_symbol_microstructure,
     load_symbol_price_series,
+    resolve_cached_btc_24h_change_pct,
 )
 from intelligence.sentiment.collectors.portfolio_collector import load_symbol_best_recent_fills
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
@@ -1164,18 +1165,8 @@ def collect_pretrade_telemetry(
                 btc_chg_24h_live = safe_float(m24.get("chg_24h_pct"), default=None)
             elif btc_m24:
                 btc_chg_24h_live = safe_float(btc_m24.get("chg_24h_pct"), default=None)
-            elif any(
-                os.path.exists(str(resolve_cachedb_filepath(os.path.join(cachedb_dir, fn))))
-                for fn in (
-                    "price_24h_BTCUSDC.json",
-                    "price_24h_BTCUSDT.json",
-                    "cache_24_price_BTCUSDC.json",
-                    "cache_24_price_BTCUSDT.json",
-                )
-            ):
-                btc_s_eq, _ = load_symbol_price_series(cachedb_dir, "BTCUSDC", current_price_items=cur_p_items, include_7d=False)
-                btc_m_eq = compute_24h_price_metrics(btc_s_eq) if btc_s_eq else {}
-                btc_chg_24h_live = safe_float(btc_m_eq.get("chg_24h_pct"), default=None)
+            else:
+                btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cachedb_dir, current_price_items=cur_p_items)
             if btc_chg_24h_live is not None and abs(btc_chg_24h_live) > 1e-6:
                 mb_data = dict(mb_data)
                 mb_data["cross_asset_regime"] = compute_cross_asset_regime(mb_data, btc_chg_24h_pct=btc_chg_24h_live)
