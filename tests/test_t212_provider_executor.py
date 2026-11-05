@@ -588,10 +588,11 @@ class T212ClientTransportTest(unittest.TestCase):
             # and _hist_cache syncs FILLED orders into _trade_cache_path (cache_trade_t212.json)
             instr_sidecar = c1._instr_shared_cache_path()
             self.assertTrue(os.path.exists(instr_sidecar))
+            from cachepaths import STALE_STAGING_MAX_AGE_SEC
             stale_tmp = os.path.join(tmpdir, ".shared_t212.json.orphan123.tmp")
             with open(stale_tmp, "w", encoding="utf-8") as fh:
                 fh.write("{}")
-            old_ts = time.time() - 300.0
+            old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
             os.utime(stale_tmp, (old_ts, old_ts))
 
             trade_cache_file = os.path.join(tmpdir, "cache_trade_t212.json")

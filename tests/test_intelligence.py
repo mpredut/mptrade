@@ -4217,7 +4217,8 @@ def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_it
     found = cachetrend._find_by_symbol_variant({"items": {"BTCUSDT": [1, 2, 3]}}, "BTCUSDT")
     assert found == ("BTCUSDT", [1, 2, 3])
 
-    # 5. atomic_snapshot_file only cleans up stale (>60s) leftover staging directories, preserving active ones
+    # 5. atomic_snapshot_file only cleans up stale (>STALE_STAGING_MAX_AGE_SEC) leftover staging directories, preserving active ones
+    from cachepaths import STALE_STAGING_MAX_AGE_SEC
     src = tmp_path / "src.json"
     src.write_text("{}", encoding="utf-8")
     dest = tmp_path / "snap.json"
@@ -4225,7 +4226,7 @@ def test_iter75_order_guard_qlimit2_sub_bypasses_context_scale_and_cachetrend_it
     stale_dir = tmp_path / ".snap.json.888888.stale"
     active_dir.mkdir()
     stale_dir.mkdir()
-    old_ts = time.time() - 120.0
+    old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
     os.utime(stale_dir, (old_ts, old_ts))
 
     atomic_snapshot_file(str(src), str(dest))
