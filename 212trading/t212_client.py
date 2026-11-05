@@ -41,7 +41,7 @@ from providers.base import (
     normalize_side,
     normalize_timestamp_ms,
 )
-from state_io import atomic_write_json, read_json_dict, save_json_state
+from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict, save_json_state
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -152,25 +152,11 @@ class T212Client:
 
     @staticmethod
     def _cleanup_stale_tmp_files(target_path: str, max_age_sec: float = STALE_STAGING_MAX_AGE_SEC) -> None:
-        if not target_path:
-            return
-        try:
-            parent = os.path.dirname(os.path.abspath(target_path))
-            base = os.path.basename(target_path)
-            if not os.path.isdir(parent):
-                return
-            prefix = f".{base}."
-            now = time.time()
-            for fname in os.listdir(parent):
-                if fname.startswith(prefix) and fname.endswith(".tmp"):
-                    fpath = os.path.join(parent, fname)
-                    try:
-                        if (now - os.path.getmtime(fpath)) >= max_age_sec:
-                            os.remove(fpath)
-                    except OSError:
-                        pass
-        except OSError:
-            pass
+        if target_path:
+            abs_p = os.path.abspath(target_path)
+            cleanup_stale_staging_siblings(
+                os.path.dirname(abs_p), f".{os.path.basename(abs_p)}.", suffix=".tmp", max_age_sec=max_age_sec
+            )
 
     def _read_shared_cache(self, attr: str, max_age_sec: float) -> tuple[bool, list | dict | None, float]:
         if not self._shared_cache_enabled() or max_age_sec <= 0.0:

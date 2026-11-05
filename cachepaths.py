@@ -1,4 +1,4 @@
-"""Centralized Single Source of Truth (SSOT) for cachedb file path resolution."""
+"""Centralized Single Source of Truth (SSOT) for cachedb file path and symbol resolution."""
 from __future__ import annotations
 
 import builtins
@@ -25,109 +25,61 @@ PREFIX_LEGACY_FILENAMES = (
 CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     "trends": {
         "exact": (
-            "cache_short_trend.json",
-            "cache_instant_trend.json",
-            "cache_long_trend.json",
-            "cache_price_long_trend.json",
-            "cache_T_trend.json",
-            "cache_kalman_trend.json",
-            "priceanalysis.json",
-            "24trend",
+            "cache_short_trend.json", "cache_instant_trend.json",
+            "cache_long_trend.json", "cache_price_long_trend.json",
+            "cache_T_trend.json", "cache_kalman_trend.json",
+            "priceanalysis.json", "24trend",
         ),
         "prefixes": (
-            "24trend/",
-            "priceanalysis.",
-            "cache_short_trend.",
-            "cache_instant_trend.",
-            "cache_long_trend.",
-            "cache_price_long_trend.",
-            "cache_T_trend.",
-            "cache_kalman_trend.",
+            "24trend/", "priceanalysis.", "cache_short_trend.", "cache_instant_trend.",
+            "cache_long_trend.", "cache_price_long_trend.", "cache_T_trend.", "cache_kalman_trend.",
         ),
         "suffixes": (),
     },
     "prices": {
-        "exact": (
-            "cache_current_price.json",
-            "cache_currentprice.json",
-            "cache_watcher_all_price.json",
-        ),
+        "exact": ("cache_current_price.json", "cache_currentprice.json", "cache_watcher_all_price.json"),
         "prefixes": (
-            "cache_current_price.",
-            "cache_currentprice.",
-            "cache_watcher_all_price.",
-            "cache_24_price_",
-            "cache_24price_",
-            "price_24h_",
-            "cache_365_price_",
-            "cache_365price_",
-            "cache_sparse_price_",
-            "cache_price_",
-            "cache_ohlc_",
+            "cache_current_price.", "cache_currentprice.", "cache_watcher_all_price.",
+            "cache_24_price_", "cache_24price_", "price_24h_",
+            "cache_365_price_", "cache_365price_",
+            "cache_sparse_price_", "cache_price_", "cache_ohlc_",
         ),
         "suffixes": (".npz",),
     },
     "telemetry": {
         "exact": (),
-        "prefixes": (
-            "orderbook_depth_",
-            "derivatives_telemetry_",
-            "whale_snapshot_",
-        ),
+        "prefixes": ("orderbook_depth_", "derivatives_telemetry_", "whale_snapshot_"),
         "suffixes": (),
     },
     "macro": {
         "exact": (
-            "macro_lexicon_collect.json",
-            "macro_benchmarks_collect.json",
-            "sentiment_eval.json",
-            "geopolitical_eval.json",
-            "fear_greed_collect.json",
-            "market_breadth_collect.json",
-            "news_feed_collect.json",
+            "macro_lexicon_collect.json", "macro_benchmarks_collect.json",
+            "sentiment_eval.json", "geopolitical_eval.json",
+            "fear_greed_collect.json", "market_breadth_collect.json", "news_feed_collect.json",
         ),
         "prefixes": (
-            "fear_greed_",
-            "market_breadth_",
-            "macro_benchmarks_",
-            "news_feed_",
-            "geopolitical_",
-            "macro_lexicon_",
-            "sentiment_eval.",
+            "fear_greed_", "market_breadth_", "macro_benchmarks_",
+            "news_feed_", "geopolitical_", "macro_lexicon_", "sentiment_eval.",
         ),
         "suffixes": (),
     },
     "orders": {
-        "exact": (
-            "binance_account_cache_health.json",
-        ),
+        "exact": ("binance_account_cache_health.json",),
         "prefixes": (
-            "cache_order",
-            "cache_trade",
-            "cache_asset_value",
-            "order_retry_",
-            "binance_account_cache_health.",
+            "cache_order", "cache_trade", "cache_asset_value",
+            "order_retry_", "binance_account_cache_health.",
         ),
         "suffixes": (),
     },
     "state": {
         "exact": (
-            "assetguardian_state.json",
-            "mt_state.json",
-            "trailing_state.json",
-            "smart_stop_loss_state.json",
-            "rtrade_pairs_state.json",
-            "autonomous_trade_intents_state.json",
-            "venue_balances_state.json",
+            "assetguardian_state.json", "mt_state.json", "trailing_state.json",
+            "smart_stop_loss_state.json", "rtrade_pairs_state.json",
+            "autonomous_trade_intents_state.json", "venue_balances_state.json",
         ),
         "prefixes": (
-            "assetguardian_state",
-            "rtrade_pairs",
-            "mt_state.",
-            "trailing_state.",
-            "smart_stop_loss_state.",
-            "autonomous_trade_intents",
-            "venue_balances_state",
+            "assetguardian_state", "rtrade_pairs", "mt_state.", "trailing_state.",
+            "smart_stop_loss_state.", "autonomous_trade_intents", "venue_balances_state",
         ),
         "suffixes": ("_state.json",),
     },
@@ -138,32 +90,20 @@ CACHEDB_SUBDOMAINS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "system": {
         "exact": (
-            "fleet_health_status.json",
-            "dev_regression_status.json",
-            "llm_topic_threads.json",
-            "llm_quota_status.json",
-            "notify_queue.json",
+            "fleet_health_status.json", "dev_regression_status.json",
+            "llm_topic_threads.json", "llm_quota_status.json", "notify_queue.json",
         ),
         "prefixes": (
-            "auto_",
-            "fleet_health_status.",
-            "dev_regression_status.",
-            "llm_topic_threads.",
-            "llm_quota_status.",
-            "notify_queue.",
+            "auto_", "fleet_health_status.", "dev_regression_status.",
+            "llm_topic_threads.", "llm_quota_status.", "notify_queue.",
         ),
         "suffixes": ("_eval.json",),
     },
 }
 
-_SIDECAR_SUFFIXES: tuple[str, ...] = (
-    ".generation.lock",
-    ".previous",
-    ".meta",
-    ".lock",
-    ".tmp",
-)
+_SIDECAR_SUFFIXES: tuple[str, ...] = (".generation.lock", ".previous", ".meta", ".lock", ".tmp")
 _SORTED_SUBDOMAINS: tuple[str, ...] = tuple(sorted(CACHEDB_SUBDOMAINS, key=len, reverse=True))
+STALE_STAGING_MAX_AGE_SEC: float = 300.0
 
 
 def _clean_path_str(p: object) -> str:
@@ -182,28 +122,39 @@ def _norm_rel_cache_path(raw: str, *, strip_cachedb_prefix: bool = False) -> str
     return s
 
 
+def _exists_with_prev(path: str) -> bool:
+    return bool(path and (os.path.exists(path) or os.path.exists(f"{path}.previous")))
+
+
+def _move_sidecars(src: str, dst: str, *, include_archives: bool = False) -> None:
+    for sfx in (".previous", ".meta"):
+        if os.path.exists(src + sfx) and not os.path.exists(dst + sfx):
+            os.replace(src + sfx, dst + sfx)
+    if include_archives:
+        for old_arch in glob.glob(glob.escape(src) + ".*.archive*"):
+            new_arch = dst + old_arch[len(src):]
+            if not os.path.exists(new_arch):
+                os.replace(old_arch, new_arch)
+
+
 def _strip_sidecar_filename(name: str) -> str:
     """Normalize a cache filename by stripping leading staging dots and trailing sidecar suffixes."""
     s = _norm_rel_cache_path(name)
     if "/" in s:
         for sub in _SORTED_SUBDOMAINS:
-            if s.startswith(sub + "/"):
+            if s.startswith(f"{sub}/"):
                 s = s[len(sub) + 1:]
                 break
     if s.startswith(".") and not s.startswith(".."):
         s = s[1:]
-    changed = True
-    while changed:
-        changed = False
-        for sfx in _SIDECAR_SUFFIXES:
-            if s.endswith(sfx) and len(s) > len(sfx):
-                s = s[: -len(sfx)]
-                changed = True
-                break
-        if not changed and ".previous." in s:
+    while True:
+        matched = next((sfx for sfx in _SIDECAR_SUFFIXES if s.endswith(sfx) and len(s) > len(sfx)), None)
+        if matched:
+            s = s[: -len(matched)]
+        elif ".previous." in s:
             s = s.split(".previous.", 1)[0]
-            changed = True
-    return s
+        else:
+            return s
 
 
 def resolve_cache_subdomain(name: object) -> str | None:
@@ -213,24 +164,19 @@ def resolve_cache_subdomain(name: object) -> str | None:
         return None
     if "/" in raw:
         for sub in _SORTED_SUBDOMAINS:
-            if raw.startswith(sub + "/") and raw[len(sub) + 1:]:
-                if sub == "system":
-                    inner = resolve_cache_subdomain(os.path.basename(raw))
-                    return inner or sub
-                return sub
+            if raw.startswith(f"{sub}/") and raw[len(sub) + 1:]:
+                return (resolve_cache_subdomain(os.path.basename(raw)) or sub) if sub == "system" else sub
         if raw.startswith("24trend/"):
             return "trends"
         raw = os.path.basename(raw)
-    cleaned = _strip_sidecar_filename(raw)
-    for cand in (cleaned, raw):
+    cands = (_strip_sidecar_filename(raw), raw)
+    for cand in cands:
         for sub, rules in CACHEDB_SUBDOMAINS.items():
             if cand in rules["exact"]:
                 return sub
-    for cand in (cleaned, raw):
+    for cand in cands:
         for sub, rules in CACHEDB_SUBDOMAINS.items():
-            if any(cand.startswith(pfx) for pfx in rules["prefixes"]):
-                return sub
-            if any(cand.endswith(sfx) for sfx in rules["suffixes"]):
+            if cand.startswith(rules["prefixes"]) or cand.endswith(rules["suffixes"]):
                 return sub
     return None
 
@@ -240,28 +186,22 @@ def resolve_cachedb_filepath(path: object) -> object:
     raw = _clean_path_str(path)
     if not raw:
         return path
-    norm = raw.replace("\\", "/")
-    parts = [p for p in norm.split("/") if p and p != "."]
+    parts = [p for p in raw.replace("\\", "/").split("/") if p and p != "."]
     if not parts:
         return raw
     if len(parts) >= 3 and f"{parts[-3]}/{parts[-2]}" in CACHEDB_SUBDOMAINS:
         return raw
     if len(parts) >= 2 and parts[-2] in CACHEDB_SUBDOMAINS:
-        if parts[-2] == "system" and resolve_cache_subdomain(parts[-1]) == "system/heartbeat":
-            rel_item = parts[-1]
-            base_dir = os.path.dirname(os.path.dirname(raw))
-        else:
+        if parts[-2] != "system" or resolve_cache_subdomain(parts[-1]) != "system/heartbeat":
             return raw
+        rel_item, base_dir = parts[-1], os.path.dirname(os.path.dirname(raw))
     elif len(parts) >= 3 and parts[-2] == "24trend" and parts[-3] in CACHEDB_SUBDOMAINS:
         return raw
     elif len(parts) >= 2 and parts[-2] == "24trend":
-        rel_item = os.path.join("24trend", parts[-1])
-        base_dir = os.path.dirname(os.path.dirname(raw))
+        rel_item, base_dir = os.path.join("24trend", parts[-1]), os.path.dirname(os.path.dirname(raw))
     else:
-        rel_item = parts[-1]
-        base_dir = os.path.dirname(raw)
-    if not base_dir:
-        base_dir = "."
+        rel_item, base_dir = parts[-1], os.path.dirname(raw)
+    base_dir = base_dir or "."
     sub = resolve_cache_subdomain(rel_item)
     if not sub:
         return raw
@@ -269,30 +209,20 @@ def resolve_cachedb_filepath(path: object) -> object:
     sub_dir = os.path.join(base_dir, *sub.split("/"))
     sub_path = os.path.join(sub_dir, rel_item)
     legacy_sys_path = os.path.join(base_dir, "system", rel_item) if sub == "system/heartbeat" else ""
-    if os.path.isdir(sub_dir):
+    sub_dir_exists = os.path.isdir(sub_dir)
+    if sub_dir_exists:
         for old_p in (flat_path, legacy_sys_path):
             if old_p and os.path.isfile(old_p) and not os.path.exists(sub_path):
                 try:
                     os.makedirs(os.path.dirname(sub_path), exist_ok=True)
                     os.replace(old_p, sub_path)
-                    for sfx in (".previous", ".meta"):
-                        if os.path.isfile(old_p + sfx) and not os.path.exists(sub_path + sfx):
-                            os.replace(old_p + sfx, sub_path + sfx)
+                    _move_sidecars(old_p, sub_path)
                 except OSError:
                     pass
-        if not os.path.exists(sub_path) and not os.path.exists(sub_path + ".previous"):
-            if legacy_sys_path and (os.path.exists(legacy_sys_path) or os.path.exists(legacy_sys_path + ".previous")):
-                return legacy_sys_path
-            if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
-                return flat_path
-        return sub_path
-    if os.path.exists(sub_path) or os.path.exists(sub_path + ".previous"):
-        return sub_path
-    if legacy_sys_path and (os.path.exists(legacy_sys_path) or os.path.exists(legacy_sys_path + ".previous")):
-        return legacy_sys_path
-    if os.path.exists(flat_path) or os.path.exists(flat_path + ".previous"):
-        return flat_path
-    return raw
+    for cand_p in (sub_path, legacy_sys_path, flat_path):
+        if _exists_with_prev(cand_p):
+            return cand_p
+    return sub_path if sub_dir_exists else raw
 
 
 def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]:
@@ -306,9 +236,6 @@ def ensure_cachedb_subdomains(cachedb_dir: str | None = None) -> tuple[str, ...]
     return tuple(created)
 
 
-STALE_STAGING_MAX_AGE_SEC: float = 300.0
-
-
 def _clean_stale_staging_in_dir(
     target_dir: str,
     *,
@@ -319,12 +246,11 @@ def _clean_stale_staging_in_dir(
         return
     now = time.time()
     for item in os.listdir(target_dir):
-        item_path = os.path.join(target_dir, item)
         if (
-            (item.startswith(".") and ".previous." in item)
-            or (item.startswith(".") and item.endswith(".tmp"))
+            (item.startswith(".") and (".previous." in item or item.endswith(".tmp")))
             or item == "test-artifacts"
         ):
+            item_path = os.path.join(target_dir, item)
             try:
                 if os.path.isdir(item_path) and not os.path.islink(item_path):
                     shutil.rmtree(item_path, ignore_errors=True)
@@ -332,6 +258,21 @@ def _clean_stale_staging_in_dir(
                     os.unlink(item_path)
             except OSError:
                 pass
+
+
+def _replace_or_discard_file(src: str, dst: str, *, is_jsonl: bool = False) -> None:
+    if not os.path.exists(dst):
+        os.replace(src, dst)
+        return
+    src_sz = os.path.getsize(src)
+    if is_jsonl:
+        should_replace = src_sz > os.path.getsize(dst)
+    else:
+        should_replace = src_sz > 0 and os.path.getmtime(src) >= os.path.getmtime(dst)
+    if should_replace:
+        os.replace(src, dst)
+    else:
+        os.unlink(src)
 
 
 def organize_cachedb_subdomains(
@@ -389,30 +330,13 @@ def organize_cachedb_subdomains(
                         c_dst = os.path.join(dst, child)
                         if os.path.isdir(c_src) and not os.path.islink(c_src):
                             shutil.rmtree(c_src, ignore_errors=True)
-                            continue
-                        if not os.path.exists(c_dst) or (
-                            os.path.getsize(c_src) > 0
-                            and os.path.getmtime(c_src) >= os.path.getmtime(c_dst)
-                        ):
-                            os.replace(c_src, c_dst)
                         else:
-                            os.unlink(c_src)
+                            _replace_or_discard_file(c_src, c_dst)
                     shutil.rmtree(src, ignore_errors=True)
-                elif os.path.exists(dst):
-                    src_size = os.path.getsize(src)
-                    dst_size = os.path.getsize(dst)
-                    if entry.endswith(".jsonl") or ".jsonl." in entry:
-                        # Never overwrite a larger JSONL archive with a smaller stray file
-                        if src_size > dst_size:
-                            os.replace(src, dst)
-                        else:
-                            os.unlink(src)
-                    elif src_size > 0 and os.path.getmtime(src) >= os.path.getmtime(dst):
-                        os.replace(src, dst)
-                    else:
-                        os.unlink(src)
                 else:
-                    os.replace(src, dst)
+                    _replace_or_discard_file(
+                        src, dst, is_jsonl=(entry.endswith(".jsonl") or ".jsonl." in entry)
+                    )
                 moved[sub].append(target_entry)
             except OSError:
                 pass
@@ -440,7 +364,7 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
     dirs = [dirname]
     norm_dir = dirname.replace("\\", "/")
     for sub in _SORTED_SUBDOMAINS:
-        if norm_dir.endswith("/" + sub) or norm_dir == sub:
+        if norm_dir.endswith(f"/{sub}") or norm_dir == sub:
             parent_dir = norm_dir[: -len(sub)].rstrip("/") or "."
             if parent_dir and parent_dir not in dirs:
                 dirs.append(parent_dir)
@@ -464,42 +388,20 @@ def legacy_filenames_for(filepath: str) -> tuple[str, ...]:
 
 def migrate_legacy_filename_if_needed(filepath: str) -> None:
     """Rename legacy pre-symmetry cache files in place when the new path is absent."""
-    raw = _clean_path_str(filepath)
-    if not raw:
-        return
-    filepath = raw
-    if os.path.exists(filepath) or os.path.exists(filepath + ".previous"):
+    filepath = _clean_path_str(filepath)
+    if not filepath or _exists_with_prev(filepath):
         return
     for legacy_path in legacy_filenames_for(filepath):
-        if not os.path.exists(legacy_path) and not os.path.exists(legacy_path + ".previous"):
+        if not _exists_with_prev(legacy_path):
             continue
         try:
             if os.path.exists(legacy_path):
                 os.replace(legacy_path, filepath)
-            if (
-                os.path.exists(legacy_path + ".meta")
-                and not os.path.exists(filepath + ".meta")
-            ):
-                os.replace(legacy_path + ".meta", filepath + ".meta")
-            if (
-                os.path.exists(legacy_path + ".previous")
-                and not os.path.exists(filepath + ".previous")
-            ):
-                os.replace(legacy_path + ".previous", filepath + ".previous")
-            for old_archive in glob.glob(glob.escape(legacy_path) + ".*.archive*"):
-                suffix = old_archive[len(legacy_path):]
-                new_archive = filepath + suffix
-                if not os.path.exists(new_archive):
-                    os.replace(old_archive, new_archive)
-            builtins.print(
-                f"[cacheManager][migration] renamed {legacy_path} -> {filepath}"
-            )
+            _move_sidecars(legacy_path, filepath, include_archives=True)
+            builtins.print(f"[cacheManager][migration] renamed {legacy_path} -> {filepath}")
             return
         except OSError as exc:
-            builtins.print(
-                f"[cacheManager][migration] failed renaming "
-                f"{legacy_path} -> {filepath}: {exc}"
-            )
+            builtins.print(f"[cacheManager][migration] failed renaming {legacy_path} -> {filepath}: {exc}")
 
 
 def get_cachedb_dir() -> str:
@@ -532,91 +434,50 @@ def cache_path(name: str) -> str:
 
 
 CACHE_QUOTE_SUFFIXES: tuple[str, ...] = (
-    "USDC",
-    "USDT",
-    "FDUSD",
-    "TUSD",
-    "BUSD",
-    "USD",
-    "EUR",
-    "RON",
-    "GBP",
+    "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "USD", "EUR", "RON", "GBP",
 )
-
 _BARE_STABLECOIN_BASES: frozenset[str] = frozenset({
-    "USDC",
-    "USDT",
-    "FDUSD",
-    "TUSD",
-    "BUSD",
-    "USDP",
-    "DAI",
-    "USDE",
-    "USDS",
-    "USD1",
-    "PYUSD",
-    "RLUSD",
-    "BFUSD",
-    "AEUR",
-    "EURI",
+    "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "USDP", "DAI",
+    "USDE", "USDS", "USD1", "PYUSD", "RLUSD", "BFUSD", "AEUR", "EURI",
 })
-
-
 _LEGACY_KRAKEN_X_BASES: frozenset[str] = frozenset({
     "XXBT", "XETH", "XXDG", "XXRP", "XLTC", "XXLM", "XZEC", "XXMR", "XETC", "XREP", "XMLN",
 })
-
 _KNOWN_T_OR_B_BASES: frozenset[str] = frozenset({
-    "SHIB",
-    "ABNB",
-    "NFTB",
-    "LAMB",
-    "SCHB",
-    "PNUT",
-    "GOAT",
-    "BRETT",
-    "BLAST",
-    "DRIFT",
-    "POPCAT",
-    "PROMPT",
-    "IOST",
-    "SCRT",
-    "DENT",
-    "ZENT",
-    "FORT",
-    "VIDT",
-    "XPRT",
-    "MSFT",
-    "RDDT",
-    "RIOT",
-    "IBIT",
-    "MSTRT",
+    "SHIB", "ABNB", "NFTB", "LAMB", "SCHB", "PNUT", "GOAT", "BRETT",
+    "BLAST", "DRIFT", "POPCAT", "PROMPT", "IOST", "SCRT", "DENT", "ZENT",
+    "FORT", "VIDT", "XPRT", "MSFT", "RDDT", "RIOT", "IBIT", "MSTRT",
 })
-
 _CANONICAL_BASE_ALIASES: dict[str, str] = {
-    "XBT": "BTC",
-    "XXBT": "BTC",
-    "XXBTZ": "BTC",
-    "XETH": "ETH",
-    "XETHZ": "ETH",
-    "XDG": "DOGE",
-    "XXDG": "DOGE",
-    "XXDGZ": "DOGE",
+    "XBT": "BTC", "XXBT": "BTC", "XXBTZ": "BTC",
+    "XETH": "ETH", "XETHZ": "ETH",
+    "XDG": "DOGE", "XXDG": "DOGE", "XXDGZ": "DOGE",
 }
 _CROSS_VENUE_BASE_EQUIVALENTS: dict[str, tuple[str, ...]] = {
-    "BTC": ("XBT",),
-    "XBT": ("BTC",),
-    "ETH": ("XETH",),
-    "XETH": ("ETH",),
-    "DOGE": ("XDG",),
-    "XDG": ("DOGE",),
+    "BTC": ("XBT",), "XBT": ("BTC",),
+    "ETH": ("XETH",), "XETH": ("ETH",),
+    "DOGE": ("XDG",), "XDG": ("DOGE",),
 }
-
-
 _KNOWN_USD_BASES_ENDING_IN_T_OR_B: frozenset[str] = frozenset({
     "XBT", "XXBT", "XXBTZ", "XAUT", "USDT", "ARB", "DOT", "BAT",
     "HOT", "NOT", "ACT", "FET", "APT", "CRB", "SUB", "GRT", "LPT",
 })
+_VENUE_ALIASES: dict[str, str] = {
+    "bin": "binance", "binance_spot": "binance", "binancespot": "binance",
+    "krk": "kraken", "kraken_spot": "kraken", "krakenspot": "kraken",
+    "hl": "hyperliquid", "hyper_liquid": "hyperliquid",
+    "hyperliquid_spot": "hyperliquid", "hyperliquidspot": "hyperliquid",
+    "trading212": "t212", "trading_212": "t212", "212trading": "t212", "212": "t212",
+}
+_USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
+
+
+def _has_xstock_lowercase_x(token: str) -> bool:
+    return len(token) > 2 and token.endswith("x") and token[:-1].isalnum() and token[:-1].isupper()
+
+
+def _is_eq_suffix(sym_u: str) -> bool:
+    return sym_u.endswith(("_EQ", "_US_EQ"))
 
 
 def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
@@ -625,10 +486,7 @@ def _is_false_tusd_or_busd_match(token: str, quote: str) -> bool:
     or 'B' (e.g. ARBUSD, CRBUSD, SUBUSD)."""
     if quote not in ("TUSD", "BUSD"):
         return False
-    # If stripping TUSD/BUSD leaves <= 2 characters (e.g. XBTUSD -> XB, ARBUSD -> AR, DOTUSD -> DO, BATUSD -> BA),
-    # this is a USD pair whose base ends in T or B, not a TUSD/BUSD pair.
-    stem_len = len(token) - len(quote)
-    if stem_len < 3:
+    if len(token) - len(quote) < 3:
         return True
     if token.endswith("USD"):
         stem_usd = token[:-3]
@@ -672,69 +530,41 @@ def normalize_cache_base_asset(symbol: object) -> str:
     if not isinstance(symbol, str):
         return ""
     raw = symbol.strip()
-    s = raw.upper()
-    if not s:
+    if not raw:
         return ""
-    cleaned = clean_symbol_key(s)
-    if cleaned == "USDCUSDT":
+    if clean_symbol_key(raw) == "USDCUSDT":
         return "USDCUSDT"
-    if "/" in raw:
-        raw_base = raw.split("/", 1)[0].strip()
-    elif "-" in raw:
-        raw_base = raw.split("-", 1)[0].strip()
-    elif "_" in raw:
-        raw_base = raw.split("_", 1)[0].strip()
-    else:
-        raw_base = raw
-    # Strip lowercase 'x' xStock marker before quote or end (e.g. SPCXx, SPCXx/USD, SPCXxUSD)
+    raw_base = raw
+    for sep in ("/", "-", "_"):
+        if sep in raw:
+            raw_base = raw.split(sep, 1)[0].strip()
+            break
     for quote in CACHE_QUOTE_SUFFIXES:
         if _is_false_tusd_or_busd_match(raw_base.upper(), quote):
             continue
         if raw_base.upper().endswith(quote) and len(raw_base) > len(quote) + 2:
             stem = raw_base[: -len(quote)]
-            if stem.endswith("x") and stem[:-1].isalnum() and stem[:-1].isupper():
+            if _has_xstock_lowercase_x(stem):
                 raw_base = stem[:-1] + quote
             break
-    if raw_base.endswith("x") and len(raw_base) > 2 and raw_base[:-1].isalnum() and raw_base[:-1].isupper():
+    if _has_xstock_lowercase_x(raw_base):
         raw_base = raw_base[:-1]
     s = _strip_kraken_asset_suffixes(raw_base.upper())
     if s.endswith("USEQ") and len(s) > 4:
         s = s[:-4]
     elif s not in _BARE_STABLECOIN_BASES:
         for quote in CACHE_QUOTE_SUFFIXES:
-            if _is_false_tusd_or_busd_match(s, quote):
-                continue
-            if s.endswith(quote) and len(s) > len(quote):
+            if not _is_false_tusd_or_busd_match(s, quote) and s.endswith(quote) and len(s) > len(quote):
                 s = s[: -len(quote)]
                 break
     s = _strip_kraken_asset_suffixes(s)
     if (len(s) == 5 and s.startswith("X") and s.endswith("Z") and s[:-1] in _LEGACY_KRAKEN_X_BASES) or s in {"XBTZ", "XDGZ"}:
         s = s[:-1]
-    if s == "XXBT":
-        return "XBT"
-    if s == "XXDG":
-        return "XDG"
+    if s in {"XXBT", "XXDG"}:
+        return s[1:]
     if s in _LEGACY_KRAKEN_X_BASES:
         return s[1:]
     return s
-
-
-_VENUE_ALIASES: dict[str, str] = {
-    "bin": "binance",
-    "binance_spot": "binance",
-    "binancespot": "binance",
-    "krk": "kraken",
-    "kraken_spot": "kraken",
-    "krakenspot": "kraken",
-    "hl": "hyperliquid",
-    "hyper_liquid": "hyperliquid",
-    "hyperliquid_spot": "hyperliquid",
-    "hyperliquidspot": "hyperliquid",
-    "trading212": "t212",
-    "trading_212": "t212",
-    "212trading": "t212",
-    "212": "t212",
-}
 
 
 def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
@@ -749,9 +579,7 @@ def normalize_venue_name(venue: object, default: str | None = "") -> str | None:
         if isinstance(venue, bool) or not isinstance(venue, str):
             return default
     v = venue.strip().lower().replace("-", "_").replace(" ", "_")
-    if not v:
-        return default
-    return _VENUE_ALIASES.get(v, v)
+    return _VENUE_ALIASES.get(v, v) if v else default
 
 
 def canonical_base_asset(symbol: object) -> str:
@@ -783,7 +611,7 @@ def split_symbol_assets(symbol: object) -> tuple[str, str] | None:
             return normalize_cache_base_asset(base_raw), quote
     if sym_u.endswith(("X.T", ".T", ".F", ".S")) and len(sym_u) > 3:
         return normalize_cache_base_asset(raw), "USD"
-    if raw.endswith("x") and len(raw) > 2 and raw[:-1].isalnum() and raw[:-1].isupper():
+    if _has_xstock_lowercase_x(raw):
         return normalize_cache_base_asset(raw[:-1]), "USD"
     return None
 
@@ -817,9 +645,7 @@ def resolve_binance_lookup_symbol(symbol: object) -> str:
     if clean_symbol_key(s) == "USDCUSDT":
         return "USDCUSDT"
     base = canonical_base_asset(s)
-    if base:
-        return f"{base}USDT"
-    return s.replace("USDC", "USDT") if "USDC" in s else s
+    return f"{base}USDT" if base else (s.replace("USDC", "USDT") if "USDC" in s else s)
 
 
 def resolve_kraken_lookup_symbol(symbol: object) -> str:
@@ -865,16 +691,10 @@ def telemetry_cache_file_path(cache_dir: object, prefix: str, symbol: object) ->
     if not eff_dir or not isinstance(symbol, str) or not symbol.strip():
         return None
     raw_u = symbol.strip().upper()
-    if raw_u.endswith(("_EQ", "_US_EQ")) and raw_u.replace("_", "").isalnum():
-        safe_sym = raw_u
-    else:
-        safe_sym = clean_symbol_key(symbol)
+    safe_sym = raw_u if (_is_eq_suffix(raw_u) and raw_u.replace("_", "").isalnum()) else clean_symbol_key(symbol)
     if not safe_sym:
         return None
     return str(resolve_cachedb_filepath(os.path.join(eff_dir, f"{prefix}_{safe_sym}.json")))
-
-
-_USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 
 
 def compatible_quote_suffixes(
@@ -889,9 +709,7 @@ def compatible_quote_suffixes(
         parts = split_symbol_assets(symbol.strip().upper())
         if parts is not None and parts[1]:
             q_str = parts[1]
-    if not q_str or q_str in _USD_FAMILY_QUOTES:
-        return default_usd
-    return (q_str,)
+    return default_usd if (not q_str or q_str in _USD_FAMILY_QUOTES) else (q_str,)
 
 
 def cache_symbol_variants(
@@ -902,11 +720,9 @@ def cache_symbol_variants(
     quotes: tuple[str, ...] = ("USDC", "USDT", "USD", "EUR"),
 ) -> list:
     """Return ordered cross-venue symbol candidates for cache lookup."""
-    if not isinstance(symbol, str):
+    if not isinstance(symbol, str) or not symbol.strip():
         return [symbol] if include_original else []
     raw = symbol.strip().upper()
-    if not raw:
-        return [symbol] if include_original else []
     cleaned = clean_symbol_key(raw)
     variants: list = []
 
@@ -937,10 +753,9 @@ def cache_symbol_variants(
             if include_base:
                 _add(b)
             if include_usd_equities:
-                _add(f"{b}_US_EQ")
                 for xst_cand in (
-                    f"{b}x.T", f"{b}X.T", f"{b}X.T/USD", f"{b}X.TUSD",
-                    f"{b}x/USD", f"{b}xUSD", f"{b}/USDC", f"{b}/USD",
+                    f"{b}_US_EQ", f"{b}x.T", f"{b}X.T", f"{b}X.T/USD",
+                    f"{b}X.TUSD", f"{b}x/USD", f"{b}xUSD", f"{b}/USDC", f"{b}/USD",
                 ):
                     _add(xst_cand)
     return variants
@@ -950,24 +765,14 @@ def _extract_live_prices_map(live_prices: object) -> dict[str, float]:
     """Normalize a cache_current_price payload, prices_and_trends dict, or raw symbol->price map."""
     if not isinstance(live_prices, dict) or not live_prices:
         return {}
-    from botcore import extract_current_price_item, safe_pos_float
+    from botcore import extract_current_price_item
 
     src = live_prices.get("items") if isinstance(live_prices.get("items"), dict) else live_prices
-    if not isinstance(src, dict):
-        return {}
-    out: dict[str, float] = {}
-    for raw_k, raw_v in src.items():
-        if not isinstance(raw_k, str) or not raw_k.strip():
-            continue
-        sym_u = raw_k.strip().upper()
-        px = safe_pos_float(raw_v, default=None) if isinstance(raw_v, (int, float)) else None
-        if px is None and isinstance(raw_v, dict):
-            px = safe_pos_float(raw_v.get("price"), default=None)
-        if px is None:
-            px = extract_current_price_item(raw_v)
-        if px is not None and px > 0.0:
-            out[sym_u] = float(px)
-    return out
+    return {
+        raw_k.strip().upper(): float(px)
+        for raw_k, raw_v in (src.items() if isinstance(src, dict) else ())
+        if isinstance(raw_k, str) and raw_k.strip() and (px := extract_current_price_item(raw_v)) is not None
+    }
 
 
 def compute_venue_nav_breakdown(
@@ -1001,32 +806,26 @@ def compute_venue_nav_breakdown(
         for key, entry in venue_balances_state.items():
             if not isinstance(key, str) or not isinstance(entry, dict):
                 continue
+            parts = key.split(":", 2)
+            v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
             if key.startswith("cash:"):
-                parts = key.split(":", 2)
-                v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
                 a_cand = entry.get("asset") or (parts[2] if len(parts) > 2 else "USD")
                 cash_items.append((f"{v_cand}:{a_cand}", {**entry, "venue": v_cand, "asset": a_cand}))
             elif key.startswith("pos:"):
-                parts = key.split(":", 2)
-                v_cand = entry.get("venue") or (parts[1] if len(parts) > 1 else "")
                 s_cand = entry.get("symbol") or (parts[2] if len(parts) > 2 else key)
                 pos_rows.append({**entry, "venue": v_cand, "symbol": s_cand})
 
     if isinstance(positions, (list, tuple)):
-        for p in positions:
-            if isinstance(p, dict):
-                pos_rows.append(p)
-
+        pos_rows.extend(p for p in positions if isinstance(p, dict))
     if isinstance(quote_cash, dict):
-        for ck, cv in quote_cash.items():
-            cash_items.append((str(ck or ""), cv))
+        cash_items.extend((str(ck or ""), cv) for ck, cv in quote_cash.items())
 
     def _matches_scope(v_name: str, sym_u: str = "") -> bool:
         if v_name in excl_set:
             return False
         if scope_norm not in ("equities", "crypto"):
             return True
-        is_eq = v_name == "t212" or sym_u.endswith(("_EQ", "_US_EQ"))
+        is_eq = v_name == "t212" or _is_eq_suffix(sym_u)
         return is_eq if scope_norm == "equities" else (not is_eq)
 
     grouped_pos: dict[tuple[str, str], list[dict]] = {}
@@ -1035,48 +834,47 @@ def compute_venue_nav_breakdown(
         sym_raw = str(p.get("symbol") or "").strip().upper()
         if not _matches_scope(v_name, sym_raw):
             continue
-        is_eq_p = sym_raw.endswith(("_EQ", "_US_EQ")) or v_name == "t212"
+        is_eq_p = _is_eq_suffix(sym_raw) or v_name == "t212"
         base_p = canonical_base_asset(p.get("base") or sym_raw) or sym_raw or f"IDX_{len(grouped_pos)}"
-        grp_k = (v_name, f"EQ:{base_p}" if is_eq_p else base_p)
-        grouped_pos.setdefault(grp_k, []).append(p)
+        grouped_pos.setdefault((v_name, f"EQ:{base_p}" if is_eq_p else base_p), []).append(p)
 
     def _lookup_live_px(sym_u: str) -> float | None:
         if not live_px_map or not sym_u:
             return None
         if sym_u in live_px_map:
             return live_px_map[sym_u]
-        if sym_u.endswith(("_EQ", "_US_EQ")):
+        if _is_eq_suffix(sym_u):
             return None
         for cand in cache_symbol_variants(sym_u, quotes=compatible_quote_suffixes(sym_u)):
-            if isinstance(cand, str) and not cand.endswith(("_EQ", "_US_EQ")) and cand in live_px_map:
+            if isinstance(cand, str) and not _is_eq_suffix(cand) and cand in live_px_map:
                 return live_px_map[cand]
         return None
 
     def _resolve_pos_free_usd(gp: dict) -> float:
         sym_u = str(gp.get("symbol") or "").strip().upper()
-        if (live_px := _lookup_live_px(sym_u)) is not None:
-            fb_live = safe_nonneg_float(gp.get("free_base"), None)
-            if fb_live is not None:
-                return round(fb_live * live_px, 2)
-        val_u = safe_nonneg_float(gp.get("value_usd"), None)
-        if val_u is not None:
+        if (live_px := _lookup_live_px(sym_u)) is not None and (
+            fb_live := safe_nonneg_float(gp.get("free_base"), None)
+        ) is not None:
+            return round(fb_live * live_px, 2)
+        if (val_u := safe_nonneg_float(gp.get("value_usd"), None)) is not None:
             return val_u
-        fb_v = safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0
-        px_v = safe_nonneg_float(gp.get("price"), 0.0) or 0.0
-        return round(fb_v * px_v, 2)
+        return round(
+            (safe_nonneg_float(gp.get("free_base"), 0.0) or 0.0)
+            * (safe_nonneg_float(gp.get("price"), 0.0) or 0.0),
+            2,
+        )
 
     def _resolve_pos_locked_usd(gp: dict) -> float:
         sym_u = str(gp.get("symbol") or "").strip().upper()
-        if (live_px := _lookup_live_px(sym_u)) is not None:
-            lb_live = safe_pos_float(gp.get("locked_base_qty"), None)
-            if lb_live is not None:
-                return round(lb_live * live_px, 2)
+        if (live_px := _lookup_live_px(sym_u)) is not None and (
+            lb_live := safe_pos_float(gp.get("locked_base_qty"), None)
+        ) is not None:
+            return round(lb_live * live_px, 2)
         return safe_nonneg_float(gp.get("locked_base_usd"), 0.0) or 0.0
 
     venue_pos_usd: dict[str, float] = {}
     grouped_positions_out: list[tuple[str, dict, float]] = []
     for (v_name, _), grp_list in grouped_pos.items():
-        p0 = grp_list[0]
         free_val_u = max((_resolve_pos_free_usd(gp) for gp in grp_list), default=0.0)
         locked_by_sym: dict[str, float] = {}
         for idx_g, gp in enumerate(grp_list):
@@ -1084,7 +882,7 @@ def compute_venue_nav_breakdown(
             locked_by_sym[s_g] = max(locked_by_sym.get(s_g, 0.0), _resolve_pos_locked_usd(gp))
         val_u = free_val_u + sum(locked_by_sym.values())
         venue_pos_usd[v_name] = venue_pos_usd.get(v_name, 0.0) + val_u
-        grouped_positions_out.append((v_name, p0, val_u))
+        grouped_positions_out.append((v_name, grp_list[0], val_u))
 
     dedup_cash: dict[tuple[str, str], tuple[float, float]] = {}
     for c_key, c in cash_items:
@@ -1122,10 +920,9 @@ def compute_venue_nav_breakdown(
         venue_locked_quote_usd[v_name] = venue_locked_quote_usd.get(v_name, 0.0) + l_u
         venue_cash_usd[v_name] = venue_cash_usd.get(v_name, 0.0) + f_u + l_u
 
-    all_venues = sorted(set(venue_pos_usd) | set(venue_cash_usd))
     venues_usd: dict[str, float] = {}
     venue_breakdown: dict[str, dict[str, float]] = {}
-    for v_k in all_venues:
+    for v_k in sorted(set(venue_pos_usd) | set(venue_cash_usd)):
         p_u = round(venue_pos_usd.get(v_k, 0.0), 2)
         fc_u = round(venue_free_cash_usd.get(v_k, 0.0), 2)
         lq_u = round(venue_locked_quote_usd.get(v_k, 0.0), 2)
@@ -1177,5 +974,3 @@ def compute_venue_nav_breakdown(
 
 if __name__ == "__main__":
     organize_cachedb_subdomains()
-
-
