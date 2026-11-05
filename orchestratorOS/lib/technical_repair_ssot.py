@@ -818,8 +818,12 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                             if (
                                 "account_cache_not_fresh" in cleaned
                                 or "account_cache_initializing" in cleaned
+                                or "account cache is not fresh" in cleaned
+                                or "account_cache_writer_not_running" in cleaned
                             ) and any(
-                                "apply_weight_limit" in lines[j] or bot_cycle_recovered_pattern.search(lines[j])
+                                "apply_weight_limit" in lines[j]
+                                or bot_cycle_recovered_pattern.search(lines[j])
+                                or daemon_recovered_pattern.search(lines[j])
                                 for j in range(idx + 1, total_lines)
                             ):
                                 continue
@@ -875,8 +879,15 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                 if idx >= tail_start_idx:
                                     st["unresolved_at_tail"] = True
                         elif guard_pattern.search(line):
-                            if "account_cache_initializing" in line and any(
-                                "apply_weight_limit" in lines[j] or bot_cycle_recovered_pattern.search(lines[j])
+                            if (
+                                "account_cache_not_fresh" in line
+                                or "account_cache_initializing" in line
+                                or "account cache is not fresh" in line
+                                or "account_cache_writer_not_running" in line
+                            ) and any(
+                                "apply_weight_limit" in lines[j]
+                                or bot_cycle_recovered_pattern.search(lines[j])
+                                or daemon_recovered_pattern.search(lines[j])
                                 for j in range(idx + 1, total_lines)
                             ):
                                 continue

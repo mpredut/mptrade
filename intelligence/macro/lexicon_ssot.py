@@ -355,6 +355,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "top stocks to",
     "value trap",
     "is it a bargain",
+    "is it a buy?",
     "running out of gas",
     "biggest stock losers",
     "biggest stock winners",
@@ -872,6 +873,8 @@ def is_excluded_reference_news_item(title: Any = "", source: Any = "", url: Any 
     src_l = str(source or "").strip().lower()
     if _is_editorial_clickbait_or_advice_title(title_l):
         return True
+    if "stocks making the biggest moves" in title_l and not has_tracked_equity_entity(title_s):
+        return True
     if url_l and ("/investingclub/" in url_l or "watch-options-action-live" in url_l):
         return True
     if ("yahoo! finance" in src_l or "feeds.finance.yahoo.com" in url_l) and title_s:
@@ -1046,8 +1049,8 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         return False
     if matched_fin and matched_fin <= {"attack", "attacks"} and (words & _NON_CRISIS_ATTACK_CONTEXT_WORDS) and not (words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
         return False
-    if matched_fin and matched_fin <= {"shares"} and not (
-        words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector", "nvda", "nvidia", "spcx", "spacex"}
+    if matched_fin and matched_fin <= {"shares", "stock"} and not has_tracked_equity_entity(title) and not (
+        words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
     ):
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"nintendo", "switch", "playstation", "xbox", "console", "ticket", "tickets", "menu", "grocery"}):

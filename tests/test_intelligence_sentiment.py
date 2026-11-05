@@ -4288,6 +4288,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         f'{clk_now} [unknown] [STDERR]   File "/app/macro_telemetry_collector.py", line 583, in harvest_macro_and_news_sensors\n'
         f"{clk_now} [unknown] [STDERR]     except Exception:\n"
         "UnboundLocalError: cannot access local variable 'datetime' where it is not associated with a value\n"
+        f"{clk_now} [BINANCE][GUARD] account cache is not fresh: account_cache_writer_not_running\n"
         f"[{clk_now}]   [STRAT] state loaded\n"
         "=== STRATEGIE KRAKEN PORNITA ===\n",
         encoding="utf-8",

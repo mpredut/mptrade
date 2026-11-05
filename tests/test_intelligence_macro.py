@@ -2286,6 +2286,22 @@ def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path,
     assert is_excluded_reference_news_item(
         "IonQ Wants to Be the Nvidia of Quantum. Its Latest Numbers Back Up the Swagger."
     ) is True
+    assert is_excluded_reference_news_item(
+        "Nvidia Stock Is Down Nearly 24% Ahead of Earnings: Is It a Buy?"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Stocks making the biggest moves after hours: DraftKings, Cloudflare, Airbnb, Atlassian & more"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Stocks making the biggest moves after hours: Nvidia, Cloudflare, Airbnb & more"
+    ) is False
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    assert has_financial_or_geopolitical_context(
+        "Here's what's driving Iren's stock higher after a brutal selloff"
+    ) is False
+    assert has_financial_or_geopolitical_context(
+        "Here's what's driving Nvidia's stock higher after a brutal selloff"
+    ) is True
 
 
 
