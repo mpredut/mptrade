@@ -906,6 +906,7 @@ from intelligence.macro.lexicon_ssot import (
     headline_content_stems,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
+    is_off_topic_general_news_title,
     load_dynamic_lexicon,
     match_high_severity_keywords,
     record_dynamic_crisis_terms_from_assessment,

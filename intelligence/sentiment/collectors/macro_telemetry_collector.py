@@ -27,6 +27,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_book_url,
     headlines_are_semantic_duplicates,
     is_excluded_reference_news_item,
+    is_off_topic_general_news_title,
     normalize_epoch_sec,
     obj_attr,
     read_first_cached_dict,
@@ -457,7 +458,14 @@ def harvest_macro_and_news_sensors(
                     break
             if not merged_dup:
                 valid_news.append(cand_entry)
-        valid_news.sort(key=lambda x: (1 if x.get("is_high_severity") else 0, safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0), reverse=True)
+        valid_news.sort(
+            key=lambda x: (
+                1 if x.get("is_high_severity") else 0,
+                0 if is_off_topic_general_news_title(x.get("title")) else 1,
+                safe_pos_float(x.get("first_seen_ts"), default=0.0) or 0.0,
+            ),
+            reverse=True,
+        )
         for item in valid_news[:6]:
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             raw_title = str(item.get("title") or "")

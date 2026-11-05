@@ -177,30 +177,36 @@ def _token_matches_crisis_stem(tok: str, crisis_stems: Set[str]) -> bool:
 
 
 _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
-    "acknowledge", "acknowledges", "adds", "admit", "admits", "affecting",
-    "ahead", "allegedly", "already", "answered", "apparently", "apps", "arrested",
-    "article", "articles", "baseball", "bat", "blame", "blamed", "blames",
-    "blaming", "boy", "brake", "briefing", "bus", "calls", "car", "carried",
-    "carries", "caused", "chip", "commentary", "concede", "concedes", "conduct",
-    "conducted", "conducts", "continue", "continues", "criticize", "criticized",
-    "criticizes", "debunked", "defensive", "digested", "discourse", "discount",
-    "discounts", "downscale", "eight", "elevated", "essay", "essays", "eve",
-    "exceptionally", "exists", "expert", "experts", "explained", "exposes",
-    "faces", "facing", "false", "features", "five", "four", "functioning",
-    "golf", "headlines", "highlights", "history", "horrific", "hurt",
-    "institute", "introduces", "involvement", "island", "jet", "join", "keyword",
-    "landing", "latest", "limited", "links", "liv", "localized", "loser",
-    "losers", "losses", "media", "midterm", "midterms", "moderate", "narrative",
-    "nine", "non", "normal", "noting", "official", "officials", "one", "orderly",
-    "peacefully", "plane", "played", "political", "position", "post", "potential",
-    "prices", "processed", "progress", "pursues", "qeshm", "questions", "rather",
-    "readiness", "record", "reported", "reportedly", "represent", "researchers",
-    "reshapes", "retaining", "rhetoric", "role", "routine", "say", "seven",
-    "showdown", "six", "sizing", "somalia", "story", "striker", "study",
-    "suspected", "targets", "ten", "tenerife", "three", "timeline", "trace",
-    "traced", "train", "trains", "truck", "two", "uganda", "uncertainty",
-    "unpriced", "veto", "victim", "victims", "volunteer", "withdrawing", "worse",
-    "wrap",
+    "acknowledge", "acknowledges", "active", "adds", "admit", "admits",
+    "adverse", "affecting", "ahead", "airfares", "alerts", "allegedly",
+    "already", "amid", "answered", "app", "apparently", "apps", "arrested",
+    "article", "articles", "baseball", "bat", "belgium", "blame", "blamed",
+    "blames", "blaming", "bondi", "boy", "brake", "breaking", "briefing",
+    "bus", "calls", "car", "carried", "carries", "caused", "chip",
+    "commentary", "concede", "concedes", "conduct", "conducted", "conducts",
+    "continue", "continues", "criticize", "criticized", "criticizes",
+    "damaged", "debunked", "defensive", "digested", "discourse", "discount",
+    "discounts", "downscale", "efforts", "eight", "elevated", "end", "essay",
+    "essays", "eve", "exceptionally", "exists", "expert", "experts",
+    "expiration", "explained", "exposes", "faces", "facing", "false", "fare",
+    "features", "five", "fleet", "florida", "four", "fresh", "functioning",
+    "golf", "headlines", "heighten", "highlights", "history", "horrific",
+    "humanitarian", "hurt", "intel", "institute", "introduces", "involvement",
+    "island", "jet", "join", "keyword", "landing", "latest", "limited",
+    "links", "liv", "localized", "loser", "losers", "losses", "media",
+    "members", "midterm", "midterms", "mobile", "moderate", "mutual",
+    "narrative", "nine", "non", "normal", "noting", "official", "officials",
+    "one", "orderly", "peacefully", "physical", "plane", "played", "political",
+    "position", "post", "potential", "prices", "processed", "progress",
+    "pursues", "qeshm", "questions", "rather", "readiness", "record",
+    "renewed", "reported", "reportedly", "represent", "researchers",
+    "reshapes", "retaining", "rhetoric", "role", "routine", "ryanair", "say",
+    "seven", "showdown", "six", "sizing", "somalia", "south", "story",
+    "striker", "study", "suspected", "sweden", "tactical", "targets",
+    "techspot", "ten", "tenerife", "three", "timeline", "trace", "traced",
+    "train", "trains", "truck", "two", "uganda", "uncertainty", "unpriced",
+    "veto", "victim", "victims", "volunteer", "withdrawing", "workers",
+    "worse", "wrap",
 })
 
 
@@ -755,6 +761,46 @@ def headline_content_stems(title: Any) -> Set[str]:
     return stems
 
 
+_GENERIC_HEADLINE_OVERLAP_STEMS: frozenset[str] = frozenset({
+    "after", "amid", "attack", "call", "day", "end", "first", "fresh", "global",
+    "market", "new", "news", "over", "plan", "price", "report", "said", "say",
+    "show", "stock", "strike", "talk", "time", "update", "war", "warn", "week",
+    "world", "year",
+})
+
+_OFF_TOPIC_TABLOID_WORDS: frozenset[str] = frozenset({
+    "cards", "celebrity", "cereal", "concert", "dylan", "farmers", "festival",
+    "match", "movie", "music", "olive", "player", "players", "recipe",
+    "recipes", "red", "singer", "song", "storm", "weather", "yacht",
+})
+
+_FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
+    _BROAD_MARKET_INDEX_CONTEXT_WORDS
+    | _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS
+    | frozenset({
+        "bank", "banks", "bond", "bonds", "central", "chip", "chips", "cpi",
+        "currency", "debt", "dollar", "economy", "economic", "energy", "etf",
+        "exports", "fed", "fomc", "gas", "gdp", "gold", "imports", "inflation",
+        "interest", "investor", "investors", "jobs", "liquidity", "loan",
+        "loans", "macro", "opec", "payroll", "payrolls", "pce", "policy",
+        "powell", "price", "prices", "rate", "rates", "recession", "reserve",
+        "retail", "sec", "semiconductor", "semiconductors", "shares", "supply",
+        "tariff", "tariffs", "tax", "taxes", "tech", "trade", "trading",
+        "treasuries", "unemployment", "yield", "yields",
+    })
+)
+
+
+def is_off_topic_general_news_title(title: Any) -> bool:
+    """Return True if a headline is sports/wildlife/entertainment/weather filler without macro or market relevance."""
+    if not isinstance(title, str) or not title.strip():
+        return False
+    words = set(re.findall(r"[a-z]{3,}", _strip_headline_publisher_suffix(title).lower()))
+    if not words or (words & _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS):
+        return False
+    return bool(words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS))
+
+
 def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     """Return True if two headlines represent syndicated rewrites of the same underlying news story."""
     stems_a = headline_content_stems(title_a)
@@ -767,7 +813,9 @@ def headlines_are_semantic_duplicates(title_a: Any, title_b: Any) -> bool:
     if len(shared) < 4:
         return False
     overlap = len(shared) / float(min(len(stems_a), len(stems_b)))
-    return overlap >= 0.60
+    if overlap >= 0.60:
+        return True
+    return overlap >= 0.40 and len(shared - _GENERIC_HEADLINE_OVERLAP_STEMS) >= 3
 
 
 HIGH_SEVERITY_KEYWORDS: Tuple[str, ...] = ()

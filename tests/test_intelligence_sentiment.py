@@ -6368,3 +6368,128 @@ def test_geopolitical_zero_high_sev_digest_reset_and_false_positive_shield_clean
     assert sensors["geopolitical_threat"]["headlines_digest"] == ""
 
 
+def test_position_peak_24h_reconciliation_and_semantic_dup_and_offtopic_news(tmp_path):
+    import time as _time
+    from intelligence.macro_sentiment_ssot import (
+        _is_noise_dynamic_keyword,
+        headlines_are_semantic_duplicates,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+
+    # 1. Held positions with missing or un-warmed trailing_peak (equal to active_avg_buy_px) and age >= 12h
+    #    reconcile trailing_peak and cycle pos_peak with high_24h and last_sell_px
+    now_ms = int(_time.time() * 1000)
+    old_buy_ts = now_ms - 48 * 3600 * 1000
+    recent_sell_ts = now_ms - 13 * 3600 * 1000
+    positions = [
+        {
+            "venue": "kraken",
+            "symbol": "TAOUSD",
+            "base": "TAO",
+            "quote": "USD",
+            "free_base": 3.7024,
+            "price": 234.9376,
+            "trailing_peak": 235.7411,
+        },
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "base": "HYPE",
+            "quote": "USDC",
+            "free_base": 15.5746,
+            "price": 83.5255,
+            "trailing_peak": None,
+        },
+    ]
+    prices_and_trends = {
+        "TAOUSD": {"price": 234.9376, "high_24h": 240.1108, "low_24h": 220.502},
+        "HYPEUSDC": {"price": 83.5255, "high_24h": 88.7365, "low_24h": 83.400},
+    }
+    venue_ro = {
+        "kraken": {
+            "TAOUSD": {
+                "last_action_side": "BUY",
+                "active_avg_buy_px": 235.741094,
+                "last_buy": {"price": 235.741094, "qty": 3.7024, "ts_ms": old_buy_ts},
+                "open_lots": [{"qty": 3.7024, "entry_px": 235.741094, "ts_ms": old_buy_ts}],
+            }
+        },
+        "hyperliquid": {
+            "HYPEUSDC": {
+                "last_action_side": "BUY",
+                "active_avg_buy_px": 85.658865,
+                "last_buy": {"price": 83.8, "qty": 5.75, "ts_ms": now_ms - 8 * 3600 * 1000},
+                "last_sell": {"price": 88.0, "qty": 5.68, "ts_ms": recent_sell_ts},
+                "open_lots": [
+                    {"qty": 9.8246, "entry_px": 86.75, "ts_ms": old_buy_ts},
+                    {"qty": 5.75, "entry_px": 83.8, "ts_ms": now_ms - 8 * 3600 * 1000},
+                ],
+            }
+        },
+    }
+    krk_cycles = {"TAOUSD": {"qty": 3.7024, "avg_cost_px": 235.741094, "pos_peak": None}}
+    hl_cycles = {"HYPEUSDC": {"qty": 15.5746, "avg_cost_px": 85.658865, "pos_peak": None}}
+    enrich_positions_with_orders_and_cycles(
+        positions,
+        prices_and_trends,
+        {},
+        venue_ro,
+        {},
+        krk_cycles,
+        hl_cycles,
+        {},
+        {},
+    )
+    assert positions[0]["trailing_peak"] == 240.1108
+    assert krk_cycles["TAOUSD"]["pos_peak"] == 240.1108
+    assert positions[0]["dd_from_peak_pct"] < 0.0
+    assert positions[1]["trailing_peak"] == 88.7365
+    assert hl_cycles["HYPEUSDC"]["pos_peak"] == 88.7365
+    assert positions[1]["dd_from_peak_pct"] < 0.0
+
+    # 2. Syndicated partisan rewrites sharing >= 3 specific entity stems and >= 0.40 overlap are deduplicated
+    assert headlines_are_semantic_duplicates(
+        "JD Vance Breaks With Trump on Iran War and Israel, Positions Himself Ahead of 2028",
+        "Vance walks Trump tightrope with scathing election critique blaming Iran war",
+    )
+    assert not headlines_are_semantic_duplicates(
+        "Iran war sends crude oil above $95 in London trading",
+        "Iran war threatens global shipping lanes in Red Sea",
+    )
+
+    # 3. Off-topic sports/tabloid filler is deprioritized behind financial/geopolitical news when selecting top 6
+    assert is_off_topic_general_news_title("World record 53 red cards shown in Brazil football match")
+    assert not is_off_topic_general_news_title("Inside the chip talent war: Trade secrets and rising Chinese rivals")
+    c_dir = tmp_path / "cachedb_news_rank"
+    c_dir.mkdir(parents=True, exist_ok=True)
+    now_s = 1_793_852_000.0
+    (c_dir / "news_feed_collect.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"title": "World record 53 red cards shown in Brazil football match", "source": "BBC", "first_seen_ts": now_s - 60},
+                    {"title": "JD Vance Breaks With Trump on Iran War and Israel, Positions Himself Ahead of 2028", "source": "NYT", "first_seen_ts": now_s - 120},
+                    {"title": "Vance walks Trump tightrope with scathing election critique blaming Iran war", "source": "The Hill", "first_seen_ts": now_s - 180},
+                    {"title": "Americans are turning on the Iran war", "source": "Yahoo", "first_seen_ts": now_s - 240},
+                    {"title": "Inside the chip talent war: Trade secrets and rising Chinese rivals", "source": "CNBC", "first_seen_ts": now_s - 300},
+                    {"title": "Stock futures are little changed after big rally as traders monitor oil prices", "source": "CNBC", "first_seen_ts": now_s - 360},
+                    {"title": "Treasury yields hold steady ahead of consumer inflation report", "source": "Reuters", "first_seen_ts": now_s - 420},
+                    {"title": "Central banks weigh interest rate cuts amid slowing global trade", "source": "FT", "first_seen_ts": now_s - 480},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    _, top_news = harvest_macro_and_news_sensors(str(c_dir), now_s)
+    top_titles = [n["title"] for n in top_news]
+    assert len(top_titles) == 6
+    assert "World record 53 red cards shown in Brazil football match" not in top_titles
+    assert sum(1 for t in top_titles if "Vance" in t) == 1
+
+    # 4. Meta/adjective noise bigrams are rejected by _is_noise_dynamic_keyword
+    for bad_bg in ("end iran", "amid iran", "war fresh", "shock breaking", "alerts hacked", "ryanair freeze"):
+        assert _is_noise_dynamic_keyword(bad_bg) is True
+
+

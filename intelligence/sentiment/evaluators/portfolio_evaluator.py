@@ -1,6 +1,7 @@
 """Stateless order-lot accounting (FIFO/LIFO), venue DCA cycle state parsing, and position cost-basis reconciliation evaluators."""
 from __future__ import annotations
 
+import time as _time
 from typing import Any, Dict, List, Optional
 
 from cachepaths import (
@@ -961,6 +962,26 @@ def enrich_positions_with_orders_and_cycles(
                 low_buy_px = min(low_buy_px, lb_px) if low_buy_px > 0 else lb_px
             if low_buy_px > 0 and not is_flat_after_exit:
                 set_pos_anchor(pos, "lowest_buy_px", "pnl_vs_lowest_buy_pct", low_buy_px, pos_px_f)
+            if held_cur > 1e-8 and not is_flat_balance and not is_flat_after_exit and pos_px_f > 0.0:
+                open_lot_ts_vals = [
+                    t for x in open_lots
+                    if isinstance(x, dict) and (t := int(safe_pos_float(x.get("ts_ms"), default=0) or 0)) > 0
+                ]
+                oldest_pos_ts = min(open_lot_ts_vals) if open_lot_ts_vals else newest_lot_ts
+                pos_age_ms = (int(_time.time() * 1000) - oldest_pos_ts) if oldest_pos_ts > 0 else 0
+                cur_pk = safe_pos_float(pos.get("trailing_peak"), default=None)
+                act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
+                pk_is_missing_or_unwarmed = cur_pk is None or (
+                    act_avg_pk is not None and abs(cur_pk - act_avg_pk) <= max(1e-6, max(cur_pk, act_avg_pk) * 1e-5)
+                )
+                if pk_is_missing_or_unwarmed and 12 * 3600 * 1000 <= pos_age_ms <= 90 * 86400 * 1000:
+                    pt_entry = prices_and_trends.get(p_sym)
+                    hi_24h = safe_pos_float(pt_entry.get("high_24h") if isinstance(pt_entry, dict) else None, default=0.0) or 0.0
+                    ls_ts_ms = int(safe_pos_float(ls.get("ts_ms") if isinstance(ls, dict) else 0, default=0) or 0)
+                    ls_px_pk = (safe_pos_float(pos.get("last_sell_px"), default=0.0) or 0.0) if ls_ts_ms >= oldest_pos_ts else 0.0
+                    if hi_24h > 0.0 and not _prices_diverged(pos_px_f, hi_24h):
+                        seed_pk = max(hi_24h, ls_px_pk, pos_px_f, cur_pk or 0.0, act_avg_pk or 0.0)
+                        set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", seed_pk, pos_px_f, overwrite=True)
         for cyc_map in {"hyperliquid": (hyperliquid_cycles,), "t212": (t212_cycles,), "kraken": (kraken_cycles,)}.get(p_venue, ()):
             cyc = next((val for cand in (p_sym, *p_quote_variants) if isinstance((val := casefold_get(cyc_map, cand)), dict)), None)
             if not isinstance(cyc, dict):
@@ -992,8 +1013,10 @@ def enrich_positions_with_orders_and_cycles(
                     if pos_px_f > 0.0:
                         cyc["pnl_vs_avg_pct"] = pct_delta(pos_px_f, eff_avg_cost)
                         cyc["dd_pct"] = cyc["pnl_vs_avg_pct"]
-                if pos_px_f > 0.0 and (c_peak := safe_pos_float(cyc.get("pos_peak") or pos.get("trailing_peak"), default=None)) is not None:
-                    eff_peak = max(c_peak, pos_px_f)
+                c_pk_val = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+                p_pk_val = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+                if pos_px_f > 0.0 and max(c_pk_val, p_pk_val) > 0.0:
+                    eff_peak = max(c_pk_val, p_pk_val, pos_px_f)
                     cyc["pos_peak"] = round(eff_peak, 6)
                     cyc["dd_from_peak_pct"] = pct_delta(pos_px_f, eff_peak)
             if pos.get("free_base") is None and cyc_qty is not None:
@@ -1037,7 +1060,12 @@ def enrich_positions_with_orders_and_cycles(
                     if eff_act_avg is None or abs(sw_avg_c - eff_act_avg) / max(eff_act_avg, 1e-9) >= 0.002:
                         set_pos_anchor(pos, "swing_subcycle_avg_px", "pnl_vs_swing_avg_pct", sw_avg_c, pos_px_f)
                 set_pos_anchor(pos, "cycle_avg_cost_px", "pnl_vs_cycle_cost_pct", cyc.get("avg_cost_px"), pos_px_f, overwrite=False)
-                set_pos_anchor(pos, "trailing_peak", "dd_from_peak_pct", cyc.get("pos_peak"), pos_px_f, overwrite=False)
+                c_pk_sync = safe_pos_float(cyc.get("pos_peak"), default=0.0) or 0.0
+                p_pk_sync = safe_pos_float(pos.get("trailing_peak"), default=0.0) or 0.0
+                if c_pk_sync > 0.0:
+                    set_pos_anchor(
+                        pos, "trailing_peak", "dd_from_peak_pct", max(c_pk_sync, p_pk_sync), pos_px_f, overwrite=(c_pk_sync > p_pk_sync)
+                    )
             set_pos_anchor(pos, "last_buy_px", "pnl_vs_last_buy_pct", cyc.get("last_buy_price"), pos_px_f, overwrite=False)
             set_pos_anchor(pos, "last_sell_px", "chg_vs_last_sell_pct", cyc.get("last_sell_price"), pos_px_f, overwrite=False)
             has_ro_buys = isinstance(ro, dict) and bool(ro.get("recent_buys"))
