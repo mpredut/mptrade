@@ -5954,4 +5954,97 @@ def test_parse_cited_taker_ratio_key_risks_and_guard_bypass_notice(tmp_path):
     assert pre_hype["Orderbook Depth Imbalance"] == "0.62 (62% bids vs 38% asks)"
 
 
+def test_bugs_99_to_102_breadth_exclusions_btc_vol_share_neg_zero_benchmarks_and_suppressed_growth_trend(tmp_path):
+    import json
+    from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthCollector
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+    from intelligence.sentiment.evaluators.price_series_evaluator import _compute_short_slopes_from_series
+
+    # Bug 99 & Bug 100: MarketBreadthCollector excludes tokenized equities/ETFs (MSTRBUSDT, SOXLBUSDT),
+    # newer stablecoins (USD1USDT), and leveraged tokens (BTCUPUSDT), does NOT falsely exclude NEURUSDT,
+    # and includes BTCFDUSD / ETHFDUSD volume in btc_vol_usd / eth_vol_usd rather than altcoin volume.
+    tickers = [
+        {"symbol": "BTCUSDT", "lastPrice": "80000.0", "priceChangePercent": "2.0", "quoteVolume": "100000000.0"},
+        {"symbol": "BTCFDUSD", "lastPrice": "80010.0", "priceChangePercent": "2.0", "quoteVolume": "100000000.0"},
+        {"symbol": "ETHUSDT", "lastPrice": "2500.0", "priceChangePercent": "3.0", "quoteVolume": "50000000.0"},
+        {"symbol": "ETHFDUSD", "lastPrice": "2501.0", "priceChangePercent": "3.0", "quoteVolume": "50000000.0"},
+        {"symbol": "SOLUSDT", "lastPrice": "150.0", "priceChangePercent": "8.5", "quoteVolume": "40000000.0"},
+        {"symbol": "TAOUSDT", "lastPrice": "240.0", "priceChangePercent": "6.2", "quoteVolume": "30000000.0"},
+        {"symbol": "NEURUSDT", "lastPrice": "0.05", "priceChangePercent": "5.1", "quoteVolume": "20000000.0"},
+        {"symbol": "ARBUSDT", "lastPrice": "0.15", "priceChangePercent": "-3.4", "quoteVolume": "10000000.0"},
+        {"symbol": "MSTRBUSDT", "lastPrice": "350.0", "priceChangePercent": "15.0", "quoteVolume": "25000000.0"},
+        {"symbol": "SOXLBUSDT", "lastPrice": "28.0", "priceChangePercent": "-18.0", "quoteVolume": "25000000.0"},
+        {"symbol": "USD1USDT", "lastPrice": "1.0", "priceChangePercent": "0.01", "quoteVolume": "50000000.0"},
+        {"symbol": "BTCUPUSDT", "lastPrice": "12.0", "priceChangePercent": "22.0", "quoteVolume": "20000000.0"},
+    ]
+    snap = MarketBreadthCollector.parse_tickers(tickers, min_volume_usd=5_000_000.0, now_ts=1_776_000_000.0)
+    assert snap is not None
+    gainer_syms = [s for s, _ in snap.top_gainers]
+    loser_syms = [s for s, _ in snap.top_losers]
+    assert "MSTRBUSDT" not in gainer_syms
+    assert "BTCUPUSDT" not in gainer_syms
+    assert "SOXLBUSDT" not in loser_syms
+    assert "NEURUSDT" in gainer_syms
+    # Total eligible crypto vol = 100M (BTCUSDT) + 100M (BTCFDUSD) + 50M (ETHUSDT) + 50M (ETHFDUSD) + 100M (alts) = 400M
+    assert snap.btc_vol_share_pct == 50.0
+    assert snap.eth_vol_share_pct == 25.0
+    assert snap.alt_vol_share_pct == 25.0
+
+    # Bug 99 & Bug 101 in harvest_macro_and_news_sensors: cached market_breadth filters MSTRBUSDT/SOXLBUSDT
+    # and cached macro_benchmarks normalizes -0.00% in items and summary_line.
+    macro_dir = tmp_path / "macro"
+    macro_dir.mkdir(parents=True, exist_ok=True)
+    (macro_dir / "market_breadth_collect.json").write_text(
+        json.dumps(
+            {
+                "timestamp": 1_776_000_000.0,
+                "top_gainers": [["INJUSDT", 12.45], ["MSTRBUSDT", 9.98], ["ZECUSDC", 8.1]],
+                "top_losers": [["HUMAUSDT", -19.1], ["SOXLBUSDT", -6.85], ["TRUMPUSDT", -5.2]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (macro_dir / "macro_benchmarks_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": 1_776_000_000.0,
+                "items": {
+                    "DXY": {
+                        "symbol": "DXY",
+                        "unit": "index",
+                        "price": 101.3,
+                        "chg_24h_pct": -0.27,
+                        "chg_1h_pct": -0.0,
+                        "chg_15m_pct": 0.01,
+                    }
+                },
+                "summary_line": "DXY=101.30 (-0.27% 24h, -0.00% 1h, +0.01% 15m)",
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors, _ = harvest_macro_and_news_sensors(str(tmp_path), now_ts=1_776_000_030.0)
+    mb_harvested = sensors["market_breadth"]
+    assert mb_harvested is not None
+    assert [m[0] for m in mb_harvested["top_gainers"]] == ["INJUSDT", "ZECUSDC"]
+    assert [m[0] for m in mb_harvested["top_losers"]] == ["HUMAUSDT", "TRUMPUSDT"]
+    bm_harvested = sensors["macro_benchmarks"]
+    assert bm_harvested is not None
+    assert "-0.00%" not in bm_harvested["summary_line"]
+    assert "+0.00% 1h" in bm_harvested["summary_line"]
+    assert "-0.00%" not in format_macro_benchmarks_summary_line(bm_harvested)
+
+    # Bug 102: when growth_15m is suppressed on a 5m-cadence series with flat 15m endpoints (slope_15m == 0.0),
+    # trend_15m must use slope_15m (0) rather than the suppressed intra-window growth_15m (-1).
+    t0_ms = 1_776_000_000_000
+    pts_5m = [[t0_ms + i * 300_000, 100.0] for i in range(12)]
+    pts_5m[-2][1] = pts_5m[-3][1] = 100.5  # intermediate bar higher than both -15m (100.0) and now (100.0)
+    slopes_5m = _compute_short_slopes_from_series(pts_5m)
+    assert slopes_5m["slope_15m"] == 0.0
+    assert "growth_15m" not in slopes_5m
+    assert slopes_5m["trend_15m"] == 0
+
+
+
 

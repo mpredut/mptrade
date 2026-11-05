@@ -81,7 +81,7 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
         min_vol = safe_nonneg_float(min_volume_usd, get_breadth_min_volume_usd())
         top_mover_min_vol = max(min_vol, get_breadth_top_mover_min_volume_usd())
         quote_suffixes = get_breadth_quote_suffixes()
-        excluded_suffixes = tuple(f"{b}{q}" for b in get_breadth_excluded_bases() for q in quote_suffixes)
+        excluded_bases = set(get_breadth_excluded_bases())
         rows: List[Tuple[str, float, float]] = []
         btc_px: Optional[float] = None
         btc_chg: Optional[float] = None
@@ -105,20 +105,31 @@ class MarketBreadthCollector(CachedHttpJsonCollector):
                 if change_pct is not None:
                     eth_btc_chg = round(change_pct, 2)
                 continue
-            if not (symbol.isascii() and symbol.isalnum() and symbol.endswith(quote_suffixes)) or any(sp in symbol for sp in excluded_suffixes):
+            if not (symbol.isascii() and symbol.isalnum() and symbol.endswith(quote_suffixes)):
                 continue
-            if symbol in ("BTCUSDC", "BTCUSDT", "BTCUSD"):
-                if last_px is not None and last_px > 0.0 and (btc_px is None or symbol == "BTCUSDC"):
-                    btc_px = round(last_px, 2)
-                if change_pct is not None and (btc_chg is None or symbol == "BTCUSDC"):
-                    btc_chg = round(change_pct, 2)
+            matching_quote = next((q for q in quote_suffixes if symbol.endswith(q)), "")
+            base_candidate = symbol[:-len(matching_quote)] if matching_quote else symbol
+            base_sym = canonical_base_asset(base_candidate) or canonical_base_asset(symbol) or base_candidate
+            if (
+                base_candidate in excluded_bases
+                or base_sym in excluded_bases
+                or (len(base_sym) > 4 and base_sym.endswith(("UP", "DOWN", "BULL", "BEAR")))
+            ):
+                continue
+            if base_sym == "BTC":
+                if symbol in ("BTCUSDC", "BTCUSDT", "BTCUSD"):
+                    if last_px is not None and last_px > 0.0 and (btc_px is None or symbol == "BTCUSDC"):
+                        btc_px = round(last_px, 2)
+                    if change_pct is not None and (btc_chg is None or symbol == "BTCUSDC"):
+                        btc_chg = round(change_pct, 2)
                 if quote_vol is not None and quote_vol > 0.0:
                     btc_vol_usd += quote_vol
-            elif symbol in ("ETHUSDC", "ETHUSDT", "ETHUSD"):
-                if last_px is not None and last_px > 0.0 and (eth_px is None or symbol == "ETHUSDC"):
-                    eth_px = round(last_px, 2)
-                if change_pct is not None and (eth_chg is None or symbol == "ETHUSDC"):
-                    eth_chg = round(change_pct, 2)
+            elif base_sym == "ETH":
+                if symbol in ("ETHUSDC", "ETHUSDT", "ETHUSD"):
+                    if last_px is not None and last_px > 0.0 and (eth_px is None or symbol == "ETHUSDC"):
+                        eth_px = round(last_px, 2)
+                    if change_pct is not None and (eth_chg is None or symbol == "ETHUSDC"):
+                        eth_chg = round(change_pct, 2)
                 if quote_vol is not None and quote_vol > 0.0:
                     eth_vol_usd += quote_vol
             if quote_vol is not None and change_pct is not None and quote_vol >= min_vol:

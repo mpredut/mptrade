@@ -20,6 +20,7 @@ from intelligence.macro_sentiment_ssot import (
     _strip_headline_publisher_suffix,
     filter_valid_severity_keywords,
     get_binance_btc_ticker_url,
+    get_breadth_excluded_bases,
     get_coinbase_btc_ticker_url,
     get_deribit_dvol_url,
     get_deribit_hist_vol_url,
@@ -153,20 +154,20 @@ def collect_macro_benchmarks_snapshot(
             if px is None:
                 continue
             chg_24h = next(
-                (round(v, 2) for mk in ("fulldayChangePercent", "regularMarketChangePercent") if (v := safe_float(meta.get(mk), default=None)) is not None and abs(v) > 1e-9),
+                (round(v, 2) + 0.0 for mk in ("fulldayChangePercent", "regularMarketChangePercent") if (v := safe_float(meta.get(mk), default=None)) is not None and abs(v) > 1e-9),
                 None,
             )
             if chg_24h is None:
                 prev_close = safe_pos_float(meta.get("chartPreviousClose") or meta.get("previousClose"), default=None)
                 if prev_close is not None and prev_close > 0:
-                    chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2)
+                    chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2) + 0.0
                 elif len(pts) >= 2 and pts[0][1] > 0:
-                    chg_24h = round(((px - pts[0][1]) / pts[0][1]) * 100.0, 2)
+                    chg_24h = round(((px - pts[0][1]) / pts[0][1]) * 100.0, 2) + 0.0
 
             dec = 4 if unit_kind == "yield_pct" else 2
             item_entry: Dict[str, Any] = {
                 "symbol": label, "yahoo_symbol": yahoo_sym, "unit": unit_kind,
-                "price": round(px, dec), "chg_24h_pct": chg_24h if chg_24h is not None else 0.0,
+                "price": round(px, dec), "chg_24h_pct": (chg_24h + 0.0) if chg_24h is not None else 0.0,
             }
             if len(pts) >= 2:
                 last_bar_ts = pts[-1][0]
@@ -174,7 +175,7 @@ def collect_macro_benchmarks_snapshot(
                     target_ts = last_bar_ts - target_sec
                     ref_pt = min(pts, key=lambda p: abs(p[0] - target_ts))
                     if abs(ref_pt[0] - target_ts) <= target_sec * 1.5 and ref_pt[1] > 0:
-                        item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2)
+                        item_entry[key_name] = round(((px - ref_pt[1]) / ref_pt[1]) * 100.0, 2) + 0.0
             if meta.get("marketState"):
                 item_entry["market_state"] = str(meta.get("marketState")).strip().upper()
             if pts:
@@ -197,7 +198,7 @@ def collect_macro_benchmarks_snapshot(
                 bn_raw = _fetch(get_binance_btc_ticker_url(), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                 bn_px = safe_pos_float((bn_raw or {}).get("price") if isinstance(bn_raw, dict) else None, default=None)
             if cb_px and bn_px and bn_px > 0:
-                cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2)
+                cb_bps = round(((cb_px - bn_px) / bn_px) * 10000.0, 2) + 0.0
                 extra_macro["coinbase_premium_bps"] = cb_bps
                 extra_macro["coinbase_premium_regime"] = (
                     "US_INSTITUTIONAL_BUYING" if cb_bps >= 5.0 else ("US_SPOT_SELLING_PRESSURE" if cb_bps <= -5.0 else "NEUTRAL")
@@ -309,6 +310,7 @@ def harvest_macro_and_news_sensors(
         if data is not None:
             enriched = _with_age_min(data, s_path, is_fear_greed=(attr == "fear_greed"))
             if attr == "market_breadth":
+                excl_mb_bases = set(get_breadth_excluded_bases())
                 for mover_key in ("top_gainers", "top_losers"):
                     if isinstance(raw_movers := enriched.get(mover_key), list):
                         dedup_movers = []
@@ -322,6 +324,11 @@ def harvest_macro_and_news_sensors(
                                 and m[0].strip().isalnum()
                             ):
                                 mb_base = canonical_base_asset(m[0].strip()) or m[0].strip().upper()
+                                if (
+                                    mb_base in excl_mb_bases
+                                    or (len(mb_base) > 4 and mb_base.endswith(("UP", "DOWN", "BULL", "BEAR")))
+                                ):
+                                    continue
                                 if mb_base not in seen_mb_bases:
                                     seen_mb_bases.add(mb_base)
                                     dedup_movers.append(m)
@@ -340,11 +347,17 @@ def harvest_macro_and_news_sensors(
                                     mb_copy["low_24h"] = mb_px
                                 if mb_hi is not None and mb_px > mb_hi:
                                     mb_copy["high_24h"] = mb_px
+                            for chg_k in ("chg_24h_pct", "chg_1h_pct", "chg_15m_pct"):
+                                if (chg_v := safe_float(mb_copy.get(chg_k), default=None)) is not None:
+                                    mb_copy[chg_k] = round(chg_v, 2) + 0.0
                             enriched_items[mb_k] = mb_copy
                         else:
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
-                if not enriched.get("summary_line") and (summary_s := format_macro_benchmarks_summary_line(enriched)):
+                cur_sum = str(enriched.get("summary_line") or "")
+                if (not cur_sum or "-0.00%" in cur_sum or "-0.0bps" in cur_sum or "-0.0%" in cur_sum) and (
+                    summary_s := format_macro_benchmarks_summary_line(enriched)
+                ):
                     enriched["summary_line"] = summary_s
             macro_sensors[attr] = enriched
     if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:

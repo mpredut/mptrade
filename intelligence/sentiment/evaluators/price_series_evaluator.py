@@ -858,12 +858,13 @@ def _compute_short_slopes_from_series(series_24h: List[Any]) -> Dict[str, Any]:
             slope_half = (((p_now - ref_p_h) / ref_p_h) / dt_min_h) if (ref_p_h > 0 and dt_min_h > 0) else slope_v
             raw_g = 0.35 * slope_v + 0.65 * slope_half
             g_v = (float(f"{raw_g:.2e}") if 0.0 < abs(raw_g) < 1e-4 else round(raw_g, 6)) + 0.0
-            win_move_bps = g_v * win_min * 1000.0
             out[s_key] = slope_v
             if (ref_t_h != ref_t or win_sec >= 9000.0 or len(pts) < 10) and (
                 has_sub3m_cadence or (raw_g * raw_s > 0.0) or (abs(raw_s) <= 1e-12 and abs(raw_g) <= 1e-12)
             ):
                 out[g_key] = g_v
+            eff_g_for_trend = out.get(g_key, slope_v)
+            win_move_bps = eff_g_for_trend * win_min * 1000.0
             out[t_key] = 1 if win_move_bps >= 0.25 else (-1 if win_move_bps <= -0.25 else 0)
     if "slope_3_7m" in out:
         out["gradient_recent_fast"] = out["slope_3_7m"]
@@ -1086,6 +1087,8 @@ def _apply_24h_series_enrichment(
                     )
                 ):
                     entry[sk] = sv
+            if stale_short_cache and "growth_2_5h" not in s_fb:
+                entry.pop("growth_2_5h", None)
         if len(series_24h) >= 20:
             all_pts_m = _extract_sorted_ts_px(series_24h)
             tail_pts_m: List[Tuple[float, float]] = []

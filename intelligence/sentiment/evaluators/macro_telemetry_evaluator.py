@@ -114,7 +114,7 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
         unit_kind = str(entry.get("unit") or "").lower()
         px_s = f"{px:.2f}%" if (sym == "US10Y" or unit_kind == "yield_pct") else (f"{px:.2f}" if (sym == "DXY" or unit_kind == "index") else f"${px:,.2f}")
         d_parts = [
-            f"{val:+.2f}% {h_lbl}"
+            f"{(round(val, 2) + 0.0):+.2f}% {h_lbl}"
             for h_lbl, h_key in (("24h", "chg_24h_pct"), ("1h", "chg_1h_pct"), ("15m", "chg_15m_pct"))
             if (val := safe_float(entry.get(h_key), default=None)) is not None
         ]
@@ -124,6 +124,7 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
         parts.append(f"{sym}={px_s}{delta_s}")
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
     if cb_bps is not None:
+        cb_bps = round(cb_bps, 1) + 0.0
         cb_reg = str(data.get("coinbase_premium_regime") or items.get("coinbase_premium_regime") or "").strip()
         parts.append(f"CB_Premium={cb_bps:+.1f}bps" + (f" ({cb_reg})" if cb_reg else ""))
     btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
@@ -136,11 +137,11 @@ def format_macro_benchmarks_summary_line(data: Any) -> str:
     if (rv_v := safe_pos_float(data.get("btc_rv_pct", items.get("btc_rv_pct")), default=None)) is not None:
         opt_parts.append(f"RV={rv_v:.1f}%")
     if (vrp_v := safe_float(data.get("btc_vrp_pct", items.get("btc_vrp_pct")), default=None)) is not None:
-        opt_parts.append(f"VRP={vrp_v:+.1f}%")
+        opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
     if (pc_v := safe_pos_float(data.get("btc_pc_oi_ratio", items.get("btc_pc_oi_ratio")), default=None)) is not None:
         opt_parts.append(f"PC_OI={pc_v:.2f}")
     if (sk_v := safe_float(data.get("btc_skew_25d_pct", items.get("btc_skew_25d_pct")), default=None)) is not None:
-        opt_parts.append(f"Skew_25d={sk_v:+.2f}%")
+        opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
     if opt_parts:
         parts.append(f"Options_Surface({', '.join(opt_parts)})")
     return " | ".join(parts)
