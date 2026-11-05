@@ -22,6 +22,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
 from intelligence.sentiment.evaluators.price_series_evaluator import pct_delta
 from instrument_registry import casefold_get
 from providers.quantity import venue_fee_cap_quantity
@@ -514,6 +515,7 @@ def build_cross_market_context(
     prices_and_trends: Dict[str, Any],
     microstructure: Dict[str, Any],
     all_t212_cycles: Optional[Dict[str, Any]] = None,
+    macro_benchmarks: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build raw, objective cross-market telemetry (Crypto <-> US Equities) with zero pre-calculated correlations or bias."""
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
@@ -596,6 +598,23 @@ def build_cross_market_context(
         ctx["crypto_bellwethers"] = crypto_bellwethers
 
     equity_bellwethers: Dict[str, Any] = {}
+    fut_lead = compute_futures_premarket_lead(macro_benchmarks) if isinstance(macro_benchmarks, dict) else {}
+    lead_v = safe_float(
+        macro_benchmarks.get("futures_lead_pct") if isinstance(macro_benchmarks, dict) else None,
+        default=safe_float(fut_lead.get("futures_lead_pct"), default=None),
+    )
+    lead_reg = str(
+        (macro_benchmarks.get("futures_lead_regime") if isinstance(macro_benchmarks, dict) else None)
+        or fut_lead.get("futures_lead_regime")
+        or ""
+    ).strip()
+    active_premarket_lead = (
+        round(lead_v, 2) + 0.0
+        if lead_v is not None
+        and abs(lead_v) >= 0.25
+        and lead_reg in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN")
+        else None
+    )
     eq_syms = sorted(
         {str(s).strip().upper() for s in prices_and_trends if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
         | {str(s).strip().upper() for s in all_t212_cycles if str(s).strip().upper().endswith(("_EQ", "_US_EQ"))}
@@ -668,6 +687,9 @@ def build_cross_market_context(
                 if t_cyc.get(k) is not None
             }
         if len(eq_entry) > 1:
+            if active_premarket_lead is not None and eq_entry.get("chg_1h_pct") is None:
+                eq_entry["futures_lead_pct"] = active_premarket_lead
+                eq_entry["futures_lead_regime"] = lead_reg
             equity_bellwethers[eq_sym] = eq_entry
     if equity_bellwethers:
         ctx["equity_bellwethers"] = equity_bellwethers

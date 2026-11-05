@@ -26,6 +26,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_dvol_url,
     get_deribit_hist_vol_url,
     get_deribit_options_book_url,
+    get_deribit_options_currencies,
     get_yahoo_chart_url,
     has_financial_or_geopolitical_context,
     has_tracked_equity_entity,
@@ -67,6 +68,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     compute_cross_asset_regime,
     compute_deribit_options_surface,
     compute_equity_macro_regime,
+    compute_futures_premarket_lead,
     enrich_sentiment_advisor_live_flow_divergence,
     format_bottom_structure_6h_parts,
     format_equity_macro_regime_line,
@@ -246,44 +248,46 @@ def collect_macro_benchmarks_snapshot(
         try:
             end_ms = int(eff_now * 1000)
             start_ms = end_ms - 3600 * 1000
-            for ccy, d_key in (("BTC", "btc_dvol"), ("ETH", "eth_dvol")):
-                d_url = get_deribit_dvol_url(ccy, start_ms, end_ms)
-                d_raw = _fetch(d_url, timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+            for ccy in get_deribit_options_currencies():
+                d_key = f"{ccy.lower()}_dvol"
+                d_raw = _fetch(get_deribit_dvol_url(ccy, start_ms, end_ms), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
                 d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
                 if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
                     if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
                         extra_macro[d_key] = round(dv, 2)
+                rv_val: Optional[float] = None
+                try:
+                    hv_raw = _fetch(get_deribit_hist_vol_url(ccy), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
+                    hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
+                    if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
+                        rv_val = safe_pos_float(hv_res[-1][1], default=None)
+                except Exception:
+                    pass
+                opt_books_list: Any = None
+                try:
+                    ob_raw = _fetch(get_deribit_options_book_url(ccy), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+                    opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
+                except Exception:
+                    pass
+                extra_macro.update(
+                    compute_deribit_options_surface(
+                        opt_books_list,
+                        currency=ccy,
+                        dvol=extra_macro.get(d_key),
+                        rv=rv_val,
+                    )
+                )
             if "btc_dvol" in extra_macro:
                 bv = extra_macro["btc_dvol"]
                 extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
-            btc_rv_val: Optional[float] = None
-            try:
-                hv_raw = _fetch(get_deribit_hist_vol_url("BTC"), timeout=2.0, headers={"User-Agent": "Mozilla/5.0"})
-                hv_res = (hv_raw or {}).get("result") if isinstance(hv_raw, dict) else None
-                if isinstance(hv_res, list) and hv_res and isinstance(hv_res[-1], list) and len(hv_res[-1]) >= 2:
-                    btc_rv_val = safe_pos_float(hv_res[-1][1], default=None)
-            except Exception:
-                pass
-            opt_books_list: Any = None
-            try:
-                ob_raw = _fetch(get_deribit_options_book_url("BTC"), timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
-                opt_books_list = (ob_raw or {}).get("result") if isinstance(ob_raw, dict) else None
-            except Exception:
-                pass
-            extra_macro.update(
-                compute_deribit_options_surface(
-                    opt_books_list,
-                    btc_dvol=extra_macro.get("btc_dvol"),
-                    btc_rv=btc_rv_val,
-                )
-            )
         except Exception:
             pass
 
+    extra_macro.update(compute_futures_premarket_lead({"items": items}))
     payload: Dict[str, Any] = {
         "ts": eff_now,
         "items": items,
-        "equity_regime": compute_equity_macro_regime({"items": items}),
+        "equity_regime": compute_equity_macro_regime({"items": items, **extra_macro}),
         **extra_macro,
     }
     payload["cross_asset_regime"] = compute_cross_asset_regime(
@@ -431,6 +435,8 @@ def harvest_macro_and_news_sensors(
                         else:
                             enriched_items[mb_k] = mb_v
                     enriched["items"] = enriched_items
+                if "futures_lead_pct" not in enriched:
+                    enriched.update(compute_futures_premarket_lead(enriched))
                 if str(enriched.get("equity_regime") or "").strip().upper() not in ("RISK_ON", "RISK_OFF", "NEUTRAL"):
                     enriched["equity_regime"] = compute_equity_macro_regime(enriched)
                 btc_chg_24h_live = resolve_cached_btc_24h_change_pct(cache_dir)
@@ -880,7 +886,12 @@ def populate_market_and_portfolio_snapshot(
     if t212_cycles:
         if xst_summary := harvest_kraken_xstocks(os.path.join(workspace_dir, "kraken"), snapshot.prices_and_trends, t212_cycles, _rj):
             snapshot.portfolio_summary["kraken_xstocks"] = xst_summary
-        if cross_market_ctx := build_cross_market_context(snapshot.prices_and_trends, snapshot.microstructure, t212_cycles):
+        if cross_market_ctx := build_cross_market_context(
+            snapshot.prices_and_trends,
+            snapshot.microstructure,
+            t212_cycles,
+            macro_benchmarks=getattr(snapshot, "macro_benchmarks", None),
+        ):
             snapshot.portfolio_summary["cross_market_context"] = cross_market_ctx
     if recent_orders:
         snapshot.portfolio_summary["recent_orders"] = recent_orders
@@ -968,6 +979,7 @@ __all__ = [
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
+    "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_bottom_structure_6h_parts",
     "format_equity_macro_regime_line",

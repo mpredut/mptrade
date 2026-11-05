@@ -1901,6 +1901,58 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     sa.review(force_refresh=True, now_ts=1_793_865_000.0)
     assert "Cross_Asset=EQUITY_BULLISH_DECOUPLING" in captured_sa_prompts[-1]
 
+    # 8. Generalized Deribit Options Surface (BTC & ETH) and Pre-Market Futures Lead (NQ=F vs QQQ, ES=F vs SPY)
+    from intelligence.macro_sentiment_ssot import get_deribit_options_currencies
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        compute_deribit_options_surface,
+        compute_equity_macro_regime,
+        compute_futures_premarket_lead,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+
+    assert get_deribit_options_currencies() == ("BTC", "ETH")
+    eth_books = [
+        {"instrument_name": "ETH-30NOV26-2600-P", "open_interest": 1200.0, "mark_iv": 68.0, "underlying_price": 2800.0, "expiration_timestamp": (1_793_850_000 + 14 * 86400) * 1000},
+        {"instrument_name": "ETH-30NOV26-3000-C", "open_interest": 950.0, "mark_iv": 61.5, "underlying_price": 2800.0, "expiration_timestamp": (1_793_850_000 + 14 * 86400) * 1000},
+    ]
+    eth_surf = compute_deribit_options_surface(eth_books, currency="ETH", dvol=64.0, rv=52.5)
+    assert eth_surf["eth_rv_pct"] == 52.5
+    assert eth_surf["eth_vrp_pct"] == 11.5
+    assert eth_surf["eth_pc_oi_ratio"] == round(1200.0 / 950.0, 2)
+    assert eth_surf["eth_skew_25d_pct"] == 6.5
+
+    premarket_gap_up_mb = {
+        "items": {
+            "SPY": {"price": 580.0, "chg_24h_pct": -0.45},
+            "QQQ": {"price": 498.0, "chg_24h_pct": -0.60},
+            "ES=F": {"price": 5835.0, "chg_1h_pct": 0.42, "chg_24h_pct": 0.48},
+            "NQ=F": {"price": 20450.0, "chg_1h_pct": 0.55, "chg_24h_pct": 0.65},
+            "IBIT": {"price": 46.2, "chg_24h_pct": 0.0},
+        },
+        "eth_dvol": 64.0,
+        **eth_surf,
+    }
+    fut_lead_up = compute_futures_premarket_lead(premarket_gap_up_mb)
+    assert fut_lead_up["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
+    assert fut_lead_up["futures_lead_pct"] > 0.80
+    premarket_gap_up_mb.update(fut_lead_up)
+    assert compute_equity_macro_regime(premarket_gap_up_mb) == "RISK_ON"
+    summary_with_eth_and_lead = format_macro_benchmarks_summary_line(premarket_gap_up_mb)
+    assert "Futures_Lead=" in summary_with_eth_and_lead
+    assert "FUTURES_PREMARKET_GAP_UP" in summary_with_eth_and_lead
+    assert "ETH_Options(RV=52.5%, VRP=+11.5%, PC_OI=1.26, Skew_25d=+6.50%)" in summary_with_eth_and_lead
+
+    cmc_premarket = build_cross_market_context(
+        {"NVDA_US_EQ": {"price": 138.5, "chg_24h_pct": -0.80}, "BTCUSDC": {"price": 69500.0, "chg_1h_pct": 0.45, "chg_24h_pct": 1.20}},
+        {},
+        {"NVDA_US_EQ": {"qty": 2.0, "cost_usd": 270.0}},
+        macro_benchmarks=premarket_gap_up_mb,
+    )
+    nvda_bw = cmc_premarket["equity_bellwethers"]["NVDA_US_EQ"]
+    assert nvda_bw["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
+    assert nvda_bw["futures_lead_pct"] == fut_lead_up["futures_lead_pct"]
+
+
 
 
 

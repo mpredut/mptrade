@@ -442,6 +442,13 @@ def get_deribit_options_book_url(currency: str = "BTC") -> str:
     return _cfg_str("feeds", "deribit_options_book_url_template").format(currency=currency)
 
 
+def get_deribit_options_currencies() -> Tuple[str, ...]:
+    ccys = _split_csv(_cfg_str("feeds", "deribit_options_currencies"), upper=True)
+    if not ccys:
+        raise ValueError("Missing required [feeds] deribit_options_currencies in macro_intelligence.conf")
+    return ccys
+
+
 def get_yahoo_chart_url(symbol: str) -> str:
     tmpl = _cfg_str("feeds", "yahoo_chart_url_template")
     if not tmpl:

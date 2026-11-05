@@ -13,6 +13,7 @@ from cachepaths import (
 from instrument_registry import casefold_get
 from intelligence.macro_sentiment_ssot import (
     get_cross_asset_regimes,
+    get_deribit_options_currencies,
     get_macro_benchmark_specs,
     normalize_epoch_sec,
     parse_cited_cvd_usd,
@@ -30,14 +31,48 @@ _MACRO_EXTRA_TELEMETRY_KEYS: frozenset[str] = frozenset({
     "cross_asset_regime",
     "coinbase_premium_bps",
     "coinbase_premium_regime",
-    "btc_dvol",
-    "eth_dvol",
     "options_vol_regime",
-    "btc_rv_pct",
-    "btc_vrp_pct",
-    "btc_pc_oi_ratio",
-    "btc_skew_25d_pct",
+    "futures_lead_pct",
+    "futures_lead_regime",
+    "nq_qqq_lead_pct",
+    "es_spy_lead_pct",
+    *(
+        f"{ccy.lower()}_{sfx}"
+        for ccy in get_deribit_options_currencies()
+        for sfx in ("dvol", "rv_pct", "vrp_pct", "pc_oi_ratio", "skew_25d_pct")
+    ),
 })
+
+
+def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
+    """Compute pre-market / extended-hours US index futures lead (NQ=F vs QQQ, ES=F vs SPY)."""
+    if not isinstance(data, dict):
+        return {}
+    items = data.get("items") if isinstance(data.get("items"), dict) else data
+    if not isinstance(items, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for lead_key, fut_sym, cash_sym in (("nq_qqq_lead_pct", "NQ=F", "QQQ"), ("es_spy_lead_pct", "ES=F", "SPY")):
+        fut, cash = items.get(fut_sym), items.get(cash_sym)
+        if not isinstance(fut, dict) or not isinstance(cash, dict):
+            continue
+        fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
+        fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
+        cash_state = str(cash.get("market_state") or "").strip().upper()
+        is_off_rth = (cash_state and cash_state != "REGULAR") or (cash_1h is None and fut_1h is not None)
+        if fut_24h is not None and cash_24h is not None:
+            diff_v = round(fut_24h - cash_24h, 2) + 0.0
+            if abs(diff_v) >= 0.35 or (is_off_rth and abs(diff_v) >= 0.25):
+                out[lead_key] = diff_v
+        elif is_off_rth and fut_1h is not None and abs(fut_1h) >= 0.25:
+            out[lead_key] = round(fut_1h, 2) + 0.0
+    lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")
+    if lead_v is None:
+        lead_v = safe_float(data.get("futures_lead_pct", items.get("futures_lead_pct")), default=None)
+    if lead_v is not None and abs(lead_v) >= 0.25:
+        out["futures_lead_pct"] = round(lead_v, 2) + 0.0
+        out["futures_lead_regime"] = "FUTURES_PREMARKET_GAP_UP" if lead_v >= 0.25 else "FUTURES_PREMARKET_GAP_DOWN"
+    return out
 
 
 def compute_equity_macro_regime(data: Any) -> str:
@@ -66,14 +101,20 @@ def compute_equity_macro_regime(data: Any) -> str:
     dxy_24h = safe_float(dxy_entry.get("chg_24h_pct"), default=None) if isinstance(dxy_entry, dict) else None
     vix_entry = items.get("VIX")
     vix_24h = safe_float(vix_entry.get("chg_24h_pct"), default=None) if isinstance(vix_entry, dict) else None
+    fut_lead = safe_float(
+        data.get("futures_lead_pct") if "futures_lead_pct" in data else compute_futures_premarket_lead(data).get("futures_lead_pct"),
+        default=0.0,
+    ) or 0.0
     if (
         avg_24h >= 0.35
         or (avg_24h >= 0.15 and avg_1h >= 0.15 and (dxy_24h is None or dxy_24h <= 0.25))
+        or (avg_24h >= 0.0 and fut_lead >= 0.40 and (dxy_24h is None or dxy_24h <= 0.25))
     ) and (vix_24h is None or vix_24h <= 5.0):
         return "RISK_ON"
     if (
         avg_24h <= -0.35
         or (avg_24h <= -0.15 and avg_1h <= -0.15)
+        or (avg_24h <= 0.0 and fut_lead <= -0.40)
         or (avg_24h < 0.0 and dxy_24h is not None and dxy_24h >= 0.40)
         or (avg_24h < 0.0 and vix_24h is not None and vix_24h >= 8.0)
     ):
@@ -167,17 +208,21 @@ def compute_cross_asset_regime(
 def compute_deribit_options_surface(
     books: Any,
     *,
+    currency: str = "BTC",
+    dvol: Optional[float] = None,
+    rv: Optional[float] = None,
     btc_dvol: Optional[float] = None,
     btc_rv: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Compute BTC options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy)."""
+    """Compute Deribit options surface metrics (RV, VRP, Put/Call OI ratio, and OTM 25d Skew proxy) for any currency (BTC, ETH)."""
     out: Dict[str, Any] = {}
-    rv_f = safe_pos_float(btc_rv, default=None)
-    dvol_f = safe_pos_float(btc_dvol, default=None)
+    pfx = str(currency or "BTC").strip().lower() or "btc"
+    rv_f = safe_pos_float(rv if rv is not None else btc_rv, default=None)
+    dvol_f = safe_pos_float(dvol if dvol is not None else btc_dvol, default=None)
     if rv_f is not None:
-        out["btc_rv_pct"] = round(rv_f, 2)
+        out[f"{pfx}_rv_pct"] = round(rv_f, 2)
     if dvol_f is not None and rv_f is not None:
-        out["btc_vrp_pct"] = round(dvol_f - rv_f, 2)
+        out[f"{pfx}_vrp_pct"] = round(dvol_f - rv_f, 2)
 
     spot = 0.0
     if isinstance(books, list) and books:
@@ -215,9 +260,9 @@ def compute_deribit_options_surface(
                     put_iv_den += oi
 
         if call_oi > 0.0 and put_oi > 0.0:
-            out["btc_pc_oi_ratio"] = round(put_oi / call_oi, 2)
+            out[f"{pfx}_pc_oi_ratio"] = round(put_oi / call_oi, 2)
         if put_iv_den > 0.0 and call_iv_den > 0.0:
-            out["btc_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
+            out[f"{pfx}_skew_25d_pct"] = round((put_iv_num / put_iv_den) - (call_iv_num / call_iv_den), 2)
     return out
 
 
@@ -254,6 +299,15 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             d_parts.append(m_state.lower())
         delta_s = f" ({', '.join(d_parts)})" if d_parts else ""
         parts.append(f"{sym}={px_s}{delta_s}")
+    lead_info = (
+        {"futures_lead_pct": data.get("futures_lead_pct"), "futures_lead_regime": data.get("futures_lead_regime")}
+        if data.get("futures_lead_pct") is not None and data.get("futures_lead_regime")
+        else compute_futures_premarket_lead(data)
+    )
+    if (lead_v := safe_float(lead_info.get("futures_lead_pct"), default=None)) is not None and (
+        lead_reg := str(lead_info.get("futures_lead_regime") or "").strip()
+    ) in ("FUTURES_PREMARKET_GAP_UP", "FUTURES_PREMARKET_GAP_DOWN"):
+        parts.append(f"Futures_Lead={(round(lead_v, 2) + 0.0):+.2f}% ({lead_reg})")
     if not include_crypto:
         return " | ".join(parts)
     cb_bps = safe_float(data.get("coinbase_premium_bps", items.get("coinbase_premium_bps")), default=None)
@@ -262,22 +316,29 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         cb_reg = str(data.get("coinbase_premium_regime") or items.get("coinbase_premium_regime") or "").strip()
         parts.append(f"CB_Premium={cb_bps:+.1f}bps" + (f" ({cb_reg})" if cb_reg else ""))
     btc_dvol = safe_pos_float(data.get("btc_dvol", items.get("btc_dvol")), default=None)
-    if btc_dvol is not None:
-        eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
-        dvol_s = f"BTC_DVOL={btc_dvol:.1f}%" + (f"/ETH_DVOL={eth_dvol:.1f}%" if eth_dvol is not None else "")
+    eth_dvol = safe_pos_float(data.get("eth_dvol", items.get("eth_dvol")), default=None)
+    if btc_dvol is not None or eth_dvol is not None:
+        dvol_s = " / ".join(
+            f"{lbl}={val:.1f}%"
+            for lbl, val in (("BTC_DVOL", btc_dvol), ("ETH_DVOL", eth_dvol))
+            if val is not None
+        ).replace(" / ", "/")
         opt_reg = str(data.get("options_vol_regime") or items.get("options_vol_regime") or "").strip()
         parts.append(dvol_s + (f" ({opt_reg})" if opt_reg else ""))
-    opt_parts: List[str] = []
-    if (rv_v := safe_pos_float(data.get("btc_rv_pct", items.get("btc_rv_pct")), default=None)) is not None:
-        opt_parts.append(f"RV={rv_v:.1f}%")
-    if (vrp_v := safe_float(data.get("btc_vrp_pct", items.get("btc_vrp_pct")), default=None)) is not None:
-        opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
-    if (pc_v := safe_pos_float(data.get("btc_pc_oi_ratio", items.get("btc_pc_oi_ratio")), default=None)) is not None:
-        opt_parts.append(f"PC_OI={pc_v:.2f}")
-    if (sk_v := safe_float(data.get("btc_skew_25d_pct", items.get("btc_skew_25d_pct")), default=None)) is not None:
-        opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
-    if opt_parts:
-        parts.append(f"Options_Surface({', '.join(opt_parts)})")
+    for ccy in get_deribit_options_currencies():
+        pfx = ccy.lower()
+        opt_parts: List[str] = []
+        if (rv_v := safe_pos_float(data.get(f"{pfx}_rv_pct", items.get(f"{pfx}_rv_pct")), default=None)) is not None:
+            opt_parts.append(f"RV={rv_v:.1f}%")
+        if (vrp_v := safe_float(data.get(f"{pfx}_vrp_pct", items.get(f"{pfx}_vrp_pct")), default=None)) is not None:
+            opt_parts.append(f"VRP={(round(vrp_v, 1) + 0.0):+.1f}%")
+        if (pc_v := safe_pos_float(data.get(f"{pfx}_pc_oi_ratio", items.get(f"{pfx}_pc_oi_ratio")), default=None)) is not None:
+            opt_parts.append(f"PC_OI={pc_v:.2f}")
+        if (sk_v := safe_float(data.get(f"{pfx}_skew_25d_pct", items.get(f"{pfx}_skew_25d_pct")), default=None)) is not None:
+            opt_parts.append(f"Skew_25d={(round(sk_v, 2) + 0.0):+.2f}%")
+        if opt_parts:
+            lbl = "Options_Surface" if ccy == "BTC" else f"{ccy}_Options"
+            parts.append(f"{lbl}({', '.join(opt_parts)})")
     cross_reg = str(data.get("cross_asset_regime") or items.get("cross_asset_regime") or "").strip().upper()
     if cross_reg not in get_cross_asset_regimes():
         cross_reg = compute_cross_asset_regime(data)
@@ -922,6 +983,7 @@ __all__ = [
     "compute_cross_asset_regime",
     "compute_deribit_options_surface",
     "compute_equity_macro_regime",
+    "compute_futures_premarket_lead",
     "enrich_sentiment_advisor_live_flow_divergence",
     "format_bottom_structure_6h_parts",
     "format_equity_macro_regime_line",
