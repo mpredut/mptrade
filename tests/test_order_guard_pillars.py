@@ -398,6 +398,45 @@ def test_geopolitical_shock_downscale_enforce():
         assert scale == 0.50
 
 
+def test_geopolitical_elevated_absorbed_by_market(tmp_path):
+    import json
+
+    now_s = time.time()
+    mock_geo = GeopoliticalThreatAssessment(
+        threat_level="ELEVATED",
+        risk_score=0.55,
+        summary="Ongoing regional diplomacy and digested maritime tensions.",
+        recommended_brake="DOWNSCALE_50",
+        headlines_analyzed=5,
+        ts=now_s - 2400.0,
+    )
+    (tmp_path / "sentiment_eval.json").write_text(
+        json.dumps(
+            {
+                "market_bias": "BULLISH",
+                "recommended_posture": "ACCUMULATE",
+                "ts": now_s - 300.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _init_mock(self):
+        self._cached_assessment = mock_geo
+        self._effective_cache_dir = lambda: str(tmp_path)
+
+    with patch.object(GeopoliticalThreatAnalyzer, "_load_from_disk", _init_mock):
+        allowed, reason, scale = check_geopolitical_order_guards(
+            symbol="BTCUSDC",
+            side="BUY",
+            margins=_margins(geopolitical_guard_mode="enforce"),
+            now=now_s,
+        )
+        assert allowed is True
+        assert "geopolitical_elevated_absorbed_by_market" in reason
+        assert scale == 1.0
+
+
 # =====================================================================
 # Pillar Bypass & Re-Buy Guard Tests
 # =====================================================================

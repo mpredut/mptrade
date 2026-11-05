@@ -1,6 +1,7 @@
 """Macro benchmarks, breaking news sensors, snapshot orchestrator, and pre-trade LLM telemetry collector."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import glob as _glob
 import logging
 import os
@@ -415,7 +416,6 @@ def harvest_macro_and_news_sensors(
                                     is_stale_us_bar = True
                                 elif bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
                                     try:
-                                        from datetime import datetime
                                         from zoneinfo import ZoneInfo
 
                                         dt_ny = datetime.fromtimestamp(now_ts, tz=ZoneInfo("America/New_York"))
@@ -505,6 +505,7 @@ def harvest_macro_and_news_sensors(
 
     breaking_news: List[Dict[str, Any]] = []
     valid_news: List[Dict[str, Any]] = []
+    stale_valid_sev_titles: set[str] = set()
     news_raw = _rj_any(os.path.join(cache_dir, "news_feed_collect.json"))
     news_data = (news_raw.get("items") or news_raw.get("headlines")) if isinstance(news_raw, dict) else news_raw
     if isinstance(news_data, list) and news_data:
@@ -517,6 +518,9 @@ def harvest_macro_and_news_sensors(
             clean_kws = list(filter_valid_severity_keywords(raw_kws, title=str(item.get("title") or ""))) if raw_kws else []
             item_seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             is_stale_sev = item_seen_ts > 0.0 and now_ts > item_seen_ts and (now_ts - item_seen_ts) > 5400.0
+            if is_stale_sev and bool(item.get("is_high_severity")) and (clean_kws or not raw_kws):
+                stale_valid_sev_titles.add(_strip_headline_publisher_suffix(str(item.get("title") or "")).strip().lower())
+                stale_valid_sev_titles.add(str(item.get("title") or "").strip().lower())
             cand_entry = {
                 **item,
                 "matched_keywords": clean_kws,
@@ -578,25 +582,37 @@ def harvest_macro_and_news_sensors(
             seen_ts = safe_pos_float(item.get("first_seen_ts"), default=0.0) or 0.0
             raw_title = str(item.get("title") or "")
             clean_title = _strip_headline_publisher_suffix(raw_title) if raw_title else item.get("title")
+            pub_utc = (
+                datetime.fromtimestamp(seen_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                if 0.0 < seen_ts <= now_ts + 300.0
+                else None
+            )
             breaking_news.append({
                 "title": clean_title or item.get("title"), "source": item.get("source"),
                 "is_high_severity": bool(item.get("is_high_severity")),
                 "keywords": item.get("matched_keywords") or [],
                 "age_min": round(max(0.0, now_ts - seen_ts) / 60.0, 1) if seen_ts > 0 else None,
+                **({"published_utc": pub_utc} if pub_utc else {}),
             })
     gt_cur = macro_sensors.get("geopolitical_threat")
     if isinstance(gt_cur, dict) and valid_news and not any(n.get("is_high_severity") for n in valid_news):
         gt_digest = str(gt_cur.get("headlines_digest") or "").strip()
-        gt_digest_invalid = False
-        if gt_digest:
-            gt_digest_titles = split_headlines_digest(gt_digest)
-            gt_digest_invalid = bool(
-                gt_digest_titles
-                and not any(
-                    filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
-                    for t in gt_digest_titles
-                )
+        gt_digest_titles = split_headlines_digest(gt_digest) if gt_digest else []
+        valid_digest_titles = [
+            t
+            for t in gt_digest_titles
+            if filter_valid_severity_keywords((), title=t, cache_dir=cache_dir, now_ts=now_ts)
+        ]
+        gt_digest_had_purged_noise = len(valid_digest_titles) < len(gt_digest_titles)
+        gt_digest_invalid = bool(gt_digest_titles and not valid_digest_titles)
+        all_valid_digest_aged_90m = bool(
+            valid_digest_titles
+            and all(
+                t.strip().lower() in stale_valid_sev_titles
+                or _strip_headline_publisher_suffix(t).strip().lower() in stale_valid_sev_titles
+                for t in valid_digest_titles
             )
+        )
         newest_news_ts = max((safe_pos_float(n.get("first_seen_ts"), default=0.0) or 0.0 for n in valid_news), default=0.0)
         has_fresh_calm_news = newest_news_ts > 0.0 and 0.0 <= (now_ts - newest_news_ts) <= 3600.0
         gt_age_min = safe_float(gt_cur.get("age_min"), 0.0) or 0.0
@@ -611,6 +627,28 @@ def harvest_macro_and_news_sensors(
             gt_cur["recommended_brake"] = "NONE"
             gt_cur["summary"] = "Calm geopolitical and energy climate. No systemic shock detected."
             gt_cur["headlines_digest"] = ""
+            gt_cur["headlines_analyzed"] = len(valid_news)
+            gt_cur["ts"] = now_ts
+            gt_cur["age_min"] = 0.0
+            if read_json_fn in (None, read_json_recovering, read_json_cached) and "PYTEST_CURRENT_TEST" not in os.environ:
+                try:
+                    _save_fn = _resolve_macro_ssot_attr("save_json_state", save_json_state, _default_save_json_state)
+                    geo_save_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, "geopolitical_eval.json")))
+                    _save_fn(geo_save_path, {k: v for k, v in gt_cur.items() if k != "age_min"}, indent=2)
+                except Exception:
+                    pass
+        elif (
+            all_valid_digest_aged_90m
+            and gt_digest_had_purged_noise
+            and str(gt_cur.get("threat_level") or "").upper() in ("ELEVATED", "CRITICAL_SHOCK")
+        ):
+            gt_cur["threat_level"] = "NORMAL"
+            gt_cur["risk_score"] = 0.1
+            gt_cur["recommended_brake"] = "NONE"
+            gt_cur["summary"] = (
+                "Geopolitical threat de-escalated to NORMAL: no fresh high-severity macro headlines in the last 90 minutes."
+            )
+            gt_cur["headlines_digest"] = " | ".join(valid_digest_titles[:12])
             gt_cur["headlines_analyzed"] = len(valid_news)
             gt_cur["ts"] = now_ts
             gt_cur["age_min"] = 0.0

@@ -26,6 +26,8 @@ class GeopoliticalShockGuard:
         symbol: str,
         side: str,
         assessment: Optional[GeopoliticalThreatAssessment],
+        *,
+        market_absorbed: bool = False,
     ) -> GuardDecision:
         """Evaluate order against current geopolitical threat assessment."""
         if normalize_order_side(side) != "BUY":
@@ -47,6 +49,13 @@ class GeopoliticalShockGuard:
                 risk_score=risk_score,
             )
         if level == "ELEVATED" or brake == "DOWNSCALE_50":
+            if market_absorbed:
+                return GuardDecision.allow(
+                    "GeopoliticalShockGuard",
+                    f"geopolitical_elevated_absorbed_by_market ({summary})",
+                    threat_level=level,
+                    risk_score=risk_score,
+                )
             return GuardDecision.downscale(
                 "GeopoliticalShockGuard",
                 scale=self.downscale_factor,

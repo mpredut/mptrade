@@ -327,6 +327,14 @@ def _is_excluded_non_crisis_attack_keyword(
             )
         ) and not (combined_words & {"sovereign", "treasury", "government", "ceiling", "bank", "banks", "exchange"}):
             return True
+    if kw_words and kw_words <= {"binance", "crypto", "exchange", "hack", "hacks", "hacked", "hacker", "hackers"}:
+        if (
+            combined_words
+            & {"denies", "denied", "probe", "fbi", "indicted", "sentenced", "trial", "provocation", "trite"}
+        ) and not (
+            combined_words & {"drained", "stolen", "exploited", "halted", "suspended", "withdrawals", "breach"}
+        ):
+            return True
     if "stock" in kw_words and any(w.startswith("plung") for w in kw_words):
         if (combined_words & _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS) and not (combined_words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
             return True
@@ -439,6 +447,12 @@ def _dynamic_lexicon_path(cache_dir: Optional[str] = None) -> str:
     return str(resolve_cachedb_filepath(os.path.join(cache_dir, fname) if cache_dir else cache_path(fname)))
 
 
+def _bigram_stem_signature(term: str) -> Tuple[str, ...]:
+    """Return a canonical order-independent tuple of normalized stems for a lexicon phrase."""
+    tokens = [_normalize_semantic_stem(w) for w in re.findall(r"[a-z]{3,}", (term or "").lower())]
+    return tuple(sorted(dict.fromkeys(t for t in tokens if t)))
+
+
 def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float] = None) -> Dict[str, Tuple[str, ...]]:
     """Load unexpired dynamically discovered high-severity and acute-shock terms from cachedb."""
     now = resolve_now_ts(now_ts)
@@ -475,9 +489,15 @@ def load_dynamic_lexicon(cache_dir: Optional[str] = None, now_ts: Optional[float
         valid_rows.sort(key=lambda r: (-r[0], r[1]))
         high_seen: Dict[str, None] = {}
         acute_seen: Dict[str, None] = {}
+        high_sig_seen: Set[Tuple[str, ...]] = set()
+        acute_sig_seen: Set[Tuple[str, ...]] = set()
         for _, _, t_clean, tier in valid_rows:
-            high_seen.setdefault(t_clean, None)
-            if tier == "acute":
+            sig = _bigram_stem_signature(t_clean) or (t_clean,)
+            if sig not in high_sig_seen:
+                high_sig_seen.add(sig)
+                high_seen.setdefault(t_clean, None)
+            if tier == "acute" and sig not in acute_sig_seen:
+                acute_sig_seen.add(sig)
                 acute_seen.setdefault(t_clean, None)
         high_tup, acute_tup = tuple(high_seen), tuple(acute_seen)
         res = {
@@ -510,10 +530,12 @@ def update_dynamic_lexicon(
 
     stopwords = _get_stopwords_set()
     existing_entries: Dict[str, Dict[str, Any]] = {}
+    sig_to_key: Dict[Tuple[str, ...], str] = {}
     pruned_existing = False
     raw = read_json_dict_cached(path, _LEXICON_FILE_CACHE)
     if isinstance(raw, dict) and isinstance(raw.get("entries"), dict):
-        for k, v in raw["entries"].items():
+        raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
+        for idx, (k, v) in enumerate(raw["entries"].items()):
             if isinstance(k, str) and isinstance(v, dict):
                 k_clean = re.sub(r"\s+", " ", k.strip().lower())
                 if _is_noise_dynamic_keyword(k_clean, stopwords):
@@ -521,11 +543,19 @@ def update_dynamic_lexicon(
                     continue
                 ts = normalize_epoch_sec(v.get("ts"), default=0.0) or 0.0
                 if ts > 0.0 and (now - ts) <= ttl:
-                    existing_entries[k_clean] = dict(v, ts=ts)
+                    raw_valid.append((ts, idx, k_clean, dict(v, ts=ts)))
                 else:
                     pruned_existing = True
             else:
                 pruned_existing = True
+        raw_valid.sort(key=lambda r: (-r[0], r[1]))
+        for _, _, k_clean, entry_dict in raw_valid:
+            sig = _bigram_stem_signature(k_clean) or (k_clean,)
+            if sig in sig_to_key:
+                pruned_existing = True
+                continue
+            sig_to_key[sig] = k_clean
+            existing_entries[k_clean] = entry_dict
 
     changed = pruned_existing
     for raw_t, tier_override in (
@@ -535,7 +565,9 @@ def update_dynamic_lexicon(
         t = re.sub(r"\s+", " ", str(raw_t or "").strip().lower())
         if _is_noise_dynamic_keyword(t, stopwords):
             continue
-        prev_entry = existing_entries.get(t, {})
+        sig = _bigram_stem_signature(t) or (t,)
+        prev_key = sig_to_key.get(sig, t)
+        prev_entry = existing_entries.get(prev_key, {})
         prev_tier = str(prev_entry.get("tier", "high")).lower()
         prev_ts = safe_float(prev_entry.get("ts"), 0.0)
         if tier_override:
@@ -544,6 +576,9 @@ def update_dynamic_lexicon(
             tier = "acute"
         else:
             tier = "high"
+        if prev_key != t and prev_key in existing_entries:
+            existing_entries.pop(prev_key, None)
+        sig_to_key[sig] = t
         existing_entries[t] = {"ts": now, "tier": tier, "source": source}
         changed = True
 
@@ -573,8 +608,10 @@ def demote_dynamic_acute_terms(
 
     stopwords = _get_stopwords_set()
     cleaned_entries: Dict[str, Dict[str, Any]] = {}
+    seen_sigs: Set[Tuple[str, ...]] = set()
+    raw_valid: List[Tuple[float, int, str, Dict[str, Any]]] = []
     changed = False
-    for k, v in raw["entries"].items():
+    for idx, (k, v) in enumerate(raw["entries"].items()):
         if not isinstance(k, str) or not isinstance(v, dict):
             changed = True
             continue
@@ -590,6 +627,14 @@ def demote_dynamic_acute_terms(
         if str(entry.get("tier", "high")).lower() == "acute":
             entry["tier"] = "high"
             changed = True
+        raw_valid.append((ts, idx, k_clean, entry))
+    raw_valid.sort(key=lambda r: (-r[0], r[1]))
+    for _, _, k_clean, entry in raw_valid:
+        sig = _bigram_stem_signature(k_clean) or (k_clean,)
+        if sig in seen_sigs:
+            changed = True
+            continue
+        seen_sigs.add(sig)
         cleaned_entries[k_clean] = entry
 
     if changed:
@@ -730,7 +775,18 @@ def build_dynamic_rss_url(cache_dir: Optional[str] = None, now_ts: Optional[floa
     max_terms = max(4, _ssot._cfg_int("feeds", "dynamic_search_max_terms", 16))
     dyn = load_dynamic_lexicon(cache_dir=cache_dir, now_ts=now_ts)
     candidates = (*dyn.get("acute_shock_phrases", ()), *dyn.get("high_severity_terms", ()), *get_active_severity_keywords(cache_dir=cache_dir, now_ts=now_ts))
-    prioritized = list(dict.fromkeys(t for t in candidates if t))[:max_terms]
+    prioritized: List[str] = []
+    seen_sigs: Set[Tuple[str, ...]] = set()
+    for t in candidates:
+        if not t:
+            continue
+        sig = _bigram_stem_signature(t) or (t,)
+        if sig in seen_sigs:
+            continue
+        seen_sigs.add(sig)
+        prioritized.append(t)
+        if len(prioritized) >= max_terms:
+            break
     encoded_terms = [urllib.parse.quote_plus(f'"{t}"' if " " in t else t) for t in prioritized]
     query_str = "+OR+".join(encoded_terms) if encoded_terms else "macro"
     return template.format(query=query_str) if "{query}" in template else template
@@ -836,6 +892,10 @@ def _normalize_semantic_stem(token: str) -> str:
     t = token.lower().strip()
     for sfx, repl in (
         ("interviews", "interview"),
+        ("iranian", "iran"),
+        ("russian", "russia"),
+        ("ukrainian", "ukraine"),
+        ("israeli", "israel"),
         ("hackers", "hack"),
         ("hacked", "hack"),
         ("hacking", "hack"),

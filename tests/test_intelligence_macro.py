@@ -2112,6 +2112,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Putin offers to help end Iran war in talks with Tehran's security chief | Daily Sabah", ["war", "iran war"]),
         ("Pentagon shake-up possible as Trump officials face scrutiny over Iran war and Republican losses", ["war", "iran war"]),
         ("Iran is Reviewing 'Concrete Proposals' on Nuclear Program, Officials Say - The New York Times", ["nuclear"]),
+        ("North Korea denies role in record Binance hack, FBI probe continues", ["binance hack", "hack"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
@@ -2140,6 +2141,146 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     assert is_excluded_reference_news_item(
         "Best Mag7 dip buys: NVIDIA leads on valuation, Alphabet on RSI - Seeking Alpha"
     ) is True
+
+
+def test_lexicon_semantic_stem_deduplication_and_utc_timestamp_context(tmp_path, monkeypatch):
+    """Verify semantic stem deduplication of dynamic bigrams, UTC publication timestamps on headlines, and polluted digest de-escalation."""
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer, GeopoliticalThreatAssessment
+    from intelligence.macro.lexicon_ssot import (
+        _bigram_stem_signature,
+        build_dynamic_rss_url,
+        load_dynamic_lexicon,
+        update_dynamic_lexicon,
+    )
+    from intelligence.macro.news_feed_collector import NewsFeedSnapshot, NewsHeadline
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+    from orchestratorOS.supervisor.prompt_sections import _age_sfx
+
+    now = 1_793_920_000.0
+    assert _bigram_stem_signature("strikes iran") == _bigram_stem_signature("iran strikes")
+    assert _bigram_stem_signature("strikes iran") == _bigram_stem_signature("strike iran")
+    assert _bigram_stem_signature("strikes iran") == _bigram_stem_signature("strikes iranian")
+    assert _bigram_stem_signature("russian strike") == _bigram_stem_signature("strike russian")
+    assert _bigram_stem_signature("binance hack") == _bigram_stem_signature("binance hackers")
+    assert _bigram_stem_signature("iran war") == _bigram_stem_signature("war iran")
+
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(exist_ok=True)
+    update_dynamic_lexicon(
+        [
+            "strikes iran", "strike iran", "iran strikes", "strikes iranian",
+            "russian strike", "russian strikes", "strike russian",
+            "iran war", "war iran",
+            "binance hack", "binance hackers",
+        ],
+        cache_dir=str(cdir),
+        now_ts=now,
+    )
+    loaded_terms = load_dynamic_lexicon(cache_dir=str(cdir), now_ts=now)["high_severity_terms"]
+    assert len(loaded_terms) == 4
+    rss_url = build_dynamic_rss_url(cache_dir=str(cdir), now_ts=now)
+    assert rss_url.lower().count("binance") == 1
+
+    # Verify GeopoliticalThreatAnalyzer de-escalates when previous digest had purged noise and remaining real high_sev are >90m old
+    state_file = cdir / "geopolitical_eval.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.65,
+                "summary": "Elevated geopolitical tensions.",
+                "recommended_brake": "DOWNSCALE_50",
+                "headlines_analyzed": 15,
+                "ts": now - 1200.0,
+                "is_fallback": False,
+                "headlines_digest": (
+                    "Elon Musk's SpaceX Default Risk Hits Record High as Democratic Sweep Adds to AI Rout | "
+                    "Iran's war strategy from Putin's playbook | "
+                    "Iran says tankers struck in Hormuz"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (cdir / "news_feed_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": now,
+                "headlines": [
+                    {
+                        "title": "Iran says tankers struck in Hormuz",
+                        "source": "DW.com",
+                        "first_seen_ts": now - 9600.0,
+                        "is_high_severity": True,
+                        "matched_keywords": ["hormuz", "tanker"],
+                    },
+                    {
+                        "title": "Elon Musk's SpaceX Default Risk Hits Record High as Democratic Sweep Adds to AI Rout",
+                        "source": "Bloomberg",
+                        "first_seen_ts": now - 1800.0,
+                        "is_high_severity": True,
+                        "matched_keywords": ["default", "default risk"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sensors, b_news = harvest_macro_and_news_sensors(str(cdir), now_ts=now)
+    assert sensors["geopolitical_threat"]["threat_level"] == "NORMAL"
+    assert sensors["geopolitical_threat"]["recommended_brake"] == "NONE"
+    assert b_news[0].get("published_utc", "").endswith("UTC")
+    assert "UTC, age=" in _age_sfx(b_news[0], parens=True)
+
+    # Verify GeopoliticalThreatAnalyzer formats UTC timestamp + age and retains older context alongside fresh headline
+    from intelligence.sentiment.gemini_client import GeminiClient
+
+    captured_prompts = []
+
+    def _fake_generate(prompt, *args, **kwargs):
+        captured_prompts.append(prompt)
+        return json.dumps(
+            {
+                "threat_level": "ELEVATED",
+                "risk_score": 0.55,
+                "summary": "Fresh Hormuz shipping warning alongside prior strike context.",
+                "recommended_brake": "DOWNSCALE_50",
+            }
+        )
+
+    analyzer = GeopoliticalThreatAnalyzer(
+        gemini_client=GeminiClient(custom_runner=_fake_generate),
+        state_file=str(state_file),
+        cache_ttl_sec=16200.0,
+    )
+    snap = {
+        "headlines": [
+            {
+                "title": "Breaking: New naval blockade warning in Strait of Hormuz",
+                "source": "Reuters",
+                "url": "https://reuters.com/1",
+                "is_high_severity": True,
+                "matched_keywords": ["hormuz", "blockade"],
+                "first_seen_ts": now - 600.0,
+            },
+            {
+                "title": "Earlier: Iran says tankers struck in Hormuz three hours ago",
+                "source": "DW.com",
+                "url": "https://dw.com/2",
+                "is_high_severity": True,
+                "matched_keywords": ["hormuz", "tanker"],
+                "first_seen_ts": now - 10800.0,
+            },
+        ],
+        "has_critical_shock_keywords": False,
+        "ts": now,
+    }
+    res = analyzer.assess(snap, now_ts=now)
+    assert res.threat_level == "ELEVATED"
+    assert len(captured_prompts) == 1
+    assert "UTC, age=10m)" in captured_prompts[0]
+    assert "UTC, age=180m)" in captured_prompts[0]
+    assert "Earlier: Iran says tankers struck in Hormuz three hours ago" in captured_prompts[0]
 
 
 

@@ -242,10 +242,54 @@ def check_geopolitical_order_guards(
     try:
         from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
         from intelligence.macro.geopolitical_guard import GeopoliticalShockGuard
-        cached_geo = GeopoliticalThreatAnalyzer()._cached_assessment
+        analyzer = GeopoliticalThreatAnalyzer()
+        cached_geo = getattr(analyzer, "_cached_assessment", None)
         if cached_geo is not None:
-            geo_dec = GeopoliticalShockGuard().check(symbol, order_side, cached_geo)
+            now_ts = _resolve_now_ts(now)
+            geo_ts = float(obj_attr(cached_geo, "ts", 0.0) or 0.0)
+            geo_level = str(obj_attr(cached_geo, "threat_level", "NORMAL") or "NORMAL").upper()
+            market_absorbed = False
+            if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:
+                try:
+                    from cachepaths import get_cachedb_dir
+                    from instrument_registry import is_equity_symbol
+                    from intelligence.macro_sentiment_ssot import load_cached_macro_benchmarks, read_first_cached_dict
+
+                    cdir = (
+                        analyzer._effective_cache_dir()
+                        if hasattr(analyzer, "_effective_cache_dir")
+                        else get_cachedb_dir()
+                    )
+                    sa_data, _ = read_first_cached_dict(cdir, "sentiment_advisor_files", "sentiment_eval.json")
+                    sa_ts = float((sa_data or {}).get("ts") or 0.0) if isinstance(sa_data, dict) else 0.0
+                    if (
+                        isinstance(sa_data, dict)
+                        and sa_ts > 0.0
+                        and 0.0 <= (now_ts - sa_ts) <= 7200.0
+                        and str(sa_data.get("market_bias") or "").upper() == "BULLISH"
+                        and str(sa_data.get("recommended_posture") or "").upper() == "ACCUMULATE"
+                    ):
+                        market_absorbed = True
+                    if not market_absorbed:
+                        mb_data = load_cached_macro_benchmarks(cdir)
+                        mb_ts = float((mb_data or {}).get("ts") or 0.0) if isinstance(mb_data, dict) else 0.0
+                        if isinstance(mb_data, dict) and mb_ts > 0.0 and 0.0 <= (now_ts - mb_ts) <= 1800.0:
+                            ca_reg = str(mb_data.get("cross_asset_regime") or "").upper()
+                            target_decouple = (
+                                "EQUITY_BULLISH_DECOUPLING"
+                                if is_equity_symbol(symbol)
+                                else "CRYPTO_BULLISH_DECOUPLING"
+                            )
+                            if ca_reg in ("COUPLED_RISK_ON", target_decouple):
+                                market_absorbed = True
+                except Exception:
+                    market_absorbed = False
+            geo_dec = GeopoliticalShockGuard().check(
+                symbol, order_side, cached_geo, market_absorbed=market_absorbed
+            )
             geo_scale = _clean_scale(getattr(geo_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+            if market_absorbed and geo_dec.allowed and geo_dec.brake_action != BrakeAction.DOWNSCALE_QTY:
+                return True, geo_dec.reason, 1.0
             if not geo_dec.allowed or geo_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
                 prefix = "[GEOPOLITICAL_GUARD_SHADOW]" if geo_mode == "shadow" else "[GEOPOLITICAL_GUARD_ENFORCE]"
                 print(f"{prefix} {order_side} {symbol}: {geo_dec.reason} (brake={geo_dec.brake_action}, suggested_scale={geo_scale})")

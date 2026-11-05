@@ -45,7 +45,9 @@ from providers.base import format_actor_tag, normalize_timestamp_ms
 def _age_sfx(d: Dict[str, Any], parens: bool = False) -> str:
     if d.get("age_min") is None:
         return ""
-    return f" (age={d['age_min']}m)" if parens else f", age={d['age_min']}m"
+    pub = str(d.get("published_utc") or "").strip()
+    inner = f"{pub}, age={d['age_min']}m" if pub else f"age={d['age_min']}m"
+    return f" ({inner})" if parens else f", {inner}"
 
 
 def _format_quote_breakdown(bd: Any, primary_asset: Any) -> str:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -11,6 +12,7 @@ from intelligence.macro_sentiment_ssot import (
     CachedTopicAssessmentAgent,
     clean_scale,
     extract_high_severity_headlines_and_digest,
+    filter_valid_severity_keywords,
     get_cache_filenames,
     has_new_acute_shock_headline,
     normalize_recommended_brake,
@@ -186,6 +188,15 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 return f", age={age_m}m"
         return ""
 
+    @classmethod
+    def _headline_time_and_age_suffix(cls, h: Any, now: float) -> str:
+        age_sfx = cls._headline_age_suffix(h, now)
+        ts_val = cls._headline_effective_ts(h, now)
+        if 0.0 < ts_val <= now + 300.0:
+            utc_str = datetime.fromtimestamp(ts_val, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            return f", {utc_str}{age_sfx}" if age_sfx else f", {utc_str}"
+        return age_sfx
+
     def assess(
         self,
         news_snapshot: Optional[NewsFeedSnapshot],
@@ -240,6 +251,19 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             if self._last_headlines_digest
             else set()
         )
+        current_high_sev_set = {
+            t_h.lower()
+            for h in high_sev
+            if (t_h := str(obj_attr(h, "title", None) or "").strip())
+        }
+        digest_had_purged_noise = bool(
+            prev_digest_set
+            and any(
+                pt not in current_high_sev_set
+                and not filter_valid_severity_keywords((), title=pt, cache_dir=state_cache_dir, now_ts=now)
+                for pt in prev_digest_set
+            )
+        )
         has_unseen_high_sev = bool(
             high_sev
             and self._last_headlines_digest
@@ -247,6 +271,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and any(
                 (t_h := str(obj_attr(h, "title", None) or "").strip())
                 and t_h.lower() not in prev_digest_set
+                and not (0.0 < self._headline_effective_ts(h, now) <= now - 5400.0)
                 for h in high_sev[:12]
             )
         )
@@ -288,6 +313,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             and not deescalate_aged_90m
             and not zero_high_sev_reset
             and not resume_from_90m_deesc
+            and not digest_had_purged_noise
             and self._cached_assessment
             and not is_stale
         ):
@@ -337,6 +363,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             not force_refresh
             and not acute_shock_alert
             and not resume_from_90m_deesc
+            and not digest_had_purged_noise
             and self._cached_assessment
             and (
                 not is_stale
@@ -347,7 +374,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
 
         session_ctx = resolve_global_trading_session(now)
         headline_list = "\n".join(
-            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_age_suffix(h, now)})"
+            f"- {obj_attr(h, 'title', None) or ''} ({obj_attr(h, 'source', None) or 'Unknown'}{self._headline_time_and_age_suffix(h, now)})"
             for h in high_sev[:12]
         )
         market_reaction_line = ""
@@ -372,6 +399,7 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
             "tariff/sanction shock, or risk-off flight to USD) that could trigger a sharp market selloff in the next 24-48 hours.\n"
             "CRITICAL CALIBRATION — FRESH UNPRICED SHOCK VS ONGOING / PRICED-IN HEADLINES:\n"
             "- Reserve 'CRITICAL_SHOCK' ('HARD_VETO_NEW_BUYS') strictly for a brand-new, sudden, unpriced kinetic or systemic escalation breaking right now (e.g., surprise military strike, sudden strait closure, emergency sanctions/tariff shock) that markets have not yet absorbed.\n"
+            "- Each headline includes its publication timestamp (YYYY-MM-DD HH:MM UTC) and age in minutes (age=Xm). Older headlines (age > 90m) are retained in the 6-hour rolling window as historical narrative context; only fresh headlines (age <= 90m) or unabsorbed market stress justify active escalation.\n"
             "- If the headlines represent ongoing rhetoric, follow-up commentary, diplomatic statements, or recycled coverage of an already-known conflict that markets have already digested or sold off on over the prior hours, classify as 'ELEVATED' ('DOWNSCALE_50') or 'NORMAL' ('NONE') so post-flush contrarian bottom accumulation is not perpetually vetoed.\n"
             "- Cross-check headline severity against Live Cross-Asset Market Reaction when present (SPY/QQQ/ES=F/NQ=F, VIX, DXY, US10Y, Futures_Lead, IBIT, CB_Premium, BTC_DVOL/ETH_DVOL, Options_Surface/ETH_Options, Cross_Asset): if markets are calm or advancing (COUPLED_RISK_ON, CRYPTO_BULLISH_DECOUPLING, FUTURES_PREMARKET_GAP_UP, subdued VIX/DVOL, positive CB_Premium), treat recycled conflict headlines as priced-in ('NORMAL' or 'ELEVATED') rather than 'CRITICAL_SHOCK'.\n\n"
             "Respond strictly in valid JSON format with exact keys:\n"
