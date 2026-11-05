@@ -8166,6 +8166,48 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     assert rgnt_dt is not None
     assert rgnt_dt.perp_spot_basis_bps == 0.0
 
+    # Sub-5m ticks in [ohlc_last - 15m, ohlc_last] are preserved when merging cache_ohlc_24h
+    last_bar_ms = fresh_ohlc24[-1][0]
+    p24_with_sub5m = stale_vol_series + [
+        [last_bar_ms - 180_000, 184.50],
+        [last_bar_ms - 60_000, 184.80],
+        [last_bar_ms + 10_000, 185.60],
+    ]
+    (cdir_eq_ohlc / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": p24_with_sub5m}}),
+        encoding="utf-8",
+    )
+    merged_sub5m_24h, _ = load_symbol_price_series(str(cdir_eq_ohlc), "NVDA_US_EQ")
+    m24_sub5m = compute_24h_price_metrics(merged_sub5m_24h)
+    assert "chg_1m_pct" in m24_sub5m and m24_sub5m["chg_1m_pct"] > 0.3
+    assert "chg_3m_pct" in m24_sub5m and m24_sub5m["chg_3m_pct"] > 0.5
+
+    # Cache24PriceManager preserves 3-element OHLCV bars written to disk with .meta when saving newer live tick
+    import cacheManager as cm
+    from state_io import write_meta_json
+
+    c24_eq_file = str(cdir_eq_ohlc / "prices" / "cache_24_price_NVDA_US_EQ.json")
+    mgr_eq = cm.Cache24PriceManager(60, ["NVDA_US_EQ"], c24_eq_file, read_only=True)
+    mgr_eq.save_state = True
+    json.dump(
+        {"items": {"NVDA_US_EQ": fresh_ohlc24}, "fetchtime": {"NVDA_US_EQ": last_bar_ms + 5000}},
+        open(c24_eq_file, "w", encoding="utf-8"),
+    )
+    write_meta_json(
+        c24_eq_file,
+        {
+            "fetchtime": {"NVDA_US_EQ": last_bar_ms + 5000},
+            "counts": {"NVDA_US_EQ": len(fresh_ohlc24)},
+            "max_ts": last_bar_ms + 5000,
+            "saved_at": last_bar_ms + 5000,
+        },
+    )
+    mgr_eq.on_price_update("NVDA_US_EQ", last_bar_ms + 15000, 186.10)
+    assert mgr_eq.save_state_to_file() is True
+    saved_eq_rows = json.loads(open(c24_eq_file, encoding="utf-8").read())["items"]["NVDA_US_EQ"]
+    assert sum(1 for r in saved_eq_rows if len(r) >= 3 and r[2] > 0) == len(fresh_ohlc24)
+    assert saved_eq_rows[-1] == [last_bar_ms + 15000, 186.10]
+
 
 
 

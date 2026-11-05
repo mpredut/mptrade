@@ -229,6 +229,7 @@ class CacheManagerInterface(ABC):
         self._legacy_jsonl_needs_rewrite = False
         self._account_cache_dirty = False
         self._last_complete_sync_at_ms = 0
+        self._last_disk_sync_max_ts = 0
 
         self.days_back = 30
 
@@ -344,6 +345,7 @@ class CacheManagerInterface(ABC):
                         print(f"[{self.cls_name}][warning] self.cache is not Dict!!!!")    
                     
                     self._hydrate_fetchtimes_from_mapping_locked(data)
+                    self._last_disk_sync_max_ts = max(self._persisted_max_ts(), self._mem_max_ts())
                     if not self.cache:
                         print(f"[{self.cls_name}][warning] cache is None")
                     if not self.fetchtime_per_symbol:
@@ -715,12 +717,17 @@ class CacheManagerInterface(ABC):
             if self.cls_name in _ORDER_CACHE_CLASSES:
                 return self._save_account_order_snapshot()
             with self.lock:
-                if self._persisted_max_ts() > self._mem_max_ts():
+                persisted_max_ts = self._persisted_max_ts()
+                if persisted_max_ts > self._mem_max_ts():
                     builtins.print(f"[{self.cls_name}][resync] file newer than memory -> "
                                    f"refusing to overwrite with stale data ({self.filename})")
+                    if type(self) is Cache24PriceManager:
+                        self._reload_from_disk()
                     return False
                 if self.append_persist:
                     return self._save_jsonl_append()
+                if type(self) is Cache24PriceManager and persisted_max_ts > self._last_disk_sync_max_ts:
+                    self._merge_newer_disk_ohlc_series_locked()
                 metadata = self._build_basic_meta_locked(sanitize_cursor=True)
                 payload = {
                     "items": self.cache,
@@ -732,6 +739,7 @@ class CacheManagerInterface(ABC):
                     metadata,
                 ):
                     return False
+                self._last_disk_sync_max_ts = max(self._persisted_max_ts(), self._mem_max_ts())
                 print(f"[{self.cls_name}][info] Save cache to file {self.filename}")
                 return True
         except Exception as e:
@@ -829,6 +837,44 @@ class CacheManagerInterface(ABC):
             print(f"[{self.cls_name}][Error] While saving the cache file {self.filename} / .tmp : {exc}")
             return False
 
+    def _merge_newer_disk_ohlc_series_locked(self) -> None:
+        """Preserve 3-element OHLCV bars written to disk by enrichment while retaining recent in-memory ticks."""
+        backup_path = self._previous_generation_path()
+        if not os.path.exists(self.filename) and not os.path.exists(backup_path):
+            return
+        try:
+            data = read_json_dict(self.filename, backup_path=backup_path, recover_previous=True)
+            disk_items = data.get("items") if isinstance(data, dict) and isinstance(data.get("items"), dict) else {}
+            for s in list(self.symbols):
+                disk_rows = disk_items.get(s)
+                if not isinstance(disk_rows, list) or not any(
+                    isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                    for r in disk_rows
+                ):
+                    continue
+                by_ts = {self._entry_timestamp_ms(r): r for r in disk_rows if self._entry_timestamp_ms(r) > 0}
+                ohlc_ts_list = [
+                    self._entry_timestamp_ms(r)
+                    for r in disk_rows
+                    if isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                ]
+                first_ohlc_ts = min(ohlc_ts_list, default=0)
+                last_ohlc_ts = max(ohlc_ts_list, default=0)
+                for r in self.cache.get(s) or ():
+                    ts = self._entry_timestamp_ms(r)
+                    if ts <= 0:
+                        continue
+                    is_ohlc_r = isinstance(r, (list, tuple)) and len(r) >= 3 and (safe_pos_float(r[2], default=0.0) or 0.0) > 0.0
+                    if ts < first_ohlc_ts or ts >= last_ohlc_ts - 15 * 60 * 1000:
+                        existing = by_ts.get(ts)
+                        if existing is None or (is_ohlc_r and (not isinstance(existing, (list, tuple)) or len(existing) < 3)):
+                            by_ts[ts] = r
+                self.cache[s] = [by_ts[k] for k in sorted(by_ts)]
+                if hasattr(self, "_trim_old_data"):
+                    self._trim_old_data(s)
+        except Exception as exc:
+            print(f"[{self.cls_name}][Error] merge disk OHLC {self.filename}: {exc}")
+
     def _reload_from_disk(self):
         """Reload the cache when another process has written a newer file."""
         if self.append_persist:
@@ -861,6 +907,7 @@ class CacheManagerInterface(ABC):
                     self._hydrate_fetchtimes_from_mapping_locked(
                         data, filter_symbols=isinstance(self, Cache24PriceManager)
                     )
+                    self._last_disk_sync_max_ts = max(self._persisted_max_ts(), self._mem_max_ts())
                     self._account_cache_dirty = False
             except Exception as e:
                 print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")

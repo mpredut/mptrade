@@ -482,6 +482,10 @@ def load_symbol_price_series(
                                     (isinstance(r_s, (list, tuple)) and len(r_s) >= 3 and (safe_pos_float(r_s[2], default=0.0) or 0.0) > 0.0)
                                     or pt_s[0] < ohlc_0[0]
                                     or pt_s[0] > ohlc_last[0]
+                                    or (
+                                        pt_s[0] >= ohlc_last[0] - 15 * 60 * 1000
+                                        and not _prices_diverged(pt_s[1], ohlc_last[1])
+                                    )
                                 ):
                                     by_bar_ts[pt_s[0]] = r_s
                         for r_o in ohlc_bars:
@@ -1714,35 +1718,48 @@ def enrich_24h_and_microstructure(
                         active_7d_vals = list(vals_5d)
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
                         try:
-                            from state_io import atomic_write_jsonl, save_json_state
+                            from state_io import atomic_write_jsonl, save_json_state, write_meta_json
 
                             eff_p24_pts = pts_24h_to_save or pts_24h_bars
+                            p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
+                            disk_p24_obj = read_json_dict(p24_target) if (p24_target and os.path.exists(p24_target)) else {}
+                            disk_p24_rows = _extract_cached_items_series(disk_p24_obj, (sym,)) if isinstance(disk_p24_obj, dict) else []
+                            check_rows = disk_p24_rows or raw_matched_series_24h
                             raw_ohlc_cnt = sum(
-                                1 for p in raw_matched_series_24h if isinstance(p, (list, tuple)) and len(p) >= 3
+                                1 for p in check_rows if isinstance(p, (list, tuple)) and len(p) >= 3
                             )
                             new_ohlc_cnt = sum(
                                 1 for p in eff_p24_pts if isinstance(p, (list, tuple)) and len(p) >= 3
                             )
                             if eff_p24_pts and (
-                                len(raw_matched_series_24h) < 10
+                                len(check_rows) < 10
                                 or raw_ohlc_cnt < new_ohlc_cnt
                                 or (
                                     not rth_bar_fresh
-                                    and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in raw_matched_series_24h)
+                                    and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows)
                                 )
                             ):
-                                p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
                                 last_pt_ts = (
                                     safe_pos_int(eff_p24_pts[-1][0], default=int(now_ts * 1000)) or int(now_ts * 1000)
                                     if isinstance(eff_p24_pts[-1], (list, tuple)) and eff_p24_pts[-1]
                                     else int(now_ts * 1000)
                                 )
                                 prev_meta = read_json_dict(f"{p24_target}.meta") if os.path.exists(f"{p24_target}.meta") else {}
-                                prev_ft = prev_meta.get("fetchtime") if isinstance(prev_meta.get("fetchtime"), dict) else {}
-                                prev_rc = prev_meta.get("rest_sync_cursor") if isinstance(prev_meta.get("rest_sync_cursor"), dict) else {}
+                                prev_ft = (
+                                    prev_meta.get("fetchtime")
+                                    if isinstance(prev_meta.get("fetchtime"), dict)
+                                    else (disk_p24_obj.get("fetchtime") if isinstance(disk_p24_obj, dict) and isinstance(disk_p24_obj.get("fetchtime"), dict) else {})
+                                )
+                                prev_rc = (
+                                    prev_meta.get("rest_sync_cursor")
+                                    if isinstance(prev_meta.get("rest_sync_cursor"), dict)
+                                    else (disk_p24_obj.get("rest_sync_cursor") if isinstance(disk_p24_obj, dict) and isinstance(disk_p24_obj.get("rest_sync_cursor"), dict) else {})
+                                )
+                                prev_cnts = prev_meta.get("counts") if isinstance(prev_meta.get("counts"), dict) else {}
                                 eff_ft_ts = max(
-                                    safe_pos_int(prev_ft.get(sym), default=0) or 0,
-                                    safe_pos_int(prev_meta.get("max_ts"), default=0) or 0,
+                                    (safe_pos_int(prev_ft.get(sym), default=0) or 0) + 1,
+                                    (safe_pos_int(prev_meta.get("max_ts"), default=0) or 0) + 1,
+                                    int(now_ts * 1000),
                                     last_pt_ts,
                                 )
                                 ft_map = {**prev_ft, sym: eff_ft_ts}
@@ -1750,6 +1767,16 @@ def enrich_24h_and_microstructure(
                                 save_json_state(
                                     p24_target,
                                     {"items": {sym: eff_p24_pts}, "fetchtime": ft_map, "rest_sync_cursor": rc_map},
+                                )
+                                write_meta_json(
+                                    p24_target,
+                                    {
+                                        "fetchtime": ft_map,
+                                        "rest_sync_cursor": rc_map,
+                                        "counts": {**prev_cnts, sym: len(eff_p24_pts)},
+                                        "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
+                                        "saved_at": int(time.time() * 1000),
+                                    },
                                 )
                             if pts_24h_to_save or pts_24h_bars:
                                 ohlc24_target = str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_ohlc_24h_{sym}.json")))
