@@ -6736,7 +6736,7 @@ def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_patt
             "kalman_vel": -0.01,
         }
     }
-    enrich_24h_and_microstructure(str(tmp_path), str(cdir), pt, {}, [], {}, now_ts=now_s)
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt, {}, {}, {}, now_ts=now_s)
     nvda_info = pt["NVDA_US_EQ"]
     assert nvda_info["chg_15m_pct"] == pytest.approx(((199.19 - 200.5) / 200.5) * 100.0, abs=0.02)
     assert nvda_info["chg_30m_pct"] == pytest.approx(((199.19 - 201.0) / 201.0) * 100.0, abs=0.02)
@@ -6745,13 +6745,14 @@ def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_patt
     assert nvda_info["slope_15m"] == pytest.approx(-0.05)
 
     (cdir / "venue_balances_state.json").write_text(
-        json.dumps({"pos:t212:NVDA_US_EQ": {"cur_px": 199.19, "ts": now_s - 30.0}}),
+        json.dumps({"pos:t212:NVDA_US_EQ": {"price": 199.19, "ts": now_s - 30.0}}),
         encoding="utf-8",
     )
-    pre_nvda = collect_pretrade_telemetry("NVDA_US_EQ", str(tmp_path), str(cdir))
-    assert pre_nvda["chg_15m_pct"] == pytest.approx(nvda_info["chg_15m_pct"], abs=0.02)
-    assert pre_nvda["chg_1h_pct"] == pytest.approx(nvda_info["chg_1h_pct"], abs=0.02)
-    assert pre_nvda["chg_24h_pct"] == pytest.approx(nvda_info["chg_24h_pct"], abs=0.02)
+    pre_nvda = collect_pretrade_telemetry("NVDA_US_EQ", str(cdir))
+    s24_str = pre_nvda["24h Multi-Horizon Price Evolution"]
+    assert f"15m={nvda_info['chg_15m_pct']:+.2f}%" in s24_str
+    assert f"1h={nvda_info['chg_1h_pct']:+.2f}%" in s24_str
+    assert f"24h={nvda_info['chg_24h_pct']:+.2f}%" in s24_str
 
     # Guard regex does not match across line from [WARNING] to 'risk guards.']'
     ldir = tmp_path / "logs"
@@ -6762,11 +6763,11 @@ def test_iter17_post_rth_equity_cache_preservation_horizon_deltas_and_guard_patt
         "2026-11-05 03:38:00,000 [INFO] [ORDER_GUARD] HARD_VETO symbol=TAOUSDC reason=max_exposure\n",
         encoding="utf-8",
     )
-    anom = harvest_log_anomalies_from_dirs([str(ldir)])
-    assert anom["error_count"] == 0
-    assert anom["warning_count"] == 0
-    assert len(anom["guard_interventions"]) == 1
-    assert "ORDER_GUARD" in anom["guard_interventions"][0]
+    anom = harvest_log_anomalies_from_dirs([str(ldir)], 1)
+    assert anom.error_count == 0
+    assert anom.warning_count == 1
+    assert len(anom.guard_interventions) == 1
+    assert "ORDER_GUARD" in anom.guard_interventions[0]
 
 
 

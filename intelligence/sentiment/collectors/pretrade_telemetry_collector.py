@@ -254,7 +254,7 @@ def collect_pretrade_telemetry(
         if live_cur_px <= 0.0 and isinstance(vb_d := _rj(os.path.join(cachedb_dir, "venue_balances_state.json")), dict):
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
-                    if str(vb_v.get("symbol") or "").strip().upper() == str(symbol).strip().upper():
+                    if str(vb_v.get("symbol") or vb_k.split(":", 2)[-1]).strip().upper() == str(symbol).strip().upper():
                         live_cur_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
                         vb_pos_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
                         if live_cur_px > 0.0:

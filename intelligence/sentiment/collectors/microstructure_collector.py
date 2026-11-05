@@ -285,7 +285,8 @@ def load_symbol_price_series(
         except Exception:
             return []
 
-    for cand in (cands if (include_7d or need_24h_supplement) else ()):
+    is_eq_sym_load = str(symbol).strip().upper().endswith(("_EQ", "_US_EQ"))
+    for cand in (cands if (include_7d or need_24h_supplement or is_eq_sym_load) else ()):
         primary_names = (
             (f"cache_sparse_price_{cand}.jsonl", f"cache_365_price_{cand}.jsonl", f"cache_365_price_{cand}.json")
             if not need_24h_supplement
