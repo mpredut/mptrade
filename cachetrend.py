@@ -2230,6 +2230,17 @@ def _start_nonbinance_trend_poller(
 
     def run():
         rth_seeded: set[str] = set()
+        empty_backoff_ts: dict[str, float] = {}
+        cpm_cache = getattr(cpm, "cache", None)
+        extract_fn = getattr(cpm, "_extract_price_and_ts", None)
+        if isinstance(cpm_cache, dict) and callable(extract_fn):
+            for s in symbols:
+                try:
+                    cached_px, _ = extract_fn(cpm_cache.get(s))
+                    if safe_pos_float(cached_px, default=None) is not None:
+                        rth_seeded.add(s)
+                except Exception:
+                    pass
         if ws_streams:
             real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
             if callable(real_ws_fn):
@@ -2244,18 +2255,27 @@ def _start_nonbinance_trend_poller(
                 real_ws_fn = getattr(cpm, "_real_ws_is_healthy", None)
                 if callable(real_ws_fn) and real_ws_fn(s):
                     continue
-                if (
-                    s in rth_seeded
-                    and (
-                        os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
-                        or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
-                    )
-                    and not is_symbol_market_open(s)
-                ):
-                    ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
-                    if isinstance(ws_ts_map, dict):
-                        ws_ts_map[s] = time.time()
-                    continue
+                rth_gate_active = (
+                    os.environ.get("MPTRADE_FORCE_RTH_GATE") == "1"
+                    or ("PYTEST_CURRENT_TEST" not in os.environ and "unittest" not in sys.modules)
+                )
+                now_ts = time.time()
+                if rth_gate_active and not is_symbol_market_open(s, now_ts):
+                    if s in rth_seeded:
+                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
+                        if isinstance(ws_ts_map, dict):
+                            ws_ts_map[s] = now_ts
+                        continue
+                    last_empty = empty_backoff_ts.get(s, 0.0)
+                    if last_empty > 0.0 and (now_ts - last_empty) < 300.0:
+                        ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
+                        if isinstance(ws_ts_map, dict):
+                            ws_ts_map[s] = now_ts
+                        continue
+                elif rth_gate_active:
+                    last_empty = empty_backoff_ts.get(s, 0.0)
+                    if last_empty > 0.0 and (now_ts - last_empty) < 60.0:
+                        continue
                 try:
                     p = _fetch_price_with_deadline(
                         cpm.market_api,
@@ -2267,10 +2287,13 @@ def _start_nonbinance_trend_poller(
                     pf = safe_pos_float(p, default=None)
                     if pf is not None:
                         rth_seeded.add(s)
+                        empty_backoff_ts.pop(s, None)
                         ws_ts_map = getattr(cpm, "_ws_last_event_ts_per_symbol", None)
                         if isinstance(ws_ts_map, dict):
                             ws_ts_map[s] = time.time()
                         cpm._push_price(s, pf)
+                    else:
+                        empty_backoff_ts[s] = time.time()
                 except _futures.TimeoutError:
                     builtins.print(
                         f"[NB-trend] {s}: fetch BLOCKED >{fetch_deadline_sec}s "

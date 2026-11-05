@@ -8661,11 +8661,17 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     assert is_symbol_market_open("BTCUSDC", sun_closed) is True
 
     _DiskBackedSymbolCollector._EQUITY_CTX_MEMO.clear()
+    _DiskBackedSymbolCollector._EQUITY_NO_OPTIONS_TS.clear()
     called_urls = []
 
     def _fake_fetch_json(cls_or_self, url, label, lookup_sym, **kwargs):
         called_urls.append(url)
         assert "binance.com" not in url
+        if "SPCX" in url:
+            return {}
+        if "RGNT" in url and "cdn.cboe.com" in url:
+            assert "_RGNT.json" not in url
+            return {}
         if "api.nasdaq.com" in url:
             return {
                 "data": {
@@ -8737,9 +8743,26 @@ def test_equity_telemetry_and_rth_market_gating(tmp_path, monkeypatch):
     assert wh_snap.top_traders_long_ratio == pytest.approx(1.5)
     assert wh_snap.taker_buy_sell_ratio > 1.0
 
-    # Outside RTH with MPTRADE_FORCE_RTH_GATE=1, collectors reuse the disk snapshot without network calls
+    # Pre-IPO / unpriced ticker (SPCX_US_EQ) memoizes negative context for 60s across all 3 collectors
+    called_urls.clear()
+    assert ob_col.fetch("SPCX_US_EQ", allow_network=True, now=wed_rth) is None
+    assert dt_col.fetch("SPCX_US_EQ", allow_network=True, now=wed_rth) is None
+    assert wh_col.fetch("SPCX_US_EQ", allow_network=True, now=wed_rth) is None
+    assert len(called_urls) == 2
+
+    # Stock without listed options (RGNT_US_EQ) only queries RGNT.json once and backs off Cboe for 1800s
+    called_urls.clear()
+    assert dt_col.fetch("RGNT_US_EQ", allow_network=True, now=wed_rth) is not None
+    cboe_calls_1 = [u for u in called_urls if "cdn.cboe.com" in u]
+    assert len(cboe_calls_1) == 1 and "RGNT.json" in cboe_calls_1[0]
+    called_urls.clear()
+    dt_col._cache.clear()
+    assert dt_col.fetch("RGNT_US_EQ", allow_network=True, now=wed_rth + 300.0) is not None
+    assert [u for u in called_urls if "cdn.cboe.com" in u] == []
+
+    # Outside RTH with MPTRADE_FORCE_RTH_GATE=1, collectors reuse the disk snapshot (even 48h old over weekend) without network calls
     sat_closed = wed_rth + 3 * 86400.0
-    ob_col.record_snapshot(ob_snap.__class__(**{**ob_snap.to_dict(), "ts": sat_closed - 7200.0}), save_to_disk=True)
+    ob_col.record_snapshot(ob_snap.__class__(**{**ob_snap.to_dict(), "ts": sat_closed - 48.0 * 3600.0}), save_to_disk=True)
     ob_col._cache.clear()
     called_urls.clear()
     monkeypatch.setenv("MPTRADE_FORCE_RTH_GATE", "1")

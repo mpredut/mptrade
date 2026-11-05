@@ -388,7 +388,7 @@ class _DiskBackedSymbolCollector:
                     if not is_symbol_market_open(sym_clean, now_f):
                         stale_disk = self._load_from_disk(sym_clean, now_f, ignore_ttl=True, exact_only=True)
                         stale_ts = safe_pos_float(getattr(stale_disk, "ts", None), default=0.0) or 0.0
-                        if stale_disk is not None and 0.0 <= (now_f - stale_ts) < 12.0 * 3600.0:
+                        if stale_disk is not None and 0.0 <= (now_f - stale_ts) < 96.0 * 3600.0:
                             self._cache[sym_clean] = (now_f, stale_disk)
                             return sym_clean, now_f, cached_ex, stale_disk, False
                 except Exception:
@@ -540,7 +540,9 @@ class _DiskBackedSymbolCollector:
                 return ctxs[idx]
         return None
 
-    _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+    _EQUITY_CTX_MEMO: Dict[str, Tuple[float, Optional[Dict[str, Any]]]] = {}
+    _EQUITY_NO_OPTIONS_TS: Dict[str, float] = {}
+    _CBOE_INDEX_TICKERS: Tuple[str, ...] = ("SPX", "VIX", "NDX", "RUT", "DJX", "XSP")
 
     def _fetch_equity_market_context(
         self,
@@ -556,8 +558,10 @@ class _DiskBackedSymbolCollector:
         if not ticker:
             return None
         cached_ctx = self._EQUITY_CTX_MEMO.get(ticker)
-        if cached_ctx is not None and 0.0 <= (now - cached_ctx[0]) < 30.0:
-            return cached_ctx[1]
+        if cached_ctx is not None:
+            memo_ttl = 60.0 if cached_ctx[1] is None else 30.0
+            if 0.0 <= (now - cached_ctx[0]) < memo_ttl:
+                return cached_ctx[1]
 
         def _parse_num(val: Any) -> Optional[float]:
             if val is None or isinstance(val, bool):
@@ -645,6 +649,9 @@ class _DiskBackedSymbolCollector:
             pass
 
         if last_px <= 0.0 and not bars:
+            if len(self._EQUITY_CTX_MEMO) > 32:
+                self._EQUITY_CTX_MEMO.clear()
+            self._EQUITY_CTX_MEMO[ticker] = (now, None)
             return None
 
         # 3. Cboe Delayed Options JSON (Open Interest & Put/Call positioning)
@@ -652,36 +659,51 @@ class _DiskBackedSymbolCollector:
         put_oi = 0.0
         call_vol = 0.0
         put_vol = 0.0
-        opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
-        for cboe_path in (f"{ticker}.json", f"_{ticker}.json"):
-            try:
-                cb = self._fetch_json_dict(
-                    f"https://cdn.cboe.com/api/global/delayed_quotes/options/{cboe_path}",
-                    "cboe_options",
-                    ticker,
-                    timeout=timeout,
-                    user_agent="Mozilla/5.0",
-                )
-                opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
-                if isinstance(opts, list) and opts:
-                    for opt in opts:
-                        if not isinstance(opt, dict):
-                            continue
-                        opt_sym = str(opt.get("option") or "")
-                        m = opt_rx.search(opt_sym)
-                        if not m:
-                            continue
-                        oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0
-                        vol_v = safe_nonneg_float(opt.get("volume"), default=0.0) or 0.0
-                        if m.group(1) == "C":
-                            call_oi += oi_v
-                            call_vol += vol_v
-                        else:
-                            put_oi += oi_v
-                            put_vol += vol_v
-                    break
-            except Exception:
-                continue
+        no_opt_ts = self._EQUITY_NO_OPTIONS_TS.get(ticker, 0.0)
+        if not (no_opt_ts > 0.0 and 0.0 <= (now - no_opt_ts) < 1800.0):
+            opt_rx = _re.compile(r"\d{6}([CP])\d{8}$")
+            cboe_paths = (
+                (f"_{ticker}.json", f"{ticker}.json")
+                if ticker in self._CBOE_INDEX_TICKERS
+                else (f"{ticker}.json",)
+            )
+            found_opts = False
+            for cboe_path in cboe_paths:
+                try:
+                    cb = self._fetch_json_dict(
+                        f"https://cdn.cboe.com/api/global/delayed_quotes/options/{cboe_path}",
+                        "cboe_options",
+                        ticker,
+                        timeout=timeout,
+                        user_agent="Mozilla/5.0",
+                    )
+                    opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
+                    if isinstance(opts, list) and opts:
+                        found_opts = True
+                        for opt in opts:
+                            if not isinstance(opt, dict):
+                                continue
+                            opt_sym = str(opt.get("option") or "")
+                            m = opt_rx.search(opt_sym)
+                            if not m:
+                                continue
+                            oi_v = safe_nonneg_float(opt.get("open_interest"), default=0.0) or 0.0
+                            vol_v = safe_nonneg_float(opt.get("volume"), default=0.0) or 0.0
+                            if m.group(1) == "C":
+                                call_oi += oi_v
+                                call_vol += vol_v
+                            else:
+                                put_oi += oi_v
+                                put_vol += vol_v
+                        break
+                except Exception:
+                    continue
+            if not found_opts:
+                if len(self._EQUITY_NO_OPTIONS_TS) > 64:
+                    self._EQUITY_NO_OPTIONS_TS.clear()
+                self._EQUITY_NO_OPTIONS_TS[ticker] = now
+            else:
+                self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
 
         ctx_out: Dict[str, Any] = {
             "ticker": ticker,
