@@ -172,15 +172,71 @@ class GeminiClient(GeminiQuotaRouterMixin):
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.15)
+            pre_dirty = (
+                self._snapshot_dirty_tracked_files(_ROOT_DIR)
+                if (use_repo_rules and os.path.isdir(_ROOT_DIR))
+                else None
+            )
             try:
                 return subprocess.run(cmd, capture_output=True, text=True, timeout=call_timeout,
                                       check=False, env=run_env, cwd=exec_cwd)
             finally:
+                if pre_dirty is not None:
+                    self._restore_newly_dirtied_tracked_files(_ROOT_DIR, pre_dirty)
                 if locked:
                     try:
                         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
                     except OSError:
                         pass
+
+    @staticmethod
+    def _snapshot_dirty_tracked_files(repo_dir: str) -> Optional[set[str]]:
+        """Return relative paths of tracked files currently modified vs HEAD in ``repo_dir``."""
+        if not repo_dir or not os.path.isdir(repo_dir):
+            return None
+        default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if "PYTEST_CURRENT_TEST" in os.environ and os.path.abspath(repo_dir) == default_root:
+            return None
+        try:
+            proc = _ORIG_SUBPROCESS_RUN(
+                ["git", "-C", repo_dir, "diff", "--name-only", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            return {line.strip() for line in (proc.stdout or "").splitlines() if line.strip()}
+        except Exception:
+            return None
+
+    @classmethod
+    def _restore_newly_dirtied_tracked_files(cls, repo_dir: str, pre_dirty: Optional[set[str]]) -> None:
+        """Restore any tracked files in ``repo_dir`` that were clean before an agy CLI query/compact call."""
+        if pre_dirty is None:
+            return
+        post_dirty = cls._snapshot_dirty_tracked_files(repo_dir)
+        if not post_dirty:
+            return
+        newly_dirty = sorted(post_dirty - pre_dirty)
+        if not newly_dirty:
+            return
+        logger.warning(
+            "Restoring %d tracked workspace file(s) modified directly during agy CLI call: %s",
+            len(newly_dirty),
+            ", ".join(newly_dirty),
+        )
+        try:
+            _ORIG_SUBPROCESS_RUN(
+                ["git", "-C", repo_dir, "checkout", "HEAD", "--", *newly_dirty],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+        except Exception as exc:
+            logger.warning("Failed restoring newly dirtied tracked files %s: %s", newly_dirty, exc)
 
     @staticmethod
     def _parse_cli_payload(proc: subprocess.CompletedProcess) -> Tuple[Optional[str], Optional[str]]:
@@ -523,7 +579,7 @@ class GeminiClient(GeminiQuotaRouterMixin):
                                             try:
                                                 c_proc = self._execute_cli(
                                                     turn_cid,
-                                                    "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards.",
+                                                    "/compact Summarize prior turns in place, preserving open positions, recent decisions, and active risk guards. Do NOT call any tools or read/modify any files.",
                                                     compact_timeout,
                                                     compact_model,
                                                     bot_cli_base,

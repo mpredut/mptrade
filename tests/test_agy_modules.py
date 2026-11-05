@@ -747,6 +747,60 @@ class TestMirrorTopicThreadToUi:
         assert repair_cmd[repair_cmd.index("--add-dir") + 1] == _ROOT_DIR
         assert repair_kw.get("cwd") == _ROOT_DIR
 
+    def test_execute_cli_restores_newly_dirtied_tracked_files_on_timeout_and_preserves_preexisting_dirty(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+        import intelligence.sentiment.gemini_client as gc_mod
+        from intelligence.sentiment.gemini_client import GeminiClient, _ORIG_SUBPROCESS_RUN
+
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+        _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "config", "user.email", "test@example.com"], check=True, capture_output=True)
+        _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True, capture_output=True)
+
+        clean_file = repo_dir / "manage_agy.sh"
+        clean_file.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        pre_dirty_file = repo_dir / "already_dirty.py"
+        pre_dirty_file.write_text("x = 1\n", encoding="utf-8")
+        _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "add", "manage_agy.sh", "already_dirty.py"], check=True, capture_output=True)
+        _ORIG_SUBPROCESS_RUN(["git", "-C", str(repo_dir), "commit", "-m", "init"], check=True, capture_output=True)
+
+        # Modify already_dirty.py BEFORE _execute_cli starts
+        pre_dirty_file.write_text("x = 2\n", encoding="utf-8")
+
+        fake_bin = tmp_path / "agy-bot"
+        fake_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+        bot_cli_base = tmp_path / "bot_cli"
+        bot_cli_base.mkdir()
+
+        monkeypatch.setattr(gc_mod, "_ROOT_DIR", str(repo_dir))
+
+        def rogue_timeout_run(cmd, **kwargs):
+            # Simulate an LLM corrupting a clean tracked file during /compact before timing out
+            clean_file.write_text("#!/usr/bin/env bash\nfi\nexit 1\nfi\n", encoding="utf-8")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=120.0)
+
+        monkeypatch.setattr(subprocess, "run", rogue_timeout_run)
+        client = GeminiClient(cli_path=str(fake_bin), project_id="autonommptrade")
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            client._execute_cli(
+                "cid-repair",
+                "/compact Summarize prior turns in place",
+                120.0,
+                "gpt-oss-120b-medium",
+                str(bot_cli_base),
+                {},
+                is_mocked=False,
+                include_repo_rules=True,
+            )
+
+        assert clean_file.read_text(encoding="utf-8") == "#!/usr/bin/env bash\nexit 0\n"
+        assert pre_dirty_file.read_text(encoding="utf-8") == "x = 2\n"
+
+
 
 
 

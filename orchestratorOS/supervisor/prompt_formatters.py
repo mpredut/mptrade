@@ -247,7 +247,8 @@ def build_supervisor_prompt(
         )
         tool_rule = (
             "- If you diagnose a reproducible code bug or configuration error and need to verify exact lines before proposing `code_remediation`, "
-            "you MAY read the target file in the workspace so `search_block` matches verbatim.\n"
+            "you MAY read the target file in the workspace so `search_block` matches verbatim. "
+            "Do NOT edit or modify workspace files directly with tools; propose all fixes exclusively in `code_remediation`.\n"
         )
         report_format_rule = (
             "- Format your response in TWO parts so this thread stays cleanly readable in the Web UI:\n"
