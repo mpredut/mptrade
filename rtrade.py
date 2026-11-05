@@ -19,6 +19,7 @@ from binance_api import bapi_placeorder as po
 from botcore import (
     _parse_bool_flag,
     exact_int,
+    format_price_log,
     load_dotenv as _load_dotenv,
     normalize_epoch_sec,
     required_bool_env,
@@ -1148,13 +1149,11 @@ class TradingBot:
                 target_qty = self.qty if pending_replacement_qty is None else pending_replacement_qty
                 submit_cache_permit = pending_cache_permit
                 pending_cache_permit = pending_replacement_price = pending_replacement_qty = None
-                tgt_px_str = f"{target_price:.2f}" if target_price >= 1.0 else (f"{target_price:.6f}".rstrip("0").rstrip(".") or "0")
-                print(f"[{self.symbol}] {side} order initiated at {tgt_px_str}; adjustment {adjustment_percent}%")
+                print(f"[{self.symbol}] {side} order initiated at {format_price_log(target_price)}; adjustment {adjustment_percent}%")
 
                 if is_side_filled():
                     cur_filled_px = getattr(self, filled_attr)
-                    cur_fpx_str = f"{cur_filled_px:.2f}" if cur_filled_px >= 1.0 else (f"{cur_filled_px:.6f}".rstrip("0").rstrip(".") or "0")
-                    print(f"[{self.symbol}] Ignore {side} order. It was previously filled at {cur_fpx_str}")
+                    print(f"[{self.symbol}] Ignore {side} order. It was previously filled at {format_price_log(cur_filled_px)}")
                     self._finish_side_precheck(side, aborted=False)
                     completed = True
                     return mark_filled(cur_filled_px)
@@ -1210,15 +1209,13 @@ class TradingBot:
                 setattr(self, filled_attr, filled_px)
 
                 if _order_fully_filled(self.symbol, order_id):
-                    fpx_str = f"{filled_px:.2f}" if filled_px >= 1.0 else (f"{filled_px:.6f}".rstrip("0").rstrip(".") or "0")
-                    print(f"[{self.symbol}] {side} order filled at {fpx_str}")
+                    print(f"[{self.symbol}] {side} order filled at {format_price_log(filled_px)}")
                     print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (1)")
                     return _complete_followup(target_qty, filled_px)
 
                 recent_fill_px = mkt.latest_fill_price(self.symbol, side, WAIT_FOR_ORDER)
                 if recent_fill_px is not None:
-                    rfpx_str = f"{recent_fill_px:.2f}" if recent_fill_px >= 1.0 else (f"{recent_fill_px:.6f}".rstrip("0").rstrip(".") or "0")
-                    print(f"[{self.symbol}] {side} order may have been filled :-) at {rfpx_str}")
+                    print(f"[{self.symbol}] {side} order may have been filled :-) at {format_price_log(recent_fill_px)}")
                     print(f"[{self.symbol}] Starting urgent {opp_side} follow-up (2)")
                     return _complete_followup(target_qty, recent_fill_px)
 
@@ -1230,8 +1227,7 @@ class TradingBot:
                     and not u.are_close(current_price, filled_opp_price, RTRADE_BAD_DAY_TOLERANCE_PCT)
                 )
                 if bad_day:
-                    cpx_str = f"{current_price:.2f}" if current_price >= 1.0 else (f"{current_price:.6f}".rstrip("0").rstrip(".") or "0")
-                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {cpx_str}")
+                    print(f"[{self.symbol}] Bed day :-(. Trying {side} at current price {'-' if is_buy else '+'} x2 {format_price_log(current_price)}")
                     adjustment_percent = RTRADE_BAD_DAY_MULTIPLIER * self.DEFAULT_ADJUSTMENT_PERCENT
                 aborting_unfilled = getattr(self, "_round_aborted", False) and not is_opp_filled()
                 if not aborting_unfilled:
@@ -1581,7 +1577,7 @@ class TradingBot:
             mark_fn(round(last_px, 4))
             print(
                 f"[{self.symbol}] startup recovery: resumed after {filled_side} fill at "
-                f"{getattr(self, attr_name):.2f}; cancelling stale {stale_side} order(s) to continue follow-up."
+                f"{format_price_log(getattr(self, attr_name))}; cancelling stale {stale_side} order(s) to continue follow-up."
             )
         api.cancel_open_orders(stale_side, self.symbol, allowed_owners={"rtrade"})
 
@@ -1632,8 +1628,7 @@ class TradingBot:
                         print(f"[{self.symbol}] Failed to fetch current price. Retrying in {WAIT_FOR_ORDER} seconds...")
                         time.sleep(WAIT_FOR_ORDER)
                         continue
-                    cpx_str = f"{current_price:.2f}" if current_price >= 1.0 else (f"{current_price:.6f}".rstrip("0").rstrip(".") or "0")
-                    print(f"[{self.symbol}] Current price: {cpx_str}")
+                    print(f"[{self.symbol}] Current price: {format_price_log(current_price)}")
 
                     if _trend_too_strong(self.symbol):
                         self._cancel_all_rtrade_open_orders()
@@ -1651,11 +1646,9 @@ class TradingBot:
 
                     filled_buy_price = buy_result + RTRADE_ZERO_EPSILON
                     filled_sell_price = sell_result
-                    fb_str = f"{filled_buy_price:.2f}" if filled_buy_price >= 1.0 else (f"{filled_buy_price:.6f}".rstrip("0").rstrip(".") or "0")
-                    fs_str = f"{filled_sell_price:.2f}" if filled_sell_price >= 1.0 else (f"{filled_sell_price:.6f}".rstrip("0").rstrip(".") or "0")
                     print(
-                        f"[{self.symbol}] Transaction complete: Bought at {fb_str}, "
-                        f"Sold at {fs_str}"
+                        f"[{self.symbol}] Transaction complete: Bought at {format_price_log(filled_buy_price)}, "
+                        f"Sold at {format_price_log(filled_sell_price)}"
                     )
                     ratio_label = "PROFIT: Profit ratio" if filled_buy_price < filled_sell_price else "LOSS: Loss ratio"
                     print(f"[{self.symbol}] {ratio_label} {filled_sell_price / filled_buy_price:.2f}")

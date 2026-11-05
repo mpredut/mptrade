@@ -10,6 +10,7 @@ from binance_api import bapi_allorders as apiorders
 from binance_api import bapi_trades as apitrades
 from botcore import (
     _parse_bool_flag,
+    format_price_log,
     load_dotenv as _load_dotenv,
     normalize_epoch_sec,
     parse_dotenv,
@@ -185,7 +186,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
                 quote = (cachepaths.split_symbol_assets(sym_name) or ("", ""))[1] or "USD"
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
-                avg_px_str = f"{avg_price:.2f}" if avg_price >= 1.0 else (f"{avg_price:.6f}".rstrip("0").rstrip(".") or "0")
+                avg_px_str = format_price_log(avg_price)
                 print(
                     f"[MONITORTRADES] 🎉 New executed order: {side} {total_qty:.6f} "
                     f"{sym_name} @ {avg_px_str} (orderId={oid}{fill_suffix})"

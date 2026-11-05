@@ -1949,6 +1949,17 @@ def test_batch59_hl_strategy_bool_validation_and_kraken_pnl_backfill_side_guard(
     assert list(inv) == [10.0, 15.0, 20.0]
 
 
+def test_format_price_log_ssot():
+    import botcore
+    import utils as u
 
+    assert u.format_price_log is botcore.format_price_log
+    assert botcore.format_price_log(123.456) == "123.46"
+    assert botcore.format_price_log(1.0) == "1.00"
+    assert botcore.format_price_log(0.1842) == "0.1842"
+    assert botcore.format_price_log(0.0005) == "0.0005"
+    assert botcore.format_price_log(0.0) == "0"
+    assert botcore.format_price_log(None) == "0"
+    assert botcore.format_price_log("bad") == "0"
 
 

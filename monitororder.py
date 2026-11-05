@@ -31,6 +31,7 @@ import order_lifecycle as accepted_order_persistence
 import lock.cooldown as trade_cooldown  # noqa: F401 (re-export: test compat)
 from botcore import (
     float_env,
+    format_price_log,
     load_dotenv as _load_dotenv,
     lru_dict_put,
     required_float_env,
@@ -202,7 +203,7 @@ def _notify_order_launched(symbol, order_type, order_id, price, quantity, owner=
         qty, px, val, quote, side, owner_tag, owner_body = _format_order_notify_fields(
             symbol, order_type, price, quantity, owner
         )
-        px_disp = f"{px:.2f}" if px >= 1.0 else (f"{px:.6f}".rstrip("0").rstrip(".") or "0")
+        px_disp = format_price_log(px)
         print(f"[MONITORORDER] 📝 New order launched{owner_body}: {side} {qty:.6f} {symbol} @ {px_disp} (orderId={order_id})")
         alert.notify(
             title=f"📝 {side} {symbol} @ {px_disp}{owner_tag}",
@@ -247,8 +248,7 @@ def monitor_open_orders_by_type(symbol, order_type, failed_orders=None):
         print("Could not obtain the current price.")
         return
     
-    cur_px_str = f"{current_price:.2f}" if current_price >= 1.0 else (f"{current_price:.6f}".rstrip("0").rstrip(".") or "0")
-    print(f"The current price : {cur_px_str}")
+    print(f"The current price : {format_price_log(current_price)}")
     
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
     custom_ttl_map = {}

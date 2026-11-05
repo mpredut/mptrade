@@ -17,7 +17,7 @@ from typing import Callable
 
 from notify_engine.alertnotifiers import bind_notify
 from botcore import (
-    _parse_bool_flag, are_close, log, defined_env, normalize_epoch_sec,
+    _parse_bool_flag, are_close, format_price_log, log, defined_env, normalize_epoch_sec,
     require_finite_float, require_int, required_env,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
@@ -829,7 +829,7 @@ class Strategy(BaseSpotMixin):
         self.s["cycle_fees"] += fee
         self.s["fees_total"] += fee
         self.s["realized_net"] -= fee
-        px_str = f"{price:.2f}" if price >= 1.0 else (f"{price:.6f}".rstrip("0").rstrip(".") or "0")
+        px_str = format_price_log(price)
         if o["side"] == "buy":
             self._apply_buy_fill_accounting(o, vol, price, fallback_to_notional=True)
             if self.s.get("entry_ts") is None:
@@ -838,7 +838,7 @@ class Strategy(BaseSpotMixin):
                 self.s["trend_mode"] = True
                 self.s["trend_peak"] = price
             avg = self._avg()
-            avg_str = f"{avg:.2f}" if avg >= 1.0 else (f"{avg:.6f}".rstrip("0").rstrip(".") or "0")
+            avg_str = format_price_log(avg)
             log(f"  [STRAT] {tag}BUY FILLED {vol} @ {price} {self.ccy} ({o.get('kind')})  "
                 f"qty={self.s['qty']:.8f} avg={avg:.{self.price_dec}f} fee={fee}")
             self._emit(
@@ -849,7 +849,7 @@ class Strategy(BaseSpotMixin):
             self._cancel_orders("sell", exclude_market=True)
         else:
             avg = self._avg() or price
-            avg_str = f"{avg:.2f}" if avg >= 1.0 else (f"{avg:.6f}".rstrip("0").rstrip(".") or "0")
+            avg_str = format_price_log(avg)
             gross = (price - avg) * vol
             net = gross - fee
             self.s["realized_gross"] += gross

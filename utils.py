@@ -48,6 +48,7 @@ def get_interval_time(valoare_prestabilita=97 * 79, marja_aleatoare=10):
 
 calculate_difference_percent = botcore.diff_percent
 are_close = botcore.are_close
+format_price_log = botcore.format_price_log
 
 
 def value_diff_to_percent(value1, value2):

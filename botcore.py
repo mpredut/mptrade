@@ -241,6 +241,12 @@ def lru_dict_put(cache: dict, key: object, value: object, max_entries: int) -> N
             cache.pop(next(iter(cache)), None)
 
 
+def format_price_log(price: object) -> str:
+    """Format a price with 2 decimals when >= 1.0 and up to 6 decimals for sub-dollar values."""
+    px = safe_float(price, default=0.0) or 0.0
+    return f"{px:.2f}" if abs(px) >= 1.0 else (f"{px:.6f}".rstrip("0").rstrip(".") or "0")
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 2. CONFIGURATION & ENVIRONMENT SSOT (Loading, Parsing, Key-Value & Watcher)
 # ═════════════════════════════════════════════════════════════════════════════
