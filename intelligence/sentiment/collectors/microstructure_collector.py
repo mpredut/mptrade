@@ -81,6 +81,7 @@ _LAST_7D_SPAN_MS_BY_SYM: Dict[str, float] = {}
 _FALLBACK_PROVIDER_OHLC_FNS: Dict[str, Any] = {}
 _FALLBACK_OHLC_SERIES_CACHE: Dict[Tuple[str, str, int], Tuple[float, Any]] = {}
 _PRICE_SERIES_MEMO: Dict[Tuple[str, str, bool, Tuple[str, ...]], Tuple[Any, list, list, float]] = {}
+_ARCH_FILE_MEMO: Dict[Tuple[str, int, int, int, Tuple[str, ...]], list] = {}
 
 logger = logging.getLogger("intelligence.sentiment.microstructure_collector")
 
@@ -289,12 +290,18 @@ def load_symbol_price_series(
                 *(f"cache_sparse_price_{c}.jsonl" for c in cands),
                 *(f"cache_365_price_{c}.jsonl" for c in cands),
                 *(f"cache_365_price_{c}.json" for c in cands),
-                "cache_watcher_all_price.json",
             ):
                 for _cand_sp in (_sp, _sp + ".previous") if "cache_24_price_" in _sp else (_sp,):
                     try:
                         _st = os.stat(_cand_sp)
                         _stat_list.append((_cand_sp, _st.st_mtime_ns, _st.st_size))
+                    except OSError:
+                        pass
+            if not _stat_list:
+                for _w_sp in _cand_paths("cache_watcher_all_price.json"):
+                    try:
+                        _st = os.stat(_w_sp)
+                        _stat_list.append((_w_sp, _st.st_mtime_ns, _st.st_size))
                     except OSError:
                         pass
             _memo_file_sig = tuple(_stat_list)
@@ -338,6 +345,7 @@ def load_symbol_price_series(
     archive_pts: list = []
     sparse_7d_pts: list = []
     cands_upper = {str(c).strip().upper() for c in cands if isinstance(c, str) and str(c).strip()}
+    cands_upper_tup = tuple(sorted(cands_upper))
 
     def _read_arch_file(arch_path: str, max_b: int = 1024 * 1024) -> list:
         if not os.path.exists(arch_path):
@@ -346,6 +354,15 @@ def load_symbol_price_series(
             if arch_path.endswith(".json"):
                 aser = _sort_ts_rows(_extract_cached_items_series(_rj(arch_path), cands))
                 return list(aser) if len(aser) >= 2 else []
+            _arch_key: Optional[Tuple[str, int, int, int, Tuple[str, ...]]] = None
+            if _rj_cand is _default_read_json_cached:
+                try:
+                    _ast = os.stat(arch_path)
+                    _arch_key = (os.path.abspath(arch_path), _ast.st_mtime_ns, _ast.st_size, max_b, cands_upper_tup)
+                    if (_hit_arch := _ARCH_FILE_MEMO.get(_arch_key)) is not None:
+                        return [list(r) for r in _hit_arch]
+                except OSError:
+                    _arch_key = None
             parsed_rows = []
             for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
                 if isinstance(rec, dict):
@@ -358,7 +375,12 @@ def load_symbol_price_series(
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
                     parsed_rows.append([item[0], item[1]])
             parsed_rows = _sort_ts_rows(parsed_rows)
-            return parsed_rows if len(parsed_rows) >= 2 else []
+            res_arch = parsed_rows if len(parsed_rows) >= 2 else []
+            if _arch_key is not None and res_arch:
+                if len(_ARCH_FILE_MEMO) > 128:
+                    _ARCH_FILE_MEMO.clear()
+                _ARCH_FILE_MEMO[_arch_key] = [list(r) for r in res_arch]
+            return res_arch
         except Exception:
             return []
 
