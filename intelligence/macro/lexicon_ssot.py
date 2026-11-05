@@ -38,6 +38,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
     "deal", "deals", "agreement", "partnership", "pact", "contract", "bargain",
     "bet", "chord", "balance", "gold", "rich", "pose", "lightning",
+    "protest", "protests", "union", "unions", "workers", "rail", "transit",
 })
 
 _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -855,10 +856,11 @@ _OFF_TOPIC_TABLOID_WORDS: frozenset[str] = (
     | _HUMAN_INTEREST_WAR_FILLER_WORDS
     | frozenset({
         "blue", "cards", "celebrity", "cereal", "concert", "dylan", "estate",
-        "exemption", "farmers", "festival", "gift", "governor", "irs", "jailed",
-        "mamdani", "match", "mayor", "movie", "music", "olive", "player",
-        "players", "prison", "recipe", "recipes", "red", "singer", "song",
-        "storm", "subscriber", "subscribers", "weather", "yacht",
+        "exemption", "farmers", "festival", "gift", "governor", "hoax", "hoaxes",
+        "irs", "jailed", "mamdani", "match", "mayor", "movie", "music", "olive",
+        "player", "players", "prison", "protest", "protests", "recipe", "recipes",
+        "red", "singer", "song", "storm", "subscriber", "subscribers", "weather",
+        "yacht",
     })
 )
 
@@ -925,6 +927,10 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     if matched_fin and matched_fin <= {"tax", "taxes"} and (words & {"estate", "gift", "exemption", "deduction", "refund", "irs", "filing", "retirees", "retirement"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
         return False
     if (words & _HUMAN_INTEREST_WAR_FILLER_WORDS) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
+        return False
+    if (words & {"hoax", "hoaxes", "protest", "protests"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS):
+        return False
+    if any(p in clean_low for p in ("stocks to buy", "stocks to watch", "best stocks to", "top stocks to")):
         return False
     if "prediction market" in clean_low and (
         words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"democratic", "congress", "senate", "ballot", "sweep"})

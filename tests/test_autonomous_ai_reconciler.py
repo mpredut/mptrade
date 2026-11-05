@@ -933,7 +933,8 @@ def test_multi_coin_trading_decisions_and_full_telemetry_prompt_context(temp_env
     assert "Sudden escalation alert in Strait of Hormuz" in prompt_text
     assert "median_chg=-3.1%" in prompt_text
     assert "7d=-5.00% 7d_range=[74.5, 80.0]" in prompt_text
-    assert "vol_1h=0.74%(adapt_reentry=1.48%)" in prompt_text
+    assert "vol_1h=0.74%" in prompt_text
+    assert "adapt_reentry=" not in prompt_text
     assert "est_rem=42.5h, med_d=3.0d/p90=6.2d" in prompt_text
     assert "order_retry_queue.jsonl" in prompt_text
     assert "[kraken] HYPEUSD: qty=13.68" in prompt_text
@@ -2623,8 +2624,8 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     assert "swing_wave(low=0.1636, high=0.1778, rally_low=+8.68%, pullback_high=+0.00%)" in prompt_out
     assert "swings_7d=[-6.5%, +8.7%], avg_amp=7.59%" in prompt_out
     assert "slopes(90s=+0.00092, 3.7m=+0.00064, 15m=+0.00045, 2.5h=+0.00021, grad_rec=+0.0012, grad_fast=+0.0018/eps=0.0004)" in prompt_out
-    assert "g_coeff(90s=+0.00081, 3.7m=+0.00055, 15m=+0.00038, 2.5h=+0.00019)" in prompt_out
-    assert "vol_1h=0.85%(adapt_reentry=1.7%) adapt_dca=2.1%" in prompt_out
+    assert "g_coeff(" not in prompt_out
+    assert "vol_1h=0.85%" in prompt_out
     assert "FULL ACCESS TO EVERYTHING IN `cachedb/` AS A DECISION INFORMATION SOURCE" in prompt_out
     assert "UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING" in prompt_out
     assert "50%–100%` of `value_usd`" in prompt_out
@@ -8902,6 +8903,30 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         }
     )
     assert "open_lifo_lots=[8@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line
+    assert "profitable_lifo_usd=$516.22(2.38_TAO@+0.84%)" in pos_line
+
+    # Verify tactical_avg_buy_px >= active_avg_buy_px is suppressed so true position profitability is not obscured
+    pos_line_arb = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "ARBUSDC",
+            "base": "ARB",
+            "quote": "USDC",
+            "free_base": 4195.16,
+            "value_usd": 669.13,
+            "free_quote": 3391.16,
+            "price": 0.1595,
+            "active_avg_buy_px": 0.155995,
+            "pnl_vs_avg_pct": 2.25,
+            "tactical_avg_buy_px": 0.159156,
+            "pnl_vs_tactical_avg_pct": 0.22,
+            "mt_gain_pct": 7.5,
+            "mt_lost_pct": 3.7188,
+        }
+    )
+    assert "avg_buy_px=0.155995 (pnl_vs_avg=2.25%)" in pos_line_arb
+    assert "tactical_avg_px=" not in pos_line_arb
+    assert "bot_ref_gain=" not in pos_line_arb
 
     pos_line_clipped = _format_tradable_position_line(
         {
