@@ -800,6 +800,34 @@ class TestMirrorTopicThreadToUi:
         assert clean_file.read_text(encoding="utf-8") == "#!/usr/bin/env bash\nexit 0\n"
         assert pre_dirty_file.read_text(encoding="utf-8") == "x = 2\n"
 
+    def test_record_topic_turn_pins_recent_actionable_trades_across_hold_streaks(self, tmp_path):
+        from orchestratorOS.agy.topics import load_topic_registry, record_topic_turn
+
+        reg_path = str(tmp_path / "reg.json")
+        cli_base = str(tmp_path / "cli")
+        os.makedirs(os.path.join(cli_base, "conversations"), exist_ok=True)
+        record_topic_turn(
+            "auto_cryptotrade_executor",
+            "cid-pin",
+            '{"summary": "Re-anchored limit orders", "market_trading_decisions": [{"decision": "SELL", "symbol": "TAOUSDC", "order_type": "LIMIT", "limit_price": 221.4, "confidence": 0.91}]}',
+            cli_base=cli_base,
+            max_history_entries=5,
+            registry_path=reg_path,
+        )
+        for i in range(6):
+            record_topic_turn(
+                "auto_cryptotrade_executor",
+                "cid-pin",
+                f'{{"summary": "Hold cycle {i}", "market_trading_decisions": [{{"decision": "HOLD", "symbol": "BTCUSDC", "confidence": 0.9}}]}}',
+                cli_base=cli_base,
+                max_history_entries=5,
+                registry_path=reg_path,
+            )
+        hist = load_topic_registry(reg_path)["auto_cryptotrade_executor"]["rolling_history"]
+        assert len(hist) == 5
+        assert any("SELL(LIMIT@221.4):TAOUSDC@0.91" in h["summary"] for h in hist)
+
+
 
 
 

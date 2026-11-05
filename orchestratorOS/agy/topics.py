@@ -447,7 +447,7 @@ def _fmt_trade_decision_item(d: Dict[str, Any]) -> str:
     return f"{d.get('decision', 'HOLD')}:{d.get('symbol', '')}@{d.get('confidence', 0)}"
 
 
-def condense_decision(response_text: Any, max_len: int = 220) -> str:
+def condense_decision(response_text: Any, max_len: int = 360) -> str:
     """Single-line summary of an LLM JSON decision (falls back to the whitespace-collapsed text)."""
     if not isinstance(response_text, str):
         return ""
@@ -467,7 +467,7 @@ def condense_decision(response_text: Any, max_len: int = 220) -> str:
         parts.extend(f"{k}={parsed[k]}" for k in _PROSE_SUMMARY_KEYS if parsed.get(k) not in (None, ""))
         if parts:
             condensed = "; ".join(parts)
-    max_len = max(4, safe_int(max_len, 220))
+    max_len = max(4, safe_int(max_len, 360))
     return condensed if len(condensed) <= max_len else condensed[: max_len - 3] + "..."
 
 
@@ -532,7 +532,28 @@ def record_topic_turn(
     condensed = condense_decision(response_text)
     if condensed:
         history.append({"utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"), "summary": condensed})
-    entry["rolling_history"] = history[-max_history_entries:] if max_history_entries > 0 else []
+    if max_history_entries > 0:
+        if len(history) > max_history_entries:
+            action_quota = max(1, max_history_entries // 3)
+            action_idxs = [
+                idx for idx, item in enumerate(history)
+                if any(
+                    tok in str(item.get("summary") or "")
+                    for tok in ("BUY(", "BUY:", "SELL(", "SELL:", "decision=BUY", "decision=SELL")
+                )
+            ]
+            pinned = set(action_idxs[-action_quota:])
+            recent_quota = max(0, max_history_entries - len(pinned))
+            for idx in range(len(history) - 1, -1, -1):
+                if len(pinned) >= max_history_entries or recent_quota <= 0:
+                    break
+                if idx not in pinned:
+                    pinned.add(idx)
+                    recent_quota -= 1
+            history = [history[idx] for idx in sorted(pinned)]
+        entry["rolling_history"] = history
+    else:
+        entry["rolling_history"] = []
     reg[resolved] = entry
     save_topic_registry(reg, registry_path)
     if active_cid:
