@@ -9150,6 +9150,26 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
         in s1_synth_delta
     )
 
+    # 11. Transient '! network error GET: The read operation timed out' recovered by '[STRAT] price=...' is not flagged
+    with tempfile.TemporaryDirectory() as tmp_net:
+        t212_log = Path(tmp_net) / "T212-bot.log"
+        t212_log.write_text(
+            "\n".join(
+                [
+                    "[02:05:26] [nvda]   [STRAT] price=182.21  qty=0.41  avg=205.83  deployed=84USD  NET=+27.39USD  ord=0",
+                    "[02:05:27]   ! network error GET: The read operation timed out",
+                    "[02:05:27] [spcx]   [STRAT] price unavailable — retrying",
+                    "[02:05:46] [spcx]   [STRAT] price=123.52  qty=7.04  avg=144.99  deployed=1021USD  NET=-179.69USD  ord=0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        net_res = harvest_log_anomalies_from_dirs([tmp_net], lookback_hours=6.0)
+        assert net_res.error_count == 0
+        assert not net_res.persistent_errors
+
+
 
 
 

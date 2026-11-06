@@ -983,7 +983,7 @@ def _format_microstructure_section(
             basis_sfx = f", {', '.join(basis_parts)}"
 
         liq_sfx = ""
-        if minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+        if not eq_no_oi_3b and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
             liq_parts: List[str] = []
             for l_lbl, px_k, usd_k, dist_k in (
                 ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
@@ -1039,6 +1039,14 @@ def _format_microstructure_section(
             continue
         if sym.endswith("USDC") and b_canon_3b not in rendered_3b_perp_by_base:
             rendered_3b_perp_by_base[b_canon_3b] = (sym, tr_sig[0], tr_sig[1])
+        deriv_oi_sfx = (
+            ""
+            if (eq_no_oi_3b and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12)
+            else (
+                f", funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
+                f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%"
+            )
+        )
         lines.append(
             f"  * {sym_3b_lbl}: ob_imbalance={minfo.get('ob_imbalance')} "
             f"(bid_depth=${minfo.get('bid_depth_usd')}, ask_depth=${minfo.get('ask_depth_usd')}){depth_1pct_sfx}, "
@@ -1046,9 +1054,8 @@ def _format_microstructure_section(
             f"ask_wall={aw_px} (${minfo.get('ask_wall_usd')}{aw_dist}), "
             f"whale_long_pct={minfo.get('whale_long_pct')}, "
             f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
-            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}, "
-            f"funding={minfo.get('funding_rate')} (pred={minfo.get('pred_funding_rate')}), "
-            f"oi_usd={oi_lbl}, oi_1h_chg={minfo.get('oi_1h_chg_pct')}%{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
+            f"(buy_v=${minfo.get('taker_buy_vol_usd')}/sell_v=${minfo.get('taker_sell_vol_usd')}){cvd_sfx}"
+            f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}"
         )
     return lines
 

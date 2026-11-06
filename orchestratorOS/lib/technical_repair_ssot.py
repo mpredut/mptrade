@@ -692,7 +692,8 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
         r"\[[A-Z0-9]+\]\s+Existing SELL order blocks AssetGuardian tier:|"
         r"Started\.\s+check_interval=|"
         r"\[CacheOrderManager\]\[info\]\s+(?:New order fills:|Save cache to file)|"
-        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up))",
+        r"\[TRAIL\]\s+[A-Z0-9]+:\s+\d+(?:\.\d+)?\s+(?:varf|warming up)|"
+        r"\[STRAT\]\s+price=\d+(?:\.\d+)?)",
         re.IGNORECASE,
     )
     daemon_recovered_pattern = re.compile(
@@ -837,6 +838,7 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                                     or "rsync error:" in cleaned
                                     or "[rsync_cachedb] ERROR:" in cleaned
                                     or "agy CLI with model" in cleaned
+                                    or "! network error " in cleaned
                                 )
                                 and any(
                                     daemon_recovered_pattern.search(lines[j])

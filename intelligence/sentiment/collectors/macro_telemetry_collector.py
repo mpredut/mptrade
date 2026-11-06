@@ -167,6 +167,25 @@ def collect_macro_benchmarks_snapshot(
             pts_24h = ([p for p in pts if p[0] >= pts[-1][0] - 86400.0] or pts) if pts else []
             mkt_state = str(meta.get("marketState") or "").strip().upper()
             reg_time_s = normalize_epoch_sec(meta.get("regularMarketTime"), default=None)
+            if not mkt_state and bool(meta.get("hasPrePostMarketData")) and isinstance(ctp := meta.get("currentTradingPeriod"), dict):
+                reg_d = ctp.get("regular") if isinstance(ctp.get("regular"), dict) else {}
+                pre_d = ctp.get("pre") if isinstance(ctp.get("pre"), dict) else {}
+                post_d = ctp.get("post") if isinstance(ctp.get("post"), dict) else {}
+                r_start = normalize_epoch_sec(reg_d.get("start"), default=None)
+                r_end = normalize_epoch_sec(reg_d.get("end"), default=None)
+                pre_start = normalize_epoch_sec(pre_d.get("start"), default=None)
+                post_end = normalize_epoch_sec(post_d.get("end"), default=None)
+                bar_ts = pts[-1][0] if pts else None
+                probe_ts = eff_now if (eff_now > 0.0 and bar_ts is not None and eff_now > bar_ts + 900.0) else (bar_ts or eff_now)
+                if r_start is not None and r_end is not None and probe_ts > 0.0:
+                    if pre_start is not None and pre_start <= probe_ts < r_start:
+                        mkt_state = "PRE"
+                    elif r_start <= probe_ts <= r_end:
+                        mkt_state = "REGULAR"
+                    elif post_end is not None and r_end < probe_ts <= post_end:
+                        mkt_state = "POST"
+                    else:
+                        mkt_state = "CLOSED"
             ext_px = None
             if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
                 ext_px = safe_pos_float(meta.get("postMarketPrice") or meta.get("preMarketPrice"), default=None)
@@ -200,12 +219,26 @@ def collect_macro_benchmarks_snapshot(
                     chg_24h = round(((px - prev_close) / prev_close) * 100.0, 2) + 0.0
                 elif len(pts_24h) >= 2 and pts_24h[0][1] > 0:
                     chg_24h = round(((px - pts_24h[0][1]) / pts_24h[0][1]) * 100.0, 2) + 0.0
+            globex_session_chg = None
+            if (
+                yahoo_sym.endswith("=F")
+                and len(pts_24h) >= 2
+                and (pts_24h[-1][0] - pts_24h[0][0]) >= 64800.0
+                and pts_24h[0][1] > 0
+            ):
+                bars_24h_chg = round(((px - pts_24h[0][1]) / pts_24h[0][1]) * 100.0, 2) + 0.0
+                if chg_24h is None or abs(bars_24h_chg - chg_24h) >= 1.0:
+                    if chg_24h is not None:
+                        globex_session_chg = chg_24h
+                    chg_24h = bars_24h_chg
 
             dec = 4 if unit_kind == "yield_pct" else 2
             item_entry: Dict[str, Any] = {
                 "symbol": label, "yahoo_symbol": yahoo_sym, "unit": unit_kind,
                 "price": round(px, dec), "chg_24h_pct": (chg_24h + 0.0) if chg_24h is not None else 0.0,
             }
+            if globex_session_chg is not None:
+                item_entry["globex_session_chg_pct"] = globex_session_chg
             if len(pts) >= 2:
                 last_bar_ts = pts[-1][0]
                 item_entry["last_bar_ts"] = int(last_bar_ts)

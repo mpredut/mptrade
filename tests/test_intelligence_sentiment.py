@@ -8614,6 +8614,23 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     )
     assert "perp_basis=+0.0bps" not in sec_3b_eq
     assert "funding_ann=+0.0%" not in sec_3b_eq
+    assert "funding=0.0" not in sec_3b_eq
+    assert "oi_usd=0.0" not in sec_3b_eq
+    assert "liq_clusters(" not in sec_3b_eq
+
+    # Ask-heavy book (ob_imbalance=0.473) + negative CVD (-$182.18M) keeps spot_cvd_15m_usd negative even when chg_15m_pct=+1.11%
+    spcx_ask_heavy = {
+        "ob_imbalance": 0.473,
+        "bid_depth_usd": 203_688_580.0,
+        "ask_depth_usd": 226_868_059.0,
+        "taker_buy_sell_ratio": 0.7066,
+        "taker_buy_vol_usd": 438_685_584.08,
+        "taker_sell_vol_usd": 620_869_037.67,
+        "cvd_15m_usd": -182_183_454.0,
+    }
+    enrich_microstructure_cvd(spcx_ask_heavy, {"price": 123.52, "chg_15m_pct": 1.11})
+    assert spcx_ask_heavy["spot_cvd_15m_usd"] < 0.0
+
 
 
 

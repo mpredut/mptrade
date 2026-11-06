@@ -469,7 +469,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
                 if vol <= 0.0 or c_p <= 0.0:
                     continue
                 if h_p > l_p:
-                    clv = (c_p - l_p) / (h_p - l_p)
+                    clv = 0.15 + 0.70 * ((c_p - l_p) / (h_p - l_p))
                 else:
                     prev_c = bar_slice[idx - 1][4] if idx > 0 else o_p
                     clv = 0.65 if c_p > prev_c else (0.35 if c_p < prev_c else 0.5)
@@ -505,8 +505,9 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
             top_ratio = round(call_oi / put_oi, 4) if put_oi > 0.0 else 2.0
             oi_usd = round(total_opt * 100.0 * mark_px, 2)
         else:
-            top_long_pct = round(taker_buy / (taker_buy + taker_sell), 4) if (taker_buy + taker_sell) > 0.0 else 0.5
-            top_ratio = taker_ratio
+            b_1h, s_1h = _bars_buy_sell(active_bars[-12:]) if len(active_bars) >= 4 else (taker_buy, taker_sell)
+            top_long_pct = round(b_1h / (b_1h + s_1h), 4) if (b_1h + s_1h) > 0.0 else 0.5
+            top_ratio = round(b_1h / s_1h, 4) if b_1h > 0.0 and s_1h > 0.0 else taker_ratio
             oi_usd = 0.0
 
         if abs(price_1h_change_pct) < 1e-6 and len(active_bars) >= 12 and active_bars[-12][4] > 0.0:

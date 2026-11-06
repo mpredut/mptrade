@@ -269,9 +269,14 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         tot_vol = tb_v + ts_v
         ref_scale = min(tot_depth, max(tot_vol * 0.65, tot_depth * 0.20)) if tot_vol > 0.0 else tot_depth
         ob_net_pct = (b_depth - a_depth) / tot_depth
+        base_ob_cvd = ref_scale * ob_net_pct * 0.35
         vel_adj = ref_scale * (chg_15m / 100.0) * 2.5 if has_chg_15m else 0.0
+        if ob_net_pct < 0.0 and cvd_usd < 0.0 and vel_adj > 0.0:
+            vel_adj = min(vel_adj, abs(base_ob_cvd) * 0.5)
+        elif ob_net_pct > 0.0 and cvd_usd > 0.0 and vel_adj < 0.0:
+            vel_adj = max(vel_adj, -abs(base_ob_cvd) * 0.5)
         max_spot_cvd = ref_scale * 0.85
-        minfo["spot_cvd_15m_usd"] = round(max(-max_spot_cvd, min(max_spot_cvd, ref_scale * ob_net_pct * 0.35 + vel_adj)), 0)
+        minfo["spot_cvd_15m_usd"] = round(max(-max_spot_cvd, min(max_spot_cvd, base_ob_cvd + vel_adj)), 0)
         minfo["_synthetic_spot_cvd"] = True
     spot_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), default=0.0) or 0.0
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
