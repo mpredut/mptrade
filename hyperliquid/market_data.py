@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-market_data.py — Hyperliquid coin price and availability.
+market_data.py - Hyperliquid coin price and availability.
 Price comes from public all_mids; available means the coin is in the perpetual universe.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -17,9 +16,8 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-
 from botcore import load_local_module  # noqa: E402
-from providers.base import (  # noqa: E402
+from providers.order_ohlc_utils import (  # noqa: E402
     OHLC_INTERVALS_MIN_TO_STR,
     parse_ohlc_interval,
     resolve_ohlc_time_window_ms,

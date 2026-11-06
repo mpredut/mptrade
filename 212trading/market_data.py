@@ -23,7 +23,21 @@ except ImportError:
 
 from cachepaths import canonical_base_asset
 from offline.backtests.datasets import drop_incomplete_last_bar, validate_dataset
-from providers.base import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
+from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
+
+
+def _extract_yahoo_result_and_quote(payload: object) -> tuple[dict | None, dict, list, dict]:
+    chart = payload.get("chart") if isinstance(payload, dict) else None
+    chart_d = chart if isinstance(chart, dict) else {}
+    result = (chart_d.get("result") or [None])[0]
+    if not isinstance(result, dict) or not result:
+        return None, chart_d, [], {}
+    raw_ts = result.get("timestamp")
+    timestamps = raw_ts if isinstance(raw_ts, list) else []
+    indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
+    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
+    quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
+    return result, chart_d, timestamps, quote
 
 
 def parse_interval_minutes(value: str) -> int:
@@ -86,34 +100,20 @@ def fetch_yahoo_candles(
         raise RuntimeError(
             f"Yahoo refused {symbol} {range_}/{interval}: HTTP {exc.code} {detail}"
         ) from exc
-    chart = payload.get("chart") if isinstance(payload, dict) else None
-    chart = chart if isinstance(chart, dict) else {}
-    result = (chart.get("result") or [None])[0]
-    if not isinstance(result, dict) or not result:
+    result, chart, timestamps, quote = _extract_yahoo_result_and_quote(payload)
+    if result is None:
         error = chart.get("error")
         raise RuntimeError(f"Yahoo returned no data for {symbol}: {error}")
-    raw_ts = result.get("timestamp")
-    timestamps = raw_ts if isinstance(raw_ts, list) else []
-    indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
-    quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
-    quote = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
     opens = quote.get("open") if isinstance(quote.get("open"), list) else []
     highs = quote.get("high") if isinstance(quote.get("high"), list) else []
     lows = quote.get("low") if isinstance(quote.get("low"), list) else []
     closes = quote.get("close") if isinstance(quote.get("close"), list) else []
     series_len = min(len(opens), len(highs), len(lows), len(closes))
     records = []
-    for index, timestamp in enumerate(timestamps):
-        if index >= series_len:
-            continue
+    for index, timestamp in enumerate(timestamps[:series_len]):
         bar = validate_ohlc_candle_bar(
-            timestamp,
-            opens[index],
-            highs[index],
-            lows[index],
-            closes[index],
-            drop_incomplete=False,
-            ts_in_ms=False,
+            timestamp, opens[index], highs[index], lows[index], closes[index],
+            drop_incomplete=False, ts_in_ms=False,
         )
         if bar is not None:
             records.append(bar)
@@ -158,21 +158,10 @@ def _chart(sym: str, rng: str = "1d", interval: str = "5m"):
     if status != 200 or not body:
         return None, []
     try:
-        data = json.loads(body)
-        if not isinstance(data, dict):
-            return None, []
-        chart = data.get("chart")
-        if not isinstance(chart, dict):
-            return None, []
-        result = (chart.get("result") or [None])[0]
-        if not isinstance(result, dict) or not result:
+        result, _, ts, q = _extract_yahoo_result_and_quote(json.loads(body))
+        if result is None:
             return None, []
         meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-        raw_ts = result.get("timestamp")
-        ts = raw_ts if isinstance(raw_ts, list) else []
-        indicators = result.get("indicators") if isinstance(result.get("indicators"), dict) else {}
-        quote_list = indicators.get("quote") if isinstance(indicators.get("quote"), list) else []
-        q = (quote_list[0] if quote_list and isinstance(quote_list[0], dict) else {}) or {}
         closes = q.get("close") if isinstance(q.get("close"), list) else []
         vols = q.get("volume") if isinstance(q.get("volume"), list) else []
         bars = []
@@ -288,22 +277,22 @@ def trend_slope_pct(sym: str, bars: int = 12) -> float | None:
     return compute_ols_slope_pct([c for (_, c, _) in bars_rows], bars=bars)
 
 
+def _fx_rate(pair: str, label: str, min_rate: float, fallback: float) -> float:
+    rate = safe_pos_float(get_price_usd(pair), default=None)
+    if rate is not None and rate > min_rate:
+        return rate
+    log(f"  ! {label} rate unavailable, using fallback {fallback}")
+    return fallback
+
+
 def get_usd_ron() -> float:
     """Return current USD/RON, falling back to 4.65 when the feed is unavailable."""
-    rate = safe_pos_float(get_price_usd("USDRON=X"), default=None)
-    if rate is not None and rate > 1:
-        return rate
-    log("  ! USD/RON rate unavailable, using fallback 4.65")
-    return 4.65
+    return _fx_rate("USDRON=X", "USD/RON", 1.0, 4.65)
 
 
 def get_eur_usd() -> float:
     """Return current EUR->USD (USD per EUR), falling back to 1.08."""
-    rate = safe_pos_float(get_price_usd("EURUSD=X"), default=None)
-    if rate is not None and rate > 0.5:
-        return rate
-    log("  ! EUR/USD rate unavailable, using fallback 1.08")
-    return 1.08
+    return _fx_rate("EURUSD=X", "EUR/USD", 0.5, 1.08)
 
 
 def check_market(sym: str) -> dict | None:

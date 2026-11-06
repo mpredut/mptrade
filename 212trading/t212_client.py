@@ -32,16 +32,12 @@ except ImportError:
     ensure_local_module_priority(_HERE, "ipo_common")
     from ipo_common import _parse_bool_flag, http_get, http_post_json, http_request, log, required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float
 
+from botcore import _clean_single_order_id, normalize_side
 from cachepaths import STALE_STAGING_MAX_AGE_SEC, cache_path
 from lock.cooldown import FileLock
-from providers.base import (
-    MarketDataProvider,
-    _clean_single_order_id,
-    extract_order_id,
-    normalize_side,
-    normalize_timestamp_ms,
-)
-from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict, save_json_state
+from providers.base import MarketDataProvider
+from providers.order_ohlc_utils import extract_order_id, normalize_timestamp_ms
+from state_io import atomic_write_json, cleanup_stale_staging_siblings, read_json_dict
 
 LIVE_BASE = "https://live.trading212.com/api/v0"
 DEMO_BASE = "https://demo.trading212.com/api/v0"
@@ -247,14 +243,9 @@ class T212Client:
             self._backoff_until = max(self._backoff_until, time.monotonic() + wait_sec)
 
     def _invalidate_order_caches_locked(self) -> None:
-        self._ord_cache = None
-        self._fetch_fail.pop("_ord_cache", None)
-        self._pf_cache = None
-        self._fetch_fail.pop("_pf_cache", None)
-        self._cash_cache = None
-        self._fetch_fail.pop("_cash_cache", None)
-        self._hist_cache = None
-        self._fetch_fail.pop("_hist_cache", None)
+        for attr in ("_ord_cache", "_pf_cache", "_cash_cache", "_hist_cache"):
+            setattr(self, attr, None)
+            self._fetch_fail.pop(attr, None)
         if self._shared_cache_enabled():
             try:
                 with self._shared_cache_file_lock():
@@ -325,17 +316,16 @@ class T212Client:
         return self._headers(endpoint_key)
 
     # -- Instruments. ----------------------------------------------------------
+    def _read_cached_dict_list(self, attr: str, path: str, what: str, *, ttl_mult: float = 1.0) -> list[dict] | None:
+        res = self._read_cached(attr, path, what, expect_type=list, ttl_mult=ttl_mult)
+        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
+
     def list_instruments(self) -> list[dict] | None:
         # Instrument metadata changes rarely; cache it across threads and restarts
         # through the shared anti-stampede cache to avoid 1 req / 50s rate limits.
-        res = self._read_cached(
-            "_instr_cache",
-            "/equity/metadata/instruments",
-            "instruments metadata",
-            expect_type=list,
-            ttl_mult=50.0,
+        return self._read_cached_dict_list(
+            "_instr_cache", "/equity/metadata/instruments", "instruments metadata", ttl_mult=50.0,
         )
-        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
 
     def search_instruments(self, ticker_substr: str, name_patterns: tuple[str, ...]) -> list[dict] | None:
         """Search by ticker substring or name/shortName pattern."""
@@ -884,8 +874,7 @@ class T212Client:
 
         A brief shared TTL coalesces all asset-thread requests into one call.
         """
-        res = self._read_cached("_pf_cache", "/equity/portfolio", "portfolio", expect_type=list)
-        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
+        return self._read_cached_dict_list("_pf_cache", "/equity/portfolio", "portfolio")
 
     def list_active_orders(self) -> list[dict] | None:
         """Return pending orders; executed orders disappear into the portfolio.
@@ -894,8 +883,7 @@ class T212Client:
         reconciliation immediately sees new orders instead of incorrectly dropping
         them or marking a take-profit tranche as sold.
         """
-        res = self._read_cached("_ord_cache", "/equity/orders", "active orders", expect_type=list)
-        return [item for item in res if isinstance(item, dict)] if isinstance(res, list) else None
+        return self._read_cached_dict_list("_ord_cache", "/equity/orders", "active orders")
 
     def get_cash(self) -> dict | None:
         """Return account cash breakdown (free, invested, blocked, total) in account base currency."""

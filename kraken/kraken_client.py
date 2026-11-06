@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-kraken_client.py — minimal REST client for Kraken Spot.
+kraken_client.py - minimal REST client for Kraken Spot.
 
 Public (no credentials): ticker, asset_pairs, pair_info
 Private (credentials required): balance, add_order, cancel_order, query_orders, open_orders
@@ -31,12 +31,17 @@ except ImportError:
     from kraken_common import (
         _parse_bool_flag, http_get, http_post_form, log, safe_pos_float,
     )
-from botcore import exact_nonneg_int, exact_pos_int, safe_nonneg_float
-from providers.base import _clean_single_order_id, normalize_side
+from botcore import (
+    _clean_single_order_id,
+    exact_nonneg_int,
+    exact_pos_int,
+    normalize_side,
+    safe_nonneg_float,
+)
 
 API_URL = "https://api.kraken.com"
 
-# ─── Per-process shared TTL cache for READ calls ──────────────────────────────
+# --- Per-process shared TTL cache for READ calls ------------------------------
 # Kraken rate-limits API calls per key. Multiple consumers (monitortrades through the
 # provider, kraken_bot, trailing, and xstock_watch), plus the profit guard's two
 # TradesHistory queries per placement (window + last_opposite_fill), repeatedly hit
@@ -216,8 +221,7 @@ class KrakenClient:
             raise KrakenError(f"raspuns invalid (HTTP {status})")
         if payload.get("error"):
             err_val = payload["error"]
-            err_msg = ", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val)
-            raise KrakenError(err_msg)
+            raise KrakenError(", ".join(str(x) for x in err_val) if isinstance(err_val, (list, tuple)) else str(err_val))
         res = payload.get("result", {})
         return res if isinstance(res, dict) else {}
 
@@ -317,7 +321,7 @@ class KrakenClient:
             dec_i = exact_nonneg_int(info.get("pair_decimals") if isinstance(info, dict) else None, default=None)
             if dec_i is not None and dec_i <= 18:
                 return dec_i
-        except Exception:  # noqa: BLE001 — conservatively fall back without blocking the order
+        except Exception:  # noqa: BLE001 - conservatively fall back without blocking the order
             pass
         return 2
 
@@ -338,16 +342,14 @@ class KrakenClient:
         side_u = normalize_side(side)
         if not side_u:
             raise ValueError(f"invalid Kraken order side: {side!r}")
-        side_val = side_u.lower()
         ot_norm = str(ordertype or "").strip().lower() if not isinstance(ordertype, bool) else ""
         if ot_norm not in {"limit", "market"}:
             raise ValueError(f"invalid Kraken ordertype: {ordertype!r}")
-        vol_str = _format_kraken_number(vol_f, 12)
         data = {
             "pair": pair_s,
-            "type": side_val,
+            "type": side_u.lower(),
             "ordertype": ot_norm,
-            "volume": vol_str,
+            "volume": _format_kraken_number(vol_f, 12),
         }
         if ot_norm == "limit":
             px_f = safe_pos_float(price, default=None)
@@ -361,8 +363,7 @@ class KrakenClient:
             if isinstance(cl_ord_id, bool) or not re.fullmatch(r"[0-9a-fA-F]{32}", str(cl_ord_id).strip()):
                 raise ValueError("a Kraken cl_ord_id must be a 128-bit hex UUID")
             data["cl_ord_id"] = str(cl_ord_id).strip().lower()
-        val_flag = _parse_bool_flag(validate, default=False)
-        if val_flag:
+        if _parse_bool_flag(validate, default=False):
             data["validate"] = "true"
         return self._private("AddOrder", data)
 

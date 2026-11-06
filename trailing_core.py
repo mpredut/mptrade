@@ -50,6 +50,8 @@ from botcore import (
     single_instance,
     touch_module_heartbeat,
 )
+from cachepaths import cache_symbol_variants, canonical_base_asset, canonical_symbol_key
+from instrument_registry import casefold_get
 from providers.execution_audit import intent_client_order_id
 from state_io import load_json_state, save_json_state
 
@@ -545,7 +547,7 @@ class TrailingCore:
             _clear_exit_progress(st)
         stop_at = st["peak"] * (1 - trail / 100.0)
 
-        # Emergency crash circuit breaker (zona de avarie) — brute force exit with bounded trend deferral.
+        # Emergency crash circuit breaker - brute force exit with bounded trend deferral.
         # Extreme crash protection is decoupled from profit warm-up.
         can_sell = has_pos or (
             self.enabled
@@ -724,9 +726,6 @@ class TrailingAdapterBase:
     def _lookup_symbol_entry(cls, mapping: dict, symbol: str, predicate=None):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip() or not isinstance(mapping, dict):
             return None
-        from cachepaths import canonical_base_asset, canonical_symbol_key
-        from instrument_registry import casefold_get
-
         sym_norm = str(symbol).strip().upper()
         canon_sym = canonical_symbol_key(sym_norm) if sym_norm else ""
         cands = (
@@ -795,9 +794,6 @@ class TrailingAdapterBase:
         if mode == "off":
             return False
         if mode == "auto" and has_auto_trend:
-            from cachepaths import canonical_symbol_key
-            from instrument_registry import casefold_get
-
             canon = canonical_symbol_key(sym_norm)
             resolved_sym = (
                 canon
@@ -825,24 +821,20 @@ class TrailingAdapterBase:
         """Return instant-trend slope (>0 up, <0 down, 0 neutral/unknown) from SSOT cache.
         Errors return 0, making trend filters a safe no-op."""
         try:
-            from cachepaths import cache_symbol_variants
-
             cache_trend_path = self._module_attr("CACHE_TREND")
-            cands = [pair] + cache_symbol_variants(pair)
             if cache_trend_path:
                 from providers.base import MarketDataProvider
 
                 snap = MarketDataProvider.read_ssot_short_trend_file(
-                    str(cache_trend_path), cands, max_age_sec=15.0
+                    str(cache_trend_path), [pair] + cache_symbol_variants(pair), max_age_sec=15.0
                 )
-                return extract_short_trend_slope(snap, pair) if snap else 0.0
-            import cacheManager as cm
+            else:
+                import cacheManager as cm
 
-            snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
+                snap = cm.get_short_trend_manager().get_fresh_snapshot(pair)
             return extract_short_trend_slope(snap, pair) if snap else 0.0
         except Exception:
-            pass
-        return 0.0
+            return 0.0
 
     def trend(self, pair: str) -> float:
         return self._trend_value(pair)
@@ -1018,8 +1010,6 @@ class TrailingAdapterBase:
         self.core.check_once()
 
     def print_status(self) -> None:
-        from instrument_registry import casefold_get
-
         state = self._load()
         if self._VENUE_SLUG == "kraken":
             trail_map = self._module_attr("TRAIL_PCT")

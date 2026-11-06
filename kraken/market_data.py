@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-market_data.py — Kraken pair-price and availability tracking.
+market_data.py - Kraken pair-price and availability tracking.
 
 Kraken prices come directly from the public Ticker endpoint rather than Yahoo.
 Available, analogous to SPCX launched, means the pair exists in AssetPairs and has
@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from providers.base import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
+from providers.order_ohlc_utils import parse_ohlc_interval_minutes, validate_ohlc_candle_bar
 
 try:
     from kraken.kraken_common import exact_nonneg_int, exact_pos_int, fetch_public_json, log, safe_nonneg_float, safe_pos_float
@@ -73,19 +73,12 @@ def fetch_ohlc_candles(
     rows = raw[:-1] if drop_incomplete else raw
     records: list[dict] = []
     for x in rows:
-        if not isinstance(x, (list, tuple)) or len(x) < 5:
-            continue
-        bar = validate_ohlc_candle_bar(
-            x[0],
-            x[1],
-            x[2],
-            x[3],
-            x[4],
-            drop_incomplete=False,
-            ts_in_ms=False,
-        )
-        if bar is not None:
-            records.append(bar)
+        if isinstance(x, (list, tuple)) and len(x) >= 5:
+            bar = validate_ohlc_candle_bar(
+                x[0], x[1], x[2], x[3], x[4], drop_incomplete=False, ts_in_ms=False,
+            )
+            if bar is not None:
+                records.append(bar)
     return records
 
 

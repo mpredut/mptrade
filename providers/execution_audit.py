@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import glob
 import hashlib
-import json
 import os
 import re
 import sys
@@ -22,11 +21,14 @@ from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
+    clean_order_id,
+    clean_order_id_str,
     clean_scale,
     conf_or_override,
     exact_pos_int,
     float_env,
     lru_dict_put,
+    normalize_side,
     parse_notify_enabled_flag,
     safe_float,
     safe_nonneg_float,
@@ -48,20 +50,17 @@ from cachepaths import (
 from instrument_registry import casefold_get
 from market_regime import ClosedPriceSeries
 from state_io import append_jsonl_record, generation_lock_path, load_json_state, read_jsonl_dicts, save_json_state
-from .base import (
-    MarketDataProvider,
+from .base import MarketDataProvider
+from .order_ohlc_utils import (
     _UNFILLED_ORDER_STATUSES,
     _parse_epoch_or_iso_s,
     _ts_ms_to_s,
-    clean_order_id,
-    clean_order_id_str,
     extract_client_order_id,
     extract_executed_qty,
     extract_order_id,
     extract_order_price,
     extract_order_side,
     extract_orig_qty,
-    normalize_side,
     normalize_timestamp_ms,
     resolve_order_actor,
 )
@@ -70,14 +69,11 @@ from .strategy_executor import (
     capture_submission, reconciliation_capabilities_of,
 )
 
-try:  # Linux live: cross-process serialization; safe per-process fallback.
-    import fcntl
-except ImportError:  # pragma: no cover - Windows/import tooling
-    fcntl = None
-
 
 _WRITE_LOCK = threading.Lock()
 _UUID_HEX_SUFFIX = re.compile(r"([0-9a-fA-F]{32})$")
+_TERMINAL_CANCEL_STATUSES = ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED")
+_OPEN_WORKING_STATUSES = ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
 
 
 def _parse_cache_max() -> int:
@@ -710,7 +706,7 @@ def reconcile_intents_from_execution_audit(
                     and (
                         (
                             not needs_ts_backfill
-                            and cur_v_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING")
+                            and cur_v_st in _OPEN_WORKING_STATUSES
                             and extract_executed_qty(exec_pay, default=0.0) <= 0.0
                         )
                         or (needs_ts_backfill and cur_v_st in ("CANCELED", "CANCELLED"))
@@ -727,7 +723,7 @@ def reconcile_intents_from_execution_audit(
                     item["execution_payload"] = exec_pay
                     updated = True
                     continue
-                if not needs_ts_backfill and cur_v_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+                if not needs_ts_backfill and cur_v_st in _TERMINAL_CANCEL_STATUSES:
                     continue
                 if not needs_ts_backfill and has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
                     continue
@@ -871,7 +867,7 @@ def reconcile_intents_from_execution_audit(
                 updated = True
         else:
             cur_st = str(exec_pay.get("status") or "").strip().upper()
-            if cur_st in ("", "NEW", "OPEN", "RESTING", "PENDING", "WORKING") or (
+            if cur_st in _OPEN_WORKING_STATUSES or (
                 exec_pay.get("reconciled_terminal") and "terminal_ts" not in exec_pay and rec_ts is not None
             ):
                 norm_cancel = v_stat if v_stat in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED") else "CANCELED"
@@ -1022,7 +1018,7 @@ def _resolve_intent_execution_details(
     if (
         matched_open is None
         and raw_intent_st == "EXECUTED"
-        and venue_st not in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED")
+        and venue_st not in _TERMINAL_CANCEL_STATUSES
         and isinstance(recent_orders, dict)
         and symbol
     ):
@@ -1120,7 +1116,7 @@ def _resolve_intent_execution_details(
         if exec_status == "PARTIALLY_FILLED" and venue_st in _UNFILLED_ORDER_STATUSES:
             venue_st = "PARTIALLY_FILLED"
     elif raw_intent_st == "EXECUTED":
-        if venue_st in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED"):
+        if venue_st in _TERMINAL_CANCEL_STATUSES:
             exec_status = venue_st
         elif is_unfilled_resting_limit:
             exec_status = "OPEN_RESTING"
@@ -1143,7 +1139,7 @@ def _resolve_intent_execution_details(
         or fill_px,
         default=None,
     )
-    if exec_status in ("OPEN_RESTING", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "CANCELED_OR_EXPIRED") and filled_qty <= 0:
+    if exec_status in ("OPEN_RESTING", *_TERMINAL_CANCEL_STATUSES) and filled_qty <= 0:
         fill_px = None
     slippage_bps: Optional[float] = None
     if (
@@ -1289,16 +1285,9 @@ def summarize_recent_ai_intents(
             intent_summary["limit_price"] = i.get("limit_price")
         if det["venue_status"]:
             intent_summary["venue_status"] = det["venue_status"]
-        if det["order_id"] is not None:
-            intent_summary["order_id"] = det["order_id"]
-        if det["fill_px"] is not None:
-            intent_summary["fill_px"] = det["fill_px"]
-        if det["filled_qty"] is not None:
-            intent_summary["filled_qty"] = det["filled_qty"]
-        if det.get("filled_notional_usd") is not None:
-            intent_summary["filled_notional_usd"] = det["filled_notional_usd"]
-        if det["slippage_bps"] is not None:
-            intent_summary["slippage_bps"] = det["slippage_bps"]
+        for k in ("order_id", "fill_px", "filled_qty", "filled_notional_usd", "slippage_bps"):
+            if det.get(k) is not None:
+                intent_summary[k] = det[k]
         if det.get("reason"):
             intent_summary["reason"] = det["reason"]
         eff_ts_val = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
@@ -1433,12 +1422,9 @@ def build_last_cycle_execution_status(
             "notional_usd": det["notional_usd"],
             "slippage_bps": det["slippage_bps"],
         }
-        if det.get("filled_notional_usd") is not None:
-            rec["filled_notional_usd"] = det["filled_notional_usd"]
-        if det.get("limit_px") is not None:
-            rec["limit_px"] = det["limit_px"]
-        if det["order_id"] is not None:
-            rec["order_id"] = det["order_id"]
+        for k in ("filled_notional_usd", "limit_px", "order_id"):
+            if det.get(k) is not None:
+                rec[k] = det[k]
         if det.get("reason"):
             rec["reason"] = det["reason"]
         eff_ts = safe_pos_float(det.get("fill_ts_val"), default=None) or det["ts_val"]
