@@ -32,7 +32,7 @@ _NOISE_LEXICON_PHRASES: frozenset[str] = frozenset({
     "shocks however", "profit thanks", "thanks gold", "insane plan", "focus live",
     "doordash strikes", "billion deal", "rival instacart", "grocery delivery",
     "gillibrand presses", "civilian schools", "hacked emergency", "shock emergency",
-    "emergency sanction", "supply shock", "warfare cyber",
+    "emergency sanction", "supply shock", "warfare cyber", "bank collapse",
 })
 
 _NON_CRISIS_STRIKE_CONTEXT_WORDS: frozenset[str] = frozenset({
@@ -55,21 +55,24 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
-    "alaska", "alaskan", "alaskans", "bills", "cabin", "cabins", "cambodia",
-    "centcom", "cruise", "cruises", "dreading", "forever", "french", "fries",
-    "heating", "passengers", "podcast", "podcasts", "residents", "retirees",
-    "retirement", "social", "tourist", "tourists", "vacation",
+    "alaska", "alaskan", "alaskans", "appreciation", "bills", "cabin", "cabins",
+    "cambodia", "centcom", "concentration", "cruise", "cruises", "decider",
+    "dreading", "episode", "episodes", "explained", "finale", "forever", "french",
+    "fries", "heating", "holocaust", "liberators", "memorial", "museum",
+    "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
+    "retirees", "retirement", "review", "season", "social", "tourist", "tourists",
+    "trailer", "vacation", "veteran", "veterans", "vulture",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
     "bidding", "browser", "burger", "burgers", "console", "coupon", "coupons",
-    "culture", "discount", "discounts", "food", "mcdonald", "mcdonalds", "menu",
-    "menus", "streaming", "talent", "turf",
+    "culture", "discount", "discounts", "food", "gallon", "mcdonald", "mcdonalds",
+    "menu", "menus", "pump", "streaming", "talent", "turf",
 })
 
 _SPORTS_CONTEXT_WORDS: frozenset[str] = frozenset({
     "basketball", "championship", "coach", "cricket", "fifa", "football",
-    "goalkeeper", "golf", "hockey", "laliga", "liv", "mlb", "nba", "nfl",
+    "goalkeeper", "golf", "hockey", "laliga", "liv", "mlb", "nba", "nfl", "nhl",
     "pga", "playoff", "playoffs", "premier", "rugby", "soccer", "stadium",
     "striker", "tenerife", "tennis", "tournament", "uefa",
 })
@@ -279,8 +282,43 @@ def _is_excluded_non_crisis_attack_keyword(
     if kw_words and kw_words <= {"missile", "missiles", "launch", "launches"}:
         if (
             combined_words
-            & {"scheduled", "schedule", "test", "tests", "testing", "exercise", "exercises", "drill", "drills", "fort", "wingate"}
+            & {
+                "scheduled", "schedule", "test", "tests", "testing", "exercise",
+                "exercises", "drill", "drills", "fort", "wingate", "environmental",
+                "observatory", "geophysical", "nasa",
+            }
         ) and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS):
+            return True
+    if kw_words and kw_words <= {"nuclear"}:
+        if (
+            combined_words
+            & {
+                "academic", "consortium", "university", "college", "campus",
+                "curriculum", "degree", "scholarship", "collaborates", "faculty",
+            }
+        ) and not (
+            combined_words
+            & (
+                _MAJOR_GEOPOLITICAL_THEATER_WORDS
+                | {"weapon", "weapons", "warhead", "warheads", "missile", "missiles", "enrichment", "strike", "strikes", "attack", "attacks"}
+            )
+        ):
+            return True
+    if kw_words and kw_words <= {"trade", "war", "wars"}:
+        if (
+            combined_words & {"budget", "unveils", "unveil", "forecast", "forecasts", "cushion"}
+        ) and not (
+            combined_words
+            & (
+                _BROAD_MARKET_INDEX_CONTEXT_WORDS
+                | {
+                    "tariff", "tariffs", "retaliate", "retaliates", "retaliation",
+                    "escalate", "escalates", "escalation", "impose", "imposed", "imposes",
+                    "hike", "hikes", "slaps", "ban", "bans", "embargo", "plunge",
+                    "plunges", "crash", "selloff", "rout",
+                }
+            )
+        ):
             return True
     if kw_words and kw_words <= {"bank", "banks", "collapse", "collapses", "crisis"}:
         if (
@@ -299,6 +337,21 @@ def _is_excluded_non_crisis_attack_keyword(
         | ({"strike", "strikes"} if war_cost_context else set())
     ):
         eff_kinetic = (kinetic_only - {"strike", "strikes"}) if war_cost_context else kinetic_only
+        if (
+            "trump" in combined_words
+            and not (
+                combined_words
+                & (
+                    (eff_kinetic - kw_words)
+                    | _BROAD_MARKET_INDEX_CONTEXT_WORDS
+                    | {
+                        "warn", "warns", "warning", "threat", "threatens", "threatened",
+                        "destroy", "ultimatum", "offensive", "security", "crude", "oil", "hormuz",
+                    }
+                )
+            )
+        ):
+            return True
         if (
             combined_words
             & (

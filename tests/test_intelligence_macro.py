@@ -2137,6 +2137,13 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Trump Says Venezuela Gains Exceed Iran War Costs - Al Arabiya English", ["war", "iran war"]),
         ("Ukraine war briefing: Zelenskyy says Russia has damaged 'every power plant' as he seeks Latin American help - The Guardian", ["war", "ukraine war"]),
         ("Trump will 'see this through': Robert Harward on Iran war - NewsNation", ["war", "iran war"]),
+        ("A 'gas war' in Fulton as two stations drop prices below $3.00 a gallon - WSTM", ["war"]),
+        ("'War' Recap, Episode 6: 'The Simple Act of Paying Attention' - Vulture", ["war"]),
+        ("US Navy, NASA withdraw final environmental impact statement for Pacific Missile Range Facility, Kokee Park Geophysical Observatory - Kauai Now", ["missile"]),
+        ("ASU collaborates on New Nuclear Academic Consortium program - The State Press", ["nuclear"]),
+        ("Devils honor 100-year-old World War II veteran on Military Appreciation Night - NHL.com", ["war"]),
+        ("Army medic from Bellevue was among the liberators of a World War II concentration camp - Pittsburgh Post-Gazette", ["war"]),
+        ("Carney unveils budget to strengthen Canada's economy as Trump's trade war slows growth - The Seattle Times", ["trade war", "war"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
