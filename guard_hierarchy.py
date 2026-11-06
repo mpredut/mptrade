@@ -128,7 +128,7 @@ class DailyLimitGuard(OperationalGuard):
     code = "GO1"
     canonical = "daily_limit"
     aliases = {"go1", "daily_limit"}
-    description = "Symmetric 24h filled order cap (25/24h) and 5s anti-spam pause per symbol and side"
+    description = "Symmetric 24h filled order cap (30/24h) per symbol and side"
 
 
 # ============================================================================

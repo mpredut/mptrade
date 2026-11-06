@@ -374,24 +374,21 @@ class IfPlaceSafeOrderDailyLimitTestCase(unittest.TestCase):
         self.assertEqual(pg.call_args.kwargs.get("bypass_guards"), {"profit_guard"})
 
     def test_daily_limit_blocks(self):
-        # 25 filled orders in 24h reaches the 25/24h cap
-        ok, reason = self._run(same_side_trades=_trades(25, age_sec=4000.0))
+        # 30 filled orders in 24h reaches the 30/24h cap
+        ok, reason = self._run(same_side_trades=_trades(30, age_sec=4000.0))
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")
 
     def test_daily_limit_blocks_sell_symmetrically(self):
-        ok, reason = self._run(same_side_trades=_trades(25, side="SELL", age_sec=4000.0), side="SELL")
+        ok, reason = self._run(same_side_trades=_trades(30, side="SELL", age_sec=4000.0), side="SELL")
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")
 
-    def test_antispam_5s_blocks_and_after_5s_allows(self):
-        ok_recent, reason_recent = self._run(same_side_trades=_trades(1, age_sec=2.0))
-        self.assertFalse(ok_recent)
-        self.assertEqual(reason_recent, "daily_limit")
-        ok_buy, reason_buy = self._run(same_side_trades=_trades(1, age_sec=6.0))
+    def test_recent_transaction_does_not_block_buy_or_sell_below_daily_limit(self):
+        ok_buy, reason_buy = self._run(same_side_trades=_trades(1, age_sec=2.0))
         self.assertTrue(ok_buy)
         self.assertIsNone(reason_buy)
-        ok_sell, reason_sell = self._run(same_side_trades=_trades(1, side="SELL", age_sec=6.0), side="SELL")
+        ok_sell, reason_sell = self._run(same_side_trades=_trades(1, side="SELL", age_sec=2.0), side="SELL")
         self.assertTrue(ok_sell)
         self.assertIsNone(reason_sell)
 
@@ -678,7 +675,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
         self.assertEqual(restore_params["price"], 60.25)
         self.assertEqual(restore_params["side"], "SELL")
 
-        # 8. order_guard.daily_limit_guard enforces symmetric 24h daily cap and 5s anti-spam
+        # 8. order_guard.daily_limit_guard enforces symmetric 24h daily cap
         now_s = int(time.time())
         fake_provider = types.SimpleNamespace(
             name="binance",
@@ -687,7 +684,7 @@ class SafeOrderMarketRegimeBoundaryTest(unittest.TestCase):
             ],
         )
         ok, reason = po.order_guard.daily_limit_guard(
-            fake_provider, SYMBOL, "BUY", max_daily_trades=10,
+            fake_provider, SYMBOL, "BUY", max_daily_trades=1,
         )
         self.assertFalse(ok)
         self.assertEqual(reason, "daily_limit")

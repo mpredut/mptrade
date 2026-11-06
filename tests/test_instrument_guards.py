@@ -235,12 +235,12 @@ class InstrumentGuardsTestCase(unittest.TestCase):
         self.assertEqual(tracked[0]["lifecycle"], "accepted")
         self.assertEqual(tracked[0]["order_id"], "producer-only")
 
-    # -- Daily cap and anti-spam. ---------------------------------------------
+    # -- Daily cap and safeback. ----------------------------------------------
     def test_daily_cap_and_safeback_behaviors(self):
-        with self.subTest("daily_limit_blocks_after_25_orders_in_24h"):
+        with self.subTest("daily_limit_blocks_after_30_orders_in_24h"):
             p = _FakeProvider()
             inst = self._inst(p)
-            for _ in range(25):
+            for _ in range(30):
                 p.seed_trade("BUY", age_sec=4000.0)
             order = inst.place("BUY", 100.0, 1.0)
             self.assertIsNone(order)
@@ -256,16 +256,11 @@ class InstrumentGuardsTestCase(unittest.TestCase):
             order = inst.place("BUY", 100.0, 1.0, safeback_seconds=14 * 24 * 3600 + 60)
             self.assertIsNotNone(order)
 
-        with self.subTest("antispam_5s_blocks_same_symbol_and_allows_after_5s"):
+        with self.subTest("recent_trade_below_daily_limit_does_not_block_buy_or_sell"):
             self._clear_state()
             for side in ("BUY", "SELL"):
-                p_recent = _FakeProvider()
-                p_recent.seed_trade(side, age_sec=2.0)
-                inst_recent = self._inst(p_recent)
-                self.assertIsNone(inst_recent.place(side, 100.0, 1.0, bypass_guards={"profit_guard"}))
-
                 p_ok = _FakeProvider()
-                p_ok.seed_trade(side, age_sec=6.0)
+                p_ok.seed_trade(side, age_sec=2.0)
                 inst_ok = self._inst(p_ok)
                 order = inst_ok.place(side, 100.0, 1.0, bypass_guards={"profit_guard"})
                 self.assertIsNotNone(order)
@@ -273,7 +268,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("bypass_profit_guard_does_not_skip_daily_limit"):
             p = _FakeProvider()
-            for _ in range(25):
+            for _ in range(30):
                 p.seed_trade("BUY", age_sec=4000.0)
             inst = self._inst(p)
             order = inst.place("BUY", 100.0, 1.0, bypass_guards={"profit_guard"})
@@ -306,7 +301,7 @@ class InstrumentGuardsTestCase(unittest.TestCase):
 
         with self.subTest("does_not_skip_daily_limit"):
             p = _FakeProvider()
-            for _ in range(25):
+            for _ in range(30):
                 p.seed_trade("BUY", age_sec=4000.0)
             order = self._inst(p).place(
                 "BUY", 100.0, 1.0,

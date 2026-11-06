@@ -73,7 +73,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "default", "binance", "kraken", "default_window_h", "kraken_window_h",
     "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy",
     "default_chop_weight", "binance_chop_weight", "kraken_chop_weight",
-    "default_max_daily_trades", "default_antispam_sec", "default_safeback_sec",
+    "default_max_daily_trades", "default_safeback_sec",
     "default_buy_reference", "binance_buy_reference", "kraken_buy_reference",
     "default_sell_reference", "binance_sell_reference", "kraken_sell_reference",
     "assetguardian_buy_reference", "assetguardian_sell_reference",
@@ -994,11 +994,6 @@ def get_max_daily_trades_cfg(provider_name):
     return int(_venue_cfg(provider_name, "_max_daily_trades"))
 
 
-def get_antispam_sec_cfg(provider_name):
-    """Return the per-symbol anti-spam pause in seconds from order_guard.conf."""
-    return safe_nonneg_float(_venue_cfg(provider_name, "_antispam_sec"), 30.0)
-
-
 def get_safeback_sec_cfg(provider_name):
     """Return the per-venue historical lookback window in seconds for the profit guard reference."""
     return safe_nonneg_float(_venue_cfg(provider_name, "_safeback_sec"), 120.0)
@@ -1009,8 +1004,7 @@ DAILY_LIMIT_WINDOW_SEC = 86400.0
 
 def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, bypass_guards=None):
     """Enforce GO1 symmetrically per symbol and side:
-    1. Max 25 filled orders per 24 hours (86400s).
-    2. Minimum 5-second anti-spam pause between orders on the same symbol and side.
+    maximum filled orders per 24 hours (86400s).
 
     Return (True, None) or (False, "daily_limit" | "history_unavailable").
     """
@@ -1028,7 +1022,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         if resolved_max_trades is not None
         else get_max_daily_trades_cfg(name)
     )
-    antispam_sec = safe_pos_float(get_antispam_sec_cfg(name), 0.0)
     try:
         trades = provider.get_orders(symbol, order_type, DAILY_LIMIT_WINDOW_SEC)
     except ProviderError as exc:
@@ -1044,16 +1037,6 @@ def daily_limit_guard(provider, symbol, order_type, max_daily_trades=None, *, by
         print(f"[DAILY-LIMIT] {order_type} {symbol}: {len(trades)} trades in 24h, "
               f"cap of {max_daily_trades}/24h -> BLOCKED")
         return False, "daily_limit"
-    if antispam_sec > 0 and trades:
-        now_s = time.time()
-        for t in trades:
-            ts_s = extract_timestamp_s(t, default=0.0) or 0.0
-            if ts_s > 0:
-                elapsed_s = max(0.0, now_s - ts_s)
-                if elapsed_s < antispam_sec:
-                    print(f"[DAILY-LIMIT] {order_type} {symbol}: last fill {elapsed_s:.1f}s ago "
-                          f"< {antispam_sec:.0f}s anti-spam -> BLOCKED")
-                    return False, "daily_limit"
     return True, None
 
 

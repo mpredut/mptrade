@@ -13216,7 +13216,6 @@ def test_iteration128_order_guard_provider_objects_and_infinite_qty_rejection():
     assert og.get_weight_proxy_cfg(fake_kraken) == og.get_weight_proxy_cfg("kraken")
     assert og.get_chop_weight_cfg(fake_kraken) == og.get_chop_weight_cfg("kraken")
     assert og.get_max_daily_trades_cfg(fake_kraken) == og.get_max_daily_trades_cfg("kraken")
-    assert og.get_antispam_sec_cfg(fake_kraken) == og.get_antispam_sec_cfg("kraken")
     assert og.get_safeback_sec_cfg(fake_kraken) == og.get_safeback_sec_cfg("kraken")
     assert og.get_margin_cfg(True) == og.get_margin_cfg("default")
 

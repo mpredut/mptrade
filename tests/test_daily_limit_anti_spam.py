@@ -1,4 +1,4 @@
-"""Unit tests for symmetric GO1 (25 filled orders / 24h + 5s per-symbol anti-spam) and Kraken multi-fill aggregation."""
+"""Unit tests for symmetric GO1 (30 filled orders / 24h) and Kraken multi-fill aggregation."""
 
 import json
 import os
@@ -75,56 +75,46 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
         order_guard._MARGINS = None
         order_guard._MARGINS_FILE_MTIME = 0.0
 
-    def test_5s_antispam_per_symbol_symmetric(self):
+    def test_recent_trades_below_daily_cap_are_allowed_symmetrically(self):
         for side in ("BUY", "SELL"):
             prov = FakeProvider()
-            # Fill on BTCUSDC 2s ago (< 5s) blocks BTCUSDC
             prov.seed_trade(side, age_sec=2.0, symbol="BTCUSDC")
             ok_same, reason_same = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", side, max_daily_trades=25)
-            self.assertFalse(ok_same)
-            self.assertEqual(reason_same, "daily_limit")
+                prov, "BTCUSDC", side, max_daily_trades=30)
+            self.assertTrue(ok_same)
+            self.assertIsNone(reason_same)
 
-            # Another symbol (TAOUSDC) in the exact same second is NOT blocked
             ok_other, reason_other = order_guard.daily_limit_guard(
-                prov, "TAOUSDC", side, max_daily_trades=25)
+                prov, "TAOUSDC", side, max_daily_trades=30)
             self.assertTrue(ok_other)
             self.assertIsNone(reason_other)
 
-            # After 5s (>= 5s), BTCUSDC is allowed
-            prov_after = FakeProvider()
-            prov_after.seed_trade(side, age_sec=6.0, symbol="BTCUSDC")
-            ok_after, reason_after = order_guard.daily_limit_guard(
-                prov_after, "BTCUSDC", side, max_daily_trades=25)
-            self.assertTrue(ok_after)
-            self.assertIsNone(reason_after)
-
-    def test_daily_limit_25_orders_in_24h_blocks_buy_and_sell_symmetrically(self):
+    def test_daily_limit_30_orders_in_24h_blocks_buy_and_sell_symmetrically(self):
         for side in ("BUY", "SELL"):
             prov = FakeProvider()
-            for _ in range(25):
+            for _ in range(30):
                 prov.seed_trade(side, age_sec=3600.0)
             ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", side, max_daily_trades=25)
+                prov, "BTCUSDC", side, max_daily_trades=30)
             self.assertFalse(ok)
             self.assertEqual(reason, "daily_limit")
 
-            # 24 orders in 24h is allowed
-            prov_24 = FakeProvider()
-            for _ in range(24):
-                prov_24.seed_trade(side, age_sec=3600.0)
-            ok_24, reason_24 = order_guard.daily_limit_guard(
-                prov_24, "BTCUSDC", side, max_daily_trades=25)
-            self.assertTrue(ok_24)
-            self.assertIsNone(reason_24)
+            # 29 orders in 24h is allowed
+            prov_29 = FakeProvider()
+            for _ in range(29):
+                prov_29.seed_trade(side, age_sec=3600.0)
+            ok_29, reason_29 = order_guard.daily_limit_guard(
+                prov_29, "BTCUSDC", side, max_daily_trades=30)
+            self.assertTrue(ok_29)
+            self.assertIsNone(reason_29)
 
     def test_bypass_go1_or_daily_limit_or_all_skips_cap(self):
         prov = FakeProvider()
-        for _ in range(30):
+        for _ in range(35):
             prov.seed_trade("BUY", age_sec=3600.0)
         for bypass in ({"GO1"}, {"daily_limit"}, {"all"}):
             ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", "BUY", max_daily_trades=25,
+                prov, "BTCUSDC", "BUY", max_daily_trades=30,
                 bypass_guards=bypass)
             self.assertTrue(ok)
             self.assertIsNone(reason)
@@ -187,16 +177,16 @@ class TestSymmetricDailyLimitGuard(unittest.TestCase):
             if os.path.exists(cache_path):
                 os.remove(cache_path)
 
-    def test_5s_antispam_clock_skew_future_fill_timestamp_still_blocks(self):
-        """A fill whose exchange timestamp is slightly ahead of local host time (e.g. +200ms)
-        must still trigger the 5-second anti-spam pause instead of slipping through."""
+    def test_clock_skew_future_fill_timestamp_does_not_block_below_daily_cap(self):
+        """A single fill whose exchange timestamp is slightly ahead of local host time (e.g. +200ms)
+        remains allowed when below the 24h trade cap."""
         for side in ("BUY", "SELL"):
             prov = FakeProvider()
             prov.seed_trade(side, age_sec=-0.2, symbol="BTCUSDC")
             ok, reason = order_guard.daily_limit_guard(
-                prov, "BTCUSDC", side, max_daily_trades=25)
-            self.assertFalse(ok)
-            self.assertEqual(reason, "daily_limit")
+                prov, "BTCUSDC", side, max_daily_trades=30)
+            self.assertTrue(ok)
+            self.assertIsNone(reason)
 
     def test_hyperliquid_multi_fill_aggregation_by_oid(self):
         from providers.base import aggregate_fills_by_order_id

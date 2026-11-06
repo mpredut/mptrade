@@ -409,7 +409,7 @@ class Instrument:
                     if px_f is not None:
                         price = px_f
 
-            # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
+            # 1. Provider-agnostic daily trade cap (30 orders / 24h per symbol and side).
             if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
                 ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u)
                 if not ok:
