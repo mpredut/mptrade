@@ -20,9 +20,17 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-from botcore import exact_pos_int, register_module_aliases, require_finite_float, safe_float, safe_nonneg_float, safe_pos_float
+from botcore import (
+    exact_pos_int,
+    normalize_side,
+    register_module_aliases,
+    require_finite_float,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+)
 from cachepaths import canonical_base_asset, legacy_filenames_for
-from providers.base import MarketDataProvider, normalize_side
+from providers.base import MarketDataProvider
 from providers.quantity import resolve_assets
 from providers.strategy_executor import PairPrecision
 from state_io import read_jsonl_dicts
@@ -31,6 +39,11 @@ from state_io import read_jsonl_dicts
 def _base_asset(symbol: str) -> str:
     """Return a trading symbol's base asset by removing the first known quote suffix."""
     return resolve_assets(symbol)[0]
+
+
+def _default_precision(base: str) -> PairPrecision:
+    return PairPrecision(price_decimals=2, volume_decimals=4, order_min=0.0, base_asset=base)
+
 
 _BT_ENV_KEYS = (
     "BACKTEST_MODE",
@@ -44,12 +57,9 @@ _BT_ENV_KEYS = (
 def backtest_isolation_context(quiet: bool = False):
     """Temporarily set backtest/replay isolation env flags and optional print suppression."""
     if quiet:
-        try:
+        with contextlib.suppress(Exception):
             import log
-
             log.disable_print()
-        except Exception:
-            pass
     orig_env = {k: os.environ.get(k) for k in _BT_ENV_KEYS}
     for k in _BT_ENV_KEYS:
         os.environ[k] = "1"
@@ -62,12 +72,9 @@ def backtest_isolation_context(quiet: bool = False):
             else:
                 os.environ[k] = v
         if quiet:
-            try:
+            with contextlib.suppress(Exception):
                 import log
-
                 log.enable_print()
-            except Exception:
-                pass
 
 
 def _clean_ts(val: float) -> float:
@@ -92,24 +99,17 @@ class SimClock:
         return self.ts
 
 
-
 def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
-    """Read a symbol JSONL cache into ascending (timestamp_seconds, price) pairs.
-
-    The expected record shape is ``{"s": symbol, "i": [timestamp_ms, price]}``.
-    Return an empty list when the file is absent.
-    """
+    """Read a symbol JSONL cache into ascending (timestamp_seconds, price) pairs."""
     out: List[Tuple[float, float]] = []
     if not isinstance(path, str) or not path.strip() or not isinstance(symbol, str) or not symbol.strip():
         return out
     if not os.path.isfile(path):
-        try:
+        with contextlib.suppress(Exception):
             for legacy_path in legacy_filenames_for(path):
                 if os.path.isfile(legacy_path):
                     path = legacy_path
                     break
-        except Exception:
-            pass
     sym_cf = symbol.strip().casefold()
     for rec in read_jsonl_dicts(path):
         rec_s = rec.get("s")
@@ -121,9 +121,8 @@ def load_price_series(path: str, symbol: str) -> List[Tuple[float, float]]:
             continue
         ts_ms_f = safe_pos_float(ts_ms, default=None)
         px_val = safe_pos_float(price, default=None)
-        if ts_ms_f is None or px_val is None:
-            continue
-        out.append((ts_ms_f / 1000.0, px_val))
+        if ts_ms_f is not None and px_val is not None:
+            out.append((ts_ms_f / 1000.0, px_val))
     out.sort(key=lambda x: x[0])
     return out
 
@@ -145,8 +144,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
     and shares it among every Instrument in that run.
     """
 
-    def __init__(self, price_series: Dict[str, List[Tuple[float, float]]],
-                 fee_pct: float = 0.1):
+    def __init__(self, price_series: Dict[str, List[Tuple[float, float]]], fee_pct: float = 0.1):
         self._series = dict(price_series) if isinstance(price_series, dict) else {}
         self._cursor: Dict[str, int] = {s: 0 for s in self._series if isinstance(s, str)}
         self._last_ts: Dict[str, float] = {}
@@ -165,10 +163,7 @@ class ReplayMarketDataProvider(MarketDataProvider):
             canon = canonical_base_asset(base)
             if canon:
                 self._asset_to_symbol.setdefault(canon, s)
-            self._precisions[s] = PairPrecision(
-                price_decimals=2, volume_decimals=4, order_min=0.0,
-                base_asset=base,
-            )
+            self._precisions[s] = _default_precision(base)
 
     @property
     def name(self) -> str:
@@ -200,20 +195,13 @@ class ReplayMarketDataProvider(MarketDataProvider):
         prec = self._precisions.get(sym)
         if prec is None:
             base = _base_asset(sym).upper()
-            prec = PairPrecision(
-                price_decimals=2, volume_decimals=4, order_min=0.0,
-                base_asset=base,
-            )
-            self._precisions[sym] = prec
+            prec = self._precisions[sym] = _default_precision(base)
             self._asset_to_symbol.setdefault(base, sym)
         return prec
 
     # ── Clock advancement: called by the backtest driver, not bot code ───────
     def advance(self, symbol: str, steps: int = 1) -> Optional[float]:
-        """Advance a symbol cursor by ``steps`` and return its new current price.
-
-        Return ``None`` when the series has ended and do not advance beyond it.
-        """
+        """Advance a symbol cursor by ``steps`` and return its new current price."""
         steps_int = exact_pos_int(steps, default=None)
         if steps_int is None:
             return None
@@ -237,36 +225,31 @@ class ReplayMarketDataProvider(MarketDataProvider):
         return self._cursor.get(sym, 0) < len(self._series.get(sym, []))
 
     def now(self, symbol: Optional[str] = None) -> float:
-        """Return the timestamp of the most recently read replay price.
-
-        This is not an independent clock. Without ``symbol``, return the latest
-        timestamp among all advanced symbols, or 0.0 before any advancement.
-        """
+        """Return the timestamp of the most recently read replay price."""
         if symbol is not None:
             return self._last_ts.get(self._resolve_symbol(symbol), 0.0)
         return max(self._last_ts.values(), default=0.0)
 
+    def _active_series_idx(self, symbol: str) -> Tuple[Optional[List[Tuple[float, float]]], int]:
+        sym = self._resolve_symbol(symbol)
+        series = self._series.get(sym)
+        idx = self._cursor.get(sym, 0)
+        return (series, idx) if (series and idx > 0) else (None, 0)
+
     # ── Market data ─────────────────────────────────────────────────────────
     def get_current_price(self, symbol: str) -> Optional[float]:
-        sym = self._resolve_symbol(symbol)
-        series = self._series.get(sym)
-        idx = self._cursor.get(sym, 0)
-        if not series or idx == 0:
-            return None
-        return series[idx - 1][1]
+        series, idx = self._active_series_idx(symbol)
+        return series[idx - 1][1] if series else None
 
     def get_price_history(self, symbol: str, lookback_h: float) -> Optional[List]:
-        sym = self._resolve_symbol(symbol)
-        series = self._series.get(sym)
-        idx = self._cursor.get(sym, 0)
-        if not series or idx == 0:
+        series, idx = self._active_series_idx(symbol)
+        if not series:
             return None
         lb_val = safe_nonneg_float(lookback_h, default=None)
         if lb_val is None:
             return []
         cutoff = series[idx - 1][0] - lb_val * 3600
-        return [{"timestamp": int(ts * 1000), "price": p}
-                for ts, p in series[:idx] if ts >= cutoff]
+        return [{"timestamp": int(ts * 1000), "price": p} for ts, p in series[:idx] if ts >= cutoff]
 
     # ── Simulated offline broker account ────────────────────────────────────
     def free_balance(self, asset: str) -> Optional[float]:

@@ -6,9 +6,15 @@ import hashlib
 import threading
 import time
 
-from botcore import _parse_bool_flag, require_pos_float, safe_nonneg_float, safe_nonneg_int, safe_pos_float
+from botcore import (
+    _parse_bool_flag,
+    clean_order_id_str,
+    normalize_side,
+    require_pos_float,
+    safe_nonneg_float,
+    safe_nonneg_int,
+)
 from cachepaths import canonical_symbol_key, resolve_cachedb_filepath
-from providers.base import _clean_single_order_id, clean_order_id_str, normalize_side
 from lock import FileLock
 from state_io import atomic_write_json, read_json_file
 
@@ -22,6 +28,12 @@ def rtrade_client_order_id(pair_id, side, kind="limit"):
 
 
 _INVALID_STORE_STRINGS = {"", "0", "0.0", "-0", "+0", "nan", "null", "none", "inf", "-inf", "+inf"}
+_REQUIRED_PAIR_KEYS = {
+    "symbol", "pair_id", "start_side", "qty", "phase",
+    "terminal", "intents", "state", "created_ts", "updated_ts",
+}
+_REQUIRED_ACTIVE_STATE_KEYS = {"pair_id", "qty", "start_side", "phase", "tickets"}
+_VALID_SNAPSHOT_STATUSES = {"open", "closed", "canceled", "expired"}
 
 
 class RTradePairStore:
@@ -33,6 +45,7 @@ class RTradePairStore:
         self.terminal_retention = safe_nonneg_int(terminal_retention, default=200)
 
     _clean_store_id = staticmethod(clean_order_id_str)
+    _parse_bool_flag = staticmethod(_parse_bool_flag)
 
     @staticmethod
     def _clean_pair_id(pair_id):
@@ -45,8 +58,6 @@ class RTradePairStore:
             and bool(value.strip())
             and value.strip().lower() not in _INVALID_STORE_STRINGS
         )
-
-    _parse_bool_flag = staticmethod(_parse_bool_flag)
 
     @staticmethod
     def _finite_positive(value, field):
@@ -72,9 +83,7 @@ class RTradePairStore:
         if rec is None:
             if not symbol:
                 raise KeyError(f"unknown pair: {pid_clean}")
-            rec = pairs[pid_clean] = self._new_pair_record(
-                symbol, pid_clean, start_side, qty, now
-            )
+            rec = pairs[pid_clean] = self._new_pair_record(symbol, pid_clean, start_side, qty, now)
         return rec
 
     @classmethod
@@ -85,15 +94,13 @@ class RTradePairStore:
         kind = str(intent.get("kind") or "")
         if side not in {"BUY", "SELL"} or not kind or key != f"{kind}:{side}":
             raise ValueError(f"invalid rtrade intent identity {key!r}")
-        raw_coid = intent.get("client_order_id")
-        if not cls._clean_store_id(raw_coid):
+        if not cls._clean_store_id(intent.get("client_order_id")):
             raise ValueError(f"invalid rtrade intent client ID {key!r}")
         if intent.get("pair_id") not in (None, pair_id):
             raise ValueError(f"rtrade intent {key!r} belongs to another pair")
         if intent.get("symbol") not in (None, symbol):
             raise ValueError(f"rtrade intent {key!r} belongs to another symbol")
-        requested_qty = intent.get("requested_qty", intent.get("qty"))
-        cls._finite_positive(requested_qty, f"intent {key!r} quantity")
+        cls._finite_positive(intent.get("requested_qty", intent.get("qty")), f"intent {key!r} quantity")
         requested_price = intent.get("requested_price", intent.get("price"))
         if requested_price is not None:
             cls._finite_positive(requested_price, f"intent {key!r} price")
@@ -105,12 +112,58 @@ class RTradePairStore:
             raise ValueError(f"invalid rtrade tracked intent ID {key!r}")
 
     @classmethod
+    def _validate_state_checkpoint(cls, pair_id: str, record: dict, state: dict) -> None:
+        if not state:
+            raise ValueError(f"empty rtrade checkpoint for {pair_id!r}")
+        if not cls._is_valid_store_str(state.get("phase")):
+            raise ValueError(f"invalid rtrade checkpoint phase for {pair_id!r}")
+        if state["phase"] != record["phase"]:
+            raise ValueError(f"rtrade checkpoint phase mismatch for {pair_id!r}")
+        state_pair_id = state.get("pair_id")
+        if state_pair_id is not None and state_pair_id != pair_id:
+            raise ValueError(f"rtrade checkpoint identity mismatch {pair_id!r}")
+        if not record["terminal"]:
+            if not _REQUIRED_ACTIVE_STATE_KEYS.issubset(state):
+                raise ValueError(f"incomplete active rtrade checkpoint {pair_id!r}")
+            cls._finite_positive(state["qty"], f"checkpoint {pair_id!r} quantity")
+            if str(state["start_side"]).upper() not in {"BUY", "SELL"}:
+                raise ValueError(f"invalid checkpoint start side for {pair_id!r}")
+        if "tickets" in state and not isinstance(state["tickets"], list):
+            raise ValueError(f"invalid rtrade checkpoint tickets for {pair_id!r}")
+        ticket_ids = set()
+        for ticket in state.get("tickets", []):
+            if not isinstance(ticket, dict):
+                raise ValueError(f"invalid rtrade checkpoint ticket for {pair_id!r}")
+            order_id = cls._clean_store_id(ticket.get("order_id"))
+            side = str(ticket.get("side") or "").upper()
+            if not order_id or order_id in ticket_ids or side not in {"BUY", "SELL"}:
+                raise ValueError(f"invalid rtrade checkpoint ticket identity for {pair_id!r}")
+            ticket_ids.add(order_id)
+            cls._finite_positive(ticket.get("price"), f"checkpoint ticket {order_id!r} price")
+            cls._finite_positive(ticket.get("qty"), f"checkpoint ticket {order_id!r} quantity")
+            if "active" in ticket and not isinstance(ticket["active"], bool):
+                raise ValueError(f"invalid rtrade checkpoint ticket state for {pair_id!r}")
+            if ticket.get("pair_id") not in (None, pair_id):
+                raise ValueError("rtrade checkpoint ticket belongs to another pair")
+        if "snapshots" in state and not isinstance(state["snapshots"], dict):
+            raise ValueError(f"invalid rtrade checkpoint snapshots for {pair_id!r}")
+        for order_id, snapshot in dict(state.get("snapshots") or {}).items():
+            if (
+                not isinstance(order_id, str)
+                or not cls._clean_store_id(order_id)
+                or not isinstance(snapshot, dict)
+                or snapshot.get("status") not in _VALID_SNAPSHOT_STATUSES
+            ):
+                raise ValueError(f"invalid rtrade checkpoint snapshot for {pair_id!r}")
+            for field in ("filled_qty", "cost", "fee"):
+                if safe_nonneg_float(snapshot.get(field, 0.0), default=None) is None:
+                    raise ValueError(f"invalid rtrade checkpoint {field} for {pair_id!r}")
+
+    @classmethod
     def _validate(cls, data):
         if not isinstance(data, dict):
             raise ValueError("invalid rtrade pair store: root must be an object")
-        if (set(data) != {"version", "pairs"}
-                or type(data.get("version")) is not int
-                or data["version"] != 1):
+        if set(data) != {"version", "pairs"} or type(data.get("version")) is not int or data["version"] != 1:
             raise ValueError("invalid rtrade pair store: expected version 1")
         pairs = data.get("pairs")
         if not isinstance(pairs, dict):
@@ -120,11 +173,7 @@ class RTradePairStore:
                 raise ValueError("invalid rtrade pair key")
             if not isinstance(record, dict):
                 raise ValueError(f"invalid rtrade pair record {pair_id!r}")
-            required = {
-                "symbol", "pair_id", "start_side", "qty", "phase",
-                "terminal", "intents", "state", "created_ts", "updated_ts",
-            }
-            if not required.issubset(record):
+            if not _REQUIRED_PAIR_KEYS.issubset(record):
                 raise ValueError(f"incomplete rtrade pair record {pair_id!r}")
             if record.get("pair_id") != pair_id:
                 raise ValueError(f"rtrade pair identity mismatch {pair_id!r}")
@@ -142,85 +191,9 @@ class RTradePairStore:
             if state is not None and not isinstance(state, dict):
                 raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
             if isinstance(state, dict):
-                if not state:
-                    raise ValueError(f"empty rtrade checkpoint for {pair_id!r}")
-                if not cls._is_valid_store_str(state.get("phase")):
-                    raise ValueError(
-                        f"invalid rtrade checkpoint phase for {pair_id!r}")
-                if state["phase"] != record["phase"]:
-                    raise ValueError(
-                        f"rtrade checkpoint phase mismatch for {pair_id!r}")
-                state_pair_id = state.get("pair_id")
-                if state_pair_id is not None and state_pair_id != pair_id:
-                    raise ValueError(f"rtrade checkpoint identity mismatch {pair_id!r}")
-                if not record["terminal"]:
-                    required_state = {
-                        "pair_id", "qty", "start_side", "phase", "tickets",
-                    }
-                    if not required_state.issubset(state):
-                        raise ValueError(
-                            f"incomplete active rtrade checkpoint {pair_id!r}")
-                    cls._finite_positive(
-                        state["qty"],
-                        f"checkpoint {pair_id!r} quantity")
-                    if str(state["start_side"]).upper() not in {"BUY", "SELL"}:
-                        raise ValueError(
-                            f"invalid checkpoint start side for {pair_id!r}")
-                if ("tickets" in state
-                        and not isinstance(state["tickets"], list)):
-                    raise ValueError(
-                        f"invalid rtrade checkpoint tickets for {pair_id!r}")
-                ticket_ids = set()
-                for ticket in state.get("tickets", []):
-                    if not isinstance(ticket, dict):
-                        raise ValueError(
-                            f"invalid rtrade checkpoint ticket for {pair_id!r}")
-                    raw_ticket_oid = ticket.get("order_id")
-                    order_id = cls._clean_store_id(raw_ticket_oid)
-                    side = str(ticket.get("side") or "").upper()
-                    if (not order_id or order_id in ticket_ids
-                            or side not in {"BUY", "SELL"}):
-                        raise ValueError(
-                            f"invalid rtrade checkpoint ticket identity "
-                            f"for {pair_id!r}")
-                    ticket_ids.add(order_id)
-                    cls._finite_positive(
-                        ticket.get("price"),
-                        f"checkpoint ticket {order_id!r} price")
-                    cls._finite_positive(
-                        ticket.get("qty"),
-                        f"checkpoint ticket {order_id!r} quantity")
-                    if ("active" in ticket
-                            and not isinstance(ticket["active"], bool)):
-                        raise ValueError(
-                            f"invalid rtrade checkpoint ticket state "
-                            f"for {pair_id!r}")
-                    if ticket.get("pair_id") not in (None, pair_id):
-                        raise ValueError(
-                            "rtrade checkpoint ticket belongs to another pair")
-                if ("snapshots" in state
-                        and not isinstance(state["snapshots"], dict)):
-                    raise ValueError(
-                        f"invalid rtrade checkpoint snapshots for {pair_id!r}")
-                for order_id, snapshot in dict(
-                        state.get("snapshots") or {}).items():
-                    if (not isinstance(order_id, str)
-                            or not cls._clean_store_id(order_id)
-                            or not isinstance(snapshot, dict)
-                            or snapshot.get("status") not in {
-                                "open", "closed", "canceled", "expired"}):
-                        raise ValueError(
-                            f"invalid rtrade checkpoint snapshot "
-                            f"for {pair_id!r}")
-                    for field in ("filled_qty", "cost", "fee"):
-                        if safe_nonneg_float(snapshot.get(field, 0.0), default=None) is None:
-                            raise ValueError(
-                                f"invalid rtrade checkpoint {field} "
-                                f"for {pair_id!r}")
-            cls._finite_positive(
-                record.get("created_ts"), f"pair {pair_id!r} created_ts")
-            cls._finite_positive(
-                record.get("updated_ts"), f"pair {pair_id!r} updated_ts")
+                cls._validate_state_checkpoint(pair_id, record, state)
+            cls._finite_positive(record.get("created_ts"), f"pair {pair_id!r} created_ts")
+            cls._finite_positive(record.get("updated_ts"), f"pair {pair_id!r} updated_ts")
             intents = record.get("intents")
             if not isinstance(intents, dict):
                 raise ValueError(f"invalid rtrade intents for {pair_id!r}")
@@ -234,10 +207,8 @@ class RTradePairStore:
         if not self.path:
             return self._validate(json.loads(json.dumps(self._mem_data)))
         eff_path = str(resolve_cachedb_filepath(self.path))
-
         try:
-            data = read_json_file(eff_path, recover_previous=True)
-            return self._validate(data)
+            return self._validate(read_json_file(eff_path, recover_previous=True))
         except FileNotFoundError:
             return {"version": 1, "pairs": {}}
 
@@ -245,9 +216,11 @@ class RTradePairStore:
         if not self.path:
             self._mem_data = json.loads(json.dumps(data))
             return
-        eff_path = str(resolve_cachedb_filepath(self.path))
         atomic_write_json(
-            eff_path, data, sort_keys=True, separators=(",", ":"),
+            str(resolve_cachedb_filepath(self.path)),
+            data,
+            sort_keys=True,
+            separators=(",", ":"),
         )
 
     def _resolved_lock_path(self):
@@ -257,10 +230,12 @@ class RTradePairStore:
             return f"{resolve_cachedb_filepath(self.path)}.lock"
         return str(resolve_cachedb_filepath(self.lock_path))
 
-    def mutate(self, fn):
+    def _lock_ctx(self):
         resolved_lock = self._resolved_lock_path()
-        lock_ctx = FileLock(resolved_lock) if resolved_lock else self._mem_lock
-        with lock_ctx:
+        return FileLock(resolved_lock) if resolved_lock else self._mem_lock
+
+    def mutate(self, fn):
+        with self._lock_ctx():
             data = self._read()
             result = fn(data["pairs"])
             if result is not False:
@@ -271,7 +246,9 @@ class RTradePairStore:
     def _prune_terminal(self, pairs):
         terminal = sorted(
             (rec for rec in pairs.values() if isinstance(rec, dict) and rec.get("terminal")),
-            key=lambda rec: float(rec.get("updated_ts") or 0.0), reverse=True)
+            key=lambda rec: float(rec.get("updated_ts") or 0.0),
+            reverse=True,
+        )
         keep = {rec.get("pair_id") for rec in terminal[:self.terminal_retention]}
         for pair_id, rec in list(pairs.items()):
             if isinstance(rec, dict) and rec.get("terminal") and pair_id not in keep:
@@ -281,14 +258,13 @@ class RTradePairStore:
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         pid_clean = self._clean_pair_id(pair_id)
         now = time.time()
+
         def op(pairs):
-            pairs[pid_clean] = self._new_pair_record(
-                symbol, pid_clean, start_side, qty_f, now
-            )
+            pairs[pid_clean] = self._new_pair_record(symbol, pid_clean, start_side, qty_f, now)
+
         self.mutate(op)
 
-    def intent(self, pair_id, side, price, qty, client_order_id, kind="limit",
-               symbol=None, start_side=None):
+    def intent(self, pair_id, side, price, qty, client_order_id, kind="limit", symbol=None, start_side=None):
         qty_f = self._finite_positive(qty, f"pair {pair_id!r} quantity")
         price_f = None if price is None else self._finite_positive(price, f"pair {pair_id!r} price")
         coid = self._clean_store_id(client_order_id)
@@ -297,33 +273,25 @@ class RTradePairStore:
         side_u = normalize_side(side)
         kind_s = str(kind or "limit").strip()
         pid_clean = self._clean_pair_id(pair_id)
+
         def op(pairs):
             now = time.time()
-            rec = self._get_or_create_pair_record(
-                pairs, pid_clean, symbol, start_side or side_u, qty_f, now
-            )
+            rec = self._get_or_create_pair_record(pairs, pid_clean, symbol, start_side or side_u, qty_f, now)
             key = f"{kind_s}:{side_u}"
             value = {
                 "side": side_u, "price": price_f, "qty": qty_f,
-                "client_order_id": coid, "kind": kind_s,
-                "order_id": None,
+                "client_order_id": coid, "kind": kind_s, "order_id": None,
             }
             if rec["intents"].get(key) == value:
                 return False
             rec["intents"][key] = value
             rec["updated_ts"] = now
             return True
+
         self.mutate(op)
 
-    def persist_intent(self, pair_id, side, kind, pending, *, symbol=None,
-                       start_side=None, qty=None):
-        """Durably replace one canonical tracked intent, or remove it.
-
-        ``TrackedOrderLifecycle`` calls this function before and after every
-        external observation.  The legacy ``price``/``qty`` aliases are retained
-        in the JSON so an older checkout can still recover records written by the
-        new coordinator.
-        """
+    def persist_intent(self, pair_id, side, kind, pending, *, symbol=None, start_side=None, qty=None):
+        """Durably replace one canonical tracked intent, or remove it."""
         side = normalize_side(side)
         kind = str(kind or "").strip()
         pid_clean = self._clean_pair_id(pair_id)
@@ -346,22 +314,21 @@ class RTradePairStore:
             if requested_qty is None:
                 raise ValueError("tracked rtrade intent missing requested_qty")
             requested_qty = self._finite_positive(requested_qty, f"intent {key!r} quantity")
-            requested_price = value.get(
-                "requested_price", value.get("price"))
+            requested_price = value.get("requested_price", value.get("price"))
             if requested_price is not None:
                 requested_price = self._finite_positive(requested_price, f"intent {key!r} price")
 
             rec = self._get_or_create_pair_record(
                 pairs, pid_clean, symbol, start_side or side, requested_qty, now
             )
-
-            value["side"] = side
-            value["kind"] = kind
-            value["requested_qty"] = requested_qty
-            value["requested_price"] = requested_price
-            # Backward-compatible aliases for the old startup recovery code.
-            value["qty"] = requested_qty
-            value["price"] = requested_price
+            value.update(
+                side=side,
+                kind=kind,
+                requested_qty=requested_qty,
+                requested_price=requested_price,
+                qty=requested_qty,
+                price=requested_price,
+            )
             if rec.setdefault("intents", {}).get(key) == value:
                 return False
             rec["intents"][key] = value
@@ -377,10 +344,11 @@ class RTradePairStore:
         side_u = normalize_side(side)
         kind_s = str(kind or "limit").strip()
         pid_clean = self._clean_pair_id(pair_id)
+
         def op(pairs):
-            key = f"{kind_s}:{side_u}"
-            pairs[pid_clean]["intents"][key]["order_id"] = clean_oid
+            pairs[pid_clean]["intents"][f"{kind_s}:{side_u}"]["order_id"] = clean_oid
             pairs[pid_clean]["updated_ts"] = time.time()
+
         self.mutate(op)
 
     def checkpoint(self, pair_id, state, terminal=False):
@@ -394,28 +362,26 @@ class RTradePairStore:
         for pair_id, state, _terminal in checkpoints:
             if not isinstance(state, dict):
                 raise ValueError(f"invalid rtrade checkpoint for {pair_id!r}")
+
         def op(pairs):
             now = time.time()
             for pair_id, state, terminal in checkpoints:
-                pid_clean = self._clean_pair_id(pair_id)
-                rec = pairs[pid_clean]
+                rec = pairs[self._clean_pair_id(pair_id)]
                 rec["state"] = state
                 rec["phase"] = state.get("phase")
                 rec["terminal"] = self._parse_bool_flag(terminal, False)
                 rec["updated_ts"] = now
             return True
+
         self.mutate(op)
 
     def active(self, symbol):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return []
         sym_key = canonical_symbol_key(symbol)
-        resolved_lock = self._resolved_lock_path()
-        lock_ctx = FileLock(resolved_lock) if resolved_lock else self._mem_lock
-        with lock_ctx:
+        with self._lock_ctx():
             pairs = self._read().get("pairs", {})
         return [
             rec for rec in pairs.values()
-            if canonical_symbol_key(rec.get("symbol")) == sym_key
-            and not rec.get("terminal")
+            if canonical_symbol_key(rec.get("symbol")) == sym_key and not rec.get("terminal")
         ]

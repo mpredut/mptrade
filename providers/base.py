@@ -1,15 +1,12 @@
 """Provider primitives with no registry or venue-module dependencies."""
 
 import contextlib
-import hashlib
 import math
 import os
-import re
 import sys
 import threading
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from typing import Any, List, Optional
 
 from botcore import (
@@ -172,8 +169,6 @@ class MarketDataProvider(ABC):
     def _ensure_client_lock(self):
         lock = getattr(self, "_client_lock", None)
         if lock is None:
-            import threading
-
             lock = threading.RLock()
             self._client_lock = lock
         return lock
@@ -192,16 +187,8 @@ class MarketDataProvider(ABC):
         if custom:
             return str(custom)
         mod = sys.modules.get(type(self).__module__)
-        mod_path = (
-            getattr(mod, self._FILLS_CACHE_PATH_MODULE_ATTR, None)
-            if (mod is not None and self._FILLS_CACHE_PATH_MODULE_ATTR)
-            else None
-        )
-        def_path = (
-            getattr(mod, self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None)
-            if (mod is not None and self._FILLS_CACHE_DEFAULT_MODULE_ATTR)
-            else None
-        )
+        mod_path = getattr(mod, self._FILLS_CACHE_PATH_MODULE_ATTR, None) if (mod and self._FILLS_CACHE_PATH_MODULE_ATTR) else None
+        def_path = getattr(mod, self._FILLS_CACHE_DEFAULT_MODULE_ATTR, None) if (mod and self._FILLS_CACHE_DEFAULT_MODULE_ATTR) else None
         if mod_path and def_path and mod_path != def_path:
             return str(mod_path)
         if self._allow_ssot_price_cache():
@@ -231,9 +218,7 @@ class MarketDataProvider(ABC):
         cache_file = self._fills_cache_file()
         if cache_file:
             self.invalidate_ssot_fills_cache(
-                symbol,
-                cache_file,
-                match_fn=getattr(type(self), "_fills_match_fn", None),
+                symbol, cache_file, match_fn=getattr(type(self), "_fills_match_fn", None)
             )
 
     def get_orders(self, symbol: str, side: Optional[str], since_s: float) -> List[dict]:
@@ -252,8 +237,7 @@ class MarketDataProvider(ABC):
                 rows = api_fn(symbol)
             if rows is None:
                 raise ProviderError(f"get_orders({symbol}): fills history unavailable")
-            cutoff_ms = (time.time() - since_val) * 1000.0
-            return aggregate_fills_by_order_id(rows, cutoff_ms=cutoff_ms, side=side)
+            return aggregate_fills_by_order_id(rows, cutoff_ms=(time.time() - since_val) * 1000.0, side=side)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -274,10 +258,8 @@ class MarketDataProvider(ABC):
         try:
             import instrument_registry as _default_ir
 
-            mkt_mod = sys.modules.get("providers.market_api")
-            ir = getattr(mkt_mod, "instrument_registry", None) or _default_ir
-            venue_slug = normalize_venue_name(getattr(venue, "name", venue) or "")
-            specs = list(ir.select_instruments(venue_slug).values())
+            ir = getattr(sys.modules.get("providers.market_api"), "instrument_registry", None) or _default_ir
+            specs = list(ir.select_instruments(normalize_venue_name(getattr(venue, "name", venue) or "")).values())
             for item in specs:
                 item_sym = str(getattr(item, "symbol", "") or "").strip().upper()
                 if item_sym == sym_u or (sym_clean and clean_symbol_key(item_sym) == sym_clean):
@@ -301,25 +283,17 @@ class MarketDataProvider(ABC):
         if isinstance(symbol, bool) or not isinstance(symbol, str) or not symbol.strip():
             return None
         fills_fn = getattr(self, "_fills_from_cache", None)
-        if not callable(fills_fn):
-            return None
-        rows = fills_fn(symbol)
+        rows = fills_fn(symbol) if callable(fills_fn) else None
         if rows is None:
             return None
         sym_u = symbol.strip().upper()
         spec = self._resolve_venue_instrument_spec(sym_u)
         base_asset = spec.base if spec is not None else ""
         quote_asset = spec.quote if spec is not None else ""
-        if not base_asset:
-            parts = split_symbol_assets(sym_u)
-            if parts is not None:
-                base_asset, quote_asset = parts
+        if not base_asset and (parts := split_symbol_assets(sym_u)) is not None:
+            base_asset, quote_asset = parts
         return compute_fills_cost_basis(
-            rows,
-            held_qty,
-            since_val,
-            base_asset=base_asset,
-            quote_asset=quote_asset,
+            rows, held_qty, since_val, base_asset=base_asset, quote_asset=quote_asset
         )
 
     def open_orders(self, symbol: str) -> List[dict]:
@@ -720,8 +694,7 @@ class MarketDataProvider(ABC):
         """Read fresh current price for ``symbol`` from CacheCurrentPriceManager / cache_current_price.json."""
         if not self._allow_ssot_price_cache():
             return None
-        max_age = safe_pos_float(max_age_sec, default=12.0) or 12.0
-        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
         custom_path = getattr(self, "_ssot_price_cache_path", None)
@@ -729,7 +702,7 @@ class MarketDataProvider(ABC):
         return self._read_ssot_current_price_candidates(
             candidates,
             price_path,
-            max_age,
+            safe_pos_float(max_age_sec, default=12.0) or 12.0,
             use_memory_manager=(custom_path is None),
         )
 
@@ -756,10 +729,10 @@ class MarketDataProvider(ABC):
         lh_f = safe_pos_float(lookback_hours, default=None)
         if lh_f is None or lh_f > 24.0:
             return None
-        max_latest_age = safe_pos_float(max_latest_age_sec, default=120.0) or 120.0
-        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
+        max_latest_age = safe_pos_float(max_latest_age_sec, default=120.0) or 120.0
         now_s = time.time()
         cutoff_ms = int((now_s - lh_f * 3600.0) * 1000)
         custom_dir = getattr(self, "_ssot_24price_cache_dir", None)
@@ -773,11 +746,7 @@ class MarketDataProvider(ABC):
                 _, entries = self._read_ssot_24price_entries(c24_path, cand)
                 if not entries or len(entries) < 2:
                     continue
-                valid: list[tuple[int, float]] = []
-                for entry in entries:
-                    parsed = MarketDataProvider._parse_ssot_price_point(entry)
-                    if parsed is not None:
-                        valid.append(parsed)
+                valid = [p for e in entries if (p := MarketDataProvider._parse_ssot_price_point(e)) is not None]
                 if len(valid) < 2:
                     continue
                 valid.sort(key=lambda pt: pt[0])
@@ -828,10 +797,10 @@ class MarketDataProvider(ABC):
         """Return a fresh short-trend snapshot for ``symbol`` from CacheShortTrendManager / cache_short_trend.json."""
         if not self._allow_ssot_price_cache():
             return None
-        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
-        candidates = [c for c in self._ssot_symbol_candidates(symbol) if c]
+        candidates = self._ssot_symbol_candidates(symbol)
         if not candidates:
             return None
+        max_age = safe_pos_float(max_age_sec, default=15.0) or 15.0
         custom_path = getattr(self, "_ssot_trend_cache_path", None)
         now_s = time.time()
         if custom_path is None:
@@ -841,26 +810,19 @@ class MarketDataProvider(ABC):
                 stm_mem = getattr(stm, "_mem", None)
                 if isinstance(stm_mem, dict):
                     lock_ctx = getattr(stm, "_lock", None) or getattr(stm, "lock", None) or contextlib.nullcontext()
-                    try:
-                        with lock_ctx:
-                            for cand in candidates:
-                                snap = casefold_get(stm_mem, cand)
-                                if not isinstance(snap, dict):
-                                    continue
-                                if _is_fresh_obs_ts(extract_timestamp_s(snap, default=None), now_s, max_age):
-                                    return dict(snap)
-                    except Exception:
-                        pass
+                    with contextlib.suppress(Exception), lock_ctx:
+                        for cand in candidates:
+                            snap = casefold_get(stm_mem, cand)
+                            if isinstance(snap, dict) and _is_fresh_obs_ts(extract_timestamp_s(snap, default=None), now_s, max_age):
+                                return dict(snap)
                 elif hasattr(stm, "get_fresh_snapshot"):
                     for cand in candidates:
-                        try:
+                        with contextlib.suppress(Exception):
                             snap = stm.get_fresh_snapshot(cand)
                             if isinstance(snap, dict):
                                 raw_ts = extract_timestamp_s(snap, default=None)
                                 if raw_ts is None or _is_fresh_obs_ts(raw_ts, now_s, max_age):
                                     return dict(snap)
-                        except Exception:
-                            continue
         trend_path = str(custom_path) if custom_path else cache_path("cache_short_trend.json")
         return self.read_ssot_short_trend_file(trend_path, candidates, max_age_sec=max_age, now_s=now_s)
 

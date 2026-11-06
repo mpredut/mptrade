@@ -27,20 +27,19 @@ from botcore import (
     exact_nonneg_int,
     exact_pos_int,
     load_env_stack,
+    normalize_side,
     required_bool_env,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
 )
-from cachepaths import cache_path, canonical_base_asset
+from cachepaths import canonical_base_asset
 from .base import (
     MarketDataProvider,
     _derive_128bit_client_order_id,
-    aggregate_fills_by_order_id,
     bool_env,
     build_open_order_entry,
     build_price_history_points,
-    extract_client_order_id,
     extract_order_fee,
     extract_order_id,
     extract_order_price,
@@ -48,7 +47,6 @@ from .base import (
     extract_order_side,
     extract_orig_qty,
     extract_timestamp_ms,
-    normalize_side,
     require_int_order_id,
     resolve_market_flag,
 )
@@ -134,9 +132,8 @@ def hl_strategy_dry_run(force_paper: bool, strategy_execute: bool) -> bool:
 def _is_transient_hl_server_error(exc: BaseException) -> bool:
     """Return True when exc represents a transient HTTP 5xx/429 error from Hyperliquid Info."""
     args = getattr(exc, "args", ())
-    if args and isinstance(args[0], int) and not isinstance(args[0], bool):
-        if args[0] in (429, 500, 502, 503, 504):
-            return True
+    if args and type(args[0]) is int and args[0] in (429, 500, 502, 503, 504):
+        return True
     msg = str(exc)
     return any(f"({code}," in msg or f"status_code={code}" in msg for code in (429, 500, 502, 503, 504))
 

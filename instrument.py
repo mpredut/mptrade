@@ -22,8 +22,8 @@ from guard_hierarchy import (
     revoke_guard_bypass,
 )
 from instrument_registry import casefold_get
-from providers.base import extract_order_id, normalize_side, resolve_market_flag
-from botcore import _parse_bool_flag, safe_float, safe_int, safe_nonneg_float, safe_pos_float
+from providers.base import extract_order_id, resolve_market_flag
+from botcore import _parse_bool_flag, normalize_side, safe_float, safe_int, safe_nonneg_float, safe_pos_float
 from providers.market_api import api as _default_api
 from providers.execution_audit import ExecutionAudit
 from providers.quantity import (
@@ -48,8 +48,7 @@ def _accepted_order_payload(payload):
     """Return whether a provider payload proves venue acceptance, never fill."""
     if not isinstance(payload, dict):
         return False
-    status = str(payload.get("status") or "").upper()
-    if status in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
+    if str(payload.get("status") or "").upper() in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}:
         return False
     return extract_order_id(payload) is not None
 
@@ -60,6 +59,10 @@ _order_id_from_payload = extract_order_id
 def _is_terminal_filter_refusal(reason) -> bool:
     """Use the retry subsystem's shared deterministic-refusal classification."""
     return order_retry.is_terminal_filter_refusal(reason)
+
+
+def _is_aborted(cb: Any) -> bool:
+    return callable(cb) and bool(cb())
 
 
 class Instrument:
@@ -485,7 +488,7 @@ class Instrument:
                         return None
 
             early_abort_if = getattr(abort_if, "is_aborted", None)
-            if callable(early_abort_if) and bool(early_abort_if()):
+            if _is_aborted(early_abort_if):
                 reason = "aborted_by_caller"
                 return None
 
@@ -526,7 +529,7 @@ class Instrument:
                     reason = refusal
                     return None
 
-            if callable(early_abort_if) and bool(early_abort_if()):
+            if _is_aborted(early_abort_if):
                 reason = "aborted_by_caller"
                 return None
 
@@ -539,14 +542,8 @@ class Instrument:
                         cm.get_short_trend_manager(), side_u, self.symbol,
                         short_trend_cls=cm.CacheShortTrendManager
                     ):
-                        retry_note = (
-                            "caller owns retry"
-                            if caller_owns_retry
-                            else "the intent stays queued for retry"
-                        )
-                        print(
-                            f"[{self.symbol}] {side_u} deferred by trend; "
-                            f"placement does not wait, {retry_note}")
+                        retry_note = "caller owns retry" if caller_owns_retry else "the intent stays queued for retry"
+                        print(f"[{self.symbol}] {side_u} deferred by trend; placement does not wait, {retry_note}")
                         reason = "trend_deferred"
                         return None
                 except Exception as e:  # noqa: BLE001 — Opportunistic gate.
@@ -602,7 +599,7 @@ class Instrument:
                             return None
                         applied_scale = min(float(applied_scale), scale_factor)
 
-            if callable(early_abort_if) and bool(early_abort_if()):
+            if _is_aborted(early_abort_if):
                 reason = "aborted_by_caller"
                 return None
 
@@ -625,7 +622,7 @@ class Instrument:
                     reason = refusal
                     return None
 
-            if callable(abort_if) and bool(abort_if()):
+            if _is_aborted(abort_if):
                 reason = "aborted_by_caller"
                 return None
             if callable(execution_enabled) and not bool(execution_enabled()):
@@ -737,7 +734,7 @@ class Instrument:
                                 venue=self.provider_name, symbol=self.symbol,
                                 side=side_u.lower(), qty=qty, scale=applied_scale,
                             )
-            if callable(abort_if) and bool(abort_if()):
+            if _is_aborted(abort_if):
                 reason = "aborted_by_caller"
                 return None
             if callable(execution_enabled) and not bool(execution_enabled()):

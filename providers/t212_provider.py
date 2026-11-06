@@ -17,16 +17,22 @@ import time
 import importlib
 from typing import Optional, List
 
-from botcore import _parse_bool_flag, safe_float, safe_nonneg_float, safe_pos_float, safe_pos_int
+from botcore import (
+    _parse_bool_flag,
+    env_value,
+    env_values_map,
+    normalize_side,
+    safe_float,
+    safe_nonneg_float,
+    safe_pos_float,
+    safe_pos_int,
+)
 from cachepaths import canonical_base_asset
 from .base import (
     MarketDataProvider,
     aggregate_fills_by_order_id,
     bool_env,
-    env_value,
-    env_values_map,
     normalize_order,
-    normalize_side,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -77,6 +83,12 @@ def _t212_tickers_match(sym_a: object, sym_b: object) -> bool:
     base_a = canonical_base_asset(sym_a)
     base_b = canonical_base_asset(sym_b)
     return bool(base_a and base_a == base_b)
+
+
+def _order_ticker(raw: dict) -> str:
+    inst = raw.get("instrument")
+    inst_ticker = inst.get("ticker") if isinstance(inst, dict) else ""
+    return str(raw.get("ticker") or inst_ticker or "").strip()
 
 
 class T212Provider(MarketDataProvider):
@@ -159,17 +171,11 @@ class T212Provider(MarketDataProvider):
             if port is None or not isinstance(port, list):
                 raise ProviderError("the T212 portfolio is unavailable")
             target_sym = str(symbol).strip().upper()
-            for p in port:
-                if not isinstance(p, dict):
-                    continue
-                if str(p.get("ticker", "")).strip().upper() == target_sym:
-                    return p
-            for p in port:
-                if not isinstance(p, dict):
-                    continue
-                if _t212_tickers_match(p.get("ticker", ""), target_sym):
-                    return p
-            return None
+            dicts = [p for p in port if isinstance(p, dict)]
+            return (
+                next((p for p in dicts if str(p.get("ticker", "")).strip().upper() == target_sym), None)
+                or next((p for p in dicts if _t212_tickers_match(p.get("ticker", ""), target_sym)), None)
+            )
         except Exception as e:  # noqa: BLE001
             if strict:
                 if isinstance(e, ProviderError):
@@ -450,22 +456,15 @@ class T212Provider(MarketDataProvider):
         if not isinstance(raw, dict):
             raise ProviderError(f"order_status({order_id}): the order is unavailable")
 
-        instrument = raw.get("instrument")
-        instrument_ticker = instrument.get("ticker") if isinstance(instrument, dict) else ""
-        ticker = str(raw.get("ticker") or instrument_ticker or "").strip()
+        ticker = _order_ticker(raw)
         expected_symbol = "" if isinstance(symbol, bool) or symbol is None else str(symbol).strip()
         if ticker and expected_symbol and not _t212_tickers_match(ticker, expected_symbol):
-            raise ProviderError(
-                f"order_status({order_id}): ticker {ticker!r}, expected {symbol!r}")
+            raise ProviderError(f"order_status({order_id}): ticker {ticker!r}, expected {symbol!r}")
 
         venue_status = str(raw.get("status") or "").strip().upper()
-        if venue_status in _OPEN_STATUSES:
-            normalized = "open"
-        else:
-            normalized = _STATUS_MAP.get(venue_status)
+        normalized = "open" if venue_status in _OPEN_STATUSES else _STATUS_MAP.get(venue_status)
         if normalized is None:
-            raise ProviderError(
-                f"order_status({order_id}): unknown T212 status {venue_status!r}")
+            raise ProviderError(f"order_status({order_id}): unknown T212 status {venue_status!r}")
 
         if any(isinstance(raw.get(k), bool) for k in ("filledQuantity", "filledValue", "fee", "commission")):
             raise ProviderError(f"order_status({order_id}): invalid fill values")
@@ -560,12 +559,7 @@ class T212Provider(MarketDataProvider):
                 raise ProviderError(f"open_orders({symbol}): active orders unavailable")
             out: List[dict] = []
             for o in raw_orders:
-                if not isinstance(o, dict):
-                    continue
-                inst_d = o.get("instrument")
-                inst_ticker = inst_d.get("ticker") if isinstance(inst_d, dict) else ""
-                order_ticker = str(o.get("ticker") or inst_ticker or "").strip()
-                if not _t212_tickers_match(order_ticker, symbol):
+                if not isinstance(o, dict) or not _t212_tickers_match(_order_ticker(o), symbol):
                     continue
                 status_u = str(o.get("status") or "NEW").strip().upper()
                 if status_u in _STATUS_MAP:
@@ -575,9 +569,7 @@ class T212Provider(MarketDataProvider):
                 side = normalize_side(o.get("side")) or ("SELL" if raw_qty < 0 else "BUY")
                 raw_px = next((o.get(k) for k in ("limitPrice", "stopPrice", "price") if o.get(k) is not None), None)
                 px = safe_pos_float(raw_px, default=None)
-                orig_q = abs(raw_qty)
                 raw_exec_qty = o.get("filledQuantity") if o.get("filledQuantity") is not None else o.get("executedQty")
-                exec_q = abs(safe_float(raw_exec_qty, default=0.0))
                 oid = extract_order_id(o)
                 out.append({
                     "id": oid,
@@ -586,8 +578,8 @@ class T212Provider(MarketDataProvider):
                     "side": side,
                     "type": str(o.get("type") or "LIMIT").strip().upper(),
                     "price": px,
-                    "origQty": orig_q,
-                    "executedQty": exec_q,
+                    "origQty": abs(raw_qty),
+                    "executedQty": abs(safe_float(raw_exec_qty, default=0.0)),
                     "status": status_u,
                 })
             return out

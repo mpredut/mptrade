@@ -37,7 +37,6 @@ if not _keys_blocked:
     if getattr(_existing_keys, "__spec__", None) is None:
         try:
             from botcore import _MergedModuleAliasFinder
-
             _existing_keys.__spec__ = _MergedModuleAliasFinder.find_spec("keys")
         except Exception:
             pass
@@ -60,6 +59,10 @@ class CredentialPair:
     profile: str
 
 
+def _clean_cred_val(raw: object) -> str:
+    return "" if (raw is None or isinstance(raw, bool)) else str(raw).strip()
+
+
 def resolve_credential_pair(
     profiles: Sequence[tuple[str, str, str]], *,
     values: Mapping[str, str] | None = None,
@@ -74,64 +77,41 @@ def resolve_credential_pair(
     for item in profiles:
         if isinstance(item, (str, bytes)) or not isinstance(item, Sequence) or len(item) != 3:
             raise CredentialConfigurationError("Each credential profile must be a (label, key_name, secret_name) tuple")
-        label, key_name, secret_name = item
-        label_str = str(label or "").strip()
-        key_var = str(key_name or "").strip()
-        secret_var = str(secret_name or "").strip()
+        label_str, key_var, secret_var = (str(x or "").strip() for x in item)
         if not label_str or not key_var or not secret_var:
             raise CredentialConfigurationError("Credential profile label, key_name, and secret_name must be non-empty")
         labels_seen.append(label_str)
-        raw_k = source.get(key_var, "")
-        raw_s = source.get(secret_var, "")
-        key = "" if (raw_k is None or isinstance(raw_k, bool)) else str(raw_k).strip()
-        secret = "" if (raw_s is None or isinstance(raw_s, bool)) else str(raw_s).strip()
+        key = _clean_cred_val(source.get(key_var, ""))
+        secret = _clean_cred_val(source.get(secret_var, ""))
         if bool(key) != bool(secret):
-            missing = secret_var if key else key_var
             raise CredentialConfigurationError(
-                f"Incomplete {label_str} credentials: missing {missing}"
+                f"Incomplete {label_str} credentials: missing {secret_var if key else key_var}"
             )
         if key:
             return CredentialPair(key=key, secret=secret, profile=label_str)
-    labels = ", ".join(labels_seen)
-    raise CredentialProfileMissingError(f"No complete credential profile: {labels}")
+    raise CredentialProfileMissingError(f"No complete credential profile: {', '.join(labels_seen)}")
 
+
+_KRAKEN_BOT_FALLBACK = ("Kraken BOT fallback", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT")
+_KRAKEN_SPARE = ("Kraken SPARE", "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE")
 
 _KRAKEN_PROFILES = {
-    "bot": (
-        ("Kraken BOT", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),
-    ),
-    "cache": (
-        ("Kraken CACHE", "KRAKEN_API_KEY_CACHE", "KRAKEN_API_SECRET_CACHE"),
-        ("Kraken BOT fallback", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),
-    ),
-    "trail": (
-        ("Kraken TRAIL", "KRAKEN_API_KEY_TRAIL", "KRAKEN_API_SECRET_TRAIL"),
-        ("Kraken BOT fallback", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),
-    ),
-    "fleet": (
-        ("Kraken primary", "KRAKEN_API_KEY", "KRAKEN_API_SECRET"),
-        ("Kraken SPARE", "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE"),
-        ("Kraken BOT fallback", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),
-    ),
-    "analysis": (
-        ("Kraken SPARE", "KRAKEN_API_KEY_SPARE", "KRAKEN_API_SECRET_SPARE"),
-        ("Kraken BOT fallback", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),
-    ),
+    "bot": (("Kraken BOT", "KRAKEN_API_KEY_BOT", "KRAKEN_API_SECRET_BOT"),),
+    "cache": (("Kraken CACHE", "KRAKEN_API_KEY_CACHE", "KRAKEN_API_SECRET_CACHE"), _KRAKEN_BOT_FALLBACK),
+    "trail": (("Kraken TRAIL", "KRAKEN_API_KEY_TRAIL", "KRAKEN_API_SECRET_TRAIL"), _KRAKEN_BOT_FALLBACK),
+    "fleet": (("Kraken primary", "KRAKEN_API_KEY", "KRAKEN_API_SECRET"), _KRAKEN_SPARE, _KRAKEN_BOT_FALLBACK),
+    "analysis": (_KRAKEN_SPARE, _KRAKEN_BOT_FALLBACK),
 }
 
 
 def kraken_credentials(role: str, *, values=None) -> CredentialPair:
     """Resolve an approved Kraken role and its explicitly ordered fallbacks."""
-    role_key = str(role or "").strip().lower() if not isinstance(role, bool) else ""
-    try:
-        profiles = _KRAKEN_PROFILES[role_key]
-    except KeyError as exc:
-        raise ValueError(f"Unknown Kraken credential role: {role}") from exc
-    return resolve_credential_pair(profiles, values=values)
+    role_key = "" if isinstance(role, bool) else str(role or "").strip().lower()
+    if role_key not in _KRAKEN_PROFILES:
+        raise ValueError(f"Unknown Kraken credential role: {role}")
+    return resolve_credential_pair(_KRAKEN_PROFILES[role_key], values=values)
 
 
 def t212_credentials(*, values=None) -> CredentialPair:
     """Resolve the single T212 API key/secret pair."""
-    return resolve_credential_pair((
-        ("T212", "T212_API_KEY", "T212_API_SECRET"),
-    ), values=values)
+    return resolve_credential_pair((("T212", "T212_API_KEY", "T212_API_SECRET"),), values=values)

@@ -19,13 +19,13 @@ from botcore import (
     exact_pos_int,
     lru_dict_put,
     normalize_epoch_sec,
+    normalize_side,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
     safe_pos_int,
 )
 from cachepaths import canonical_symbol_key as _clean_regime_symbol_key, normalize_venue_name
-from providers.base import normalize_side
 
 
 def _resolve_provider_name(provider) -> Optional[str]:
@@ -168,18 +168,17 @@ class MarketRegimeContext:
 
         # 4. Identity validation
         require_identity = _parse_bool_flag(require_identity, False)
-        if require_identity:
-            if not isinstance(self.symbol, str) or not self.symbol.strip():
-                return False
-            if not isinstance(self.provider, str) or not self.provider.strip():
-                return False
+        if require_identity and (
+            not isinstance(self.symbol, str) or not self.symbol.strip()
+            or not isinstance(self.provider, str) or not self.provider.strip()
+        ):
+            return False
 
         if symbol is not None:
             if not isinstance(symbol, str) or not symbol.strip():
                 return False
-            target_sym = _clean_regime_symbol_key(symbol)
             if self.symbol is not None:
-                if not isinstance(self.symbol, str) or _clean_regime_symbol_key(self.symbol) != target_sym:
+                if not isinstance(self.symbol, str) or _clean_regime_symbol_key(self.symbol) != _clean_regime_symbol_key(symbol):
                     return False
             elif require_identity:
                 return False
@@ -188,11 +187,10 @@ class MarketRegimeContext:
             if isinstance(provider, bool):
                 return False
             target_prov = _resolve_provider_name(provider)
-            if target_prov is not None:
-                if self.provider is not None:
-                    if _resolve_provider_name(self.provider) != target_prov:
-                        return False
-                elif require_identity:
+            if target_prov is None:
+                return not require_identity
+            if self.provider is not None:
+                if _resolve_provider_name(self.provider) != target_prov:
                     return False
             elif require_identity:
                 return False
@@ -458,7 +456,7 @@ class MarketRegimeEvaluator:
         raw_gr = snapshot.get("gradient_recent")
         raw_grad = raw_gc if raw_gc is not None else raw_gr
         raw_eps = snapshot["epsilon"]
-        for candidate in (raw_gc, raw_gr):
+        for candidate in (raw_gc, raw_gr, raw_grad, raw_eps):
             if candidate is None:
                 continue
             if isinstance(candidate, bool):
@@ -469,15 +467,10 @@ class MarketRegimeEvaluator:
                 return self.unknown("invalid_signal")
             if not math.isfinite(cf):
                 return self.unknown("non_finite_signal")
-        if isinstance(raw_grad, bool) or isinstance(raw_eps, bool):
+        if raw_grad is None or raw_eps is None:
             return self.unknown("invalid_signal")
-        try:
-            gradient = float(raw_grad)
-            epsilon = abs(float(raw_eps))
-        except (TypeError, ValueError):
-            return self.unknown("invalid_signal")
-        if not math.isfinite(gradient) or not math.isfinite(epsilon):
-            return self.unknown("non_finite_signal")
+        gradient = float(raw_grad)
+        epsilon = abs(float(raw_eps))
         samples = snapshot.get("n_samples")
         window = snapshot.get("window_seconds")
         try:
@@ -487,11 +480,7 @@ class MarketRegimeEvaluator:
                     if s_clean.endswith(".0") and s_clean[:-2].isdigit():
                         samples = s_clean[:-2]
                 parsed_samples = int(samples)
-                if (
-                    isinstance(samples, bool)
-                    or float(samples) != parsed_samples
-                    or parsed_samples < 3
-                ):
+                if isinstance(samples, bool) or float(samples) != parsed_samples or parsed_samples < 3:
                     return self.unknown("invalid_sample_metadata")
                 samples = parsed_samples
             if window is not None:
@@ -512,8 +501,7 @@ class MarketRegimeEvaluator:
         return MarketRegimeDecision(
             regime=regime, gradient=gradient, epsilon=epsilon,
             strength=strength, fresh=True, reason=reason,
-            n_samples=samples,
-            window_seconds=window,
+            n_samples=samples, window_seconds=window,
         )
 
 
@@ -1257,15 +1245,10 @@ class MarketRegimeService:
         x_mean = (n - 1) / 2.0
         y_mean = sum(y) / n
         sxx = n * (n * n - 1) / 12.0
-        sxy = 0.0
-        for i, value in enumerate(y):
-            sxy += (i - x_mean) * (value - y_mean)
+        sxy = sum((i - x_mean) * (value - y_mean) for i, value in enumerate(y))
         slope = sxy / sxx
         intercept = y_mean - slope * x_mean
-        residual_sq = 0.0
-        for i, value in enumerate(y):
-            diff = value - (intercept + slope * i)
-            residual_sq += diff * diff
+        residual_sq = sum((value - (intercept + slope * i)) ** 2 for i, value in enumerate(y))
         slope_error = math.sqrt(max(0.0, residual_sq) / max(1, n - 2) / sxx)
         epsilon = max(slope_error, 1e-12)
         decision = self.evaluator.evaluate({

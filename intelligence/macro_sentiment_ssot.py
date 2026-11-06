@@ -13,13 +13,10 @@ boilerplate across ``intelligence/`` and ``llm_order_guard.py`` by:
 from __future__ import annotations
 
 import configparser
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
 import logging
 import os
 import re
 import sys
-import threading
 import time
 import urllib.parse
 
@@ -44,11 +41,6 @@ if TYPE_CHECKING:
     from intelligence.sentiment.collectors.fear_greed_collector import FearGreedSnapshot
     from intelligence.sentiment.collectors.market_breadth_collector import MarketBreadthSnapshot
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None  # type: ignore[assignment]
-
 from botcore import (
     _parse_bool_flag,
     build_heartbeat_payload,
@@ -61,6 +53,7 @@ from botcore import (
     is_interval_due,
     load_ini_config,
     normalize_epoch_sec,
+    normalize_side,
     obj_attr,
     obj_float,
     parse_dotenv,
@@ -91,7 +84,6 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from instrument_registry import casefold_get
-from providers.base import normalize_side
 from state_io import (
     atomic_write_json,
     discard_generation_file,
@@ -112,7 +104,6 @@ logger = logging.getLogger(__name__)
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_MACRO_CONFIG_PATH = os.path.join(_ROOT_DIR, "macro_intelligence.conf")
 DEFAULT_CRONTAB_PATH = os.path.join(_ROOT_DIR, "systemd", "crontab.prod.txt")
-_CONFIG_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "parser": None}
 _CRONTAB_CACHE: Dict[str, Any] = {"mtime": -1.0, "path": "", "interval_sec": None}
 
 
@@ -442,52 +433,46 @@ def get_deribit_options_book_url(currency: str = "BTC") -> str:
     return _cfg_str("feeds", "deribit_options_book_url_template").format(currency=currency)
 
 
+def _require_feed_str(key: str) -> str:
+    val = _cfg_str("feeds", key)
+    if not val:
+        raise ValueError(f"Missing required [feeds] {key} in macro_intelligence.conf")
+    return val
+
+
+def _require_feed_csv(key: str) -> Tuple[str, ...]:
+    vals = _split_csv(_cfg_str("feeds", key), upper=True)
+    if not vals:
+        raise ValueError(f"Missing required [feeds] {key} in macro_intelligence.conf")
+    return vals
+
+
 def get_deribit_options_currencies() -> Tuple[str, ...]:
-    ccys = _split_csv(_cfg_str("feeds", "deribit_options_currencies"), upper=True)
-    if not ccys:
-        raise ValueError("Missing required [feeds] deribit_options_currencies in macro_intelligence.conf")
-    return ccys
+    return _require_feed_csv("deribit_options_currencies")
 
 
 def get_yahoo_chart_url(symbol: str) -> str:
-    tmpl = _cfg_str("feeds", "yahoo_chart_url_template")
-    if not tmpl:
-        raise ValueError("Missing required [feeds] yahoo_chart_url_template in macro_intelligence.conf")
-    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+    return _require_feed_str("yahoo_chart_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
 
 
 def get_yahoo_equity_chart_5d_url(symbol: str) -> str:
-    tmpl = _cfg_str("feeds", "yahoo_equity_chart_5d_url_template")
-    if not tmpl:
-        raise ValueError("Missing required [feeds] yahoo_equity_chart_5d_url_template in macro_intelligence.conf")
-    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+    return _require_feed_str("yahoo_equity_chart_5d_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
 
 
 def get_nasdaq_equity_quote_url(symbol: str) -> str:
-    tmpl = _cfg_str("feeds", "nasdaq_equity_quote_url_template")
-    if not tmpl:
-        raise ValueError("Missing required [feeds] nasdaq_equity_quote_url_template in macro_intelligence.conf")
-    return tmpl.format(symbol=urllib.parse.quote(str(symbol or "").strip()))
+    return _require_feed_str("nasdaq_equity_quote_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
 
 
 def get_cboe_delayed_options_url(option_path: str) -> str:
-    tmpl = _cfg_str("feeds", "cboe_delayed_options_url_template")
-    if not tmpl:
-        raise ValueError("Missing required [feeds] cboe_delayed_options_url_template in macro_intelligence.conf")
-    return tmpl.format(option_path=str(option_path or "").strip().lstrip("/"))
+    return _require_feed_str("cboe_delayed_options_url_template").format(option_path=str(option_path or "").strip().lstrip("/"))
 
 
 def get_cboe_index_tickers() -> Tuple[str, ...]:
-    tickers = _split_csv(_cfg_str("feeds", "cboe_index_tickers"), upper=True)
-    if not tickers:
-        raise ValueError("Missing required [feeds] cboe_index_tickers in macro_intelligence.conf")
-    return tickers
+    return _require_feed_csv("cboe_index_tickers")
 
 
 def get_macro_benchmark_specs() -> Tuple[Tuple[str, str, str], ...]:
-    raw = _cfg_str("feeds", "macro_benchmark_specs")
-    if not raw:
-        raise ValueError("Missing required [feeds] macro_benchmark_specs in macro_intelligence.conf")
+    raw = _require_feed_str("macro_benchmark_specs")
     specs: List[Tuple[str, str, str]] = []
     for item in _split_csv(raw, lower=False, upper=False):
         parts = [p.strip() for p in item.split(":")]

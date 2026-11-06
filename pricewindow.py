@@ -34,13 +34,13 @@ from cachepaths import canonical_base_asset, canonical_symbol_key
 from instrument_registry import load_registry
 import utils as u
 
-# ── Window constants ──────────────────────────────────────────────────────────
+# -- Window constants ----------------------------------------------------------
 DEFAULT_SAMPLE_RATE_SEC = 0.8     # Nominal fallback sampling rate.
 RECENT_GRADIENT_SECONDS = 60.0    # Recent-momentum window in seconds (for primary 222s window).
 WINDOW_SECONDS_SMALL = 3.7 * 60          # 3.7 minutes (222.0s)
 WINDOW_SECONDS_BIG   = 2.5 * 60 * 60     # 2.5 hours (9000.0s)
 
-# ── Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) ──
+# -- Short-trend Estimator Registry (SSOT for growth_coefficient / final_trend) --
 # Direct Step-WOLS estimator on raw price increments:
 #   growth_coefficient = sum(k^p * dy_k) / sum(k^p)
 # Differentiated per instrument via trend.step_wols_power in instruments.conf:
@@ -65,9 +65,7 @@ DEFAULT_STEP_WOLS_POWER = 2.0         # Default exponent p when symbol is not in
 
 def _resolve_short_trend_estimator() -> str:
     raw = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
-    if raw in _SHORT_TREND_ESTIMATORS:
-        return raw
-    return SHORT_TREND_ESTIMATOR_STEP_WOLS
+    return raw if raw in _SHORT_TREND_ESTIMATORS else SHORT_TREND_ESTIMATOR_STEP_WOLS
 
 
 SHORT_TREND_ESTIMATOR = _resolve_short_trend_estimator()
@@ -81,15 +79,20 @@ def dynamic_window_key(window_seconds: float) -> str:
     return f"{w:g}"
 
 
-def _resolve_step_wols_power(estimator_name: str = None) -> float:
+def _env_or_estimator_power(estimator_name: str | None = None) -> float | None:
     if "MPTRADE_STEP_WOLS_POWER" in os.environ:
         return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
-    est = (estimator_name or SHORT_TREND_ESTIMATOR or "").lower()
+    est = str(estimator_name if estimator_name is not None else os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "")).strip().lower()
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
         return 3.0
     if est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:
         return 1.0
-    return DEFAULT_STEP_WOLS_POWER
+    return None
+
+
+def _resolve_step_wols_power(estimator_name: str = None) -> float:
+    override = _env_or_estimator_power(estimator_name or SHORT_TREND_ESTIMATOR)
+    return override if override is not None else DEFAULT_STEP_WOLS_POWER
 
 
 STEP_WOLS_POWER = _resolve_step_wols_power(SHORT_TREND_ESTIMATOR)
@@ -110,18 +113,18 @@ def _register_symbol_param(target_map: dict[str, float], sym: str, base: str, c_
                 target_map.setdefault(f"{b}{q}", val)
 
 
-def _load_symbol_power_map() -> dict[str, float]:
+def _ensure_symbol_trend_caches() -> tuple[dict[str, float], dict[str, float]]:
     conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments.conf")
     try:
         mtime_ns = os.stat(conf_path).st_mtime_ns
     except OSError:
-        return {}
+        return {}, {}
     if _SYMBOL_POWER_CACHE["mtime_ns"] == mtime_ns and _SYMBOL_POWER_CACHE["map"]:
-        return _SYMBOL_POWER_CACHE["map"]
+        return _SYMBOL_POWER_CACHE["map"], _SYMBOL_FAST_WINDOW_CACHE["map"]
     try:
         registry = load_registry(conf_path)
     except Exception:
-        return {}
+        return {}, {}
     mapping: dict[str, float] = {}
     fast_win_map: dict[str, float] = {}
     for spec in registry.values():
@@ -138,18 +141,15 @@ def _load_symbol_power_map() -> dict[str, float]:
     _SYMBOL_POWER_CACHE["map"] = mapping
     _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] = mtime_ns
     _SYMBOL_FAST_WINDOW_CACHE["map"] = fast_win_map
-    return mapping
+    return mapping, fast_win_map
+
+
+def _load_symbol_power_map() -> dict[str, float]:
+    return _ensure_symbol_trend_caches()[0]
 
 
 def _load_symbol_fast_window_map() -> dict[str, float]:
-    conf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "instruments.conf")
-    try:
-        mtime_ns = os.stat(conf_path).st_mtime_ns
-    except OSError:
-        return {}
-    if _SYMBOL_FAST_WINDOW_CACHE["mtime_ns"] != mtime_ns:
-        _load_symbol_power_map()
-    return _SYMBOL_FAST_WINDOW_CACHE["map"]
+    return _ensure_symbol_trend_caches()[1]
 
 
 def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> float | None:
@@ -237,19 +237,13 @@ def step_wols_power_for_symbol(symbol: str | None = None) -> float:
     ``trend.step_wols_power`` in ``instruments.conf`` (BTC -> 3.0, altcoins -> 2.0),
     falling back to ``DEFAULT_STEP_WOLS_POWER`` (2.0).
     """
-    if "MPTRADE_STEP_WOLS_POWER" in os.environ:
-        return max(0.0, float_env("MPTRADE_STEP_WOLS_POWER", default=DEFAULT_STEP_WOLS_POWER))
-    raw_est = str(os.environ.get("MPTRADE_SHORT_TREND_ESTIMATOR", "") or "").strip().lower()
-    if raw_est == SHORT_TREND_ESTIMATOR_STEP_WOLS_CUBIC:
-        return 3.0
-    if raw_est == SHORT_TREND_ESTIMATOR_STEP_WOLS_LINEAR:
-        return 1.0
+    override = _env_or_estimator_power()
+    if override is not None:
+        return override
     if STEP_WOLS_POWER != DEFAULT_STEP_WOLS_POWER:
         return max(0.0, float(STEP_WOLS_POWER))
     found = _lookup_symbol_param(symbol, _load_symbol_power_map())
-    if found is not None:
-        return found
-    return float(STEP_WOLS_POWER)
+    return found if found is not None else float(STEP_WOLS_POWER)
 
 
 def _active_estimator() -> str:
@@ -298,13 +292,24 @@ def effective_recent_gradient_seconds(window_seconds=None) -> float:
     For the primary window (<= 222s) or unspecified windows, returns
     ``RECENT_GRADIENT_SECONDS`` (60s). For larger windows (e.g. 900s, 9000s),
     scales proportionally by ``RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL``
-    (60 / 222 ≈ 27.03% of the window) so multi-minute/hour windows do not
+    (60 / 222 ~= 27.03% of the window) so multi-minute/hour windows do not
     collapse to a 60-second tail.
     """
     win_f = safe_float(window_seconds, default=None)
     if win_f is not None and win_f > WINDOW_SECONDS_SMALL:
         return win_f * (RECENT_GRADIENT_SECONDS / WINDOW_SECONDS_SMALL)
     return RECENT_GRADIENT_SECONDS
+
+
+def _telescoped_mean_gradient(p, a: int, b: int, r: int) -> tuple[float, float]:
+    """Return ``(sum_g_all, grad_recent)`` over ``p[a..b]`` with recent tail ``r``."""
+    n = b - a + 1
+    sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
+    if n > r:
+        grad_recent = float(((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r))
+    else:
+        grad_recent = float(sum_g_all / n)
+    return sum_g_all, grad_recent
 
 
 class PriceTrendAnalyzer:
@@ -431,16 +436,15 @@ class IncrementalTrendBuffer:
         self.base_pk2 = 0.0
         self.y_ref = None
 
+    def _series_lists(self) -> tuple[list, ...]:
+        return (
+            self.timestamps, self.prices, self.p0, self.p1, self.p2,
+            self.pk2, self.pg2, self.plr2, self.nonpos,
+        )
+
     def clear(self):
-        self.timestamps.clear()
-        self.prices.clear()
-        self.p0.clear()
-        self.p1.clear()
-        self.p2.clear()
-        self.pk2.clear()
-        self.pg2.clear()
-        self.plr2.clear()
-        self.nonpos.clear()
+        for seq in self._series_lists():
+            seq.clear()
         self.offset = 0
         self.base_p0 = self.base_p1 = self.base_p2 = self.base_pk2 = 0.0
         self.y_ref = None
@@ -572,15 +576,8 @@ class IncrementalTrendBuffer:
         self.base_p1 = self.p1[idx - 1]
         self.base_p2 = self.p2[idx - 1]
         self.base_pk2 = self.pk2[idx - 1]
-        del self.timestamps[:idx]
-        del self.prices[:idx]
-        del self.p0[:idx]
-        del self.p1[:idx]
-        del self.p2[:idx]
-        del self.pk2[:idx]
-        del self.pg2[:idx]
-        del self.plr2[:idx]
-        del self.nonpos[:idx]
+        for seq in self._series_lists():
+            del seq[:idx]
         self.offset += idx
         if not self.prices:
             self.clear()
@@ -675,14 +672,7 @@ class IncrementalTrendBuffer:
 
         recent_sec = effective_recent_gradient_seconds(window_seconds)
         recent_n = _safe_recent_n(recent_sec, sample_rate_sec)
-        sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
-        if n > recent_n:
-            r = recent_n
-            gradient_recent = float(
-                ((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r)
-            )
-        else:
-            gradient_recent = float(sum_g_all / n)
+        sum_g_all, gradient_recent = _telescoped_mean_gradient(p, a, b, recent_n)
         if abs(gradient_recent) <= 1e-12:
             gradient_recent = 0.0
 
@@ -996,18 +986,9 @@ class PriceWindow:
                 return 0.0
             if self._is_trend_buf_synced():
                 blen = len(self._trend_buf.prices)
-                p = self._trend_buf.prices
-                a = blen - n
-                b = blen - 1
+                _, val = _telescoped_mean_gradient(self._trend_buf.prices, blen - n, blen - 1, r)
             else:
-                p = self.prices
-                a = 0
-                b = n - 1
-            if n > r:
-                val = ((p[b] - p[b - 1]) + (p[b] - p[b - r + 1]) + (p[b] - p[b - r])) / (2.0 * r)
-            else:
-                sum_g_all = (p[b] - p[a]) + 0.5 * ((p[b] - p[b - 1]) + (p[a + 1] - p[a]))
-                val = sum_g_all / n
+                _, val = _telescoped_mean_gradient(self.prices, 0, n - 1, r)
         return float(val)
 
     def get_noise_epsilon(self, k: float = 1.0) -> float:
@@ -1161,11 +1142,11 @@ class WindowAnalyzer:
             return -price_diff_newest if price_diff_max > price_diff_min else price_diff_newest, 0
         return 0, 0
 
-    # ══════════════════════════════════════════════════════════════════════════════
-    # [HISTORICAL EXPERIMENTS & DRAFT METRICS — PRESERVE FOR REFERENCE — DO NOT DELETE]
+    # ==============================================================================
+    # [HISTORICAL EXPERIMENTS & DRAFT METRICS - PRESERVE FOR REFERENCE - DO NOT DELETE]
     # Preserved for analysis and potential reuse/recalibration in strategies.
     # Note: evaluate_buy_sell_opportunity was removed per requirement (empty stub).
-    # ══════════════════════════════════════════════════════════════════════════════
+    # ==============================================================================
     # def calculate_slope_max_min(self):
     #     """Calculate direct slope between window extremes (min and max)."""
     #     w = self.window

@@ -20,26 +20,23 @@ from typing import Optional, List
 
 from botcore import (
     _parse_bool_flag,
+    clean_order_id,
+    env_values_map,
     exact_nonneg_int,
     exact_pos_int,
     load_local_module,
+    normalize_side,
     safe_nonneg_float,
     safe_pos_float,
 )
 from .base import (
     MarketDataProvider,
     _derive_128bit_client_order_id,
-    aggregate_fills_by_order_id,
     bool_env,
     build_open_order_entry,
     build_price_history_points,
-    clean_order_id,
-    env_values_map,
-    extract_client_order_id,
     extract_order_fee,
-    extract_timestamp_ms,
     normalize_order,
-    normalize_side,
     require_clean_order_id,
     resolve_market_flag,
 )
@@ -68,6 +65,14 @@ _CACHE_MAX_STALE_S = 30.0   # Beyond this, assume cachemanager stopped and use T
 _KRAKEN_QUOTES = (
     "USDC", "USDT", "USD", "EUR", "GBP", "CAD", "JPY", "AUD",
     "BTC", "XBT", "ETH",
+)
+_KRAKEN_FALLBACK_ERR_TOKENS = (
+    "permission denied",
+    "invalid nonce",
+    "rate limit",
+    "temporary lockout",
+    "eroare retea",
+    "network error",
 )
 
 
@@ -258,7 +263,7 @@ class KrakenProvider(MarketDataProvider):
                 self._cli = cli
                 self._auto_cli = cli
             else:
-                print("[Kraken] ⚠ STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
+                print("[Kraken] [WARN] STARTED WITHOUT keys (kraken/.env missing or incomplete at the first account call)"
                       " -> the account reads (balance/orders) will fail; NOT caching, retrying on the next tick.")
             return cli
 
@@ -293,16 +298,7 @@ class KrakenProvider(MarketDataProvider):
             return fn(cli)
         except Exception as exc:  # noqa: BLE001
             err_l = str(exc).lower()
-            can_fallback = any(
-                tok in err_l
-                for tok in (
-                    "permission denied",
-                    "invalid nonce",
-                    "rate limit",
-                    "temporary lockout",
-                    "eroare retea",
-                )
-            )
+            can_fallback = any(tok in err_l for tok in _KRAKEN_FALLBACK_ERR_TOKENS)
             fb_cli = self._order_query_fallback_client() if can_fallback else None
             if fb_cli is not None:
                 try:
@@ -445,16 +441,7 @@ class KrakenProvider(MarketDataProvider):
                     return bx
             except Exception as exc:  # noqa: BLE001
                 err_l = str(exc).lower()
-                if any(
-                    tok in err_l
-                    for tok in (
-                        "permission denied",
-                        "invalid nonce",
-                        "rate limit",
-                        "temporary lockout",
-                        "eroare retea",
-                    )
-                ):
+                if any(tok in err_l for tok in _KRAKEN_FALLBACK_ERR_TOKENS):
                     raise
         res = cli.balance() if callable(bal_fn) else {}
         return res if isinstance(res, dict) else {}
@@ -538,46 +525,34 @@ class KrakenProvider(MarketDataProvider):
         """Return a strict Binance-shaped snapshot of active Kraken orders."""
         raw_orders = self._query_with_bot_fallback(lambda cli: cli.open_orders(), f"open_orders({symbol})")
         if not isinstance(raw_orders, dict):
-            raise ProviderError(
-                f"open_orders({symbol}): payload Kraken invalid")
+            raise ProviderError(f"open_orders({symbol}): invalid Kraken payload")
 
         normalized = []
         for order_id, raw in raw_orders.items():
             clean_oid = _clean_kraken_order_id(order_id, f"open_orders({symbol})")
             if not isinstance(raw, dict):
-                raise ProviderError(
-                    f"open_orders({symbol}): order {order_id} is invalid")
+                raise ProviderError(f"open_orders({symbol}): order {order_id} is invalid")
             description = raw.get("descr") or {}
             if not isinstance(description, dict):
-                raise ProviderError(
-                    f"open_orders({symbol}): invalid description for order "
-                    f"{order_id}")
+                raise ProviderError(f"open_orders({symbol}): invalid description for order {order_id}")
             pair = str(description.get("pair") or raw.get("pair") or "")
             if not pair:
-                raise ProviderError(
-                    f"open_orders({symbol}): order {order_id} without a pair")
+                raise ProviderError(f"open_orders({symbol}): order {order_id} without a pair")
             if not _kraken_pair_matches(symbol, pair):
                 continue
             side = normalize_side(description.get("type") or raw.get("type"))
             if side not in {"BUY", "SELL"}:
-                raise ProviderError(
-                    f"open_orders({symbol}): an invalid side for {order_id}")
+                raise ProviderError(f"open_orders({symbol}): an invalid side for {order_id}")
             raw_px = description.get("price") if description.get("price") is not None else raw.get("price", 0.0)
             price = safe_nonneg_float(raw_px, default=None)
             original_qty = safe_pos_float(raw.get("vol"), default=None)
             executed_qty = safe_nonneg_float(raw.get("vol_exec") if raw.get("vol_exec") is not None else 0.0, default=None)
             if price is None or original_qty is None or executed_qty is None or executed_qty > original_qty:
-                raise ProviderError(
-                    f"open_orders({symbol}): invalid quantities/price for {order_id}")
+                raise ProviderError(f"open_orders({symbol}): invalid quantities/price for {order_id}")
             normalized.append(
                 build_open_order_entry(
-                    raw,
-                    order_id=clean_oid,
-                    side=side,
-                    price=price,
-                    orig_qty=original_qty,
-                    executed_qty=executed_qty,
-                    default_status="OPEN",
+                    raw, order_id=clean_oid, side=side, price=price,
+                    orig_qty=original_qty, executed_qty=executed_qty, default_status="OPEN",
                 )
             )
         return normalized
@@ -856,7 +831,7 @@ class KrakenProvider(MarketDataProvider):
                 base_asset=base_str,
             )
         except (TypeError, ValueError, OverflowError) as e:
-            raise ProviderError(f"pair_precision {symbol}: info malformat ({e})") from e
+            raise ProviderError(f"pair_precision {symbol}: malformed pair_info ({e})") from e
 
     def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
         interval_i = exact_pos_int(interval_min, default=None)
