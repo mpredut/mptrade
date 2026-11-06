@@ -493,7 +493,7 @@ class Strategy(BaseSpotMixin):
             avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
             log(f"  [STRAT] {tag}OPEN {self.p.direction.upper()} {fq:.6f} @ {fp:.4f} "
                 f"({'DCA' if is_dca else 'ENTRY'}) qty={self.s['qty']:.6f} avg={avg:.4f}")
-            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp_s}",
+            notify(title=f"{tag}{self.coin} OPEN {self.p.direction} {fq:.2f}@{fp_s} [hl_bot]",
                    body=f"{'DCA' if is_dca else 'ENTRY'} | q{self.s['qty']:.2f} a{avg_s}",
                    source="hyperliquid", price=fp, desktop=self.desktop)
         self._cancel_close()   # average changed; replace the take-profit order
@@ -511,7 +511,7 @@ class Strategy(BaseSpotMixin):
             px_s = format_price_log(price) if 0.0 < price < 1.0 else f"{price:.2f}"
             avg_s = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
             log(f"  [STRAT] {tag}CLOSE {sz:.6f} @ {price:.4f}  gross={gross:+.4f} fee={fee:.4f} net={net:+.4f}")
-            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f}",
+            notify(title=f"{tag}{self.coin} CLOSE {sz:.2f}@{px_s} N{net:+.2f} [hl_bot]",
                    body=f"a{avg_s} · gr{gross:+.2f} fee{fee:.2f} N{net:+.2f} | Ntot{self.s['realized_net']:+.2f}",
                    source="hyperliquid", price=price, desktop=self.desktop)
         if real_qty is not None:

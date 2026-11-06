@@ -1853,6 +1853,44 @@ class TestMonitortradesExecutedTrades(unittest.TestCase):
                 price=80060.0,
             )
 
+    def test_multi_wave_partial_fills_include_cumulative_total(self):
+        wave1 = [
+            {
+                "symbol": "TAOUSDC", "id": "3101", "orderId": "721791852",
+                "clientOrderId": "AI_intent_1778016667__61795c_f2bb206",
+                "price": 221.40, "qty": 0.3520, "time": 1700000001000, "isBuyer": False,
+            },
+        ]
+        wave2 = wave1 + [
+            {
+                "symbol": "TAOUSDC", "id": "3102", "orderId": "721791852",
+                "price": 221.40, "qty": 5.7455, "time": 1700000300000, "isBuyer": False,
+            },
+        ]
+        with patch.object(mt.apitrades, "get_trade_orders", side_effect=[[], wave1, wave2]), \
+             patch("notify_engine.alertnotifiers.notify") as mock_notify:
+            mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
+            mock_notify.assert_not_called()
+
+            mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
+            mock_notify.assert_called_once_with(
+                title="🎉 SELL TAOUSDC @ 221.40 [ai_executor]",
+                body="Order 721791852 (ai_executor) executed! Filled: 0.3520 TAOUSDC (~77.93 USDC)",
+                source="monitortrades",
+                symbol="TAOUSDC",
+                price=221.40,
+            )
+
+            mock_notify.reset_mock()
+            mt.check_and_notify_executed_trades(symbols_list=["TAOUSDC"])
+            mock_notify.assert_called_once_with(
+                title="🎉 SELL TAOUSDC @ 221.40 [ai_executor]",
+                body="Order 721791852 (ai_executor) executed! Filled: 5.7455 TAOUSDC (~1272.05 USDC) [total: 6.0975 TAOUSDC (~1349.99 USDC), 2 fills]",
+                source="monitortrades",
+                symbol="TAOUSDC",
+                price=221.40,
+            )
+
     def test_executed_trade_includes_owner_from_client_order_id(self):
         initial_trades = []
         new_trade = {

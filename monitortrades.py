@@ -173,6 +173,11 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 oid = extract_order_id(t, default="") or _extract_trade_uid(t)
                 trades_by_order.setdefault(oid, []).append(t)
 
+            all_trades_by_order: dict[str, list[dict]] = {}
+            for t in orders:
+                oid = extract_order_id(t, default="") or _extract_trade_uid(t)
+                all_trades_by_order.setdefault(oid, []).append(t)
+
             try:
                 accepted_owner_map = order_retry.get_accepted_order_owner_map()
             except Exception:
@@ -187,8 +192,9 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     if raw_sym is not None and not isinstance(raw_sym, bool) and str(raw_sym).strip()
                     else str(symbol)
                 )
+                all_group = all_trades_by_order.get(oid, group)
                 cid = next(
-                    (c for t in group if (c := extract_client_order_id(t, default=""))),
+                    (c for t in all_group if (c := extract_client_order_id(t, default=""))),
                     "",
                 )
                 trade_ts_ms = _order_timestamp_ms(first)
@@ -216,6 +222,10 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)
                 quote = (cachepaths.split_symbol_assets(sym_name) or ("", ""))[1] or "USD"
                 fill_suffix = f" ({len(group)} fills)" if len(group) > 1 else ""
+                if len(all_group) > len(group):
+                    cum_qty = sum(extract_order_qty(t) for t in all_group)
+                    cum_val = sum(extract_order_qty(t) * extract_order_price(t) for t in all_group)
+                    fill_suffix += f" [total: {cum_qty:.4f} {sym_name} (~{cum_val:.2f} {quote}), {len(all_group)} fills]"
                 avg_px_str = format_price_log(avg_price)
                 print(
                     f"[MONITORTRADES] 🎉 New executed order{owner_body}: {side} {total_qty:.6f} "
