@@ -2165,6 +2165,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Emirates Airline Profit Falls After Iran War Disrupts Air Traffic - WSJ", ["war", "iran war"]),
         ("France to order long-range naval cruise missile from MBDA - Reuters", ["cruise missile", "missile"]),
         ("35 years since Kuwait extinguished last burning oil well after Iraqi invasion - Kuwait Times", ["invasion"]),
+        ("AI stocks hammered by midterm shock as data center buildout becomes a 'war of attrition'", ["war"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()

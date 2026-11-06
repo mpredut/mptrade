@@ -72,9 +72,10 @@ _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
-    "bidding", "browser", "burger", "burgers", "console", "coupon", "coupons",
-    "culture", "discount", "discounts", "food", "gallon", "mcdonald", "mcdonalds",
-    "menu", "menus", "pump", "streaming", "talent", "turf",
+    "attrition", "bidding", "browser", "buildout", "burger", "burgers",
+    "console", "coupon", "coupons", "culture", "discount", "discounts",
+    "food", "gallon", "mcdonald", "mcdonalds", "menu", "menus", "pump",
+    "streaming", "talent", "turf",
 })
 
 _SPORTS_CONTEXT_WORDS: frozenset[str] = frozenset({
