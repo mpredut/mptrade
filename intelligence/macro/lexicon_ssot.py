@@ -423,6 +423,11 @@ def _is_excluded_non_crisis_attack_keyword(
                 "talks", "negotiation", "negotiations", "proposal", "proposals", "reviewing",
                 "humanity", "humanitarian", "melania", "exempt", "exempts",
                 "exempted", "exempting", "exemption", "exemptions",
+                *(
+                    {"pass", "passage"}
+                    if "free" in combined_words
+                    else set()
+                ),
             }
         ) and not (
             combined_words
@@ -433,6 +438,24 @@ def _is_excluded_non_crisis_attack_keyword(
                     "reject", "rejects", "rejected", "violate", "violates", "violated",
                     "resume", "resumes", "resumed", "abandon", "abandons", "abandoned",
                     "shatter", "shatters", "shattered", "threat", "threatens", "threatened",
+                }
+            )
+        ):
+            return True
+    if kw_words and kw_words <= {"sanction", "sanctions", "russia", "russian", "iran", "iranian"}:
+        if (
+            combined_words
+            & {
+                "jail", "jailed", "jailing", "sailor", "prison", "sentenced",
+                "convicted", "trial", "arrest", "arrested", "indicted", "court",
+            }
+        ) and not (
+            combined_words
+            & (
+                _BROAD_MARKET_INDEX_CONTEXT_WORDS
+                | {
+                    "impose", "imposed", "imposes", "package", "treasury", "embargo",
+                    "ban", "bans", "oil", "crude", "bank", "banks",
                 }
             )
         ):

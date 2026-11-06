@@ -104,15 +104,21 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         tl_norm = normalize_threat_level(data.get("threat_level"), default="NORMAL")
         rb_norm = normalize_recommended_brake(data.get("recommended_brake"), threat_level=tl_norm)
         raw_rs = data.get("risk_score", default_risk_score)
+        rs_clean = clean_scale(raw_rs, default=default_risk_score, allow_percent=True)
         sum_low = summary_str.lower()
-        if (
-            tl_norm == "ELEVATED"
-            and ("no systemic risk" in sum_low or "false alarm" in sum_low or "sent in error" in sum_low)
-            and ("already reflected" in sum_low or "already priced" in sum_low or "already digested" in sum_low)
+        if tl_norm == "ELEVATED" and (
+            (
+                ("no systemic risk" in sum_low or "false alarm" in sum_low or "sent in error" in sum_low)
+                and ("already reflected" in sum_low or "already priced" in sum_low or "already digested" in sum_low)
+            )
+            or (
+                rs_clean < 0.50
+                and ("no immediate supply disruption" in sum_low or "no new kinetic escalation" in sum_low)
+            )
         ):
             tl_norm = "NORMAL"
             rb_norm = "NONE"
-            raw_rs = min(clean_scale(raw_rs, default=default_risk_score, allow_percent=True), 0.25)
+            raw_rs = min(rs_clean, 0.25)
         raw_fb = data.get("is_fallback")
         fb_flag = (
             is_fallback
