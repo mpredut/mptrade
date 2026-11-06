@@ -2201,6 +2201,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         "ETFs Bought $34.3 Million of SpaceX (SPCX) on Nov. 4",
         "Nvidia Stock Rises on Dip-Buying: 3 Reasons to Be Optimistic",
         "Dell vs. Nvidia: Chip Stocks Just Suffered Their Worst Sell-Off Since 2020. Which Is the Better Buy for 2027?",
+        "Micron vs. Nvidia: Which AI Stock Is a Better Buy for 2027?",
         "Texas Gov.-Elect Gina Hinojosa Just Delivered Fantastic News for SpaceX Investors",
         "TSMC Makes the Chips for Both Nvidia and AMD. Here's What a $5,000 Investment Could Be Worth by 2030.",
         "Forget Nvidia. Here's the Company Behind the Chips",

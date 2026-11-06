@@ -577,7 +577,7 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "in net etf selling",
     "in net etf buying",
     "reasons to be optimistic",
-    "which is the better buy",
+    "better buy",
     "just delivered fantastic news for",
     "investment could be worth",
     "wants to be the nvidia of",
