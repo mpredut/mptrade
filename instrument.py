@@ -412,8 +412,10 @@ class Instrument:
                         price = px_f
 
             # 1. Provider-agnostic daily trade cap (25 orders / 24h + 5s per-symbol anti-spam).
-            if not GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards):
-                ok, reason = order_guard.daily_limit_guard(self._provider, self.symbol, side_u)
+            if not (GUARD_REGISTRY["GO1"].is_bypassed(bypassed_guards) or is_stop):
+                ok, reason = order_guard.daily_limit_guard(
+                    self._provider, self.symbol, side_u, bypass_guards=bypassed_guards
+                )
                 if not ok:
                     return None
 
