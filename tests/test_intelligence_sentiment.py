@@ -9451,4 +9451,19 @@ def test_premarket_gap_preservation_and_symmetric_sell_late_scale(tmp_path, monk
     assert remaining_ids == ["ai_accepted_sell_1"]
 
 
+def test_headlines_are_semantic_duplicates_syndicated_ai_stocks_rewrites():
+    """Verify syndicated rewrites sharing 2-letter acronyms (AI/US) and magnitude nouns (trillions) deduplicate."""
+    from intelligence.macro.lexicon_ssot import headlines_are_semantic_duplicates
+
+    assert headlines_are_semantic_duplicates(
+        "AI stocks climb after trillions wiped from market values",
+        "AI stocks bounce back after trillions wiped from market values",
+    )
+    assert not headlines_are_semantic_duplicates(
+        "AI stocks climb after trillions wiped from market values",
+        "US labor market regains ground as job growth surges",
+    )
+
+
+
 
