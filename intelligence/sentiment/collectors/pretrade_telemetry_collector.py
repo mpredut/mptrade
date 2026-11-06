@@ -25,6 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     safe_pos_float,
 )
 from intelligence.sentiment.collectors.microstructure_collector import (
+    _EQ_YAHOO_CHART_MEMO,
     _LAST_7D_SPAN_MS_BY_SYM,
     _load_stitched_7d_ohlc_closes,
     _refresh_stale_t212_cached_positions,
@@ -305,13 +306,18 @@ def collect_pretrade_telemetry(
         )
         m24 = compute_24h_price_metrics(alt_series_24h) if alt_series_24h else {}
         last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
-        live_cur_px = next(
-            (px_v for cand in quote_variants if (px_v := extract_current_price_item(casefold_get(cur_p_items, cand))) is not None and px_v > 0.0),
-            0.0,
-        )
+        live_cur_px = 0.0
+        cp_ts_sec = 0.0
+        for cand in quote_variants:
+            raw_cp = casefold_get(cur_p_items, cand)
+            if (px_v := extract_current_price_item(raw_cp)) is not None and px_v > 0.0:
+                live_cur_px = px_v
+                if isinstance(raw_cp, list) and raw_cp and (cp_pt := _parse_ts_px_row(raw_cp[-1])) is not None and cp_pt[0] > 1e11:
+                    cp_ts_sec = cp_pt[0] / 1000.0
+                break
         vb_pos_ts = 0.0
         vb_path = str(resolve_cachedb_filepath(os.path.join(cachedb_dir, "venue_balances_state.json")))
-        if live_cur_px <= 0.0 and isinstance(vb_d := _rj(vb_path), dict):
+        if (live_cur_px <= 0.0 or is_eq_sym) and isinstance(vb_d := _rj(vb_path), dict):
             if is_eq_sym and _rj is _default_read_json_cached:
                 import time as _pt_time
 
@@ -319,29 +325,64 @@ def collect_pretrade_telemetry(
             for vb_k, vb_v in vb_d.items():
                 if isinstance(vb_k, str) and vb_k.startswith("pos:") and isinstance(vb_v, dict):
                     if str(vb_v.get("symbol") or vb_k.split(":", 2)[-1]).strip().upper() == str(symbol).strip().upper():
-                        live_cur_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
-                        vb_pos_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
-                        if live_cur_px > 0.0:
+                        vb_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
+                        vb_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
+                        if vb_px > 0.0:
+                            if (
+                                vb_ts > 0.0
+                                and cp_ts_sec > 0.0
+                                and abs(round(vb_px, 4) - round(live_cur_px, 4)) < 1e-4
+                                and cp_ts_sec < vb_ts
+                            ):
+                                vb_ts = cp_ts_sec
+                            vb_pos_ts = vb_ts
+                            if (
+                                live_cur_px <= 0.0
+                                or abs(round(live_cur_px, 4) - round(vb_px, 4)) < 1e-4
+                                or (cp_ts_sec > 0.0 and vb_ts > cp_ts_sec)
+                            ):
+                                live_cur_px = round(vb_px, 4) if is_eq_sym else vb_px
                             break
         cur_px_est = last_alt_pt[1] if last_alt_pt is not None else 0.0
         rth_fresh_eq = True
         eq_post_rth_override = False
         eq_px_diverged_05pct = False
+        eq_chart_refreshed = False
         if not cur_px_est or cur_px_est <= 0.0:
             cur_px_est = live_cur_px
+        sym_u_eq = str(symbol).strip().upper()
+        memo_chart_eq = _EQ_YAHOO_CHART_MEMO.get(sym_u_eq) if (is_eq_sym and "PYTEST_CURRENT_TEST" not in os.environ) else None
+        raw_alt_last_ts_ms = last_alt_pt[0] if last_alt_pt is not None else 0.0
+        now_s_eq_chk = _time.time()
+        eq_rth_open_chk = bool(is_symbol_market_open(symbol, now_s_eq_chk)) if is_eq_sym else False
+        memo_ttl_eq = 240.0 if (eq_rth_open_chk or memo_chart_eq is None) else 1800.0
+        memo_chart_fresh_eq = bool(memo_chart_eq is not None and 0.0 <= (now_s_eq_chk - memo_chart_eq[0]) < memo_ttl_eq)
         if (
-            (not m24 or "chg_24h_pct" not in m24 or "chg_1h_pct" not in m24 or m24.get("vp_source") == "TPO")
-            and is_eq_sym
+            is_eq_sym
             and "PYTEST_CURRENT_TEST" not in os.environ
+            and (
+                not m24
+                or "chg_24h_pct" not in m24
+                or "chg_1h_pct" not in m24
+                or m24.get("vp_source") == "TPO"
+                or memo_chart_eq is not None
+                or eq_rth_open_chk
+                or raw_alt_last_ts_ms <= 0.0
+                or (int(now_s_eq_chk * 1000) - raw_alt_last_ts_ms) > 5 * 60 * 1000
+            )
         ):
             try:
                 import time as _pt_time
 
-                ws_root = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
-                if not os.path.exists(os.path.join(ws_root, "212trading", "market_data.py")):
-                    ws_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-                _chart_fn = load_local_module(os.path.join(ws_root, "212trading"), "market_data")._chart
-                chart_res = _chart_fn(str(symbol).strip().upper().split("_", 1)[0], rng="5d", interval="5m")
+                if memo_chart_fresh_eq and memo_chart_eq is not None:
+                    chart_res = memo_chart_eq[1]
+                else:
+                    ws_root = os.path.dirname(os.path.abspath(cachedb_dir.rstrip("/\\")))
+                    if not os.path.exists(os.path.join(ws_root, "212trading", "market_data.py")):
+                        ws_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                    _chart_fn = load_local_module(os.path.join(ws_root, "212trading"), "market_data")._chart
+                    chart_res = _chart_fn(sym_u_eq.split("_", 1)[0], rng="5d", interval="5m")
+                    _EQ_YAHOO_CHART_MEMO[sym_u_eq] = (now_s_eq_chk, chart_res)
                 pts_5d_eq = []
                 if isinstance(chart_res, tuple) and len(chart_res) >= 2 and isinstance(chart_res[1], list):
                     pts_5d_eq = sorted(
@@ -360,6 +401,14 @@ def collect_pretrade_telemetry(
                         key=lambda pt: pt[0],
                     )
                 if pts_5d_eq:
+                    if len(pts_5d_eq) >= 10:
+                        for split_idx in range(len(pts_5d_eq) - 1, max(4, len(pts_5d_eq) - 4), -1):
+                            if (
+                                (pts_5d_eq[split_idx][0] - pts_5d_eq[split_idx - 1][0]) > 2 * 3600 * 1000
+                                and (pts_5d_eq[-1][0] - pts_5d_eq[split_idx][0]) < 15 * 60 * 1000
+                            ):
+                                pts_5d_eq = pts_5d_eq[:split_idx]
+                                break
                     raw_alt_series_24h = list(alt_series_24h)
                     now_ms_c = int(_pt_time.time() * 1000)
                     eq_rth_open_c = bool(is_symbol_market_open(symbol, now_ms_c / 1000.0))
@@ -399,9 +448,10 @@ def collect_pretrade_telemetry(
                             pts_24_eq = [by_ts_c[k] for k in sorted(by_ts_c)]
                     alt_series_24h = list(pts_24_eq)
                     arch_vals_7d = [pt[1] for pt in pts_5d_eq]
+                    eq_chart_refreshed = len(alt_series_24h) >= 5
                     m24 = compute_24h_price_metrics(alt_series_24h) or {}
                     last_alt_pt = _parse_ts_px_row(alt_series_24h[-1]) if alt_series_24h else None
-                    if (not cur_px_est or cur_px_est <= 0.0) and last_alt_pt is not None:
+                    if last_alt_pt is not None:
                         cur_px_est = last_alt_pt[1]
             except Exception:
                 pass
@@ -410,6 +460,14 @@ def collect_pretrade_telemetry(
 
             now_ms_eq = int(_pt_time.time() * 1000)
             eq_rth_open = bool(is_symbol_market_open(symbol, now_ms_eq / 1000.0))
+            eff_live_px_ts = max(cp_ts_sec, vb_pos_ts)
+            if (
+                live_cur_px > 0.0
+                and last_alt_pt[0] > 1e11
+                and eff_live_px_ts > 0.0
+                and (last_alt_pt[0] / 1000.0) > eff_live_px_ts + 60.0
+            ):
+                live_cur_px = round(last_alt_pt[1], 4)
             rth_fresh_eq = (
                 (now_ms_eq - last_alt_pt[0]) <= (4 * 3600 * 1000 if eq_rth_open else 20 * 60 * 1000)
                 and (live_cur_px <= 0.0 or abs(live_cur_px - last_alt_pt[1]) / max(live_cur_px, last_alt_pt[1]) <= 0.005)
@@ -892,7 +950,7 @@ def collect_pretrade_telemetry(
                 and (float(last_alt_pt[0]) / 1000.0 - st_ts_t) > 600.0
             )
             s15_val, s25_val = t_entry.get("slope_15m"), t_entry.get("slope_2_5h")
-            if (eq_px_diverged_05pct or stale_short_ts) and alt_series_24h:
+            if (eq_px_diverged_05pct or eq_chart_refreshed or stale_short_ts) and alt_series_24h:
                 for k_ov in (
                     "slope_90s", "growth_90s", "trend_90s",
                     "slope_3_7m", "growth_3_7m", "trend_3_7m",
@@ -902,7 +960,7 @@ def collect_pretrade_telemetry(
                 ):
                     t_entry.pop(k_ov, None)
                 t_entry.update(_compute_short_slopes_from_series(alt_series_24h))
-                if eq_px_diverged_05pct and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
+                if (eq_px_diverged_05pct or eq_chart_refreshed) and isinstance(k_recomp := _compute_kalman_from_series(alt_series_24h), dict):
                     t_entry.update(k_recomp)
             elif alt_series_24h and (
                 t_entry.get("slope_3_7m") is None
@@ -984,6 +1042,7 @@ def collect_pretrade_telemetry(
                 and (
                     "Whale Taker Flow" not in telemetry
                     or str(telemetry.get("Whale Taker Flow") or "").endswith(" 0.00")
+                    or eq_no_oi_pt
                 )
             ):
                 telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_m:.2f}"

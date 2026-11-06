@@ -7,7 +7,7 @@ import os
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
 
-from botcore import extract_current_price_item, load_local_module
+from botcore import extract_current_price_item, load_local_module, safe_pos_int
 from cachepaths import (
     cache_symbol_variants,
     canonical_base_asset,
@@ -1222,8 +1222,9 @@ def _refresh_stale_t212_cached_positions(
     ]
     if not t212_ts_vals:
         return False
+    min_t212_ts = min(t212_ts_vals)
     max_t212_ts = max(t212_ts_vals)
-    if max_t212_ts <= 0.0 or (now_ts - max(max_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
+    if max_t212_ts <= 0.0 or (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
         return False
     try:
         from providers.t212_provider import T212Provider
@@ -1231,13 +1232,16 @@ def _refresh_stale_t212_cached_positions(
 
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
         t212_rows = T212Provider()._client().get_portfolio()
-        if not isinstance(t212_rows, list) or not t212_rows:
+        if not isinstance(t212_rows, list):
             return False
         t212_dirty = False
+        seen_portfolio_tickers: set[str] = set()
         for row in t212_rows:
             if not isinstance(row, dict):
                 continue
             rticker = str(row.get("ticker") or "").strip().upper()
+            if rticker:
+                seen_portfolio_tickers.add(rticker)
             cur_px_r = safe_pos_float(row.get("currentPrice"), default=None)
             if rticker and cur_px_r is not None and isinstance(c_pos := cached_bals.get(f"pos:t212:{rticker}"), dict):
                 prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
@@ -1253,6 +1257,29 @@ def _refresh_stale_t212_cached_positions(
                         c_pos["value_usd"] = round(c_free * cur_px_r, 2)
                     c_pos["ts"] = now_ts
                     t212_dirty = True
+        for bkey, c_pos in list(cached_bals.items()):
+            if not (isinstance(bkey, str) and bkey.startswith("pos:t212:") and isinstance(c_pos, dict)):
+                continue
+            rticker = str(c_pos.get("symbol") or bkey.split(":", 2)[-1]).strip().upper()
+            if not rticker or rticker in seen_portfolio_tickers:
+                continue
+            prev_c_ts = safe_pos_float(c_pos.get("ts"), default=0.0) or 0.0
+            if (now_ts - prev_c_ts) < max_age_sec:
+                continue
+            try:
+                import importlib as _imp
+
+                _md = _imp.import_module("212trading.market_data")
+                cur_px_fb = safe_pos_float(_md.get_price_usd(_md.t212_to_yahoo(rticker)), default=None)
+                if cur_px_fb is not None:
+                    prev_c_px = safe_pos_float(c_pos.get("price"), default=None)
+                    new_c_px = round(cur_px_fb, 4)
+                    if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or prev_c_ts <= 0.0:
+                        c_pos["price"] = new_c_px
+                        c_pos["ts"] = now_ts
+                        t212_dirty = True
+            except Exception:
+                pass
         if t212_dirty:
             save_json_state(bcache_path, cached_bals, indent=2)
         return t212_dirty
@@ -1771,13 +1798,15 @@ def enrich_24h_and_microstructure(
                         active_7d_vals = list(vals_5d)
                     if cache_dir and os.path.isdir(cache_dir) and "PYTEST_CURRENT_TEST" not in os.environ:
                         try:
-                            from state_io import atomic_write_jsonl, save_json_state, write_meta_json
+                            from state_io import atomic_write_jsonl, read_json_dict, save_json_state, write_meta_json
 
                             eff_p24_pts = pts_24h_to_save or pts_24h_bars
                             p24_target = p24_eq_path or str(resolve_cachedb_filepath(os.path.join(cache_dir, f"cache_24_price_{sym}.json")))
                             disk_p24_obj = read_json_dict(p24_target) if (p24_target and os.path.exists(p24_target)) else {}
                             disk_p24_rows = _extract_cached_items_series(disk_p24_obj, (sym,)) if isinstance(disk_p24_obj, dict) else []
                             check_rows = disk_p24_rows or raw_matched_series_24h
+                            check_last_pt = _parse_ts_px_row(check_rows[-1]) if check_rows else None
+                            eff_last_pt = _parse_ts_px_row(eff_p24_pts[-1]) if eff_p24_pts else None
                             raw_ohlc_cnt = sum(
                                 1 for p in check_rows if isinstance(p, (list, tuple)) and len(p) >= 3
                             )
@@ -1787,6 +1816,11 @@ def enrich_24h_and_microstructure(
                             if eff_p24_pts and (
                                 len(check_rows) < 10
                                 or raw_ohlc_cnt < new_ohlc_cnt
+                                or check_last_pt is None
+                                or (
+                                    eff_last_pt is not None
+                                    and (eff_last_pt[0] > check_last_pt[0] or abs(eff_last_pt[1] - check_last_pt[1]) > 1e-4)
+                                )
                                 or (
                                     not rth_bar_fresh
                                     and any(isinstance(p, (list, tuple)) and len(p) < 3 for p in check_rows)
@@ -1828,7 +1862,7 @@ def enrich_24h_and_microstructure(
                                         "rest_sync_cursor": rc_map,
                                         "counts": {**prev_cnts, sym: len(eff_p24_pts)},
                                         "max_ts": max((safe_pos_int(v, default=0) or 0 for v in ft_map.values()), default=eff_ft_ts),
-                                        "saved_at": int(time.time() * 1000),
+                                        "saved_at": int(_time.time() * 1000),
                                     },
                                 )
                             if pts_24h_to_save or pts_24h_bars:

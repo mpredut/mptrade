@@ -429,8 +429,8 @@ def resolve_macro_economic_calendar(
 
 _CITED_TAKER_RATIO_RE = re.compile(
     r"(?:([0-9]+\.[0-9]+)\s*(?:taker[\s_]+(?:buy[/_]sell[\s_]+)?|buy[/_]sell[\s_]+)ratios?"
-    r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratios?(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*(?:(?:overall|aggregate|15m|1h|4h|5m|3m|1m)[\s:=]+)?([0-9]+\.[0-9]+)(?![0-9%])"
-    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:overall|aggregate|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?|[),])(?![0-9%]))",
+    r"|taker[\s_]+(?:buy[/_]sell[\s_]+)?ratios?(?:\s+\w+)?(?:\s*(?:of|at|to|=|:|is))?[\s(]*(?:(?:overall|aggregate|headline|15m|1h|4h|5m|3m|1m)[\s:=]+)?([0-9]+\.[0-9]+)(?![0-9%])"
+    r"|taker[\s_]+(?:(?:buy|sell|buying|selling|buy[/_]sell)(?:[\s_]+(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))?|(?:ratios?|flow|pressure|dominance|balance|absorption|demand|activity|resurgence))(?:[^.;()\n]{0,45}?)[\s(]+(?:(?:overall|aggregate|headline|15m|1h|4h|5m|3m|1m)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s(]*)?([0-9]+\.[0-9]+)(?:\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?|\s*headline|[),])(?![0-9%]))",
     re.IGNORECASE,
 )
 _TAKER_PAREN_GROUP_RE = re.compile(
@@ -438,21 +438,21 @@ _TAKER_PAREN_GROUP_RE = re.compile(
     re.IGNORECASE,
 )
 _PAREN_RATIO_ITEM_RE = re.compile(
-    r"(?:(?:(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s:=]*)([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
+    r"(?:(?:(overall|aggregate|headline|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+)?(?:(?:taker[\s_]+)?(?:buy[/_]sell[\s_]+)?ratios?(?:\s*(?:of|at|to|=|:|is))?[\s:=]*)([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
     r"|([0-9]+\.[0-9]+)\s*(?:(?:taker|buy[/_]sell)[\s_]+)?ratios?\b"
-    r"|\b(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
-    r"|([0-9]+\.[0-9]+)(?![0-9%A-Za-z])[\s:=]*(?:(?:on|in|for)\s+)?\b(overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b"
+    r"|\b(overall|aggregate|headline|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)[\s:=]+([0-9]+\.[0-9]+)(?![0-9%A-Za-z])"
+    r"|([0-9]+\.[0-9]+)(?![0-9%A-Za-z])[\s:=]*(?:(?:on|in|for)\s+)?\b(overall|aggregate|headline|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b"
     r"|^\s*(?:(?:taker[\s_]+)?(?:buy(?:ing)?|sell(?:ing)?|buy[/_]sell)[\s:=]+)?([0-9]+\.[0-9]+)\s*$)",
     re.IGNORECASE,
 )
 _HORIZON_TOKEN_RE = re.compile(
-    r"\b(?:overall|aggregate|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b",
+    r"\b(?:overall|aggregate|headline|15m|15-minute|1h|1-hour|4h|4-hour|5m|5-minute|3m|3-minute|1m|1-minute)\b",
     re.IGNORECASE,
 )
 
 
 def _rank_taker_ratio_context(ctx: str) -> int:
-    if re.search(r"\b(?:overall|aggregate|15m|15-minute)\b", ctx):
+    if re.search(r"\b(?:overall|aggregate|headline|15m|15-minute)\b", ctx):
         return 3
     if re.search(r"\b(?:1m|3m|5m|1-minute|3-minute|5-minute)\b", ctx):
         return 0
@@ -480,8 +480,9 @@ def parse_cited_taker_ratio(text: Any, *, horizon: Optional[str] = None) -> Opti
                 "5m": r"\b(?:5m|5-minute)\b",
                 "3m": r"\b(?:3m|3-minute)\b",
                 "1m": r"\b(?:1m|1-minute)\b",
-                "15m": r"\b(?:overall|aggregate|15m|15-minute)\b",
-                "overall": r"\b(?:overall|aggregate|15m|15-minute)\b",
+                "15m": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
+                "overall": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
+                "headline": r"\b(?:overall|aggregate|headline|15m|15-minute)\b",
                 "1h": r"\b(?:1h|1-hour)\b",
                 "4h": r"\b(?:4h|4-hour)\b",
             }.get(hz_norm, rf"\b{re.escape(hz_norm)}\b"),

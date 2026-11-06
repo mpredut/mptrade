@@ -8849,6 +8849,102 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     assert t212_cyc_dd["RGNT_US_EQ"]["pos_peak"] == 1.6
     assert t212_cyc_dd["RGNT_US_EQ"]["dd_from_peak_pct"] == -26.88
 
+    # Bug 126: parse_cited_taker_ratio recognizes "headline" ratio token in parenthesized multi-horizon groups
+    from intelligence.macro.calendar_ssot import parse_cited_taker_ratio
+
+    sa_headline_sell = (
+        "BTC broke below its prior 6h low ($75,534.30) to a new 1h low of $75,322.63 "
+        "amid aggressive short-term taker selling (0.6409 headline, 0.3151 5m ratio, -$20.16M 5m CVD)."
+    )
+    assert parse_cited_taker_ratio(sa_headline_sell) == 0.6409
+    assert parse_cited_taker_ratio(sa_headline_sell, horizon="headline") == 0.6409
+    assert parse_cited_taker_ratio(sa_headline_sell, horizon="5m") == 0.3151
+
+    sa_headline_buy = (
+        "BTC reclaimed the prior 6h low ($75,530.70) to trade at $75,612.00, "
+        "supported by strong taker buying (1.5639 headline, 1.6606 5m ratio, +$7.68M 5m CVD)."
+    )
+    assert parse_cited_taker_ratio(sa_headline_buy) == 1.5639
+    assert parse_cited_taker_ratio(sa_headline_buy, horizon="5m") == 1.6606
+
+    # Bug 127: collect_pretrade_telemetry prefers fresher venue_balances_state pos:t212:* price over stale timestamped cache_current_price tick and normalizes Whale Taker Flow on zero-OI equities
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import collect_pretrade_telemetry
+
+    cdir_eq_vb = tmp_path / "cdir_eq_vb"
+    cdir_eq_vb.mkdir(exist_ok=True)
+    stale_rth_ms = int((now_cd - 36000) * 1000)
+    eq_rth_series = [
+        [stale_rth_ms - (24 - i) * 3600 * 1000, round(200.0 - i * 0.75, 4), 1000.0]
+        for i in range(25)
+    ]
+    (cdir_eq_vb / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": eq_rth_series}}),
+        encoding="utf-8",
+    )
+    (cdir_eq_vb / "cache_current_price.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": [[stale_rth_ms, 182.0]]}}),
+        encoding="utf-8",
+    )
+    (cdir_eq_vb / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "price": 184.88, "ts": now_cd - 30.0}}),
+        encoding="utf-8",
+    )
+    (cdir_eq_vb / "orderbook_depth_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "NVDA_US_EQ",
+            "imbalance_ratio": 0.48,
+            "mid_price": 182.0,
+            "best_bid": 181.95,
+            "best_ask": 182.05,
+            "spread_bps": 5.49,
+            "bid_depth_usd": 400000000.0,
+            "ask_depth_usd": 420000000.0,
+            "largest_bid_wall_price": 181.78,
+            "largest_bid_wall_usd": 350000000.0,
+            "largest_ask_wall_price": 183.68,
+            "largest_ask_wall_usd": 320000000.0,
+        }),
+        encoding="utf-8",
+    )
+    (cdir_eq_vb / "whale_snapshot_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "NVDA_US_EQ",
+            "top_traders_long_pct": 0.0,
+            "taker_buy_sell_ratio": 0.80,
+            "taker_ratio_1h": 0.179,
+            "taker_buy_vol_usd": 0.0,
+            "taker_sell_vol_usd": 8874.08,
+            "open_interest_usd": 0.0,
+        }),
+        encoding="utf-8",
+    )
+    tel_eq_vb = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir_eq_vb))
+    assert "184.66" in str(tel_eq_vb.get("Orderbook Bid Wall Ahead"))
+    assert "186.59" in str(tel_eq_vb.get("Orderbook Ask Wall Ahead")) or "186.58" in str(tel_eq_vb.get("Orderbook Ask Wall Ahead"))
+    assert tel_eq_vb.get("Whale Taker Flow") == "Buyer/Seller ratio: 0.18"
+
+    # Bug 128: collect_pretrade_telemetry does not overwrite newer Yahoo RTH bar price with older cached spot price timestamp
+    cdir_eq_old_cp = tmp_path / "cdir_eq_old_cp"
+    cdir_eq_old_cp.mkdir(exist_ok=True)
+    rth_close_ms = int((now_cd - 7200) * 1000)
+    older_cp_ms = int((now_cd - 36000) * 1000)
+    eq_rth_bars_25 = [
+        [rth_close_ms - (24 - i) * 3600 * 1000, round(180.0 + i * 0.2, 4), 1000.0]
+        for i in range(25)
+    ]
+    (cdir_eq_old_cp / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": eq_rth_bars_25}}),
+        encoding="utf-8",
+    )
+    (cdir_eq_old_cp / "cache_current_price.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": [[older_cp_ms, 182.0]]}}),
+        encoding="utf-8",
+    )
+    tel_eq_old_cp = collect_pretrade_telemetry("NVDA_US_EQ", cachedb_dir=str(cdir_eq_old_cp))
+    assert "24h=+2.67%" in str(tel_eq_old_cp.get("24h Multi-Horizon Price Evolution"))
+
+
+
 
 
 
