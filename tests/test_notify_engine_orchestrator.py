@@ -1409,3 +1409,16 @@ class EmailMirrorTest(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertIn("SERVER DOWN", self.sent[0][0]["Subject"])
 
+    def test_owner_tag_stripping_and_refused_guard_classification(self):
+        from notify_engine.alertnotifiers import _is_guard_alert, strip_owner_tags
+        import order_retry
+
+        self.assertEqual(strip_owner_tags("🎉 BUY BTCUSDC [ai_executor]"), "🎉 BUY BTCUSDC ")
+        self.assertEqual(strip_owner_tags("📝 BUY HYPEUSD [spot_dca]"), "📝 BUY HYPEUSD ")
+        self.assertEqual(strip_owner_tags("🎉 SELL TAOUSDC [trailing_stop]"), "🎉 SELL TAOUSDC ")
+        self.assertTrue(_is_guard_alert([{"name": "⚠️ [auto_trade_executor] REFUSED BUY BTCUSDC", "source": "llm_trader"}]))
+        self.assertEqual(order_retry.infer_concrete_record_owner({"intent_id": "trailing:kraken:ADA:SELL:100"}), "trailing_stop")
+        self.assertEqual(order_retry.infer_concrete_record_owner({"kind": "TRAIL_SELL"}), "trailing_stop")
+        self.assertEqual(order_retry.infer_concrete_record_owner({"client_order_id": "OR_123_0"}), "")
+
+

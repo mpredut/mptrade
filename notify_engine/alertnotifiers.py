@@ -72,8 +72,8 @@ _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
 )
 _OWNER_TAG_RE = re.compile(
-    r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\]"
-    r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN)\)",
+    r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN|AI_EXECUTOR|SPOT_DCA|TRAILING_STOP)\]"
+    r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN|AI_EXECUTOR|SPOT_DCA|TRAILING_STOP)\)",
     flags=re.IGNORECASE,
 )
 
@@ -155,7 +155,7 @@ def _is_guard_alert(alerts: list[Any]) -> bool:
             any(
                 marker in title
                 for marker in (
-                    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED",
+                    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
                     "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
                     "TRAILING", "QUARANTINE", "GIVE UP",
                 )
@@ -1186,7 +1186,7 @@ def _dispatch_order_event_notification(
     notify(
         title=eff_title,
         body=eff_body,
-        source=str(source or owner or "llm_trader"),
+        source=str(source or venue or owner or "llm_trader"),
         symbol=sym_s,
         price=px_f if include_price else None,
     )

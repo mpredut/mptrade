@@ -39,6 +39,7 @@ if _HERE not in sys.path:
 
 from kraken_common import (_parse_bool_flag, load_dotenv, load_env_stack, log, notify, required_bool_env,  # noqa: E402
                            required_env, required_float_env, safe_float, safe_nonneg_float, safe_pos_float)
+from botcore import format_price_log  # noqa: E402
 from kraken_client import KrakenClient  # noqa: E402
 
 from trailing_core import (  # noqa: E402  (re-export should_sell for tests/compatibility)
@@ -316,9 +317,10 @@ class KrakenTrailing(TrailingAdapterBase):
                     qty,
                     result.intent.get("requested_price") if isinstance(result.intent, dict) else 0.0,
                 )
+                avg_str = format_price_log(avg) if 0.0 < avg < 1.0 else f"{avg:.2f}"
                 notify(
                     title=f"{'🛑' if notify_action == 'SELL' else '🟢'} TRAILING "
-                          f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg:.2f}",
+                          f"{notify_asset} {notify_action} FILLED {qty:.2f}@~{avg_str}",
                     body=f"status={result.status.status} fee={result.status.fee}",
                     source="kraken-trail", price=avg, desktop=False,
                 )

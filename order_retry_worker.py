@@ -685,6 +685,8 @@ def _fmt_num(val: float) -> str:
 
 
 def _concrete_record_owner(rec) -> str:
+    if hasattr(oq, "infer_concrete_record_owner"):
+        return str(oq.infer_concrete_record_owner(rec) or "").strip()
     if not isinstance(rec, dict):
         return ""
     owner = str(oq.infer_record_owner(rec) or "").strip()

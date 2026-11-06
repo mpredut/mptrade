@@ -595,6 +595,21 @@ def complete_accepted_claim(
         order_id = None
     claim_dict = claim if isinstance(claim, dict) else {}
     client_order_id = _claim_client_order_id(claim_dict)
+    owner = ""
+    if hasattr(order_retry_module, "infer_concrete_record_owner"):
+        try:
+            owner = str(order_retry_module.infer_concrete_record_owner(claim_dict) or "").strip()
+        except Exception:
+            owner = ""
+    elif hasattr(order_retry_module, "infer_record_owner"):
+        try:
+            raw_owner = str(order_retry_module.infer_record_owner(claim_dict) or "").strip()
+            if raw_owner and raw_owner not in ("unknown", "unspecified", "order_retry") and not raw_owner.startswith("alt:"):
+                owner = raw_owner
+        except Exception:
+            owner = ""
+    owner_tag = f" [{owner}]" if owner else ""
+    owner_part = f"owner={owner} " if owner else ""
     qty = claim_dict.get("qty")
     px = claim_dict.get("requested_price") if claim_dict.get("requested_price") is not None else claim_dict.get("ref_price")
     qty_f = safe_float(qty, default=None)
@@ -607,7 +622,7 @@ def complete_accepted_claim(
     val_str = f"~${val_f:.2f}" if val_f is not None else "N/A"
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     detail = (
-        f"venue={provider_name} symbol={symbol} side={side} "
+        f"venue={provider_name} symbol={symbol} side={side} {owner_part}"
         f"qty={qty} price={px} value={val_str} time={now_str} "
         f"order_id={order_id} client_order_id={client_order_id} "
         f"attempts={ACCEPTED_TRACKING_PERSIST_ATTEMPTS} error={last_error}"
@@ -618,7 +633,7 @@ def complete_accepted_claim(
         _ALERTED_PERSISTENCE_FAILURES, dedup_key, time.monotonic(), _PERSISTENCE_ALERT_COOLDOWN_SEC, 1000
     ):
         alert.notify(
-            title="🛑 CRITICAL accepted order tracking persistence failure",
+            title=f"🛑 CRITICAL accepted order tracking persistence failure{owner_tag}",
             body=detail,
             source="order-persistence",
             symbol=str(symbol),

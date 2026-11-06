@@ -284,7 +284,7 @@ class TestRebuyGuardsKraken(Base):
         ts.check_once()  # tracks initial peaks: HYPE=50, TAO=200, ADA=0.50
 
         # Crash TAO by -25% (exceeds 22% trail) while HYPE and ADA stay normal
-        c.prices["TAOUSD"] = 150.0  # -25% de la 200
+        c.prices["TAOUSD"] = 150.0  # -25% from 200
         ts.check_once()
 
         self.assertEqual(len(c.orders), 1)

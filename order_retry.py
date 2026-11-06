@@ -855,6 +855,8 @@ def infer_record_owner(rec: dict) -> str:
             return "ai_executor"
         if iid.startswith("spot-dca:"):
             return "spot_dca"
+        if iid.startswith("trailing:"):
+            return "trailing_stop"
     kind = _clean_str(rec.get("kind")) or _clean_str(placement.get("kind"))
     if "monitor_order_replace" in kind:
         return "monitororder"
@@ -864,7 +866,15 @@ def infer_record_owner(rec: dict) -> str:
         return "tradeall"
     if kind.lower().startswith("assetguardian") or "asset_guardian" in kind.lower():
         return "assetguardian"
+    if kind.upper().startswith("TRAIL"):
+        return "trailing_stop"
     return owner
+
+
+def infer_concrete_record_owner(rec: dict) -> str:
+    """Return the inferred owner of a record only when it is a concrete bot/module owner."""
+    owner = infer_record_owner(rec)
+    return owner if _is_concrete_owner(owner) else ""
 
 
 def get_accepted_order_owner_map() -> dict:

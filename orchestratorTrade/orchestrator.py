@@ -332,14 +332,28 @@ class BotManager:
         return head_str
 
     async def _reload_runtime_modules_and_manifest(self) -> None:
-        global evaluate_heartbeat_files_freshness, parse_procs_manifest
+        global evaluate_heartbeat_files_freshness, parse_procs_manifest, NotificationServer
         try:
             import importlib
             import orchestratorOS.lib.technical_repair_ssot as _trs
             importlib.reload(botcore)
+            cfg_path = os.path.join(ROOT_DIR, "config.env")
+            if os.path.exists(cfg_path):
+                botcore.load_dotenv(cfg_path, override=True)
             importlib.reload(_trs)
             evaluate_heartbeat_files_freshness = _trs.evaluate_heartbeat_files_freshness
             parse_procs_manifest = _trs.parse_procs_manifest
+            if type(getattr(self, "server", None)).__name__ == "NotificationServer":
+                import notify_engine.alertnotifiers as _an
+                import notify_engine.mailer as _mailer
+                import notify_engine.server as _ns
+                importlib.reload(_mailer)
+                importlib.reload(_an)
+                importlib.reload(_ns)
+                NotificationServer = _ns.NotificationServer
+                self.server.__class__ = _ns.NotificationServer
+                self.server.ntfy_token = self.server._load_ntfy_token()
+                self.server.rules = self.server._load_rules()
         except Exception as exc:
             logging.warning(f"Could not reload runtime heartbeat modules: {exc}")
         new_bots = self.parse_procs_conf()
