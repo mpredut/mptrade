@@ -209,14 +209,7 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     )
                 except Exception:
                     owner = "unspecified"
-                valid_owner = bool(
-                    owner
-                    and not isinstance(owner, bool)
-                    and owner not in ("unspecified", "unknown", "order_retry")
-                    and not str(owner).startswith("alt:")
-                )
-                owner_tag = f" [{owner}]" if valid_owner else ""
-                owner_body = f" ({owner})" if valid_owner else ""
+                owner_tag, owner_body = alert.format_owner_tags(owner)
                 total_qty = sum(extract_order_qty(t) for t in group)
                 total_val = sum(extract_order_qty(t) * extract_order_price(t) for t in group)
                 avg_price = total_val / total_qty if total_qty > 0 else extract_order_price(first)

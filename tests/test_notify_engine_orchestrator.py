@@ -1527,5 +1527,33 @@ class EmailMirrorTest(unittest.TestCase):
             self.assertIsNotNone(batch)
             self.assertIn("Order 1002", batch[1])
 
+        from notify_engine.alertnotifiers import (
+            _GATE_ACCEPTED_REASONS,
+            _GATE_SUPPRESSED_REASONS,
+            format_notify_price,
+            format_notify_qty,
+            format_owner_tags,
+        )
+        from notify_engine.server import NotificationServer
+
+        self.assertEqual(format_owner_tags("tradeall"), (" [tradeall]", " (tradeall)"))
+        self.assertEqual(format_owner_tags("unspecified"), ("", ""))
+        self.assertEqual(format_owner_tags("order_retry"), ("", ""))
+        self.assertEqual(format_owner_tags("order_retry", ignore=("unspecified", "unknown")), (" [order_retry]", " (order_retry)"))
+        self.assertEqual(format_owner_tags("alt:12345"), ("", ""))
+        self.assertEqual(format_notify_qty(0.015), "0.015")
+        self.assertEqual(format_notify_qty(0.0), "0")
+        self.assertEqual(format_notify_price(75180.5), "75,180.50")
+        self.assertEqual(format_notify_price(75180.5, comma=False), "75180.50")
+        self.assertEqual(format_notify_price(0.0001842), "0.0001842")
+        self.assertTrue(set(_GATE_SUPPRESSED_REASONS).issubset(set(_GATE_ACCEPTED_REASONS)))
+        self.assertIn("buffered_for_bulk", _GATE_ACCEPTED_REASONS)
+        self.assertNotIn("buffered_for_bulk", _GATE_SUPPRESSED_REASONS)
+        tb_lines = [f"line_{i}" for i in range(15)]
+        collapsed = NotificationServer._collapse_traceback(tb_lines)
+        self.assertIn("...", collapsed)
+        self.assertTrue(collapsed.startswith("line_0\n  ...\nline_5"))
+
+
 
 

@@ -33,7 +33,12 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 from botcore import _parse_bool_flag, load_env_stack, safe_pos_int
-from notify_engine.alertnotifiers import _external_notifications_disabled, pass_common_gate
+from notify_engine.alertnotifiers import (
+    _GATE_ACCEPTED_REASONS,
+    _canonical_topic_key,
+    _external_notifications_disabled,
+    pass_common_gate,
+)
 
 # Categories whose ntfy topic (NTFY_TOPIC_<CATEGORY>) is mirrored to email.
 EMAIL_MIRRORED_CATEGORIES = ("ERROR", "DEADMAN", "SERVER")
@@ -69,12 +74,9 @@ def email_mirrored_topics() -> set[str]:
 
 
 def is_email_mirrored(topic: str | None) -> bool:
-    if not topic or not isinstance(topic, str):
+    if not topic or not isinstance(topic, str) or not topic.strip():
         return False
-    t_clean = topic.strip().rstrip("/")
-    if "/" in t_clean:
-        t_clean = t_clean.rsplit("/", 1)[-1]
-    return bool(t_clean) and t_clean in email_mirrored_topics()
+    return _canonical_topic_key(topic) in email_mirrored_topics()
 
 
 def _config() -> dict | None:
@@ -139,13 +141,7 @@ def send_email(subject: str, body: str, *, dedup: bool = True) -> bool:
         )
         if not allowed:
             logging.info(f"Email gated by common delivery policy ({reason}): {subject}")
-            return reason in (
-                "duplicate",
-                "similar_eliminated",
-                "buffered_for_bulk",
-                "topic_queue_full_dropped",
-                "queue_full_dropped",
-            )
+            return reason in _GATE_ACCEPTED_REASONS
         if out_payload:
             subject, body, _, _ = out_payload
             subject = re.sub(r"[\r\n]+", " ", "" if isinstance(subject, bool) else str(subject or "")).strip() or "Alert"

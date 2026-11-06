@@ -1703,20 +1703,13 @@ def generate_unique_intent_id(
 
 
 def _fmt_intent_qty(val: Any) -> str:
-    fval = safe_pos_float(val, default=0.0) or 0.0
-    return f"{fval:.8f}".rstrip("0").rstrip(".") or "0"
+    from notify_engine.alertnotifiers import format_notify_qty
+    return format_notify_qty(val)
 
 
 def _fmt_intent_px(val: Any, *, comma: bool = False) -> str:
-    fval = safe_pos_float(val, default=0.0) or 0.0
-    if fval >= 1.0 and round(fval, 2) == round(fval, 6):
-        return f"{fval:,.2f}" if comma else f"{fval:.2f}"
-    raw = (f"{fval:,.8f}" if comma else f"{fval:.8f}").rstrip("0")
-    if raw.endswith("."):
-        return f"{raw}00"
-    if len(raw.rsplit(".", 1)[-1]) == 1:
-        return f"{raw}0"
-    return raw
+    from notify_engine.alertnotifiers import format_notify_price
+    return format_notify_price(val, comma=comma)
 
 
 def record_shadow_intent_observation(

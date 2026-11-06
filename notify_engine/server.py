@@ -23,9 +23,12 @@ from cachepaths import cache_path, normalize_venue_name
 from state_io import atomic_write_text, read_json_dict, read_text_lines
 from notify_engine.alertnotifiers import (
     AlertNotifier,
+    _GATE_ACCEPTED_REASONS,
+    _GATE_SUPPRESSED_REASONS,
     _TRADE_MARKERS,
     _alert_attr,
     _alerts_are_urgent,
+    _canonical_topic_key,
     _external_notifications_disabled,
     _is_provider_daily_limit,
     _mark_provider_daily_limit,
@@ -187,6 +190,12 @@ class NotificationServer:
 
     def _resolve_topic(self, category: str) -> str:
         return resolve_topic(category)
+
+    def _default_error_topic(self) -> str:
+        try:
+            return self._resolve_topic("ERROR")
+        except Exception:
+            return "ntfy-error-1978"
         
     def _enqueue_payload(self, intent_type: str, data: dict):
         try:
@@ -208,13 +217,7 @@ class NotificationServer:
 
     @staticmethod
     def _ntfy_gate_accepted() -> bool:
-        return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in (
-            "buffered_for_bulk",
-            "duplicate",
-            "similar_eliminated",
-            "topic_queue_full_dropped",
-            "queue_full_dropped",
-        )
+        return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
 
     def _apply_ntfy_gate(
         self,
@@ -246,8 +249,7 @@ class NotificationServer:
                     return out_retry or (title, body, priority, topic)
                 logging.info(f"ntfy delivery gated after due-batch flush ({reason_retry}): {title}")
         if (
-            getattr(_GATED_DISPATCH_TLS, "last_gate_reason", reason)
-            not in ("duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped")
+            getattr(_GATED_DISPATCH_TLS, "last_gate_reason", reason) not in _GATE_SUPPRESSED_REASONS
             and not skip_email
             and is_email_mirrored(topic)
         ):
@@ -285,10 +287,7 @@ class NotificationServer:
         if batch:
             bulk_title, bulk_body, bulk_prio, bulk_topic = batch
             if not bulk_topic:
-                try:
-                    bulk_topic = self._resolve_topic("ERROR")
-                except Exception:
-                    bulk_topic = "ntfy-error-1978"
+                bulk_topic = self._default_error_topic()
             prev = getattr(_GATED_DISPATCH_TLS, "active", False)
             prev_skip_email = getattr(_GATED_DISPATCH_TLS, "skip_email", False)
             _GATED_DISPATCH_TLS.active = True
@@ -467,20 +466,13 @@ class NotificationServer:
                     title = self._format_new_coins_batch_title(alerts)
                 body = AlertNotifier.format_batch_message(alerts)
                 source = _alert_attr(first, "source") or "price_alert"
-            elif alert_type == "bot_event":
-                base_name = _alert_attr(first, "name") or "Alert"
-                if len(alerts) == 1:
-                    title = base_name
-                    body = _alert_attr(first, "body") or ""
-                else:
-                    title = f"{base_name} ({len(alerts)})"
-                    body = AlertNotifier.format_batch_message(alerts)
-                source = _alert_attr(first, "source") or ""
             else:
                 base_name = _alert_attr(first, "name") or _alert_attr(first, "title") or "Alert"
                 if len(alerts) == 1:
                     title = base_name
-                    body = _alert_attr(first, "body") or _alert_attr(first, "message") or _alert_attr(first, "symbol") or ""
+                    body = _alert_attr(first, "body") or (
+                        "" if alert_type == "bot_event" else (_alert_attr(first, "message") or _alert_attr(first, "symbol") or "")
+                    )
                 else:
                     title = f"{base_name} ({len(alerts)})"
                     body = AlertNotifier.format_batch_message(alerts)
@@ -490,9 +482,7 @@ class NotificationServer:
         body = "" if isinstance(body, bool) else str(body or "")
         source = "" if isinstance(source, bool) else str(source or "")
 
-        topic = None
-        if isinstance(webhook_url, str) and webhook_url.strip():
-            topic = webhook_url.strip().rstrip("/").rsplit("/", 1)[-1]
+        topic = _canonical_topic_key(webhook_url) if isinstance(webhook_url, str) and webhook_url.strip() else None
         if not topic:
             topic = _topic_for_category(title, source)
 
@@ -555,6 +545,12 @@ class NotificationServer:
             urgent=urgent,
         )
 
+    @staticmethod
+    def _collapse_traceback(lines: list[str], *, threshold: int = 12) -> str:
+        if len(lines) > threshold:
+            return lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
+        return "\n".join(lines)
+
     def process_line(self, line: str, bot_name: str):
         if not isinstance(line, str) or isinstance(line, bool):
             return
@@ -584,22 +580,15 @@ class NotificationServer:
                 elif is_indented or is_chain_header:
                     self.traceback_buffers[bot_name].append(clean_stripped)
                     if len(self.traceback_buffers[bot_name]) >= 40:
-                        lines = self.traceback_buffers[bot_name]
-                        accumulated = lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
+                        line = self._collapse_traceback(self.traceback_buffers[bot_name])
                         self.traceback_buffers[bot_name] = []
-                        line = accumulated
                     else:
                         return
                 else:
                     # Terminal exception line reached!
                     self.traceback_buffers[bot_name].append(clean_stripped)
-                    lines = self.traceback_buffers[bot_name]
-                    if len(lines) > 12:
-                        accumulated = lines[0] + "\n  ...\n" + "\n".join(lines[-10:])
-                    else:
-                        accumulated = "\n".join(lines)
+                    line = self._collapse_traceback(self.traceback_buffers[bot_name])
                     self.traceback_buffers[bot_name] = []
-                    line = accumulated
         elif "\n" not in clean_stripped and "Traceback (most recent call last):" in clean_stripped:
             self.traceback_buffers[bot_name] = [clean_stripped]
             return
@@ -793,12 +782,7 @@ class NotificationServer:
                                 title = _clean_str(payload.get("title"))
                                 msg = _clean_str(payload.get("message"))
                                 prio = _clean_str(payload.get("priority"), "default", strip=True)
-                                top = _clean_str(payload.get("topic"), strip=True)
-                                if not top:
-                                    try:
-                                        top = self._resolve_topic("ERROR")
-                                    except Exception:
-                                        top = "ntfy-error-1978"
+                                top = _clean_str(payload.get("topic"), strip=True) or self._default_error_topic()
                                 if not title.startswith("[DELAYED]"):
                                     title = "[DELAYED] " + title
                                 success = await asyncio.to_thread(
@@ -835,23 +819,22 @@ class NotificationServer:
                         if success:
                             success_count += 1
                             queue_dirty = True
-                        elif intent == "email" and last_error_is_auth_failure():
-                            failed_intents.add(intent)
-                            queue_dirty = True
+                            continue
+                        failed_intents.add(intent)
+                        queue_dirty = True
+                        if intent == "email" and last_error_is_auth_failure():
                             logging.warning(
                                 f"Dropping queued email due to permanent SMTP authentication failure: {payload.get('subject', '')!r}"
                             )
+                            continue
+                        retries = safe_nonneg_int(payload.get("retry_count", 0), default=0) + 1
+                        if retries >= _MAX_QUEUE_RETRIES:
+                            logging.warning(
+                                f"Dropping queued {intent} notification after {retries} failed retries"
+                            )
                         else:
-                            failed_intents.add(intent)
-                            queue_dirty = True
-                            retries = safe_nonneg_int(payload.get("retry_count", 0), default=0) + 1
-                            if retries >= _MAX_QUEUE_RETRIES:
-                                logging.warning(
-                                    f"Dropping queued {intent} notification after {retries} failed retries"
-                                )
-                            else:
-                                payload["retry_count"] = retries
-                                remaining.append(json.dumps(payload))
+                            payload["retry_count"] = retries
+                            remaining.append(json.dumps(payload))
                     elif intent == "email" and last_error_is_auth_failure():
                         queue_dirty = True
                         logging.warning(

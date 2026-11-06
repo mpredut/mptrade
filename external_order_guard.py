@@ -120,13 +120,8 @@ def check_external_order_guards(
         if not check_cooldown_gate(_MICRO_SHADOW_NOTIFY_COOLDOWN, cd_key, now_ts):
             return
         try:
-            from notify_engine.alertnotifiers import notify
-            px_fmt = (
-                f"{price_f:,.2f}"
-                if price_f >= 1.0 and round(price_f, 2) == round(price_f, 6)
-                else format_price_log(price_f)
-            )
-            price_str = f" @ ${px_fmt}" if price_f > 0.0 else ""
+            from notify_engine.alertnotifiers import format_notify_price, notify
+            price_str = f" @ ${format_notify_price(price_f)}" if price_f > 0.0 else ""
             scale_str = f" (Scale: {scale_pct}%)" if scale_pct is not None else ""
             notify(
                 title=title,

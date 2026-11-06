@@ -44,13 +44,14 @@ _URGENT_MARKERS = (
     "MANUAL", "ERROR", "CATASTROPH", "CRASH", "GONE", "IMBALANC",
     "LICHID", "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR", "CATASTROF",
 )
-_GUARD_MARKERS = (
-    "🛑", "🛡", "STOP-LOSS", "STOP_LOSS", "TRAILING", "LIQUID", "CATASTROPH", "CRASH",
-    "LICHID", "CATASTROF",
+_GUARD_ALERT_TITLE_MARKERS = (
+    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
+    "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
+    "TRAILING", "QUARANTINE", "GIVE UP",
 )
-_OPS_MARKERS = (
-    "FAILED", "ERROR", "MANUAL", "GONE", "IMBALANC",
-    "ESUAT", "ERORI", "DISPARUT", "DEZECHILIBR",
+_GUARD_ALERT_SOURCES = (
+    "order_guard", "guard", "assetguardian", "macro_shadow",
+    "smart_stop_loss", "post_stop_guard",
 )
 _ERROR_AND_OPS_TITLE_MARKERS = (
     "FAILED", "ERROR", "EXCEPTION", "TRACEBACK", "CRITICAL", "CATASTROPH", "CRASH",
@@ -71,17 +72,56 @@ _TRADE_MARKERS = (
 _FAKE_ALERT_MARKERS = (
     "ZZZFAKE", "FAKEUSD", "TESTPAIR", "TSTX", "FAKE_VENUE", "ZZZ",
 )
-_OWNER_TAG_RE = re.compile(
-    r"\[(MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN|AI_EXECUTOR|SPOT_DCA|TRAILING_STOP|ORDER_MANAGER|HL_BOT)\]"
-    r"|\((MANUAL|TRADEALL|MONITORORDER|RTRADE|MONITORTRADES|ASSETGUARDIAN|AI_EXECUTOR|SPOT_DCA|TRAILING_STOP|ORDER_MANAGER|HL_BOT)\)",
-    flags=re.IGNORECASE,
+_KNOWN_OWNERS = (
+    "MANUAL", "TRADEALL", "MONITORORDER", "RTRADE", "MONITORTRADES",
+    "ASSETGUARDIAN", "AI_EXECUTOR", "SPOT_DCA", "TRAILING_STOP", "ORDER_MANAGER", "HL_BOT",
 )
+_OWNER_PAT = "|".join(_KNOWN_OWNERS)
+_OWNER_TAG_RE = re.compile(rf"\[({_OWNER_PAT})\]|\(({_OWNER_PAT})\)", flags=re.IGNORECASE)
+_GATE_SUPPRESSED_REASONS = (
+    "duplicate", "similar_eliminated", "queue_full_dropped", "topic_queue_full_dropped",
+)
+_GATE_ACCEPTED_REASONS = ("buffered_for_bulk", *_GATE_SUPPRESSED_REASONS)
 
 
 def strip_owner_tags(text: Any) -> str:
     """Remove bot/manual owner bracket or paren tags from an alert title."""
     s = "" if isinstance(text, bool) or text is None else str(text)
     return _OWNER_TAG_RE.sub("", s)
+
+
+def format_owner_tags(
+    owner: Any,
+    *,
+    ignore: tuple[str, ...] = ("unspecified", "unknown", "order_retry"),
+) -> tuple[str, str]:
+    """Return ``(owner_tag, owner_body)`` as ``(' [owner]', ' (owner)')`` when valid, else ``('', '')``."""
+    if owner is None or isinstance(owner, bool):
+        return "", ""
+    s = str(owner).strip()
+    if not s or s.lower() in ignore or s.lower().startswith("alt:"):
+        return "", ""
+    return f" [{s}]", f" ({s})"
+
+
+def format_notify_qty(qty: Any) -> str:
+    """Format a trade/order quantity without trailing zeros."""
+    qf = safe_pos_float(qty, default=0.0) or 0.0
+    return f"{qf:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def format_notify_price(price: Any, *, comma: bool = True) -> str:
+    """Format a price with optional comma grouping and full sub-dollar precision."""
+    pf = safe_pos_float(price, default=0.0) or 0.0
+    sep = "," if comma else ""
+    if pf >= 1.0 and round(pf, 2) == round(pf, 6):
+        return f"{pf:{sep}.2f}"
+    raw = f"{pf:{sep}.8f}".rstrip("0")
+    if raw.endswith("."):
+        return f"{raw}00"
+    if len(raw.rsplit(".", 1)[-1]) == 1:
+        return f"{raw}0"
+    return raw
 
 
 def is_fake_alert_text(*parts: Any) -> bool:
@@ -151,23 +191,7 @@ def _is_guard_alert(alerts: list[Any]) -> bool:
             continue
         title = strip_owner_tags(str(alert.get("name") or alert.get("symbol") or alert.get("title") or "").upper())
         source = str(alert.get("source") or "").lower()
-        if (
-            any(
-                marker in title
-                for marker in (
-                    "🛡", "🛑", "GUARD", "VETO", "SHADOW", "BLOCKED", "REFUSED",
-                    "SMART-SL", "POST-STOP", "STOP-LOSS", "STOP_LOSS",
-                    "TRAILING", "QUARANTINE", "GIVE UP",
-                )
-            )
-            or any(
-                src in source
-                for src in (
-                    "order_guard", "guard", "assetguardian", "macro_shadow",
-                    "smart_stop_loss", "post_stop_guard",
-                )
-            )
-        ):
+        if any(m in title for m in _GUARD_ALERT_TITLE_MARKERS) or any(s in source for s in _GUARD_ALERT_SOURCES):
             return True
     return False
 
@@ -176,12 +200,11 @@ def _is_error_or_ops_alert(alerts: list[Any]) -> bool:
     for alert in alerts:
         if not isinstance(alert, dict):
             continue
-        title = str(alert.get("name") or alert.get("title") or "").upper()
+        title_no_owner = strip_owner_tags(str(alert.get("name") or alert.get("title") or "").upper())
         source = str(alert.get("source") or "").lower()
-        title_no_owner = strip_owner_tags(title)
         if (
-            any(marker in title_no_owner for marker in _ERROR_AND_OPS_TITLE_MARKERS)
-            or any(src in source for src in _ERROR_AND_OPS_SOURCES)
+            any(m in title_no_owner for m in _ERROR_AND_OPS_TITLE_MARKERS)
+            or any(s in source for s in _ERROR_AND_OPS_SOURCES)
             or alert.get("type") == "email"
         ):
             return True
@@ -790,6 +813,30 @@ def _is_provider_daily_limit(response: Any) -> bool:
     return "42908" in body or "daily" in body
 
 
+def _webhook_json_default(obj: Any) -> Any:
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    return str(obj)
+
+
+def _serialize_webhook_alert(a: Any) -> Any:
+    if hasattr(a, "to_dict"):
+        d = a.to_dict()
+        d.setdefault("type", "price_alert")
+        return d
+    if isinstance(a, dict):
+        return a
+    return str(a)
+
+
+def _emit_orchestrator_intent(payload: dict[str, Any], *, default: Any = None) -> bool:
+    sys.stdout.write(json.dumps(payload, default=default) + "\n")
+    sys.stdout.flush()
+    return True
+
+
 class AlertNotifier:
 
     @staticmethod
@@ -1001,10 +1048,10 @@ class AlertNotifier:
         message = AlertNotifier.format_batch_message(alerts)
         if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
             # The orchestrator parses child stdout; same schema as its retry queue.
-            intent = {"__orchestrator_intent__": "email", "subject": subject, "message": message}
-            sys.stdout.write(json.dumps(intent, default=str) + "\n")
-            sys.stdout.flush()
-            return True
+            return _emit_orchestrator_intent(
+                {"__orchestrator_intent__": "email", "subject": subject, "message": message},
+                default=str,
+            )
         from notify_engine.server import NotificationServer
         return NotificationServer()._send_email(subject, message)
 
@@ -1015,36 +1062,16 @@ class AlertNotifier:
         if _external_notifications_disabled():
             return True
         if _as_bool_flag(os.environ.get("MPTRADE_ORCHESTRATED"), False):
-            def default_serializer(obj):
-                if hasattr(obj, "to_dict"):
-                    return obj.to_dict()
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-                return str(obj)
-
-            serialized_alerts = []
-            for a in alerts:
-                if hasattr(a, "to_dict"):
-                    d = a.to_dict()
-                    d.setdefault("type", "price_alert")
-                    serialized_alerts.append(d)
-                elif isinstance(a, dict):
-                    serialized_alerts.append(a)
-                else:
-                    serialized_alerts.append(str(a))
-
-            intent = {
-                "__orchestrator_intent__": "ntfy_webhook",
-                "webhook_url": webhook_url,
-                "alerts": serialized_alerts
-            }
-            sys.stdout.write(json.dumps(intent, default=default_serializer) + "\n")
-            sys.stdout.flush()
-            return True
-        else:
-            from notify_engine.server import NotificationServer
-            server = NotificationServer()
-            return server.dispatch_alerts(list(alerts), webhook_url=webhook_url)
+            return _emit_orchestrator_intent(
+                {
+                    "__orchestrator_intent__": "ntfy_webhook",
+                    "webhook_url": webhook_url,
+                    "alerts": [_serialize_webhook_alert(a) for a in alerts],
+                },
+                default=_webhook_json_default,
+            )
+        from notify_engine.server import NotificationServer
+        return NotificationServer().dispatch_alerts(list(alerts), webhook_url=webhook_url)
 
     @staticmethod
     def send(alert, enable_console=True, enable_file=True,
@@ -1095,23 +1122,20 @@ def notify(title: str, body: str, source: str, symbol: str,
                 "priority": "urgent" if urgent else "high",
                 "topic": _topic_for_category(title, source),
             })
-        sys.stdout.write(json.dumps(intent) + "\n")
-        sys.stdout.flush()
+        _emit_orchestrator_intent(intent)
     else:
         from notify_engine.server import NotificationServer
         NotificationServer().dispatch_alerts([alert])
-    email_flag = _as_bool_flag(email, False)
-    if email_flag:
+    if _as_bool_flag(email, False):
         from notify_engine.mailer import is_email_mirrored
         from notify_engine.server import _topic_for_category
         if not is_email_mirrored(_topic_for_category(title, source)):
             AlertNotifier.send_email_batch([alert], subject=title)
- 
- 
+
+
 def check_alert(condition: bool, message: str, alert_interval: int = 60, symbol: str = "TRADE") -> None:
     """Dispatches a trade alert notification if condition is met."""
-    cond_flag = _as_bool_flag(condition, False)
-    if cond_flag:
+    if _as_bool_flag(condition, False):
         try:
             notify("Trade Alert", str(message), "tradeall", symbol)
         except Exception:
@@ -1160,22 +1184,9 @@ def _dispatch_order_event_notification(
     side_s = str(side or "").strip().upper() or "ORDER"
     ord_type_s = str(order_type or "MARKET").strip().upper()
     venue_s = str(venue or source or "venue").strip()
-    qty_s = f"{qty_f:.8f}".rstrip("0").rstrip(".") or "0"
-    if px_f >= 1.0 and round(px_f, 2) == round(px_f, 6):
-        px_s = f"{px_f:,.2f}"
-    else:
-        px_s = f"{px_f:,.8f}".rstrip("0")
-        if px_s.endswith("."):
-            px_s = f"{px_s}00"
-        elif len(px_s.rsplit(".", 1)[-1]) == 1:
-            px_s = f"{px_s}0"
-    valid_owner = bool(
-        owner_norm
-        and owner_norm not in ("unspecified", "unknown", "order_retry")
-        and not owner_norm.startswith("alt:")
-    )
-    owner_tag = f" [{owner_norm}]" if valid_owner else ""
-    owner_body = f" ({owner_norm})" if valid_owner else ""
+    qty_s = format_notify_qty(qty_f)
+    px_s = format_notify_price(px_f, comma=True)
+    owner_tag, owner_body = format_owner_tags(owner_norm)
     eff_title = title or f"{default_icon} {default_verb} {side_s} {sym_s} ${notional_f:.0f}{owner_tag}"
     eff_body = body or (
         f"Venue: {venue_s} · Qty: {qty_s} @ ${px_s} ({ord_type_s} · ${notional_f:,.0f})\n"

@@ -107,9 +107,7 @@ def _format_order_notify_fields(symbol, order_type, price, quantity, owner=None)
     val = px * qty
     quote = (split_symbol_assets(symbol) or ("", ""))[1] or "USD"
     side = normalize_side(order_type) or str(order_type).upper()
-    valid_owner = owner and owner not in ("unspecified", "unknown")
-    owner_tag = f" [{owner}]" if valid_owner else ""
-    owner_body = f" ({owner})" if valid_owner else ""
+    owner_tag, owner_body = alert.format_owner_tags(owner, ignore=("unspecified", "unknown"))
     return qty, px, val, quote, side, owner_tag, owner_body
 
 
@@ -120,8 +118,8 @@ def _notify_order_expired(symbol, order_type, order_id, price, quantity, owner=N
             symbol, order_type, price, quantity, owner
         )
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        px_str = f"{px:,.2f}" if px >= 10 else (f"{px:.8f}".rstrip("0").rstrip(".") or "0")
-        qty_str = f"{qty:.8f}".rstrip("0").rstrip(".") or "0"
+        px_str = alert.format_notify_price(px)
+        qty_str = alert.format_notify_qty(qty)
         print(f"[MONITORORDER] ⏰ Order expired & canceled{owner_body}: {side} {qty:.6f} {symbol} @ {px_str} (orderId={order_id})")
         alert.notify(
             title=f"⏰ Order Expired & Canceled: {side} {symbol}{owner_tag}",
