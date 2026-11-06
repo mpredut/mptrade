@@ -9040,6 +9040,37 @@ def test_prompt_2042_audit_breadth_exclusions_advisor_pullback_news_filler_and_s
     update_microstructure_cycle_deltas(str(cdir_cd_frozen), cd_frozen_map, now_ts=now_cd)
     assert cd_frozen_map["NVDA_US_EQ"]["cycle_delta"]["cvd_15m_delta_usd"] == 0.0
 
+    # Bug 132: collect_macro_benchmarks_snapshot preserves true 24h bar change for VIX/GTH indices when previousClose rolls at overnight open
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
+
+    def _fake_vix_gth_fetch(url, timeout=3.5, headers=None):
+        if "%5EVIX" in url or "^VIX" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "regularMarketPrice": 27.60,
+                                "previousClose": 28.18,
+                                "chartPreviousClose": 28.18,
+                                "hasPrePostMarketData": False,
+                            },
+                            "timestamp": [int(now_cd - 86400), int(now_cd - 43200), int(now_cd)],
+                            "indicators": {"quote": [{"close": [17.08, 28.18, 27.60]}]},
+                        }
+                    ]
+                }
+            }
+        return {}
+
+    vix_snap = collect_macro_benchmarks_snapshot(
+        str(tmp_path / "cdir_vix_gth"), now_ts=now_cd, persist=False, fetch_fn=_fake_vix_gth_fetch
+    )
+    assert vix_snap is not None
+    vix_item = vix_snap["items"]["VIX"]
+    assert abs(vix_item["chg_24h_pct"] - 61.59) <= 0.02
+    assert abs(vix_item["globex_session_chg_pct"] - (-2.06)) <= 0.02
+
 
 
 
