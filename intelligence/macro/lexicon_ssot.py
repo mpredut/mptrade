@@ -55,10 +55,11 @@ _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
 })
 
 _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
-    "alaska", "alaskan", "alaskans", "appreciation", "bills", "cabin", "cabins",
-    "cambodia", "centcom", "concentration", "cruise", "cruises", "decider",
-    "dreading", "episode", "episodes", "explained", "finale", "forever", "french",
-    "fries", "heating", "holocaust", "liberators", "memorial", "museum",
+    "academic", "alaska", "alaskan", "alaskans", "appreciation", "asu", "bills",
+    "cabin", "cabins", "cambodia", "centcom", "concentration", "consortium",
+    "cruise", "cruises", "decider", "disney", "dreading", "episode", "episodes",
+    "explained", "finale", "forever", "french", "fries", "hbo", "heating",
+    "holocaust", "hulu", "liberators", "memorial", "museum", "netflix",
     "passengers", "podcast", "podcasts", "premiere", "recap", "residents",
     "retirees", "retirement", "review", "season", "social", "tourist", "tourists",
     "trailer", "vacation", "veteran", "veterans", "vulture",
