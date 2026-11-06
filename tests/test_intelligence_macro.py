@@ -2113,6 +2113,7 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Pentagon shake-up possible as Trump officials face scrutiny over Iran war and Republican losses", ["war", "iran war"]),
         ("Iran is Reviewing 'Concrete Proposals' on Nuclear Program, Officials Say - The New York Times", ["nuclear"]),
         ("North Korea denies role in record Binance hack, FBI probe continues", ["binance hack", "hack"]),
+        ("Melania Trump urges 'humanity over war' with Ukraine, Russia officials - Reuters", ["war"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()

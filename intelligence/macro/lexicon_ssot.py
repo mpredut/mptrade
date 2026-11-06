@@ -206,20 +206,20 @@ _NON_CRISIS_DYNAMIC_BIGRAM_WORDS: frozenset[str] = frozenset({
     "liquidation", "liquidations", "liv", "localized", "long", "loser",
     "losers", "losses", "macro", "media", "members", "midterm", "midterms",
     "mobile", "moderate", "mounting", "mutual", "narrative", "nine", "non", "normal",
-    "noting", "official", "officials", "one", "orderly", "outlook",
+    "noting", "official", "officials", "one", "ongoing", "orderly", "outlook",
     "peacefully", "persistent", "physical", "plane", "playbook", "played", "plunge",
-    "plunged", "plunges", "plunging", "political", "position", "post",
+    "plunged", "plunges", "plunging", "political", "position", "possible", "post", "posture",
     "potential", "prices", "processed", "progress", "prolongation", "pursues",
-    "qeshm", "questions", "rather", "readiness", "record", "reflect",
+    "qeshm", "questions", "rather", "readiness", "recent", "record", "reflect",
     "reflects", "related", "renewed", "reported", "reportedly", "represent",
-    "researchers", "reshapes", "retaining", "rhetoric", "risk", "risks",
+    "researchers", "reshapes", "retaining", "rhetoric", "rhetorical", "risk", "risks",
     "role", "rout", "routine", "ryanair", "say", "scrutiny", "secondary",
     "selloff", "seven", "short", "showdown", "six", "sizing", "soaring", "somalia",
     "south", "stocks", "story", "strategy", "striker", "study", "surging", "suspected",
     "sustain", "sustained", "sustaining", "sustains", "sweden", "systemic", "tactical", "targets",
     "tech", "techspot", "ten", "tenerife", "three", "timeline", "trace",
     "traced", "train", "trains", "truck", "trump", "two", "uganda",
-    "unabsorbed", "unanticipated", "uncertainty", "unpriced", "veto",
+    "unabsorbed", "unanticipated", "uncertainty", "underscore", "underscores", "unpriced", "veto",
     "victim", "victims", "volatility", "volunteer", "wave", "waves", "widespread",
     "withdrawing", "workers", "worse", "wrap",
 })
@@ -300,6 +300,7 @@ def _is_excluded_non_crisis_attack_keyword(
                 "halt", "halts", "halted", "halting", "deescalation", "deescalate",
                 "avoid", "avoids", "ease", "eases", "easing", "end", "ends", "ended", "ending",
                 "talks", "negotiation", "negotiations", "proposal", "proposals", "reviewing",
+                "humanity", "humanitarian", "melania",
             }
         ) and not (
             combined_words
