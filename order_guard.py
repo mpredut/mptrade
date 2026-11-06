@@ -1476,8 +1476,18 @@ def check_intelligence_guards(
     effective_scale = static_scale
     active_reason = static_reason
 
-    # 1. Dynamic G_QLIMIT2 re-evaluation (ParabolicSurgeGuard + WeibullExhaustionGuard) when cached
-    if was_cached and not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass):
+    # 1. Dynamic G_QLIMIT2 re-evaluation (ParabolicSurgeGuard + WeibullExhaustionGuard) when cached inputs changed
+    qlimit2_inputs_changed = (
+        price != cached_price
+        or explicit_dur_sec != cached_dur
+        or price_history is not None
+        or now is not None
+    )
+    if (
+        was_cached
+        and qlimit2_inputs_changed
+        and not (GUARD_REGISTRY["G_QLIMIT2"].is_bypassed(bypassed) and not parabolic_only_bypass and not weibull_only_bypass)
+    ):
         from qlimit_order_guard import check_qlimit2_order_guards
         q_ok, q_reason, q_scale = check_qlimit2_order_guards(
             symbol=symbol,

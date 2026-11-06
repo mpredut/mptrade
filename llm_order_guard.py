@@ -75,7 +75,11 @@ def evaluate_high_stake_order_guard(
     notify_on_eval: bool = True,
 ) -> Tuple[bool, str, float]:
     """SSOT evaluator for HighStakeGuard (GLLM1) across both initial and cached-context re-evaluations."""
-    from intelligence.sentiment.guards.high_stake_guard import HighStakeGuard, is_llm_guard_exempt
+    from intelligence.sentiment.guards.high_stake_guard import (
+        HIGH_STAKE_NOTIONAL_JUMP_RATIO,
+        HighStakeGuard,
+        is_llm_guard_exempt,
+    )
     from order_guard import is_intelligence_master_off, resolve_high_stake_min_notional_usd, validate_guard_mode_cfg
 
     side = _normalize_side(side)
@@ -108,7 +112,10 @@ def evaluate_high_stake_order_guard(
     prev_notional_f = _pos_float(prev_notional, -1.0)
     prev_notional = prev_notional_f if prev_notional_f > 0.0 else None
 
-    notional_jump = prev_notional is not None and (computed_notional - prev_notional) / max(prev_notional, 1.0) > 0.20
+    notional_jump = (
+        prev_notional is not None
+        and (computed_notional - prev_notional) / max(prev_notional, 1.0) > HIGH_STAKE_NOTIONAL_JUMP_RATIO
+    )
     if prev_notional is None or prev_notional < min_notional or notional_jump:
         ctx_usable = valid_context or isinstance(regime_context, dict)
         if dur_sec is None and ctx_usable:
@@ -130,32 +137,36 @@ def evaluate_high_stake_order_guard(
                 notional_eur=computed_notional,
             )
         g_scale = _clean_scale(getattr(g_dec, "suggested_scale", 1.0), default=1.0, allow_percent=True)
+        g_meta = getattr(g_dec, "metadata", None)
+        g_meta = g_meta if isinstance(g_meta, dict) else {}
+        eval_notional = _pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
+        is_cache_hit = bool(g_meta.get("cache_hit"))
         if valid_context:
             try:
                 g_tuple = (bool(g_dec.allowed), g_dec.reason, g_scale)
                 if not isinstance(decisions_map, dict):
                     decisions_map = {}
                 entry = decisions_map.get(cache_key, {})
-                entry["gemini_notional"] = computed_notional
+                entry["gemini_notional"] = eval_notional
                 entry["gemini_decision"] = g_tuple
                 decisions_map[cache_key] = entry
                 object.__setattr__(regime_context, "_intelligence_decisions_by_key", decisions_map)
                 object.__setattr__(regime_context, "_gemini_decision_key", cache_key)
-                object.__setattr__(regime_context, "_gemini_evaluated_notional", computed_notional)
+                object.__setattr__(regime_context, "_gemini_evaluated_notional", eval_notional)
                 object.__setattr__(regime_context, "_gemini_decision", g_tuple)
             except Exception:
                 pass
 
         ccy_sym = "€" if str(symbol or "").strip().upper().endswith("EUR") else "$"
         do_notify = _parse_bool_flag(notify_on_eval, True) if not isinstance(notify_on_eval, bool) else notify_on_eval
-        if do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY:
+        if not is_cache_hit and (do_notify or not g_dec.allowed or g_dec.brake_action == BrakeAction.DOWNSCALE_QTY):
             prefix = "[LLM_GUARD_SHADOW]" if llm_mode == "shadow" else "[LLM_GUARD_ENFORCE]"
             print(
                 f"{prefix} {side} {symbol} {ccy_sym}{computed_notional:.2f}: {g_dec.reason} "
                 f"(brake={g_dec.brake_action}, suggested_scale={g_scale})"
             )
 
-        if do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), _resolve_now_ts(now)):
+        if not is_cache_hit and do_notify and check_cooldown_gate(_LLM_SHADOW_NOTIFY_COOLDOWN, (clean_symbol_key(symbol), side), _resolve_now_ts(now)):
             try:
                 from notify_engine.alertnotifiers import format_notify_price, notify
                 from orchestratorOS.agy.topics import topic_spec

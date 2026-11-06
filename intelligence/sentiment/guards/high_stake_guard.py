@@ -54,7 +54,8 @@ DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_MIN_NOTIONAL_EUR = DEFAULT_MIN_NOTIONAL_USD
 DEFAULT_LLM_GUARD_CACHE_TTL_SEC = 600.0
 DEFAULT_HIGH_STAKE_CACHE_TTL_SEC = DEFAULT_LLM_GUARD_CACHE_TTL_SEC
-_HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, str, int], tuple[float, GuardDecision]] = {}
+HIGH_STAKE_NOTIONAL_JUMP_RATIO = 1.0
+_HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, ...], tuple[float, GuardDecision]] = {}
 
 LLM_GUARD_JSON_SCHEMA_FOOTER = (
     "Respond strictly in valid JSON format with exact keys:\n"
@@ -86,10 +87,16 @@ def evaluate_llm_guard_response(
     fb_norm = str(fallback_action or "allow").strip().lower()
     if not resp or not isinstance(resp, dict):
         if fb_norm in ("veto", "block"):
-            return GuardDecision.veto(guard_name, "llm_query_timeout_fail_closed", notional_eur=safe_notional)
+            return GuardDecision.veto(
+                guard_name, "llm_query_timeout_fail_closed", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+            )
         if fb_norm == "downscale":
-            return GuardDecision.downscale(guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional)
-        return GuardDecision.allow(guard_name, "llm_query_timeout_fallback_allowed", notional_eur=safe_notional)
+            return GuardDecision.downscale(
+                guard_name, scale=0.5, reason="llm_query_timeout_downscaled", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+            )
+        return GuardDecision.allow(
+            guard_name, "llm_query_timeout_fallback_allowed", notional_eur=safe_notional, evaluated_notional_eur=safe_notional
+        )
 
     raw_dec = resp.get("decision")
     decision_str = str(raw_dec if (isinstance(raw_dec, str) and raw_dec.strip()) else "APPROVED").upper().strip()
@@ -98,13 +105,30 @@ def evaluate_llm_guard_response(
     scale = clean_scale(resp.get("suggested_scale"), 0.5 if decision_str == "DOWNSCALE" else 1.0, allow_percentage=True)
 
     if decision_str in ("REJECTED", "REJECT", "VETO", "BLOCK", "DENIED", "DENY"):
-        return GuardDecision.veto(guard_name, f"Gemini vetoed {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason)
+        return GuardDecision.veto(
+            guard_name,
+            f"Gemini vetoed {action_label}: {reason}",
+            notional_eur=safe_notional,
+            evaluated_notional_eur=safe_notional,
+            gemini_reason=reason,
+        )
     if decision_str == "DOWNSCALE":
         eff_scale = 0.5 if (scale <= 0.0 or scale >= 1.0) else max(0.1, min(1.0, scale))
         return GuardDecision.downscale(
-            guard_name, scale=eff_scale, reason=f"Gemini downscaled {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason
+            guard_name,
+            scale=eff_scale,
+            reason=f"Gemini downscaled {action_label}: {reason}",
+            notional_eur=safe_notional,
+            evaluated_notional_eur=safe_notional,
+            gemini_reason=reason,
         )
-    return GuardDecision.allow(guard_name, f"Gemini approved {action_label}: {reason}", notional_eur=safe_notional, gemini_reason=reason)
+    return GuardDecision.allow(
+        guard_name,
+        f"Gemini approved {action_label}: {reason}",
+        notional_eur=safe_notional,
+        evaluated_notional_eur=safe_notional,
+        gemini_reason=reason,
+    )
 
 
 def resolve_llm_guard_cache_ttl(
@@ -152,6 +176,9 @@ class PreTradeLLMGuardBase:
         dec: GuardDecision,
         notional: float,
         valid_resp: Optional[Dict[str, Any]] = None,
+        *,
+        evaluated_notional_eur: Optional[float] = None,
+        cache_hit: bool = False,
     ) -> GuardDecision:
         if isinstance(getattr(dec, "shadow_decision", None), GuardDecision):
             return dec
@@ -162,7 +189,13 @@ class PreTradeLLMGuardBase:
             shadow_msg = f"shadow_mode (LLM suggested {decision_str}: {reason})"
         else:
             shadow_msg = f"shadow_mode ({dec.reason})"
-        return GuardDecision.allow(self.GUARD_NAME, shadow_msg, notional_eur=notional, shadow_decision=dec)
+        extra_meta: Dict[str, Any] = {
+            "notional_eur": notional,
+            "evaluated_notional_eur": evaluated_notional_eur if evaluated_notional_eur is not None else notional,
+        }
+        if cache_hit:
+            extra_meta["cache_hit"] = True
+        return GuardDecision.allow(self.GUARD_NAME, shadow_msg, shadow_decision=dec, **extra_meta)
 
     def _execute_pretrade_guard_eval(
         self,
@@ -180,6 +213,7 @@ class PreTradeLLMGuardBase:
         telemetry: Optional[Dict[str, Any]] = None,
         regime_context: Optional[Any] = None,
         dur_sec: Optional[float] = None,
+        max_notional_jump_ratio: Optional[float] = None,
         on_decision: Optional[Callable[[GuardDecision], None]] = None,
         logger_inst: Optional[logging.Logger] = None,
     ) -> GuardDecision:
@@ -198,13 +232,37 @@ class PreTradeLLMGuardBase:
                     if isinstance(getattr(cached_dec, "shadow_decision", None), GuardDecision)
                     else cached_dec
                 )
-                if self.mode == "shadow":
-                    return self._wrap_shadow_decision(base_dec, notional)
-                if isinstance(getattr(base_dec, "metadata", None), dict) and base_dec.metadata.get("notional_eur") != notional:
+                base_meta = getattr(base_dec, "metadata", None)
+                base_meta = base_meta if isinstance(base_meta, dict) else {}
+                eval_notional = safe_pos_float(
+                    base_meta.get("evaluated_notional_eur") or base_meta.get("notional_eur"),
+                    default=None,
+                )
+                notional_jumped = (
+                    max_notional_jump_ratio is not None
+                    and eval_notional is not None
+                    and (notional - eval_notional) / max(eval_notional, 1.0) > max_notional_jump_ratio
+                )
+                if not notional_jumped:
+                    baseline_notional = eval_notional if eval_notional is not None else notional
+                    if self.mode == "shadow":
+                        return self._wrap_shadow_decision(
+                            base_dec,
+                            notional,
+                            evaluated_notional_eur=baseline_notional,
+                            cache_hit=True,
+                        )
                     from dataclasses import replace as _dc_replace
 
-                    return _dc_replace(base_dec, metadata={**base_dec.metadata, "notional_eur": notional})
-                return base_dec
+                    return _dc_replace(
+                        base_dec,
+                        metadata={
+                            **base_meta,
+                            "notional_eur": notional,
+                            "evaluated_notional_eur": baseline_notional,
+                            "cache_hit": True,
+                        },
+                    )
 
         _telem_fn = resolve_patched_attr(
             "collect_pretrade_telemetry",
@@ -375,7 +433,7 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             return GuardDecision.allow("HighStakeGuard", "backtest_mode_exempt", notional_eur=notional)
 
         now_ts = resolve_now_ts(now)
-        cache_key = (clean_symbol_key(symbol), side_norm, int(notional // 100.0))
+        cache_key = (clean_symbol_key(symbol), side_norm)
         header_lines = (
             f"- Symbol: {symbol}",
             f"- Side: {side_norm}",
@@ -397,5 +455,6 @@ class HighStakeGuard(PreTradeLLMGuardBase):
             telemetry=telemetry,
             regime_context=regime_context,
             dur_sec=dur_sec,
+            max_notional_jump_ratio=HIGH_STAKE_NOTIONAL_JUMP_RATIO,
             logger_inst=logger,
         )

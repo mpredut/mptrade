@@ -535,13 +535,20 @@ class TestCase5HistoryFailClosed:
         )
         assert len(calls) == 1
 
-        # 3. Third evaluation with notional jumping to 1500 EUR (+50% > 20%) -> triggers re-evaluation!
+        # 3. Third evaluation with notional jumping to 1500 EUR (+50% <= 100%) -> cached, no new call!
         order_guard.check_intelligence_guards(
             MockProvider(), "BTCUSDC", "BUY", 100.0,
             regime_context=ctx, qty=15.0  # notional = 1500 EUR
         )
+        assert len(calls) == 1
+
+        # 4. Fourth evaluation with notional jumping to 2500 EUR (+150% > 100%) -> triggers re-evaluation!
+        order_guard.check_intelligence_guards(
+            MockProvider(), "BTCUSDC", "BUY", 100.0,
+            regime_context=ctx, qty=25.0  # notional = 2500 EUR
+        )
         assert len(calls) == 2
-        assert calls[1] == 1500.0
+        assert calls[1] == 2500.0
 
 
 class TestArchitectureFixes4Cases:
@@ -797,23 +804,23 @@ class TestSisterArchitecturalDefects:
         assert len(calls) == 1
         assert getattr(ctx, "_gemini_evaluated_notional", None) == 1000.0
 
-        # 2. Intermediate step at 1150 EUR (+15% < 20%): skipped, baseline remains 1000 EUR
+        # 2. Intermediate step at 1600 EUR (+60% <= 100%): skipped, baseline remains 1000 EUR
         order_guard.check_intelligence_guards(
             MockProvider(), "BTCUSDC", "BUY", 100.0,
-            regime_context=ctx, qty=11.5  # notional = 1150 EUR
+            regime_context=ctx, qty=16.0  # notional = 1600 EUR
         )
         assert len(calls) == 1
         assert getattr(ctx, "_gemini_evaluated_notional", None) == 1000.0
 
-        # 3. Step at 1300 EUR (+30% from 1000 EUR, but only +13% from 1150 EUR):
+        # 3. Step at 2200 EUR (+120% from 1000 EUR, even though only +37.5% from 1600 EUR):
         # MUST trigger re-evaluation because baseline was preserved!
         order_guard.check_intelligence_guards(
             MockProvider(), "BTCUSDC", "BUY", 100.0,
-            regime_context=ctx, qty=13.0  # notional = 1300 EUR
+            regime_context=ctx, qty=22.0  # notional = 2200 EUR
         )
         assert len(calls) == 2
-        assert calls[1] == 1300.0
-        assert getattr(ctx, "_gemini_evaluated_notional", None) == 1300.0
+        assert calls[1] == 2200.0
+        assert getattr(ctx, "_gemini_evaluated_notional", None) == 2200.0
 
     def test_sister3_gemini_decision_preserved_on_identical_subsequent_check(self, monkeypatch):
         """Sister 3: Gemini decisions (rejection and downscaling) must be cached and re-applied
@@ -16847,7 +16854,7 @@ def test_iteration180_post_stop_high_stake_and_sentiment_macro_collectors_hygien
         gemini_client=GeminiClient(custom_runner=lambda p, m, t: '{"decision": "REJECTED", "reason": "risk"}'),
         cache_ttl_sec=60.0,
     )
-    _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY", 10)] = (True, None)
+    _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY")] = (True, None)
     hs_dec = hs_guard.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=1050.0, telemetry={}, now=1010.0)
     assert hs_dec.allowed is False
 
@@ -17112,6 +17119,93 @@ def test_iteration185_atomic_write_jsonl_bapi_snapshot_cache_rows_and_clean_orde
     assert len(candles) == 1
     assert candles[0]["timestamp"] == 2
     assert candles[0]["close"] == 17.0
+
+
+def test_high_stake_cache_reuse_across_buckets_and_100pct_notional_jump(monkeypatch):
+    """Verify HighStakeGuard reuses a single LLM evaluation per (symbol, side) across $100 buckets
+    without re-reading telemetry or re-querying LLM unless notional increases by > 100%, and
+    check_intelligence_guards skips redundant G_QLIMIT2 re-evaluations when price/duration are unchanged."""
+    from intelligence.sentiment.guards import high_stake_guard as hsg_mod
+    import llm_order_guard
+    import qlimit_order_guard
+
+    hsg_mod._HIGH_STAKE_DECISION_CACHE.clear()
+    monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
+
+    telem_calls = []
+    llm_calls = []
+
+    def fake_telem(symbol, **kw):
+        telem_calls.append(symbol)
+        return {"whale_flow": 1.15}
+
+    def fake_query(client, topic, prompt, **kw):
+        llm_calls.append(prompt)
+        return {"decision": "DOWNSCALE", "suggested_scale": 0.5, "reason": "scale to 50%"}
+
+    monkeypatch.setattr(hsg_mod, "collect_pretrade_telemetry", fake_telem)
+    monkeypatch.setattr(hsg_mod, "query_topic_json", fake_query)
+    monkeypatch.setattr(order_guard, "_load_margins", lambda: _margins(
+        internal_guard_mode="enforce",
+        intelligence_guards_mode="enforce",
+        llm_guard_mode="enforce",
+        high_stake_min_notional_usd=700.0,
+        regime_context_max_age_sec=120.0,
+    ))
+
+    class MockProv:
+        name = "binance"
+
+    now_ts = time.time()
+
+    # 1. Order 1 at 750 EUR on ctx1 -> 1 telemetry read, 1 LLM call
+    ctx1 = _build_test_context()
+    ok1, reason1, scale1 = order_guard.check_intelligence_guards(
+        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx1, qty=7.5, now=now_ts + 1.0
+    )
+    assert ok1 is True and scale1 == pytest.approx(0.5)
+    assert len(telem_calls) == 1
+    assert len(llm_calls) == 1
+
+    # 2. Order 2 immediately after on a NEW context (ctx2) at 1400 EUR (+86.7% <= 100%, different $100 bucket)
+    # -> Reuses cached decision with 0 new telemetry reads and 0 new LLM queries!
+    ctx2 = _build_test_context()
+    ok2, reason2, scale2 = order_guard.check_intelligence_guards(
+        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=14.0, now=now_ts + 15.0
+    )
+    assert ok2 is True and scale2 == pytest.approx(0.5)
+    assert len(telem_calls) == 1
+    assert len(llm_calls) == 1
+    # Baseline evaluated notional is preserved at 750.0 (no ratchet drift to 1400.0)
+    assert getattr(ctx2, "_gemini_evaluated_notional", None) == pytest.approx(750.0)
+
+    # 3. Order 3 on ctx2 with notional 1600 EUR (+113.3% > 100% vs 750 EUR baseline) -> triggers fresh LLM query!
+    ok3, reason3, scale3 = order_guard.check_intelligence_guards(
+        MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx2, qty=16.0, now=now_ts + 30.0
+    )
+    assert ok3 is True and scale3 == pytest.approx(0.5)
+    assert len(telem_calls) == 2
+    assert len(llm_calls) == 2
+    assert getattr(ctx2, "_gemini_evaluated_notional", None) == pytest.approx(1600.0)
+
+    # 4. Same-context re-check with identical price & duration does not re-run check_qlimit2_order_guards
+    qlimit2_calls = []
+    orig_qlimit2 = qlimit_order_guard.check_qlimit2_order_guards
+    monkeypatch.setattr(
+        qlimit_order_guard,
+        "check_qlimit2_order_guards",
+        lambda **kw: (qlimit2_calls.append(kw.get("price")) or orig_qlimit2(**kw)),
+    )
+    ctx3 = _build_test_context()
+    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
+    assert len(qlimit2_calls) == 1
+    # Second stage of same order with identical price=100.0 and default duration -> skipped!
+    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 100.0, regime_context=ctx3, qty=5.0)
+    assert len(qlimit2_calls) == 1
+    # Price change on same context -> re-evaluates G_QLIMIT2!
+    order_guard.check_intelligence_guards(MockProv(), "BTCUSDC", "BUY", 101.0, regime_context=ctx3, qty=5.0)
+    assert len(qlimit2_calls) == 2
+
 
 
 
