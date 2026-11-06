@@ -521,9 +521,7 @@ class WhalePositioningCollector(_DiskBackedSymbolCollector):
         prev_oi = safe_pos_float(obj_attr(prev_snap, "open_interest_usd", None), default=0.0) or 0.0
         oi_chg_pct = round(((oi_usd - prev_oi) / prev_oi) * 100.0, 2) if (oi_usd > 0.0 and prev_oi > 0.0) else 0.0
         prev_reg = obj_attr(prev_snap, "divergence_regime", None) if prev_snap else None
-        funding_rate = self._resolve_cached_funding_rate(symbol, now=now)
-        if funding_rate is None and total_opt > 0.0:
-            funding_rate = round((top_long_pct - 0.5) * 0.0004, 6)
+        funding_rate = 0.0
 
         regime = self.classify_regime(
             price_1h_change_pct=price_1h_change_pct,
