@@ -657,9 +657,21 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
         sched_task_id = ""
         sched_cond = "never"
         awaiting_sched_task_id = False
+        sched_calls = 0
+        latest_user_input_ts = 0.0
         for rec in records:
             step_type = str(rec.get("type") or "")
             content = str(rec.get("content") or "")
+            if step_type == "USER_INPUT":
+                created_raw = str(rec.get("created_at") or "").strip()
+                if created_raw:
+                    try:
+                        latest_user_input_ts = max(
+                            latest_user_input_ts,
+                            datetime.fromisoformat(created_raw.replace("Z", "+00:00")).timestamp(),
+                        )
+                    except Exception:
+                        latest_user_input_ts = max(latest_user_input_ts, st.st_mtime)
             if awaiting_sched_task_id and step_type == "GENERIC":
                 m_tid = re.search(r"background task with task id:\s*(\S+)", content)
                 if m_tid and ("Timer:" in content or "Cron:" in content or "schedule" in content):
@@ -697,6 +709,7 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                         cron_active = False
                         sched_task_id = ""
                 elif name == "schedule":
+                    sched_calls += 1
                     created_raw = str(rec.get("created_at") or "").strip()
                     sched_ts = st.st_mtime
                     if created_raw:
@@ -718,6 +731,11 @@ def _has_active_schedule_timer(brain_dir: str, ignored: set[str], now: float) ->
                         sched_task_id = ""
                         awaiting_sched_task_id = True
         if cron_active or now < oneshot_until:
+            # Autonomous repeating loops (multiple schedule calls or user input > 30m ago) must not permanently block UI sync
+            is_repeating_loop = sched_calls >= 2
+            is_stale_user_input = latest_user_input_ts > 0.0 and (now - latest_user_input_ts) > 1800.0
+            if is_repeating_loop or is_stale_user_input:
+                continue
             return True
     return False
 

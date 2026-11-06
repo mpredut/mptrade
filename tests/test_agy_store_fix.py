@@ -344,6 +344,95 @@ def test_active_schedule_timer_in_interactive_transcript_blocks_ui_sync(store):
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
 
+def test_repeating_schedule_loop_does_not_block_ui_sync(store):
+    """An autonomous loop with multiple schedule calls must not permanently starve UI sync."""
+    import json
+    from datetime import datetime, timezone
+
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1500)
+
+    log_dir = cli / "brain" / "looping-cid" / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tp = log_dir / "transcript.jsonl"
+    sched_ts = time.time() - 300.0  # 5m ago (within 20m timer)
+    sched_iso = datetime.fromtimestamp(sched_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "created_at": sched_iso,
+                "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": "1200", "Prompt": "wake 1"}}],
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 2,
+                "type": "PLANNER_RESPONSE",
+                "created_at": sched_iso,
+                "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": "1200", "Prompt": "wake 2"}}],
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+def test_stale_user_input_with_active_timer_does_not_block_ui_sync(store):
+    """A conversation where user input occurred >30m ago does not block UI sync even if a timer is active."""
+    import json
+    from datetime import datetime, timezone
+
+    cli, d1, _ = store
+    (d1 / "pending-topic.db").write_text("y")
+    _set_rows(["pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids([]))
+    _age_store(d1, 1500)
+
+    log_dir = cli / "brain" / "stale-cid" / ".system_generated" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    tp = log_dir / "transcript.jsonl"
+    user_ts = time.time() - 2400.0  # 40m ago (> 30m)
+    user_iso = datetime.fromtimestamp(user_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sched_ts = time.time() - 300.0  # 5m ago
+    sched_iso = datetime.fromtimestamp(sched_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 0,
+                "type": "USER_INPUT",
+                "created_at": user_iso,
+                "content": "do recurring check",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "created_at": sched_iso,
+                "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": "1200", "Prompt": "wake"}}],
+            }
+        )
+        + "\n"
+    )
+    os.utime(tp, (sched_ts, sched_ts))
+    for root, _, files in os.walk(cli / "brain"):
+        for f in files:
+            os.utime(os.path.join(root, f), (sched_ts, sched_ts))
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+
+
 
 
 
