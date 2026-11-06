@@ -795,17 +795,17 @@ def active_cycle_window_ref(opp_orders, same_orders=None, order_type="SELL", *, 
         else:
             rem_to_consume = qty
             while lots and rem_to_consume > 1e-12:
-                rem_lot, init_lot, _lot_px, _lot_ts = lots[0]
+                rem_lot, init_lot, _lot_px, _lot_ts = lots[-1]
                 if rem_lot <= rem_to_consume + 1e-12:
                     rem_to_consume -= rem_lot
-                    lots.pop(0)
+                    lots.pop()
                 else:
                     new_rem = rem_lot - rem_to_consume
                     rem_to_consume = 0.0
                     if new_rem <= init_lot * 0.02 + 1e-12:
-                        lots.pop(0)
+                        lots.pop()
                     else:
-                        lots[0][0] = new_rem
+                        lots[-1][0] = new_rem
 
     active_lots = [(lot[0], lot[2]) for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]
     active_opp = [(lot[3], lot[0], lot[2]) for lot in lots if lot[0] > lot[1] * 0.02 + 1e-12 and lot[2] > 0]

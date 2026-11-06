@@ -429,6 +429,41 @@ class BuyReferenceSwitchTest(unittest.TestCase):
                 order_guard.profit_guard(provider, "HYPEUSD", "SELL", 100.0, 1.15, window_ref=ref)
             )
 
+    def test_active_cycle_window_ref_consumes_harvested_dip_lot_via_lifo(self):
+        """When a recent lower DCA tranche is harvested by a SELL while older higher BUY
+        tranches remain open, LIFO matching must consume the harvested dip lot rather than
+        the oldest higher lot so subsequent SELLs do not reference the already-sold dip price."""
+        opp_orders = [
+            {"price": 240.5, "qty": 1.2515, "timestamp": 1000.0},
+            {"price": 237.1, "qty": 2.1056, "timestamp": 2000.0},
+            {"price": 213.2, "qty": 1.7715, "timestamp": 3000.0},
+        ]
+        same_orders = [
+            # Harvested the 213.2 dip lot (1.7715) plus 0.6788 of the 237.1 lot
+            {"price": 224.7, "qty": 2.4503, "timestamp": 4000.0},
+        ]
+        ref_hybrid = order_guard.active_cycle_window_ref(
+            opp_orders, same_orders, "SELL", reference_mode="hybrid"
+        )
+        ref_last = order_guard.active_cycle_window_ref(
+            opp_orders, same_orders, "SELL", reference_mode="last"
+        )
+        self.assertEqual(ref_hybrid, 237.1)
+        self.assertEqual(ref_last, 237.1)
+        provider = _Provider("binance", last_fill=213.2)
+        with mock.patch.object(order_guard, "_MARGINS", _margins()):
+            # Selling at 226.2 (above harvested 213.2, but below remaining 237.1 lot) must be blocked
+            self.assertFalse(
+                order_guard.profit_guard(
+                    provider, "TAOUSDC", "SELL", 226.2, 1.15, window_ref=ref_hybrid, reference_mode="hybrid"
+                )
+            )
+            self.assertTrue(
+                order_guard.profit_guard(
+                    provider, "TAOUSDC", "SELL", 240.0, 1.15, window_ref=ref_hybrid, reference_mode="hybrid"
+                )
+            )
+
     def test_sell_falls_back_to_last_opposite_fill_when_window_empty(self):
         """Even on venues with window_h > 0, both BUY and SELL orders in static modes
         with no opposite fill inside the window fall back symmetrically to last_opposite_fill."""
