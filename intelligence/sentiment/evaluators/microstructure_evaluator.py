@@ -688,8 +688,8 @@ def _is_unnormalized_zero_oi_whale_snap(snap: Dict[str, Any]) -> bool:
         return False
     if (safe_pos_float(snap.get("oi_usd"), default=0.0) or 0.0) > 0.0:
         return False
-    wl_v = safe_pos_float(snap.get("whale_long_pct"), default=0.0) or 0.0
-    return wl_v <= 0.0 or wl_v >= 1.0
+    wl_v = clean_scale(snap.get("whale_long_pct"), default=None, allow_percent=True)
+    return wl_v is not None and (wl_v <= 0.0 or wl_v >= 1.0)
 
 
 def _resolve_non_static_prev_metric(
@@ -706,7 +706,7 @@ def _resolve_non_static_prev_metric(
     is_scale_key = key in ("whale_long_pct", "ob_imbalance")
     if cur_val is not None and ref_val is not None and abs(cur_val - ref_val) < static_tol:
         for cand in reversed(h_list):
-            if not isinstance(cand, dict) or _is_unnormalized_zero_oi_whale_snap(cand):
+            if not isinstance(cand, dict) or (key == "whale_long_pct" and _is_unnormalized_zero_oi_whale_snap(cand)):
                 continue
             cand_ts = normalize_epoch_sec(safe_pos_float(cand.get("ts"), default=0.0) or 0.0, default=0.0)
             if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
