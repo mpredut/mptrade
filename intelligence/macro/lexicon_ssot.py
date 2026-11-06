@@ -59,12 +59,14 @@ _HUMAN_INTEREST_WAR_FILLER_WORDS: frozenset[str] = frozenset({
     "academic", "alaska", "alaskan", "alaskans", "appreciation", "assistance",
     "asu", "bags", "bills", "broadcasting", "cabin", "cabins", "cambodia",
     "centcom", "concentration", "consortium", "cruise", "cruises", "decider",
-    "disney", "dreading", "episode", "episodes", "explained", "finale", "forever",
-    "french", "fries", "hbo", "heating", "holocaust", "hulu", "journalist",
-    "journalists", "liberators", "memorial", "museum", "myanmar", "netflix",
-    "pack", "packing", "passengers", "podcast", "podcasts", "premiere", "recap",
-    "residents", "retirees", "retirement", "review", "rsf", "season", "social",
-    "tourist", "tourists", "trailer", "vacation", "veteran", "veterans", "vulture",
+    "declassified", "disney", "dreading", "episode", "episodes", "explained",
+    "finale", "forever", "french", "fries", "greenland", "hbo", "heating",
+    "holocaust", "hulu", "journalist", "journalists", "liberators", "memorial",
+    "museum", "myanmar", "mystery", "netflix", "pack", "packing", "passengers",
+    "podcast", "podcasts", "premiere", "recap", "residents", "retirees",
+    "retirement", "review", "rsf", "season", "social", "tourist", "tourists",
+    "trailer", "tunnels", "vacation", "vatican", "veteran", "veterans",
+    "vulture", "wwi", "wwii",
 })
 
 _COMMERCIAL_METAPHOR_WAR_WORDS: frozenset[str] = frozenset({
@@ -368,8 +370,14 @@ def _is_excluded_non_crisis_attack_keyword(
             return True
     war_cost_context = bool(combined_words & {"cost", "costs", "bill", "household", "households"})
     war_weapons_essay = bool(combined_words & {"gis", "decide", "decides"})
-    non_kinetic_war_kws = ({"strike", "strikes"} if war_cost_context else set()) | (
-        {"missile", "missiles"} if war_weapons_essay else set()
+    historical_war_context = bool(
+        (combined_words & {"declassified", "greenland", "mystery", "tunnels", "vatican", "wwi", "wwii"})
+        and not (combined_words & _MAJOR_GEOPOLITICAL_THEATER_WORDS)
+    )
+    non_kinetic_war_kws = (
+        ({"strike", "strikes"} if war_cost_context else set())
+        | ({"missile", "missiles"} if (war_weapons_essay or historical_war_context) else set())
+        | ({"bomb", "bombs", "bombing"} if historical_war_context else set())
     )
     if kw_words and kw_words <= (
         {
@@ -1206,6 +1214,9 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     if matched_fin and matched_fin <= {"nuclear", "missile", "missiles", "bank", "banks"}:
         probe_kw = "nuclear" if "nuclear" in matched_fin else ("missile" if (matched_fin & {"missile", "missiles"}) else "bank")
         if _is_excluded_non_crisis_attack_keyword(probe_kw, words, _get_crisis_stems_set()):
+            return False
+    if matched_fin and matched_fin <= {"sanction", "sanctions", "russia", "russian", "iran", "iranian"}:
+        if _is_excluded_non_crisis_attack_keyword("sanctions", words, _get_crisis_stems_set()):
             return False
     if matched_fin and matched_fin <= {"shares", "stock"} and not has_tracked_equity_entity(title) and not (
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
