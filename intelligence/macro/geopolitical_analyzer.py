@@ -253,13 +253,6 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
                 )
             )
         )
-        acute_shock_alert = (
-            news_snapshot is not None
-            and self._as_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False))
-            and self._cached_assessment is not None
-            and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
-            and has_new_acute_phrase
-        )
         prev_digest_lower = self._last_headlines_digest.lower() if self._last_headlines_digest else ""
         prev_digest_set = (
             {p.lower() for p in split_headlines_digest(self._last_headlines_digest)}
@@ -292,12 +285,19 @@ class GeopoliticalThreatAnalyzer(CachedTopicAssessmentAgent):
         )
         all_high_sev_aged_90m = bool(
             high_sev
-            and not acute_shock_alert
             and not has_unseen_high_sev
             and all(
                 0.0 < self._headline_effective_ts(h, now) <= now - 5400.0
                 for h in high_sev
             )
+        )
+        acute_shock_alert = (
+            news_snapshot is not None
+            and not all_high_sev_aged_90m
+            and self._as_bool_flag(obj_attr(news_snapshot, "has_critical_shock_keywords", False))
+            and self._cached_assessment is not None
+            and self._cached_assessment.threat_level in ("NORMAL", "ELEVATED")
+            and has_new_acute_phrase
         )
         deescalate_aged_90m = bool(
             all_high_sev_aged_90m

@@ -2161,6 +2161,10 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
         ("Oil Declines on Signs of Moves Toward Gulf War De-Escalation - Bloomberg.com", ["war", "escalation"]),
         ("Europe's Streets Reject the Economy of War - CounterPunch.org", ["war"]),
         ("FEMA to Assess Delaware's Nuclear Emergency Readiness in Salem and Hope Creek Exercise - Homeland Security Today", ["nuclear"]),
+        ("In The War On Mosquitos, Bird Advocates Shift Their Game Plan - Honolulu Civil Beat", ["war"]),
+        ("Emirates Airline Profit Falls After Iran War Disrupts Air Traffic - WSJ", ["war", "iran war"]),
+        ("France to order long-range naval cruise missile from MBDA - Reuters", ["cruise missile", "missile"]),
+        ("35 years since Kuwait extinguished last burning oil well after Iraqi invasion - Kuwait Times", ["invasion"]),
     ]
     for title, raw_kws in non_crisis_titles:
         assert filter_valid_severity_keywords(raw_kws, title=title, cache_dir=str(tmp_path), now_ts=now) == ()
@@ -2182,6 +2186,9 @@ def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path)
     ) is True
     assert is_excluded_reference_news_item(
         "SpaceX and Tesla Stock Plunges Have Wiped About $450 Billion in Value Since the Midterms. Is It Time to Buy?"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "Could Investing $500 a Month in SpaceX Stock Help You Retire a Millionaire?"
     ) is True
     assert is_excluded_reference_news_item(
         "Not Nvidia. Not Micron. This Dutch Company Controls a Key Bottleneck of AI Chip Production."

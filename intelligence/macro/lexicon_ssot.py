@@ -286,7 +286,7 @@ def _is_excluded_non_crisis_attack_keyword(
         return True
     if (combined_words & _NON_CRISIS_STRIKE_CONTEXT_WORDS) and kw_words and kw_words <= {"strike", "strikes"} and not (text_words & (kinetic_only - {"strike", "strikes"})):
         return True
-    if kw_words and kw_words <= {"missile", "missiles", "launch", "launches"}:
+    if kw_words and kw_words <= {"cruise", "naval", "missile", "missiles", "launch", "launches"}:
         if (
             combined_words
             & {
@@ -307,6 +307,18 @@ def _is_excluded_non_crisis_attack_keyword(
             & {
                 "launch", "launches", "launched", "strike", "strikes", "struck",
                 "attack", "attacks", "fire", "fired", "barrage", "intercept", "intercepted",
+            }
+        ):
+            return True
+    if kw_words and kw_words <= {"invasion", "war", "wars"}:
+        if (
+            (combined_words & {"anniversary", "extinguished", "kuwait", "wwi", "wwii", "memorial", "museum"})
+            or ("years" in combined_words and "since" in combined_words)
+        ) and not (
+            combined_words
+            & {
+                "launch", "launches", "launched", "airstrike", "airstrikes",
+                "missile", "missiles", "drone", "drones", "troops", "breaking",
             }
         ):
             return True
@@ -444,6 +456,7 @@ def _is_excluded_non_crisis_attack_keyword(
             & (
                 _PARTISAN_ELECTION_CONTEXT_WORDS
                 | _HUMAN_INTEREST_WAR_FILLER_WORDS
+                | _SINGLE_STOCK_EARNINGS_CONTEXT_WORDS
                 | {
                     "strategy", "playbook", "outlook", "parse", "parsing",
                     "before", "already", "scrutiny", "rumors", "prolongation",
@@ -453,7 +466,8 @@ def _is_excluded_non_crisis_attack_keyword(
                     "briefing", "seeks", "seeking", "harward", "recalibrates",
                     "recalibrate", "expectations", "assumptions", "soufan",
                     "multilateral", "approaches", "really", "safe", "gis",
-                    "decide", "decides",
+                    "decide", "decides", "airline", "airlines", "profit",
+                    "profits", "traffic", "emirates",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
@@ -552,6 +566,8 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "good bets in",
     "best bets for",
     "millionaire-maker",
+    "retire a millionaire",
+    "help you retire",
     "wants to be the nvidia of",
     "should you buy ",
     "names at fire-sale prices",
@@ -914,6 +930,8 @@ def discover_dynamic_terms_from_headlines(
             eff_stems.discard("attack")
         if _is_excluded_non_crisis_attack_keyword("war", word_set, crisis_stems):
             eff_stems.difference_update({"war", "escalat"})
+        if _is_excluded_non_crisis_attack_keyword("missile", word_set, crisis_stems):
+            eff_stems.difference_update({"missile", "launch"})
         if _is_excluded_non_crisis_attack_keyword("liquidation", word_set, crisis_stems):
             eff_stems.difference_update({"war", "strike", "attack", "liquidat", "collaps", "crash"})
         src_key = str(obj_attr(h, "source", "") or "unknown").strip().lower()
