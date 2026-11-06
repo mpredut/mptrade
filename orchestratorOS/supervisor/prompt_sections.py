@@ -1115,6 +1115,17 @@ def _format_tradable_position_line(pos: Dict[str, Any], max_usd: float = 2000.0)
             elif isinstance(pct_val, float):
                 pct_val = pct_val + 0.0
             pct_sfx = f" ({pct_lbl}={pct_val}%)" if pct_val is not None else ""
+            if (
+                px_k == "last_buy_px"
+                and pct_val is not None
+                and isinstance(open_lots_chk := pos.get("open_lots"), list)
+                and len(open_lots_chk) > 0
+                and not any(
+                    isinstance(lt, dict) and _same_anchor_px(pos.get("last_buy_px"), lt.get("entry_px"))
+                    for lt in open_lots_chk
+                )
+            ):
+                pct_sfx = f" (chg_vs_last_buy={pct_val}%, lot_harvested)"
             t_extra += f", {lbl}={pos.get(px_k)}{pct_sfx}"
     venue = pos.get("venue")
     fb_fees = resolve_venue_fee_and_limits(

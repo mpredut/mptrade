@@ -8905,6 +8905,30 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations():
     )
     assert "open_lifo_lots=[8@234.0(-7.31%), 2.38@215.1(+0.84%)]" in pos_line
     assert "profitable_lifo_usd=$516.22(2.38_TAO@+0.84%)" in pos_line
+    assert "last_buy_px=215.1 (pnl_vs_last_buy=0.84%)" in pos_line
+
+    # When last_buy_px lot has already been harvested (not in open_lots), label as chg_vs_last_buy + lot_harvested
+    pos_line_harvested = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "TAOUSDC",
+            "base": "TAO",
+            "quote": "USDC",
+            "free_base": 9.801456,
+            "value_usd": 2207.78,
+            "free_quote": 6751.44,
+            "price": 225.25,
+            "active_avg_buy_px": 243.794951,
+            "pnl_vs_avg_pct": -7.61,
+            "last_buy_px": 213.2,
+            "pnl_vs_last_buy_pct": 5.65,
+            "open_lots": [
+                {"lot_id": "L1", "qty": 4.6774, "entry_px": 258.5},
+                {"lot_id": "L2", "qty": 1.1717, "entry_px": 232.3},
+            ],
+        }
+    )
+    assert "last_buy_px=213.2 (chg_vs_last_buy=5.65%, lot_harvested)" in pos_line_harvested
 
     # Verify tactical_avg_buy_px >= active_avg_buy_px is suppressed so true position profitability is not obscured
     pos_line_arb = _format_tradable_position_line(
