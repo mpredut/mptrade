@@ -58,6 +58,7 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
         if not isinstance(fut, dict) or not isinstance(cash, dict):
             continue
         fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
+        fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
         fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
         cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
         fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
@@ -78,6 +79,15 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
             )
             if dir_ok and abs(diff_v) >= 0.25:
                 out[lead_key] = diff_v
+            elif fut_globex is not None and abs(fut_globex) >= 0.25:
+                globex_dir_ok = (
+                    (fut_globex > 0.0 and (fut_1h is None or fut_1h >= -0.15))
+                    or (fut_globex < 0.0 and (fut_1h is None or fut_1h <= 0.15))
+                )
+                if globex_dir_ok:
+                    out[lead_key] = round(fut_globex, 2) + 0.0
+        elif fut_globex is not None and abs(fut_globex) >= 0.25:
+            out[lead_key] = round(fut_globex, 2) + 0.0
         elif fut_1h is not None and abs(fut_1h) >= 0.25:
             out[lead_key] = round(fut_1h, 2) + 0.0
     lead_v = out.get("nq_qqq_lead_pct") if out.get("nq_qqq_lead_pct") is not None else out.get("es_spy_lead_pct")

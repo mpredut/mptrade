@@ -2064,6 +2064,20 @@ def test_cross_asset_regime_vix_and_symmetric_ai_telemetry(tmp_path):
     assert compute_futures_premarket_lead(live_rth_selloff_mb) == {}
     assert "Futures_Lead=" not in format_macro_benchmarks_summary_line(live_rth_selloff_mb)
 
+    globex_overnight_mb = {
+        "items": {
+            "SPY": {"price": 736.70, "chg_24h_pct": -3.93, "market_state": "CLOSED", "last_bar_ts": 1_793_926_764},
+            "QQQ": {"price": 656.93, "chg_24h_pct": -5.06, "market_state": "CLOSED", "last_bar_ts": 1_793_926_799},
+            "ES=F": {"price": 7398.75, "chg_24h_pct": -4.16, "globex_session_chg_pct": 0.21, "chg_1h_pct": 0.16, "chg_15m_pct": 0.05, "last_bar_ts": 1_793_931_314},
+            "NQ=F": {"price": 27032.00, "chg_24h_pct": -5.02, "globex_session_chg_pct": 1.05, "chg_1h_pct": 0.44, "chg_15m_pct": 0.13, "last_bar_ts": 1_793_931_313},
+        },
+    }
+    globex_lead = compute_futures_premarket_lead(globex_overnight_mb)
+    assert globex_lead["nq_qqq_lead_pct"] == 1.05
+    assert globex_lead["futures_lead_pct"] == 1.05
+    assert globex_lead["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
+    assert "Futures_Lead=+1.05%" in format_macro_benchmarks_summary_line(globex_overnight_mb)
+
 
 def test_lexicon_llm_prose_pruning_and_editorial_diplomatic_exclusions(tmp_path):
     """Verify LLM prose/derivatives bigrams are pruned from dynamic lexicon and non-kinetic war/nuclear/default headlines do not trigger high-severity."""
