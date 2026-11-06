@@ -9001,3 +9001,118 @@ def test_iter23_cycle_realized_pnl_sync_legacy_whale_refresh_and_post_rth_zero_v
     assert "'realized_pnl_usd': -22.62" in rendered_portfolio
     assert "realized_pnl=$-22.62" in rendered_portfolio
 
+
+def test_iter108_portfolio_collector_and_scope_filter_equity_crypto_isolation(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from cachepaths import cache_symbol_variants
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        harvest_recent_orders_and_enrich_positions,
+        harvest_tradable_positions_and_orders,
+        harvest_venue_cycles,
+        load_symbol_best_recent_fills,
+    )
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        apply_asset_scope_filter,
+    )
+
+    # 1. harvest_venue_cycles and harvest_tradable_positions_and_orders isolate bare t212 COIN from crypto COINUSDC
+    t212_dir = tmp_path / "212trading"
+    t212_dir.mkdir(parents=True, exist_ok=True)
+    (t212_dir / ".state_COIN_US_EQ.json").write_text(
+        json.dumps({"qty": 2.0, "cost_usd": 480.0, "avg_cost": 240.0, "entry_price": 240.0}),
+        encoding="utf-8",
+    )
+    pt_crypto_only = {"COINUSDC": {"price": 1.25}}
+    _, _, t212_cycs = harvest_venue_cycles(str(tmp_path), pt_crypto_only, {})
+    assert t212_cycs["COIN_US_EQ"]["dd_pct"] is None
+
+    bare_t212_inst = SimpleNamespace(
+        symbol="COIN",
+        provider_name="t212",
+        base="COIN",
+        quote="USD",
+        enabled=True,
+        _provider=SimpleNamespace(free_balance=lambda a: 2.0 if a == "COIN" else 100.0),
+    )
+    pos_out, _, _, _ = harvest_tradable_positions_and_orders(
+        {"T212_COIN": bare_t212_inst},
+        {"COINUSDC": {"price": 1.25}},
+        {},
+        {},
+    )
+    assert pos_out[0]["price"] is None
+
+    # Allow-able match when COIN_US_EQ is present in prices_and_trends even with explicit_quote="USD"
+    pos_out_eq, _, _, _ = harvest_tradable_positions_and_orders(
+        {"T212_COIN": bare_t212_inst},
+        {"COIN_US_EQ": {"price": 245.0}, "COINUSDC": {"price": 1.25}},
+        {},
+        {},
+    )
+    assert pos_out_eq[0]["price"] == pytest.approx(245.0)
+
+    # 2. load_symbol_best_recent_fills filters unscoped quote_variants so COINUSDC never reads COIN_US_EQ or vice versa
+    cdir_iso = tmp_path / "iso" / "cachedb"
+    cdir_iso.mkdir(parents=True, exist_ok=True)
+    (cdir_iso / "cache_trade_t212.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "COINUSDC": [
+                        {"symbol": "COINUSDC", "side": "BUY", "price": 1.25, "qty": 50.0, "executedQty": 50.0, "timestamp": 1_700_000_000_000}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_symbol_best_recent_fills(
+        str(cdir_iso),
+        "COIN_US_EQ",
+        cache_symbol_variants("COIN_US_EQ", include_base=True),
+    ) is None
+
+    # 3. harvest_recent_orders_and_enrich_positions does not price bare t212 cycle from COINUSDC when recovering from venue_balances_state
+    cdir = tmp_path / "cachedb"
+    cdir.mkdir(parents=True, exist_ok=True)
+    (cdir / "venue_balances_state.json").write_text(
+        json.dumps({"pos:t212:COIN": {"venue": "t212", "symbol": "COIN", "free_base": 3.0}}),
+        encoding="utf-8",
+    )
+    t212_bare_cyc = {"COIN": {"qty": 1.0, "avg_cost_px": 240.0, "entry_price": 240.0}}
+    harvest_recent_orders_and_enrich_positions(
+        str(cdir),
+        {},
+        [],
+        {"COINUSDC": {"price": 1.25}},
+        {},
+        {},
+        t212_bare_cyc,
+    )
+    assert t212_bare_cyc["COIN"]["qty"] == pytest.approx(3.0)
+    assert t212_bare_cyc["COIN"].get("dd_pct") is None
+
+    # 4. apply_asset_scope_filter classifies venue-less items by _EQ/_US_EQ symbol suffix
+    ps_crypto = {
+        "active_retry_queue": [
+            {"symbol": "COIN_US_EQ", "side": "BUY", "qty": 1.0},
+            {"symbol": "COINUSDC", "side": "BUY", "qty": 10.0},
+        ],
+        "last_cycle_execution_status": {"symbol": "COIN_US_EQ", "status": "EXECUTED"},
+    }
+    apply_asset_scope_filter({}, {}, ps_crypto, "crypto", {}, {})
+    assert [x["symbol"] for x in ps_crypto["active_retry_queue"]] == ["COINUSDC"]
+    assert "last_cycle_execution_status" not in ps_crypto
+
+    ps_eq = {
+        "active_retry_queue": [
+            {"symbol": "COIN_US_EQ", "side": "BUY", "qty": 1.0},
+            {"symbol": "COINUSDC", "side": "BUY", "qty": 10.0},
+        ],
+        "last_cycle_execution_status": {"symbol": "COIN_US_EQ", "status": "EXECUTED"},
+    }
+    apply_asset_scope_filter({}, {}, ps_eq, "equities", {}, {})
+    assert [x["symbol"] for x in ps_eq["active_retry_queue"]] == ["COIN_US_EQ"]
+    assert ps_eq.get("last_cycle_execution_status", {}).get("symbol") == "COIN_US_EQ"
+

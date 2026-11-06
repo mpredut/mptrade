@@ -325,10 +325,11 @@ def harvest_venue_cycles(
     """Harvest normalized ``.state_*.json`` DCA cycle states for Kraken, Hyperliquid, and Trading212."""
     _rj = _resolve_read_json_cached(read_json_fn)
 
-    def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int) -> None:
+    def _record_cyc(target: Dict[str, Any], st_path: str, sym: str, dec: int, *, is_eq: bool = False) -> None:
         if isinstance((st_data := _rj(st_path)), dict):
+            lookup_sym = f"{sym}_US_EQ" if is_eq and not str(sym).strip().upper().endswith(("_EQ", "_US_EQ")) else sym
             parsed = parse_venue_cycle_state(
-                st_data, sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
+                st_data, lookup_sym, prices_and_trends, avg_decimals=dec, fallback_prices=fallback_prices, include_meta=True
             )
             prev = target.get(sym)
             if isinstance(prev, dict):
@@ -364,7 +365,7 @@ def harvest_venue_cycles(
 
     all_t212_cycles: Dict[str, Any] = {}
     for st_path, ticker in _iter_t212_state_files(workspace_dir):
-        _record_cyc(all_t212_cycles, st_path, ticker, 4)
+        _record_cyc(all_t212_cycles, st_path, ticker, 4, is_eq=True)
 
     return kraken_cycles, hyperliquid_cycles, all_t212_cycles
 
@@ -414,7 +415,6 @@ def harvest_kraken_xstocks(
     live_px = (
         (resolve_symbol_price(listed_pair, prices_and_trends) if listed_pair else 0.0)
         or resolve_symbol_price(t212_sib, prices_and_trends)
-        or resolve_symbol_price(underlying, prices_and_trends)
     )
     xst_summary: Dict[str, Any] = {
         "underlying": underlying, "t212_sibling": t212_sib, "holdings": x_holdings,
@@ -550,7 +550,8 @@ def _apply_open_orders_locked_balances(
             oo_item["age_min"] = 0.0
             oo_item["age"] = "0.0m"
         if oo_px > 0.0 and oo_sym and oo_item.get("dist_from_spot_pct") is None:
-            spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_sym, prices_and_trends)
+            oo_lookup_sym = f"{oo_sym}_US_EQ" if oo_v == "t212" and not oo_sym.endswith(("_EQ", "_US_EQ")) else oo_sym
+            spot_oo = safe_pos_float((prices_and_trends.get(oo_sym) or {}).get("price"), default=0.0) or resolve_symbol_price(oo_lookup_sym, prices_and_trends)
             if spot_oo > 0.0:
                 oo_item["dist_from_spot_pct"] = round(((oo_px - spot_oo) / spot_oo) * 100.0, 2)
         if not oo_v or not oo_sym or oo_rem <= 0.0:
@@ -715,7 +716,8 @@ def harvest_tradable_positions_and_orders(
                 except Exception:
                     if px_f <= 0:
                         px, px_f = None, 0.0
-            if px_f <= 0 and (px_f := resolve_symbol_price(sym, prices_and_trends, explicit_quote=quote)) > 0:
+            lookup_sym_p = f"{sym}_US_EQ" if v_norm == "t212" and not sym.endswith(("_EQ", "_US_EQ")) else sym
+            if px_f <= 0 and (px_f := resolve_symbol_price(lookup_sym_p, prices_and_trends, explicit_quote=None if v_norm == "t212" else quote)) > 0:
                 px = px_f
             if px_f <= 0 and prev_pos_px > 0:
                 px = px_f = round(prev_pos_px, 4) if v_norm == "t212" else prev_pos_px
@@ -837,7 +839,12 @@ def harvest_tradable_positions_and_orders(
                 if p_sym:
                     exact_pt_px = safe_pos_float((prices_and_trends.get(p_sym) or {}).get("price"), default=0.0) or 0.0
                     cached_pos_px = safe_pos_float(rec_pos.get("price"), default=0.0) or 0.0
-                    sib_pt_px = resolve_symbol_price(p_sym, prices_and_trends, explicit_quote=p_quote) if exact_pt_px <= 0.0 else exact_pt_px
+                    p_lookup_rec = f"{p_sym}_US_EQ" if v_rec_norm == "t212" and not p_sym.endswith(("_EQ", "_US_EQ")) else p_sym
+                    sib_pt_px = (
+                        resolve_symbol_price(p_lookup_rec, prices_and_trends, explicit_quote=None if v_rec_norm == "t212" else p_quote)
+                        if exact_pt_px <= 0.0
+                        else exact_pt_px
+                    )
                     if exact_pt_px > 0.0:
                         px_rec = exact_pt_px
                     elif cached_pos_px > 0.0 and (sib_pt_px <= 0.0 or not _prices_diverged(cached_pos_px, sib_pt_px)):
@@ -972,6 +979,19 @@ def load_symbol_best_recent_fills(
     sym_upper = str(symbol or "").strip().upper()
     is_eq_sym = sym_upper.endswith(("_EQ", "_US_EQ"))
     is_crypto_pair = (not is_eq_sym) and (split_symbol_assets(sym_upper) is not None)
+    scoped_variants = (
+        [
+            c
+            for c in quote_variants
+            if (
+                not str(c).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+                if is_eq_sym
+                else not str(c).strip().upper().endswith(("_EQ", "_US_EQ"))
+            )
+        ]
+        if (is_eq_sym or is_crypto_pair)
+        else list(quote_variants)
+    )
     sym_quotes = compatible_quote_suffixes(sym_upper)
     base_upper = canonical_base_asset(sym_upper)
     for ord_file, cache_venue in _ORDER_CACHE_FILES:
@@ -979,11 +999,11 @@ def load_symbol_best_recent_fills(
             continue
         ord_data = _rj(os.path.join(cachedb_dir, ord_file))
         o_items = ord_data.get("items", {}) if isinstance(ord_data, dict) and isinstance(ord_data.get("items"), dict) else {}
-        matched_cand = next((cand for cand in quote_variants if casefold_get(o_items, cand)), None)
+        matched_cand = next((cand for cand in scoped_variants if casefold_get(o_items, cand)), None)
         orders_for_sym = casefold_get(o_items, matched_cand) if matched_cand else []
         if cache_venue in ("hyperliquid", "t212"):
             audit_items = _load_audit_terminal_orders(cachedb_dir, cache_venue)
-            audit_cand = next((cand for cand in quote_variants if casefold_get(audit_items, cand)), None)
+            audit_cand = next((cand for cand in scoped_variants if casefold_get(audit_items, cand)), None)
             if audit_cand:
                 orders_for_sym = _merge_audit_orders(orders_for_sym, casefold_get(audit_items, audit_cand))
                 if not matched_cand:
@@ -1028,7 +1048,7 @@ def load_symbol_best_recent_fills(
             ]
             if best_venue:
                 cyc_maps.sort(key=lambda vc: 0 if vc[0] == best_venue else 1)
-            cyc_cands = list(dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in quote_variants if str(c).strip())]))
+            cyc_cands = list(dict.fromkeys([sym_upper, *(str(c).strip().upper() for c in scoped_variants if str(c).strip())]))
             matched_cyc: Optional[Dict[str, Any]] = None
             matched_cyc_venue: Optional[str] = None
             for cand in cyc_cands:
@@ -1129,26 +1149,36 @@ def harvest_recent_orders_and_enrich_positions(
         else:
             recent_orders.setdefault(sym_k, fills_d)
 
+    def _scoped_sym_variants(raw_sym: Any, *, is_eq: bool) -> list[str]:
+        s_u = str(raw_sym or "").strip().upper()
+        if not s_u:
+            return []
+        return [
+            str(v_s).strip().upper()
+            for v_s in (s_u, *cache_symbol_variants(s_u, include_base=True))
+            if (
+                not str(v_s).strip().upper().endswith(("USD", "USDC", "USDT", "FDUSD", "TUSD", "BUSD", "EUR", "BTC", "ETH"))
+                if is_eq
+                else not str(v_s).strip().upper().endswith(("_EQ", "_US_EQ"))
+            )
+        ]
+
     active_t212_syms: set[str] = set()
     for s_k in (t212_cycles or {}):
-        for v_s in (s_k, *cache_symbol_variants(str(s_k), include_base=True)):
-            active_t212_syms.add(str(v_s).strip().upper())
+        active_t212_syms.update(_scoped_sym_variants(s_k, is_eq=True))
     for s_k, iv in (inst_by_sym or {}).items():
         if normalize_venue_name(getattr(iv, "provider_name", None)) == "t212":
             raw_s = str(getattr(iv, "symbol", "") or str(s_k).split(":", 1)[-1]).strip().upper()
-            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
-                active_t212_syms.add(str(v_s).strip().upper())
+            active_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
     for pos_it in (tradable_positions or ()):
         if isinstance(pos_it, dict) and normalize_venue_name(pos_it.get("venue")) == "t212":
             raw_s = str(pos_it.get("symbol") or "").strip().upper()
-            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
-                active_t212_syms.add(str(v_s).strip().upper())
+            active_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
     allowed_t212_syms = set(active_t212_syms)
     if allowed_t212_syms:
         for it_t212 in (_venue_intents("t212") or ()):
             raw_s = str(it_t212.get("symbol") or "").strip().upper()
-            for v_s in (raw_s, *cache_symbol_variants(raw_s, include_base=True)):
-                allowed_t212_syms.add(str(v_s).strip().upper())
+            allowed_t212_syms.update(_scoped_sym_variants(raw_s, is_eq=True))
 
     audit_cache_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for order_cache_name, cache_venue in _ORDER_CACHE_FILES:
@@ -1218,7 +1248,7 @@ def harvest_recent_orders_and_enrich_positions(
             lb = safe_pos_float(pos_item.get("locked_base_qty"), default=0.0) or 0.0
             if pv and ps and (fb >= 0.0 or lb > 0.0):
                 held_q = (max(0.0, fb) + lb) if fb >= 0.0 else lb
-                for sv in (ps, *cache_symbol_variants(ps, include_base=True)):
+                for sv in _scoped_sym_variants(ps, is_eq=(pv == "t212" or ps.endswith(("_EQ", "_US_EQ")))):
                     sv_k = (pv, sv.upper())
                     if sv_k not in live_held_by_venue_sym or held_q > live_held_by_venue_sym[sv_k]:
                         live_held_by_venue_sym[sv_k] = held_q
@@ -1231,10 +1261,11 @@ def harvest_recent_orders_and_enrich_positions(
             if not t_sym_u or (c_venue_ro, t_sym_u) in live_held_by_venue_sym or not isinstance(t_cyc, dict):
                 continue
             t_base_u = canonical_base_asset(t_sym_u)
+            ro_cands = _scoped_sym_variants(t_sym_u, is_eq=(c_venue_ro == "t212" or t_sym_u.endswith(("_EQ", "_US_EQ"))))
             c_pos = next(
                 (
                     v_pos
-                    for cand_k in (t_sym_u, *cache_symbol_variants(t_sym_u, include_base=True))
+                    for cand_k in ro_cands
                     if isinstance((v_pos := cached_bals_ro.get(f"pos:{c_venue_ro}:{cand_k.upper()}")), dict)
                 ),
                 None,
@@ -1252,17 +1283,14 @@ def harvest_recent_orders_and_enrich_positions(
             lb_c = safe_pos_float(c_pos.get("locked_base_qty") if isinstance(c_pos, dict) else None, default=0.0) or 0.0
             if fb_c is not None:
                 held_c = fb_c + lb_c
-                for sv_c in (t_sym_u, *cache_symbol_variants(t_sym_u, include_base=True)):
+                for sv_c in ro_cands:
                     live_held_by_venue_sym.setdefault((c_venue_ro, sv_c.upper()), held_c)
                 live_held_by_venue_sym[(c_venue_ro, t_sym_u)] = held_c
                 if c_venue_ro == "t212" and held_c > 1e-8:
                     t_cyc["qty"] = round(held_c, 6)
-                    t_px = (
-                        resolve_symbol_price(
-                            t_sym_u if t_sym_u.endswith(("_EQ", "_US_EQ")) else f"{t_sym_u}_US_EQ",
-                            prices_and_trends,
-                        )
-                        or resolve_symbol_price(t_sym_u, prices_and_trends)
+                    t_px = resolve_symbol_price(
+                        t_sym_u if t_sym_u.endswith(("_EQ", "_US_EQ")) else f"{t_sym_u}_US_EQ",
+                        prices_and_trends,
                     )
                     if (t_avg := safe_pos_float(t_cyc.get("avg_cost_px") or t_cyc.get("entry_price"), default=None)) is not None:
                         t_cyc["cost_usd"] = round(held_c * t_avg, 2)

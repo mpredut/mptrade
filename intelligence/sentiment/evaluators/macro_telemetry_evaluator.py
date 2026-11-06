@@ -406,7 +406,15 @@ def apply_asset_scope_filter(
             portfolio_summary.pop(key, None)
 
     def _is_t212_venue(item: Any) -> bool:
-        return isinstance(item, dict) and (normalize_venue_name(item.get("venue")) == "t212") == want_t212
+        if not isinstance(item, dict):
+            return False
+        v_n = normalize_venue_name(item.get("venue"))
+        if v_n:
+            is_t212 = v_n == "t212"
+        else:
+            sym_u = str(item.get("symbol") or "").strip().upper()
+            is_t212 = sym_u.endswith(("_EQ", "_US_EQ")) or sym_u in t212_sym_set
+        return is_t212 == want_t212
 
     if want_t212:
         prices_and_trends = {k: v for k, v in prices_and_trends.items() if str(k).upper() in t212_sym_set or str(k).upper().endswith(("_EQ", "_US_EQ"))}
