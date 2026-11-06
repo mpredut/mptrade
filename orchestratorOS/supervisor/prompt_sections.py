@@ -969,11 +969,9 @@ def _format_microstructure_section(
         basis_sfx = ""
         basis_parts: List[str] = []
         eq_no_oi_3b = sym_is_eq_3b and (_parse_finite_float(minfo.get("oi_usd"), 0.0) or 0.0) <= 0.0
-        if (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None and not (sym_is_eq_3b and abs(b_bps) < 1e-9):
+        if not sym_is_eq_3b and (b_bps := _parse_finite_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
             basis_parts.append(f"perp_basis={b_bps:+.1f}bps")
-        if (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None and not (
-            sym_is_eq_3b and abs(f_ann) < 1e-9 and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12
-        ):
+        if not sym_is_eq_3b and (f_ann := _parse_finite_float(minfo.get("funding_annualized_pct"), None)) is not None:
             basis_parts.append(f"funding_ann={f_ann:+.1f}%")
         if (arb_bps := _parse_finite_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
             basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={arb_bps:+.1f}bps")
@@ -1039,7 +1037,7 @@ def _format_microstructure_section(
             continue
         if sym.endswith("USDC") and b_canon_3b not in rendered_3b_perp_by_base:
             rendered_3b_perp_by_base[b_canon_3b] = (sym, tr_sig[0], tr_sig[1])
-        eq_zero_fund_3b = sym_is_eq_3b and abs(_parse_finite_float(minfo.get("funding_rate"), 0.0) or 0.0) < 1e-12
+        eq_zero_fund_3b = sym_is_eq_3b
         deriv_oi_sfx = (
             ""
             if (eq_no_oi_3b and eq_zero_fund_3b)

@@ -1045,8 +1045,9 @@ def load_symbol_microstructure(
         if m_info.get("funding_rate") is None and (w_fr := safe_float(obj_attr(whale, "funding_rate"), default=None)) is not None:
             m_info["funding_rate"] = w_fr
     if is_equity_symbol(sym):
-        if m_info.get("perp_spot_basis_bps") is not None:
-            m_info["perp_spot_basis_bps"] = 0.0
+        for eq_zero_k in ("perp_spot_basis_bps", "funding_rate", "pred_funding_rate", "funding_annualized_pct"):
+            if m_info.get(eq_zero_k) is not None:
+                m_info[eq_zero_k] = 0.0
         tr5_eq = safe_pos_float(m_info.get("taker_ratio_5m"), default=None)
         if tr5_eq is not None and (tr5_eq < 0.176 or tr5_eq > 5.67):
             clv_old = tr5_eq / (1.0 + tr5_eq)

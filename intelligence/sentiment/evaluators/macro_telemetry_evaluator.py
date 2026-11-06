@@ -71,11 +71,7 @@ def compute_futures_premarket_lead(data: Any) -> Dict[str, Any]:
         if not is_off_rth:
             any_cash_live_rth = True
             continue
-        globex_dir_ok = fut_globex is not None and (
-            (fut_globex > 0.0 and (fut_1h is None or fut_1h >= -0.15))
-            or (fut_globex < 0.0 and (fut_1h is None or fut_1h <= 0.15))
-        )
-        if fut_globex is not None and abs(fut_globex) >= 0.25 and globex_dir_ok:
+        if fut_globex is not None and abs(fut_globex) >= 0.25:
             out[lead_key] = round(fut_globex, 2) + 0.0
         elif fut_24h is not None and cash_24h is not None:
             diff_v = round(fut_24h - cash_24h, 2) + 0.0

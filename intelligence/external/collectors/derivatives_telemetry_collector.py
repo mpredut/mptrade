@@ -132,9 +132,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
         idx_px = mark_px
         oi_shares = total_opt_contracts * 100.0
         oi_usd = round(oi_shares * mark_px, 2)
-        call_share = (call_oi / total_opt_contracts) if total_opt_contracts > 0.0 else 0.5
-        # Map options call-put skew into an 8h funding-equivalent carry metric
-        funding_equiv = round((call_share - 0.5) * 0.0004, 6) + 0.0
+        funding_equiv = 0.0
         basis_bps = 0.0
         telemetry = DerivativesTelemetry(
             symbol=symbol,
@@ -146,7 +144,7 @@ class DerivativesTelemetryCollector(_DiskBackedSymbolCollector):
             mark_price=round(mark_px, 4),
             index_price=round(idx_px, 4),
             perp_spot_basis_bps=basis_bps,
-            funding_annualized_pct=round(funding_equiv * 3.0 * 365.0 * 100.0, 2) + 0.0,
+            funding_annualized_pct=0.0,
         )
         return self._commit_snapshot(symbol, now, telemetry)
 
