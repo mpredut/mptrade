@@ -698,6 +698,12 @@ def _resolve_non_static_prev_metric(
         for cand in reversed(h_list):
             if not isinstance(cand, dict):
                 continue
+            if (
+                cand.get("whale_long_pct") is not None
+                and (safe_pos_float(cand.get("whale_long_pct"), default=0.0) or 0.0) <= 0.0
+                and (safe_pos_float(cand.get("oi_usd"), default=0.0) or 0.0) <= 0.0
+            ):
+                continue
             cand_ts = normalize_epoch_sec(safe_pos_float(cand.get("ts"), default=0.0) or 0.0, default=0.0)
             if cand_ts > 0.0 and 180.0 <= (eff_now - cand_ts) <= 3600.0:
                 cand_v = (
