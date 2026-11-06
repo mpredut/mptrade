@@ -444,7 +444,7 @@ def harvest_macro_and_news_sensors(
                                         stripped_stale_intraday = True
                             if mb_k in ("SPY", "QQQ", "IBIT", "US10Y", "VIX"):
                                 bar_ts_v = safe_pos_float(mb_copy.get("last_bar_ts"), default=None)
-                                is_stale_us_bar = False
+                                is_stale_us_bar = str(mb_copy.get("market_state") or "").strip().upper() == "CLOSED"
                                 if bar_ts_v is not None and now_ts > 0.0 and (now_ts - bar_ts_v) > 2700.0:
                                     is_stale_us_bar = True
                                 elif bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
